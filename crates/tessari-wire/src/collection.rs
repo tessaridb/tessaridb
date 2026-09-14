@@ -46,6 +46,20 @@ use crate::peer::Hello;
 /// What a follower asks a leader for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Collect {
+    /// The log the cursor counts in.
+    ///
+    /// A position is a number in ONE log and means nothing in another, so an ask
+    /// that named only a number was an ask the leader had to guess the space of
+    /// — and it guessed from the grant, which is right for exactly one log and
+    /// wrong for every other one the subscriber is entitled to (Q-620, Q-621).
+    ///
+    /// It is the follower's to name and not the leader's to derive, because a
+    /// subscriber reads a CHAIN: the store's own log carries the namespace and
+    /// database definitions its records depend on, and the grant names only the
+    /// bottom of that chain. What the leader keeps is the authority to refuse —
+    /// see [`Serving`], where a log the grant neither contains nor sits inside
+    /// is answered with a refusal and not with records.
+    pub home: Reach,
     /// The first position the follower does not hold — **inclusive**.
     ///
     /// It is also the follower's own assertion that it holds `from - 1`, which
@@ -66,7 +80,8 @@ impl Collect {
     /// The body of a [`crate::PeerFrame::Collect`] frame.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let mut body = Vec::with_capacity(16);
+        let mut body = Vec::with_capacity(25);
+        frame::put_reach(&mut body, self.home);
         frame::put_u64(&mut body, self.from.get());
         frame::put_u64(&mut body, self.limit);
         body
@@ -78,9 +93,11 @@ impl Collect {
     ///
     /// Returns [`Error::Malformed`] when the body is not the shape an ask takes.
     pub fn decode(body: &[u8]) -> Result<Self> {
-        let (from, at) = frame::take_u64(body, 0)?;
+        let (home, at) = frame::take_reach(body, 0)?;
+        let (from, at) = frame::take_u64(body, at)?;
         let (limit, _) = frame::take_u64(body, at)?;
         Ok(Self {
+            home,
             from: Sequence::new(from),
             limit,
         })
@@ -350,12 +367,29 @@ impl Origin for Serving<'_> {
             // one holding a `DEFINE REPLICA` and the other a backup.
             return Err(Error::Unsubscribed);
         };
-        let previous = preceding(self.log, over, asked.from)?;
+        // A log the grant neither contains nor sits inside holds nothing this
+        // follower is entitled to. Both directions are servable and they serve
+        // different halves of the chain: a log INSIDE the grant is entirely the
+        // follower's, and a log ABOVE it — the store's own, for a namespace
+        // subscriber — is read with the mutations outside the reach elided,
+        // which is what carries `DEFINE NAMESPACE` to a subscriber without
+        // carrying the namespace beside it.
+        //
+        // The refusal is `Unsubscribed` rather than a fourth frame because the
+        // repair is the same statement: a `REPLICATES` that does not cover the
+        // log asked for. A follower that derives its log set from the catalog it
+        // has itself replayed never produces it — see [`crate::logs_to_collect`]
+        // — so this answers a peer that is out of step or out of order, and the
+        // one thing it must not do is answer it with somebody else's records.
+        if !(over.contains(asked.home) || asked.home.contains(over)) {
+            return Err(Error::Unsubscribed);
+        }
+        let previous = preceding(self.log, over, asked.home, asked.from)?;
         // A `u64` from a peer against a `usize` here: on a platform where the
         // two differ the ask is larger than anything this node could answer, so
         // the whole log is the honest ceiling.
         let limit = usize::try_from(asked.limit).unwrap_or(usize::MAX);
-        let (records, stopped_early) = self.fill(over, asked.from, limit)?;
+        let (records, stopped_early) = self.fill(over, asked.home, asked.from, limit)?;
         // What the follower now holds: the last position it was handed, or —
         // when it was handed nothing — the one it told us it was at. The same
         // rule the leader's own door uses, because it is the same event.
@@ -363,11 +397,10 @@ impl Origin for Serving<'_> {
             || Sequence::new(asked.from.get().saturating_sub(1)),
             |(sequence, _)| *sequence,
         );
-        // The log the collect read, which is the one `reached` counts in. A
-        // `Collect` frame names no log yet, so this is one link of the chain
-        // (Q-621, slice C).
-        self.log
-            .follower_served(follower, tessari_types::Reach::Store, reached);
+        // The log the collect read, which is the one `reached` counts in — the
+        // follower's ask, because a position recorded against any other log is
+        // two unrelated counters subtracted (Q-630).
+        self.log.follower_served(follower, asked.home, reached);
         Ok(Collected {
             previous,
             records,
@@ -402,6 +435,7 @@ impl Serving<'_> {
     fn fill(
         &self,
         over: Reach,
+        home: Reach,
         from: Sequence,
         limit: usize,
     ) -> Result<(Vec<(Sequence, LogRecord)>, bool)> {
@@ -416,16 +450,13 @@ impl Serving<'_> {
                 // always meant *ask again*.
                 return Ok((carried, false));
             }
-            // The log read is the subscription's own reach, because the frame
-            // carries no log to name yet: `Collect` holds a cursor and a limit
-            // and nothing that says which counter the cursor counts in (Q-618).
-            // That makes this a read of ONE link of the chain a subscriber is
-            // entitled to — the widest logs above it are not reached until the
-            // frame names a log and the follower asks once per log, which is
-            // slice C (Q-620, Q-621).
+            // Two reaches and they answer two different questions: `over` is
+            // what this follower may SEE, and `home` is which log the cursor
+            // counts in. They were one value while a frame carried no log, and
+            // that made every ask a read of one link of the chain (Q-618).
             let page = self
                 .log
-                .log_records_within(over, over, cursor, room.min(COLLECTION_PAGE_RECORDS))
+                .log_records_within(over, home, cursor, room.min(COLLECTION_PAGE_RECORDS))
                 .map_err(refused)?;
             if page.is_empty() {
                 return Ok((carried, false));
@@ -456,7 +487,7 @@ impl Serving<'_> {
 /// # Errors
 ///
 /// Returns [`Error::Uncollectable`] when this node holds nothing at `from - 1`.
-fn preceding(store: &Store, over: Reach, from: Sequence) -> Result<Epoch> {
+fn preceding(store: &Store, over: Reach, home: Reach, from: Sequence) -> Result<Epoch> {
     if from.get() <= 1 {
         // Nothing precedes the first position, and a store that never elected
         // anybody writes exactly this epoch — so the answer is the same value a
@@ -471,7 +502,7 @@ fn preceding(store: &Store, over: Reach, from: Sequence) -> Result<Epoch> {
     // the subscription exists to prevent, in the one place a reach was not
     // threaded through — which is how a rule acquires a hole.
     let held = store
-        .log_records_within(over, over, before, 1)
+        .log_records_within(over, home, before, 1)
         .map_err(|why| Error::Refused {
             message: why.to_string(),
         })?;
@@ -514,8 +545,10 @@ impl Collector<'_> {
     ///
     /// # The cursor is the caller's and not this module's
     ///
-    /// `from` is the first position this node does not hold — ordinarily its own
-    /// committed tail plus one. It is a parameter rather than something read
+    /// `from` is the first position this node does not hold **in `home`** —
+    /// ordinarily its own committed tail there plus one. A node holds one log
+    /// per home, so the pair travels together: a number without the log it
+    /// counts in names no position at all. It is a parameter rather than something read
     /// here, and the rule that made it one is worth keeping: no surface on the
     /// network may reach the store's raw feed, `committed_tail` included, because
     /// a serving surface able to read positions directly is one that can stream
@@ -542,7 +575,7 @@ impl Collector<'_> {
     /// that disagrees with the history this node holds arrives as the store's
     /// own divergence, unchanged: rewording it would give an operator two
     /// accounts of one event.
-    pub fn collect(&self, into: &Store, from: Sequence) -> Result<Sequence> {
+    pub fn collect(&self, into: &Store, home: Reach, from: Sequence) -> Result<Sequence> {
         let held = Sequence::new(from.get().saturating_sub(1));
         let (_, answered) = call(
             self.peer.1,
@@ -551,6 +584,7 @@ impl Collector<'_> {
             self.peer.0,
             self.said,
             Ask::Records(Collect {
+                home,
                 from,
                 limit: self.limit,
             }),
@@ -565,11 +599,13 @@ impl Collector<'_> {
         let mut previous = collected.previous;
         let mut reached = held;
         for (at, record) in &collected.records {
-            // The log this collect read. A `Collect` frame names none yet, so it
-            // is the store's — one link of the chain, and the same constant the
-            // ask above is bounded by (Q-621, Q-622; slice C gives the frame a
-            // log to name).
-            into.apply_from_stream(tessari_types::Reach::Store, *at, previous, record)
+            // The log this collect read, which is the log it is applied into.
+            // The two were allowed to differ while the frame named none: a
+            // namespace subscriber read the leader's namespace log and filed
+            // every record in its OWN store log, so the sequences counted in a
+            // counter they never came from and nothing was in an error state to
+            // say so.
+            into.apply_from_stream(home, *at, previous, record)
                 .map_err(refused)?;
             previous = record.epoch();
             reached = *at;
@@ -596,6 +632,51 @@ impl Collector<'_> {
     }
 }
 
+/// Every log this node should ask a leader for, in the order it should ask.
+///
+/// # Why the follower derives this instead of being told
+///
+/// A subscriber is entitled to the CHAIN from the store's own log down to the
+/// reach it was granted: the namespace and database definitions its records
+/// depend on are written in the logs above it, and a follower that asked only
+/// for its own would hold records belonging to a namespace that does not exist
+/// on it (Q-620, Q-621).
+///
+/// The grant lives on the leader and the follower does not hold it, so the
+/// obvious design is for the leader to send the set. That would put the grant on
+/// the wire beside the leader's own copy, and two copies of one authority is the
+/// shape that lets a peer be authorized for one namespace and served another —
+/// the objection [`Serving`]'s own header records.
+///
+/// It is not needed. The follower asks for [`Reach::Store`] first and applies
+/// what comes back; the leader's read elided every mutation outside the grant,
+/// so the catalog the follower then reads names only namespaces it is
+/// subscribed to. The set derived from it is inside the grant **by
+/// construction**, and the leader keeps the authority to refuse anything else.
+///
+/// The order is the store's log first, then each namespace, then its databases —
+/// `Store::homes`'s order and the same reason: a definition arrives before the
+/// records that depend on it.
+///
+/// # Errors
+///
+/// Returns [`Error::Refused`] carrying the store's own words when the catalog
+/// cannot be read.
+pub fn logs_to_collect(store: &Store) -> Result<Vec<Reach>> {
+    let mut transaction = store.begin().map_err(refused)?;
+    let catalog = Catalog::new(&mut transaction);
+    let mut logs = vec![Reach::Store];
+    let namespaces = catalog.namespaces().map_err(refused)?;
+    for namespace in namespaces {
+        logs.push(Reach::Namespace(namespace.id));
+        for database in catalog.databases_in(namespace.id).map_err(refused)? {
+            logs.push(Reach::Database(namespace.id, database.id));
+        }
+    }
+    transaction.rollback();
+    Ok(logs)
+}
+
 /// The store's own words, carried through rather than reworded.
 fn refused(why: tessari_storage::Error) -> Error {
     Error::Refused {
@@ -607,7 +688,10 @@ fn refused(why: tessari_storage::Error) -> Error {
 mod tests {
     use super::{
         COLLECTION_BUDGET_BYTES, Collect, Collected, Collector, Reach, Result, Serving, StoreValue,
+        logs_to_collect,
     };
+    use tessari_types::{DatabaseId, NamespaceId};
+
     use crate::error::Error;
     use crate::grant::Deciding;
     use crate::link::tests::{Authority, THERE, hello, settled};
@@ -679,7 +763,7 @@ mod tests {
         // the whole log — which is the ask nothing caps.
         let serving = Serving::within(db.store(), &Everything, one_record() * 2);
         let (records, stopped_early) = serving
-            .fill(Reach::Store, Sequence::new(1), usize::MAX)
+            .fill(Reach::Store, Reach::Store, Sequence::new(1), usize::MAX)
             .expect("a store-reach read of its own log");
 
         assert_eq!(
@@ -698,7 +782,7 @@ mod tests {
         let db = logged(&[1, 1, 1, 1, 1, 1]);
         let serving = Serving::within(db.store(), &Everything, one_record() * 2);
         let (first, _) = serving
-            .fill(Reach::Store, Sequence::new(1), usize::MAX)
+            .fill(Reach::Store, Reach::Store, Sequence::new(1), usize::MAX)
             .expect("a store-reach read of its own log");
         let next = Sequence::new(
             first
@@ -714,7 +798,7 @@ mod tests {
         // position, which is what a follower actually does.
         let roomy = Serving::within(db.store(), &Everything, one_record() * 64);
         let (second, stopped_early) = roomy
-            .fill(Reach::Store, next, usize::MAX)
+            .fill(Reach::Store, Reach::Store, next, usize::MAX)
             .expect("a store-reach read of its own log");
 
         assert_eq!(second.len(), 4, "the rest of the log, and none of it twice");
@@ -730,7 +814,7 @@ mod tests {
         let db = logged(&[1, 1, 1]);
         let serving = Serving::within(db.store(), &Everything, 0);
         let (records, stopped_early) = serving
-            .fill(Reach::Store, Sequence::new(1), usize::MAX)
+            .fill(Reach::Store, Reach::Store, Sequence::new(1), usize::MAX)
             .expect("a store-reach read of its own log");
 
         // A budget that could answer nothing would leave a follower asking for
@@ -744,7 +828,7 @@ mod tests {
         let db = logged(&[1, 1, 1]);
         let serving = Serving::within(db.store(), &Everything, one_record() * 64);
         let (records, stopped_early) = serving
-            .fill(Reach::Store, Sequence::new(1), usize::MAX)
+            .fill(Reach::Store, Reach::Store, Sequence::new(1), usize::MAX)
             .expect("a store-reach read of its own log");
 
         assert_eq!(records.len(), 3);
@@ -773,7 +857,7 @@ mod tests {
         // A generous count: the answer comes back short of it, which is the
         // reading that used to mean *the peer had no more* and now does not.
         collector(&mine, &der, &said, address, 64)
-            .collect(follower.store(), Sequence::new(1))
+            .collect(follower.store(), Reach::Store, Sequence::new(1))
             .expect("the collection");
         door.join().expect("the door's thread");
 
@@ -820,6 +904,20 @@ mod tests {
     /// A peer door for `LEADER` serving one connection, asking `db`'s own
     /// catalog who may collect.
     fn declaring(authority: &Authority, db: &Arc<Db>) -> (SocketAddr, JoinHandle<()>) {
+        declaring_for(authority, db, 1)
+    }
+
+    /// The same door, serving `rounds` connections.
+    ///
+    /// A collection is one connection, and a follower walking the chain from the
+    /// store's log down to its own reach makes one per log — so a test about the
+    /// chain has to say how many, and has to then make exactly that many or the
+    /// join waits on an accept nobody ever performs.
+    fn declaring_for(
+        authority: &Authority,
+        db: &Arc<Db>,
+        rounds: usize,
+    ) -> (SocketAddr, JoinHandle<()>) {
         let peers = Peers::bind(
             "127.0.0.1:0",
             authority.issue(LEADER, Purpose::Peer),
@@ -830,12 +928,14 @@ mod tests {
         let mine = hello(LEADER);
         let db = Arc::clone(db);
         let door = std::thread::spawn(move || {
-            drop(peers.greet(
-                || Ok(mine),
-                &LEADER,
-                &Deciding::holding(settled()),
-                &Serving::declared(db.store()),
-            ));
+            for _ in 0..rounds {
+                drop(peers.greet(
+                    || Ok(mine),
+                    &LEADER,
+                    &Deciding::holding(settled()),
+                    &Serving::declared(db.store()),
+                ));
+            }
         });
         (address, door)
     }
@@ -874,10 +974,21 @@ mod tests {
         (address, door)
     }
 
-    /// Ask the door at `address` for the records after `from`.
+    /// Ask the door at `address` for the store log's records after `from`.
     fn collect(
         authority: &Authority,
         address: SocketAddr,
+        from: u64,
+        limit: u64,
+    ) -> crate::error::Result<Answered> {
+        collect_from(authority, address, Reach::Store, from, limit)
+    }
+
+    /// The same, naming the log.
+    fn collect_from(
+        authority: &Authority,
+        address: SocketAddr,
+        home: Reach,
         from: u64,
         limit: u64,
     ) -> crate::error::Result<Answered> {
@@ -888,6 +999,7 @@ mod tests {
             LEADER,
             &hello(THERE),
             Ask::Records(Collect {
+                home,
                 from: Sequence::new(from),
                 limit,
             }),
@@ -910,10 +1022,25 @@ mod tests {
     #[test]
     fn a_collection_frame_round_trips() {
         let asked = Collect {
+            home: Reach::Database(NamespaceId::new(4), DatabaseId::new(9)),
             from: Sequence::new(7),
             limit: 64,
         };
         assert_eq!(Collect::decode(&asked.encode()).expect("an ask"), asked);
+        // The log is the field a number means nothing without, so it round-trips
+        // at every level rather than at the one the fixture happened to pick.
+        for home in [
+            Reach::Store,
+            Reach::Namespace(NamespaceId::new(1)),
+            Reach::Database(NamespaceId::new(1), DatabaseId::new(2)),
+        ] {
+            let asked = Collect {
+                home,
+                from: Sequence::new(1),
+                limit: 8,
+            };
+            assert_eq!(Collect::decode(&asked.encode()).expect("an ask").home, home);
+        }
 
         let answer = Collected {
             previous: Epoch::new(3),
@@ -1137,22 +1264,57 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "the Collect frame names no log, so this reads one link of the \
-                chain and a namespace's records are in another (Q-628, slice C)"]
     fn a_subscriber_receives_its_namespace_and_not_the_one_beside_it() {
+        /// One per level of the reach lattice, which is what bounds the chain.
+        const ROUNDS: usize = 3;
+
         let authority = Authority::new();
         let leader = granting(" REPLICATES NAMESPACE prod");
-        let (address, door) = declaring(&authority, &leader);
+        // One round per log the follower asks for, and it discovers the logs as
+        // it goes: the store's own first, then the namespace that arrived in it.
+        let (address, door) = declaring_for(&authority, &leader, ROUNDS);
 
         let follower = Db::in_memory().expect("an in-memory store");
         let mine = authority.issue(THERE, Purpose::Peer);
         let der = authority.der();
         let said = hello(THERE);
-        let reached = collector(&mine, &der, &said, address, 1024)
-            .collect(follower.store(), Sequence::new(1))
-            .expect("a subscribed peer collects");
-        assert!(reached.get() > 1, "the leader had a log to hand over");
+        let collector = collector(&mine, &der, &said, address, 1024);
+
+        // The chain, walked the way the node's own loop walks it: collect a
+        // log, then re-derive the set, because the namespace whose log is worth
+        // asking for only exists once the store's log has been applied.
+        let mut reached = Sequence::ZERO;
+        let mut asked: Vec<Reach> = Vec::new();
+        for _ in 0..ROUNDS {
+            let logs = logs_to_collect(follower.store()).expect("this node's own logs");
+            // The next log this node has not asked for, or the store's own
+            // again. Never a `break`: the door accepts exactly `ROUNDS`
+            // connections, and stopping short leaves it waiting on one that
+            // never arrives.
+            let home = logs
+                .into_iter()
+                .find(|home| !asked.contains(home))
+                .unwrap_or(Reach::Store);
+            asked.push(home);
+            // Each round asks a log this node has not asked for, so the first
+            // position it does not hold there is the first one there is. Reading
+            // its own tail would be the node's own loop and not this test's: the
+            // raw feed is not something a test in a networked crate reaches
+            // either, and `enforcement.rs` is right to say so.
+            reached = collector
+                .collect(follower.store(), home, Sequence::new(1))
+                .expect("a subscribed peer collects");
+        }
         door.join().expect("the door's thread");
+        assert!(reached.get() >= 1, "the leader had a log to hand over");
+        assert!(
+            asked.contains(&Reach::Store),
+            "the store's own log is where the namespace definition lives"
+        );
+        assert!(
+            asked.iter().any(|home| matches!(home, Reach::Namespace(_))),
+            "and the namespace's own log is where its records live: {asked:?}"
+        );
 
         // Read back through a session rather than through the log, because what
         // the subscription is *for* is which records exist on the follower — and
@@ -1171,6 +1333,106 @@ mod tests {
             missing.to_string().contains("no namespace named \"other\""),
             "the namespace beside the subscription never arrived, and the \
              refusal names it: {missing}"
+        );
+    }
+
+    #[test]
+    fn a_record_read_out_of_one_log_is_applied_into_that_same_log() {
+        // The defect this slice closes, asserted by POSITION and not by
+        // presence: a follower used to read the leader's namespace log and file
+        // every record in its own store log, so the records arrived and the
+        // sequences counted in a counter they never came from.
+        const ROUNDS: usize = 2;
+
+        let authority = Authority::new();
+        let leader = granting(" REPLICATES NAMESPACE prod");
+        let (address, door) = declaring_for(&authority, &leader, ROUNDS);
+
+        let follower = Db::in_memory().expect("an in-memory store");
+        let mine = authority.issue(THERE, Purpose::Peer);
+        let der = authority.der();
+        let said = hello(THERE);
+        let collector = collector(&mine, &der, &said, address, 1024);
+
+        // The log the subscribed namespace's records actually live in. It is
+        // the DATABASE's and not the namespace's: a record homes at the join of
+        // the reaches its mutations carried to, and a `CREATE` inside one
+        // database joins to that database. The leader holds no namespace-level
+        // log at all, which is worth knowing before writing an assertion about
+        // one — `leader.store().homes()` answers it and compiles nothing.
+        let inside = leader
+            .store()
+            .homes()
+            .expect("the leader's own logs")
+            .into_iter()
+            .find(|home| matches!(home, Reach::Database(namespace, _) if namespace.get() == 1))
+            .expect("the fixture writes records inside prod's database");
+        for home in [Reach::Store, inside] {
+            collector
+                .collect(follower.store(), home, Sequence::new(1))
+                .expect("a subscribed peer collects");
+        }
+        door.join().expect("the door's thread");
+
+        // Positions rather than a count, because the defect being closed put the
+        // right records in the wrong counter: a follower that folded them into
+        // its store log would hold every record and no position in this one.
+        let at = |db: &Db, home| -> Vec<Sequence> {
+            db.store()
+                .log_records(home, Sequence::ZERO, 64)
+                .expect("a log reads back")
+                .into_iter()
+                .map(|(sequence, _)| sequence)
+                .collect()
+        };
+        let theirs = at(&leader, inside);
+        assert!(
+            !theirs.is_empty(),
+            "the fixture must put records in that log for this to assert anything"
+        );
+        assert_eq!(
+            at(&follower, inside),
+            theirs,
+            "the records were read out of that log and must count in the \
+             follower's copy of it, at the same positions"
+        );
+        assert!(
+            follower
+                .store()
+                .homes()
+                .expect("the follower's logs")
+                .contains(&inside),
+            "and the log must exist on the follower rather than its records \
+             having been folded into the store's"
+        );
+    }
+
+    #[test]
+    fn a_log_no_subscription_reaches_is_refused_rather_than_served() {
+        let authority = Authority::new();
+        let leader = granting(" REPLICATES NAMESPACE prod");
+        let (address, door) = declaring(&authority, &leader);
+
+        let beside = logs_to_collect(leader.store())
+            .expect("the leader's own logs")
+            .into_iter()
+            .rfind(|home| matches!(home, Reach::Namespace(_)))
+            .expect("the fixture declares two namespaces");
+        let refused = collect_from(&authority, address, beside, 1, 64)
+            .expect_err("a namespace this peer is not subscribed to");
+        door.join().expect("the door's thread");
+
+        // The same refusal a peer nobody subscribed gets, and deliberately so:
+        // the repair is the same `REPLICATES` clause, and a fourth frame would
+        // send an operator to it by a different sentence.
+        assert!(
+            matches!(refused, Error::Unsubscribed),
+            "a log outside the grant is a refusal and not an empty answer: {refused}"
+        );
+        let said = refused.to_string();
+        assert!(
+            said.contains("reaches the log it asked for"),
+            "and the sentence is true of a partial subscription too: {said}"
         );
     }
 
@@ -1209,7 +1471,7 @@ mod tests {
         let der = authority.der();
         let said = hello(THERE);
         let reached = collector(&mine, &der, &said, address, 1024)
-            .collect(follower.store(), Sequence::new(1))
+            .collect(follower.store(), Reach::Store, Sequence::new(1))
             .expect("a subscribed peer collects");
         door.join().expect("the door's thread");
         assert!(reached.get() > 1, "the leader had a log to hand over");
@@ -1250,7 +1512,7 @@ mod tests {
         let der = authority.der();
         let said = hello(THERE);
         let reached = collector(&mine, &der, &said, address, 64)
-            .collect(follower.store(), Sequence::new(1))
+            .collect(follower.store(), Reach::Store, Sequence::new(1))
             .expect("a collection applies");
         door.join().expect("the door's thread");
 
@@ -1282,7 +1544,7 @@ mod tests {
         let der = authority.der();
         let said = hello(THERE);
         let reached = collector(&mine, &der, &said, address, 64)
-            .collect(follower.store(), Sequence::new(1))
+            .collect(follower.store(), Reach::Store, Sequence::new(1))
             .expect("a batch of three leaderships applies");
         door.join().expect("the door's thread");
 
@@ -1302,8 +1564,11 @@ mod tests {
         let mine = authority.issue(THERE, Purpose::Peer);
         let der = authority.der();
         let said = hello(THERE);
-        let refused =
-            collector(&mine, &der, &said, address, 64).collect(follower.store(), Sequence::new(3));
+        let refused = collector(&mine, &der, &said, address, 64).collect(
+            follower.store(),
+            Reach::Store,
+            Sequence::new(3),
+        );
         door.join().expect("the door's thread");
 
         assert!(
@@ -1349,7 +1614,7 @@ mod tests {
         // Bound of two against a log of three: the answer fills the bound, so
         // the follower asked and did not arrive.
         collector(&mine, &der, &said, address, 2)
-            .collect(follower.store(), Sequence::new(1))
+            .collect(follower.store(), Reach::Store, Sequence::new(1))
             .expect("the first collection");
         assert_eq!(
             follower
@@ -1362,7 +1627,7 @@ mod tests {
 
         // The rest arrives inside the bound, so the peer had no more.
         collector(&mine, &der, &said, address, 2)
-            .collect(follower.store(), Sequence::new(3))
+            .collect(follower.store(), Reach::Store, Sequence::new(3))
             .expect("the second collection");
         door.join().expect("the door's thread");
         assert!(

@@ -21,6 +21,8 @@
 
 use std::io::{Read, Write};
 
+use tessari_types::{DatabaseId, NamespaceId, Reach};
+
 use crate::error::{Error, Result};
 
 /// What every connection says first, in both directions.
@@ -370,6 +372,52 @@ impl<R: std::io::Read, W: std::io::Write> std::io::Write for Duplex<'_, R, W> {
     fn flush(&mut self) -> std::io::Result<()> {
         self.writer.flush()
     }
+}
+
+/// Append a log home as the nine fixed bytes a reach takes on this wire.
+///
+/// Written here rather than borrowed from the key encoding, for the reason
+/// `tessari-backup`'s own copy records: a wire format is its own format. The key
+/// grammar may be re-laid out without every peer in a running cluster having to
+/// be upgraded in the same breath, and two formats moving together by accident
+/// is exactly what keeping them apart prevents.
+///
+/// The variant leads, then the namespace and the database, both always written.
+/// Fixed width because a frame body that followed it would otherwise start at
+/// three different offsets.
+pub(crate) fn put_reach(into: &mut Vec<u8>, reach: Reach) {
+    let (variant, namespace, database) = match reach {
+        Reach::Store => (0_u8, 0_u32, 0_u32),
+        Reach::Namespace(namespace) => (1, namespace.get(), 0),
+        Reach::Database(namespace, database) => (2, namespace.get(), database.get()),
+    };
+    into.push(variant);
+    put_u32(into, namespace);
+    put_u32(into, database);
+}
+
+/// Read one back.
+///
+/// A variant this build does not know is refused rather than widened to the
+/// store, which is the key encoding's rule and holds for the same reason: a peer
+/// asking for a home this binary cannot name must not be answered with every
+/// tenancy's records.
+///
+/// # Errors
+///
+/// Returns [`Error::Malformed`] when the bytes are short or name a variant this
+/// build does not have.
+pub(crate) fn take_reach(from: &[u8], at: usize) -> Result<(Reach, usize)> {
+    let variant = *from.get(at).ok_or(Error::Malformed)?;
+    let (namespace, at) = take_u32(from, at.checked_add(1).ok_or(Error::Malformed)?)?;
+    let (database, at) = take_u32(from, at)?;
+    let reach = match variant {
+        0 => Reach::Store,
+        1 => Reach::Namespace(NamespaceId::new(namespace)),
+        2 => Reach::Database(NamespaceId::new(namespace), DatabaseId::new(database)),
+        _ => return Err(Error::Malformed),
+    };
+    Ok((reach, at))
 }
 
 #[cfg(test)]

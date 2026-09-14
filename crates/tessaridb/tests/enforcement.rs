@@ -725,19 +725,24 @@ const RAW_FEED: &[&str] = &[
 /// completed the peer handshake, this is wrong again.
 ///
 /// **Two.** The follower's collection loop reads its OWN tail to know the first
-/// position it does not hold. It answers nobody: the value leaves this process
-/// only as the `from` of an outgoing ask, and what comes back is whatever the
-/// peer's own subscription check permits. The alternative was to have the
-/// cursor read inside the collector, which would have put the raw feed behind a
-/// network-facing type instead of in the process that owns the store.
+/// position it does not hold — once per LOG now, because a node holds one log
+/// per home and a position counts in one of them. It answers nobody: the value
+/// leaves this process only as the `from` of an outgoing ask, and what comes
+/// back is whatever the peer's own subscription check permits. The alternative
+/// was to have the cursor read inside the collector, which would have put the
+/// raw feed behind a network-facing type instead of in the process that owns
+/// the store.
 ///
 /// **Three and four.** `Serving::fill` is the peer door's scoped log reader —
 /// the loop behind `Serving::collected` that fills one answer under a byte
 /// budget, reading a page at a time so that a follower's uncapped record count
 /// cannot make one read of the whole log — and `preceding` reads the one record
 /// before the batch to state the leadership it follows. Both read at `over` — the subscription's own reach —
-/// and they are the only callers of `log_records_within` in any crate this test
-/// scans. The second one earned its place here: it read at `Reach::Store` until
+/// and both now also name the LOG the follower asked for, which the door has
+/// already checked the subscription reaches. The two arguments answer two
+/// questions and neither substitutes for the other: `over` is what this peer may
+/// SEE, `home` is which counter the cursor counts in. They are still the only
+/// callers of `log_records_within` in any crate this test scans. The second one earned its place here: it read at `Reach::Store` until
 /// this rule was written, for an answer a scoped read gives identically, which
 /// is how a rule acquires a hole nobody would have looked for. It is the
 /// enforced path rather than a way past one: the reach it reads with is the
@@ -755,15 +760,15 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ),
     (
         "tessari-cli/src/main.rs",
-        "let held = match store.committed_tail(tessari_types::Reach::Store) {",
+        "let seed = match store.committed_tail(home) {",
     ),
     (
         "tessari-wire/src/collection.rs",
-        ".log_records_within(over, over, cursor, room.min(COLLECTION_PAGE_RECORDS))",
+        ".log_records_within(over, home, cursor, room.min(COLLECTION_PAGE_RECORDS))",
     ),
     (
         "tessari-wire/src/collection.rs",
-        ".log_records_within(over, over, before, 1)",
+        ".log_records_within(over, home, before, 1)",
     ),
 ];
 

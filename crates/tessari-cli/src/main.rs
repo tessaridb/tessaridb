@@ -801,19 +801,10 @@ fn collect_from_upstream(
     published: &tessari_wire::Published,
     stopping: &tessari_serve::Stopping,
 ) {
-    let store = db.store();
-    // The store's own log. A node holds one log per home now, so this is one
-    // of several positions and the greeting has room for one — parked in Q-622,
-    // which is the wire frame's question and not this call site's.
-    let held = match store.committed_tail(tessari_types::Reach::Store) {
-        Ok(tail) => tail,
-        Err(why) => {
-            log::warn!("this node cannot say how far its log reaches: {why}");
-            return;
-        }
-    };
-    let mut collecting =
-        tessari_wire::Collecting::from(tessari_types::Sequence::new(held.get().saturating_add(1)));
+    // One cursor per log. A node holds one log per home, and which logs it
+    // should ask for is not fixed at start: a namespace arrives by collection,
+    // and its own log is something to collect only once it has.
+    let mut collecting = tessari_wire::Collecting::new();
     tessari_wire::every(
         std::time::Duration::from_secs(tessari_constants::COLLECTION_SECONDS),
         stopping,
@@ -886,15 +877,37 @@ fn collect_from_upstream(
                 peer: (node, address),
                 limit: tessari_constants::COLLECTION_RECORDS,
             };
-            let before = collecting.reached();
-            let reached = collecting.once(|at| collector.collect(store, at));
-            if reached == before {
-                log::info!(
-                    "nothing collected from {endpoint}; still at {}",
-                    before.get()
-                );
-            } else {
-                log::info!("collected to {} from {endpoint}", reached.get());
+            // Every log this node should hold, store's own first, derived from
+            // the catalog it has itself replayed — so the set is inside the
+            // grant without the grant ever crossing the wire (Q-620, Q-621).
+            let logs = match tessari_wire::logs_to_collect(store) {
+                Ok(logs) => logs,
+                Err(why) => {
+                    log::warn!("this node cannot say which logs it should hold: {why}");
+                    return;
+                }
+            };
+            for home in logs {
+                // The seed for a log with no cursor yet: the first position
+                // this node does not hold THERE. Read here rather than inside
+                // the collector, which may not reach the feed.
+                let seed = match store.committed_tail(home) {
+                    Ok(tail) => tessari_types::Sequence::new(tail.get().saturating_add(1)),
+                    Err(why) => {
+                        log::warn!("this node cannot say how far {home:?} reaches: {why}");
+                        continue;
+                    }
+                };
+                let before = collecting.reached(home);
+                let reached = collecting.once(home, seed, |at| collector.collect(store, home, at));
+                if before == Some(reached) {
+                    log::debug!(
+                        "nothing collected for {home:?} from {endpoint}; still at {}",
+                        reached.get()
+                    );
+                } else {
+                    log::info!("collected {home:?} to {} from {endpoint}", reached.get());
+                }
             }
         },
     );

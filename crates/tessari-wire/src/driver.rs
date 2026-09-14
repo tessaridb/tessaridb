@@ -36,13 +36,14 @@
 //! be tested by standing up peers, and one that read the clock itself could only
 //! have its timing rule tested by waiting.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use tessari_encoding::{NODE_ID_LEN, Roles};
 use tessari_serve::Stopping;
 use tessari_storage::{Lease, ReplicaDefinition};
-use tessari_types::{Epoch, Sequence};
+use tessari_types::{Epoch, Reach, Sequence};
 
 use crate::campaign::Stood;
 use crate::directory::{Destination, Directory};
@@ -199,26 +200,52 @@ impl tessari_session::Elsewhere for Published {
     }
 }
 
-/// How far this node has collected, and what a failed collection does to it.
-#[derive(Debug)]
+/// How far this node has collected in each log, and what a failure does to it.
+///
+/// # One cursor per log, and not one cursor
+///
+/// A position counts in ONE log. A node holds one log per home, so a single
+/// cursor carried across logs would advance in one space and be spent in
+/// another — asking a namespace's log for a position the store's log had
+/// reached, which is a gap or a re-send depending only on which log ran ahead.
+#[derive(Debug, Default)]
 pub struct Collecting {
-    at: Sequence,
+    at: BTreeMap<Reach, Sequence>,
 }
 
 impl Collecting {
-    /// Start collecting from `at` — the first position this node does not hold.
+    /// A node that has collected nothing yet.
     #[must_use]
-    pub fn from(at: Sequence) -> Self {
-        Self { at }
+    pub fn new() -> Self {
+        Self {
+            at: BTreeMap::new(),
+        }
     }
 
-    /// The position this node has reached.
+    /// The position this node has reached in `home`, or `None` when it has not
+    /// collected there at all.
+    ///
+    /// `None` rather than a zero, because *I have never collected this log* and
+    /// *I collected it and reached the beginning* are different statements and
+    /// the caller seeding a cursor has to tell them apart.
     #[must_use]
-    pub fn reached(&self) -> Sequence {
-        self.at
+    pub fn reached(&self, home: Reach) -> Option<Sequence> {
+        self.at.get(&home).copied()
     }
 
-    /// One collection. The cursor moves **only** when the pass answers.
+    /// One collection of one log. The cursor moves **only** when the pass
+    /// answers.
+    ///
+    /// `seed` is where to start when this log has no cursor yet — ordinarily
+    /// this node's own committed tail there plus one. It is read by the caller
+    /// and not here, because a log this node has never collected is discovered
+    /// by reading the catalog, and the rule `Collector::collect` documents keeps
+    /// the feed out of this crate's reach.
+    ///
+    /// After a pass the cursor holds what the pass REACHED, which is the last
+    /// position applied rather than the first one not held — so the next ask
+    /// re-fetches one record. That is unchanged from when there was one cursor
+    /// and is recorded rather than corrected here (Q-631).
     ///
     /// # Why a failure leaves the cursor alone
     ///
@@ -227,11 +254,20 @@ impl Collecting {
     /// later pass ever asks for the gap, and nothing is in an error state to say
     /// so. Leaving it costs a repeated request when the peer comes back, which
     /// is the failure worth having.
-    pub fn once<E>(&mut self, pass: impl FnOnce(Sequence) -> Result<Sequence, E>) -> Sequence {
-        if let Ok(reached) = pass(self.at) {
-            self.at = reached;
-        }
-        self.at
+    pub fn once<E>(
+        &mut self,
+        home: Reach,
+        seed: Sequence,
+        pass: impl FnOnce(Sequence) -> Result<Sequence, E>,
+    ) -> Sequence {
+        let at = self.at.get(&home).copied().unwrap_or(seed);
+        let reached = if let Ok(reached) = pass(at) {
+            reached
+        } else {
+            at
+        };
+        self.at.insert(home, reached);
+        reached
     }
 }
 
@@ -681,7 +717,7 @@ mod tests {
     use tessari_encoding::{NODE_ID_LEN, NodeVersion, Roles};
     use tessari_serve::Stopping;
     use tessari_storage::Lease;
-    use tessari_types::{Epoch, Sequence};
+    use tessari_types::{Epoch, NamespaceId, Reach, Sequence};
 
     use super::{
         Collecting, Published, Renewing, ReplicaDefinition, Seed, Stood, bootstrap_from, due_in,
@@ -692,6 +728,8 @@ mod tests {
     use crate::peer::Hello;
 
     const NODE: [u8; NODE_ID_LEN] = [7; NODE_ID_LEN];
+    /// The log every single-log fixture here counts in.
+    const STORE: Reach = Reach::Store;
     const ANOTHER: [u8; NODE_ID_LEN] = [9; NODE_ID_LEN];
 
     /// A serving peer one second behind.
@@ -1004,13 +1042,16 @@ mod tests {
 
     #[test]
     fn a_failed_collection_retries_from_the_same_position() {
-        let mut collecting = Collecting::from(Sequence::new(5));
-        let reached = collecting.once(|_| Err::<Sequence, ()>(()));
+        let mut collecting = Collecting::new();
+        let seed = Sequence::new(5);
+        let reached = collecting.once(STORE, seed, |_| Err::<Sequence, ()>(()));
         assert_eq!(reached, Sequence::new(5), "a failed pass moved the cursor");
-        assert_eq!(collecting.reached(), Sequence::new(5));
+        assert_eq!(collecting.reached(STORE), Some(Sequence::new(5)));
 
         let asked = RefCell::new(Vec::new());
-        let reached = collecting.once(|at| {
+        // A seed the retry must NOT take: the cursor exists now, so a pass that
+        // read the seed again would be a pass that forgot where it failed.
+        let reached = collecting.once(STORE, Sequence::new(99), |at| {
             asked.borrow_mut().push(at);
             Ok::<Sequence, ()>(Sequence::new(at.get() + 10))
         });
@@ -1024,12 +1065,38 @@ mod tests {
 
     #[test]
     fn a_collection_that_lands_advances_the_cursor() {
-        let mut collecting = Collecting::from(Sequence::new(1));
+        let mut collecting = Collecting::new();
         assert_eq!(
-            collecting.once(|_| Ok::<Sequence, ()>(Sequence::new(9))),
+            collecting.once(STORE, Sequence::new(1), |_| Ok::<Sequence, ()>(
+                Sequence::new(9)
+            )),
             Sequence::new(9)
         );
-        assert_eq!(collecting.reached(), Sequence::new(9));
+        assert_eq!(collecting.reached(STORE), Some(Sequence::new(9)));
+    }
+
+    /// The whole reason the cursor is a map: two logs, two counters.
+    #[test]
+    fn a_position_reached_in_one_log_is_not_a_position_in_another() {
+        let prod = Reach::Namespace(NamespaceId::new(1));
+        let mut collecting = Collecting::new();
+        assert_eq!(collecting.reached(prod), None, "nothing collected anywhere");
+
+        collecting.once(STORE, Sequence::new(1), |_| {
+            Ok::<Sequence, ()>(Sequence::new(40))
+        });
+        // The seed is what a namespace log with no cursor starts from, and the
+        // store's log reaching 40 must not spend it: a single cursor would have
+        // asked this log for position 40 and been answered a gap or a re-send
+        // depending only on which log ran ahead.
+        let asked = RefCell::new(Vec::new());
+        collecting.once(prod, Sequence::new(1), |at| {
+            asked.borrow_mut().push(at);
+            Ok::<Sequence, ()>(Sequence::new(3))
+        });
+        assert_eq!(*asked.borrow(), vec![Sequence::new(1)]);
+        assert_eq!(collecting.reached(STORE), Some(Sequence::new(40)));
+        assert_eq!(collecting.reached(prod), Some(Sequence::new(3)));
     }
 
     /// The deadlock W256 measured against three processes, as a unit.

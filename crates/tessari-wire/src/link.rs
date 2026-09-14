@@ -682,6 +682,7 @@ pub(crate) mod tests {
             HERE,
             &hello(THERE),
             Ask::Records(Collect {
+                home: tessari_types::Reach::Store,
                 from: Sequence::new(7),
                 limit: 16,
             }),

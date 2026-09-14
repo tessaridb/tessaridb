@@ -96,17 +96,23 @@ pub enum Error {
         from: u64,
     },
 
-    /// A peer asked for the log and nothing subscribed it.
+    /// A peer asked for a log no subscription of its covers.
     ///
     /// Distinct from [`Self::Uncollectable`] and from an empty collection,
     /// because the three have three different repairs: a grant, a re-bootstrap,
     /// and nothing at all. The message names the statement that grants one,
     /// since an operator reading this is holding a cluster where one node
     /// silently receives nothing.
+    ///
+    /// It covers two conditions and says so, because they share that one repair:
+    /// no subscription at all, and a subscription that does not reach the log
+    /// asked for. Splitting them would be a fourth frame sending an operator to
+    /// the same `REPLICATES` clause by a different sentence.
     #[error(
-        "no subscription is declared for this node — `DEFINE REPLICA <name> AT \
-         '<endpoint>' NODE '<id>' REPLICATES <STORE|NAMESPACE …|DATABASE …>` on \
-         the node that holds the original grants one"
+        "no subscription declared for this node reaches the log it asked for — \
+         `DEFINE REPLICA <name> AT '<endpoint>' NODE '<id>' REPLICATES \
+         <STORE|NAMESPACE …|DATABASE …>` on the node that holds the original \
+         grants one"
     )]
     Unsubscribed,
 
