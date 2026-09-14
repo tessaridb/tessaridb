@@ -15,7 +15,8 @@ use tessari_encoding::{LogRecord, Mutation, RecordValue, StampedValue, encode_pa
 use tessari_kv::{Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value};
 use tessari_storage::{Catalog, EDGE_IN, EDGE_OUT, Error, Reach, RecordAddress, Store, TableShape};
 use tessari_types::{
-    DatabaseId, Epoch, NamespaceId, RecordId, RecordRef, Sequence, TableId, Value as FieldValue,
+    DatabaseId, Epoch, NamespaceId, RecordId, RecordRef, ReplicationClass, Sequence, TableId,
+    Value as FieldValue,
 };
 
 /// How many records the log is read in one go. Larger than any test writes.
@@ -359,6 +360,113 @@ fn two_leaderships_writing_one_sequence_are_refused_rather_than_silently_dropped
         1,
         "S1.3 — a divergence nobody counts is a divergence nobody notices"
     );
+}
+
+/// A store with `prod`/`orders` declared, and the namespace given `class`.
+///
+/// Returns the store, the home a record in that database files at, and the
+/// mutation address to write there — derived rather than assumed, because
+/// `create_namespace` allocates the id and a test that hard-codes `1` passes
+/// for the wrong reason the day allocation changes.
+fn declared(class: Option<ReplicationClass>) -> (Store, Reach, NamespaceId, DatabaseId) {
+    let store = store_on(&backend());
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let namespace = catalog.create_namespace("prod").unwrap();
+    let database = catalog.create_database(namespace.id, "orders").unwrap();
+    if let Some(class) = class {
+        catalog.set_replication_class(namespace.id, class).unwrap();
+    }
+    transaction.commit().unwrap();
+    (
+        store,
+        Reach::Database(namespace.id, database.id),
+        namespace.id,
+        database.id,
+    )
+}
+
+/// One put into `declared`'s database, under `epoch`.
+fn contested(
+    namespace: NamespaceId,
+    database: DatabaseId,
+    epoch: Epoch,
+    value: &[u8],
+) -> LogRecord {
+    LogRecord::at(
+        epoch,
+        vec![Mutation {
+            namespace,
+            database,
+            table: TableId::new(1),
+            id: RecordId::from("contested"),
+            value: StampedValue::new(RecordValue::Present(value.to_vec())),
+        }],
+    )
+}
+
+#[test]
+fn two_leaderships_on_a_declared_range_are_both_admitted() {
+    // S2.1, the half that is new. The same offer the test above refuses, made
+    // against a namespace that declared `MULTI MASTER` — and the declaration is
+    // the only difference between the two, which is what makes this a scoping
+    // of the fence rather than a hole in it.
+    let (store, home, namespace, database) = declared(Some(ReplicationClass::MultiMaster));
+    let first = Sequence::new(store.committed_tail(home).unwrap().get().saturating_add(1));
+
+    store
+        .apply_record(
+            first,
+            &contested(namespace, database, Epoch::new(1), b"from-one-master"),
+        )
+        .unwrap();
+    store
+        .apply_record(
+            first,
+            &contested(namespace, database, Epoch::new(2), b"from-the-other"),
+        )
+        .expect("a declared range admits a second leadership");
+
+    assert_eq!(
+        store.health().unwrap().log_divergences,
+        0,
+        "two masters on a declared range are not a divergence, so nothing counts one"
+    );
+}
+
+#[test]
+fn a_range_that_declared_single_leader_refuses_exactly_as_silence_does() {
+    // The other side of the declaration, and the reason the class is a stated
+    // value rather than a boolean that is only ever set: an operator who
+    // answered the question gets the engine's existing behaviour, not a
+    // different one, and `INFO FOR` can still tell the two apart.
+    for class in [None, Some(ReplicationClass::SingleLeader)] {
+        let (store, home, namespace, database) = declared(class);
+        let first = Sequence::new(store.committed_tail(home).unwrap().get().saturating_add(1));
+
+        store
+            .apply_record(
+                first,
+                &contested(namespace, database, Epoch::new(1), b"from-the-old-leader"),
+            )
+            .unwrap();
+        let error = store
+            .apply_record(
+                first,
+                &contested(namespace, database, Epoch::new(2), b"from-the-new-leader"),
+            )
+            .unwrap_err();
+
+        match error {
+            Error::LogDivergence { sequence, .. } => assert_eq!(sequence, first),
+            other => panic!("expected a divergence for {class:?}, got {other}"),
+        }
+        assert_eq!(
+            store.health().unwrap().log_divergences,
+            1,
+            "an undeclared and an explicitly single-leader range answer alike"
+        );
+    }
 }
 
 #[test]

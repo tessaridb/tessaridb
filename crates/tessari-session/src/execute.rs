@@ -16,7 +16,7 @@ use tessari_storage::{
 
 use tessari_types::{
     Analyzer, FieldId, FieldKind, Filter, GraphId, IdentityKind, Path, RecordId, RecordRef,
-    Replication, Step, TableId, Value,
+    Replication, ReplicationClass, Step, TableId, Value,
 };
 
 use crate::condition::boolean;
@@ -78,7 +78,8 @@ impl Session<'_> {
                 name,
                 if_not_exists,
                 replication,
-            } => self.define_namespace(transaction, name, *if_not_exists, *replication),
+                class,
+            } => self.define_namespace(transaction, name, *if_not_exists, *replication, *class),
             StatementKind::AlterNamespace { name, replication } => {
                 self.alter_namespace(transaction, name, *replication)
             }
@@ -1544,6 +1545,7 @@ impl Session<'_> {
         name: &Name,
         if_not_exists: bool,
         replication: Option<Replication>,
+        class: Option<ReplicationClass>,
     ) -> Result<Outcome> {
         if if_not_exists
             && Catalog::new(transaction)
@@ -1580,6 +1582,13 @@ impl Session<'_> {
             // Through the same call an `ALTER` makes, so the two statements
             // cannot set this field differently.
             Catalog::new(transaction).set_replication(definition.id, replication)?;
+        }
+        if let Some(class) = class {
+            // The same route for the same reason. No `ALTER` sets the class
+            // today (G027 S2.1 needs only a declaration, BGV-MINIMAL-001), and
+            // the setter exists in the shape an `ALTER` would use so that
+            // adding one later is a statement rather than a second write path.
+            Catalog::new(transaction).set_replication_class(definition.id, class)?;
         }
         Ok(Outcome::Done)
     }

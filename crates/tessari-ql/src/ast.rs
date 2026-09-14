@@ -21,7 +21,8 @@
 //! [`TableId`]: tessari_types::TableId
 
 use tessari_types::{
-    Assertion, Duration, FieldKind, Filter, IdentityKind, Path, RecordId, Replication, Value,
+    Assertion, Duration, FieldKind, Filter, IdentityKind, Path, RecordId, Replication,
+    ReplicationClass, Value,
 };
 
 use crate::function::Function;
@@ -94,6 +95,15 @@ pub enum StatementKind {
         /// which trains an operator to decline without thinking — the
         /// inherited default the ADR exists to abolish, wearing a costume.
         replication: Option<Replication>,
+        /// How many writers it admits, when the statement said (G027 S2.1).
+        ///
+        /// `None` is a namespace that **said nothing**, and that reads as
+        /// single-leader wherever it is asked — which is what this engine has
+        /// always done and what the two-leaderships refusal has always
+        /// enforced. It is kept apart from a stated
+        /// [`ReplicationClass::SingleLeader`] because an operator who answered
+        /// the question has told the cluster something a silence has not.
+        class: Option<ReplicationClass>,
     },
     /// `DEFINE DATABASE orders`
     DefineDatabase {

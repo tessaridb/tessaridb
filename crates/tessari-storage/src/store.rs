@@ -1517,12 +1517,54 @@ impl Store {
         if held == offered {
             return Ok(());
         }
+        // Asked here and nowhere earlier. Two leaderships at one position is a
+        // divergence on a single-leader range and two masters on a declared
+        // one, and the two arrive identically — so the declaration is what
+        // tells them apart. Reading it costs a catalog lookup, which is why it
+        // is behind the epoch comparison rather than in front of it: the branch
+        // above is the ordinary retry, it is the common case by a wide margin,
+        // and it pays nothing for this.
+        if self.admits_two_writers(home)? {
+            return Ok(());
+        }
         self.divergences.fetch_add(1, Ordering::Relaxed);
         Err(Error::LogDivergence {
             sequence: at,
             held,
             offered,
         })
+    }
+
+    /// Whether the range this log belongs to was **declared** multi-master
+    /// (G027 S2.1).
+    ///
+    /// The declaration lives on the namespace, where ADR-0060 already put the
+    /// replication clause and where G025 materialised the routing answer for a
+    /// range. A log homed at the store answers `false`: the store log carries
+    /// catalog records that every subscriber reads, and there is no namespace
+    /// above it to have declared anything.
+    ///
+    /// **Silence is single-leader**, deliberately and not as a fallback — it is
+    /// what this engine has always done, and what the refusal above has always
+    /// enforced. A class stored by a later build that this one cannot read is a
+    /// decoding failure from the catalog and propagates as one, rather than
+    /// being read as either answer.
+    fn admits_two_writers(&self, home: Reach) -> Result<bool> {
+        let (Some(namespace), _) = home.parts() else {
+            return Ok(false);
+        };
+        let mut transaction = self.begin()?;
+        let Some(definition) =
+            crate::catalog::Catalog::new(&mut transaction).namespace(namespace)?
+        else {
+            // The namespace is gone while its log is still being applied. Not a
+            // declaration, so not an exemption — the fence stands, which is the
+            // safe answer of the two.
+            return Ok(false);
+        };
+        Ok(definition
+            .class
+            .is_some_and(tessari_types::ReplicationClass::admits_two_writers))
     }
 
     /// The backend, for the transaction's read and commit paths.

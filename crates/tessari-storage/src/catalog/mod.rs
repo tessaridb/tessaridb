@@ -40,7 +40,8 @@ mod vault;
 
 use tessari_encoding::{decode_payload, encode_payload};
 use tessari_types::{
-    DatabaseId, FieldKind, IndexId, NamespaceId, Path, RecordId, Replication, TableId, Value,
+    DatabaseId, FieldKind, IndexId, NamespaceId, Path, RecordId, Replication, ReplicationClass,
+    TableId, Value,
 };
 
 pub use analyzer::AnalyzerDefinition;
@@ -112,6 +113,9 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             // whose pending writes are keyed by address, so a definition
             // written and then amended still reaches the log as one mutation.
             replication: None,
+            // The same, for the same reason: applied by
+            // [`Self::set_replication_class`] whichever statement carried it.
+            class: None,
         };
         self.write(system::NAMESPACES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
@@ -147,6 +151,33 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             });
         };
         definition.replication = Some(replication);
+        self.write(system::NAMESPACES, namespace.get(), &definition.to_value());
+        Ok(definition)
+    }
+
+    /// Set how many writers a namespace admits (G027 S2.1).
+    ///
+    /// The sibling of [`Self::set_replication`] and deliberately the same shape,
+    /// so the class cannot acquire a second write path the count does not have.
+    /// It moves between **stated** values and never back to never-stated, for
+    /// that method's reason: a namespace that was once asked has been asked.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoSuchParent`] when the namespace does not exist, and
+    /// the substrate or decoding failure otherwise.
+    pub fn set_replication_class(
+        &mut self,
+        namespace: NamespaceId,
+        class: ReplicationClass,
+    ) -> Result<NamespaceDefinition> {
+        let Some(mut definition) = self.namespace(namespace)? else {
+            return Err(Error::NoSuchParent {
+                entity: "namespace",
+                id: namespace.get(),
+            });
+        };
+        definition.class = Some(class);
         self.write(system::NAMESPACES, namespace.get(), &definition.to_value());
         Ok(definition)
     }

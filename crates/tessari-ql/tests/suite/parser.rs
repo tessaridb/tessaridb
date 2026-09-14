@@ -11,7 +11,7 @@ use tessari_ql::{
     Approximation, BinaryOp, EdgeClause, Error, ExprKind, Identity, InfoSubject, Projection,
     RecordTarget, Script, Source, StatementKind, parse,
 };
-use tessari_types::{Datetime, FieldKind, Number, RecordId, Replication, Value};
+use tessari_types::{Datetime, FieldKind, Number, RecordId, Replication, ReplicationClass, Value};
 
 /// A replication factor, which is never zero.
 fn factor(n: u32) -> Replication {
@@ -1341,6 +1341,41 @@ fn a_namespace_declares_how_many_copies_it_wants() {
         panic!("DEFINE NAMESPACE REPLICATION FACTOR");
     };
     assert_eq!(replication, Some(factor(3)));
+}
+
+/// The clause a namespace declares its **writers** with (G027 S2.1), which is a
+/// different question from how many copies it keeps — so it is a different
+/// clause and both may stand on one statement.
+#[test]
+fn a_namespace_declares_how_many_writers_it_admits() {
+    let StatementKind::DefineNamespace { class, .. } = one("DEFINE NAMESPACE prod;") else {
+        panic!("DEFINE NAMESPACE");
+    };
+    assert_eq!(class, None, "a bare definition states nothing");
+
+    let StatementKind::DefineNamespace { class, .. } = one("DEFINE NAMESPACE prod MULTI MASTER;")
+    else {
+        panic!("DEFINE NAMESPACE MULTI MASTER");
+    };
+    assert_eq!(class, Some(ReplicationClass::MultiMaster));
+
+    let StatementKind::DefineNamespace {
+        replication, class, ..
+    } = one("DEFINE NAMESPACE prod REPLICATION FACTOR 3 SINGLE LEADER;")
+    else {
+        panic!("DEFINE NAMESPACE REPLICATION … SINGLE LEADER");
+    };
+    assert_eq!(replication, Some(factor(3)));
+    assert_eq!(class, Some(ReplicationClass::SingleLeader));
+}
+
+/// Half a phrase is a mistake, not a namespace named `multi`. The clause is two
+/// contextual words, so the second is expected once the first is read — and
+/// saying so is what keeps `MULTI` usable as an ordinary name everywhere else.
+#[test]
+fn half_a_class_clause_is_refused_at_the_word_that_is_missing() {
+    assert!(parse("DEFINE NAMESPACE prod MULTI;").is_err());
+    assert!(parse("DEFINE NAMESPACE prod SINGLE;").is_err());
 }
 
 #[test]

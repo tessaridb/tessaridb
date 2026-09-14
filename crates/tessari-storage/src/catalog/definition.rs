@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 use tessari_types::{
     DatabaseId, Duration, GraphId, IdentityKind, IndexId, NamespaceId, Number, Path, Replication,
-    TableId, Value,
+    ReplicationClass, TableId, Value,
 };
 
 use tessari_vault::{KeyId, Wrapped};
@@ -57,6 +57,7 @@ const FIELD_RETAIN: &str = "retain";
 const FIELD_DIMENSION: &str = "dimension";
 const FIELD_DISTANCE: &str = "distance";
 const FIELD_REPLICATION: &str = "replication";
+const FIELD_REPLICATION_CLASS: &str = "replication_class";
 
 /// A namespace: the outermost tenancy level.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +84,20 @@ pub struct NamespaceDefinition {
     /// because what is bought is not the number — it is the distinction between
     /// silence and a stated answer, and silence cannot be reconstructed.
     pub replication: Option<Replication>,
+    /// How many writers it admits — single-leader, or multi-master (G027 S2.1).
+    ///
+    /// `None` is **never stated** and reads as single-leader wherever it is
+    /// asked, which is what every namespace written before this field did and
+    /// what the engine has always enforced. It is kept apart from a stated
+    /// [`ReplicationClass::SingleLeader`] for the reason its neighbour keeps
+    /// its own two absences apart: an operator who considered the question and
+    /// answered it has told the cluster something, and `INFO FOR` reports a
+    /// decision differently from a silence.
+    ///
+    /// Separate from `replication` rather than folded into it because the two
+    /// are independent — how many copies and how many writers — and a namespace
+    /// declared multi-master still has a factor.
+    pub class: Option<ReplicationClass>,
 }
 
 /// A database within a namespace.
@@ -260,6 +275,9 @@ impl NamespaceDefinition {
         if let Some(replication) = self.replication {
             fields.insert(FIELD_REPLICATION.to_owned(), replication.to_value());
         }
+        if let Some(class) = self.class {
+            fields.insert(FIELD_REPLICATION_CLASS.to_owned(), class.to_value());
+        }
         Value::Object(fields)
     }
 
@@ -284,10 +302,21 @@ impl NamespaceDefinition {
                 })?,
             ),
         };
+        let class = match fields.get(FIELD_REPLICATION_CLASS) {
+            None => None,
+            Some(held) => Some(ReplicationClass::from_value(held).ok_or(
+                Error::CatalogMalformed {
+                    entity: "namespace",
+                    field: FIELD_REPLICATION_CLASS,
+                    found: "a replication class this build does not have",
+                },
+            )?),
+        };
         Ok(Self {
             id: NamespaceId::new(field_id(fields, FIELD_ID, "namespace")?),
             name: field_name(fields, "namespace")?,
             replication,
+            class,
         })
     }
 }
@@ -1770,6 +1799,39 @@ mod tests {
     }
 
     #[test]
+    fn a_stated_class_round_trips_and_a_definition_without_one_reads_as_silence() {
+        // G027 S2.1. The second half is the one that matters on disk: a
+        // namespace written before this field existed must still decode, and
+        // must decode as *never stated* rather than as either answer — the same
+        // property the replication clause bought, and the same reason nothing
+        // stored is rewritten.
+        for class in [
+            ReplicationClass::SingleLeader,
+            ReplicationClass::MultiMaster,
+        ] {
+            let namespace = NamespaceDefinition {
+                id: NamespaceId::new(7),
+                name: "prod".to_owned(),
+                replication: None,
+                class: Some(class),
+            };
+            let read = NamespaceDefinition::from_value(&namespace.to_value()).unwrap();
+            assert_eq!(read, namespace, "{class}");
+        }
+
+        // Pinned as a literal for its neighbour's reason: this is a namespace a
+        // build without the class field wrote, not a round trip of today's, and
+        // it must read as never stated and encode back unchanged.
+        let stored = Value::Object(BTreeMap::from([
+            ("id".to_owned(), number(7)),
+            ("name".to_owned(), Value::from("prod")),
+        ]));
+        let read = NamespaceDefinition::from_value(&stored).unwrap();
+        assert_eq!(read.class, None);
+        assert_eq!(read.to_value(), stored, "a read must not rewrite it");
+    }
+
+    #[test]
     fn a_stated_policy_round_trips_and_is_not_silence() {
         for policy in [
             Replication::None,
@@ -1779,6 +1841,7 @@ mod tests {
                 id: NamespaceId::new(7),
                 name: "prod".to_owned(),
                 replication: Some(policy),
+                class: None,
             };
             let read = NamespaceDefinition::from_value(&namespace.to_value()).unwrap();
             assert_eq!(read, namespace, "{policy}");
@@ -1817,6 +1880,7 @@ mod tests {
             id: NamespaceId::new(7),
             name: "prod".to_owned(),
             replication: None,
+            class: None,
         };
         assert_eq!(
             NamespaceDefinition::from_value(&namespace.to_value()).unwrap(),

@@ -4,7 +4,8 @@ use core::num::NonZeroU32;
 
 use super::Parser;
 use tessari_types::{
-    Assertion, FieldKind, Filter, IdentityKind, Number, Path, Replication, Step, parse_uuid,
+    Assertion, FieldKind, Filter, IdentityKind, Number, Path, Replication, ReplicationClass, Step,
+    parse_uuid,
 };
 
 use crate::ast::{
@@ -379,6 +380,34 @@ impl Parser<'_> {
         Ok(Some(Replication::Factor(factor)))
     }
 
+    /// `MULTI MASTER` or `SINGLE LEADER`, the clause that says how many writers
+    /// a namespace admits (G027 S2.1).
+    ///
+    /// Four contextual words rather than four keywords, for
+    /// [`Self::replication_clause`]'s reason and with more force: `MASTER`,
+    /// `LEADER`, `SINGLE` and `MULTI` are ordinary English nouns that a corpus
+    /// of 333 `DEFINE NAMESPACE` statements across this engine and four sibling
+    /// repositories may well already use as names, and reserving one
+    /// retroactively refuses every script that did. Two words rather than one
+    /// because the phrase is what an operator already calls the thing, so the
+    /// clause they type is the phrase `INFO FOR` will read back to them.
+    ///
+    /// Answers `None` when no clause stands here. That namespace said nothing,
+    /// which reads as single-leader everywhere and is deliberately not
+    /// [`ReplicationClass::SingleLeader`] — see
+    /// [`StatementKind::DefineNamespace`].
+    fn replication_class_clause(&mut self) -> Result<Option<ReplicationClass>> {
+        if self.eat_word("multi") {
+            self.expect_word("master", "`MASTER` after `MULTI`")?;
+            return Ok(Some(ReplicationClass::MultiMaster));
+        }
+        if self.eat_word("single") {
+            self.expect_word("leader", "`LEADER` after `SINGLE`")?;
+            return Ok(Some(ReplicationClass::SingleLeader));
+        }
+        Ok(None)
+    }
+
     fn expect_word(&mut self, word: &str, expected: &'static str) -> Result<()> {
         if self.eat_word(word) {
             return Ok(());
@@ -676,10 +705,17 @@ impl Parser<'_> {
                 self.advance();
                 let if_not_exists = self.eat_if_not_exists()?;
                 let name = self.name()?;
+                // Read in clause order, and the two are read in separate
+                // statements rather than inside the struct literal because
+                // field initialisers are evaluated in source order and a later
+                // reordering of the fields would silently reorder the grammar.
+                let replication = self.replication_clause()?;
+                let class = self.replication_class_clause()?;
                 Ok(StatementKind::DefineNamespace {
                     name,
                     if_not_exists,
-                    replication: self.replication_clause()?,
+                    replication,
+                    class,
                 })
             }
             Some(Keyword::Database) => {

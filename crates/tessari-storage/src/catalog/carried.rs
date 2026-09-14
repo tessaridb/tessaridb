@@ -435,6 +435,7 @@ mod tests {
                         id: PROD,
                         name: "prod".to_owned(),
                         replication: None,
+                        class: None,
                     }
                     .to_value()
                 )
