@@ -15,23 +15,44 @@
 //! proven from the mutation alone is [`Carried::StoreOnly`], which for a
 //! selective follower means elided.
 //!
-//! # The identity class does not travel below store reach
+//! # The identity class travels everywhere, always — and what had to be true first
 //!
-//! The cluster concept put users, credentials and grants in an *everywhere,
-//! always* class. That was written when a subscription meant a whole node. It
-//! stopped being safe the moment [`Kind::Replicate`] joined a closed set whose
-//! owner role expands to every kind: every namespace owner already declared
-//! gained `replicate` over their own namespace, and an *everywhere* identity
-//! class would hand them every credential hash in the store — across every
-//! tenancy — through a permission nobody granted them separately.
+//! The cluster has **one set of users**: a node that joins holds the same
+//! identities as the node it joined, so an operator who can sign in on the
+//! leader can sign in on any follower. That is the concept's own text and it is
+//! the instruction this module now follows.
 //!
-//! So a user is carried by **the user's own tenancy**. A namespace's users reach
-//! that namespace's follower, which is the reader such a follower needs; a
-//! store-level user reaches a store-reach subscriber and nobody else. The cost
-//! of the other reading is not recoverable by a later fix, because a hash that
-//! reached a subscriber has reached it.
+//! It has not always been safe, and the history is worth keeping because it is
+//! the argument for the invariant that replaced it. This module once carried a
+//! user by **the user's own tenancy**, and the reason was [`Kind::Replicate`]:
+//! it had joined a closed set whose owner role expands to every kind, so every
+//! namespace owner already declared held it over their own namespace. An
+//! *everywhere* identity class would have handed them every credential hash in
+//! the store, across every tenancy, through a permission nobody granted them
+//! separately.
+//!
+//! What changed is the permission, not the appetite for the risk.
+//! [`Kind::may_be_held_at`] makes `replicate` a thing held over the whole store
+//! or not at all, so the only principal who can open **any** subscription is one
+//! already entitled to every byte in the store. A follower is provisioned by the
+//! cluster rather than asked for by a tenant, and the narrowing a selective
+//! subscription performs is an arrangement rather than a right.
+//!
+//! # So the protection moved rather than being dropped
+//!
+//! It used to be *the hash does not arrive*. It is now *the hash arrives on a
+//! node the cluster stood up, and a tenant on that node cannot read it* —
+//! `Session::administers` bounds every read of a user by the reader's own
+//! tenancy, on the singular form and on the listing alike. Those are different
+//! defences with different failure modes, and the second is the one that has to
+//! hold on a follower, so it is asserted there rather than inferred.
+//!
+//! One thing does not move: a hash that reached a subscriber has reached it, and
+//! no later fix recovers that. The reason this direction is takeable at all is
+//! that the set of subscribers shrank first.
 //!
 //! [`Kind::Replicate`]: super::Kind
+//! [`Kind::may_be_held_at`]: super::Kind::may_be_held_at
 
 use tessari_encoding::{Mutation, RecordValue, decode_payload};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, Value};
@@ -144,15 +165,12 @@ pub(crate) fn carried_to(mutation: &Mutation) -> Result<Carried> {
         (t, Some(value)) if t == system::LEADERSHIPS => {
             Carried::Within(super::LeadershipDefinition::from_value(&value)?.range)
         }
-        (t, Some(value)) if t == system::USERS => {
-            let declared = super::UserDefinition::from_value(&value)?;
-            match Reach::of(declared.namespace, declared.database) {
-                // A store-level user, or one whose tenancy names a database with
-                // no namespace — which is not a place. Both stay at the store.
-                Some(Reach::Store) | None => Carried::StoreOnly,
-                Some(reach) => Carried::Within(reach),
-            }
-        }
+        // The identity class, and it is unconditional: every user reaches every
+        // subscriber, whatever tenancy they were declared at. Not read from the
+        // record at all, because there is no longer a question to ask of it —
+        // classifying by tenancy is what produced the split this reversed, and
+        // leaving the read in place would leave the split one edit away.
+        (t, _) if t == system::USERS => Carried::Everywhere,
         // Everything else, named rather than left to a catch-all so that the
         // ratchet below is a statement about a set somebody wrote down:
         //   ALLOCATORS        one counter per level, for the whole store
@@ -341,7 +359,10 @@ mod tests {
             Carried::Everywhere
         );
 
-        // 9 — a user, by the user's OWN tenancy. This is the Q-535 row.
+        // 9 — a user, wherever they were declared. The cluster has one set of
+        // identities, so this row is deliberately insensitive to the tenancy in
+        // the record: both spellings below are the same answer, and asserting
+        // both is what says so.
         let namespaced = UserDefinition {
             id: 2,
             name: "prod_reader".to_owned(),
@@ -353,7 +374,7 @@ mod tests {
         };
         assert_eq!(
             class(system::USERS, RecordId::Int(2), Some(namespaced.to_value())),
-            Carried::Within(Reach::Namespace(PROD))
+            Carried::Everywhere
         );
         let store_wide = UserDefinition {
             namespace: None,
@@ -361,8 +382,17 @@ mod tests {
         };
         assert_eq!(
             class(system::USERS, RecordId::Int(1), Some(store_wide.to_value())),
-            Carried::StoreOnly,
-            "a store-level user's credential record stays at the store"
+            Carried::Everywhere,
+            "a store-level user reaches every follower, which is what lets one be signed in there"
+        );
+        // And a tombstone too, which the old rule could not carry at all: a
+        // deleted user is read from the value, and a value that is gone proved no
+        // tenancy. A deletion that does not reach a follower leaves a credential
+        // live on it after it was revoked everywhere else.
+        assert_eq!(
+            class(system::USERS, RecordId::Int(1), None),
+            Carried::Everywhere,
+            "a revocation must reach every node the credential reached"
         );
 
         // 5, 10, 11, 13, 16, 17, 18 — the store's own business, on a payload that

@@ -71,6 +71,8 @@ fn two_tenants(store: &Store) {
         "DEFINE USER prod_reader ON NAMESPACE prod AUTHORITIES read \
          PASSWORD 'correct horse battery';\n\
          DEFINE USER node AUTHORITIES replicate \
+         PASSWORD 'correct horse battery';\n\
+         DEFINE USER prod_owner ON NAMESPACE prod ROLE owner \
          PASSWORD 'correct horse battery';",
     )
     .unwrap();
@@ -181,18 +183,18 @@ fn a_selective_followers_reader_cannot_name_another_tenants_table() {
     );
 }
 
-/// Q-535, and it is the reason this wave departs from the concept's own text.
+/// The cluster has one set of users, and a selective follower holds all of them.
 ///
-/// The concept put the identity class in an *everywhere, always* class. That
-/// stopped being safe when `replicate` joined a closed set whose owner role
-/// expands to every kind: every namespace owner gained it over their own
-/// namespace, and an *everywhere* identity class would hand them every
-/// credential hash in the store.
+/// This test asserted the opposite until S4.2, and the reversal is the point
+/// rather than an embarrassment: the departure it used to pin was taken because
+/// a namespace owner could hold `replicate` over their own namespace, and S4.1
+/// removed that. What used to protect a tenancy was the hash not arriving; what
+/// protects it now is `administers`, asserted below on the follower itself.
 ///
-/// Asserted against the hash itself rather than against a count, because a count
-/// that happened to match is not evidence and a PHC string is unmistakable.
+/// Asserted against the hash itself rather than against a count alone, because a
+/// count that happened to match is not evidence and a PHC string is unmistakable.
 #[test]
-fn a_namespace_subscriber_does_not_receive_the_stores_credentials() {
+fn a_selective_follower_receives_every_tenancys_users() {
     let leader = store();
     two_tenants(&leader);
 
@@ -228,34 +230,30 @@ fn a_namespace_subscriber_does_not_receive_the_stores_credentials() {
             }
             if rendered.contains("\"root\"")
                 || rendered.contains("\"prod_reader\"")
+                || rendered.contains("\"prod_owner\"")
                 || rendered.contains("\"node\"")
             {
                 names.push(rendered);
             }
         }
     }
-    // One, and naming it is the assertion: `prod_reader` lives `ON NAMESPACE
-    // prod`, so it is this follower's to hold — the reader in the test above
-    // signs in with it, and a follower that could not would have no identity at
-    // all. `root` and `node` are the **store's**, and those hashes are what must
-    // not be here.
-    //
-    // It was two until `replicate` became store-only: `node` used to be declared
-    // at `ON NAMESPACE prod` and so travelled with the tenancy it named. Moving
-    // it to the store moved its credential record out of this stream, which
-    // sharpens the test rather than weakening it — the subscriber's own hash is
-    // now among the ones that must not arrive.
+    // Four, one per declared user: `root` and `node` at the store, `prod_reader`
+    // and `prod_owner` in `prod`. Naming them matters more than counting them —
+    // a count can be met by the wrong four — and `root` is the one the old rule
+    // held back, so it is named explicitly.
     assert_eq!(
-        hashes, 1,
-        "exactly the subscribed namespace's own users travel, got {hashes} credential records: {names:?}"
+        hashes, 4,
+        "every user in the cluster travels, got {hashes} credential records: {names:?}"
     );
     assert!(
-        !names.iter().any(|rendered| rendered.contains("\"root\"")),
-        "the store owner's credential record must not reach a namespace subscriber: {names:?}"
+        names.iter().any(|rendered| rendered.contains("\"root\"")),
+        "including the store owner's, which is what one identity per cluster means: {names:?}"
     );
     assert!(
-        !names.iter().any(|rendered| rendered.contains("\"node\"")),
-        "nor the subscriber's own, which is a store user like any other: {names:?}"
+        names
+            .iter()
+            .any(|rendered| rendered.contains("\"prod_reader\"")),
+        "and the subscribed tenancy's own, which it always did: {names:?}"
     );
 }
 
@@ -345,4 +343,125 @@ fn a_store_reach_subscription_still_carries_the_whole_log() {
             "both tenants' records reach a store subscriber"
         );
     }
+}
+
+// G025 S4.2 — the identity class replicates everywhere, always.
+//
+// The cluster has ONE set of users (concept §5.2, and the owner's instruction on
+// 2026-09-13 that overruled the departure W215 shipped). What changed to make it
+// safe is W279: `replicate` is held over the whole store or not at all, so the
+// only principal who can open any subscription is one already entitled to the
+// whole store. Before that, an *everywhere* identity class would have handed
+// every credential hash in the store to any namespace owner, because the owner
+// role expanded to every kind at their own reach and that included this one.
+//
+// So the protection moved. It is no longer *the hash does not arrive*; it is
+// *the hash arrives and the tenant cannot read it*. The test below asserts the
+// second, which is why the control above it exists at all.
+
+/// The control, and it is asserted on the **leader** on purpose.
+///
+/// A refusal that is only ever observed where the record is absent proves
+/// nothing about the refusal. This one runs where every record is certainly
+/// present, so what it measures is the check rather than the carriage.
+#[test]
+fn a_namespace_owner_cannot_read_a_store_users_credentials() {
+    let leader = store();
+    two_tenants(&leader);
+
+    let mut tenant = signed_in(&leader, "prod_owner");
+    let refusal = tenant.run("INFO FOR USER root;").unwrap_err();
+    assert!(
+        matches!(refusal, tessari_session::Error::NotYours { ref user, .. } if user == "root"),
+        "a namespace owner does not administer a store-level user, got {refusal:?}"
+    );
+
+    // And the listing draws the same boundary, which is the road that leaks
+    // quietly: a refusal on the singular form with the plural form still naming
+    // everybody would hide nothing at all.
+    let listed = tenant.run("INFO FOR USERS;").unwrap();
+    let rendered = format!("{listed:?}");
+    assert!(
+        !rendered.contains("\"root\""),
+        "nor may they be shown one in a listing: {rendered}"
+    );
+}
+
+/// S4.2's first half: a **store-level** user signs in on a selective follower.
+///
+/// The one thing a per-tenancy identity class could never do. A follower
+/// subscribed to `prod` held `prod`'s users and nobody else, so it had no
+/// store-level identity at all — nobody on it could declare anything, and an
+/// operator who could sign in on the leader was a stranger there.
+///
+/// Signing in is the assertion rather than a lookup, because `sign_in` matches
+/// over the user **records** and never over the name table: a record that
+/// reached the follower is one it can authenticate against, and asking the
+/// catalog whether the row is present would prove the carriage without proving
+/// the consequence.
+#[test]
+fn a_store_level_user_signs_in_on_a_selective_follower() {
+    let leader = store();
+    two_tenants(&leader);
+    let follower = follow(&leader, Reach::Namespace(NamespaceId::new(1)), "node");
+
+    let mut session = Session::new(&follower);
+    session
+        .sign_in("root", PASSWORD)
+        .expect("the cluster has one set of users, so the store owner is known here too");
+}
+
+/// S4.2's second half, run **as the namespace owner** and on the **follower**.
+///
+/// This is the half S4.1 exists to make safe, and the position is the criterion.
+/// An administrator refused proves nothing — an administrator is refused
+/// everywhere. A namespace owner is the principal who holds every kind their
+/// reach can hold, on a node that now physically holds every credential in the
+/// cluster, and they must still not be able to read one that is not theirs.
+///
+/// The presence check is not decoration. Without it this test passes on a build
+/// where the record never arrived, which is the exact shape of assertion that
+/// passes with the feature disabled.
+#[test]
+fn a_namespace_owner_on_a_selective_follower_cannot_read_another_tenancys_credentials() {
+    let leader = store();
+    two_tenants(&leader);
+    let follower = follow(&leader, Reach::Namespace(NamespaceId::new(1)), "node");
+
+    // The record is here. That is what makes the refusal below a refusal rather
+    // than an absence.
+    {
+        let mut transaction = follower.begin().unwrap();
+        let catalog = tessari_storage::Catalog::new(&mut transaction);
+        assert!(
+            catalog
+                .users()
+                .unwrap()
+                .iter()
+                .any(|user| user.name == "root"),
+            "the store owner's record must be on this follower for the refusal to mean anything"
+        );
+    }
+
+    let mut tenant = Session::new(&follower);
+    tenant.sign_in("prod_owner", PASSWORD).unwrap();
+    let refusal = tenant.run("INFO FOR USER root;").unwrap_err();
+    assert!(
+        matches!(refusal, tessari_session::Error::NotYours { ref user, .. } if user == "root"),
+        "the tenancy boundary is what protects the hash now, got {refusal:?}"
+    );
+
+    // The listing draws the same boundary. A refusal on the singular form beside
+    // a listing that names everybody would hide nothing, and the listing is the
+    // road an operator reaches for first.
+    let listed = tenant.run("INFO FOR USERS;").unwrap();
+    let rendered = format!("{listed:?}");
+    assert!(
+        !rendered.contains("\"root\""),
+        "a namespace owner is shown their own tenancy and no other: {rendered}"
+    );
+    assert!(
+        rendered.contains("\"prod_reader\""),
+        "and they are shown their own, so the listing is bounded rather than empty: {rendered}"
+    );
 }
