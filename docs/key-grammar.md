@@ -97,6 +97,7 @@ because renumbering after data exists is a full rebuild.
 | `0x39` | `ReclaimFloor` | `meta` | implemented |
 | `0x3a` | `GraphCatalog` | `meta` | reserved, unused — see §9 |
 | `0x3b` | `EdgeKindCatalog` | `meta` | reserved, unused — see §9 |
+| `0x3c` | `VersionPosition` | `meta` | implemented |
 
 ### 3c. The spatial entry
 

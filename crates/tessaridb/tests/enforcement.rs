@@ -530,7 +530,23 @@ const TABLES: &[Table] = &[
         // Its re-classification trigger: giving it an argument, or making
         // anything read it back as a decision rather than as a report. A counter
         // that something BRANCHES on has stopped being a counter.
-        expected: 32,
+        //
+        // 33 since the record version was separated from the log position
+        // (Q-614, ADR-0073): `Store::committed_version` answers the version this
+        // store has stamped up to. Classified **exempt, and it reaches no data**
+        // — it takes no argument and returns one number read from a single META
+        // key, with no tenancy anywhere in it. Its callers are `begin`,
+        // `begin_at` and `retention_floor`, each of which needs the moment a
+        // snapshot is taken at rather than any record written before it.
+        //
+        // Its re-classification trigger is the one B2 is about to pull: a
+        // store-wide answer is safe only while one counter covers every range.
+        // Make the counter per-range and a caller granted one namespace can
+        // watch a number that moves with writes in namespaces it cannot read —
+        // not the records, but their existence and their rate, which is a
+        // channel rather than a leak and is exactly as invisible. The method
+        // then owes a `Reach` and the answer owes the caller's own range.
+        expected: 33,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -589,7 +605,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
         moved.len(),
         moved.join("\n  "),
     );
-    assert_eq!(total, 84, "the counted tables no longer sum to 84");
+    assert_eq!(total, 85, "the counted tables no longer sum to 85");
 }
 
 /// Every `.rs` file under a directory.

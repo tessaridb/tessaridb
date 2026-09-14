@@ -261,6 +261,44 @@ impl StoreKey for AppliedPositionKey {
     }
 }
 
+/// Addresses the newest record version this store has written.
+///
+/// A singleton, advanced in the same batch as the versions it accounts for.
+///
+/// # Why this is not the applied position
+///
+/// It held the same number for as long as one leader decided every write, and
+/// that is the only reason the two were ever one key. They answer different
+/// questions. The applied position is the log's — a fact several nodes must
+/// agree on, because a replica resumes at it and a divergence is detected by
+/// comparing it. A record version is a fact about one store's own visible
+/// history: it orders that store's records against each other and against the
+/// snapshot a reader holds, and nobody else reads it.
+///
+/// Once two leaders allocate log positions from independent counters, one
+/// number cannot be both. A transaction opened at a store-wide "5" would read
+/// one range as of its fifth record and another as of its fifth — two unrelated
+/// moments presented as one, with no error and plausible data (Q-614).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct VersionPositionKey;
+
+impl StoreKey for VersionPositionKey {
+    type Value = Sequence;
+
+    const KIND: KeyKind = KeyKind::VersionPosition;
+
+    fn encode(&self) -> Key {
+        Key::from(vec![Self::KIND.tag()])
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        reader.finish()?;
+        Ok(Self)
+    }
+}
+
 /// Addresses the oldest sequence a read can still be answered at exactly.
 ///
 /// Reclamation keeps, for each record, the newest version at or below the floor

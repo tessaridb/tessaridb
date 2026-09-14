@@ -5992,9 +5992,15 @@ second mechanism bolted beside it.
 
 ### Why it is a sequence and not a timestamp
 
-The number is a **log sequence** — the same one a transaction's snapshot is, and
-the same one the store reports as its committed tail. It is not a wall clock,
-and the clause deliberately does not accept one.
+The number is a **record version** — the same one a transaction's snapshot is.
+It is not a wall clock, and the clause deliberately does not accept one.
+
+It is **not** the log position the store reports as its committed tail. The two
+carry the same value while one leader decides every write, and they are separate
+numbers because they are separate facts: a log position is what a replica
+resumes from and what two nodes compare for divergence, while a record version
+is where this store's own history puts a record. A snapshot is a statement about
+the second of those.
 
 No log record carries a timestamp, so a time would have to be resolved through a
 mapping. More importantly it would be a spelling that looks more precise than

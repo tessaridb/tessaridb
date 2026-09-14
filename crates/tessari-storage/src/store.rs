@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use tessari_encoding::{
     AppliedPositionKey, FormatVersion, FormatVersionKey, LogKey, LogRecord, NODE_ID_LEN,
-    NodeIdentity, Roles, StoreKey, StoreValue,
+    NodeIdentity, Roles, StoreKey, StoreValue, VersionPositionKey,
 };
 use tessari_kv::{KeyRange, KvBackend, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::{Epoch, Sequence};
@@ -207,6 +207,7 @@ impl Store {
             Some(found) => found.check_supported()?,
             None => write_initial_metadata(&backend)?,
         }
+        seed_version_position(&backend)?;
         crate::node::ensure(&backend)?;
         let store = Self {
             backend,
@@ -698,13 +699,17 @@ impl Store {
         crate::node::configure(&self.backend, roles, endpoints)
     }
 
-    /// Begin a transaction at the current committed tail.
+    /// Begin a transaction at the newest version this store has written.
+    ///
+    /// The newest **version**, not the newest log position: a snapshot is a
+    /// statement about this store's own visible history, which is the fact the
+    /// version counter holds (see [`Self::committed_version`]).
     ///
     /// # Errors
     ///
-    /// Returns an error when the committed tail cannot be read or decoded.
+    /// Returns an error when the version position cannot be read or decoded.
     pub fn begin(&self) -> Result<Transaction<'_>> {
-        Ok(Transaction::new(self, self.committed_tail()?))
+        Ok(Transaction::new(self, self.committed_version()?))
     }
 
     /// Begin a transaction reading the store as it stood at `at`.
@@ -721,15 +726,15 @@ impl Store {
     /// - **Below the reclaim floor.** Reclamation removed the versions that
     ///   would have answered, so the read would resolve to something older, or
     ///   to nothing, and call that the past.
-    /// - **Above the committed tail.** There is no state there yet. Answering
-    ///   with the present would make a read of the future silently succeed and
-    ///   then change its answer the next time it is asked.
+    /// - **Above the newest version written.** There is no state there yet.
+    ///   Answering with the present would make a read of the future silently
+    ///   succeed and then change its answer the next time it is asked.
     ///
     /// # Errors
     ///
     /// Returns [`Error::VersionReclaimed`] when `at` is below the reclaim floor,
-    /// [`Error::VersionInTheFuture`] when it is above the committed tail, or a
-    /// backend error when either bound cannot be read.
+    /// [`Error::VersionInTheFuture`] when it is above the newest version
+    /// written, or a backend error when either bound cannot be read.
     pub fn begin_at(&self, at: Sequence) -> Result<Transaction<'_>> {
         let floor = self.reclaim_floor()?;
         if at < floor {
@@ -738,7 +743,7 @@ impl Store {
                 floor: floor.get(),
             });
         }
-        let tail = self.committed_tail()?;
+        let tail = self.committed_version()?;
         if at > tail {
             return Err(Error::VersionInTheFuture {
                 asked: at.get(),
@@ -752,17 +757,17 @@ impl Store {
     ///
     /// Versions strictly older than the newest version at or below this may be
     /// reclaimed; nothing at or above it may be. With no reader live the floor is
-    /// the committed tail, because a transaction that begins next will begin
-    /// there.
+    /// the newest version written, because a transaction that begins next will
+    /// begin there.
     ///
     /// # Errors
     ///
-    /// Returns an error when the committed tail cannot be read, which is only
+    /// Returns an error when the version position cannot be read, which is only
     /// consulted when no snapshot is live.
     pub fn retention_floor(&self) -> Result<Sequence> {
         match self.snapshots.oldest() {
             Some(oldest) => Ok(oldest),
-            None => self.committed_tail(),
+            None => self.committed_version(),
         }
     }
 
@@ -992,6 +997,33 @@ impl Store {
     pub fn committed_tail(&self) -> Result<Sequence> {
         let key = AppliedPositionKey.encode();
         let stored = self.backend.get(AppliedPositionKey::keyspace(), &key)?;
+        match stored {
+            Some(value) => Ok(Sequence::decode(value.as_slice())?),
+            None => Ok(Sequence::ZERO),
+        }
+    }
+
+    /// The newest version this store has written a record at.
+    ///
+    /// The twin of [`Self::committed_tail`], and the distinction between them
+    /// is the whole of Q-614. The committed tail is the **log's** position: a
+    /// replica resumes from it, a divergence is detected by comparing it, and
+    /// it is therefore a number several nodes must agree on. This is **this
+    /// store's** own: it orders this store's records against each other and
+    /// against the snapshot a reader holds, and no other node ever reads it.
+    ///
+    /// They carry the same value while one leader decides every write, which is
+    /// the only reason they were one key. Once positions are allocated per
+    /// range, a snapshot taken from a log position would read one range as of
+    /// its fifth record and another as of its fifth — two unrelated moments
+    /// presented as one, with no error and plausible data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the value cannot be read or decoded.
+    pub fn committed_version(&self) -> Result<Sequence> {
+        let key = VersionPositionKey.encode();
+        let stored = self.backend.get(VersionPositionKey::keyspace(), &key)?;
         match stored {
             Some(value) => Ok(Sequence::decode(value.as_slice())?),
             None => Ok(Sequence::ZERO),
@@ -1270,7 +1302,13 @@ impl Store {
         // divergence between two nodes' catalogs rather than a caller's mistake
         // — which is worth stopping at rather than writing through.
         crate::schema::validate(self, record)?;
-        let batch = crate::index::maintain(self, record, crate::log::apply_batch(at, record))?;
+        // Allocated here, locally, and deliberately not taken from `at`. A
+        // replica numbers its own records: the log position it is replaying was
+        // decided elsewhere, the version it writes them at is its own history
+        // (Q-614). The two agree today because one flat log admits one writer.
+        let version = Sequence::new(self.committed_version()?.get().saturating_add(1));
+        let batch =
+            crate::index::maintain(self, record, crate::log::apply_batch(at, version, record))?;
         // Derived here as well as in the commit, because that is the whole
         // reason it is derived from the record: a follower that skipped this
         // would carry the edges and no way to walk them, and its walks would
@@ -1288,7 +1326,7 @@ impl Store {
         // reason it is derived from the record: a follower that skipped this
         // would carry the records and none of the counts, and its planner would
         // then choose a different access path for the same query.
-        let batch = crate::cardinality::maintain(self, record, batch, at)?;
+        let batch = crate::cardinality::maintain(self, record, batch, version)?;
         self.backend.apply(batch)?;
         Ok(())
     }
@@ -1422,6 +1460,47 @@ fn write_initial_metadata(backend: &Arc<dyn KvBackend>) -> Result<()> {
     Ok(())
 }
 
+/// Give the version counter a value, once, on a store that has none.
+///
+/// Every store written before the version was separated from the log position
+/// stamped its records at the position, so the position **is** the version
+/// those records were written at. Seeding from it is what makes the counter
+/// resume rather than restart — a counter that began again at zero would hand
+/// out version numbers the store's existing records already hold, and a reader
+/// would resolve to whichever of the two the key order happened to put first.
+///
+/// A fresh store reaches this with the position at zero, so the two cases are
+/// one path rather than two that could disagree.
+///
+/// The `Absent` precondition makes a race between two openers harmless: one
+/// writes, the other is refused and finds the value already there. A refusal is
+/// therefore success, not an error to report.
+fn seed_version_position(backend: &Arc<dyn KvBackend>) -> Result<()> {
+    let version_key = VersionPositionKey.encode();
+    if backend
+        .get(VersionPositionKey::keyspace(), &version_key)?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let applied_key = AppliedPositionKey.encode();
+    let applied = match backend.get(AppliedPositionKey::keyspace(), &applied_key)? {
+        Some(value) => Sequence::decode(value.as_slice())?,
+        None => Sequence::ZERO,
+    };
+    let batch = WriteBatch::new()
+        .expect_absent(VersionPositionKey::keyspace(), version_key.clone())
+        .put(
+            VersionPositionKey::keyspace(),
+            version_key,
+            applied.encode(),
+        );
+    match backend.apply(batch) {
+        Ok(()) | Err(tessari_kv::Error::Conflict { .. }) => Ok(()),
+        Err(other) => Err(other.into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // Test assertions are exactly where a panic is the correct outcome.
@@ -1443,6 +1522,41 @@ mod tests {
         assert_eq!(
             read_format_version(store.backend()).unwrap(),
             Some(FormatVersion::CURRENT)
+        );
+    }
+
+    #[test]
+    fn a_fresh_store_starts_its_version_counter_at_zero_as_well() {
+        let store = Store::open(backend()).unwrap();
+        assert_eq!(store.committed_version().unwrap(), Sequence::ZERO);
+    }
+
+    #[test]
+    fn a_store_opened_without_a_version_counter_resumes_it_from_the_applied_position() {
+        let backend = backend();
+        let store = Store::open(Arc::clone(&backend)).unwrap();
+        // The shape a store written before the version was separated from the
+        // log position has on disk: a position, and no counter beside it. Its
+        // records were stamped at that position, so the position *is* the
+        // version they hold.
+        backend
+            .apply(
+                WriteBatch::new()
+                    .put(
+                        AppliedPositionKey::keyspace(),
+                        AppliedPositionKey.encode(),
+                        Sequence::new(7).encode(),
+                    )
+                    .delete(VersionPositionKey::keyspace(), VersionPositionKey.encode()),
+            )
+            .unwrap();
+        drop(store);
+
+        let reopened = Store::open(backend).unwrap();
+        assert_eq!(
+            reopened.committed_version().unwrap(),
+            Sequence::new(7),
+            "a counter restarted at zero would reissue versions records already hold"
         );
     }
 

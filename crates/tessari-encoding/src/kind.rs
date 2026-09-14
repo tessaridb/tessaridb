@@ -76,6 +76,14 @@ pub enum KeyKind {
     /// Raised by reclamation, which is the only thing that can make an older
     /// answer unavailable.
     ReclaimFloor,
+    /// The newest record version this store has written.
+    ///
+    /// Separate from [`Self::AppliedPosition`] because the two are different
+    /// facts, and were one number only while a single leader made every
+    /// timeline the same timeline. A log position is a fact several nodes must
+    /// agree on; a record version is a fact about *this* store's own visible
+    /// history that no other node reads (Q-614).
+    VersionPosition,
 }
 
 impl KeyKind {
@@ -108,6 +116,7 @@ impl KeyKind {
         Self::BackfillWatermark,
         Self::NodeIdentity,
         Self::ReclaimFloor,
+        Self::VersionPosition,
     ];
 
     /// The leading byte that identifies this kind on disk.
@@ -143,6 +152,7 @@ impl KeyKind {
             Self::ReclaimFloor => 0x39,
             Self::GraphCatalog => 0x3a,
             Self::EdgeKindCatalog => 0x3b,
+            Self::VersionPosition => 0x3c,
         }
     }
 
@@ -173,7 +183,8 @@ impl KeyKind {
             | Self::IdAllocator
             | Self::BackfillWatermark
             | Self::NodeIdentity
-            | Self::ReclaimFloor => Keyspace::META,
+            | Self::ReclaimFloor
+            | Self::VersionPosition => Keyspace::META,
         }
     }
 
@@ -208,6 +219,7 @@ impl KeyKind {
             Self::BackfillWatermark => "backfill-watermark",
             Self::NodeIdentity => "node-identity",
             Self::ReclaimFloor => "reclaim-floor",
+            Self::VersionPosition => "version-position",
         }
     }
 
@@ -291,6 +303,7 @@ mod tests {
             (KeyKind::ReclaimFloor, 0x39),
             (KeyKind::GraphCatalog, 0x3a),
             (KeyKind::EdgeKindCatalog, 0x3b),
+            (KeyKind::VersionPosition, 0x3c),
         ];
         assert_eq!(expected.len(), KeyKind::ALL.len(), "a kind is untested");
         for (kind, tag) in expected {

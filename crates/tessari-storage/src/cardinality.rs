@@ -51,7 +51,7 @@ pub(crate) fn maintain(
     store: &Store,
     record: &LogRecord,
     mut batch: WriteBatch,
-    at: Sequence,
+    version: Sequence,
 ) -> Result<WriteBatch> {
     let view = store.begin()?;
     let mut deltas: BTreeMap<TableId, i64> = BTreeMap::new();
@@ -86,7 +86,7 @@ pub(crate) fn maintain(
         if delta == 0 {
             continue;
         }
-        batch = write_count(&view, batch, table, delta, at)?;
+        batch = write_count(&view, batch, table, delta, version)?;
     }
     Ok(batch)
 }
@@ -97,7 +97,7 @@ fn write_count(
     batch: WriteBatch,
     table: TableId,
     delta: i64,
-    at: Sequence,
+    version: Sequence,
 ) -> Result<WriteBatch> {
     let id = RecordId::Int(i64::from(table.get()));
     let address = system::address(system::RECORD_COUNTS, id.clone());
@@ -118,7 +118,7 @@ fn write_count(
         system::SYSTEM_DATABASE,
         system::RECORD_COUNTS,
         id,
-        at,
+        version,
     );
     let value = RecordValue::Present(encode_payload(&definition::count(next)?).into_bytes());
     Ok(batch.put(RecordKey::keyspace(), key.encode(), value.encode()))

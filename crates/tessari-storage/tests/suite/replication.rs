@@ -173,24 +173,60 @@ fn replay_into_an_empty_store_reproduces_it_byte_for_byte() {
 fn a_replica_reads_what_the_source_reads_including_the_history_behind_it() {
     let source_backend = backend();
     let source = store_on(&source_backend);
-    let first = write(&source, "r", b"first");
+    write(&source, "r", b"first");
+    let source_held_first = source.begin().unwrap().snapshot();
     write(&source, "r", b"second");
 
     let replica_backend = backend();
     let replica = store_on(&replica_backend);
-    for (sequence, record) in source.log_records(Sequence::ZERO, PLENTY).unwrap() {
+    let mut replica_held_first = None;
+    for (index, (sequence, record)) in source
+        .log_records(Sequence::ZERO, PLENTY)
+        .unwrap()
+        .into_iter()
+        .enumerate()
+    {
         replica.apply_record(sequence, &record).unwrap();
+        if index == 0 {
+            replica_held_first = Some(replica.begin().unwrap().snapshot());
+        }
     }
+    let replica_held_first = replica_held_first.unwrap();
 
     assert_eq!(
         replica.begin().unwrap().get(&at("r")).unwrap(),
         Some(b"second".to_vec())
     );
-    // The older version survived the replay too, so a snapshot taken on the
-    // replica reads the same history the source would have shown.
-    let older = replica.begin().unwrap();
-    assert_eq!(older.snapshot(), source.committed_tail().unwrap());
-    assert!(first < older.snapshot());
+    // The older version survived the replay too — asserted as the STATE each
+    // store reads at its OWN earlier snapshot, and deliberately not as the two
+    // of them agreeing on a number. A record version is a fact about one
+    // store's visible history and a log position is the fact the two share, so
+    // an assertion that a replica's snapshot equals the source's committed tail
+    // is an assertion about the wrong one (Q-614). It held while a single flat
+    // log made every version equal its position, which is exactly why it was
+    // worth writing down before that stopped being true.
+    assert_eq!(
+        replica
+            .begin_at(replica_held_first)
+            .unwrap()
+            .get(&at("r"))
+            .unwrap(),
+        source
+            .begin_at(source_held_first)
+            .unwrap()
+            .get(&at("r"))
+            .unwrap(),
+        "the replica's own history answers what the source's answers"
+    );
+    assert_eq!(
+        replica
+            .begin_at(replica_held_first)
+            .unwrap()
+            .get(&at("r"))
+            .unwrap(),
+        Some(b"first".to_vec())
+    );
+    assert!(replica_held_first < replica.begin().unwrap().snapshot());
 }
 
 #[test]

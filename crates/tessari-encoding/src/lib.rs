@@ -49,7 +49,7 @@ pub use index_keys::{
 };
 pub use keys::{
     AppliedPositionKey, FormatVersionKey, LogKey, NodeIdentityKey, ReclaimFloorKey, RecordKey,
-    StoreKey, TABLE_PREFIX_LEN,
+    StoreKey, TABLE_PREFIX_LEN, VersionPositionKey,
 };
 pub use kind::KeyKind;
 pub use node::{BUILD_VERSION, Membership, NODE_ID_LEN, NodeIdentity, NodeVersion, Roles};

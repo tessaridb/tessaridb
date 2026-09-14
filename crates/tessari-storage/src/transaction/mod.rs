@@ -1,6 +1,7 @@
 //! Transactions at snapshot isolation.
 //!
-//! A snapshot is one sequence number. Every read in a transaction seeks to that
+//! A snapshot is one record version — this store's own number, not the log's
+//! position (Q-614). Every read in a transaction seeks to that
 //! sequence and takes the newest version at or before it, so the transaction
 //! sees one consistent point in the store's history however long it runs.
 //!

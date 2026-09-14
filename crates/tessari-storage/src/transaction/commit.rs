@@ -225,7 +225,11 @@ impl Transaction<'_> {
 
     fn settle(self, settle: Settle) -> Result<Sequence> {
         if self.writes.is_empty() {
-            return Ok(self.snapshot);
+            // The log position, not this transaction's snapshot. Nothing was
+            // committed, so neither answer is a position anything was written
+            // at — but the return names a log position, and the snapshot stopped
+            // being one when the version was separated from it (Q-614).
+            return self.store.committed_tail();
         }
         // First, and after the empty check rather than before it. First because
         // a node that has run out of leadership should not be doing schema
@@ -282,13 +286,20 @@ impl Transaction<'_> {
             // that a replica's apply does not. Everything after this line is the
             // shared path.
             let commit_at = Sequence::new(tail.get().saturating_add(1));
+            // And the version, separately, because it is a different fact: the
+            // position is what a replica resumes from and compares, the version
+            // is where this store's own history puts these records. Read inside
+            // the loop for the same reason the tail is — a lost attempt built on
+            // a state that has since moved (Q-614).
+            let commit_version =
+                Sequence::new(self.store.committed_version()?.get().saturating_add(1));
             // Index entries are derived here rather than carried in the record,
             // and they are derived inside the loop because they depend on the
             // committed state this attempt is building on (see `crate::index`).
             let batch = crate::index::maintain(
                 self.store,
                 &record,
-                crate::log::apply_batch(commit_at, &record),
+                crate::log::apply_batch(commit_at, commit_version, &record),
             )?;
             // Adjacency is derived in the same place and for the same reason: a
             // replica reaches its state by replaying this record, so entries the
@@ -300,7 +311,7 @@ impl Transaction<'_> {
             // for the same reason: the planner on a follower must read the same
             // number as the planner on the leader, or one query takes two access
             // paths depending on which node answered it.
-            let batch = crate::cardinality::maintain(self.store, &record, batch, commit_at)?;
+            let batch = crate::cardinality::maintain(self.store, &record, batch, commit_version)?;
             // Everything above this ran. This is the whole difference between a
             // rehearsal and a write, and it is one line so that it can only ever
             // be the whole difference.
