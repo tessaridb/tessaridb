@@ -33,6 +33,7 @@
 
 use core::cmp::Ordering;
 
+use crate::error::{Error, Result};
 use crate::node::NODE_ID_LEN;
 
 /// How one stamp stands to another.
@@ -126,6 +127,33 @@ impl CausalStamp {
     #[must_use]
     pub fn entries(&self) -> &[([u8; NODE_ID_LEN], u64)] {
         &self.entries
+    }
+
+    /// Rebuild a stamp from entries read back out of a stored value.
+    ///
+    /// The ordering is checked rather than restored. Sorting here would accept a
+    /// stamp whose bytes are wrong and hand back one that is right, which hides
+    /// a broken writer behind a forgiving reader; and a duplicate node has no
+    /// correct repair at all, because the two counts disagree about what one
+    /// node had seen and nothing in the bytes says which is current.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::StampOutOfOrder`] when an entry does not follow its
+    /// predecessor strictly.
+    pub fn from_entries(entries: Vec<([u8; NODE_ID_LEN], u64)>) -> Result<Self> {
+        for (at, pair) in entries.windows(2).enumerate() {
+            let ordered = pair
+                .first()
+                .zip(pair.get(1))
+                .is_some_and(|((left, _), (right, _))| left < right);
+            if !ordered {
+                return Err(Error::StampOutOfOrder {
+                    at: at.saturating_add(1),
+                });
+            }
+        }
+        Ok(Self { entries })
     }
 
     /// Whether this stamp has seen everything the other has.

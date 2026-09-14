@@ -161,6 +161,19 @@ pub enum Error {
         len: usize,
     },
 
+    /// A causal stamp's entries were not in strictly ascending node order.
+    ///
+    /// Every routine that reads a stamp — the count lookup and the three-way
+    /// comparison alike — binary-searches the entry list, so an unordered or
+    /// duplicated list does not fail: it answers the wrong node's count and
+    /// reports a causal relation that never held. The decoder is the only place
+    /// the invariant can be broken, so it is the only place that checks it.
+    #[error("causal stamp entries are not in strictly ascending node order at index {at}")]
+    StampOutOfOrder {
+        /// The index of the first entry that did not follow its predecessor.
+        at: usize,
+    },
+
     /// A payload carried a value type this build does not know.
     ///
     /// Not corruption: the bytes are well-formed and a newer build would read
@@ -273,6 +286,7 @@ impl Error {
             | Self::InvalidUtf8 { .. }
             | Self::ValueTruncated { .. }
             | Self::TombstoneWithPayload { .. }
+            | Self::StampOutOfOrder { .. }
             | Self::InvalidDecimal { .. }
             | Self::InvalidSubSecond { .. }
             | Self::InvalidNodeEndpoint

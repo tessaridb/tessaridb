@@ -156,7 +156,7 @@ mod tests {
     // Test assertions are exactly where a panic is the correct outcome.
     #![allow(clippy::panic, clippy::unwrap_used)]
 
-    use tessari_encoding::{Mutation, RecordValue};
+    use tessari_encoding::{Mutation, RecordValue, StampedValue};
     use tessari_kv::{Keyspace, Precondition};
     use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
 
@@ -172,7 +172,7 @@ mod tests {
             database: DatabaseId::new(1),
             table: TableId::new(1),
             id: RecordId::from("r"),
-            value: RecordValue::Present(b"v".to_vec()),
+            value: StampedValue::new(RecordValue::Present(b"v".to_vec())),
         }])
     }
 

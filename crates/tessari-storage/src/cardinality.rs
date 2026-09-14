@@ -73,7 +73,7 @@ pub(crate) fn maintain(
         // over an existing record is a replacement and not an arrival, and a
         // delete of something already gone is not a departure. Both are zero,
         // and only the stored state tells them from the other two cases.
-        let delta = match (view.get(&address)?.is_some(), &mutation.value) {
+        let delta = match (view.get(&address)?.is_some(), mutation.value.value()) {
             (false, RecordValue::Present(_)) => 1_i64,
             (true, RecordValue::Tombstone) => -1_i64,
             _ => continue,

@@ -230,7 +230,7 @@ fn a_selective_follower_receives_every_tenancys_users() {
             // which a PHC string is present and invisible — a test written
             // against it passes while the hash travels, which is the exact
             // failure this one exists to catch.
-            let rendered = match &mutation.value {
+            let rendered = match mutation.value.value() {
                 tessari_encoding::RecordValue::Present(payload) => {
                     format!("{:?}", tessari_encoding::decode_payload(payload).unwrap())
                 }

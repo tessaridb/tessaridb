@@ -114,7 +114,7 @@ pub(crate) fn carried_to(mutation: &Mutation) -> Result<Carried> {
             },
         );
     }
-    let present = match &mutation.value {
+    let present = match mutation.value.value() {
         RecordValue::Present(payload) => Some(decode_payload(payload)?),
         // A tombstone in the system tenancy has lost the fields its tenancy was
         // written in. Unprovable, so `StoreOnly` — a selective follower can
@@ -292,7 +292,7 @@ pub(crate) fn home_of(record: &LogRecord) -> Result<Reach> {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use tessari_encoding::encode_payload;
+    use tessari_encoding::{StampedValue, encode_payload};
     use tessari_types::{RecordId, TableId};
 
     use super::*;
@@ -308,9 +308,9 @@ mod tests {
             database: system::SYSTEM_DATABASE,
             table,
             id,
-            value: value.map_or(RecordValue::Tombstone, |value| {
+            value: StampedValue::new(value.map_or(RecordValue::Tombstone, |value| {
                 RecordValue::Present(encode_payload(&value).into_bytes())
-            }),
+            })),
         }
     }
 
@@ -324,7 +324,7 @@ mod tests {
             database,
             table: TableId::new(4),
             id: RecordId::Int(id),
-            value: RecordValue::Tombstone,
+            value: StampedValue::new(RecordValue::Tombstone),
         }
     }
 
@@ -403,7 +403,7 @@ mod tests {
             database: SHOP,
             table: TableId::new(4),
             id: RecordId::Int(1),
-            value: RecordValue::Tombstone,
+            value: StampedValue::new(RecordValue::Tombstone),
         };
         assert_eq!(
             carried_to(&mutation).unwrap(),

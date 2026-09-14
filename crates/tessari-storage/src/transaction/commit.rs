@@ -11,7 +11,7 @@ use std::hash::{BuildHasher, Hasher};
 use std::time::Duration;
 
 use tessari_constants::{COMMIT_BACKOFF_CEILING, COMMIT_BACKOFF_STEP, MAX_COMMIT_ATTEMPTS};
-use tessari_encoding::{LogRecord, Mutation, RecordValue, decode_payload};
+use tessari_encoding::{LogRecord, Mutation, RecordValue, StampedValue, decode_payload};
 use tessari_types::Sequence;
 
 use super::{RecordAddress, Transaction};
@@ -361,7 +361,7 @@ impl Transaction<'_> {
                     database: address.database,
                     table: address.table,
                     id: address.id.clone(),
-                    value: value.clone(),
+                    value: StampedValue::new(value.clone()),
                 })
                 .collect(),
         )

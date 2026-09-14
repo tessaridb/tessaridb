@@ -322,7 +322,7 @@ fn build(
         {
             continue;
         }
-        match &mutation.value {
+        match mutation.value.value() {
             RecordValue::Present(payload) => rows.insert(mutation.id.clone(), payload.clone()),
             RecordValue::Tombstone => rows.remove(&mutation.id),
         };
@@ -490,7 +490,7 @@ fn apply_one(
             graph.remove(&mutation.id);
             batch = graph::erase(batch, &address, &mutation.id);
         }
-        if let RecordValue::Present(payload) = &mutation.value
+        if let RecordValue::Present(payload) = mutation.value.value()
             && let Some(held) = projected_vector(definition, &decode_payload(payload)?)
         {
             let touched = graph.insert(&mutation.id, held);
@@ -515,7 +515,7 @@ fn apply_one(
                 definition,
             );
         }
-        if let RecordValue::Present(payload) = &mutation.value {
+        if let RecordValue::Present(payload) = mutation.value.value() {
             batch = place(
                 batch,
                 &address,
@@ -551,7 +551,7 @@ fn apply_one(
                 );
             }
         }
-        if let RecordValue::Present(payload) = &mutation.value {
+        if let RecordValue::Present(payload) = mutation.value.value() {
             let analysed = terms_of(definition, analyzer, &decode_payload(payload)?);
             counted.added(analysed.tokens);
             let length = analysed.length();
@@ -587,7 +587,7 @@ fn apply_one(
         }
     }
 
-    if let RecordValue::Present(payload) = &mutation.value {
+    if let RecordValue::Present(payload) = mutation.value.value() {
         for values in project(definition, &decode_payload(payload)?) {
             batch = insert(
                 store,

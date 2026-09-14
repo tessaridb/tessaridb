@@ -58,4 +58,6 @@ pub use node::{BUILD_VERSION, Membership, NODE_ID_LEN, NodeIdentity, NodeVersion
 pub use order::{KeyReader, KeyWriter};
 pub use payload::{decode as decode_payload, encode as encode_payload};
 pub use spatial_keys::{SpatialExtent, SpatialIndexKey};
-pub use value::{CODEC_VERSION, FormatVersion, LogRecord, Mutation, RecordValue, StoreValue};
+pub use value::{
+    CODEC_VERSION, FormatVersion, LogRecord, Mutation, RecordValue, StampedValue, StoreValue,
+};

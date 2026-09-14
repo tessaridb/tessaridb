@@ -1078,6 +1078,59 @@ mod tests {
         assert_eq!(back.previous, Epoch::new(3));
     }
 
+    /// The wire is the first of S1.3's three carriers, and it carries the stamp
+    /// without knowing it exists.
+    ///
+    /// That is the point rather than an accident of this test: the frame carries
+    /// a log record's encoded bytes, and the stamp lives inside a mutation's
+    /// value, so nothing in this crate had to change for a stamped record to
+    /// cross a link. The assertion below is what turns that from a claim into
+    /// evidence — it compares the bytes AND reads the stamp back out, because a
+    /// frame that dropped the flag bit would still produce equal-looking records
+    /// if only the payload were compared.
+    #[test]
+    fn a_stamped_record_survives_the_collection_frame() {
+        use tessari_encoding::{CausalStamp, Mutation, RecordValue, StampedValue};
+        use tessari_types::{RecordId, TableId};
+
+        let mut stamp = CausalStamp::new();
+        stamp.advance([1_u8; NODE_ID_LEN]);
+        stamp.advance([1_u8; NODE_ID_LEN]);
+        stamp.advance([2_u8; NODE_ID_LEN]);
+
+        let record = LogRecord::at(
+            Epoch::new(4),
+            vec![Mutation {
+                namespace: NamespaceId::new(1),
+                database: DatabaseId::new(1),
+                table: TableId::new(1),
+                id: RecordId::from("contested"),
+                value: StampedValue::stamped(
+                    stamp.clone(),
+                    RecordValue::Present(b"from one of two masters".to_vec()),
+                ),
+            }],
+        );
+        let answer = Collected {
+            previous: Epoch::new(3),
+            records: vec![(Sequence::new(7), record)],
+            stopped_early: false,
+        };
+
+        let encoded = answer.encode();
+        let back = Collected::decode(&encoded).expect("an answer");
+        assert_eq!(back, answer, "the frame did not carry the record unchanged");
+        assert_eq!(
+            back.encode(),
+            encoded,
+            "re-encoding what came off the wire did not reproduce the same bytes"
+        );
+        let carried = &back.records[0].1.mutations()[0].value;
+        assert_eq!(carried.stamp(), &stamp, "the causal stamp did not survive");
+        assert_eq!(carried.stamp().count(&[1_u8; NODE_ID_LEN]), 2);
+        assert_eq!(carried.stamp().count(&[2_u8; NODE_ID_LEN]), 1);
+    }
+
     #[test]
     fn a_follower_collects_the_records_it_does_not_have() {
         let authority = Authority::new();

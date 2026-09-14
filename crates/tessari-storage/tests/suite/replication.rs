@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use tessari_encoding::{LogRecord, Mutation, RecordValue, encode_payload};
+use tessari_encoding::{LogRecord, Mutation, RecordValue, StampedValue, encode_payload};
 use tessari_kv::{Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value};
 use tessari_storage::{Catalog, EDGE_IN, EDGE_OUT, Error, Reach, RecordAddress, Store, TableShape};
 use tessari_types::{
@@ -57,7 +57,7 @@ fn mutation(id: &str, value: &[u8]) -> Mutation {
         database: DatabaseId::new(1),
         table: TableId::new(1),
         id: RecordId::from(id),
-        value: RecordValue::Present(value.to_vec()),
+        value: StampedValue::new(RecordValue::Present(value.to_vec())),
     }
 }
 
@@ -319,7 +319,7 @@ fn two_leaderships_writing_one_sequence_are_refused_rather_than_silently_dropped
             database: DatabaseId::new(1),
             table: TableId::new(1),
             id: RecordId::from("contested"),
-            value: RecordValue::Present(b"from-the-new-leader".to_vec()),
+            value: StampedValue::new(RecordValue::Present(b"from-the-new-leader".to_vec())),
         }],
     );
     held.apply_record(
@@ -331,7 +331,7 @@ fn two_leaderships_writing_one_sequence_are_refused_rather_than_silently_dropped
                 database: DatabaseId::new(1),
                 table: TableId::new(1),
                 id: RecordId::from("contested"),
-                value: RecordValue::Present(b"from-the-old-leader".to_vec()),
+                value: StampedValue::new(RecordValue::Present(b"from-the-old-leader".to_vec())),
             }],
         ),
     )
@@ -373,7 +373,7 @@ fn re_sending_a_record_the_store_already_holds_stays_a_free_no_op() {
             database: DatabaseId::new(1),
             table: TableId::new(1),
             id: RecordId::from("repeated"),
-            value: RecordValue::Present(b"v".to_vec()),
+            value: StampedValue::new(RecordValue::Present(b"v".to_vec())),
         }],
     );
     held.apply_record(Sequence::new(1), &record).unwrap();
@@ -401,7 +401,7 @@ fn replaying_an_older_record_from_an_older_leadership_is_not_a_divergence() {
             database: DatabaseId::new(1),
             table: TableId::new(1),
             id: RecordId::from("old"),
-            value: RecordValue::Present(b"a".to_vec()),
+            value: StampedValue::new(RecordValue::Present(b"a".to_vec())),
         }],
     );
     let second = LogRecord::at(
@@ -411,7 +411,7 @@ fn replaying_an_older_record_from_an_older_leadership_is_not_a_divergence() {
             database: DatabaseId::new(1),
             table: TableId::new(1),
             id: RecordId::from("new"),
-            value: RecordValue::Present(b"b".to_vec()),
+            value: StampedValue::new(RecordValue::Present(b"b".to_vec())),
         }],
     );
     held.apply_record(Sequence::new(1), &first).unwrap();
@@ -433,7 +433,7 @@ fn a_replica_that_applied_a_record_can_still_commit_of_its_own_accord() {
         database: DatabaseId::new(1),
         table: TableId::new(1),
         id: RecordId::from("applied"),
-        value: RecordValue::Present(b"from-the-log".to_vec()),
+        value: StampedValue::new(RecordValue::Present(b"from-the-log".to_vec())),
     }]);
     replica.apply_record(Sequence::new(1), &record).unwrap();
 

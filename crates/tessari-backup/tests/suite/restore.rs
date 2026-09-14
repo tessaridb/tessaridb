@@ -11,10 +11,13 @@
 
 use std::sync::Arc;
 
+use tessari_encoding::{
+    CausalStamp, LogRecord, Mutation, NODE_ID_LEN, RecordKey, RecordValue, StampedValue, StoreValue,
+};
 use tessari_kv::{KeyRange, Keyspace, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
 use tessari_session::{Outcome, Session};
 use tessari_storage::Store;
-use tessari_types::{Reach, Sequence};
+use tessari_types::{DatabaseId, Epoch, NamespaceId, Reach, RecordId, Sequence, TableId};
 
 /// Every engine this project has built, in one script.
 ///
@@ -293,6 +296,78 @@ fn the_record_counter_survives_a_restore_rather_than_starting_again() {
         "Int(4)",
         "the restored table carried on from three rather than starting again: {keys:?}"
     );
+}
+
+/// A stamped record, applied straight into a log, backed up and restored.
+///
+/// The third of S1.3's carriers, and the one with the longest path: the stamp is
+/// written into a value, the value into a mutation, the mutation into a log
+/// record, the record into a backup file, and the file back into a fresh store.
+/// Nothing along that path was taught about the stamp — the backup carries a log
+/// record's encoded bytes and the restore replays them — so this test is what
+/// says the claim is true rather than merely plausible.
+///
+/// The record is applied rather than written through a session on purpose: no
+/// writer produces a stamp yet (that is S2), and a criterion about the FORMAT
+/// must not wait on the mechanism that will fill it in.
+#[test]
+fn a_stamped_record_survives_a_backup_and_a_restore() {
+    let mut stamp = CausalStamp::new();
+    stamp.advance([1_u8; NODE_ID_LEN]);
+    stamp.advance([1_u8; NODE_ID_LEN]);
+    stamp.advance([2_u8; NODE_ID_LEN]);
+
+    let (source_backend, source) = store();
+    let record = LogRecord::at(
+        Epoch::new(1),
+        vec![Mutation {
+            namespace: NamespaceId::new(1),
+            database: DatabaseId::new(1),
+            table: TableId::new(1),
+            id: RecordId::from("contested"),
+            value: StampedValue::stamped(
+                stamp.clone(),
+                RecordValue::Present(b"from one of two masters".to_vec()),
+            ),
+        }],
+    );
+    source.apply_record(Sequence::new(1), &record).unwrap();
+
+    let mut taken = Vec::new();
+    tessari_backup::write(&source, &mut taken).unwrap();
+    let (target_backend, restored) = store();
+    tessari_backup::read(&restored, &mut taken.as_slice()).unwrap();
+
+    // Byte-for-byte, the way W283 compared `meta`, `index` and `log`: one record
+    // applied into one log leaves one version, so the version stamp the other
+    // comparison has to set aside is the same on both sides here.
+    let expected = dump(&source_backend, Keyspace::DATA);
+    let found = dump(&target_backend, Keyspace::DATA);
+    assert_eq!(expected, found, "the DATA keyspace differs after a restore");
+
+    // And the bytes are the right bytes, not merely equal ones. A restore that
+    // dropped the stamp on both sides would satisfy the comparison above.
+    // Selected by key rather than by position. The record keyspace also holds
+    // the table's maintained row count, which is a `RecordValue` at a system
+    // address and sorts ahead of the record — so `first()` here reads the
+    // counter, decodes cleanly, and reports an empty stamp. That is a green
+    // assertion about the wrong bytes, which is the failure mode a byte-for-byte
+    // comparison alone cannot catch either.
+    let prefix = RecordKey::versions_prefix(
+        NamespaceId::new(1),
+        DatabaseId::new(1),
+        TableId::new(1),
+        &RecordId::from("contested"),
+    );
+    let (_, value) = found
+        .iter()
+        .find(|(key, _)| key.as_slice().starts_with(&prefix))
+        .expect("the record came back");
+    let decoded = StampedValue::decode(value.as_slice()).unwrap();
+    assert_eq!(decoded.stamp(), &stamp, "the causal stamp did not survive");
+    assert_eq!(decoded.stamp().count(&[1_u8; NODE_ID_LEN]), 2);
+    assert_eq!(decoded.stamp().count(&[2_u8; NODE_ID_LEN]), 1);
+    assert_eq!(decoded.value().payload(), b"from one of two masters");
 }
 
 /// The one key that is deliberately **not** derived from the log.

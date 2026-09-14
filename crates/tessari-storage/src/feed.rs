@@ -99,7 +99,7 @@ pub(crate) fn changes_in(sequence: Sequence, record: &LogRecord) -> Result<Vec<C
         if mutation.namespace == SYSTEM_NAMESPACE && mutation.database == SYSTEM_DATABASE {
             continue;
         }
-        let kind = match &mutation.value {
+        let kind = match mutation.value.value() {
             RecordValue::Present(payload) => ChangeKind::Written(decode_payload(payload)?),
             RecordValue::Tombstone => ChangeKind::Removed,
         };
