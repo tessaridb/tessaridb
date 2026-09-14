@@ -1140,11 +1140,36 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
         }
         std::thread::sleep(POLL);
     }
+    // Read before the `expect`, so a failure reports how long it waited rather
+    // than only that it gave up.
+    let took = began.elapsed();
     let successor = successor.expect(
         "the cluster lost its leader and never got another: two of three nodes \
          were up, which is a majority, so a round could have been carried",
     );
     assert_ne!(successor, leader, "the killed node cannot be the successor");
+
+    // G025 S2.2's timed half. *Faster than the awareness round* is a claim about
+    // two numbers the constants already fix: a voter hears a live leader's
+    // renewal about every two round times, while the greeting directory
+    // refreshes every `AWARENESS_SECONDS` and a reading is itself up to that old
+    // again — `STALENESS_FLOOR_SECONDS`, which is the worst case a node relying
+    // on the directory alone would have to wait through.
+    //
+    // The bound is therefore the directory's worst case and not a tight fit to
+    // whatever a run happens to show: a threshold fitted to an observation
+    // asserts that the machine is as fast as it was the day it was measured.
+    // The lease term is spent in both arms and is common-mode; what this bound
+    // separates is the signal.
+    eprintln!("failover took {took:?}");
+    assert!(
+        took < Duration::from_secs(tessari_constants::STALENESS_FLOOR_SECONDS),
+        "the cluster took {took:?} to accept a write after losing its leader, \
+         which is at or past the {}s a node with nothing but the greeting \
+         directory would have to wait — so nothing here shows the peer link \
+         detecting the loss any faster than the awareness round does",
+        tessari_constants::STALENESS_FLOOR_SECONDS
+    );
 
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let seen = reading.join().expect("the reading thread panicked");
