@@ -229,7 +229,9 @@ impl Transaction<'_> {
             // committed, so neither answer is a position anything was written
             // at — but the return names a log position, and the snapshot stopped
             // being one when the version was separated from it (Q-614).
-            return self.store.committed_tail();
+            return self
+                .store
+                .committed_tail(crate::store::UNPARTITIONED_REPORT_HOME);
         }
         // First, and after the empty check rather than before it. First because
         // a node that has run out of leadership should not be doing schema
@@ -263,6 +265,12 @@ impl Transaction<'_> {
             return Err(Error::NoLeadershipYet);
         }
         let record = self.log_record();
+        // The log this commit belongs to, derived from the record before the
+        // loop because it cannot change between attempts: it is a property of
+        // what is being written, not of the state being written onto. The
+        // position is allocated from this home's counter, which is the whole of
+        // what "the sequence is per-range" means at the write end.
+        let home = crate::catalog::home_of(&record)?;
 
         let mut attempt = 0_u32;
         loop {
@@ -274,7 +282,7 @@ impl Transaction<'_> {
                 });
             }
 
-            let tail = self.store.committed_tail()?;
+            let tail = self.store.committed_tail(home)?;
             self.check_for_conflicts()?;
             // Inside the loop with the conflict check, and for the same reason:
             // both are read against the committed state this attempt builds on,
@@ -299,7 +307,7 @@ impl Transaction<'_> {
             let batch = crate::index::maintain(
                 self.store,
                 &record,
-                crate::log::apply_batch(commit_at, commit_version, &record),
+                crate::log::apply_batch(home, commit_at, commit_version, &record),
             )?;
             // Adjacency is derived in the same place and for the same reason: a
             // replica reaches its state by replaying this record, so entries the

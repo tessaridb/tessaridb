@@ -84,11 +84,26 @@ fn writes(store: &Store, count: usize, from: usize) {
 /// One follower collects, naming itself, and is told what it is told.
 fn collects(store: &Store, node: [u8; 16], from: Sequence, limit: usize) -> usize {
     let mut follower = signed_in(store, "node");
+    // ONE collect, over the log the fixture's records land in. That is what the
+    // wire does — a `Collect` frame names no log, so a follower reads one link
+    // of the chain (Q-621) — and it is also what makes the lag arithmetic below
+    // mean anything: `behind` counts in one log, and a single `from` spread over
+    // several would be a bound in none of them (Q-625).
     follower
-        .replicate_from(store, node, Reach::Store, from, limit)
+        .replicate_from(store, node, Reach::Store, DATA_LOG, from, limit)
         .unwrap()
         .len()
 }
+
+/// The log this file's writes land in.
+///
+/// `leader` declares namespace 1 and database 1, and `writes` creates rows in
+/// them — so the records this file counts are filed there and not in the store's
+/// own log, which holds the definitions (S6.2).
+const DATA_LOG: Reach = Reach::Database(
+    tessari_types::NamespaceId::new(1),
+    tessari_types::DatabaseId::new(1),
+);
 
 /// What one follower row says: `(sequence, behind, quiet_for)`.
 struct Reported {
@@ -343,7 +358,7 @@ fn a_leader_that_has_dated_nothing_states_no_copy_age_at_all() {
 fn a_follower_level_with_a_dated_tail_holds_a_copy_with_no_age_to_speak_of() {
     let store = leader();
     writes(&store, 3, 1);
-    store.mark_tail().unwrap();
+    store.mark_tail(DATA_LOG).unwrap();
     collects(&store, ONE_FOLLOWER, Sequence::new(1), 256);
 
     let row = only(&store);
@@ -365,12 +380,12 @@ fn the_age_of_a_copy_does_not_grow_while_the_leader_writes_nothing() {
     // since it last asked goes on growing, because there is nothing to ask for.
     let store = leader();
     writes(&store, 2, 1);
-    store.mark_tail().unwrap();
+    store.mark_tail(DATA_LOG).unwrap();
     collects(&store, ONE_FOLLOWER, Sequence::new(1), 256);
 
     std::thread::sleep(Duration::from_millis(40));
     // The cadence keeps running on an idle leader; this is one of its rounds.
-    store.mark_tail().unwrap();
+    store.mark_tail(DATA_LOG).unwrap();
 
     let row = only(&store);
     let age = row.copy_age.expect("the tail is dated");
@@ -394,7 +409,7 @@ fn a_copy_older_than_every_position_the_leader_dated_has_no_age_it_can_state() {
 
     // Everything this leader has dated is beyond what that follower holds.
     writes(&store, 4, 10);
-    store.mark_tail().unwrap();
+    store.mark_tail(DATA_LOG).unwrap();
 
     let row = only(&store);
     assert!(row.behind > 0, "it is short of the tail");
@@ -410,12 +425,12 @@ fn two_followers_at_different_positions_are_given_different_ages() {
     // test above and fail only this one.
     let store = leader();
     writes(&store, 2, 1);
-    store.mark_tail().unwrap();
+    store.mark_tail(DATA_LOG).unwrap();
     collects(&store, ONE_FOLLOWER, Sequence::new(1), 256);
 
     std::thread::sleep(Duration::from_millis(40));
     writes(&store, 2, 10);
-    store.mark_tail().unwrap();
+    store.mark_tail(DATA_LOG).unwrap();
     collects(&store, ANOTHER_FOLLOWER, Sequence::new(1), 256);
 
     let rows = followers(&store);

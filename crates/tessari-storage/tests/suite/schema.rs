@@ -441,9 +441,7 @@ fn a_replica_reaches_the_same_verdict_from_the_same_log() {
 
     let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
-    for (sequence, log_record) in source.store.log_records(Sequence::ZERO, 1024).unwrap() {
-        replica.apply_record(sequence, &log_record).unwrap();
-    }
+    crate::replay(&source.store, &replica);
 
     let mirrored = Fixture {
         store: replica,
@@ -524,15 +522,16 @@ fn a_replica_reaches_the_same_verdict_about_a_required_field() {
 
     let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
-    for (sequence, record) in fixture.store.log_records(Sequence::ZERO, 1024).unwrap() {
-        replica.apply_record(sequence, &record).unwrap();
-    }
+    crate::replay(&fixture.store, &replica);
     // Everything the leader committed applies; nothing it refused is in the log.
     assert_eq!(
-        replica.log_records(Sequence::ZERO, 1024).unwrap().len(),
+        replica
+            .log_records(crate::FIXTURE_HOME, Sequence::ZERO, 1024)
+            .unwrap()
+            .len(),
         fixture
             .store
-            .log_records(Sequence::ZERO, 1024)
+            .log_records(crate::FIXTURE_HOME, Sequence::ZERO, 1024)
             .unwrap()
             .len()
     );
@@ -725,9 +724,7 @@ fn a_replica_reaches_the_same_verdict_because_the_constraint_is_in_the_log() {
 
     let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
-    for (sequence, record) in fixture.store.log_records(Sequence::ZERO, 1_000).unwrap() {
-        replica.apply_record(sequence, &record).unwrap();
-    }
+    crate::replay(&fixture.store, &replica);
 
     let mut transaction = replica.begin().unwrap();
     transaction.put(

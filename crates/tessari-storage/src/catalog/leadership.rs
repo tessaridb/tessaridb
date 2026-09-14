@@ -52,7 +52,7 @@ use std::collections::BTreeMap;
 use tessari_encoding::{NODE_ID_LEN, decode_payload, encode_payload};
 use tessari_types::{Epoch, Number, RecordId, Value};
 
-use super::authority::Reach;
+use super::authority::{Reach, ReachCodec};
 use super::definition::{count_of, object};
 use super::{Catalog, system};
 use crate::error::{Error, Result};
@@ -283,7 +283,7 @@ mod tests {
     use tessari_encoding::NODE_ID_LEN;
     use tessari_types::{DatabaseId, Epoch, NamespaceId, Number, Value};
 
-    use crate::catalog::authority::Reach;
+    use crate::catalog::authority::{Reach, ReachCodec};
     use crate::error::Error;
 
     const ONE: [u8; NODE_ID_LEN] = [1; NODE_ID_LEN];

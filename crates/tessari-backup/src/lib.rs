@@ -30,14 +30,33 @@
 //! # The format
 //!
 //! ```text
-//! header   "TESSARILOG" <format:u8> <codec:u8> <writer:u32*3> <from:u64> <tail:u64>
-//! record   <length:u32> <sequence:u64> <crc32:u32> <bytes…>
+//! head     "TESSARILOG" <format:u8> <codec:u8> <writer:u32*3> <sections:u32>
+//! frame    <tag:u8>
+//!   tag 1  section  <home:9> <from:u64> <tail:u64>
+//!   tag 2  record   <length:u32> <sequence:u64> <crc32:u32> <bytes…>
 //! ```
 //!
-//! `from` is the first sequence the file holds, which is what makes an
+//! # Why a file holds sections rather than a log
+//!
+//! A store used to hold one log and now holds one per range (S6.2), so a file
+//! carrying *the* log would read as whole, restore without error, and be missing
+//! every record written into a database — the one failure a backup exists to
+//! prevent. Each log gets a section, and the file is the store rather than a
+//! part of it (Q-624).
+//!
+//! `from` is the first sequence that section holds, which is what makes an
 //! **incremental** backup a thing a reader can check rather than a thing a
-//! filename claims: a file starting at `from` restores onto a store standing at
-//! `from - 1`, and onto no other.
+//! filename claims: a section starting at `from` restores onto a store whose
+//! log stands at `from - 1`, and onto no other. The bounds sit **after** the
+//! home because a position counts in one log and means nothing without knowing
+//! which (Q-621).
+//!
+//! Frames carry a tag for the reason records carry a length: a boundary that
+//! has to be *inferred* — from a record count, or from a sequence reaching the
+//! section's tail — is a decoder wandering into the next section and
+//! succeeding. `sections` is in the head instead so that a reader knows how many
+//! to expect **before** applying any of them, which is what lets a restore that
+//! cannot span several refuse one without having half-applied it.
 //!
 //! The CRC is over the record's body and exists because framing catches a file
 //! that was *cut* and nothing about a file that is the right length and holds
@@ -74,7 +93,7 @@ use std::io::{Read, Write};
 
 use tessari_encoding::{LogRecord, NodeVersion, StoreValue};
 use tessari_storage::Store;
-use tessari_types::Sequence;
+use tessari_types::{DatabaseId, NamespaceId, Reach, Sequence};
 
 mod check;
 
@@ -100,7 +119,50 @@ const LEGACY_MAGIC: &[u8; 8] = b"TESSALOG";
 /// is a third question, separate from both of the versions above: the framing
 /// can be identical and the records can decode perfectly while the build that
 /// produced them meant something this one does not. See [`Head`].
-const FORMAT: u8 = 3;
+///
+/// It moved to 4 when a store stopped holding one log. The file now carries a
+/// section per log, and every frame carries a tag — a layout change that a
+/// version-3 reader would misread rather than refuse, which is what this byte
+/// prevents.
+const FORMAT: u8 = 4;
+
+/// A frame that opens a section: one log, and the range of it this file holds.
+const FRAME_SECTION: u8 = 1;
+
+/// A frame that carries one log record, belonging to the section above it.
+const FRAME_RECORD: u8 = 2;
+
+/// A reach as the nine fixed bytes a log key carries it in.
+///
+/// Written out here rather than borrowed from the key encoding because a backup
+/// file is its own format: the key grammar may be re-laid out without every file
+/// ever written becoming unreadable, and the two moving together by accident is
+/// exactly what a separate format is for.
+fn home_bytes(home: Reach) -> [u8; 9] {
+    let (variant, namespace, database) = match home {
+        Reach::Store => (0_u8, 0_u32, 0_u32),
+        Reach::Namespace(namespace) => (1, namespace.get(), 0),
+        Reach::Database(namespace, database) => (2, namespace.get(), database.get()),
+    };
+    let mut bytes = [0_u8; 9];
+    bytes[0] = variant;
+    bytes[1..5].copy_from_slice(&namespace.to_be_bytes());
+    bytes[5..9].copy_from_slice(&database.to_be_bytes());
+    bytes
+}
+
+/// The reach [`home_bytes`] wrote, or `None` for a variant this build does not
+/// know.
+fn home_in(bytes: [u8; 9]) -> Option<Reach> {
+    let namespace = NamespaceId::new(u32::from_be_bytes(bytes[1..5].try_into().ok()?));
+    let database = DatabaseId::new(u32::from_be_bytes(bytes[5..9].try_into().ok()?));
+    match bytes[0] {
+        0 => Some(Reach::Store),
+        1 => Some(Reach::Namespace(namespace)),
+        2 => Some(Reach::Database(namespace, database)),
+        _ => None,
+    }
+}
 
 /// How many log records are read from the store at a time.
 ///
@@ -123,6 +185,26 @@ pub enum Error {
     /// A record could not be decoded.
     #[error(transparent)]
     Encoding(#[from] tessari_encoding::Error),
+
+    /// One sequence was named where several logs are in play.
+    ///
+    /// A whole backup and a whole restore span every log a store holds. The two
+    /// surfaces bounded by a single sequence — an incremental backup `FROM n`
+    /// and a point-in-time restore `UPTO n` — cannot: sequence 500 in one log
+    /// and sequence 500 in another are unrelated moments, and a number that
+    /// silently meant the first of them would produce a store no log explains.
+    /// Refused rather than guessed at until both surfaces name a position per
+    /// log (Q-624, Q-621).
+    #[error(
+        "{what} names one sequence and {logs} logs are in play; \
+         a sequence counts in one log alone"
+    )]
+    ManyLogs {
+        /// Which surface named the sequence.
+        what: &'static str,
+        /// How many logs are in play.
+        logs: usize,
+    },
 
     /// The file does not begin the way one of these does.
     #[error("this is not a TessariDB backup")]
@@ -191,41 +273,59 @@ pub enum Error {
 /// Result alias for this crate.
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// What a backup wrote.
+/// One log, and the range of it a file's section holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Written {
-    /// How many log records it holds.
-    pub records: u64,
-    /// The first sequence it holds.
+pub struct LogSpan {
+    /// The log the section holds.
+    pub home: Reach,
+    /// The first sequence of it the section holds.
     pub from: Sequence,
-    /// The sequence the store was at when it was taken.
+    /// The sequence that log was at when the section was taken.
     pub tail: Sequence,
+}
+
+/// What a backup wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Written {
+    /// How many log records it holds, across every section.
+    pub records: u64,
+    /// What each section covers, in the order they were written.
+    ///
+    /// A list rather than one pair because a store holds a log per range, and
+    /// reporting the last section's bounds as the file's would be a number that
+    /// is right about a part and wrong about the whole.
+    pub logs: Vec<LogSpan>,
     /// The build that wrote it.
     pub writer: NodeVersion,
 }
 
-/// What a backup turned out to hold, without any of it being applied.
+/// One section of a file, as reading it without applying it found it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VerifiedLog {
+    /// What the section says it covers.
+    pub span: LogSpan,
+    /// The last sequence in it that read whole and checked out.
+    ///
+    /// What a restore of this log could safely be stopped at, which is the
+    /// number somebody holding a damaged file actually needs.
+    pub good_through: Sequence,
+}
+
+/// What a backup turned out to hold, without any of it being applied.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verified {
     /// The build that wrote the file.
     pub written_by: NodeVersion,
-    /// How many records read whole and checked out.
+    /// How many records read whole and checked out, across every section.
     pub records: u64,
-    /// The first sequence the file says it holds.
-    pub from: Sequence,
-    /// The sequence the file says it was taken at.
-    pub tail: Sequence,
-    /// The last sequence that read whole and checked out.
-    ///
-    /// What a restore could safely be stopped at, which is the number somebody
-    /// holding a damaged file actually needs.
-    pub good_through: Sequence,
-    /// Whether the file ended mid-record.
+    /// What each section says it holds, and how far it actually reads.
+    pub logs: Vec<VerifiedLog>,
+    /// Whether the file ended mid-record, or before every section arrived.
     pub truncated: bool,
 }
 
 /// What a restore applied.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Restored {
     /// The build that wrote the file.
     ///
@@ -233,76 +333,161 @@ pub struct Restored {
     /// this one": restoring an older backup into a newer build is the case this
     /// field exists to make visible, not one to refuse.
     pub written_by: NodeVersion,
-    /// How many records were applied.
+    /// How many records were applied, across every section.
     pub records: u64,
-    /// The sequence the file said it held.
-    pub tail: Sequence,
-    /// Whether the file ended mid-record.
+    /// What each section the restore reached said it covered.
+    pub logs: Vec<LogSpan>,
+    /// Whether the file ended mid-record, or before every section arrived.
     ///
     /// Reported rather than raised: an interrupted backup is still most of a
     /// store, and the caller is the one who knows whether most is enough.
     pub truncated: bool,
 }
 
-/// Write a store's log to `out`.
+/// Write every log a store holds to `out`.
+///
+/// One section per log, in the order [`tessari_storage::Store::homes`] lists
+/// them — which puts the store's own log first, so the namespace and database
+/// definitions a range's records depend on are restored before those records
+/// are.
 ///
 /// # Errors
 ///
 /// Returns an error when the store or the stream fails.
 pub fn write(store: &Store, out: &mut impl Write) -> Result<Written> {
-    write_from(store, out, Sequence::new(1))
+    let homes = store.homes()?;
+    let sections = u32::try_from(homes.len()).unwrap_or(u32::MAX);
+    let writer = write_head(out, sections)?;
+    let mut records = 0_u64;
+    let mut logs = Vec::with_capacity(homes.len());
+    for home in homes {
+        let (written, span) = write_section(store, out, home, Sequence::new(1))?;
+        records = records.saturating_add(written);
+        logs.push(span);
+    }
+    Ok(Written {
+        records,
+        logs,
+        writer,
+    })
 }
 
-/// Write the part of a store's log at or after `from`.
+/// Write the part of one log at or after `from`.
 ///
-/// An **incremental** backup. `from` is written into the header, so a reader
-/// knows what the file continues from rather than being told by a filename —
-/// and a restore refuses a store that is not standing exactly there.
+/// An **incremental** backup, and a one-section file. `from` is written into the
+/// section, so a reader knows what the file continues from rather than being
+/// told by a filename — and a restore refuses a store whose log for that home is
+/// not standing exactly there.
 ///
-/// `write_from(store, out, 1)` is a whole backup, which is what [`write`] is:
-/// the two are one path, so an incremental restore exercises the code an
-/// ordinary one does.
+/// `write_from(store, out, home, 1)` is a whole backup **of that one log**, not
+/// of the store: a store holding several logs is backed up whole by [`write`].
+/// The two share every byte of their framing, so an incremental restore
+/// exercises the code an ordinary one does.
 ///
 /// # Errors
 ///
 /// Returns an error when the store or the stream fails.
-pub fn write_from(store: &Store, out: &mut impl Write, from: Sequence) -> Result<Written> {
-    let start = Sequence::new(from.get().max(1));
-    let tail = store.committed_tail()?;
+pub fn write_from(
+    store: &Store,
+    out: &mut impl Write,
+    home: Reach,
+    from: Sequence,
+) -> Result<Written> {
+    let writer = write_head(out, 1)?;
+    let (records, span) = write_section(store, out, home, from)?;
+    Ok(Written {
+        records,
+        logs: vec![span],
+        writer,
+    })
+}
+
+/// The one log a sequence-bounded backup can name, or a refusal.
+///
+/// A store that has only ever been written through one leader holds one log, and
+/// that log is what an incremental backup counts in. A store holding several is
+/// refused rather than partly written: `FROM n` would silently mean the first
+/// log's sequence `n` and leave every other log out of a file that reads as
+/// whole (Q-624).
+///
+/// An empty store answers [`Reach::Store`] — it has no log yet, and the store's
+/// own is where its first record will go.
+///
+/// # Errors
+///
+/// Returns [`Error::ManyLogs`] when the store holds more than one log, and the
+/// store's own failure when they cannot be listed.
+pub fn only_log(store: &Store) -> Result<Reach> {
+    match store.homes()?.as_slice() {
+        [] => Ok(Reach::Store),
+        [home] => Ok(*home),
+        many => Err(Error::ManyLogs {
+            what: "an incremental backup",
+            logs: many.len(),
+        }),
+    }
+}
+
+/// Write what a file begins with, and answer the build that wrote it.
+fn write_head(out: &mut impl Write, sections: u32) -> Result<NodeVersion> {
     let writer = NodeVersion::current();
     out.write_all(MAGIC)?;
     out.write_all(&[FORMAT, tessari_encoding::CODEC_VERSION])?;
     // Beside the other two versions, because it answers a question of the same
-    // kind — and before the bounds, so that everything about *who wrote this* is
-    // read before anything about *what it covers*.
+    // kind — and before anything about what the file covers, so that everything
+    // about *who wrote this* is read first.
     out.write_all(&writer.major.to_be_bytes())?;
     out.write_all(&writer.minor.to_be_bytes())?;
     out.write_all(&writer.patch.to_be_bytes())?;
+    // How many sections follow, in the head rather than discovered by reading
+    // them: a restore bounded by one sequence has to refuse a multi-log file
+    // BEFORE it applies the first section, and after the first section it is too
+    // late to refuse anything.
+    out.write_all(&sections.to_be_bytes())?;
+    Ok(writer)
+}
+
+/// Write one log's section, and answer how many records went into it.
+fn write_section(
+    store: &Store,
+    out: &mut impl Write,
+    home: Reach,
+    from: Sequence,
+) -> Result<(u64, LogSpan)> {
+    let start = Sequence::new(from.get().max(1));
+    let tail = store.committed_tail(home)?;
+    out.write_all(&[FRAME_SECTION])?;
+    // The home before the bounds, because the bounds mean nothing without it:
+    // a position counts in one log, and a section that named a range without
+    // naming which log it counted in would restore onto the wrong base with no
+    // error (Q-621).
+    out.write_all(&home_bytes(home))?;
     out.write_all(&start.get().to_be_bytes())?;
     out.write_all(&tail.get().to_be_bytes())?;
+    let span = LogSpan {
+        home,
+        from: start,
+        tail,
+    };
 
     let mut written = 0_u64;
     let mut from = start;
     loop {
-        let page = store.log_records(from, PAGE)?;
+        let page = store.log_records(home, from, PAGE)?;
         if page.is_empty() {
             break;
         }
         for (sequence, record) in &page {
             if sequence.get() > tail.get() {
                 // A write that landed after the backup began is simply not in
-                // it. The tail in the header is what makes that honest rather
+                // it. The tail in the section is what makes that honest rather
                 // than arbitrary.
-                return Ok(Written {
-                    records: written,
-                    from: start,
-                    tail,
-                    writer,
-                });
+                return Ok((written, span));
             }
             let bytes = record.encode();
             let body = bytes.as_slice();
             let length = u32::try_from(body.len()).unwrap_or(u32::MAX);
+            out.write_all(&[FRAME_RECORD])?;
             out.write_all(&length.to_be_bytes())?;
             out.write_all(&sequence.get().to_be_bytes())?;
             out.write_all(&check::crc32(body).to_be_bytes())?;
@@ -314,12 +499,7 @@ pub fn write_from(store: &Store, out: &mut impl Write, from: Sequence) -> Result
         };
         from = Sequence::new(last.get().saturating_add(1));
     }
-    Ok(Written {
-        records: written,
-        from: start,
-        tail,
-        writer,
-    })
+    Ok((written, span))
 }
 
 /// Replay a backup into an **empty** store.
@@ -354,74 +534,103 @@ pub fn read_until(
     input: &mut impl Read,
     upto: Option<Sequence>,
 ) -> Result<Restored> {
-    let held = Head::read(input)?;
-    // The store is checked against the file rather than against zero: a whole
-    // backup continues from an empty store and an incremental one continues from
-    // where its predecessor stopped, and both are the same question.
-    let at = store.committed_tail()?;
-    let needs = held.from.get().saturating_sub(1);
-    if at.get() != needs {
-        return Err(Error::WrongBase {
-            needs,
-            found: at.get(),
+    let head = Head::read(input)?;
+    // Refused here, before a byte of any section is applied: after the first
+    // section there is no way to refuse that is not a half-applied restore, and
+    // this is the whole reason the section count lives in the head.
+    if upto.is_some() && head.sections != 1 {
+        return Err(Error::ManyLogs {
+            what: "a point-in-time restore",
+            logs: usize::try_from(head.sections).unwrap_or(usize::MAX),
         });
     }
 
     let mut applied = 0_u64;
-    let mut last = at;
+    let mut logs: Vec<LogSpan> = Vec::new();
+    let mut open: Option<(LogSpan, Sequence)> = None;
+    let mut truncated = false;
     loop {
-        let Some((sequence, body)) = next(input)? else {
+        let Some(frame) = Frame::next(input)? else {
             break;
         };
-        let Some(body) = body else {
-            return Ok(Restored {
-                written_by: held.writer,
-                records: applied,
-                tail: held.tail,
-                truncated: true,
-            });
-        };
-        if let Some(upto) = upto
-            && sequence.get() > upto.get()
-        {
-            // Stopped where the caller asked, which is not a truncation: the
-            // file is whole and the store is deliberately behind it.
-            return Ok(Restored {
-                written_by: held.writer,
-                records: applied,
-                tail: held.tail,
-                truncated: false,
-            });
+        match frame {
+            Frame::Cut => {
+                truncated = true;
+                break;
+            }
+            Frame::Section(span) => {
+                // The store is checked against the section rather than against
+                // zero: a whole backup continues from an empty log and an
+                // incremental one continues from where its predecessor stopped,
+                // and both are the same question.
+                let at = store.committed_tail(span.home)?;
+                let needs = span.from.get().saturating_sub(1);
+                if at.get() != needs {
+                    return Err(Error::WrongBase {
+                        needs,
+                        found: at.get(),
+                    });
+                }
+                if let Some((span, reached)) = open.replace((span, at)) {
+                    truncated = truncated || reached.get() < span.tail.get();
+                    logs.push(span);
+                }
+            }
+            Frame::Record { sequence, body } => {
+                let Some((_, reached)) = open.as_mut() else {
+                    // A record before any section names the log it belongs to.
+                    // There is no defensible guess: applying it into the store's
+                    // own log would put a range's records in the wrong counter.
+                    return Err(Error::NotABackup);
+                };
+                if let Some(upto) = upto
+                    && sequence.get() > upto.get()
+                {
+                    // Stopped where the caller asked, which is not a truncation:
+                    // the file is whole and the store is deliberately behind it.
+                    break;
+                }
+                let record = LogRecord::decode(&body)?;
+                store.apply_record(sequence, &record)?;
+                applied = applied.saturating_add(1);
+                *reached = sequence;
+            }
         }
-        let record = LogRecord::decode(&body)?;
-        store.apply_record(sequence, &record)?;
-        applied = applied.saturating_add(1);
-        last = sequence;
+    }
+    if let Some((span, reached)) = open {
+        // A file cut cleanly *between* records ends the way a whole one does, so
+        // the framing alone cannot tell them apart. The section can: one running
+        // from `from` to `tail` holds exactly that many records, and fewer means
+        // the file lost some. `upto` is the exception — there the store is
+        // deliberately behind — and it only ever reaches one section.
+        truncated = truncated || (upto.is_none() && reached.get() < span.tail.get());
+        logs.push(span);
     }
     Ok(Restored {
-        written_by: held.writer,
+        written_by: head.writer,
         records: applied,
-        tail: held.tail,
-        // A file cut cleanly *between* records ends the way a whole one does, so
-        // the framing alone cannot tell them apart. The header can: a file
-        // running from `from` to `tail` holds exactly that many records, and
-        // fewer means the file lost some.
-        truncated: last.get() < held.tail.get(),
+        // A file that ends before every section it promised arrived lost whole
+        // logs, not a tail — which the per-section check above cannot see,
+        // because the sections it never reached left no trace in the stream.
+        truncated: truncated || logs.len() < usize::try_from(head.sections).unwrap_or(0),
+        logs,
     })
 }
 
 /// What a bootstrap left the node holding, and where it must continue from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bootstrapped {
     /// The build that wrote the prefix.
     pub written_by: NodeVersion,
     /// How many log records were applied.
     pub records: u64,
-    /// The sequence to ask the leader for next.
+    /// The sequence to ask the leader for next, per log the node now holds.
     ///
     /// Taken from the node's **own** committed tail after the replay, never from
-    /// what the prefix said it held — see [`bootstrap`].
-    pub follow_from: Sequence,
+    /// what the prefix said it held — see [`bootstrap`]. One entry per log,
+    /// because a node holding several has several positions and a single number
+    /// would be right about one of them (Q-620, Q-621).
+    pub follow_from: Vec<(Reach, Sequence)>,
     /// Whether the prefix ended mid-record.
     ///
     /// A truncated prefix leaves a node that is a correct copy of an *earlier*
@@ -459,11 +668,15 @@ pub struct Bootstrapped {
 /// [`Error::Damaged`] at the first record whose bytes are not the bytes written.
 pub fn bootstrap(store: &Store, input: &mut impl Read) -> Result<Bootstrapped> {
     let restored = read(store, input)?;
-    let reached = store.committed_tail()?;
+    let mut follow_from = Vec::with_capacity(restored.logs.len());
+    for home in store.homes()? {
+        let reached = store.committed_tail(home)?;
+        follow_from.push((home, Sequence::new(reached.get().saturating_add(1))));
+    }
     Ok(Bootstrapped {
         written_by: restored.written_by,
         records: restored.records,
-        follow_from: Sequence::new(reached.get().saturating_add(1)),
+        follow_from,
         truncated: restored.truncated,
     })
 }
@@ -480,47 +693,62 @@ pub fn bootstrap(store: &Store, input: &mut impl Read) -> Result<Bootstrapped> {
 /// read, and [`Error::Damaged`] at the first record whose bytes are not the
 /// bytes that were written.
 pub fn verify(input: &mut impl Read) -> Result<Verified> {
-    let held = Head::read(input)?;
+    let head = Head::read(input)?;
     let mut records = 0_u64;
-    let mut good_through = Sequence::new(held.from.get().saturating_sub(1));
+    let mut logs: Vec<VerifiedLog> = Vec::new();
+    let mut open: Option<VerifiedLog> = None;
+    let mut truncated = false;
     loop {
-        let Some((sequence, body)) = next(input)? else {
+        let Some(frame) = Frame::next(input)? else {
             break;
         };
-        let Some(body) = body else {
-            return Ok(Verified {
-                written_by: held.writer,
-                records,
-                from: held.from,
-                tail: held.tail,
-                good_through,
-                truncated: true,
-            });
-        };
-        // Decoded as well as checksummed: a record whose bytes survived and
-        // whose *shape* did not is a record a restore would fail on, and the
-        // point of verifying is to find that out today.
-        LogRecord::decode(&body)?;
-        records = records.saturating_add(1);
-        good_through = sequence;
+        match frame {
+            Frame::Cut => {
+                truncated = true;
+                break;
+            }
+            Frame::Section(span) => {
+                let opening = VerifiedLog {
+                    span,
+                    good_through: Sequence::new(span.from.get().saturating_sub(1)),
+                };
+                if let Some(done) = open.replace(opening) {
+                    truncated = truncated || done.good_through.get() < done.span.tail.get();
+                    logs.push(done);
+                }
+            }
+            Frame::Record { sequence, body } => {
+                let Some(current) = open.as_mut() else {
+                    return Err(Error::NotABackup);
+                };
+                // Decoded as well as checksummed: a record whose bytes survived
+                // and whose *shape* did not is a record a restore would fail on,
+                // and the point of verifying is to find that out today.
+                LogRecord::decode(&body)?;
+                records = records.saturating_add(1);
+                current.good_through = sequence;
+            }
+        }
+    }
+    if let Some(done) = open {
+        truncated = truncated || done.good_through.get() < done.span.tail.get();
+        logs.push(done);
     }
     Ok(Verified {
-        written_by: held.writer,
+        written_by: head.writer,
         records,
-        from: held.from,
-        tail: held.tail,
-        good_through,
-        truncated: good_through.get() < held.tail.get(),
+        truncated: truncated || logs.len() < usize::try_from(head.sections).unwrap_or(0),
+        logs,
     })
 }
 
-/// What a backup's header says.
+/// What a backup file begins with, before any section.
 #[derive(Debug, Clone, Copy)]
 struct Head {
     /// The build that wrote the file.
     writer: NodeVersion,
-    from: Sequence,
-    tail: Sequence,
+    /// How many sections — that is, how many logs — the file holds.
+    sections: u32,
 }
 
 impl Head {
@@ -558,19 +786,13 @@ impl Head {
                 supported: running.to_string(),
             });
         }
-        let mut bounds = [0_u8; 16];
+        let mut counted = [0_u8; 4];
         input
-            .read_exact(&mut bounds)
+            .read_exact(&mut counted)
             .map_err(|_| Error::NotABackup)?;
-        let (from, tail) = bounds.split_at(8);
         Ok(Self {
             writer,
-            from: Sequence::new(u64::from_be_bytes(
-                from.try_into().map_err(|_| Error::NotABackup)?,
-            )),
-            tail: Sequence::new(u64::from_be_bytes(
-                tail.try_into().map_err(|_| Error::NotABackup)?,
-            )),
+            sections: u32::from_be_bytes(counted),
         })
     }
 
@@ -619,37 +841,89 @@ impl Head {
     }
 }
 
-/// The next record: its sequence and its body, or `None` at a clean end.
-///
-/// A body of `None` means the file was cut inside this record.
-fn next(input: &mut impl Read) -> Result<Option<(Sequence, Option<Vec<u8>>)>> {
-    let mut header = [0_u8; 16];
-    match fill(input, &mut header)? {
-        Filled::Empty => return Ok(None),
-        Filled::Short => return Ok(Some((Sequence::new(0), None))),
-        Filled::Whole => {}
-    }
-    let (framing, rest) = header.split_at(4);
-    let (numbered, checked) = rest.split_at(8);
-    let length = usize::try_from(u32::from_be_bytes(
-        framing.try_into().map_err(|_| Error::NotABackup)?,
-    ))
-    .unwrap_or(0);
-    let sequence = Sequence::new(u64::from_be_bytes(
-        numbered.try_into().map_err(|_| Error::NotABackup)?,
-    ));
-    let expected = u32::from_be_bytes(checked.try_into().map_err(|_| Error::NotABackup)?);
+/// One frame of a backup file.
+#[derive(Debug)]
+enum Frame {
+    /// A section opening: the log that follows, and the range of it held.
+    Section(LogSpan),
+    /// One log record, belonging to the section above it.
+    Record {
+        /// Where in that log it was.
+        sequence: Sequence,
+        /// Its encoded bytes, checksum already agreed.
+        body: Vec<u8>,
+    },
+    /// The file ended inside a frame.
+    Cut,
+}
 
-    let mut body = vec![0_u8; length];
-    if !matches!(fill(input, &mut body)?, Filled::Whole) {
-        return Ok(Some((sequence, None)));
+impl Frame {
+    /// The next frame, or `None` at a clean end of the file.
+    fn next(input: &mut impl Read) -> Result<Option<Self>> {
+        let mut tag = [0_u8; 1];
+        match fill(input, &mut tag)? {
+            Filled::Empty => return Ok(None),
+            Filled::Short | Filled::Whole => {}
+        }
+        match tag.first().copied().unwrap_or(0) {
+            FRAME_SECTION => Self::section(input),
+            FRAME_RECORD => Self::record(input),
+            // Not a truncation and not a guess: the framing is self-describing,
+            // so a tag this build does not know is a file it cannot read rather
+            // than one it should skip past.
+            _ => Err(Error::NotABackup),
+        }
     }
-    if check::crc32(&body) != expected {
-        return Err(Error::Damaged {
-            sequence: sequence.get(),
-        });
+
+    /// A section frame: the home, then the bounds that count inside it.
+    fn section(input: &mut impl Read) -> Result<Option<Self>> {
+        let mut raw = [0_u8; 25];
+        if !matches!(fill(input, &mut raw)?, Filled::Whole) {
+            return Ok(Some(Self::Cut));
+        }
+        let (homed, bounds) = raw.split_at(9);
+        let homed: [u8; 9] = homed.try_into().map_err(|_| Error::NotABackup)?;
+        let home = home_in(homed).ok_or(Error::NotABackup)?;
+        let (from, tail) = bounds.split_at(8);
+        Ok(Some(Self::Section(LogSpan {
+            home,
+            from: Sequence::new(u64::from_be_bytes(
+                from.try_into().map_err(|_| Error::NotABackup)?,
+            )),
+            tail: Sequence::new(u64::from_be_bytes(
+                tail.try_into().map_err(|_| Error::NotABackup)?,
+            )),
+        })))
     }
-    Ok(Some((sequence, Some(body))))
+
+    /// A record frame: its length, its sequence, its checksum, its bytes.
+    fn record(input: &mut impl Read) -> Result<Option<Self>> {
+        let mut header = [0_u8; 16];
+        if !matches!(fill(input, &mut header)?, Filled::Whole) {
+            return Ok(Some(Self::Cut));
+        }
+        let (framing, rest) = header.split_at(4);
+        let (numbered, checked) = rest.split_at(8);
+        let length = usize::try_from(u32::from_be_bytes(
+            framing.try_into().map_err(|_| Error::NotABackup)?,
+        ))
+        .unwrap_or(0);
+        let sequence = Sequence::new(u64::from_be_bytes(
+            numbered.try_into().map_err(|_| Error::NotABackup)?,
+        ));
+        let expected = u32::from_be_bytes(checked.try_into().map_err(|_| Error::NotABackup)?);
+
+        let mut body = vec![0_u8; length];
+        if !matches!(fill(input, &mut body)?, Filled::Whole) {
+            return Ok(Some(Self::Cut));
+        }
+        if check::crc32(&body) != expected {
+            return Err(Error::Damaged {
+                sequence: sequence.get(),
+            });
+        }
+        Ok(Some(Self::Record { sequence, body }))
+    }
 }
 
 /// How much of a buffer a read managed to fill.

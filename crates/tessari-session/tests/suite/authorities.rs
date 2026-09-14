@@ -784,6 +784,7 @@ fn a_node_with_credentials_and_no_authority_may_not_take_the_log() {
             &store,
             A_FOLLOWER,
             Reach::Store,
+            Reach::Store,
             tessari_types::Sequence::new(1),
             16,
         )
@@ -812,6 +813,7 @@ fn a_node_granted_replication_over_the_store_receives_the_log() {
         .replicate_from(
             &store,
             A_FOLLOWER,
+            Reach::Store,
             Reach::Store,
             tessari_types::Sequence::new(1),
             64,
@@ -843,6 +845,7 @@ fn reading_every_record_is_not_authority_to_take_the_log() {
             &store,
             A_FOLLOWER,
             Reach::Store,
+            Reach::Store,
             tessari_types::Sequence::new(1),
             16,
         )
@@ -869,6 +872,7 @@ fn operating_the_node_is_not_authority_to_take_the_log() {
         .replicate_from(
             &store,
             A_FOLLOWER,
+            Reach::Store,
             Reach::Store,
             tessari_types::Sequence::new(1),
             16,
@@ -1020,6 +1024,7 @@ fn a_store_reach_holder_may_still_subscribe_over_one_namespace() {
         &store,
         A_FOLLOWER,
         Reach::Namespace(namespace),
+        Reach::Namespace(namespace),
         tessari_types::Sequence::new(1),
         16,
     )
@@ -1045,6 +1050,7 @@ fn a_revoked_replication_authority_stops_a_node_that_was_already_reading() {
         &store,
         A_FOLLOWER,
         Reach::Store,
+        Reach::Store,
         tessari_types::Sequence::new(1),
         16,
     )
@@ -1056,6 +1062,7 @@ fn a_revoked_replication_authority_stops_a_node_that_was_already_reading() {
         .replicate_from(
             &store,
             A_FOLLOWER,
+            Reach::Store,
             Reach::Store,
             tessari_types::Sequence::new(1),
             16,
@@ -1091,6 +1098,7 @@ fn an_open_store_hands_out_its_log_because_an_open_store_hands_out_everything() 
         .replicate_from(
             &store,
             A_FOLLOWER,
+            Reach::Store,
             Reach::Store,
             tessari_types::Sequence::new(1),
             64,

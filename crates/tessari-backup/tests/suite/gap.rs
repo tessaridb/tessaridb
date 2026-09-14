@@ -36,16 +36,23 @@ use tessari_encoding::{LogKey, StoreKey};
 use tessari_kv::{KvBackend, MemoryBackend, WriteBatch};
 use tessari_session::Session;
 use tessari_storage::Store;
-use tessari_types::Sequence;
+use tessari_types::{Reach, Sequence};
 
 /// The same fixture the other files in this crate use, so the sequences stay
 /// comparable when one of them moves.
 ///
 /// The mapping matters here in a way it does not elsewhere, because this file
-/// addresses records by number: `USE` writes nothing, so the nine logged
-/// statements are 1 `DEFINE NAMESPACE`, 2 `DEFINE DATABASE`, 3 `DEFINE TABLE`,
-/// 4 `DEFINE FIELD`, 5 `DEFINE INDEX`, 6 `CREATE people:1`, 7 `CREATE people:2`,
-/// **8 `DELETE people:2`**, 9 `CREATE people:3`.
+/// addresses records by number — and the numbers now count in **two** logs
+/// rather than one (S6.2). `USE` writes nothing, so the store's own log holds
+/// 1 `DEFINE NAMESPACE`, 2 `DEFINE DATABASE`, 3 `DEFINE TABLE`, 4 `DEFINE
+/// FIELD`, 5 `DEFINE INDEX` — the schema is carried to the whole store — and the
+/// database's own log holds only the records: 1 `CREATE people:1`,
+/// 2 `CREATE people:2`, **3 `DELETE people:2`**, 4 `CREATE people:3`.
+///
+/// Everything below counts in the database's log, and [`data_log`] is how the
+/// tests name it. The guards do not trust this comment — `leader` asserts the
+/// two logs and their lengths, so a change to the fixture fails here with the
+/// numbers rather than somewhere further down without them.
 const LEADER: &str = "\
 DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
 DEFINE DATABASE orders; USE DATABASE orders;\n\
@@ -57,16 +64,23 @@ CREATE people:2 = { name: 'grace', email: 'b@x' };\n\
 DELETE people:2;\n\
 CREATE people:3 = { name: 'edith', email: 'c@x' };";
 
-/// The record deliberately removed from the middle of the leader's log.
+/// The record deliberately removed from the middle of the leader's data log.
 ///
 /// Chosen as the `DELETE` rather than an arbitrary record because it makes the
 /// cost of a silent skip observable: skipping it leaves the follower holding a
 /// row the leader has removed, so the two stores would disagree about a record
 /// that neither of them reports as missing.
-const MISSING: u64 = 8;
+const MISSING: u64 = 3;
 
-/// Where the follower stands when the truncated stream reaches it.
-const FOLLOWER_STOPS_AT: u64 = 6;
+/// Where the follower stands, in the data log, when the truncated stream
+/// reaches it.
+const FOLLOWER_STOPS_AT: u64 = 1;
+
+/// How long the data log is when the fixture has run.
+const DATA_RECORDS: u64 = 4;
+
+/// How long the store's own log is when the fixture has run.
+const STORE_RECORDS: u64 = 5;
 
 fn store() -> (Arc<dyn KvBackend>, Store) {
     let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
@@ -89,17 +103,48 @@ fn leader() -> (Arc<dyn KvBackend>, Store) {
         let mut opening = Session::new(&store);
         opening.run(LEADER).unwrap();
     }
+    // The numbers this file addresses records by, asserted rather than trusted:
+    // a fixture that grew a statement would otherwise move `MISSING` onto an
+    // innocent record and every test below would pass while proving nothing.
+    assert_eq!(
+        crate::tails(&store),
+        vec![
+            (Reach::Store, Sequence::new(STORE_RECORDS)),
+            (data_log(&store), Sequence::new(DATA_RECORDS)),
+        ],
+        "the fixture no longer has the shape this file's constants describe"
+    );
     (backend, store)
 }
 
-/// A follower brought up to `upto` and no further.
+/// The log the fixture's records land in — the database's, not the store's.
+fn data_log(store: &Store) -> Reach {
+    let mut homes = store.homes().unwrap();
+    homes.retain(|home| *home != Reach::Store);
+    match homes.as_slice() {
+        [one] => *one,
+        many => panic!("expected one data log, found {}", many.len()),
+    }
+}
+
+/// A follower whose data log stands at `upto` and no further.
+///
+/// Two restores rather than one, because `upto` counts in one log (Q-625): the
+/// store's own log goes over whole — the namespace and database definitions the
+/// records depend on — and the data log stops where the test needs it.
 fn follower_at(leader: &Store, upto: u64) -> Store {
     let (_backend, store) = store();
-    let mut whole = Vec::new();
-    tessari_backup::write(leader, &mut whole).unwrap();
-    tessari_backup::read_until(&store, &mut whole.as_slice(), Some(Sequence::new(upto))).unwrap();
+    let home = data_log(leader);
+
+    let mut definitions = Vec::new();
+    tessari_backup::write_from(leader, &mut definitions, Reach::Store, Sequence::new(1)).unwrap();
+    tessari_backup::read(&store, &mut definitions.as_slice()).unwrap();
+
+    let mut records = Vec::new();
+    tessari_backup::write_from(leader, &mut records, home, Sequence::new(1)).unwrap();
+    tessari_backup::read_until(&store, &mut records.as_slice(), Some(Sequence::new(upto))).unwrap();
     assert_eq!(
-        store.committed_tail().unwrap(),
+        store.committed_tail(home).unwrap(),
         Sequence::new(upto),
         "the follower did not stop where this test needs it to"
     );
@@ -107,10 +152,10 @@ fn follower_at(leader: &Store, upto: u64) -> Store {
 }
 
 /// Remove one record from the middle of a log.
-fn cut(backend: &Arc<dyn KvBackend>, sequence: u64) {
+fn cut(backend: &Arc<dyn KvBackend>, home: Reach, sequence: u64) {
     let batch = WriteBatch::new().delete(
         LogKey::keyspace(),
-        LogKey::new(Sequence::new(sequence)).encode(),
+        LogKey::new(home, Sequence::new(sequence)).encode(),
     );
     backend.apply(batch).unwrap();
 }
@@ -124,10 +169,11 @@ fn a_log_that_no_longer_reaches_the_follower_is_refused_and_names_the_missing_se
     let (leader_backend, held) = leader();
     let follower = follower_at(&held, FOLLOWER_STOPS_AT);
 
-    cut(&leader_backend, MISSING);
+    let home = data_log(&held);
+    cut(&leader_backend, home, MISSING);
     // Vacuity guard: if the cut removed nothing, everything below passes while
     // showing nothing at all.
-    let after_the_cut = held.log_records(Sequence::new(MISSING), 1).unwrap();
+    let after_the_cut = held.log_records(home, Sequence::new(MISSING), 1).unwrap();
     assert_ne!(
         after_the_cut[0].0,
         Sequence::new(MISSING),
@@ -140,6 +186,7 @@ fn a_log_that_no_longer_reaches_the_follower_is_refused_and_names_the_missing_se
     tessari_backup::write_from(
         &held,
         &mut truncated,
+        home,
         Sequence::new(FOLLOWER_STOPS_AT.saturating_add(1)),
     )
     .unwrap();
@@ -159,12 +206,12 @@ fn a_log_that_no_longer_reaches_the_follower_is_refused_and_names_the_missing_se
     // It stopped *at* the gap, having applied what came before it. The position
     // reflects what was actually applied, not what the header promised.
     assert_eq!(
-        follower.committed_tail().unwrap(),
+        follower.committed_tail(home).unwrap(),
         Sequence::new(MISSING.saturating_sub(1)),
         "the follower's position does not match what it applied"
     );
 
-    // And this is what a silent skip would have cost. Record 8 deletes
+    // And this is what a silent skip would have cost. The missing record deletes
     // `people:2`; the leader has run it and the follower has not, so the row
     // survives here and is gone there. A follower that skipped the gap would
     // hold a record the leader deleted, and neither store would report anything
@@ -187,18 +234,20 @@ fn a_log_that_no_longer_reaches_the_follower_is_refused_and_names_the_missing_se
 fn the_same_truncated_log_is_refused_again_rather_than_accepted_on_retry() {
     let (leader_backend, held) = leader();
     let follower = follower_at(&held, FOLLOWER_STOPS_AT);
-    cut(&leader_backend, MISSING);
+    let home = data_log(&held);
+    cut(&leader_backend, home, MISSING);
 
     let mut truncated = Vec::new();
     tessari_backup::write_from(
         &held,
         &mut truncated,
+        home,
         Sequence::new(FOLLOWER_STOPS_AT.saturating_add(1)),
     )
     .unwrap();
 
     tessari_backup::bootstrap(&follower, &mut truncated.as_slice()).unwrap_err();
-    let stopped_at = follower.committed_tail().unwrap();
+    let stopped_at = follower.committed_tail(home).unwrap();
 
     // Offering the same stream again must not become an acceptance. A refusal
     // that heals itself on retry is worse than one that never fired, because a
@@ -207,10 +256,10 @@ fn the_same_truncated_log_is_refused_again_rather_than_accepted_on_retry() {
     // the remedy is destructive.
     //
     // The *variant* changes, and that is the guards working rather than a
-    // weakness. The first attempt applied record 7 before stopping, so the
-    // follower now stands at 7 while the stream still says it begins at 7 —
-    // which no longer describes this store. `WrongBase { needs: 6, found: 7 }`
-    // answers first, before the applier ever sees a record. Asserting `LogGap`
+    // weakness. The first attempt applied the record before the gap, so the
+    // follower now stands one past where the stream still says it begins —
+    // which no longer describes this store. `WrongBase` answers first, before
+    // the applier ever sees a record. Asserting `LogGap`
     // again would be asserting that the follower had *not* advanced, which is
     // the opposite of what the first test just proved.
     let refused_again =
@@ -224,7 +273,7 @@ fn the_same_truncated_log_is_refused_again_rather_than_accepted_on_retry() {
         "the retry was refused, but by neither gap guard: {refused_again}"
     );
     assert_eq!(
-        follower.committed_tail().unwrap(),
+        follower.committed_tail(home).unwrap(),
         stopped_at,
         "the retry moved the follower"
     );

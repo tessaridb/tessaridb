@@ -190,11 +190,17 @@ fn explaining_a_read_does_not_run_it() {
     // a read leaves those alone whether or not it happened.
     let store = store();
     let mut session = ready(&store);
-    let before = store.committed_tail().unwrap();
+    // The database's own log, not the store's: a write from this read would land
+    // there, and asking the store's would pass whether or not it did (S6.2).
+    let home = tessari_types::Reach::Database(
+        tessari_types::NamespaceId::new(1),
+        tessari_types::DatabaseId::new(1),
+    );
+    let before = store.committed_tail(home).unwrap();
     session
         .run("EXPLAIN SELECT * FROM users WHERE city = 'Paris';")
         .unwrap();
-    assert_eq!(store.committed_tail().unwrap(), before);
+    assert_eq!(store.committed_tail(home).unwrap(), before);
     assert_eq!(ids(&mut session, "SELECT * FROM users;").len(), 3);
 }
 

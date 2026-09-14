@@ -33,6 +33,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use tessari_types::{DatabaseId, NamespaceId, Number, Value};
 
+/// Re-exported so that `catalog::Reach` keeps resolving.
+///
+/// The shape moved a layer down when a log key had to carry it (a store key is
+/// encoded beneath this crate, and a type cannot be named from underneath the
+/// crate that defines it). Every caller in this tree reaches it through the
+/// catalog, so it is re-exported here rather than re-pointed in twenty files.
+pub use tessari_types::Reach;
+
 use super::definition::number;
 use super::user::Role;
 use crate::error::{Error, Result};
@@ -158,80 +166,30 @@ impl Kind {
     }
 }
 
-/// How far an authority reaches.
+/// The catalog's encoding of a [`Reach`].
 ///
-/// [`Self::Database`] carries its namespace as well as its database, so a
-/// database reach cannot be constructed without the namespace that contains it.
-/// The alternative — two `Option` fields — makes "a database in no namespace"
-/// a value somebody has to remember to reject.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Reach {
-    /// The whole store, every namespace in it.
-    Store,
-    /// One namespace, every database in it.
-    Namespace(NamespaceId),
-    /// One database.
-    Database(NamespaceId, DatabaseId),
+/// A trait rather than inherent methods because the shape itself lives a layer
+/// below — a log key carries a reach, and store keys are encoded under this
+/// crate — while this encoding raises **this** crate's malformed-catalog error
+/// and belongs with the catalog that reads it. The method syntax at the call
+/// sites is unchanged.
+pub(crate) trait ReachCodec: Sized {
+    /// This reach, as a catalog record stores it.
+    fn to_value(self) -> Value;
+
+    /// Read one back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CatalogMalformed`] when the stored value is not a reach.
+    fn from_value(value: &Value, entity: &'static str, field: &'static str) -> Result<Reach>;
 }
 
-impl Reach {
-    /// The reach a user's tenancy describes.
-    ///
-    /// `None` for a database named without a namespace, which is not a place —
-    /// the caller decides whether that is corruption or a bad request, because
-    /// this type cannot tell which of its callers it is answering.
-    #[must_use]
-    pub const fn of(namespace: Option<NamespaceId>, database: Option<DatabaseId>) -> Option<Self> {
-        match (namespace, database) {
-            (None, None) => Some(Self::Store),
-            (Some(namespace), None) => Some(Self::Namespace(namespace)),
-            (Some(namespace), Some(database)) => Some(Self::Database(namespace, database)),
-            (None, Some(_)) => None,
-        }
-    }
-
-    /// The tenancy this reach describes — the inverse of [`Self::of`].
-    ///
-    /// Paired with `of` so that the two directions cannot drift: a caller
-    /// holding a reach never has to rebuild the pair by hand and never has to
-    /// handle the database-without-a-namespace case, which this type makes
-    /// unconstructible.
-    #[must_use]
-    pub const fn parts(self) -> (Option<NamespaceId>, Option<DatabaseId>) {
-        match self {
-            Self::Store => (None, None),
-            Self::Namespace(namespace) => (Some(namespace), None),
-            Self::Database(namespace, database) => (Some(namespace), Some(database)),
-        }
-    }
-
-    /// Whether this reach contains `other`.
-    ///
-    /// The only implication in this model. Downward and nothing else: the store
-    /// contains a namespace, a namespace contains its databases, and a reach
-    /// contains itself.
-    #[must_use]
-    pub fn contains(self, other: Self) -> bool {
-        match (self, other) {
-            (Self::Store, _) => true,
-            (Self::Namespace(mine), Self::Namespace(theirs)) => mine == theirs,
-            (Self::Namespace(mine), Self::Database(theirs, _)) => mine == theirs,
-            (Self::Database(namespace, database), Self::Database(theirs, their_database)) => {
-                namespace == theirs && database == their_database
-            }
-            // A database reach does not contain the namespace above it, and a
-            // namespace reach does not contain the store. Written out rather
-            // than left to a catch-all so that adding a reach fails to compile
-            // here instead of silently answering `false`.
-            (Self::Namespace(_) | Self::Database(_, _), Self::Store)
-            | (Self::Database(_, _), Self::Namespace(_)) => false,
-        }
-    }
-
+impl ReachCodec for Reach {
     /// This reach, as a catalog record stores it.
     ///
     /// Tagged rather than inferred from which ids are present, because
-    /// [`Self::Store`] carries no ids at all and an object with no ids would
+    /// [`Reach::Store`] carries no ids at all and an object with no ids would
     /// then be the same bytes as an object somebody wrote wrong. The tag makes
     /// the whole store a thing that was said rather than a thing the reader
     /// assumed.
@@ -243,15 +201,14 @@ impl Reach {
     /// would be two on-disk spellings of one type. Two readings of the same
     /// bytes is a thing that can disagree with itself, which is the reason the
     /// log record carries no mutation count either.
-    #[must_use]
-    pub fn to_value(self) -> Value {
+    fn to_value(self) -> Value {
         let (namespace, database) = self.parts();
         let mut fields = BTreeMap::from([(
             FIELD_REACH.to_owned(),
             Value::from(match self {
-                Self::Store => REACH_STORE,
-                Self::Namespace(_) => REACH_NAMESPACE,
-                Self::Database(_, _) => REACH_DATABASE,
+                Reach::Store => REACH_STORE,
+                Reach::Namespace(_) => REACH_NAMESPACE,
+                Reach::Database(_, _) => REACH_DATABASE,
             }),
         )]);
         if let Some(namespace) = namespace {
@@ -273,7 +230,7 @@ impl Reach {
     ///
     /// Returns [`Error::CatalogMalformed`] when the value is not an object, the
     /// tag is missing or unknown, or a tag's ids are absent or out of range.
-    pub fn from_value(value: &Value, entity: &'static str, field: &'static str) -> Result<Self> {
+    fn from_value(value: &Value, entity: &'static str, field: &'static str) -> Result<Reach> {
         let malformed = || Error::CatalogMalformed {
             entity,
             field,
@@ -296,12 +253,12 @@ impl Reach {
             }
         };
         match tag.as_str() {
-            REACH_STORE => Ok(Self::Store),
+            REACH_STORE => Ok(Reach::Store),
             REACH_NAMESPACE => id(FIELD_NAMESPACE)
-                .map(|namespace| Self::Namespace(NamespaceId::new(namespace)))
+                .map(|namespace| Reach::Namespace(NamespaceId::new(namespace)))
                 .ok_or_else(malformed),
             REACH_DATABASE => match (id(FIELD_NAMESPACE), id(FIELD_DATABASE)) {
-                (Some(namespace), Some(database)) => Ok(Self::Database(
+                (Some(namespace), Some(database)) => Ok(Reach::Database(
                     NamespaceId::new(namespace),
                     DatabaseId::new(database),
                 )),

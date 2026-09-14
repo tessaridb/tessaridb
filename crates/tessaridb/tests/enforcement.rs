@@ -546,7 +546,36 @@ const TABLES: &[Table] = &[
         // not the records, but their existence and their rate, which is a
         // channel rather than a leak and is exactly as invisible. The method
         // then owes a `Reach` and the answer owes the caller's own range.
-        expected: 33,
+        //
+        // 34 since the log became per-range (G025 **S6.2**, Q-620):
+        // `Store::homes` lists the logs this store holds, by scanning the
+        // applied-position keys. Classified **exempt, and it reaches no data** —
+        // it takes no argument and no identity, and it answers a list of
+        // `Reach` values, which is the SHAPE of the store and not a record in
+        // it. Its callers are the backup, which writes a section per log, and
+        // the replay paths, which walk every log in order.
+        //
+        // Its re-classification trigger is precise and it is not the one the
+        // method looks like it has: the existence of a namespace is already
+        // published by the catalog to anybody who may read it, so the list is
+        // not a new disclosure. What would change that is a caller who may read
+        // NO namespace being handed one — so the day this is reachable from a
+        // session rather than from a process that already holds the store, it
+        // owes the caller's own reach.
+        //
+        // 35 since the same wave: `Store::apply_record_in` applies a record into
+        // a log the caller names, for the one path that cannot derive it — a
+        // selective subscriber is given records with everything outside its
+        // reach removed, and a record emptied to nothing has no mutation left to
+        // derive a home from (Q-621). Classified **not enforced here, and
+        // enforced one layer up by the same gate as its neighbour**: its only
+        // caller is `Store::apply_from_stream`, whose only caller is the peer
+        // door, which asks `may_replicate` for the reach it then collects.
+        //
+        // Its re-classification trigger: a second caller. The argument above is
+        // entirely about there being one, and a caller that names a log it was
+        // not served from writes a range's records into another range's counter.
+        expected: 35,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -570,7 +599,14 @@ const TABLES: &[Table] = &[
     Table {
         file: "crates/tessari-backup/src/lib.rs",
         what: "the backup surface, which takes a store and no identity",
-        expected: 6,
+        // 7 since the file gained a section per log (G025 **S6.2**, Q-624):
+        // `backup::only_log` answers the one log a sequence-bounded backup can
+        // name, or refuses. Classified **exempt on the same ground as the rest
+        // of this module** — it takes a store and no identity, and it answers a
+        // `Reach` derived from `Store::homes`, which is the shape of the store
+        // and not a record in it. The whole module is reached only by a process
+        // that already holds the store.
+        expected: 7,
         count: module_functions,
     },
     Table {
@@ -605,7 +641,9 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
         moved.len(),
         moved.join("\n  "),
     );
-    assert_eq!(total, 85, "the counted tables no longer sum to 85");
+    // 88 since the log became per-range: `Store::homes`, `Store::apply_record_in`
+    // and `backup::only_log`, each classified in the block above (G025 S6.2).
+    assert_eq!(total, 88, "the counted tables no longer sum to 88");
 }
 
 /// Every `.rs` file under a directory.
@@ -708,21 +746,24 @@ const RAW_FEED: &[&str] = &[
 /// left off the list, so that a SECOND caller appearing in these crates fails
 /// this test — which is the property the one-caller argument rests on.
 const CLASSIFIED: &[(&str, &str)] = &[
+    // The same four paths as before the log became per-range; each now names the
+    // log it reads, which is a fact about the read and changes none of the
+    // classifications above (Q-621).
     (
         "tessari-cli/src/main.rs",
-        "let tail = store.committed_tail().map_err(|why| why.to_string())?;",
+        ".committed_tail(tessari_types::Reach::Store)",
     ),
     (
         "tessari-cli/src/main.rs",
-        "let held = match store.committed_tail() {",
+        "let held = match store.committed_tail(tessari_types::Reach::Store) {",
     ),
     (
         "tessari-wire/src/collection.rs",
-        ".log_records_within(over, cursor, room.min(COLLECTION_PAGE_RECORDS))",
+        ".log_records_within(over, over, cursor, room.min(COLLECTION_PAGE_RECORDS))",
     ),
     (
         "tessari-wire/src/collection.rs",
-        ".log_records_within(over, before, 1)",
+        ".log_records_within(over, over, before, 1)",
     ),
 ];
 

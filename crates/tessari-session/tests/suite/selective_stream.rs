@@ -88,15 +88,22 @@ fn follow(leader: &Store, over: Reach, as_user: &str) -> Store {
     let follower = store();
     let mut node = Session::new(leader);
     node.sign_in(as_user, PASSWORD).unwrap();
-    let carried = node
-        .replicate_from(leader, A_FOLLOWER, over, Sequence::new(1), 256)
-        .unwrap();
-    let mut previous = tessari_types::Epoch::ZERO;
-    for (sequence, record) in carried {
-        follower
-            .apply_from_stream(sequence, previous, &record)
+    // Every log the leader holds, one collect each: the GRANT is what narrows a
+    // subscription and the LOG is only where a record was filed (Q-620). In
+    // `homes()` order, so the definitions a range's records depend on arrive
+    // first — and each collect names its log to the applier, because a record
+    // the filter emptied has no mutation left to derive one from (Q-621).
+    for home in leader.homes().unwrap() {
+        let carried = node
+            .replicate_from(leader, A_FOLLOWER, over, home, Sequence::new(1), 256)
             .unwrap();
-        previous = record.epoch();
+        let mut previous = tessari_types::Epoch::ZERO;
+        for (sequence, record) in carried {
+            follower
+                .apply_from_stream(home, sequence, previous, &record)
+                .unwrap();
+            previous = record.epoch();
+        }
     }
     follower
 }
@@ -205,6 +212,10 @@ fn a_selective_follower_receives_every_tenancys_users() {
             &leader,
             A_FOLLOWER,
             Reach::Namespace(NamespaceId::new(1)),
+            // The STORE's log, because that is where what a namespace grant may
+            // and may not see sits together: both tenants' definitions and every
+            // user (Q-620). The grant narrows; the log only says where to read.
+            Reach::Store,
             Sequence::new(1),
             256,
         )
@@ -276,7 +287,14 @@ fn a_commit_entirely_outside_the_reach_arrives_empty_and_the_tail_advances() {
     let mut owner = Session::new(&leader);
     owner.sign_in("root", PASSWORD).unwrap();
     let whole = owner
-        .replicate_from(&leader, A_FOLLOWER, Reach::Store, Sequence::new(1), 256)
+        .replicate_from(
+            &leader,
+            A_FOLLOWER,
+            Reach::Store,
+            Reach::Store,
+            Sequence::new(1),
+            256,
+        )
         .unwrap();
     let mut node = Session::new(&leader);
     node.sign_in("node", PASSWORD).unwrap();
@@ -285,6 +303,10 @@ fn a_commit_entirely_outside_the_reach_arrives_empty_and_the_tail_advances() {
             &leader,
             A_FOLLOWER,
             Reach::Namespace(NamespaceId::new(1)),
+            // The STORE's log, because that is where what a namespace grant may
+            // and may not see sits together: both tenants' definitions and every
+            // user (Q-620). The grant narrows; the log only says where to read.
+            Reach::Store,
             Sequence::new(1),
             256,
         )
@@ -310,7 +332,10 @@ fn a_commit_entirely_outside_the_reach_arrives_empty_and_the_tail_advances() {
 
     let follower = follow(&leader, Reach::Namespace(NamespaceId::new(1)), "node");
     assert_eq!(
-        follower.committed_tail().unwrap().get(),
+        // The log the collect above measured, which is the store's own: a
+        // position counts in one log, and this is the one `whole` was read from
+        // (Q-621).
+        follower.committed_tail(Reach::Store).unwrap().get(),
         u64::try_from(whole.len()).unwrap(),
         "the follower's tail advances over an elided record exactly as over a full one"
     );

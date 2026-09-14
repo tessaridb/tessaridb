@@ -685,7 +685,7 @@ fn dial_peers(
             // age this makes measurable is only honest at the interval the
             // staleness floor is derived from. It rides this round rather than
             // the commit path deliberately: see `Store::mark_tail`.
-            if let Err(why) = store.mark_tail() {
+            if let Err(why) = store.mark_tail(tessari_types::Reach::Store) {
                 log::warn!("this node cannot date its own log position: {why}");
             }
             let declared = store.begin().and_then(|mut transaction| {
@@ -802,7 +802,10 @@ fn collect_from_upstream(
     stopping: &tessari_serve::Stopping,
 ) {
     let store = db.store();
-    let held = match store.committed_tail() {
+    // The store's own log. A node holds one log per home now, so this is one
+    // of several positions and the greeting has room for one — parked in Q-622,
+    // which is the wire frame's question and not this call site's.
+    let held = match store.committed_tail(tessari_types::Reach::Store) {
         Ok(tail) => tail,
         Err(why) => {
             log::warn!("this node cannot say how far its log reaches: {why}");
@@ -1187,7 +1190,9 @@ fn bind_the_greeter(db: &Db, node: [u8; tessari_storage::NODE_ID_LEN]) {
 fn greeting(db: &Db) -> Result<tessari_wire::Hello, String> {
     let store = db.store();
     let identity = store.node_identity().map_err(|why| why.to_string())?;
-    let tail = store.committed_tail().map_err(|why| why.to_string())?;
+    let tail = store
+        .committed_tail(tessari_types::Reach::Store)
+        .map_err(|why| why.to_string())?;
     let current_as_of = store.current_as_of().map_err(|why| why.to_string())?;
     // The leadership this node is actually writing under — and the trigger the
     // previous version of this line named has now fired.
@@ -1212,7 +1217,9 @@ fn greeting(db: &Db) -> Result<tessari_wire::Hello, String> {
     // what this node holds, rather than the one it holds a lease under. A voter
     // ranks candidates on this pair, and ranking on `leading` instead would put
     // a follower carrying the newest records below an ex-leader carrying fewer.
-    let tail_leadership = store.tail_leadership().map_err(|why| why.to_string())?;
+    let tail_leadership = store
+        .tail_leadership(tessari_types::Reach::Store)
+        .map_err(|why| why.to_string())?;
     Ok(tessari_wire::Hello::about(
         &identity,
         leading,
@@ -1235,18 +1242,29 @@ fn backup(db: &Db, path: &std::path::Path, from: Option<u64>) -> Result<(), Stri
     let mut out = std::io::BufWriter::new(
         fs::File::create(path).map_err(|failure| format!("{}: {failure}", path.display()))?,
     );
-    let from = tessaridb::Sequence::new(from.unwrap_or(1));
-    let written = tessari_backup::write_from(db.store(), &mut out, from)
-        .map_err(|failure| format!("{}: {failure}", path.display()))?;
+    // No `FROM` is the whole store, and the whole store is every log it holds.
+    // A `FROM` names one sequence, which counts in one log — so it is the
+    // incremental path, and a store holding several logs refuses it rather than
+    // writing a file that reads as whole and is missing the rest (Q-624).
+    let written = match from {
+        None | Some(0 | 1) => tessari_backup::write(db.store(), &mut out),
+        Some(from) => {
+            let home = tessari_backup::only_log(db.store()).map_err(|why| why.to_string())?;
+            tessari_backup::write_from(db.store(), &mut out, home, tessaridb::Sequence::new(from))
+        }
+    }
+    .map_err(|failure| format!("{}: {failure}", path.display()))?;
     out.flush()
         .map_err(|failure| format!("{}: {failure}", path.display()))?;
-    println!(
-        "{} record(s) to {}, sequences {}..={}",
-        written.records,
-        path.display(),
-        written.from,
-        written.tail
-    );
+    println!("{} record(s) to {}", written.records, path.display());
+    for log in &written.logs {
+        println!(
+            "  {} sequences {}..={}",
+            log_name(log.home),
+            log.from,
+            log.tail
+        );
+    }
     Ok(())
 }
 
@@ -1259,18 +1277,36 @@ fn restore(db: &Db, path: &std::path::Path, upto: Option<u64>) -> Result<(), Str
     let held = tessari_backup::read_until(db.store(), &mut input, upto)
         .map_err(|failure| format!("{}: {failure}", path.display()))?;
     println!("{} record(s) from {}", held.records, path.display());
+    for log in &held.logs {
+        println!("  {} through {}", log_name(log.home), log.tail);
+    }
     if held.truncated {
         // Said loudly and on the error stream, because a partial restore that
         // reads as a success is how somebody learns later that the last hour is
         // gone.
         eprintln!(
-            "warning: {} was cut short — it says it holds {} record(s) and {} were read",
+            "warning: {} was cut short — {} record(s) across {} log(s) were read",
             path.display(),
-            held.tail,
-            held.records
+            held.records,
+            held.logs.len()
         );
     }
     Ok(())
+}
+
+/// Name a log the way an operator reads it.
+///
+/// Numbers rather than names because a backup file holds ids and nothing else:
+/// resolving them would need the catalog the file is a copy of, and a restore is
+/// exactly the moment that catalog may not be there yet.
+fn log_name(home: tessaridb::Reach) -> String {
+    match home {
+        tessaridb::Reach::Store => "store".to_owned(),
+        tessaridb::Reach::Namespace(namespace) => format!("namespace {}", namespace.get()),
+        tessaridb::Reach::Database(namespace, database) => {
+            format!("namespace {} database {}", namespace.get(), database.get())
+        }
+    }
 }
 
 /// Read a backup and say what it holds, applying none of it.
@@ -1281,18 +1317,33 @@ fn verify(path: &std::path::Path) -> Result<Ended, String> {
     let held = tessari_backup::verify(&mut input)
         .map_err(|failure| format!("{}: {failure}", path.display()))?;
     println!(
-        "{} record(s), sequences {}..={}, good through {}",
-        held.records, held.from, held.tail, held.good_through
+        "{} record(s) across {} log(s)",
+        held.records,
+        held.logs.len()
     );
+    for log in &held.logs {
+        println!(
+            "  {} sequences {}..={}, good through {}",
+            log_name(log.span.home),
+            log.span.from,
+            log.span.tail,
+            log.good_through
+        );
+    }
     if held.truncated {
         // On the error stream and with a non-zero exit, because the whole point
         // of verifying is that somebody's script can act on the answer.
-        eprintln!(
-            "warning: {} was cut short — it says it holds through {} and reads through {}",
-            path.display(),
-            held.tail,
-            held.good_through
-        );
+        eprintln!("warning: {} was cut short", path.display());
+        for log in &held.logs {
+            if log.good_through.get() < log.span.tail.get() {
+                eprintln!(
+                    "  {} says it holds through {} and reads through {}",
+                    log_name(log.span.home),
+                    log.span.tail,
+                    log.good_through
+                );
+            }
+        }
         return Ok(Ended::Refused);
     }
     Ok(Ended::Fine)

@@ -125,8 +125,6 @@ fn the_log_carries_the_value_so_a_replica_reconstructs_it() {
     put(&source, "r", &original);
 
     let replica = store();
-    for (sequence, record) in source.log_records(Sequence::ZERO, 1024).unwrap() {
-        replica.apply_record(sequence, &record).unwrap();
-    }
+    crate::replay(&source, &replica);
     assert_eq!(get(&replica, "r"), Some(original));
 }

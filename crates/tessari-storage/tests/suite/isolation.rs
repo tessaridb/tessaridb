@@ -157,11 +157,21 @@ fn a_losing_commit_writes_none_of_its_records_not_even_the_uncontended_ones() {
 fn an_empty_commit_succeeds_and_advances_nothing() {
     let store = store();
     write(&store, "r", b"value");
-    let before = store.committed_tail().unwrap();
+    let in_the_range = store.committed_tail(crate::FIXTURE_HOME).unwrap();
 
+    // An empty commit writes no record, so it names no range — and a position
+    // it could answer with has to come from somewhere. It answers the store's
+    // own tail, which is the log every node reports while a greeting carries one
+    // (Q-622); what "advances nothing" means is that no log moved.
     let txn = store.begin().unwrap();
-    assert_eq!(txn.commit().unwrap(), before);
-    assert_eq!(store.committed_tail().unwrap(), before);
+    assert_eq!(
+        txn.commit().unwrap(),
+        store.committed_tail(tessari_types::Reach::Store).unwrap()
+    );
+    assert_eq!(
+        store.committed_tail(crate::FIXTURE_HOME).unwrap(),
+        in_the_range
+    );
 }
 
 #[test]
@@ -172,7 +182,7 @@ fn a_rolled_back_transaction_leaves_no_trace() {
     // wrote nothing and did not move the committed tail.
     let store = store();
     write(&store, "kept", b"value");
-    let before = store.committed_tail().unwrap();
+    let before = store.committed_tail(crate::FIXTURE_HOME).unwrap();
 
     let mut abandoned = store.begin().unwrap();
     abandoned.put(at("discarded"), b"never".to_vec());
@@ -180,7 +190,7 @@ fn a_rolled_back_transaction_leaves_no_trace() {
 
     assert_eq!(read(&store, "discarded"), None);
     assert_eq!(read(&store, "kept"), Some(b"value".to_vec()));
-    assert_eq!(store.committed_tail().unwrap(), before);
+    assert_eq!(store.committed_tail(crate::FIXTURE_HOME).unwrap(), before);
 }
 
 // ----------------------------------------------------------- permitted anomalies

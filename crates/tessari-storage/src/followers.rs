@@ -39,12 +39,14 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use tessari_encoding::NODE_ID_LEN;
-use tessari_types::Sequence;
+use tessari_types::{Reach, Sequence};
 
 /// What a leader has given one follower, and when.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Served {
-    /// The highest sequence that follower has been given.
+    /// The log that sequence counts in.
+    pub home: Reach,
+    /// The highest sequence that follower has been given, in that log.
     pub sequence: Sequence,
     /// When it last collected — including a collection that carried nothing.
     ///
@@ -65,9 +67,17 @@ pub struct Served {
 pub struct FollowerLag {
     /// Which follower, by the id it named itself with.
     pub node: [u8; NODE_ID_LEN],
-    /// The highest sequence it has been given.
+    /// The log the sequence below counts in.
+    ///
+    /// Published rather than assumed, because a store keeps a log per range
+    /// (S6.2) and `sequence` and `behind` mean nothing without it. Reading a
+    /// follower's position in one log against the leader's tail in another is
+    /// not an approximation — the two counters are unrelated, and the answer is
+    /// a number with no error bar rather than a wrong one (Q-622).
+    pub home: Reach,
+    /// The highest sequence it has been given, in [`Self::home`].
     pub sequence: Sequence,
-    /// How many sequences short of this leader's committed tail that is.
+    /// How many sequences short of this leader's tail **in that log** that is.
     pub behind: u64,
     /// How long since it last collected.
     ///
@@ -89,6 +99,11 @@ pub struct FollowerLag {
     /// `None` when the copy predates everything the leader has sampled. A caller
     /// must read `None` as beyond every bound, the way
     /// [`crate::Store::current_as_of`] is read.
+    ///
+    /// Also `None` when the follower's log is not the one the leader dates. The
+    /// tail marks sample one log, so an age read from them for another log would
+    /// be a duration computed from two unrelated counters — which is worse than
+    /// no answer, because it carries no sign that it is wrong (Q-622).
     pub copy_age: Option<Duration>,
 }
 
@@ -109,11 +124,12 @@ impl Followers {
     /// registry that can fail a follower's replication in order to protect a
     /// diagnostic, which is the wrong way round: a lost lag row is a gap in a
     /// report, a refused pull is a follower that stops advancing.
-    pub fn served(&self, node: [u8; NODE_ID_LEN], sequence: Sequence) {
+    pub fn served(&self, node: [u8; NODE_ID_LEN], home: Reach, sequence: Sequence) {
         if let Ok(mut seen) = self.seen.lock() {
             seen.insert(
                 node,
                 Served {
+                    home,
                     sequence,
                     at: Instant::now(),
                 },

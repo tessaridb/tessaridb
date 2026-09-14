@@ -57,7 +57,7 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use tessari_types::Sequence;
+use tessari_types::{Reach, Sequence};
 
 /// How many samples of its own tail a leader keeps.
 ///
@@ -76,8 +76,26 @@ const TAIL_MARKS: usize = 32;
 /// tail the other cannot read.
 #[derive(Debug, Default)]
 pub struct TailMarks {
+    /// The log these marks date, and their series.
+    ///
+    /// One log, not one per log: a node dates the tail it reports, and it
+    /// reports one (Q-622). The log is carried so that an age is never read for
+    /// a position taken in a different log — the two counters are unrelated and
+    /// the subtraction would produce a duration with no error bar rather than a
+    /// wrong one. Marking a different log starts the series again, which is the
+    /// truthful answer to a node that changed what it dates.
+    ///
     /// Oldest first. Strictly increasing in sequence, non-decreasing in instant.
-    marks: Mutex<VecDeque<(Sequence, Instant)>>,
+    marks: Mutex<Series>,
+}
+
+/// The marks themselves, and the log they date.
+#[derive(Debug, Default)]
+struct Series {
+    /// The log these marks count in, or `None` before the first mark.
+    home: Option<Reach>,
+    /// Oldest first. Strictly increasing in sequence, non-decreasing in instant.
+    marks: VecDeque<(Sequence, Instant)>,
 }
 
 impl TailMarks {
@@ -87,10 +105,15 @@ impl TailMarks {
     /// [`crate::followers::Followers::served`] does: a timeline that can refuse
     /// is a timeline that can fail something real in order to protect a
     /// diagnostic.
-    pub fn mark(&self, tail: Sequence) {
-        let Ok(mut marks) = self.marks.lock() else {
+    pub fn mark(&self, home: Reach, tail: Sequence) {
+        let Ok(mut held) = self.marks.lock() else {
             return;
         };
+        if held.home != Some(home) {
+            held.home = Some(home);
+            held.marks.clear();
+        }
+        let marks = &mut held.marks;
         let now = Instant::now();
         match marks.back_mut() {
             // The tail has not moved: this is the same position, seen later.
@@ -106,14 +129,20 @@ impl TailMarks {
         }
     }
 
-    /// How old a copy holding everything up to `held` is, if that can be said.
+    /// How old a copy holding everything up to `held` in `home` is, if that can
+    /// be said.
     ///
-    /// `None` means the copy predates every mark this leader kept — the honest
-    /// answer, and one a caller must treat as beyond every bound.
+    /// `None` means the copy predates every mark this leader kept, **or** that
+    /// the position counts in a log this leader does not date — the honest
+    /// answer in both cases, and one a caller must treat as beyond every bound.
     #[must_use]
-    pub fn age_of(&self, held: Sequence) -> Option<Duration> {
-        let marks = self.marks.lock().ok()?;
-        marks
+    pub fn age_of(&self, home: Reach, held: Sequence) -> Option<Duration> {
+        let series = self.marks.lock().ok()?;
+        if series.home != Some(home) {
+            return None;
+        }
+        series
+            .marks
             .iter()
             .rev()
             .find(|(sequence, _)| *sequence <= held)
@@ -123,6 +152,10 @@ impl TailMarks {
 
 #[cfg(test)]
 mod tests {
+    /// The one log these marks date. Which one does not matter here — what
+    /// matters is that a mark and the age read from it name the same one.
+    const HOME: super::Reach = super::Reach::Store;
+
     use super::{TAIL_MARKS, TailMarks};
     use tessari_types::Sequence;
 
@@ -132,38 +165,40 @@ mod tests {
 
     #[test]
     fn a_leader_that_has_marked_nothing_can_date_no_copy_at_all() {
-        assert!(TailMarks::default().age_of(sequence(1)).is_none());
+        assert!(TailMarks::default().age_of(HOME, sequence(1)).is_none());
     }
 
     #[test]
     fn a_copy_level_with_the_newest_mark_is_dated_from_that_mark() {
         let marks = TailMarks::default();
-        marks.mark(sequence(10));
-        assert!(marks.age_of(sequence(10)).is_some());
-        assert!(marks.age_of(sequence(11)).is_some());
+        marks.mark(HOME, sequence(10));
+        assert!(marks.age_of(HOME, sequence(10)).is_some());
+        assert!(marks.age_of(HOME, sequence(11)).is_some());
     }
 
     #[test]
     fn a_copy_older_than_every_mark_has_no_age_to_state() {
         let marks = TailMarks::default();
-        marks.mark(sequence(10));
-        marks.mark(sequence(20));
-        assert!(marks.age_of(sequence(9)).is_none());
+        marks.mark(HOME, sequence(10));
+        marks.mark(HOME, sequence(20));
+        assert!(marks.age_of(HOME, sequence(9)).is_none());
     }
 
     #[test]
     fn an_unmoved_tail_is_redated_rather_than_appended() {
         let marks = TailMarks::default();
-        marks.mark(sequence(10));
-        let first = marks.age_of(sequence(10)).expect("a mark was made");
-        marks.mark(sequence(10));
-        let second = marks.age_of(sequence(10)).expect("the mark is still there");
+        marks.mark(HOME, sequence(10));
+        let first = marks.age_of(HOME, sequence(10)).expect("a mark was made");
+        marks.mark(HOME, sequence(10));
+        let second = marks
+            .age_of(HOME, sequence(10))
+            .expect("the mark is still there");
         assert!(
             second <= first,
             "re-marking the same tail must date it later, not earlier: {second:?} vs {first:?}"
         );
         assert_eq!(
-            marks.marks.lock().expect("not poisoned").len(),
+            marks.marks.lock().expect("not poisoned").marks.len(),
             1,
             "an unmoved tail must not consume a second slot"
         );
@@ -173,11 +208,14 @@ mod tests {
     fn the_window_is_bounded_and_the_oldest_marks_go_first() {
         let marks = TailMarks::default();
         for position in 1..=u64::try_from(TAIL_MARKS).expect("fits") + 5 {
-            marks.mark(sequence(position));
+            marks.mark(HOME, sequence(position));
         }
-        assert_eq!(marks.marks.lock().expect("not poisoned").len(), TAIL_MARKS);
+        assert_eq!(
+            marks.marks.lock().expect("not poisoned").marks.len(),
+            TAIL_MARKS
+        );
         assert!(
-            marks.age_of(sequence(1)).is_none(),
+            marks.age_of(HOME, sequence(1)).is_none(),
             "a position evicted from the window can no longer be dated"
         );
     }

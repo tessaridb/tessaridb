@@ -371,7 +371,10 @@ fn a_read_above_the_committed_tail_is_refused_rather_than_answered_with_the_pres
     let at = record(&store, ns, db, tb, 1);
     write(&store, &at, "ada");
 
-    let tail = store.committed_tail().unwrap();
+    // The VERSION, not a log position: `begin_at` names an MVCC moment, and the
+    // two stopped being one number when B1 separated them and one log per range
+    // made the difference observable (Q-614, Q-623).
+    let tail = store.committed_version().unwrap();
     let ahead = Sequence::new(tail.get() + 1);
 
     // Answering with the present would make this succeed now and return a

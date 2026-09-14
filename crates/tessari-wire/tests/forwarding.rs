@@ -33,25 +33,33 @@ const READY: &str = "USE NAMESPACE prod; USE DATABASE orders;";
 /// forever, and one that skipped this step would be asserting that a write
 /// appeared on a node nothing ever sent it to.
 fn replicate(leader: &Db, follower: &Db) -> u64 {
-    // `saturating_add` rather than `+`, matching what `bootstrap` itself does:
-    // the workspace denies bare arithmetic, and the next sequence after the tail
-    // is exactly the shape that lint exists for.
-    let from = Sequence::new(
-        follower
-            .store()
-            .committed_tail()
-            .unwrap()
-            .get()
-            .saturating_add(1),
-    );
-    let mut carried = Vec::new();
-    let sent = tessari_backup::write_from(leader.store(), &mut carried, from).unwrap();
-    let applied = tessari_backup::bootstrap(follower.store(), &mut carried.as_slice()).unwrap();
-    assert_eq!(
-        applied.records, sent.records,
-        "the follower applied a different number of records than the leader sent",
-    );
-    sent.records
+    // Once per log the leader holds, because a position counts in one log and a
+    // file carries one section per log (Q-620, Q-624). The store's own log first,
+    // in `homes()` order, so the definitions a range's records depend on arrive
+    // before those records do.
+    let mut carried_in_all = 0_u64;
+    for home in leader.store().homes().unwrap() {
+        // `saturating_add` rather than `+`, matching what `bootstrap` itself
+        // does: the workspace denies bare arithmetic, and the next sequence
+        // after the tail is exactly the shape that lint exists for.
+        let from = Sequence::new(
+            follower
+                .store()
+                .committed_tail(home)
+                .unwrap()
+                .get()
+                .saturating_add(1),
+        );
+        let mut carried = Vec::new();
+        let sent = tessari_backup::write_from(leader.store(), &mut carried, home, from).unwrap();
+        let applied = tessari_backup::bootstrap(follower.store(), &mut carried.as_slice()).unwrap();
+        assert_eq!(
+            applied.records, sent.records,
+            "the follower applied a different number of records than the leader sent",
+        );
+        carried_in_all = carried_in_all.saturating_add(sent.records);
+    }
+    carried_in_all
 }
 
 /// The names a `SELECT * FROM users` answers with, in the order it answers.

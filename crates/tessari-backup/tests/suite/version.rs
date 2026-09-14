@@ -118,7 +118,7 @@ fn a_backup_from_a_newer_build_is_refused_before_anything_is_applied() {
     // **Before anything is applied**, which is the part that matters: a
     // half-applied restore is worse than a refused one, and the header is read
     // whole before the first record is looked at.
-    assert_eq!(into.committed_tail().unwrap().get(), 0);
+    assert_eq!(crate::records_held(&into), 0);
 }
 
 #[test]
@@ -167,5 +167,5 @@ fn a_file_that_begins_with_neither_name_is_refused() {
         .unwrap_err()
         .to_string();
     assert!(refused.contains("not a TessariDB backup"), "{refused}");
-    assert_eq!(into.committed_tail().unwrap().get(), 0);
+    assert_eq!(crate::records_held(&into), 0);
 }

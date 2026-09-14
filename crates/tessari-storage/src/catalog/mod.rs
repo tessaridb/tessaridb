@@ -45,7 +45,7 @@ use tessari_types::{
 
 pub use analyzer::AnalyzerDefinition;
 pub use authority::{Authority, Held, Kind, Reach};
-pub(crate) use carried::carried_to;
+pub(crate) use carried::{carried_to, home_of};
 pub(crate) use change::{CatalogChange, catalog_change, defined_index};
 pub use consumer::{ConsumerDefinition, Mapped, OnFailure};
 pub use definition::{

@@ -11,15 +11,31 @@
 //!
 //! # One batch, and why it is one
 //!
-//! Applying a record at log position `S` writes, together:
+//! Applying a record homed at `H`, at log position `S`, writes, together:
 //!
-//! - the log record itself, at `S`;
+//! - the log record itself, at `S` in `H`'s log;
 //! - every mutation it carries, as a record version at `V`;
-//! - the applied position, advanced to `S`;
+//! - `H`'s applied position, advanced to `S`;
 //! - the version position, advanced to `V`.
 //!
 //! Split across two batches, a crash in between is indistinguishable from
 //! success, and recovery either applies a record twice or skips it forever.
+//!
+//! # Why the record names a log rather than the log
+//!
+//! `H` is the join, over the record's mutations, of where each one is carried
+//! (`crate::catalog::home_of`, Q-620). A record touching one database homes
+//! there; one touching two databases of a namespace homes at that namespace;
+//! one carrying anything every node receives homes at the store. The partition
+//! therefore follows the **replication filter** and not the admission gate — if
+//! it followed the gate, a follower would never learn that its own namespace
+//! exists, because the row that defines a namespace is written at the system
+//! address.
+//!
+//! Each home counts from its own counter, which is what lets two leaders on
+//! disjoint ranges both allocate a next position without agreeing on anything.
+//! Nothing compares a position in one home against a position in another; a
+//! reader that did would be comparing two unrelated counters.
 //!
 //! # Why the position and the version are two numbers
 //!
@@ -66,41 +82,61 @@ use tessari_encoding::{
     AppliedPositionKey, LogKey, LogRecord, RecordKey, StoreKey, StoreValue, VersionPositionKey,
 };
 use tessari_kv::WriteBatch;
-use tessari_types::Sequence;
+use tessari_types::{Reach, Sequence};
 
 /// The batch that applies one log record.
 ///
-/// `at` is the record's position in the log — the replicated fact. `version` is
-/// the version every mutation is written at — this store's own fact. See the
-/// module header for why they are two parameters and not one.
-pub(crate) fn apply_batch(at: Sequence, version: Sequence, record: &LogRecord) -> WriteBatch {
-    let applied_key = AppliedPositionKey.encode();
+/// `home` is the log the record belongs to — the reach the partition function
+/// gave it (`crate::catalog::home_of`). `at` is the record's position **in that
+/// log** — the replicated fact. `version` is the version every mutation is
+/// written at — this store's own fact, store-wide and deliberately not
+/// partitioned. See the module header for why the last two are two parameters
+/// and not one, and why the first joined them.
+pub(crate) fn apply_batch(
+    home: Reach,
+    at: Sequence,
+    version: Sequence,
+    record: &LogRecord,
+) -> WriteBatch {
+    let applied_key = AppliedPositionKey::new(home).encode();
     let version_key = VersionPositionKey.encode();
     let previous_position = Sequence::new(at.get().saturating_sub(1));
     let previous_version = Sequence::new(version.get().saturating_sub(1));
 
-    let mut batch = WriteBatch::new()
-        .expect_value(
+    // A home's first record finds no position key at all, because a home does
+    // not exist until something is written into it — there is no list of homes
+    // to seed at open, and inventing one would mean deciding in advance which
+    // databases a store will ever hold. `Absent` is the same guarantee
+    // `expect_value` gives one record later: two writers racing for position 1
+    // both assert it, and exactly one wins. Asserting `ZERO` instead would
+    // refuse every first record, because an absent key does not satisfy a value
+    // assertion.
+    let first_in_this_home = at == Sequence::new(1);
+    let mut batch = if first_in_this_home {
+        WriteBatch::new().expect_absent(AppliedPositionKey::keyspace(), applied_key.clone())
+    } else {
+        WriteBatch::new().expect_value(
             AppliedPositionKey::keyspace(),
             applied_key.clone(),
             previous_position.encode(),
         )
-        .put(AppliedPositionKey::keyspace(), applied_key, at.encode())
-        .expect_value(
-            VersionPositionKey::keyspace(),
-            version_key.clone(),
-            previous_version.encode(),
-        )
-        .put(
-            VersionPositionKey::keyspace(),
-            version_key,
-            version.encode(),
-        )
-        .put(
-            LogKey::keyspace(),
-            LogKey::new(at).encode(),
-            record.encode(),
-        );
+    }
+    .put(AppliedPositionKey::keyspace(), applied_key, at.encode())
+    .expect_value(
+        VersionPositionKey::keyspace(),
+        version_key.clone(),
+        previous_version.encode(),
+    )
+    .put(
+        VersionPositionKey::keyspace(),
+        version_key,
+        version.encode(),
+    )
+    .put(
+        LogKey::keyspace(),
+        LogKey::new(home, at).encode(),
+        record.encode(),
+    );
 
     for mutation in record.mutations() {
         let key = RecordKey::new(
@@ -124,6 +160,10 @@ mod tests {
     use tessari_kv::{Keyspace, Precondition};
     use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
 
+    /// The home every record in these tests belongs to — the database its one
+    /// mutation is written in, which is what `home_of` answers for it.
+    const HOME: Reach = Reach::Database(NamespaceId::new(1), DatabaseId::new(1));
+
     use super::*;
 
     fn record() -> LogRecord {
@@ -138,7 +178,7 @@ mod tests {
 
     #[test]
     fn applying_asserts_both_the_position_and_the_version_it_moves() {
-        let batch = apply_batch(Sequence::new(7), Sequence::new(4), &record());
+        let batch = apply_batch(HOME, Sequence::new(7), Sequence::new(4), &record());
         let expected: Vec<Vec<u8>> = batch
             .preconditions()
             .iter()
@@ -159,21 +199,32 @@ mod tests {
     }
 
     #[test]
-    fn the_first_record_asserts_a_store_that_has_applied_nothing() {
-        let batch = apply_batch(Sequence::new(1), Sequence::new(1), &record());
+    fn the_first_record_in_a_home_asserts_that_home_has_no_position_yet() {
+        // A home comes into existence with its first record, so there is no
+        // key to compare a value against — and an absent key does not satisfy
+        // an assertion that it holds zero, which is why this is not simply the
+        // same assertion one number lower.
+        let batch = apply_batch(HOME, Sequence::new(1), Sequence::new(1), &record());
+        let mut absent = 0_u32;
+        let mut values = Vec::new();
         for precondition in batch.preconditions() {
             match precondition {
-                Precondition::ValueIs { expected, .. } => {
-                    assert_eq!(expected, &Sequence::ZERO.encode());
-                }
-                other => panic!("expected a value assertion, got {other:?}"),
+                Precondition::Absent { .. } => absent = absent.saturating_add(1),
+                Precondition::ValueIs { expected, .. } => values.push(expected.clone()),
+                other => panic!("expected an absence or a value assertion, got {other:?}"),
             }
         }
+        assert_eq!(absent, 1, "the home's position, which does not exist yet");
+        assert_eq!(
+            values,
+            vec![Sequence::ZERO.encode()],
+            "the version counter, which is store-wide and was seeded at open"
+        );
     }
 
     #[test]
     fn one_batch_carries_the_log_record_the_versions_and_the_position() {
-        let batch = apply_batch(Sequence::new(3), Sequence::new(3), &record());
+        let batch = apply_batch(HOME, Sequence::new(3), Sequence::new(3), &record());
         let keyspaces: Vec<Keyspace> = batch
             .ops()
             .iter()
@@ -192,7 +243,7 @@ mod tests {
         // were the same number, so a test that passed either would pass.
         let at = Sequence::new(11);
         let version = Sequence::new(4);
-        let batch = apply_batch(at, version, &record());
+        let batch = apply_batch(HOME, at, version, &record());
         let versions: Vec<Sequence> = batch
             .ops()
             .iter()
@@ -207,7 +258,10 @@ mod tests {
     fn a_record_carrying_nothing_still_advances_the_position() {
         // Not something a commit produces — an empty transaction never reaches
         // the log — but a replica must be able to apply whatever it is sent.
+        // Homed at the store, which is where `home_of` puts a record carrying
+        // nothing: there is no mutation to take a narrower home from.
         let batch = apply_batch(
+            Reach::Store,
             Sequence::new(2),
             Sequence::new(2),
             &LogRecord::new(Vec::new()),

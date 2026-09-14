@@ -2553,12 +2553,7 @@ fn a_declared_analyzer_survives_a_replica_replaying_the_log() {
     let replica_backend =
         std::sync::Arc::new(tessari_kv::MemoryBackend::new()) as std::sync::Arc<dyn KvBackend>;
     let replica = Store::open(std::sync::Arc::clone(&replica_backend)).unwrap();
-    for (sequence, record) in store
-        .log_records(tessari_types::Sequence::ZERO, 1024)
-        .unwrap()
-    {
-        replica.apply_record(sequence, &record).unwrap();
-    }
+    crate::replay(&store, &replica);
 
     // The analyzer, the attachment and the records all arrived through one log,
     // so the replica answers the same search.
@@ -2716,12 +2711,7 @@ fn a_replica_builds_the_same_postings_from_the_same_log() {
     let replica_backend =
         std::sync::Arc::new(tessari_kv::MemoryBackend::new()) as std::sync::Arc<dyn KvBackend>;
     let replica = Store::open(std::sync::Arc::clone(&replica_backend)).unwrap();
-    for (sequence, record) in store
-        .log_records(tessari_types::Sequence::ZERO, 4096)
-        .unwrap()
-    {
-        replica.apply_record(sequence, &record).unwrap();
-    }
+    crate::replay(&store, &replica);
 
     let mut mirrored = Session::new(&replica);
     mirrored.run("USE NAMESPACE prod DATABASE orders;").unwrap();
@@ -2988,12 +2978,15 @@ fn what_is_stored_is_a_hash_and_no_plaintext_reaches_the_log() {
 
     // The log is what a replica and a backup receive, so a plaintext there is a
     // plaintext everywhere.
-    for (_, record) in store.log_records(Sequence::ZERO, 4096).unwrap() {
-        let bytes = format!("{record:?}");
-        assert!(
-            !bytes.contains("correct horse"),
-            "the log carries the password"
-        );
+    // Every log, because a plaintext hiding in one of several is a plaintext.
+    for home in store.homes().unwrap() {
+        for (_, record) in store.log_records(home, Sequence::ZERO, 4096).unwrap() {
+            let bytes = format!("{record:?}");
+            assert!(
+                !bytes.contains("correct horse"),
+                "the log carries the password"
+            );
+        }
     }
 }
 

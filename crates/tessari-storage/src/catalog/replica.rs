@@ -35,7 +35,7 @@ use std::collections::BTreeMap;
 use tessari_encoding::{NODE_ID_LEN, Roles, decode_payload};
 use tessari_types::{Number, RecordId, Value};
 
-use super::authority::Reach;
+use super::authority::{Reach, ReachCodec};
 use super::definition::{field_id, field_name, number, object};
 use super::{Catalog, Level, id_key, qualify, system};
 use crate::error::{Error, Result};

@@ -20,7 +20,7 @@ use std::sync::Arc;
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
 use tessari_storage::Store;
-use tessari_types::Sequence;
+use tessari_types::{Reach, Sequence};
 
 /// Enough of the store to be worth copying, and small enough to read.
 ///
@@ -73,6 +73,17 @@ fn leader() -> (Store, Vec<u8>) {
     (store, prefix)
 }
 
+/// Where a node that had caught up with `held` would continue each log from.
+///
+/// One per log, because a node holds a log per range now and a single number
+/// would be right about one of them (Q-620, Q-626).
+fn following(held: &Store) -> Vec<(Reach, Sequence)> {
+    crate::tails(held)
+        .into_iter()
+        .map(|(home, tail)| (home, Sequence::new(tail.get().saturating_add(1))))
+        .collect()
+}
+
 /// What both stores say to the same questions.
 fn interrogate(store: &Store) -> Vec<String> {
     let mut session = session(store);
@@ -99,17 +110,14 @@ fn an_empty_node_ends_up_holding_what_the_leader_holds() {
     // And the position is the one the feed's own contract asks for: records are
     // read at or after it, so the next unseen record is one past the applied
     // tail rather than the tail itself.
-    assert_eq!(
-        brought_up.follow_from,
-        Sequence::new(held.committed_tail().unwrap().get() + 1)
-    );
+    assert_eq!(brought_up.follow_from, following(&held));
 }
 
 #[test]
 fn a_bootstrapped_node_follows_from_where_it_stopped_and_neither_replays_nor_skips() {
     let (held, prefix) = leader();
     let (_, follower) = store();
-    let brought_up = tessari_backup::bootstrap(&follower, &mut prefix.as_slice()).unwrap();
+    let _brought_up = tessari_backup::bootstrap(&follower, &mut prefix.as_slice()).unwrap();
 
     // The leader moves on, in both of the ways it can: a schema change and a
     // record change. Both must arrive, and the schema one is the half a change
@@ -125,25 +133,27 @@ fn a_bootstrapped_node_follows_from_where_it_stopped_and_neither_replays_nor_ski
     }
 
     // Catching up is the same operation as bootstrapping, from a later position
-    // — which is ADR-0021 §3, exercised rather than asserted.
-    let mut next = Vec::new();
-    let sent = tessari_backup::write_from(&held, &mut next, brought_up.follow_from).unwrap();
+    // — which is ADR-0021 §3, exercised rather than asserted. There is a
+    // position per log now, so it is once per log that moved, and a log that did
+    // not move sends an empty section rather than being skipped (Q-620, Q-626).
+    let mut sent_in_all = 0_u64;
+    for (home, from) in following(&follower) {
+        let mut next = Vec::new();
+        let sent = tessari_backup::write_from(&held, &mut next, home, from).unwrap();
+        let caught_up = tessari_backup::bootstrap(&follower, &mut next.as_slice()).unwrap();
+        // Nothing replayed: the records applied on the way up are exactly the
+        // ones written after the bootstrap, not those plus the history again.
+        assert_eq!(caught_up.records, sent.records);
+        sent_in_all = sent_in_all.saturating_add(sent.records);
+    }
     assert!(
-        sent.records > 0,
+        sent_in_all > 0,
         "the leader had nothing to send, so this test proves nothing"
     );
-    let caught_up = tessari_backup::bootstrap(&follower, &mut next.as_slice()).unwrap();
-
-    // Nothing replayed: the records applied on the way up are exactly the ones
-    // written after the bootstrap, not those plus the history again.
-    assert_eq!(caught_up.records, sent.records);
     // Nothing skipped: the two stores agree again, including about the field
     // that only the catalog knows.
     assert_eq!(interrogate(&held), interrogate(&follower));
-    assert_eq!(
-        caught_up.follow_from,
-        Sequence::new(held.committed_tail().unwrap().get() + 1)
-    );
+    assert_eq!(following(&follower), following(&held));
 }
 
 #[test]
@@ -167,10 +177,15 @@ fn the_change_feed_is_not_the_replication_channel() {
             .unwrap();
     }
 
-    let seen = held
-        .changes_since(brought_up.follow_from, 100)
-        .unwrap()
-        .changes;
+    // The log the schema change landed in, which is the one this boundary is
+    // about — the catalog change went into the database's own log, and asking
+    // the store's would prove nothing.
+    let (home, from) = *brought_up
+        .follow_from
+        .iter()
+        .max_by_key(|(_, at)| at.get())
+        .unwrap();
+    let seen = held.changes_since(home, from, 100).unwrap().changes;
     assert!(
         seen.is_empty(),
         "the feed carried a catalog change, so this boundary has moved and the \
@@ -178,10 +193,7 @@ fn the_change_feed_is_not_the_replication_channel() {
     );
     // The log did carry it, which is what makes the omission a property of the
     // feed rather than of the commit.
-    assert_eq!(
-        held.log_records(brought_up.follow_from, 100).unwrap().len(),
-        1
-    );
+    assert_eq!(held.log_records(home, from, 100).unwrap().len(), 1);
 }
 
 #[test]
@@ -197,22 +209,31 @@ fn a_prefix_cut_in_transit_leaves_the_node_where_it_actually_reached() {
     // inside a sequence, inside a body, and between two records. A cut *inside*
     // the header is not a truncated prefix at all — it is not a prefix, and it
     // is refused as one in `restore.rs`.
-    const HEADER_LEN: usize = 10 + 1 + 1 + (4 + 4 + 4) + 8 + 8;
+    // Magic, the two versions, the writer's three numbers, and the section
+    // count — everything before the first frame. A cut inside it is not a
+    // truncated prefix at all.
+    const HEADER_LEN: usize = 10 + 1 + 1 + (4 + 4 + 4) + 4;
     for cut in (HEADER_LEN..prefix.len()).step_by(7) {
         let (_, follower) = store();
         let brought_up = tessari_backup::bootstrap(&follower, &mut &prefix[..cut]).unwrap();
         assert!(brought_up.truncated, "a cut at {cut} went unnoticed");
         assert_eq!(
             brought_up.follow_from,
-            Sequence::new(follower.committed_tail().unwrap().get() + 1),
+            following(&follower),
             "a cut at {cut} left the node claiming a position it had not reached"
         );
         if brought_up.records > 0 {
             cut_at_least_one = true;
             // Which is strictly behind what the prefix said it held — otherwise
-            // the assertion above would pass for the wrong reason.
+            // the assertion above would pass for the wrong reason. Summed across
+            // the logs, because a cut lands partway through one of several.
+            let claimed: u64 = brought_up
+                .follow_from
+                .iter()
+                .map(|(_, at)| at.get().saturating_sub(1))
+                .sum();
             assert!(
-                brought_up.follow_from.get() <= brought_up.records + 1,
+                claimed <= brought_up.records,
                 "a cut at {cut} followed from beyond what it applied"
             );
         }

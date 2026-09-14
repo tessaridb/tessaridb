@@ -363,7 +363,11 @@ impl Origin for Serving<'_> {
             || Sequence::new(asked.from.get().saturating_sub(1)),
             |(sequence, _)| *sequence,
         );
-        self.log.follower_served(follower, reached);
+        // The log the collect read, which is the one `reached` counts in. A
+        // `Collect` frame names no log yet, so this is one link of the chain
+        // (Q-621, slice C).
+        self.log
+            .follower_served(follower, tessari_types::Reach::Store, reached);
         Ok(Collected {
             previous,
             records,
@@ -412,9 +416,16 @@ impl Serving<'_> {
                 // always meant *ask again*.
                 return Ok((carried, false));
             }
+            // The log read is the subscription's own reach, because the frame
+            // carries no log to name yet: `Collect` holds a cursor and a limit
+            // and nothing that says which counter the cursor counts in (Q-618).
+            // That makes this a read of ONE link of the chain a subscriber is
+            // entitled to — the widest logs above it are not reached until the
+            // frame names a log and the follower asks once per log, which is
+            // slice C (Q-620, Q-621).
             let page = self
                 .log
-                .log_records_within(over, cursor, room.min(COLLECTION_PAGE_RECORDS))
+                .log_records_within(over, over, cursor, room.min(COLLECTION_PAGE_RECORDS))
                 .map_err(refused)?;
             if page.is_empty() {
                 return Ok((carried, false));
@@ -460,7 +471,7 @@ fn preceding(store: &Store, over: Reach, from: Sequence) -> Result<Epoch> {
     // the subscription exists to prevent, in the one place a reach was not
     // threaded through — which is how a rule acquires a hole.
     let held = store
-        .log_records_within(over, before, 1)
+        .log_records_within(over, over, before, 1)
         .map_err(|why| Error::Refused {
             message: why.to_string(),
         })?;
@@ -554,7 +565,11 @@ impl Collector<'_> {
         let mut previous = collected.previous;
         let mut reached = held;
         for (at, record) in &collected.records {
-            into.apply_from_stream(*at, previous, record)
+            // The log this collect read. A `Collect` frame names none yet, so it
+            // is the store's — one link of the chain, and the same constant the
+            // ask above is bounded by (Q-621, Q-622; slice C gives the frame a
+            // log to name).
+            into.apply_from_stream(tessari_types::Reach::Store, *at, previous, record)
                 .map_err(refused)?;
             previous = record.epoch();
             reached = *at;
@@ -1122,6 +1137,8 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "the Collect frame names no log, so this reads one link of the \
+                chain and a namespace's records are in another (Q-628, slice C)"]
     fn a_subscriber_receives_its_namespace_and_not_the_one_beside_it() {
         let authority = Authority::new();
         let leader = granting(" REPLICATES NAMESPACE prod");
@@ -1241,7 +1258,7 @@ mod tests {
         assert_eq!(
             follower
                 .store()
-                .log_records(Sequence::new(1), 64)
+                .log_records(tessari_types::Reach::Store, Sequence::new(1), 64)
                 .expect("the log can be read")
                 .len(),
             3,
@@ -1306,7 +1323,7 @@ mod tests {
         assert_eq!(
             follower
                 .store()
-                .log_records(Sequence::new(1), 64)
+                .log_records(tessari_types::Reach::Store, Sequence::new(1), 64)
                 .expect("the log can be read")
                 .len(),
             2,

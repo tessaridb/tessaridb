@@ -14,6 +14,7 @@ use std::sync::Arc;
 use tessari_kv::{KeyRange, Keyspace, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
 use tessari_session::{Outcome, Session};
 use tessari_storage::Store;
+use tessari_types::{Reach, Sequence};
 
 /// Every engine this project has built, in one script.
 ///
@@ -82,10 +83,15 @@ const MAGIC_LEN: usize = 10;
 /// one test spelled the two version bytes' own offsets as literals and went red
 /// on its own. They derive from `MAGIC_LEN` now, so the layout really is one
 /// place.
-const HEADER_LEN: usize = MAGIC_LEN + 1 + 1 + (4 + 4 + 4) + 8 + 8;
+/// It has moved three times now: the third took the bounds OUT of it and into a
+/// per-log section, and added the section count in their place (Q-624).
+const HEADER_LEN: usize = MAGIC_LEN + 1 + 1 + (4 + 4 + 4) + 4;
 
-/// One record's frame: its length, its sequence, and its checksum.
-const FRAME_LEN: usize = 4 + 8 + 4;
+/// One section's frame: its tag, its home, and the bounds that count in it.
+const SECTION_LEN: usize = 1 + 9 + 8 + 8;
+
+/// One record's frame: its tag, its length, its sequence, and its checksum.
+const FRAME_LEN: usize = 1 + 4 + 8 + 4;
 
 /// Reads that touch each engine, so a difference anywhere shows up as an answer.
 const INTERROGATION: &[&str] = &[
@@ -114,6 +120,57 @@ fn store() -> (Arc<dyn KvBackend>, Store) {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let store = Store::open(Arc::clone(&backend)).unwrap();
     (backend, store)
+}
+
+/// A store whose every record lands in the store's own log, and its backup.
+///
+/// Namespace and database definitions are carried everywhere, so they home at
+/// the store (Q-620) — and nothing here writes *into* a database, which is what
+/// keeps this store at one log. One log is what the surfaces bounded by a single
+/// sequence need (Q-625), and this is the fixture that gives them one.
+fn one_log() -> (Arc<dyn KvBackend>, Store, Vec<u8>) {
+    let (backend, store) = store();
+    {
+        let mut session = Session::new(&store);
+        session
+            .run(
+                "DEFINE NAMESPACE one;\n\
+                 DEFINE NAMESPACE two;\n\
+                 DEFINE NAMESPACE three;\n\
+                 DEFINE NAMESPACE four;\n\
+                 USE NAMESPACE one;\n\
+                 DEFINE DATABASE first;\n\
+                 DEFINE DATABASE second;\n",
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        store.homes().unwrap(),
+        vec![Reach::Store],
+        "the fixture was supposed to hold one log"
+    );
+    let mut taken = Vec::new();
+    tessari_backup::write(&store, &mut taken).unwrap();
+    (backend, store, taken)
+}
+
+/// The one log that moved since `base` was taken, and where it stood then.
+///
+/// The base file names every log it holds and where each stood, so this is a
+/// comparison rather than a guess — which is the property the sections bought.
+fn moved_since(base: &[u8], store: &Store) -> (Reach, Sequence) {
+    let held = tessari_backup::verify(&mut &base[..]).unwrap();
+    let mut moved: Vec<(Reach, Sequence)> = Vec::new();
+    for log in &held.logs {
+        let now = store.committed_tail(log.span.home).unwrap();
+        if now.get() > log.span.tail.get() {
+            moved.push((log.span.home, log.span.tail));
+        }
+    }
+    match moved.as_slice() {
+        [one] => *one,
+        many => panic!("expected one log to have moved, {} did", many.len()),
+    }
 }
 
 fn signed_in(store: &Store) -> Session<'_> {
@@ -153,7 +210,7 @@ fn original() -> (Arc<dyn KvBackend>, Store, Vec<u8>) {
     let mut taken = Vec::new();
     let written = tessari_backup::write(&store, &mut taken).unwrap();
     assert!(written.records > 0);
-    assert_eq!(written.tail, store.committed_tail().unwrap());
+    crate::covers(&written.logs, &store);
     (backend, store, taken)
 }
 
@@ -163,8 +220,9 @@ fn a_restored_store_answers_exactly_what_the_original_did() {
     let (_, restored) = store();
     let outcome = tessari_backup::read(&restored, &mut taken.as_slice()).unwrap();
     assert!(!outcome.truncated);
-    assert_eq!(outcome.tail, source.committed_tail().unwrap());
-    assert_eq!(restored.committed_tail().unwrap(), outcome.tail);
+    // Every log the source holds, at the sequence the source holds it — the
+    // restored store's own answer, not the file's claim about itself.
+    assert_eq!(crate::tails(&restored), crate::tails(&source));
 
     let mut here = signed_in(&source);
     let mut there = signed_in(&restored);
@@ -269,8 +327,60 @@ fn every_derived_byte_is_identical_because_it_was_derived() {
             expected.len(),
             found.len()
         );
-        assert_eq!(expected, found, "{keyspace:?} differs after a restore");
+        if keyspace == Keyspace::DATA {
+            // A record is keyed by the VERSION it was written at, and a version
+            // is the node's own history rather than the log's (Q-614). A store
+            // holding a log per range has no single commit order for a replay to
+            // reproduce — the restore applies one log and then the next — so the
+            // same records come back stamped in a different order (Q-627).
+            //
+            // What must still hold, and does: the same records, with the same
+            // bytes, at the same keys apart from that stamp — and the same
+            // MULTISET of stamps, which is what proves none was skipped,
+            // duplicated, or invented.
+            assert_eq!(
+                unversioned(&expected),
+                unversioned(&found),
+                "{keyspace:?} differs after a restore in more than the version"
+            );
+            assert_eq!(
+                versions(&expected),
+                versions(&found),
+                "the restore did not stamp the same set of versions"
+            );
+        } else {
+            assert_eq!(expected, found, "{keyspace:?} differs after a restore");
+        }
     }
+}
+
+/// Every entry with the version each record is keyed by removed.
+///
+/// The version is the last eight bytes of a record key, complemented so that the
+/// newest sorts first. Dropped here rather than decoded because what this
+/// comparison needs is the entry WITHOUT it, and taking the tail is the whole of
+/// that.
+fn unversioned(held: &[(Vec<u8>, Vec<u8>)]) -> Vec<(Vec<u8>, Vec<u8>)> {
+    held.iter()
+        .map(|(key, value)| (key[..key.len().saturating_sub(8)].to_vec(), value.clone()))
+        .collect()
+}
+
+/// The distinct version stamps a keyspace carries, sorted.
+///
+/// Distinct rather than counted: one log record can write several entries, so
+/// how many entries share a stamp depends on which record got it — which is
+/// exactly what a reordered replay changes. What must not change is the SET,
+/// because that is what would show a version skipped, duplicated across two
+/// records, or invented (Q-627).
+fn versions(held: &[(Vec<u8>, Vec<u8>)]) -> Vec<Vec<u8>> {
+    let mut found: Vec<Vec<u8>> = held
+        .iter()
+        .map(|(key, _)| key[key.len().saturating_sub(8)..].to_vec())
+        .collect();
+    found.sort();
+    found.dedup();
+    found
 }
 
 /// Everything in a keyspace that the log is supposed to produce.
@@ -419,7 +529,7 @@ fn a_truncated_backup_restores_what_it_holds_and_says_so() {
     // From the end of the header onward: inside a length prefix, inside a
     // sequence, inside a record body, and cleanly between two records. A cut
     // *inside* the header is a different answer and has its own test.
-    const HEADER: usize = HEADER_LEN;
+    const HEADER: usize = HEADER_LEN + SECTION_LEN;
     for cut in (HEADER..taken.len()).step_by(7) {
         let (_, restored) = store();
         let outcome = tessari_backup::read(&restored, &mut &taken[..cut]).unwrap();
@@ -431,8 +541,9 @@ fn a_truncated_backup_restores_what_it_holds_and_says_so() {
         if outcome.records > 0 {
             seen_partial = true;
         }
-        // Whatever it applied, the store is consistent to that point.
-        assert_eq!(restored.committed_tail().unwrap().get(), outcome.records);
+        // Whatever it applied, the store is consistent to that point — across
+        // every log, because a cut file stops partway through one of several.
+        assert_eq!(crate::records_held(&restored), outcome.records);
     }
     assert!(seen_partial, "no cut left a partial restore to check");
 }
@@ -450,6 +561,16 @@ fn a_file_cut_inside_its_own_header_is_not_a_backup_at_all() {
             "a cut at {cut} gave {refused}"
         );
     }
+    // A cut inside the FIRST SECTION is a different answer: the head was read,
+    // so the file is a backup — one that lost every log it promised. It reports
+    // truncated rather than refusing, because the head said how many sections to
+    // expect and none of them arrived whole.
+    for cut in HEADER_LEN..HEADER_LEN + SECTION_LEN {
+        let (_, restored) = store();
+        let outcome = tessari_backup::read(&restored, &mut &taken[..cut]).unwrap();
+        assert!(outcome.truncated, "a cut at {cut} went unnoticed");
+        assert_eq!(outcome.records, 0, "a cut at {cut} applied something");
+    }
 }
 
 #[test]
@@ -458,15 +579,16 @@ fn a_cut_exactly_between_two_records_is_still_noticed() {
     // The header's tail is what catches it, because sequences start at one and
     // cannot have gaps, so a backup taken at tail `n` holds exactly `n` records.
     let (_, _held, taken) = original();
-    // The first record's frame is its header plus its body.
+    // The first record sits after the head and the first section's own frame.
+    let at = HEADER_LEN + SECTION_LEN;
     let length = usize::try_from(u32::from_be_bytes([
-        taken[HEADER_LEN],
-        taken[HEADER_LEN + 1],
-        taken[HEADER_LEN + 2],
-        taken[HEADER_LEN + 3],
+        taken[at + 1],
+        taken[at + 2],
+        taken[at + 3],
+        taken[at + 4],
     ]))
     .unwrap();
-    let boundary = HEADER_LEN + FRAME_LEN + length;
+    let boundary = at + FRAME_LEN + length;
     let (_, restored) = store();
     let outcome = tessari_backup::read(&restored, &mut &taken[..boundary]).unwrap();
     assert_eq!(outcome.records, 1);
@@ -496,7 +618,7 @@ fn an_empty_store_backs_up_and_restores_to_an_empty_store() {
     let outcome = tessari_backup::read(&restored, &mut taken.as_slice()).unwrap();
     assert_eq!(outcome.records, 0);
     assert!(!outcome.truncated);
-    assert_eq!(restored.committed_tail().unwrap().get(), 0);
+    assert_eq!(crate::records_held(&restored), 0);
 }
 
 #[test]
@@ -513,7 +635,7 @@ fn a_restored_store_can_be_written_to_and_backed_up_again() {
             .run("CREATE people:9 = { name: 'after', email: 'e@x', at: [3.0, 0.0] };")
             .unwrap();
     }
-    assert!(restored.committed_tail().unwrap().get() > first.records);
+    assert!(crate::records_held(&restored) > first.records);
 
     let mut again = Vec::new();
     let written = tessari_backup::write(&restored, &mut again).unwrap();
@@ -527,11 +649,24 @@ fn a_backup_can_be_verified_without_being_applied_to_anything() {
     // backup nobody checks.
     let (_, held, taken) = original();
     let verified = tessari_backup::verify(&mut taken.as_slice()).unwrap();
-    assert_eq!(verified.from.get(), 1);
-    assert_eq!(verified.tail, held.committed_tail().unwrap());
-    assert_eq!(verified.good_through, verified.tail);
     assert!(!verified.truncated);
-    assert_eq!(verified.records, verified.tail.get());
+    // Every section, because a file that verified one log and silently dropped
+    // another would pass a check written against a single tail.
+    let mut counted = 0_u64;
+    for log in &verified.logs {
+        assert_eq!(log.span.from.get(), 1);
+        assert_eq!(log.good_through, log.span.tail);
+        counted = counted.saturating_add(log.span.tail.get());
+    }
+    assert_eq!(
+        verified
+            .logs
+            .iter()
+            .map(|log| (log.span.home, log.span.tail))
+            .collect::<Vec<_>>(),
+        crate::tails(&held)
+    );
+    assert_eq!(verified.records, counted);
 }
 
 #[test]
@@ -541,8 +676,9 @@ fn a_record_whose_bytes_changed_is_refused_before_it_is_applied() {
     // which is luck, or applies a record nobody wrote.
     let (_, _held, taken) = original();
     let mut damaged = taken.clone();
-    // A byte well inside the first record's body, past the header and the frame.
-    let at = HEADER_LEN + FRAME_LEN + 3;
+    // A byte well inside the first record's body, past the head, the first
+    // section's frame, and the record's own frame.
+    let at = HEADER_LEN + SECTION_LEN + FRAME_LEN + 3;
     damaged[at] ^= 0xff;
 
     let refused = tessari_backup::verify(&mut damaged.as_slice()).unwrap_err();
@@ -581,26 +717,28 @@ fn an_incremental_backup_plus_its_base_is_the_whole_store() {
     }
     let taken_at = base.len();
     assert!(taken_at > 0);
-    let base_tail = tessari_backup::verify(&mut base.as_slice()).unwrap().tail;
+    // An increment covers ONE log, because the sequence it starts at counts in
+    // one (Q-621). Which log is not a guess — the base file names every log it
+    // holds and where each stood, so "what moved since the base" is a comparison
+    // the format supports.
+    let (home, base_tail) = moved_since(&base, &held);
 
     let mut increment = Vec::new();
     let written = tessari_backup::write_from(
         &held,
         &mut increment,
+        home,
         tessari_types::Sequence::new(base_tail.get() + 1),
     )
     .unwrap();
-    assert_eq!(written.from.get(), base_tail.get() + 1);
+    assert_eq!(crate::only(&written.logs).from.get(), base_tail.get() + 1);
     assert!(written.records > 0, "the increment holds nothing");
 
     // Restore the base, then the increment onto it.
     let (_, rebuilt) = store();
     tessari_backup::read(&rebuilt, &mut base.as_slice()).unwrap();
     tessari_backup::read(&rebuilt, &mut increment.as_slice()).unwrap();
-    assert_eq!(
-        rebuilt.committed_tail().unwrap(),
-        held.committed_tail().unwrap()
-    );
+    assert_eq!(crate::tails(&rebuilt), crate::tails(&held));
 
     // And it answers what the original answers.
     let mut there = signed_in(&held);
@@ -625,11 +763,12 @@ fn an_increment_refuses_a_store_that_is_not_where_it_continues_from() {
             .run("CREATE people:9 = { name: 'later', email: 'z@x' };")
             .unwrap();
     }
-    let base_tail = tessari_backup::verify(&mut base.as_slice()).unwrap().tail;
+    let (home, base_tail) = moved_since(&base, &held);
     let mut increment = Vec::new();
     tessari_backup::write_from(
         &held,
         &mut increment,
+        home,
         tessari_types::Sequence::new(base_tail.get() + 1),
     )
     .unwrap();
@@ -647,15 +786,23 @@ fn an_increment_refuses_a_store_that_is_not_where_it_continues_from() {
 fn a_restore_can_stop_at_a_chosen_point() {
     // The log is the store, so stopping the replay leaves the store holding
     // exactly what it held then — there is no second mechanism to rewind and
-    // nothing to undo.
-    let (_, held, taken) = original();
-    let whole = held.committed_tail().unwrap();
+    // nothing to undo. One log, because the sequence a caller stops at counts in
+    // one; the multi-log case is the refusal below.
+    let (_, held, taken) = one_log();
+    let whole = held.committed_tail(tessari_types::Reach::Store).unwrap();
     let midpoint = tessari_types::Sequence::new(whole.get() / 2);
+    assert!(
+        midpoint.get() > 0,
+        "the fixture is too short to stop halfway"
+    );
 
     let (_, rebuilt) = store();
     let outcome =
         tessari_backup::read_until(&rebuilt, &mut taken.as_slice(), Some(midpoint)).unwrap();
-    assert_eq!(rebuilt.committed_tail().unwrap(), midpoint);
+    assert_eq!(
+        rebuilt.committed_tail(tessari_types::Reach::Store).unwrap(),
+        midpoint
+    );
     assert!(
         !outcome.truncated,
         "stopping where the caller asked is not a truncation"
@@ -665,8 +812,40 @@ fn a_restore_can_stop_at_a_chosen_point() {
     // asserted by taking the original's own backup to the same point.
     let (_, twin) = store();
     tessari_backup::read_until(&twin, &mut taken.as_slice(), Some(midpoint)).unwrap();
-    assert_eq!(
-        twin.committed_tail().unwrap(),
-        rebuilt.committed_tail().unwrap()
+    assert_eq!(crate::tails(&twin), crate::tails(&rebuilt));
+}
+
+#[test]
+fn a_point_in_time_restore_of_a_file_holding_several_logs_is_refused() {
+    // Sequence 40 in one log and sequence 40 in another are unrelated moments,
+    // so one number is not a point in time across several logs — it is two
+    // arbitrary cuts presented as one instant (Q-625). Refused rather than
+    // guessed at.
+    let (_, _held, taken) = original();
+    let (_, rebuilt) = store();
+    let refused =
+        tessari_backup::read_until(&rebuilt, &mut taken.as_slice(), Some(Sequence::new(3)))
+            .unwrap_err();
+    assert!(
+        matches!(refused, tessari_backup::Error::ManyLogs { .. }),
+        "{refused}"
+    );
+    // And refused BEFORE anything was applied, which is the whole reason the
+    // section count sits in the file's head: after the first section there is no
+    // refusal left that is not a half-applied restore.
+    assert_eq!(crate::records_held(&rebuilt), 0);
+}
+
+#[test]
+fn an_incremental_backup_of_a_store_holding_several_logs_is_refused() {
+    // The write side of the same rule. `write_from` itself takes the log, so the
+    // refusal belongs to the surface that has only a sequence to go on — the
+    // `FROM n` of a statement or a command line (Q-625).
+    let (_, held, _) = original();
+    assert!(held.homes().unwrap().len() > 1, "the fixture holds one log");
+    let refused = tessari_backup::only_log(&held).unwrap_err();
+    assert!(
+        matches!(refused, tessari_backup::Error::ManyLogs { .. }),
+        "{refused}"
     );
 }

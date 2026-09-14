@@ -54,7 +54,7 @@
 //! [`Kind::Replicate`]: super::Kind
 //! [`Kind::may_be_held_at`]: super::Kind::may_be_held_at
 
-use tessari_encoding::{Mutation, RecordValue, decode_payload};
+use tessari_encoding::{LogRecord, Mutation, RecordValue, decode_payload};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, Value};
 
 use super::system::{self, Level};
@@ -238,6 +238,56 @@ fn named(mutation: &Mutation, value: Option<&Value>) -> Carried {
     }
 }
 
+/// Where a whole log record is filed.
+///
+/// [`carried_to`] answers for one mutation, and a record carries many: one
+/// transaction's writes accumulate into a single set and are emitted as one
+/// record, so `BEGIN; DEFINE ANALYZER …; CREATE person …; COMMIT` produces a
+/// record holding an [`Carried::Everywhere`] mutation beside a
+/// [`Carried::Within`] one. A partition over records therefore has to be total
+/// over SETS of mutations, and this is that function.
+///
+/// The home is the [`Reach::join`] of what each mutation answers — the narrowest
+/// reach that covers all of them. A record written entirely inside one database
+/// homes there; one that touches two databases in a namespace homes at the
+/// namespace; one that touches two namespaces homes at the store.
+///
+/// # Why `Everywhere` files at the store rather than everywhere
+///
+/// An analyzer travels to every subscriber, and the store log is the only log
+/// every subscriber reads — so it is the only correct home for a record everyone
+/// needs. The alternative, copying the record into each existing partition, is
+/// unbounded in the number of partitions and puts one record at two positions,
+/// which is the thing a log exists not to do. The cost is that a transaction
+/// defining an analyzer alongside data files the whole record at the top; that is
+/// accepted rather than optimised, because analyzer definitions are rare and the
+/// filter on the way out still narrows what each subscriber sees.
+///
+/// An empty record homes at the store as well. A commit never produces one, but
+/// a replica must be able to apply whatever it is sent, and the store is the
+/// only answer that cannot be wrong for a record that says nothing.
+///
+/// # Errors
+///
+/// Returns [`crate::Error::CatalogMalformed`] when a mutation's definition is
+/// present and cannot be decoded — the same refusal [`carried_to`] makes, and for
+/// the same reason: a record whose home cannot be proven is filed nowhere rather
+/// than filed wrongly.
+pub(crate) fn home_of(record: &LogRecord) -> Result<Reach> {
+    let mut home = None;
+    for mutation in record.mutations() {
+        let own = match carried_to(mutation)? {
+            Carried::Within(reach) => reach,
+            Carried::Everywhere | Carried::StoreOnly => Reach::Store,
+        };
+        home = Some(match home {
+            Some(so_far) => Reach::join(so_far, own),
+            None => own,
+        });
+    }
+    Ok(home.unwrap_or(Reach::Store))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -266,6 +316,83 @@ mod tests {
 
     fn class(table: TableId, id: RecordId, value: Option<Value>) -> Carried {
         carried_to(&system(table, id, value)).unwrap()
+    }
+
+    fn data(namespace: NamespaceId, database: DatabaseId, id: i64) -> Mutation {
+        Mutation {
+            namespace,
+            database,
+            table: TableId::new(4),
+            id: RecordId::Int(id),
+            value: RecordValue::Tombstone,
+        }
+    }
+
+    #[test]
+    fn a_record_written_inside_one_database_homes_there() {
+        let record = LogRecord::new(vec![data(PROD, SHOP, 1), data(PROD, SHOP, 2)]);
+        assert_eq!(home_of(&record).unwrap(), Reach::Database(PROD, SHOP));
+    }
+
+    #[test]
+    fn a_record_touching_two_databases_homes_at_the_namespace_above_them() {
+        let other = DatabaseId::new(9);
+        let record = LogRecord::new(vec![data(PROD, SHOP, 1), data(PROD, other, 1)]);
+        assert_eq!(home_of(&record).unwrap(), Reach::Namespace(PROD));
+    }
+
+    #[test]
+    fn a_record_touching_two_namespaces_homes_at_the_store() {
+        let elsewhere = NamespaceId::new(8);
+        let record = LogRecord::new(vec![data(PROD, SHOP, 1), data(elsewhere, SHOP, 1)]);
+        assert_eq!(home_of(&record).unwrap(), Reach::Store);
+    }
+
+    #[test]
+    fn an_analyzer_beside_data_takes_the_whole_record_to_the_store() {
+        // The case that made the home a question at all: one transaction's
+        // writes are emitted as one record, so a record can hold a mutation
+        // every subscriber needs beside one that belongs to a single database.
+        // The store log is the only log every subscriber reads, so it is the
+        // only home that cannot withhold the analyzer from somebody who needs
+        // it — even though it widens the data mutation's own home.
+        let analyzer = system(
+            system::ANALYZERS,
+            RecordId::from("english"),
+            Some(Value::None),
+        );
+        assert_eq!(carried_to(&analyzer).unwrap(), Carried::Everywhere);
+        let record = LogRecord::new(vec![data(PROD, SHOP, 1), analyzer]);
+        assert_eq!(home_of(&record).unwrap(), Reach::Store);
+    }
+
+    #[test]
+    fn a_record_carrying_nothing_homes_at_the_store() {
+        // A commit never produces one — an empty transaction never reaches the
+        // log — but a replica applies whatever it is sent, and the store is the
+        // only home that cannot be wrong for a record that says nothing.
+        assert_eq!(home_of(&LogRecord::new(Vec::new())).unwrap(), Reach::Store);
+    }
+
+    #[test]
+    fn the_home_contains_every_mutation_it_carries() {
+        // The property behind the tables above: whatever the home is, the
+        // filter on the way out must let every one of the record's own
+        // mutations through it. A home that failed this would drop a record's
+        // own writes from the subscriber the record was filed for.
+        let elsewhere = NamespaceId::new(8);
+        let record = LogRecord::new(vec![
+            data(PROD, SHOP, 1),
+            data(PROD, DatabaseId::new(9), 1),
+            data(elsewhere, SHOP, 1),
+        ]);
+        let home = home_of(&record).unwrap();
+        for mutation in record.mutations() {
+            assert!(
+                carried_to(mutation).unwrap().reaches(home),
+                "{home:?} does not carry a mutation of its own record"
+            );
+        }
     }
 
     /// Ordinary data needs no decode at all: its address is its tenancy.

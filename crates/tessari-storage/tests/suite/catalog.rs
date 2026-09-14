@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tessari_encoding::{decode_payload, encode_payload};
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_storage::{Catalog, Error, IndexShape, RecordAddress, Store, TableKind, TableShape};
-use tessari_types::{Path, RecordId, Sequence, Value};
+use tessari_types::{Path, RecordId, Value};
 
 fn store() -> (Arc<dyn KvBackend>, Store) {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
@@ -260,9 +260,7 @@ fn the_catalog_replays_onto_a_replica_through_the_ordinary_log() {
     let (_, _, table) = create_tree(&source, ("prod", "orders", "line_items"));
 
     let (_replica_backend, replica) = store();
-    for (sequence, record) in source.log_records(Sequence::ZERO, 1024).unwrap() {
-        replica.apply_record(sequence, &record).unwrap();
-    }
+    crate::replay(&source, &replica);
 
     let mut transaction = replica.begin().unwrap();
     let catalog = Catalog::new(&mut transaction);
@@ -664,9 +662,7 @@ fn a_replica_rebuilds_an_edge_table_with_its_indexes_and_its_declarations() {
 
     let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
-    for (sequence, record) in store.log_records(Sequence::ZERO, 1024).unwrap() {
-        replica.apply_record(sequence, &record).unwrap();
-    }
+    crate::replay(&store, &replica);
 
     let mut transaction = replica.begin().unwrap();
     let catalog = Catalog::new(&mut transaction);
@@ -813,9 +809,7 @@ fn the_record_counter_reaches_a_replica_rather_than_being_derived_there() {
 
     let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
-    for (sequence, record) in store.log_records(Sequence::ZERO, 1024).unwrap() {
-        replica.apply_record(sequence, &record).unwrap();
-    }
+    crate::replay(&store, &replica);
 
     assert_eq!(next(&replica, table), 3);
 }

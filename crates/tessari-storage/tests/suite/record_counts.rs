@@ -34,7 +34,7 @@ use std::sync::Arc;
 use tessari_encoding::encode_payload;
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_storage::{Catalog, RecordAddress, Store, TableShape};
-use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId, Value};
+use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId, Value};
 
 /// The seed the workload runs from. Printed by every failing assertion.
 const SEED: u64 = 0x00c0_ffee_0bad_f00d;
@@ -288,9 +288,7 @@ fn a_replica_replaying_the_log_reaches_the_same_count() {
     transaction.commit().unwrap();
 
     let follower = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
-    for (sequence, record) in fixture.store.log_records(Sequence::ZERO, 1_000).unwrap() {
-        follower.apply_record(sequence, &record).unwrap();
-    }
+    crate::replay(&fixture.store, &follower);
 
     let mut transaction = follower.begin().unwrap();
     assert_eq!(

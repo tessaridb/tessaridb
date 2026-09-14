@@ -75,7 +75,9 @@ fn every_commit_leaves_exactly_one_log_record_at_its_own_sequence() {
     let second = write(&store, "b", b"2");
     let third = delete(&store, "a");
 
-    let records = store.log_records(Sequence::ZERO, PLENTY).unwrap();
+    let records = store
+        .log_records(crate::FIXTURE_HOME, Sequence::ZERO, PLENTY)
+        .unwrap();
     let sequences: Vec<Sequence> = records.iter().map(|(sequence, _)| *sequence).collect();
     assert_eq!(sequences, vec![first, second, third]);
 }
@@ -87,7 +89,9 @@ fn the_log_is_gap_free_and_reads_oldest_first() {
         write(&store, &format!("r{n}"), b"v");
     }
 
-    let records = store.log_records(Sequence::ZERO, PLENTY).unwrap();
+    let records = store
+        .log_records(crate::FIXTURE_HOME, Sequence::ZERO, PLENTY)
+        .unwrap();
     assert_eq!(records.len(), 10);
     for (index, (sequence, _)) in records.iter().enumerate() {
         let expected = u64::try_from(index).unwrap().saturating_add(1);
@@ -102,7 +106,9 @@ fn a_log_read_can_resume_from_a_position() {
         write(&store, &format!("r{n}"), b"v");
     }
 
-    let tail = store.log_records(Sequence::new(4), PLENTY).unwrap();
+    let tail = store
+        .log_records(crate::FIXTURE_HOME, Sequence::new(4), PLENTY)
+        .unwrap();
     let sequences: Vec<u64> = tail.iter().map(|(sequence, _)| sequence.get()).collect();
     assert_eq!(sequences, vec![4, 5]);
 }
@@ -111,13 +117,19 @@ fn a_log_read_can_resume_from_a_position() {
 fn an_empty_transaction_never_reaches_the_log() {
     let store = store_on(&backend());
     write(&store, "r", b"v");
-    let before = store.log_records(Sequence::ZERO, PLENTY).unwrap().len();
+    let before = store
+        .log_records(crate::FIXTURE_HOME, Sequence::ZERO, PLENTY)
+        .unwrap()
+        .len();
 
     let empty = store.begin().unwrap();
     empty.commit().unwrap();
 
     assert_eq!(
-        store.log_records(Sequence::ZERO, PLENTY).unwrap().len(),
+        store
+            .log_records(crate::FIXTURE_HOME, Sequence::ZERO, PLENTY)
+            .unwrap()
+            .len(),
         before,
         "a commit that changes nothing must not occupy a sequence"
     );
@@ -135,9 +147,7 @@ fn replay_into_an_empty_store_reproduces_it_byte_for_byte() {
 
     let replica_backend = backend();
     let replica = store_on(&replica_backend);
-    for (sequence, record) in source.log_records(Sequence::ZERO, PLENTY).unwrap() {
-        replica.apply_record(sequence, &record).unwrap();
-    }
+    crate::replay(&source, &replica);
 
     // The node identity is the one key a replay must **not** reproduce: it is in
     // `META` precisely so that it does not travel (ADR-0018 §1), because a
@@ -164,8 +174,8 @@ fn replay_into_an_empty_store_reproduces_it_byte_for_byte() {
         "the replica came up holding the source's identity"
     );
     assert_eq!(
-        replica.committed_tail().unwrap(),
-        source.committed_tail().unwrap()
+        replica.committed_tail(crate::FIXTURE_HOME).unwrap(),
+        source.committed_tail(crate::FIXTURE_HOME).unwrap()
     );
 }
 
@@ -181,7 +191,7 @@ fn a_replica_reads_what_the_source_reads_including_the_history_behind_it() {
     let replica = store_on(&replica_backend);
     let mut replica_held_first = None;
     for (index, (sequence, record)) in source
-        .log_records(Sequence::ZERO, PLENTY)
+        .log_records(crate::FIXTURE_HOME, Sequence::ZERO, PLENTY)
         .unwrap()
         .into_iter()
         .enumerate()
@@ -235,7 +245,9 @@ fn applying_the_same_log_twice_changes_nothing_the_second_time() {
     let source = store_on(&source_backend);
     write(&source, "a", b"1");
     write(&source, "b", b"2");
-    let log = source.log_records(Sequence::ZERO, PLENTY).unwrap();
+    let log = source
+        .log_records(crate::FIXTURE_HOME, Sequence::ZERO, PLENTY)
+        .unwrap();
 
     let replica_backend = backend();
     let replica = store_on(&replica_backend);
@@ -269,7 +281,9 @@ fn a_gap_in_the_log_is_refused_rather_than_skipped() {
     write(&source, "a", b"1");
     write(&source, "b", b"2");
     write(&source, "c", b"3");
-    let log = source.log_records(Sequence::ZERO, PLENTY).unwrap();
+    let log = source
+        .log_records(crate::FIXTURE_HOME, Sequence::ZERO, PLENTY)
+        .unwrap();
 
     let replica = store_on(&backend());
     replica.apply_record(log[0].0, &log[0].1).unwrap();
@@ -284,7 +298,10 @@ fn a_gap_in_the_log_is_refused_rather_than_skipped() {
         other => panic!("expected a gap, got {other}"),
     }
     assert!(!error.is_retryable(), "the same record will still be wrong");
-    assert_eq!(replica.committed_tail().unwrap(), Sequence::new(1));
+    assert_eq!(
+        replica.committed_tail(crate::FIXTURE_HOME).unwrap(),
+        Sequence::new(1)
+    );
 }
 
 #[test]
@@ -362,7 +379,10 @@ fn re_sending_a_record_the_store_already_holds_stays_a_free_no_op() {
     held.apply_record(Sequence::new(1), &record).unwrap();
     held.apply_record(Sequence::new(1), &record).unwrap();
     held.apply_record(Sequence::new(1), &record).unwrap();
-    assert_eq!(held.committed_tail().unwrap(), Sequence::new(1));
+    assert_eq!(
+        held.committed_tail(crate::FIXTURE_HOME).unwrap(),
+        Sequence::new(1)
+    );
     assert_eq!(held.health().unwrap().log_divergences, 0);
 }
 
@@ -430,7 +450,10 @@ fn a_replica_that_applied_a_record_can_still_commit_of_its_own_accord() {
         Some(b"from-a-commit".to_vec())
     );
     assert_eq!(
-        replica.log_records(Sequence::ZERO, PLENTY).unwrap().len(),
+        replica
+            .log_records(crate::FIXTURE_HOME, Sequence::ZERO, PLENTY)
+            .unwrap()
+            .len(),
         2,
         "both paths left one log record each"
     );
@@ -501,9 +524,7 @@ fn a_replay_derives_the_adjacency_the_commit_derived() {
 
     let replica_backend = backend();
     let replica = store_on(&replica_backend);
-    for (sequence, record) in source.log_records(Sequence::ZERO, PLENTY).unwrap() {
-        replica.apply_record(sequence, &record).unwrap();
-    }
+    crate::replay(&source, &replica);
 
     let node_identity = Key::from(vec![0x38]);
     for keyspace in Keyspace::ALL {
@@ -568,11 +589,20 @@ fn a_follower_catches_a_leader_that_is_still_writing() {
     let mut passes = 0_usize;
     let mut overlapped = 0_usize;
     loop {
-        let from = Sequence::new(replica.committed_tail().unwrap().get().saturating_add(1));
-        let batch = leader.log_records(from, BATCH).unwrap();
+        let from = Sequence::new(
+            replica
+                .committed_tail(crate::FIXTURE_HOME)
+                .unwrap()
+                .get()
+                .saturating_add(1),
+        );
+        let batch = leader
+            .log_records(crate::FIXTURE_HOME, from, BATCH)
+            .unwrap();
         if batch.is_empty() {
             if writer.is_finished()
-                && replica.committed_tail().unwrap() == leader.committed_tail().unwrap()
+                && replica.committed_tail(crate::FIXTURE_HOME).unwrap()
+                    == leader.committed_tail(crate::FIXTURE_HOME).unwrap()
             {
                 break;
             }
@@ -602,7 +632,14 @@ fn a_follower_catches_a_leader_that_is_still_writing() {
     // asks for.
     for (sequence, record) in leader
         .log_records(
-            Sequence::new(replica.committed_tail().unwrap().get().saturating_add(1)),
+            crate::FIXTURE_HOME,
+            Sequence::new(
+                replica
+                    .committed_tail(crate::FIXTURE_HOME)
+                    .unwrap()
+                    .get()
+                    .saturating_add(1),
+            ),
             PLENTY,
         )
         .unwrap()
@@ -622,12 +659,12 @@ fn a_follower_catches_a_leader_that_is_still_writing() {
     );
     assert_eq!(
         u64::try_from(applied).unwrap(),
-        leader.committed_tail().unwrap().get(),
+        leader.committed_tail(crate::FIXTURE_HOME).unwrap().get(),
         "the follower applied a different number of records than the leader wrote"
     );
     assert_eq!(
-        replica.committed_tail().unwrap(),
-        leader.committed_tail().unwrap(),
+        replica.committed_tail(crate::FIXTURE_HOME).unwrap(),
+        leader.committed_tail(crate::FIXTURE_HOME).unwrap(),
         "the follower did not converge on the leader's tail"
     );
     assert_eq!(
@@ -675,7 +712,10 @@ fn a_record_whose_predecessor_the_follower_never_wrote_is_refused_at_once() {
         let record = LogRecord::at(Epoch::new(1), vec![mutation(&format!("record-{n}"), b"v")]);
         follower.apply_record(Sequence::new(n), &record).unwrap();
     }
-    assert_eq!(follower.committed_tail().unwrap(), Sequence::new(5));
+    assert_eq!(
+        follower.committed_tail(crate::FIXTURE_HOME).unwrap(),
+        Sequence::new(5)
+    );
 
     // The sender's sixth record. Its own record at 5 was written under epoch 2,
     // because its history parted from this follower's at sequence 4.
@@ -685,7 +725,12 @@ fn a_record_whose_predecessor_the_follower_never_wrote_is_refused_at_once() {
     );
 
     let error = follower
-        .apply_from_stream(Sequence::new(6), Epoch::new(2), &offered)
+        .apply_from_stream(
+            crate::FIXTURE_HOME,
+            Sequence::new(6),
+            Epoch::new(2),
+            &offered,
+        )
         .unwrap_err();
     match error {
         Error::LogDivergence {
@@ -705,7 +750,7 @@ fn a_record_whose_predecessor_the_follower_never_wrote_is_refused_at_once() {
     }
 
     assert_eq!(
-        follower.committed_tail().unwrap(),
+        follower.committed_tail(crate::FIXTURE_HOME).unwrap(),
         Sequence::new(5),
         "the refused record was applied anyway"
     );
@@ -723,9 +768,12 @@ fn a_stream_whose_predecessor_matches_is_applied_like_any_other_record() {
 
     let next = LogRecord::at(Epoch::new(7), vec![mutation("record-4", b"v")]);
     store
-        .apply_from_stream(Sequence::new(4), Epoch::new(7), &next)
+        .apply_from_stream(crate::FIXTURE_HOME, Sequence::new(4), Epoch::new(7), &next)
         .unwrap();
-    assert_eq!(store.committed_tail().unwrap(), Sequence::new(4));
+    assert_eq!(
+        store.committed_tail(crate::FIXTURE_HOME).unwrap(),
+        Sequence::new(4)
+    );
     assert_eq!(store.health().unwrap().log_divergences, 0);
 }
 
@@ -739,14 +787,17 @@ fn the_first_record_of_a_log_claims_the_epoch_of_a_store_that_elected_nobody() {
     let empty = store_on(&empty_backend);
     let first = LogRecord::at(Epoch::new(3), vec![mutation("record-1", b"v")]);
     empty
-        .apply_from_stream(Sequence::new(1), Epoch::ZERO, &first)
+        .apply_from_stream(crate::FIXTURE_HOME, Sequence::new(1), Epoch::ZERO, &first)
         .unwrap();
-    assert_eq!(empty.committed_tail().unwrap(), Sequence::new(1));
+    assert_eq!(
+        empty.committed_tail(crate::FIXTURE_HOME).unwrap(),
+        Sequence::new(1)
+    );
 
     let other_backend = backend();
     let other = store_on(&other_backend);
     let error = other
-        .apply_from_stream(Sequence::new(1), Epoch::new(9), &first)
+        .apply_from_stream(crate::FIXTURE_HOME, Sequence::new(1), Epoch::new(9), &first)
         .unwrap_err();
     assert!(matches!(error, Error::LogDivergence { .. }), "{error}");
 }
@@ -824,9 +875,7 @@ fn a_replica_answers_who_leads_from_the_log_it_applied_and_from_nothing_else() {
         "a store that has applied nothing must not claim to know who leads"
     );
 
-    for (sequence, record) in source.log_records(Sequence::ZERO, PLENTY).unwrap() {
-        replica.apply_record(sequence, &record).unwrap();
-    }
+    crate::replay(&source, &replica);
 
     let answered = leads(&replica, Reach::Store).expect("the log carried the leadership");
     assert_eq!(answered.node, LEADER);

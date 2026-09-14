@@ -22,6 +22,7 @@ mod identity_kind;
 mod ids;
 mod number;
 mod path;
+mod reach;
 mod record_id;
 mod replication;
 mod stemmer;
@@ -43,6 +44,7 @@ pub use ids::{
 };
 pub use number::Number;
 pub use path::{Path, Step};
+pub use reach::Reach;
 pub use record_id::RecordId;
 pub use replication::Replication;
 pub use stemmer::stem;

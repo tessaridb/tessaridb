@@ -352,7 +352,23 @@ impl FormatVersion {
     /// one thing: a store *created* by this build is refused by an older one at
     /// `open`, rather than at whichever read first meets a flag bit it does not
     /// know.
-    pub const CURRENT: Self = Self(2);
+    ///
+    /// Moved to 3 when the log became per-range and its keys gained a home. A
+    /// store below 3 **is** rewritten at open, which is the difference from the
+    /// bump before it: version 2 changed what a value means, and an old value
+    /// still decoded; version 3 changed the shape of a key, and an old key does
+    /// not decode at all. Keeping two key decoders live would put the choice
+    /// between them on the replication read path forever, for a format nothing
+    /// has released.
+    pub const CURRENT: Self = Self(3);
+
+    /// The first format whose log keys carry a home.
+    ///
+    /// Named rather than written as a literal at the one place that compares
+    /// against it: a later bump moves `CURRENT` and must leave this where it is,
+    /// and a literal `3` sitting in the storage layer would move with whichever
+    /// of the two the next author happened to be reading.
+    pub const HOMED_LOG: Self = Self(3);
 
     /// Wrap a raw format version.
     #[must_use]

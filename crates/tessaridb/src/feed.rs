@@ -31,7 +31,7 @@ use std::time::Duration;
 
 use tessari_session::redact::Visible;
 use tessari_storage::{Change, Watch};
-use tessari_types::TableId;
+use tessari_types::{Reach, TableId};
 
 use crate::{Db, Sequence, Session};
 
@@ -162,7 +162,11 @@ pub fn follow(
     // through a session's read path, so a field grant reaches it here or not at
     // all — and "not at all" means pushing a field nobody granted.
     let mut visible: BTreeMap<TableId, Visible> = BTreeMap::new();
-    let mut subscription = Db::subscribe(asked.from, watch);
+    // The log of the tenancy this session selected. Before the log was
+    // partitioned there was one to read and the filter below did the whole job;
+    // now the home is what makes the position mean anything, and the filter
+    // stays because a database's log still carries every table in it.
+    let mut subscription = Db::subscribe(Reach::Database(tenancy.0, tenancy.1), asked.from, watch);
     let mut seen = 0;
     loop {
         // A staged shutdown reaches a feed here. A pusher spends its life

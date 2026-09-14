@@ -171,9 +171,16 @@ impl<'a> Transaction<'a> {
     ///
     /// # Errors
     ///
-    /// Returns an error when the committed tail cannot be read or decoded.
+    /// Returns an error when the committed version cannot be read or decoded.
     pub fn indexes_are_current(&self) -> Result<bool> {
-        Ok(self.snapshot == self.store.committed_tail()?)
+        // The **version**, not the log position. A snapshot is a record version
+        // — this store's own number — and comparing it against a log position
+        // was one comparison between two scales that happened to hold the same
+        // value while a single leader decided every write (Q-623). It stops
+        // holding the moment positions go per-home, and the answer it would give
+        // is `false` for every transaction, which silently takes the scan on
+        // every index-served read.
+        Ok(self.snapshot == self.store.committed_version()?)
     }
 
     /// Whether this transaction has written to one table without committing.

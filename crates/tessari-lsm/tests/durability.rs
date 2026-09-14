@@ -66,6 +66,15 @@ const ACKNOWLEDGED_BEFORE_KILL: usize = 20;
 /// it. The parent ends it three orders of magnitude before this.
 const CHILD_GIVES_UP_AFTER: u64 = 100_000;
 
+/// The log every record this test writes lands in.
+///
+/// `address` names namespace 1 and database 1, so the position `commit` answers
+/// with counts in that database's own log and in no other (S6.2). Reading the
+/// store's log here would compare a promise made about one counter against
+/// another that never moved.
+const HOME: tessari_types::Reach =
+    tessari_types::Reach::Database(NamespaceId::new(1), DatabaseId::new(1));
+
 fn address(n: u64) -> RecordAddress {
     RecordAddress::new(
         NamespaceId::new(1),
@@ -167,7 +176,7 @@ fn an_acknowledged_commit_survives_the_writer_being_killed() {
     // the two regions were recovered to different points.
     let (_, last) = acknowledged.last().unwrap();
     assert!(
-        reopened.committed_tail().unwrap() >= *last,
+        reopened.committed_tail(HOME).unwrap() >= *last,
         "the committed position was recovered behind the records it accounts for"
     );
 }
@@ -310,7 +319,7 @@ fn an_acknowledged_commit_survives_a_kill_after_the_store_has_flushed() {
 
     let (_, last) = acknowledged.last().unwrap();
     assert!(
-        reopened.committed_tail().unwrap() >= *last,
+        reopened.committed_tail(HOME).unwrap() >= *last,
         "the committed position was recovered behind the records it accounts for"
     );
 }

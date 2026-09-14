@@ -200,11 +200,12 @@ impl<'a> Session<'a> {
         store: &Store,
         node: [u8; NODE_ID_LEN],
         over: Reach,
+        home: Reach,
         from: Sequence,
         limit: usize,
     ) -> Result<Vec<(Sequence, LogRecord)>> {
         self.may_replicate(store, over)?;
-        let records = store.log_records_within(over, from, limit)?;
+        let records = store.log_records_within(over, home, from, limit)?;
         // What the follower now holds: the last sequence it was handed, or —
         // when it was handed nothing — the position it told us it was at.
         let reached = records.last().map_or_else(
@@ -214,7 +215,7 @@ impl<'a> Session<'a> {
         // Recorded here because the door is the only way through, so a peer
         // read that goes unrecorded is not expressible. That is the same
         // argument the door itself was built on.
-        store.follower_served(node, reached);
+        store.follower_served(node, home, reached);
         Ok(records)
     }
 

@@ -307,18 +307,23 @@ impl Db {
         self.store.leading()
     }
 
-    /// What changed from `from` onward, oldest first.
+    /// What changed in `home`'s log from `from` onward, oldest first.
     ///
     /// A projection of the replication log: no state, no registration, and the
     /// same answer on a replica reading the same log. The result carries where
     /// to resume, because a commit that changed no records still moves a reader
     /// forward.
     ///
+    /// `home` names which log, and it is not optional for the reason `from` is
+    /// not: a position counts in one log and in no other, so a call that left
+    /// the log to be assumed would be spending one counter's number against
+    /// another's.
+    ///
     /// # Errors
     ///
     /// Returns an error when a record or a payload cannot be read.
-    pub fn changes_since(&self, from: Sequence, limit: usize) -> Result<Changes> {
-        Ok(self.store.changes_since(from, limit)?)
+    pub fn changes_since(&self, home: Reach, from: Sequence, limit: usize) -> Result<Changes> {
+        Ok(self.store.changes_since(home, from, limit)?)
     }
 
     /// A database over a store somebody else opened.
@@ -512,15 +517,16 @@ impl Db {
         &self.store
     }
 
-    /// The position of the newest committed change.
+    /// The position of the newest committed change in `home`'s log.
     ///
-    /// A subscription starting after this one sees only what happens next.
+    /// A subscription on that log starting after this one sees only what
+    /// happens next.
     ///
     /// # Errors
     ///
     /// Returns an error when the position cannot be read.
-    pub fn committed_tail(&self) -> Result<Sequence> {
-        Ok(self.store.committed_tail()?)
+    pub fn committed_tail(&self, home: Reach) -> Result<Sequence> {
+        Ok(self.store.committed_tail(home)?)
     }
 
     /// Follow the changes to one table, or to all of them, from `from` onward.
@@ -530,8 +536,8 @@ impl Db {
     /// subscribers: nothing to leak, nothing to clean up when a caller
     /// disappears, and no lock on the write path.
     #[must_use]
-    pub const fn subscribe(from: Sequence, watch: Watch) -> Subscription {
-        Subscription::new(from, watch)
+    pub const fn subscribe(home: Reach, from: Sequence, watch: Watch) -> Subscription {
+        Subscription::new(home, from, watch)
     }
 
     /// The next changes a subscription is waiting for, advancing it.

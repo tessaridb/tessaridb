@@ -16,7 +16,7 @@ use tessari_encoding::{
     AppliedPositionKey, CODEC_VERSION, FormatVersion, FormatVersionKey, KeyKind, RecordKey,
     RecordValue, StoreKey, StoreValue, TABLE_PREFIX_LEN,
 };
-use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
+use tessari_types::{DatabaseId, NamespaceId, Reach, RecordId, Sequence, TableId};
 
 fn key_bytes(id: RecordId, version: u64) -> Vec<u8> {
     RecordKey::new(
@@ -114,7 +114,20 @@ fn singleton_meta_keys_match_their_tags() {
         vec![KeyKind::FormatVersion.tag()]
     );
     assert_eq!(FormatVersionKey.encode().into_bytes(), vec![0x30]);
-    assert_eq!(AppliedPositionKey.encode().into_bytes(), vec![0x31]);
+    // The applied position stopped being a singleton when the log became
+    // per-range: the tag now leads nine bytes of home. `Reach::Store` writes the
+    // variant and two zeroed identifiers, which is the home every record in a
+    // store written before this change belongs to.
+    assert_eq!(
+        AppliedPositionKey::new(Reach::Store).encode().into_bytes(),
+        vec![0x31, 0x00, 0, 0, 0, 0, 0, 0, 0, 0]
+    );
+    assert_eq!(
+        AppliedPositionKey::new(Reach::Database(NamespaceId::new(1), DatabaseId::new(2)))
+            .encode()
+            .into_bytes(),
+        vec![0x31, 0x02, 0, 0, 0, 1, 0, 0, 0, 2]
+    );
 }
 
 #[test]
@@ -127,9 +140,13 @@ fn stored_values_match_their_fixtures() {
         RecordValue::Tombstone.encode().into_bytes(),
         vec![0x01, 0x01]
     );
+    // A NAMED version rather than `CURRENT`, because `CURRENT` moves by design
+    // and a fixture that moves with it pins nothing. This one is the on-disk
+    // layout a store has to keep being able to recognise, so its bytes are the
+    // thing worth freezing.
     assert_eq!(
-        FormatVersion::CURRENT.encode().into_bytes(),
-        vec![0x01, 0x00, 0x00, 0x00, 0x00, 0x02]
+        FormatVersion::HOMED_LOG.encode().into_bytes(),
+        vec![0x01, 0x00, 0x00, 0x00, 0x00, 0x03]
     );
     assert_eq!(
         Sequence::new(258).encode().into_bytes(),

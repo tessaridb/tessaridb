@@ -45,13 +45,19 @@ fn ready(store: &Store) -> Session<'_> {
     session
 }
 
-/// The sequence the store has committed up to, which is what `VERSION` names.
+/// The version the store has committed up to, which is what `VERSION` names.
 ///
-/// Read rather than counted. Counting statements would encode how many
-/// sequences each one spends, which is a fact about the write path and not
-/// about this feature.
+/// The **version**, not a log position. They were one number until B1 separated
+/// them (Q-614) and one log per range made the difference observable: `VERSION n`
+/// is an MVCC time-travel read, so it counts in the store-wide version counter,
+/// while a log position counts in one log of several (S6.2). Asking a tail here
+/// would name a moment in one range and read it as though it were the store's.
+///
+/// Read rather than counted. Counting statements would encode how many versions
+/// each one spends, which is a fact about the write path and not about this
+/// feature.
 fn now(store: &Store) -> u64 {
-    store.committed_tail().unwrap().get()
+    store.committed_version().unwrap().get()
 }
 
 fn ids(session: &mut Session<'_>, script: &str) -> Vec<RecordId> {
