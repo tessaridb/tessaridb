@@ -1871,3 +1871,46 @@ fn the_log_hears_the_statements_that_never_left_the_building() {
          the reader is told twice in one line"
     );
 }
+
+#[cfg(feature = "console")]
+#[test]
+fn both_of_the_stylesheet_s_mandatory_clamps_are_present() {
+    // The console's design has two clamps on its dials, and they are mandatory
+    // together: motion goes to zero when the reader asks for reduced motion, and
+    // the geometry steps one notch out of the dense band below 768px, where the
+    // pointer is a finger rather than a mouse.
+    //
+    // Only the first was ever built. W322 measured the console at 375×812: rows
+    // 35px and pressables 38px, the DESKTOP dial, with nothing overflowing — so
+    // there was no symptom to notice, and a pair written as one sentence was
+    // ticked as one thing. A clamp with no failure mode is exactly the kind that
+    // needs a test rather than a reviewer.
+    let css = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/console.css"))
+        .expect("the emitted stylesheet");
+
+    assert!(
+        css.contains("@media (prefers-reduced-motion: reduce)"),
+        "the stylesheet no longer honours a reader who asked for reduced motion"
+    );
+    assert!(
+        css.contains("@media (max-width: 48rem)"),
+        "the stylesheet has no clamp below 768px, so the console renders at the \
+         dense dial on a phone — measured at 35px rows and 38px pressables before \
+         this clamp existed"
+    );
+
+    // And the clamp has to carry a floor, not merely exist. 44px is where the
+    // two platform conventions agree, and it is well above the 24×24 minimum the
+    // desktop dial already clears — a clamp that moved nothing would pass the
+    // check above and change nothing on the screen.
+    let clamp = css
+        .split("@media (max-width: 48rem)")
+        .nth(1)
+        .expect("the clamp block");
+    let floors = clamp.matches("min-height: 2.75rem").count();
+    assert!(
+        floors >= 3,
+        "the clamp sets a touch floor {floors} time(s); buttons, tabs and fields \
+         are each pressed with a finger below this width"
+    );
+}

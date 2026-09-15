@@ -1013,3 +1013,48 @@ details.tucked > summary {
     scroll-behavior: auto !important;
   }
 }
+
+/* ─────────────────────────────────────────── the second mandatory clamp ── */
+
+/* `VISUAL_DENSITY 70 → 60` below 768px (brief §3, ref 28 mobile collapse: −10).
+ *
+ * The brief names two clamps and calls both mandatory, in one sentence. Its
+ * sibling above was built; this one was not, and the pair was ticked as one
+ * thing — so the console rendered at the DENSE dial on a phone, rows at 35px
+ * and pressables at 38px, measured at 375×812 in W322. Nothing was broken,
+ * which is why it survived a release gate marked as passing.
+ *
+ * The brief gives the band for 70 and not for 60, so the number comes from the
+ * one thing that actually changes below this width: the pointer is a finger.
+ * Apple's HIG asks 44×44pt and Material 48×48dp; WCAG 2.2 SC 2.5.8 asks 24×24
+ * and is a FLOOR the desktop dial already clears, not a target. 44px is the
+ * convention both platforms agree on, and it is what the geometry the dial
+ * names relaxes to here — rows, pressables, card padding. Nothing else moves,
+ * and nothing moves at all above 768px.
+ */
+@media (max-width: 48rem) {
+  button {
+    padding: var(--s-3) var(--s-4);
+    min-height: 2.75rem;
+  }
+
+  [role="tab"] {
+    min-height: 2.75rem;
+  }
+
+  th,
+  td {
+    /* 12px text at line-height 1.5 is 18px; 13px above and below carries the
+       row to 44px, one notch out of the 32-40px dense band. */
+    padding: 0.8125rem var(--s-3);
+  }
+
+  .pane {
+    padding: var(--s-5);
+  }
+
+  input,
+  select {
+    min-height: 2.75rem;
+  }
+}
