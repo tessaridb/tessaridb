@@ -52,6 +52,20 @@ export const answer = (id: string, size: "full" | "small" = "full"): Node =>
 /** The statement a form has composed, shown before it is sent. */
 export const preview = (id: string): Node => el("pre", { id, class: "answer small" });
 
+/**
+ * What pressing the button will do, in the reader's language.
+ *
+ * Distinct from `preview` on purpose: that one is a `pre` because a statement is
+ * code and its whitespace is load-bearing, and this one is a paragraph because a
+ * consequence is prose. Drawing a sentence in a monospaced box makes it look
+ * like something to be parsed rather than read.
+ */
+export const says = (id: string): Node => el("p", { id, class: "note says" });
+
+/** A statement kept reachable without being in the way. */
+export const behindDisclosure = (summary: string, ...children: Child[]): Node =>
+  el("details", { class: "statement" }, el("summary", {}, summary), ...children);
+
 export type Weight = "primary" | "quiet" | "default";
 
 export const button = (

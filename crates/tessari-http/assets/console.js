@@ -71,6 +71,174 @@
     return block;
   }
 
+  // src/tabs.ts
+  //! Which section is on screen.
+  //!
+  //! Hash routing, so a section is a link somebody can send and a refresh keeps
+  //! you where you were. A panel nobody can link to is a panel people describe to
+  //! each other in words.
+  var tabs = () => all('[role="tab"]');
+  function pane(tab) {
+    const named = tab.getAttribute("aria-controls");
+    if (named === null) {
+      throw new Error(`the tab #${tab.id} controls nothing`);
+    }
+    return at(named);
+  }
+  function show(name) {
+    const wanted = tabs().some((tab) => tab.id === "tab-" + name) ? name : "query";
+    for (const tab of tabs()) {
+      const chosen = tab.id === "tab-" + wanted;
+      tab.setAttribute("aria-selected", String(chosen));
+      tab.tabIndex = chosen ? 0 : -1;
+      pane(tab).hidden = !chosen;
+    }
+    if (window.location.hash !== "#" + wanted) {
+      window.location.hash = wanted;
+    }
+  }
+  function wire() {
+    for (const tab of tabs()) {
+      tab.addEventListener("click", () => show(tab.id.replace("tab-", "")));
+      tab.addEventListener("keydown", (event) => {
+        const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+        if (step === 0) {
+          return;
+        }
+        event.preventDefault();
+        const here = tabs();
+        const next = here[(here.indexOf(tab) + step + here.length) % here.length];
+        if (next === void 0) {
+          return;
+        }
+        next.focus();
+        show(next.id.replace("tab-", ""));
+      });
+    }
+    window.addEventListener(
+      "hashchange",
+      () => show(window.location.hash.replace("#", ""))
+    );
+    show(window.location.hash.replace("#", ""));
+  }
+
+  // src/log.ts
+  //! What the panel did, on the operator's behalf.
+  //!
+  //! Every other screen composes TessariQL and sends it without showing it. That
+  //! is only honest because it is still recoverable, and this is where it is
+  //! recovered from: the statement as sent, the node's own words back, how long it
+  //! took, and which screen issued it.
+  //!
+  //! Two things it is deliberately not. It is not the store's audit trail —
+  //! `INFO FOR AUDIT` answers a different question, for a different reader, with a
+  //! durability this makes no claim to. And it is not persisted: a record of who
+  //! was administered and when, left behind on a shared operator's machine, is a
+  //! disclosure nobody asked for. It lives as long as the tab does.
+  var redacted = (statement) => statement.replace(/PASSWORD\s+'(?:[^'\\]|\\.)*'/gi, "PASSWORD '…'");
+  var CAP = 200;
+  var kept = [];
+  function record(entry2) {
+    kept.unshift({ ...entry2, what: redacted(entry2.what) });
+    if (kept.length > CAP) {
+      kept.length = CAP;
+    }
+    write("log-count", String(kept.length));
+    if (!at("log-sheet").hidden) {
+      draw();
+    }
+  }
+  function reopen(what) {
+    setValue("script", what);
+    hide("log-sheet", true);
+    show("query");
+    at("script").focus();
+  }
+  function copy(what, where2, said2) {
+    const clipboard = navigator.clipboard;
+    if (clipboard === void 0) {
+      const range = document.createRange();
+      range.selectNodeContents(where2);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      said2.textContent = "selected — ⌘C or Ctrl-C";
+      return;
+    }
+    void clipboard.writeText(what).then(
+      () => {
+        said2.textContent = "copied";
+      },
+      () => {
+        said2.textContent = "the browser would not copy it";
+      }
+    );
+  }
+  function entry(one2) {
+    const row = made("div", "logged");
+    const head = made("div", "logged-head");
+    const screen = made("span", "faint");
+    screen.textContent = one2.screen;
+    const took = made("span", "faint");
+    took.textContent = one2.ms + " ms";
+    head.append(screen, took);
+    const what = made("pre", "logged-what");
+    what.textContent = one2.what;
+    const said2 = made("p", one2.failed ? "note warn" : "note");
+    said2.textContent = one2.said;
+    const why = made("p", "note faint");
+    why.textContent = one2.why === void 0 ? "" : "Why: " + one2.why;
+    why.hidden = one2.why === void 0;
+    const actions = made("div", "row tight");
+    const told2 = made("span", "status");
+    const copied = made("button", "quiet");
+    copied.type = "button";
+    copied.textContent = "Copy";
+    copied.addEventListener("click", () => copy(one2.what, what, told2));
+    const opened = made("button", "quiet");
+    opened.type = "button";
+    opened.textContent = "Open in Run";
+    opened.addEventListener("click", () => reopen(one2.what));
+    actions.append(copied, opened, told2);
+    row.append(head, what, said2, why, actions);
+    return row;
+  }
+  function draw() {
+    clear("log-list");
+    if (kept.length === 0) {
+      const empty = made("p", "note");
+      empty.textContent = "Nothing yet. Everything this panel sends on your behalf lands here.";
+      at("log-list").appendChild(empty);
+      return;
+    }
+    const list = made("div");
+    for (const one2 of kept) {
+      list.appendChild(entry(one2));
+    }
+    at("log-list").appendChild(list);
+  }
+  function closeIt() {
+    hide("log-sheet", true);
+    at("log-open").setAttribute("aria-expanded", "false");
+  }
+  function wire2() {
+    write("log-count", "0");
+    at("log-open").addEventListener("click", () => {
+      const opening = at("log-sheet").hidden;
+      hide("log-sheet", !opening);
+      at("log-open").setAttribute("aria-expanded", String(opening));
+      if (opening) {
+        draw();
+      }
+    });
+    at("log-close").addEventListener("click", closeIt);
+    document.addEventListener("keydown", (pressed) => {
+      if (pressed.key === "Escape" && !at("log-sheet").hidden) {
+        closeIt();
+      }
+    });
+  }
+
   // src/session.ts
   //! Who this page is, and the token it is holding.
   //!
@@ -132,7 +300,7 @@
     }
     return found;
   }
-  function wire() {
+  function wire3() {
     const identity = sheet();
     at("user").addEventListener("input", signedIn);
     at("sign-in").addEventListener("click", async () => {
@@ -209,7 +377,30 @@
   //! something this page sits on top of.
   var SCRIPT_ROUTE = "/script";
   var WATCH_ROUTE = "/watch";
-  async function ask(source) {
+  var outcome = (result) => {
+    if (Array.isArray(result.records)) {
+      return result.records.length === 1 ? "1 record" : `${result.records.length} records`;
+    }
+    return result.kind ?? "answered";
+  };
+  function said(text, status) {
+    let body;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      const words = text.trim();
+      return { said: words === "" ? `${status}` : words, failed: status >= 400 };
+    }
+    if (typeof body.error === "string") {
+      return { said: body.error, failed: true };
+    }
+    if (!Array.isArray(body.results)) {
+      return { said: text, failed: status >= 400 };
+    }
+    return { said: body.results.map(outcome).join(", "), failed: status >= 400 };
+  }
+  async function ask(source, screen, why) {
+    const started = performance.now();
     const headers = {};
     const offered = credential();
     if (offered !== null) {
@@ -229,10 +420,18 @@
     if (reply.status === 401 && token() !== null) {
       ended();
     }
-    return { reply, text: await reply.text() };
+    const text = await reply.text();
+    record({
+      what: source,
+      ...said(text, reply.status),
+      ms: Math.round(performance.now() - started),
+      screen,
+      why
+    });
+    return { reply, text };
   }
-  async function valueOf(source) {
-    const { reply, text } = await ask(source);
+  async function valueOf(source, screen, why) {
+    const { reply, text } = await ask(source, screen, why);
     let body;
     try {
       body = JSON.parse(text);
@@ -270,8 +469,8 @@
   var flat = (value2) => value2 === null || typeof value2 !== "object";
   function shape(records) {
     let agreed = null;
-    for (const record of records) {
-      const inside = record.value;
+    for (const record2 of records) {
+      const inside = record2.value;
       if (inside === null || typeof inside !== "object" || Array.isArray(inside)) {
         return null;
       }
@@ -294,7 +493,7 @@
     if (fields === null) {
       return null;
     }
-    const values = records.map((record) => record.value);
+    const values = records.map((record2) => record2.value);
     const numeric = fields.map(
       (field) => values.every((value2) => typeof value2[field] === "number")
     );
@@ -306,9 +505,9 @@
       head.appendChild(column);
     }
     const body = table.createTBody();
-    records.forEach((record, position) => {
+    records.forEach((record2, position) => {
       const row = body.insertRow();
-      row.insertCell().textContent = record.id;
+      row.insertCell().textContent = record2.id;
       fields.forEach((field, index) => {
         const box = row.insertCell();
         box.textContent = cell(values[position]?.[field]);
@@ -370,7 +569,7 @@
   async function readNode() {
     say("node-status", "asking…");
     try {
-      const answered2 = held2(await valueOf("INFO FOR NODE;"));
+      const answered2 = held2(await valueOf("INFO FOR NODE;", "Node"));
       const all2 = answered2 ?? {};
       const { cluster, ...mine } = all2;
       facts("node-facts", mine);
@@ -400,7 +599,7 @@
     );
     say("node-status", "");
   }
-  function wire2() {
+  function wire4() {
     at("node-refresh").addEventListener("click", readNode);
     let read = false;
     for (const tab of ["tab-node", "tab-cluster"]) {
@@ -423,7 +622,7 @@
     const differ = fresh !== "" && again !== "" && fresh !== again;
     say("mine-status", differ ? "the two new ones differ" : "", differ);
   }
-  function wire3() {
+  function wire5() {
     for (const field of ["mine-current", "mine-new", "mine-again"]) {
       at(field).addEventListener("input", shapeMine);
     }
@@ -434,6 +633,7 @@
         return;
       }
       say("mine-status", "changing…");
+      const started = performance.now();
       try {
         const reply = await fetch("/password", {
           method: "POST",
@@ -442,6 +642,13 @@
           credentials: "omit"
         });
         const text = await reply.text();
+        record({
+          what: "Change your own password — POST /password as " + name,
+          said: reply.status >= 400 ? reason(text) : "changed; every session ended",
+          failed: reply.status >= 400,
+          ms: Math.round(performance.now() - started),
+          screen: "Users · your own password"
+        });
         if (reply.status >= 400) {
           say("mine-status", reason(text), true);
           return;
@@ -502,7 +709,7 @@
     answered = null;
     clear("answer");
     try {
-      const { reply, text } = await ask(value("script"));
+      const { reply, text } = await ask(value("script"), "Query");
       try {
         answered = JSON.parse(text);
       } catch {
@@ -517,7 +724,7 @@
       say("script-status", "the node did not answer: " + told(failure), true);
     }
   }
-  function wire4() {
+  function wire6() {
     for (const button of all("[data-shape]")) {
       button.addEventListener("click", () => {
         drawing = button.dataset["shape"] ?? "auto";
@@ -536,55 +743,29 @@
     });
   }
 
-  // src/tabs.ts
-  //! Which section is on screen.
+  // src/roster.ts
+  //! What the panel has been told about who exists.
   //!
-  //! Hash routing, so a section is a link somebody can send and a refresh keeps
-  //! you where you were. A panel nobody can link to is a panel people describe to
-  //! each other in words.
-  var tabs = () => all('[role="tab"]');
-  function pane(tab) {
-    const named = tab.getAttribute("aria-controls");
-    if (named === null) {
-      throw new Error(`the tab #${tab.id} controls nothing`);
-    }
-    return at(named);
+  //! The blast radius a destructive form shows — *who loses what* — has to come
+  //! from somewhere, and the only honest source is the listing the node already
+  //! answered. This holds it, so that the forms can read it without importing the
+  //! listing that draws it: `users.ts` writes here and `user-forms.ts` reads, which
+  //! keeps the two modules pointing one way instead of at each other.
+  //!
+  //! It is deliberately not a cache. Nothing here is asked for on a miss, nothing
+  //! expires, and a name this module has never heard of returns `null` so the form
+  //! can say it does not know rather than invent a reach. A radius drawn from a
+  //! guess is worse than no radius at all — it is the panel narrating an answer
+  //! the node never gave.
+  var known = /* @__PURE__ */ new Map();
+  function forget() {
+    known.clear();
   }
-  function show(name) {
-    const wanted = tabs().some((tab) => tab.id === "tab-" + name) ? name : "query";
-    for (const tab of tabs()) {
-      const chosen = tab.id === "tab-" + wanted;
-      tab.setAttribute("aria-selected", String(chosen));
-      tab.tabIndex = chosen ? 0 : -1;
-      pane(tab).hidden = !chosen;
-    }
-    if (window.location.hash !== "#" + wanted) {
-      window.location.hash = wanted;
-    }
+  function remember(name, one2) {
+    known.set(name, one2);
   }
-  function wire5() {
-    for (const tab of tabs()) {
-      tab.addEventListener("click", () => show(tab.id.replace("tab-", "")));
-      tab.addEventListener("keydown", (event) => {
-        const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
-        if (step === 0) {
-          return;
-        }
-        event.preventDefault();
-        const here = tabs();
-        const next = here[(here.indexOf(tab) + step + here.length) % here.length];
-        if (next === void 0) {
-          return;
-        }
-        next.focus();
-        show(next.id.replace("tab-", ""));
-      });
-    }
-    window.addEventListener(
-      "hashchange",
-      () => show(window.location.hash.replace("#", ""))
-    );
-    show(window.location.hash.replace("#", ""));
+  function lookup(name) {
+    return known.get(name) ?? null;
   }
 
   // src/user-forms.ts
@@ -593,6 +774,13 @@
   //! Only the statements and the previews live here. The buttons that RUN them
   //! are in `users.ts`, beside the listing they have to redraw — which keeps the
   //! two modules pointing one way instead of at each other.
+  //!
+  //! What a pane shows before it runs is **what will happen**, in words, and not
+  //! the statement that will do it. The statement is not hidden — it is in the
+  //! log the moment it is sent, and on the one pane that cannot come back it sits
+  //! behind a disclosure. The difference matters because reading TessariQL to find
+  //! out what a button does makes the language the interface, and then everybody
+  //! who cannot read it is guessing.
   function quoted(text) {
     let out = "'";
     for (const character of text) {
@@ -638,7 +826,6 @@
     }
     return "DEFINE USER " + name + (space === "" ? "" : " ON " + space) + " ROLE " + named + " PASSWORD " + quoted(value("new-password")) + ";";
   }
-  var redacted = (statement) => statement.replace(/PASSWORD '.*';$/, "PASSWORD '…';");
   function missing() {
     if (trimmed("new-name") === "") {
       return "a name is needed";
@@ -648,10 +835,13 @@
     }
     return "a space is needed — or choose the whole node, which is not the same thing";
   }
+  function definitionSays() {
+    const space = reach();
+    return "Creates " + trimmed("new-name") + " as " + role() + (space === "" ? " of the whole node — an administrator" : " in " + space) + ", with the password typed above.";
+  }
   function preview() {
-    const statement = definition();
     write("role-says", MEANS[value("new-role")] ?? "");
-    write("define-preview", statement === null ? missing() : redacted(statement));
+    write("define-preview", definition() === null ? missing() : definitionSays());
   }
   function shapeTheForm() {
     hide("scope-field", value("new-reach") === "node");
@@ -679,29 +869,52 @@
     }
     return "a role is needed";
   }
+  function changeWhy() {
+    return trimmed("change-why");
+  }
+  function alterationSays() {
+    const name = trimmed("change-name");
+    const today = lookup(name);
+    const standing = today === null ? " This panel has not been told what " + name + " reaches — press List to find out." : " Today " + name + " is " + today.role + " in " + today.reach + ", and that is unchanged.";
+    if (value("change-what") === "password") {
+      return "Sets a new password for " + name + ". The one they have stops working and any session they are holding ends, so they sign in again with the new one." + standing;
+    }
+    return "Makes " + name + " " + changedRole() + ". Any session they are holding ends, so they sign in again." + standing;
+  }
   function shapeTheChange() {
     const changing = value("change-what");
     hide("change-password-field", changing !== "password");
     hide("change-role-field", changing !== "role");
     hide("change-role-other-field", changing !== "role" || value("change-role") !== "other");
-    const statement = alteration();
-    write("change-preview", statement === null ? changeMissing() : redacted(statement));
+    write("change-preview", alteration() === null ? changeMissing() : alterationSays());
   }
   function removal() {
     const name = trimmed("remove-name");
     const again = trimmed("remove-confirm");
     return name !== "" && name === again ? "DROP USER " + name + ";" : null;
   }
+  function removeWhy() {
+    return trimmed("remove-why");
+  }
+  function removalSays() {
+    const name = trimmed("remove-name");
+    const today = lookup(name);
+    if (today === null) {
+      return name + " loses access entirely, and their grants go with them. This panel has not been told what " + name + " reaches — press List above to find out before you do this.";
+    }
+    return name + " loses access entirely: " + today.role + " in " + today.reach + ", and the grants go with them. A new user of the same name inherits none of it.";
+  }
   function shapeTheRemoval() {
     const statement = removal();
     disable("remove", statement === null);
     const name = trimmed("remove-name");
     write(
-      "remove-preview",
-      statement !== null ? statement : name === "" ? "a name is needed" : "type the same name again to confirm"
+      "remove-radius",
+      statement !== null ? removalSays() : name === "" ? "a name is needed" : "type the same name again to confirm"
     );
+    write("remove-preview", statement ?? "");
   }
-  function wire6() {
+  function wire7() {
     for (const field of [
       "new-name",
       "new-scope",
@@ -718,12 +931,13 @@
       "change-what",
       "change-password",
       "change-role",
-      "change-role-other"
+      "change-role-other",
+      "change-why"
     ]) {
       at(field).addEventListener("input", shapeTheChange);
       at(field).addEventListener("change", shapeTheChange);
     }
-    for (const field of ["remove-name", "remove-confirm"]) {
+    for (const field of ["remove-name", "remove-confirm", "remove-why"]) {
       at(field).addEventListener("input", shapeTheRemoval);
     }
     shapeTheForm();
@@ -754,12 +968,16 @@
       head.appendChild(cell2);
     }
     const body = table.createTBody();
+    forget();
     for (const one2 of everybody) {
       const row = body.insertRow();
       const name = one2.user ?? "";
       row.insertCell().textContent = name;
-      row.insertCell().textContent = one2.role === "owner" && one2.namespace === void 0 ? "owner · admin" : one2.role ?? "";
-      row.insertCell().textContent = one2.namespace === void 0 ? "the whole node" : one2.namespace + (one2.database === void 0 ? "" : "." + one2.database);
+      const said2 = one2.role === "owner" && one2.namespace === void 0 ? "owner · admin" : one2.role ?? "";
+      row.insertCell().textContent = said2;
+      const reach2 = one2.namespace === void 0 ? "the whole node" : one2.namespace + (one2.database === void 0 ? "" : "." + one2.database);
+      row.insertCell().textContent = reach2;
+      remember(name, { role: said2, reach: reach2 });
       row.addEventListener("click", () => pick(name));
     }
     return table;
@@ -767,7 +985,7 @@
   async function listUsers() {
     say("user-status", "asking…");
     try {
-      const answer2 = held2(await valueOf("INFO FOR USERS;"));
+      const answer2 = held2(await valueOf("INFO FOR USERS;", "Users · list"));
       const everybody = answer2 === null ? [] : answer2["users"];
       clear("user-list");
       if (!Array.isArray(everybody) || everybody.length === 0) {
@@ -782,7 +1000,7 @@
       say("user-status", told(failure), true);
     }
   }
-  function wire7() {
+  function wire8() {
     at("list").addEventListener("click", listUsers);
     at("tab-users").addEventListener("click", () => {
       if (at("user-list").textContent === "") {
@@ -797,7 +1015,7 @@
       }
       say("user-status", "asking…");
       try {
-        const answered2 = await valueOf("INFO FOR USER " + name + ";");
+        const answered2 = await valueOf("INFO FOR USER " + name + ";", "Users · detail");
         const one2 = held2(answered2);
         if (one2 !== null) {
           facts("user-answer", one2);
@@ -818,7 +1036,7 @@
       }
       say("define-status", "running…");
       try {
-        const answered2 = await valueOf(statement);
+        const answered2 = await valueOf(statement, "Users · define");
         const finished = answered2 !== null && answered2.kind === "done";
         say("define-status", finished ? "ok" : "");
         if (!finished) {
@@ -834,9 +1052,14 @@
         say("change-status", changeMissing(), true);
         return;
       }
+      const why = changeWhy();
+      if (why === "") {
+        say("change-status", "say why — this ends their session and they sign in again", true);
+        return;
+      }
       say("change-status", "running…");
       try {
-        const answered2 = await valueOf(statement);
+        const answered2 = await valueOf(statement, "Users · change", why);
         say("change-status", answered2 !== null && answered2.kind === "done" ? "ok" : "");
         await listUsers();
       } catch (failure) {
@@ -849,12 +1072,18 @@
         say("remove-status", "the two names do not match", true);
         return;
       }
+      const why = removeWhy();
+      if (why === "") {
+        say("remove-status", "say why — this does not come back", true);
+        return;
+      }
       say("remove-status", "running…");
       try {
-        const answered2 = await valueOf(statement);
+        const answered2 = await valueOf(statement, "Users · remove", why);
         say("remove-status", answered2 !== null && answered2.kind === "done" ? "removed" : "");
         setValue("remove-name", "");
         setValue("remove-confirm", "");
+        setValue("remove-why", "");
         shapeTheRemoval();
         await listUsers();
       } catch (failure) {
@@ -913,7 +1142,7 @@
     }
     return wanted;
   }
-  function wire8() {
+  function wire9() {
     at("follow").addEventListener("click", () => {
       stop();
       clear("changes");
@@ -973,12 +1202,13 @@
   //! graph first reaches it, which makes the order of everything on this page an
   //! accident of who imports whom. One list is cheaper to read and cannot drift.
   write("where", "served by " + window.location.host);
-  wire5();
-  wire();
-  wire4();
-  wire8();
-  wire6();
-  wire7();
   wire2();
+  wire();
   wire3();
+  wire6();
+  wire9();
+  wire7();
+  wire8();
+  wire4();
+  wire5();
 })();

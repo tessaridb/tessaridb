@@ -7,13 +7,16 @@
 import { held, valueOf } from "./api.js";
 import { at, clear, made, say, setValue, trailer, trimmed } from "./dom.js";
 import { facts, put } from "./draw.js";
+import { forget, remember } from "./roster.js";
 import { told } from "./session.js";
 import {
   alteration,
   changeMissing,
+  changeWhy,
   definition,
   missing,
   removal,
+  removeWhy,
   shapeTheChange,
   shapeTheRemoval,
 } from "./user-forms.js";
@@ -50,6 +53,10 @@ function listing(everybody: readonly Listed[]): HTMLTableElement {
     head.appendChild(cell);
   }
   const body = table.createTBody();
+  // The roster starts again with every listing: it stands for what the node just
+  // said, and a name kept from a listing before a removal would let a destructive
+  // form draw a reach that is no longer there.
+  forget();
   for (const one of everybody) {
     const row = body.insertRow();
     const name = one.user ?? "";
@@ -57,12 +64,17 @@ function listing(everybody: readonly Listed[]): HTMLTableElement {
     // An owner with no space is the node's administrator. The listing says so
     // in the word people use, rather than leaving it to be inferred from an
     // empty cell — which is what the panel did before, and nobody inferred it.
-    row.insertCell().textContent =
+    const said =
       one.role === "owner" && one.namespace === undefined ? "owner · admin" : (one.role ?? "");
-    row.insertCell().textContent =
+    row.insertCell().textContent = said;
+    const reach =
       one.namespace === undefined
         ? "the whole node"
         : one.namespace + (one.database === undefined ? "" : "." + one.database);
+    row.insertCell().textContent = reach;
+    // The same two strings the reader is looking at, so the radius a destructive
+    // form draws and the row it was picked from cannot disagree.
+    remember(name, { role: said, reach });
     // A name in a listing is there to be clicked; typing it again is the kind
     // of small tax that makes an operator go back to `curl`.
     row.addEventListener("click", () => pick(name));
@@ -74,7 +86,7 @@ function listing(everybody: readonly Listed[]): HTMLTableElement {
 export async function listUsers(): Promise<void> {
   say("user-status", "asking…");
   try {
-    const answer = held(await valueOf("INFO FOR USERS;"));
+    const answer = held(await valueOf("INFO FOR USERS;", "Users · list"));
     const everybody = answer === null ? [] : answer["users"];
     clear("user-list");
     if (!Array.isArray(everybody) || everybody.length === 0) {
@@ -107,7 +119,7 @@ export function wire(): void {
     }
     say("user-status", "asking…");
     try {
-      const answered = await valueOf("INFO FOR USER " + name + ";");
+      const answered = await valueOf("INFO FOR USER " + name + ";", "Users · detail");
       const one = held(answered);
       if (one !== null) {
         facts("user-answer", one);
@@ -129,7 +141,7 @@ export function wire(): void {
     }
     say("define-status", "running…");
     try {
-      const answered = await valueOf(statement);
+      const answered = await valueOf(statement, "Users · define");
       const finished = answered !== null && answered.kind === "done";
       say("define-status", finished ? "ok" : "");
       if (!finished) {
@@ -146,9 +158,17 @@ export function wire(): void {
       say("change-status", changeMissing(), true);
       return;
     }
+    // Refused here rather than by a dead button: a control that will not press
+    // and says nothing leaves the operator looking for the field that is wrong,
+    // and the whole point of the reason is that somebody articulates one.
+    const why = changeWhy();
+    if (why === "") {
+      say("change-status", "say why — this ends their session and they sign in again", true);
+      return;
+    }
     say("change-status", "running…");
     try {
-      const answered = await valueOf(statement);
+      const answered = await valueOf(statement, "Users · change", why);
       say("change-status", answered !== null && answered.kind === "done" ? "ok" : "");
       // The listing carries the role, so a role change that is not redrawn
       // leaves the old one on screen looking current.
@@ -164,14 +184,20 @@ export function wire(): void {
       say("remove-status", "the two names do not match", true);
       return;
     }
+    const why = removeWhy();
+    if (why === "") {
+      say("remove-status", "say why — this does not come back", true);
+      return;
+    }
     say("remove-status", "running…");
     try {
-      const answered = await valueOf(statement);
+      const answered = await valueOf(statement, "Users · remove", why);
       say("remove-status", answered !== null && answered.kind === "done" ? "removed" : "");
       // Cleared only on success, so a refusal leaves the name on screen to be
       // read — and never leaves a confirmed form one click from firing again.
       setValue("remove-name", "");
       setValue("remove-confirm", "");
+      setValue("remove-why", "");
       shapeTheRemoval();
       await listUsers();
     } catch (failure) {

@@ -224,3 +224,112 @@ fn the_file_routes_refuse_a_crossing_on_every_method_that_reads() {
         );
     }
 }
+
+/// `ada:a long one`, in base64 — a viewer, and the lowest privilege that exists.
+const ADA: &str = "Basic YWRhOmEgbG9uZyBvbmU=";
+
+/// A store with an owner of everything and a viewer of one database.
+///
+/// The viewer is the probe's whole point. Every other case in this file asks
+/// whether one tenant can reach another's data; these ask whether the least
+/// privileged account this store can hold — one that may legitimately sign in,
+/// read its own database, and nothing else — can reach the administration the
+/// console's Users screen performs. The console is not in the loop for any of
+/// it: a guard that lives in a disabled button is a guard against the button.
+fn an_owner_and_a_viewer(address: &str) {
+    let (status, said) = script(
+        address,
+        "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
+         DEFINE COLLECTION orders; CREATE orders:1 = { total: 5 }; \
+         DEFINE USER root ROLE owner PASSWORD 'a long one';",
+        None,
+    );
+    assert_eq!(status, 200, "{said}");
+    let (status, said) = script(
+        address,
+        "USE NAMESPACE prod; USE DATABASE shop; \
+         DEFINE USER ada ON prod.shop ROLE viewer PASSWORD 'a long one';",
+        Some(ROOT),
+    );
+    assert_eq!(status, 200, "{said}");
+}
+
+#[test]
+fn a_viewer_is_refused_at_every_point_the_users_screen_reaches() {
+    let (_node, address) = node();
+    an_owner_and_a_viewer(&address);
+
+    // The control first. Without it a store that had simply stopped answering
+    // this account would pass every refusal below, which is the failure mode a
+    // one-sided probe cannot see.
+    let (status, said) = script(
+        &address,
+        "USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM orders;",
+        Some(ADA),
+    );
+    assert_eq!(
+        status, 200,
+        "the viewer could not read her own database: {said}"
+    );
+
+    // Each statement the console's Users screen sends, sent the way a `curl`
+    // would send it. The screen's own guards — a disabled button, a typed
+    // confirmation, a reason field — are not in this loop at all, which is the
+    // point: they are deliberation aids for the operator and were never the
+    // thing standing between a viewer and a `DROP USER`.
+    for (what, statement) in [
+        ("list the accounts", "INFO FOR USERS;"),
+        (
+            "define an account",
+            "DEFINE USER mallory ROLE owner PASSWORD 'a long one';",
+        ),
+        ("promote herself", "ALTER USER ada SET ROLE owner;"),
+        (
+            "reset another account's password",
+            "ALTER USER root SET PASSWORD 'a long one too';",
+        ),
+        ("remove the owner", "DROP USER root;"),
+    ] {
+        let (status, said) = script(&address, statement, Some(ADA));
+        assert!(status >= 400, "a viewer could {what}: {status} {said}");
+    }
+
+    // And the owner can, so the refusals above are about the identity rather
+    // than about a surface that has stopped working.
+    let (status, said) = script(&address, "INFO FOR USERS;", Some(ROOT));
+    assert_eq!(status, 200, "the owner was refused the listing: {said}");
+    let (status, said) = script(&address, "ALTER USER ada SET ROLE editor;", Some(ROOT));
+    assert_eq!(status, 200, "the owner was refused a role change: {said}");
+}
+
+#[test]
+fn the_password_route_can_only_ever_change_the_caller_s_own() {
+    // The console's eighth mutation, and the one that is not a statement. It
+    // takes a credential and a new password and has no field for a subject, so
+    // the question is not whether it checks one — it is whether the absence
+    // holds when somebody tries. A confused deputy here would let any account
+    // that can sign in take over any other.
+    let (_node, address) = node();
+    an_owner_and_a_viewer(&address);
+
+    let (status, said) = send(&address, "POST", "/password", b"a new long one", Some(ADA));
+    assert_eq!(
+        status, 200,
+        "the viewer could not change her own password: {said}"
+    );
+
+    // Hers moved.
+    let (status, _) = script(
+        &address,
+        "USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM orders;",
+        Some(ADA),
+    );
+    assert_eq!(status, 401, "her old password still works");
+
+    // The owner's did not, which is the assertion the whole case exists for.
+    let (status, said) = script(&address, "INFO FOR USERS;", Some(ROOT));
+    assert_eq!(
+        status, 200,
+        "the viewer's password change reached the owner's account: {said}"
+    );
+}

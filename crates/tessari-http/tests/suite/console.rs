@@ -668,3 +668,186 @@ fn every_sentence_that_denies_a_capability_is_on_the_record() {
         stale.join("\n  ")
     );
 }
+
+/// Every TypeScript module the console is built from, as the repository holds it.
+///
+/// Enumerated from the directory and never from a list written here. A list is
+/// exactly the under-collection defect this band has now been bitten by twice:
+/// a module added next month would not be on it, and the scan would go on
+/// passing while its reach quietly shrank. The failure mode of reading the
+/// directory is the loud one — a wrong path finds nothing — and the assertions
+/// below turn that into a failure instead of a pass.
+#[cfg(feature = "console")]
+fn panel_sources() -> Vec<(String, String)> {
+    let directory = concat!(env!("CARGO_MANIFEST_DIR"), "/panel/src");
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(directory).expect("the panel's source directory") {
+        let path = entry.expect("a directory entry").path();
+        if path.extension().is_none_or(|kind| kind != "ts") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .expect("a file name")
+            .to_string_lossy()
+            .into_owned();
+        found.push((name, std::fs::read_to_string(&path).expect("a source file")));
+    }
+    found
+}
+
+/// The three modules that own a route, and the reason each one is allowed one.
+///
+/// `api.ts` is the only path to `/script` and records every statement it sends.
+/// `password.ts` posts to `/password`, which is not a statement at all — a token
+/// is not proof of a password — and records the action instead. `session.ts`
+/// exchanges a password for a token and sends nothing on the store's behalf.
+#[cfg(feature = "console")]
+const MAY_REACH_THE_NODE: &[&str] = &["api.ts", "password.ts", "session.ts"];
+
+#[cfg(feature = "console")]
+#[test]
+fn nothing_reaches_the_node_outside_the_modules_that_record_what_they_send() {
+    // The gap this closes was MEASURED, not imagined: a `fetch("/script", …)`
+    // planted in `users.ts` built, typechecked, and passed all fourteen console
+    // tests. The log's most important property was a convention that nothing
+    // anywhere checked, which is the same shape as the outage the previous wave
+    // found — a property everyone believes and no mechanism verifies.
+    let sources = panel_sources();
+    assert!(
+        sources.len() >= 10,
+        "the panel's sources were not found, so this scan would pass by reading \
+         nothing: {} file(s)",
+        sources.len()
+    );
+    for expected in MAY_REACH_THE_NODE {
+        assert!(
+            sources.iter().any(|(name, _)| name == expected),
+            "{expected} is not among the sources this test read, so the allow-list \
+             is not describing the tree it is scanning"
+        );
+    }
+
+    let reaching: Vec<&str> = sources
+        .iter()
+        .filter(|(name, text)| {
+            !MAY_REACH_THE_NODE.contains(&name.as_str()) && text.contains("fetch(")
+        })
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert!(
+        reaching.is_empty(),
+        "these modules talk to the node without going through the one path that \
+         records it: {reaching:?}"
+    );
+
+    // And the tighter half: `/script` is reachable from one module. A second
+    // caller would be a mutation the statement log never hears about, which is
+    // the whole failure this guards.
+    let naming: Vec<&str> = sources
+        .iter()
+        .filter(|(name, text)| name != "api.ts" && text.contains("\"/script\""))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert!(
+        naming.is_empty(),
+        "these modules name the script route themselves rather than asking \
+         `api.ts` for it: {naming:?}"
+    );
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn a_password_cannot_reach_the_statement_log_in_the_clear() {
+    // Also measured rather than assumed: with the redaction deleted, every test
+    // in this suite still passed, because nothing here had ever read a log
+    // entry. This is a weaker check than a behavioural one and is recorded as
+    // such — the redaction is a TypeScript rule and there is no test runner in
+    // this repository that can call it. What it does assert is the shipped
+    // artifact: the single statement that writes an entry applies the rule.
+    let (_node, address) = node();
+    let (status, _, script) = get(&address, "/console.js");
+    assert_eq!(status, 200, "the console's script is not served");
+    assert!(
+        script.contains("unshift("),
+        "nothing in the served script writes a log entry, so this test is \
+         asserting about code that is not there"
+    );
+
+    let writes: Vec<&str> = script
+        .lines()
+        .filter(|line| line.contains("unshift("))
+        .collect();
+    for line in &writes {
+        assert!(
+            line.contains("redacted("),
+            "a log entry is written without the redaction: {}",
+            line.trim()
+        );
+    }
+
+    // The rule itself, so a redaction narrowed back to its old shape — the last
+    // occurrence only, no escape handling — fails here rather than in the field.
+    assert!(
+        script.contains("/PASSWORD\\s+'(?:[^'\\\\]|\\\\.)*'/gi"),
+        "the redaction is not the global, escape-aware one the log relies on"
+    );
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn no_screen_but_run_asks_the_operator_to_read_a_statement() {
+    // Criterion T2.4's own measurement, made on the served page rather than on
+    // a claim about it. The user forms used to draw the statement they would
+    // send; they now say what will happen. The one statement still on a screen
+    // is the removal's, because what is confirmed has to be the thing that runs
+    // — and it sits behind a disclosure, which makes it readable without making
+    // it read.
+    let (_node, address) = node();
+    let (status, _, page) = get(&address, "/");
+    assert_eq!(status, 200, "the console's page is not served");
+
+    let previews: Vec<&str> = page
+        .match_indices("id=\"")
+        .filter_map(|(at, _)| {
+            let rest = page.get(at.saturating_add(4)..)?;
+            let id = rest.split('"').next()?;
+            id.ends_with("-preview").then_some(id)
+        })
+        .collect();
+    assert!(
+        !previews.is_empty(),
+        "no preview element was found at all, so the assertion below would pass \
+         by finding nothing"
+    );
+
+    // A `pre` is the panel's component for a statement; a `p.says` is its
+    // component for a consequence. Which one an id is drawn with is the whole
+    // difference the criterion measures.
+    for id in &previews {
+        let at = page
+            .find(&format!("id=\"{id}\""))
+            .expect("the id just found");
+        let opened = page[..at].rfind('<').expect("an opening tag");
+        let tag = &page[opened..at];
+        if !tag.starts_with("<pre") {
+            continue;
+        }
+        assert_eq!(
+            *id, "remove-preview",
+            "a screen outside Run draws a statement for the operator to read"
+        );
+        let disclosure = page
+            .find("<details class=\"statement\">")
+            .expect("the removal's statement sits behind a disclosure");
+        let closed = page[disclosure..]
+            .find("</details>")
+            .map(|end| disclosure.saturating_add(end))
+            .expect("the disclosure closes");
+        assert!(
+            disclosure < at && at < closed,
+            "the removal's statement is not inside the disclosure that should \
+             hold it"
+        );
+    }
+}

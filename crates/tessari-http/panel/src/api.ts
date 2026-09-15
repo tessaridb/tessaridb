@@ -5,6 +5,7 @@
 //! is the constraint that keeps the API the product surface rather than
 //! something this page sits on top of.
 
+import { record } from "./log.js";
 import { credential, ended, token } from "./session.js";
 
 // The two public routes this page uses. Named once, so what the console reaches
@@ -38,8 +39,60 @@ export interface Answer {
   readonly error?: string;
 }
 
-/** Run a script against the node, and hand back the reply and its text. */
-export async function ask(source: string): Promise<{ reply: Response; text: string }> {
+/**
+ * What one result amounts to, in the node's own vocabulary.
+ *
+ * It reports the `kind` the node used rather than a word this page chose for
+ * it, and counts records rather than describing them. Anything more would be
+ * the panel narrating an answer it did not give.
+ */
+const outcome = (result: Result): string => {
+  if (Array.isArray(result.records)) {
+    return result.records.length === 1 ? "1 record" : `${result.records.length} records`;
+  }
+  return result.kind ?? "answered";
+};
+
+/** The node's own words about what it just did — its answer, or its refusal. */
+function said(text: string, status: number): { said: string; failed: boolean } {
+  let body: Answer;
+  try {
+    body = JSON.parse(text) as Answer;
+  } catch {
+    // Not JSON at all: whatever it sent is still the node speaking, and an
+    // empty body with a status is all there is to report.
+    const words = text.trim();
+    return { said: words === "" ? `${status}` : words, failed: status >= 400 };
+  }
+  if (typeof body.error === "string") {
+    return { said: body.error, failed: true };
+  }
+  if (!Array.isArray(body.results)) {
+    return { said: text, failed: status >= 400 };
+  }
+  return { said: body.results.map(outcome).join(", "), failed: status >= 400 };
+}
+
+/**
+ * Run a script against the node, and hand back the reply and its text.
+ *
+ * `screen` is a parameter and not something read off the active tab, so that a
+ * screen added later cannot forget to say who it is — the compiler asks. Every
+ * call lands in the statement log, Run included: the log's job is that nothing
+ * this session sent is unaccounted for, and the screen field is what tells the
+ * operator's own statements apart from the ones a form sent for them.
+ *
+ * `why` is optional and carried rather than enforced: which actions owe a reason
+ * is the screen's judgement, not this module's, and a transport that refused a
+ * statement for want of a sentence would be deciding policy from the wrong
+ * place. The screens that owe one refuse before they reach here.
+ */
+export async function ask(
+  source: string,
+  screen: string,
+  why?: string,
+): Promise<{ reply: Response; text: string }> {
+  const started = performance.now();
   const headers: Record<string, string> = {};
   const offered = credential();
   if (offered !== null) {
@@ -59,12 +112,24 @@ export async function ask(source: string): Promise<{ reply: Response; text: stri
   if (reply.status === 401 && token() !== null) {
     ended();
   }
-  return { reply, text: await reply.text() };
+  const text = await reply.text();
+  record({
+    what: source,
+    ...said(text, reply.status),
+    ms: Math.round(performance.now() - started),
+    screen,
+    why,
+  });
+  return { reply, text };
 }
 
 /** The single value a one-statement script answered, or a thrown reason. */
-export async function valueOf(source: string): Promise<Result | null> {
-  const { reply, text } = await ask(source);
+export async function valueOf(
+  source: string,
+  screen: string,
+  why?: string,
+): Promise<Result | null> {
+  const { reply, text } = await ask(source, screen, why);
   let body: Answer;
   try {
     body = JSON.parse(text) as Answer;

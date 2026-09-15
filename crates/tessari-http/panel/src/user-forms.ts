@@ -3,8 +3,16 @@
 //! Only the statements and the previews live here. The buttons that RUN them
 //! are in `users.ts`, beside the listing they have to redraw — which keeps the
 //! two modules pointing one way instead of at each other.
+//!
+//! What a pane shows before it runs is **what will happen**, in words, and not
+//! the statement that will do it. The statement is not hidden — it is in the
+//! log the moment it is sent, and on the one pane that cannot come back it sits
+//! behind a disclosure. The difference matters because reading TessariQL to find
+//! out what a button does makes the language the interface, and then everybody
+//! who cannot read it is guessing.
 
 import { at, disable, hide, trimmed, value, write } from "./dom.js";
+import { lookup } from "./roster.js";
 
 /** Text into a TessariQL string literal, escaped the way the language escapes. */
 export function quoted(text: string): string {
@@ -80,16 +88,6 @@ export function definition(): string | null {
   );
 }
 
-/**
- * A statement with its password drawn as the store draws it.
- *
- * The preview is the one place a password would appear in plain view on
- * somebody's screen, and a shoulder is a threat this page can actually do
- * something about. The statement that runs carries the real one.
- */
-const redacted = (statement: string): string =>
-  statement.replace(/PASSWORD '.*';$/, "PASSWORD '…';");
-
 /** Which field is still empty, named rather than left to be guessed. */
 export function missing(): string {
   if (trimmed("new-name") === "") {
@@ -101,11 +99,30 @@ export function missing(): string {
   return "a space is needed — or choose the whole node, which is not the same thing";
 }
 
-/** Keep the preview current, with the password shown as the store shows it. */
+/**
+ * What pressing the button will do, in words.
+ *
+ * It says what is created and where, and stops. What the new account will then
+ * be able to reach is the role's business and is already said beside the role
+ * control — repeating it here would be the pane explaining the same thing twice
+ * and drifting on one of them.
+ */
+export function definitionSays(): string {
+  const space = reach();
+  return (
+    "Creates " +
+    trimmed("new-name") +
+    " as " +
+    role() +
+    (space === "" ? " of the whole node — an administrator" : " in " + space) +
+    ", with the password typed above."
+  );
+}
+
+/** Keep the pane current: what the role means, and what the button will do. */
 function preview(): void {
-  const statement = definition();
   write("role-says", MEANS[value("new-role")] ?? "");
-  write("define-preview", statement === null ? missing() : redacted(statement));
+  write("define-preview", definition() === null ? missing() : definitionSays());
 }
 
 /** Show only the fields the chosen reach and role actually need. */
@@ -154,14 +171,53 @@ export function changeMissing(): string {
   return "a role is needed";
 }
 
-/** Show the fields this change needs, and the statement it would run. */
+/** The reason the operator gave for a change that costs somebody their access. */
+export function changeWhy(): string {
+  return trimmed("change-why");
+}
+
+/**
+ * What this change will do to the person it is about.
+ *
+ * Both branches say the session ends, and that is measured rather than assumed:
+ * a token stands for the account record it was issued against, so a node that
+ * finds the record has moved refuses it and drops it. Whether a *promotion* does
+ * the same as a demotion is asserted by the probe in the suite, not by this
+ * sentence — the pane says what is proven elsewhere and invents nothing.
+ */
+export function alterationSays(): string {
+  const name = trimmed("change-name");
+  const today = lookup(name);
+  const standing =
+    today === null
+      ? " This panel has not been told what " + name + " reaches — press List to find out."
+      : " Today " + name + " is " + today.role + " in " + today.reach + ", and that is unchanged.";
+  if (value("change-what") === "password") {
+    return (
+      "Sets a new password for " +
+      name +
+      ". The one they have stops working and any session they are holding ends, " +
+      "so they sign in again with the new one." +
+      standing
+    );
+  }
+  return (
+    "Makes " +
+    name +
+    " " +
+    changedRole() +
+    ". Any session they are holding ends, so they sign in again." +
+    standing
+  );
+}
+
+/** Show the fields this change needs, and what running it will do. */
 export function shapeTheChange(): void {
   const changing = value("change-what");
   hide("change-password-field", changing !== "password");
   hide("change-role-field", changing !== "role");
   hide("change-role-other-field", changing !== "role" || value("change-role") !== "other");
-  const statement = alteration();
-  write("change-preview", statement === null ? changeMissing() : redacted(statement));
+  write("change-preview", alteration() === null ? changeMissing() : alterationSays());
 }
 
 /**
@@ -179,19 +235,58 @@ export function removal(): string | null {
   return name !== "" && name === again ? "DROP USER " + name + ";" : null;
 }
 
-/** Keep the button and the preview honest about whether the two names agree. */
+/** The reason the operator gave for taking somebody's access away. */
+export function removeWhy(): string {
+  return trimmed("remove-why");
+}
+
+/**
+ * Who loses what, said before the statement rather than after it.
+ *
+ * Drawn from the listing the node already answered and from nowhere else. When
+ * this panel has not been told, it says so: a reach guessed from a name would be
+ * the console narrating an answer the node never gave, and the one place that is
+ * least affordable is the pane that does not come back.
+ */
+export function removalSays(): string {
+  const name = trimmed("remove-name");
+  const today = lookup(name);
+  if (today === null) {
+    return (
+      name +
+      " loses access entirely, and their grants go with them. This panel has not been" +
+      " told what " +
+      name +
+      " reaches — press List above to find out before you do this."
+    );
+  }
+  return (
+    name +
+    " loses access entirely: " +
+    today.role +
+    " in " +
+    today.reach +
+    ", and the grants go with them. A new user of the same name inherits none of it."
+  );
+}
+
+/** Keep the button, the radius and the statement honest about this form. */
 export function shapeTheRemoval(): void {
   const statement = removal();
   disable("remove", statement === null);
   const name = trimmed("remove-name");
   write(
-    "remove-preview",
+    "remove-radius",
     statement !== null
-      ? statement
+      ? removalSays()
       : name === ""
         ? "a name is needed"
         : "type the same name again to confirm",
   );
+  // The statement is still reachable, one disclosure down: what is confirmed
+  // has to be the thing that runs, and that needs it readable — it does not
+  // need it read.
+  write("remove-preview", statement ?? "");
 }
 
 export function wire(): void {
@@ -213,12 +308,13 @@ export function wire(): void {
     "change-password",
     "change-role",
     "change-role-other",
+    "change-why",
   ]) {
     at(field).addEventListener("input", shapeTheChange);
     at(field).addEventListener("change", shapeTheChange);
   }
 
-  for (const field of ["remove-name", "remove-confirm"]) {
+  for (const field of ["remove-name", "remove-confirm", "remove-why"]) {
     at(field).addEventListener("input", shapeTheRemoval);
   }
 

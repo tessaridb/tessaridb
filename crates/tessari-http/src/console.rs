@@ -156,17 +156,25 @@ mod tests {
         // a panel whose tab was never added is a section nobody can reach. The
         // second is the quieter one — the markup is all there, and it is simply
         // invisible.
+        //
+        // Scanned PER ROLE and not per attribute. `aria-controls` used to be a
+        // reliable stand-in for "this is a tab", and it stopped being one the
+        // moment a disclosure button acquired one — which is correct ARIA and
+        // not something this test gets to forbid. A needle that was a proxy for
+        // the subject silently becomes a needle for something else.
         let page = page();
-        let named = |attribute: &str| -> Vec<String> {
-            page.match_indices(attribute)
-                .filter_map(|(at, _)| {
-                    let rest = page.get(at.saturating_add(attribute.len())..)?;
+        let named = |role: &str, attribute: &str| -> Vec<String> {
+            page.lines()
+                .filter(|line| line.contains(role))
+                .filter_map(|line| {
+                    let at = line.find(attribute)?;
+                    let rest = line.get(at.saturating_add(attribute.len())..)?;
                     rest.split('"').next().map(str::to_owned)
                 })
                 .collect()
         };
-        let controls = named(r#"aria-controls=""#);
-        let labelled = named(r#"aria-labelledby=""#);
+        let controls = named(r#"role="tab""#, r#"aria-controls=""#);
+        let labelled = named(r#"role="tabpanel""#, r#"aria-labelledby=""#);
         assert!(!controls.is_empty(), "the page has no tabs at all");
         assert_eq!(
             controls.len(),

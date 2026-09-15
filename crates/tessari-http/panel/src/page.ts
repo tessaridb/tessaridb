@@ -11,8 +11,9 @@
 
 import { document, el, type Node } from "./html.js";
 import {
-  answer, button, choose, field, note, number, pane, paneHead, panel, preview,
-  ROLES, row, secret, split, status, tabs, text, warning, type Destination,
+  answer, behindDisclosure, button, choose, field, note, number, pane, paneHead,
+  panel, preview, ROLES, row, says, secret, split, status, tabs, text, warning,
+  type Destination,
 } from "./ui.js";
 
 const DESTINATIONS: readonly Destination[] = [
@@ -184,7 +185,7 @@ const defineOne = (): Node =>
       field("Password", secret("new-password", "new-password")),
     ),
     el("p", { id: "role-says", class: "note" }),
-    preview("define-preview"),
+    says("define-preview"),
     row("default", button("define", "Run it", "primary")),
   );
 
@@ -220,7 +221,13 @@ const changeOne = (): Node =>
         hidden: true,
       }),
     ),
-    preview("change-preview"),
+    row(
+      "default",
+      field("Why", text("change-why", { placeholder: "rotating a credential that leaked" }), {
+        class: "wide",
+      }),
+    ),
+    says("change-preview"),
     row("default", button("change", "Run it", "primary")),
   );
 
@@ -243,7 +250,14 @@ const removeOne = (): Node =>
       field("Who", text("remove-name", { placeholder: "ada" })),
       field("Type the name again", text("remove-confirm", { placeholder: "ada" })),
     ),
-    preview("remove-preview"),
+    row(
+      "default",
+      field("Why", text("remove-why", { placeholder: "left the team on Friday" }), {
+        class: "wide",
+      }),
+    ),
+    says("remove-radius"),
+    behindDisclosure("The statement this will send", preview("remove-preview")),
     row("default", button("remove", "Remove", "default", { disabled: true })),
     el("hr", { class: "between" }),
     paneHead("Your own password", status("mine-status")),
@@ -343,6 +357,51 @@ const cluster = (): Node =>
     ),
   );
 
+/**
+ * The statement log, and the one control that opens it.
+ *
+ * It sits in a tray at the foot of the page rather than in a pane, because it
+ * belongs to the session and not to any one screen. Nothing routes through it
+ * and it never opens itself — §5 of the brief is explicit that the record is
+ * behind a control and never in the flow.
+ */
+const tray = (): Node =>
+  el(
+    "footer",
+    { class: "tray" },
+    // Built with `el` rather than `ui.button`, which takes a label and not
+    // markup: the count is a live element the log writes into, so it has to be
+    // a child rather than part of a string.
+    el(
+      "button",
+      {
+        id: "log-open",
+        type: "button",
+        class: "quiet",
+        "aria-controls": "log-sheet",
+        "aria-expanded": "false",
+      },
+      "Statements ",
+      el("span", { id: "log-count", class: "count" }, "0"),
+    ),
+    el("span", { class: "faint" }, "everything this panel sent for you"),
+  );
+
+const logSheet = (): Node =>
+  el(
+    "div",
+    { id: "log-sheet", class: "sheet log", hidden: true, role: "region", "aria-label": "Statements" },
+    paneHead("Statements this session", button("log-close", "Close", "quiet")),
+    note(
+      "The panel's own record, newest first — not the store's. ",
+      el("code", {}, "INFO FOR AUDIT"),
+      " answers a different question, for a different reader, and keeps its answer. " +
+        "This holds no credential, lasts as long as this tab, and makes no claim to " +
+        "survive it.",
+    ),
+    el("div", { id: "log-list" }),
+  );
+
 export const index = (): string =>
   document(
     el(
@@ -355,6 +414,8 @@ export const index = (): string =>
         bar(),
         tabs(DESTINATIONS),
         el("main", {}, query(), users(), node(), cluster()),
+        tray(),
+        logSheet(),
         el("script", { src: "/console.js" }),
       ),
     ),

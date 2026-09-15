@@ -58,7 +58,7 @@ async function run(): Promise<void> {
   answered = null;
   clear("answer");
   try {
-    const { reply, text } = await ask(value("script"));
+    const { reply, text } = await ask(value("script"), "Query");
     // Parsed when it is JSON and shown as it came when it is not: an error body
     // is plain text and reformatting it would only hide it.
     try {

@@ -54,7 +54,7 @@ function answer(scraped: { status: number; body: unknown }): string {
 export async function readNode(): Promise<void> {
   say("node-status", "asking…");
   try {
-    const answered = held(await valueOf("INFO FOR NODE;"));
+    const answered = held(await valueOf("INFO FOR NODE;", "Node"));
     const all = answered ?? {};
     // `cluster` is its own object and belongs on the cluster tab; what is left
     // is this machine, which is what this pane claims to show.

@@ -1,6 +1,7 @@
 //! Changing your own password.
 
 import { at, disable, say, setValue, trimmed, value } from "./dom.js";
+import { record } from "./log.js";
 import { basic, reason, told } from "./session.js";
 
 /**
@@ -31,6 +32,7 @@ export function wire(): void {
       return;
     }
     say("mine-status", "changing…");
+    const started = performance.now();
     try {
       // Basic and not the token this page is holding: the route asks for the
       // current password as a second proof, and a token is not one. The bytes
@@ -42,6 +44,17 @@ export function wire(): void {
         credentials: "omit",
       });
       const text = await reply.text();
+      // This is the one thing the panel does that is not a statement, so the
+      // log records the ACT rather than a sentence of TessariQL. Leaving it out
+      // would make the log's claim false in exactly the place it matters most:
+      // this ends every session the account holds, on every node.
+      record({
+        what: "Change your own password — POST /password as " + name,
+        said: reply.status >= 400 ? reason(text) : "changed; every session ended",
+        failed: reply.status >= 400,
+        ms: Math.round(performance.now() - started),
+        screen: "Users · your own password",
+      });
       if (reply.status >= 400) {
         say("mine-status", reason(text), true);
         return;

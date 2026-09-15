@@ -608,6 +608,127 @@ hr.between {
   margin: 1.25rem 0 0.25rem;
 }
 
+/* ──────────────────────────────────── what a button will do ── */
+
+/* The panes above the destructive buttons used to draw the statement they would
+   send. They now say what will happen, and this is the face that says it: the
+   page's reading face, not the monospaced one. A consequence set in a code box
+   reads as something to be parsed, and the whole reason the statement moved is
+   that parsing it was never the operator's job. */
+.says {
+  color: var(--text);
+  font-size: var(--t-13);
+  line-height: 1.55;
+  max-width: 68ch;
+  border-left: 2px solid var(--accent-edge);
+  padding-left: var(--s-3);
+  margin: var(--s-3) 0;
+}
+
+/* A field whose answer is a sentence and not a word. Without this the reason box
+   is the width of a name box, which tells the operator to write one word in it —
+   and one word is not a reason. */
+label.wide {
+  flex: 1 1 26rem;
+}
+
+label.wide input {
+  width: 100%;
+}
+
+/* The statement, kept reachable and out of the way: what is confirmed has to be
+   the thing that runs, and that needs it readable rather than read. The marker
+   is the browser's own, because a disclosure nobody recognises as one is a
+   paragraph with a strange margin. */
+details.statement {
+  margin: 0 0 var(--s-3);
+}
+
+details.statement > summary {
+  color: var(--text-faint);
+  font-size: var(--t-12);
+  cursor: pointer;
+  padding: var(--s-1) 0;
+}
+
+/* ─────────────────────────────────────────────── the statement log ── */
+
+/* The tray is where the session's record lives, and it is the only element on
+   the page that belongs to no screen. It stays put while a pane scrolls,
+   because the point of a record you can always reach is that you can always
+   reach it. */
+.tray {
+  position: sticky;
+  bottom: 0;
+  z-index: 9;
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-2) var(--s-5);
+  background: var(--surface-raised);
+  border-top: 1px solid var(--line);
+}
+
+/* The count, in the mono stack so it does not shuffle the words beside it as
+   it climbs past 9 and past 99. */
+.count {
+  display: inline-block;
+  min-width: 1.5rem;
+  padding: 0 var(--s-1);
+  border-radius: var(--radius-small);
+  background: var(--violet-a12);
+  color: var(--accent-text);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-12);
+  text-align: center;
+}
+
+/* `fixed` and not `absolute`: `.sheet` positions itself against the identity
+   control it lives inside, and this one is a child of the body with nothing to
+   position against. Same surface, different anchor. */
+.sheet.log {
+  position: fixed;
+  right: var(--s-4);
+  bottom: 3rem;
+  top: auto;
+  width: min(44rem, calc(100vw - var(--s-6)));
+  max-height: min(34rem, 70vh);
+  overflow-y: auto;
+}
+
+.logged {
+  padding: var(--s-3) 0;
+  border-top: 1px solid var(--line);
+}
+
+.logged-head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s-3);
+  font-size: var(--t-12);
+}
+
+/* The statement as sent. It wraps rather than scrolls sideways, because a
+   record you have to drag to read is a record nobody reads. */
+.logged-what {
+  margin: var(--s-2) 0;
+  padding: var(--s-2);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-small);
+  color: var(--text);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-12);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.logged .note {
+  margin: var(--s-2) 0;
+}
+
 /* ─────────────────────────────────────────────────── reduced motion ── */
 
 /* The dial's own clamp: `prefers-reduced-motion: reduce` takes MOTION_INTENSITY

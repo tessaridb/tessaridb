@@ -17,6 +17,7 @@
 //! accident of who imports whom. One list is cheaper to read and cannot drift.
 
 import { write } from "./dom.js";
+import * as log from "./log.js";
 import * as node from "./node.js";
 import * as password from "./password.js";
 import * as query from "./query.js";
@@ -28,6 +29,9 @@ import * as watch from "./watch.js";
 
 write("where", "served by " + window.location.host);
 
+// The log first, so the count in the tray reads zero before anything can add
+// to it — and so a statement sent during start-up has somewhere to land.
+log.wire();
 tabs.wire();
 session.wire();
 query.wire();

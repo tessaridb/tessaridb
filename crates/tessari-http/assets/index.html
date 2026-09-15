@@ -133,7 +133,7 @@
               <label>Password <input id="new-password" type="password" autocomplete="new-password" /></label>
             </div>
             <p id="role-says" class="note"></p>
-            <pre id="define-preview" class="answer small"></pre>
+            <p id="define-preview" class="note says"></p>
             <div class="row">
               <button id="define" type="button" class="primary">Run it</button>
             </div>
@@ -167,7 +167,10 @@
               </label>
               <label id="change-role-other-field" hidden>Which <input id="change-role-other" type="text" placeholder="a role this build knows" /></label>
             </div>
-            <pre id="change-preview" class="answer small"></pre>
+            <div class="row">
+              <label class="wide">Why <input id="change-why" type="text" placeholder="rotating a credential that leaked" /></label>
+            </div>
+            <p id="change-preview" class="note says"></p>
             <div class="row">
               <button id="change" type="button" class="primary">Run it</button>
             </div>
@@ -183,7 +186,14 @@
               <label>Who <input id="remove-name" type="text" placeholder="ada" /></label>
               <label>Type the name again <input id="remove-confirm" type="text" placeholder="ada" /></label>
             </div>
-            <pre id="remove-preview" class="answer small"></pre>
+            <div class="row">
+              <label class="wide">Why <input id="remove-why" type="text" placeholder="left the team on Friday" /></label>
+            </div>
+            <p id="remove-radius" class="note says"></p>
+            <details class="statement">
+              <summary>The statement this will send</summary>
+              <pre id="remove-preview" class="answer small"></pre>
+            </details>
             <div class="row">
               <button id="remove" type="button" disabled>Remove</button>
             </div>
@@ -254,6 +264,18 @@
         </div>
       </section>
     </main>
+    <footer class="tray">
+      <button id="log-open" type="button" class="quiet" aria-controls="log-sheet" aria-expanded="false">Statements <span id="log-count" class="count">0</span></button>
+      <span class="faint">everything this panel sent for you</span>
+    </footer>
+    <div id="log-sheet" class="sheet log" hidden role="region" aria-label="Statements">
+      <div class="pane-head">
+        <h2>Statements this session</h2>
+        <button id="log-close" type="button" class="quiet">Close</button>
+      </div>
+      <p class="note">The panel's own record, newest first — not the store's. <code>INFO FOR AUDIT</code> answers a different question, for a different reader, and keeps its answer. This holds no credential, lasts as long as this tab, and makes no claim to survive it.</p>
+      <div id="log-list"></div>
+    </div>
     <script src="/console.js"></script>
   </body>
 </html>
