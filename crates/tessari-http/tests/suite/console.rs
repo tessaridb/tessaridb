@@ -26,7 +26,7 @@ use tessari_http::Node;
 use tessaridb::Db;
 
 /// A node on a loopback port the operating system picked, plus its address.
-fn node() -> (Arc<Node>, String) {
+pub(crate) fn node() -> (Arc<Node>, String) {
     let db = Arc::new(Db::in_memory().unwrap());
     let node = Arc::new(Node::bind(db, "127.0.0.1:0").unwrap());
     let address = node.address();
@@ -36,7 +36,7 @@ fn node() -> (Arc<Node>, String) {
 }
 
 /// One request, and everything that came back: status, headers, body.
-fn get(address: &str, path: &str) -> (u16, Vec<String>, String) {
+pub(crate) fn get(address: &str, path: &str) -> (u16, Vec<String>, String) {
     let mut stream = TcpStream::connect(address).unwrap();
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))

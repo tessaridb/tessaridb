@@ -6,6 +6,7 @@
 //! link once rather than once per case.
 
 mod console;
+mod console_tokens;
 mod crossing;
 mod objects;
 mod routes;

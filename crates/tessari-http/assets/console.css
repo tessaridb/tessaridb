@@ -55,6 +55,13 @@
   --s-5: 1.5rem;
   --s-6: 2rem;
 
+  /* Motion. `MOTION_INTENSITY 20` buys state feedback and nothing else: one
+     duration, mid-band at 100ms so a later nudge stays legal in both
+     directions, and ease-out-quad because a state that is arriving should
+     decelerate into place. No spring, no loop, no decorative motion. */
+  --motion-fast: 100ms;
+  --ease: cubic-bezier(0.5, 1, 0.89, 1);
+
   --t-12: 0.75rem;
   --t-13: 0.8125rem;
   --t-14: 0.875rem;
@@ -151,6 +158,7 @@ h2 {
 
 code {
   font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   font-size: 0.92em;
   color: var(--accent-text);
 }
@@ -277,6 +285,9 @@ code {
   font: inherit;
   font-size: var(--t-13);
   cursor: pointer;
+  transition:
+    color var(--motion-fast) var(--ease),
+    border-bottom-color var(--motion-fast) var(--ease);
 }
 
 .tabs [role="tab"]:hover {
@@ -343,12 +354,14 @@ input,
 textarea,
 select {
   font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   font-size: var(--t-13);
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-small);
   padding: var(--s-2);
+  transition: border-color var(--motion-fast) var(--ease);
 }
 
 input:focus,
@@ -419,6 +432,10 @@ button {
   background: var(--accent-wash);
   color: var(--accent-text);
   cursor: pointer;
+  transition:
+    background var(--motion-fast) var(--ease),
+    border-color var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease);
 }
 
 button:hover:not(:disabled) {
@@ -452,6 +469,7 @@ button:disabled {
 
 .status {
   font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   font-size: var(--t-12);
   color: var(--text-faint);
 }
@@ -471,6 +489,7 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: var(--radius-small);
   font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   font-size: var(--t-12);
 }
 
@@ -511,9 +530,14 @@ table {
 th,
 td {
   text-align: left;
-  padding: var(--s-1) var(--s-3);
+  /* 12px text at line-height 1.5 is 18px; 8px above and below puts the row at
+     34px, inside the 32-40px band `VISUAL_DENSITY 70` asks for. It was 26px,
+     which is denser than dense — a scanning eye loses its place in a table
+     whose rows are tighter than the text is tall. */
+  padding: var(--s-2) var(--s-3);
   border-bottom: 1px solid var(--line);
   white-space: nowrap;
+  transition: background var(--motion-fast) var(--ease);
 }
 
 th {
@@ -534,6 +558,7 @@ thead th {
 
 tbody th {
   font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   font-weight: 400;
   padding-right: var(--s-5);
 }
@@ -555,6 +580,7 @@ tbody tr:hover td {
   max-height: 20rem;
   overflow: auto;
   font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
   font-size: var(--t-12);
 }
 
@@ -580,4 +606,28 @@ hr.between {
   border: 0;
   border-top: 1px solid var(--line);
   margin: 1.25rem 0 0.25rem;
+}
+
+/* ─────────────────────────────────────────────────── reduced motion ── */
+
+/* The dial's own clamp: `prefers-reduced-motion: reduce` takes MOTION_INTENSITY
+   to 0. Nothing is lost, because at 20 there was never anything but state
+   feedback — a colour that arrives in 100ms and a colour that is simply there
+   carry the same information. `0s` rather than removing the declarations, so a
+   rule added later inherits the clamp instead of escaping it.
+
+   `:focus-visible` is deliberately absent from every transition above and
+   therefore from this block. A focus ring is not state feedback, it is the
+   answer to "where am I", and a keyboard user moving quickly through a form
+   should never see it lagging behind the caret. Instant is correct there at
+   every motion setting. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0s !important;
+    animation-duration: 0s !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
 }
