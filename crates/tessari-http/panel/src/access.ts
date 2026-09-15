@@ -162,10 +162,63 @@ const removeOne = (): Node =>
     ),
   );
 
+/**
+ * Giving and taking away what one account reaches.
+ *
+ * Its own pane rather than a drawer over a user detail, which is the shape the
+ * brief sketched: there is no separate user-detail SURFACE to put a drawer over
+ * — the detail is a pane on this screen — and a drawer over a pane would be a
+ * sheet over the thing it belongs to. Recorded as a difference from the brief
+ * rather than taken silently.
+ */
+const giveOrTake = (): Node =>
+  pane(
+    paneHead("Give or take away", status("grant-status")),
+    note(
+      "A grant is not only an addition. A user with no table grants is governed " +
+        "by their role; a user with one reaches exactly what they were granted — " +
+        "so the first grant narrows, and taking the last one away widens. The line " +
+        "under the form says which of the two you are about to do.",
+    ),
+    row(
+      "default",
+      field("Who", text("grant-who", { placeholder: "ada" })),
+      field(
+        "Direction ",
+        choose("grant-direction", [
+          { value: "give", label: "give", chosen: true },
+          { value: "take", label: "take away" },
+        ]),
+      ),
+      field(
+        "On ",
+        choose("grant-reach", [
+          { value: "table", label: "a table", chosen: true },
+          { value: "namespace", label: "a namespace" },
+          { value: "database", label: "a database" },
+          { value: "store", label: "the whole store" },
+        ]),
+      ),
+      field("Named", text("grant-name", { placeholder: "app.main.orders" }), {
+        id: "grant-name-field",
+      }),
+      field("What", text("grant-what", { placeholder: "read, write" })),
+    ),
+    row(
+      "default",
+      field("Why", text("grant-why", { placeholder: "joining the billing rota" }), {
+        class: "wide",
+      }),
+    ),
+    says("grant-says"),
+    row("default", button("grant-apply", "Run it", "primary")),
+  );
+
 export const access = (): Node =>
   panel(
     to("access"),
     false,
     split(whoThereIs(), defineOne()),
     split(changeOne(), removeOne()),
+    giveOrTake(),
   );

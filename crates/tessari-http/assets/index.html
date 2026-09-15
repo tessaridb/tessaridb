@@ -317,6 +317,41 @@
             <p class="note">The current one is asked for because being signed in is not proof of a password — otherwise a token copied off this connection would be a way to take the account rather than borrow it. Changing it ends every session you hold, this one included, so you will be asked to sign in again.</p>
           </div>
         </div>
+        <div class="pane">
+          <div class="pane-head">
+            <h2>Give or take away</h2>
+            <span id="grant-status" class="status" role="status"></span>
+          </div>
+          <p class="note">A grant is not only an addition. A user with no table grants is governed by their role; a user with one reaches exactly what they were granted — so the first grant narrows, and taking the last one away widens. The line under the form says which of the two you are about to do.</p>
+          <div class="row">
+            <label>Who <input id="grant-who" type="text" placeholder="ada" /></label>
+            <label>
+              Direction 
+              <select id="grant-direction">
+                <option value="give" selected>give</option>
+                <option value="take">take away</option>
+              </select>
+            </label>
+            <label>
+              On 
+              <select id="grant-reach">
+                <option value="table" selected>a table</option>
+                <option value="namespace">a namespace</option>
+                <option value="database">a database</option>
+                <option value="store">the whole store</option>
+              </select>
+            </label>
+            <label id="grant-name-field">Named <input id="grant-name" type="text" placeholder="app.main.orders" /></label>
+            <label>What <input id="grant-what" type="text" placeholder="read, write" /></label>
+          </div>
+          <div class="row">
+            <label class="wide">Why <input id="grant-why" type="text" placeholder="joining the billing rota" /></label>
+          </div>
+          <p id="grant-says" class="note says"></p>
+          <div class="row">
+            <button id="grant-apply" type="button" class="primary">Run it</button>
+          </div>
+        </div>
       </section>
       <section id="panel-this-node" role="tabpanel" aria-labelledby="tab-this-node" tabindex="0" hidden>
         <div class="pane-head">

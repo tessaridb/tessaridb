@@ -21,6 +21,7 @@ import * as context from "./context.js";
 import * as detail from "./detail.js";
 import * as drawer from "./drawer.js";
 import * as formation from "./formation.js";
+import * as grants from "./grants.js";
 import * as log from "./log.js";
 import * as node from "./node.js";
 import * as password from "./password.js";
@@ -44,6 +45,7 @@ query.wire();
 search.wire();
 shortcuts.wire();
 formation.wire();
+grants.wire();
 drawer.wire();
 detail.wire();
 

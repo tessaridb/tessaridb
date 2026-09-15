@@ -382,7 +382,7 @@
   //! durability this makes no claim to. And it is not persisted: a record of who
   //! was administered and when, left behind on a shared operator's machine, is a
   //! disclosure nobody asked for. It lives as long as the tab does.
-  var redacted = (statement) => statement.replace(/PASSWORD\s+'(?:[^'\\]|\\.)*'/gi, "PASSWORD '…'");
+  var redacted = (statement2) => statement2.replace(/PASSWORD\s+'(?:[^'\\]|\\.)*'/gi, "PASSWORD '…'");
   var CAP = 200;
   var kept = [];
   function record(entry2) {
@@ -814,14 +814,14 @@
       }
     });
     at("drawer-apply").addEventListener("click", async () => {
-      const statement = change(open, ticked());
-      if (statement === null) {
+      const statement2 = change(open, ticked());
+      if (statement2 === null) {
         say("drawer-status", "there is nothing this drawer can send for that", true);
         return;
       }
       say("drawer-status", "running…");
       try {
-        const answered2 = await valueOf(statement, "Cluster · roles");
+        const answered2 = await valueOf(statement2, "Cluster · roles");
         say("drawer-status", answered2 !== null && answered2.kind === "done" ? "declared" : "");
       } catch (failure) {
         say("drawer-status", told(failure), true);
@@ -957,10 +957,10 @@
   function preview2() {
     write("role-says", MEANS[value("new-role")] ?? "");
     const space = reach();
-    const statement = definition();
+    const statement2 = definition();
     write(
       "define-preview",
-      statement === null || space === null ? missing() : definitionSays(trimmed("new-name"), role(), space)
+      statement2 === null || space === null ? missing() : definitionSays(trimmed("new-name"), role(), space)
     );
   }
   function shapeTheForm() {
@@ -1015,14 +1015,14 @@
     return trimmed("remove-why");
   }
   function shapeTheRemoval() {
-    const statement = removal();
-    disable("remove", statement === null);
+    const statement2 = removal();
+    disable("remove", statement2 === null);
     const name = trimmed("remove-name");
     write(
       "remove-radius",
-      statement !== null ? removalSays(name) : name === "" ? "a name is needed" : "type the same name again to confirm"
+      statement2 !== null ? removalSays(name) : name === "" ? "a name is needed" : "type the same name again to confirm"
     );
-    write("remove-preview", statement ?? "");
+    write("remove-preview", statement2 ?? "");
   }
   function wire7() {
     for (const field of [
@@ -1110,9 +1110,9 @@
   }
   function incomplete(rows) {
     for (const [index, row] of rows.entries()) {
-      const missing2 = row.name === "" ? "a name" : row.endpoint === "" ? "an address" : row.node === "" ? "a node id" : row.roles.length === 0 ? "at least one role" : null;
-      if (missing2 !== null) {
-        return `row ${index + 1} needs ${missing2}`;
+      const missing3 = row.name === "" ? "a name" : row.endpoint === "" ? "an address" : row.node === "" ? "a node id" : row.roles.length === 0 ? "at least one role" : null;
+      if (missing3 !== null) {
+        return `row ${index + 1} needs ${missing3}`;
       }
     }
     return null;
@@ -1125,13 +1125,13 @@
   }
   function preview3() {
     const rows = intended();
-    const missing2 = incomplete(rows);
+    const missing3 = incomplete(rows);
     if (rows.length === 0) {
       say("form-says", "Nothing declared yet.");
       return;
     }
-    if (missing2 !== null) {
-      say("form-says", missing2, true);
+    if (missing3 !== null) {
+      say("form-says", missing3, true);
       return;
     }
     const named = rows.map((row) => row.name).join(", ");
@@ -1171,9 +1171,9 @@
         say("form-status", "nothing to declare", true);
         return;
       }
-      const missing2 = incomplete(rows);
-      if (missing2 !== null) {
-        say("form-status", missing2, true);
+      const missing3 = incomplete(rows);
+      if (missing3 !== null) {
+        say("form-status", missing3, true);
         return;
       }
       say("form-status", "running…");
@@ -1186,6 +1186,122 @@
     });
     preview3();
     showStatement();
+  }
+
+  // src/grants.ts
+  //! Giving and taking away what one account may reach.
+  //!
+  //! The third action S2.1 names, beside a role change and a removal, and the one
+  //! the console had no surface for. `GRANT` and `REVOKE` were in the language the
+  //! whole time; what was missing was a screen.
+  //!
+  //! # Two counterintuitive rules, both stated before the button
+  //!
+  //! The engine's own doc carries them and they are the reason this screen needs a
+  //! blast radius rather than a confirmation:
+  //!
+  //! 1. **A user's first table grant NARROWS them.** A user with no grants is
+  //!    governed by their role; a user with one reaches exactly what they were
+  //!    granted. So giving `read` on one table takes away everything else the role
+  //!    allowed — the opposite of what "grant" sounds like.
+  //! 2. **Taking away the LAST table grant WIDENS them**, back to their whole
+  //!    role, so the node refuses it. An operator running a revoke is thinking
+  //!    about narrowing, and this is the one revoke that does the reverse.
+  //!
+  //! Neither is discoverable from the form. Both are in the radius line.
+  //!
+  //! # Authorities are a different question from table grants
+  //!
+  //! One asks *which of my tables*, the other *how much of this store*, and the
+  //! language keeps them as separate statements for that reason. This screen keeps
+  //! them as one control with a reach chooser, because to the operator they are
+  //! one decision — who may do what, and how far.
+  var reachOf = () => value("grant-reach");
+  function statement() {
+    const who = trimmed("grant-who");
+    const what = trimmed("grant-what");
+    const reach3 = reachOf();
+    const name = trimmed("grant-name");
+    const giving = value("grant-direction") === "give";
+    if (who === "" || what === "" || reach3 !== "store" && name === "") {
+      return null;
+    }
+    if (reach3 === "table") {
+      const parts = name.split(".");
+      if (parts.length !== 3) {
+        return null;
+      }
+      const [namespaceOf, databaseOf, table] = parts;
+      const act = giving ? `GRANT ${what} ON ${table} TO ${who};` : `REVOKE ${what} ON ${table} FROM ${who};`;
+      return `USE NAMESPACE ${namespaceOf}; USE DATABASE ${databaseOf}; ${act}`;
+    }
+    const target = reach3 === "store" ? "STORE" : `${reach3 === "namespace" ? "NAMESPACE" : "DATABASE"} ${name}`;
+    return giving ? `GRANT ${what} ON ${target} TO ${who};` : `REVOKE ${what} ON ${target} FROM ${who};`;
+  }
+  function missing2() {
+    if (trimmed("grant-who") === "") {
+      return "a name is needed";
+    }
+    if (trimmed("grant-what") === "") {
+      return "say what — read, write, manage, operate or replicate";
+    }
+    if (reachOf() === "table" && trimmed("grant-name").split(".").length !== 3) {
+      return "name the table in full, as namespace.database.table";
+    }
+    return "name the table, namespace or database it is on";
+  }
+  function says() {
+    const who = trimmed("grant-who");
+    const what = trimmed("grant-what");
+    const giving = value("grant-direction") === "give";
+    const table = reachOf() === "table";
+    const today = lookup(who);
+    const standing = today === null ? ` This panel has not been told what ${who} reaches — press List to find out.` : ` Today ${who} is ${today.role} in ${today.reach}.`;
+    if (table && giving) {
+      return `Gives ${who} ${what} on ${trimmed("grant-name")}. If they hold no table grant yet this NARROWS them: a user with grants reaches exactly what they were granted, and nothing else their role would have allowed.` + standing;
+    }
+    if (table) {
+      return `Takes ${what} on ${trimmed("grant-name")} away from ${who}. If it is their LAST table grant the node will refuse it — going from one grant to none widens them back to their whole role, which is the opposite of a revoke.` + standing;
+    }
+    const where2 = reachOf() === "store" ? "the whole store" : trimmed("grant-name");
+    return giving ? `Gives ${who} ${what} over ${where2}.${standing}` : `Takes ${what} over ${where2} away from ${who}. An authority going to none leaves them holding nothing there, which the node allows.${standing}`;
+  }
+  function shape2() {
+    hide("grant-name-field", reachOf() === "store");
+    say("grant-says", statement() === null ? missing2() : says());
+  }
+  function wire9() {
+    for (const field of [
+      "grant-who",
+      "grant-what",
+      "grant-reach",
+      "grant-name",
+      "grant-direction",
+      "grant-why"
+    ]) {
+      at(field).addEventListener("input", shape2);
+      at(field).addEventListener("change", shape2);
+    }
+    at("grant-apply").addEventListener("click", async () => {
+      const sending = statement();
+      if (sending === null) {
+        say("grant-status", missing2(), true);
+        return;
+      }
+      const why = trimmed("grant-why");
+      if (why === "") {
+        say("grant-status", "say why — this changes what somebody may reach", true);
+        return;
+      }
+      say("grant-status", "running…");
+      try {
+        const answered2 = await valueOf(sending, "Access · grant", why);
+        say("grant-status", answered2 !== null && answered2.kind === "done" ? "done" : "");
+      } catch (failure) {
+        say("grant-status", told(failure), true);
+      }
+    });
+    shape2();
   }
 
   // src/map.ts
@@ -1413,7 +1529,7 @@
     );
     say("node-status", "");
   }
-  function wire9() {
+  function wire10() {
     at("node-refresh").addEventListener("click", readNode);
     let read = false;
     for (const tab of ["tab-this-node", "tab-cluster"]) {
@@ -1436,7 +1552,7 @@
     const differ = fresh !== "" && again !== "" && fresh !== again;
     say("mine-status", differ ? "the two new ones differ" : "", differ);
   }
-  function wire10() {
+  function wire11() {
     for (const field of ["mine-current", "mine-new", "mine-again"]) {
       at(field).addEventListener("input", shapeMine);
     }
@@ -1538,7 +1654,7 @@
       say("script-status", "the node did not answer: " + told(failure), true);
     }
   }
-  function wire11() {
+  function wire12() {
     for (const button of all("[data-shape]")) {
       button.addEventListener("click", () => {
         drawing = button.dataset["shape"] ?? "auto";
@@ -1658,7 +1774,7 @@
       text.includes(":") ? "nothing here answers to that — name a record in full, as namespace.database.table:key" : "nothing here answers to that name"
     );
   }
-  function wire12() {
+  function wire13() {
     at("search").addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -1723,7 +1839,7 @@
     at("keys-sheet").hidden = true;
   }
   var DESTINATIONS = ["run", "cluster", "access", "this-node"];
-  function wire13() {
+  function wire14() {
     draw3();
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !at("keys-sheet").hidden) {
@@ -1904,7 +2020,7 @@
     }
     write("user-count", tally(matched));
   }
-  function wire14() {
+  function wire15() {
     at("list").addEventListener("click", listUsers);
     at("user-filter").addEventListener("input", redraw);
     at("tab-access").addEventListener("click", () => {
@@ -1934,14 +2050,14 @@
       }
     });
     at("define").addEventListener("click", async () => {
-      const statement = definition();
-      if (statement === null) {
+      const statement2 = definition();
+      if (statement2 === null) {
         say("define-status", missing(), true);
         return;
       }
       say("define-status", "running…");
       try {
-        const answered2 = await valueOf(statement, "Users · define");
+        const answered2 = await valueOf(statement2, "Users · define");
         const finished = answered2 !== null && answered2.kind === "done";
         say("define-status", finished ? "ok" : "");
         if (!finished) {
@@ -1952,8 +2068,8 @@
       }
     });
     at("change").addEventListener("click", async () => {
-      const statement = alteration();
-      if (statement === null) {
+      const statement2 = alteration();
+      if (statement2 === null) {
         say("change-status", changeMissing(), true);
         return;
       }
@@ -1964,7 +2080,7 @@
       }
       say("change-status", "running…");
       try {
-        const answered2 = await valueOf(statement, "Users · change", why);
+        const answered2 = await valueOf(statement2, "Users · change", why);
         say("change-status", answered2 !== null && answered2.kind === "done" ? "ok" : "");
         await listUsers();
       } catch (failure) {
@@ -1972,8 +2088,8 @@
       }
     });
     at("remove").addEventListener("click", async () => {
-      const statement = removal();
-      if (statement === null) {
+      const statement2 = removal();
+      if (statement2 === null) {
         say("remove-status", "the two names do not match", true);
         return;
       }
@@ -1984,7 +2100,7 @@
       }
       say("remove-status", "running…");
       try {
-        const answered2 = await valueOf(statement, "Users · remove", why);
+        const answered2 = await valueOf(statement2, "Users · remove", why);
         say("remove-status", answered2 !== null && answered2.kind === "done" ? "removed" : "");
         setValue("remove-name", "");
         setValue("remove-confirm", "");
@@ -2047,7 +2163,7 @@
     }
     return wanted2;
   }
-  function wire15() {
+  function wire16() {
     at("follow").addEventListener("click", () => {
       stop();
       clear("changes");
@@ -2110,16 +2226,17 @@
   wire4();
   wire3();
   wire5();
-  wire11();
   wire12();
   wire13();
+  wire14();
   wire8();
+  wire9();
   wire6();
   wire2();
   wire();
-  wire15();
+  wire16();
   wire7();
-  wire14();
-  wire9();
+  wire15();
   wire10();
+  wire11();
 })();
