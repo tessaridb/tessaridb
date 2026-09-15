@@ -1307,3 +1307,66 @@ fn the_four_states_are_four_renderings_and_four_messages() {
          four: {unspoken:?}"
     );
 }
+
+#[cfg(feature = "console")]
+#[test]
+fn nothing_the_console_remembers_is_a_credential() {
+    // S5.2 asks the operator's context to survive a reload, which means the
+    // console writes something down for the first time. The line it must not
+    // cross is a credential, and the guard is structural because the failure is
+    // silent: a password in `sessionStorage` looks like nothing at all until
+    // somebody opens the tab on a shared machine.
+    let sources = panel_sources();
+    let source = sources
+        .iter()
+        .find(|(name, _)| name == "context.ts")
+        .map(|(_, text)| text.as_str())
+        .expect("context.ts is not among the sources this test read");
+
+    // The LIST and not the file. Scanning the whole module for `"password"`
+    // matched the `type="password"` in its own header — the module explaining
+    // why it refuses credentials tripped the check that they are refused.
+    let opened = source
+        .find("REMEMBERED: readonly string[] = [")
+        .expect("context.ts declares no remembered set");
+    let listed = &source[opened..][..source[opened..]
+        .find("];")
+        .expect("the remembered set does not close")];
+
+    // Every id the panel draws as a password control, taken from the page
+    // itself rather than from a list here — a list would be the thing that goes
+    // stale the day a form gains a field.
+    let (_node, address) = node();
+    let (status, _, page) = get(&address, "/");
+    assert_eq!(status, 200, "the console's page is not served");
+    let secrets: Vec<String> = page
+        .split('<')
+        .filter(|tag| tag.starts_with("input") && tag.contains(r#"type="password""#))
+        .filter_map(|tag| {
+            let at = tag.find(r#"id=""#)?;
+            tag.get(at.saturating_add(4)..)?
+                .split('"')
+                .next()
+                .map(str::to_owned)
+        })
+        .collect();
+    assert!(
+        !secrets.is_empty(),
+        "no password control was found on the page, so this scan would pass by \
+         finding nothing"
+    );
+    for id in &secrets {
+        assert!(
+            !listed.contains(&format!("\"{id}\"")),
+            "the console remembers `{id}`, which is a password control"
+        );
+    }
+
+    // And the storage is per-tab. `localStorage` would hand tomorrow's reader
+    // the namespace, the account name and the statement somebody was working on
+    // tonight.
+    assert!(
+        source.contains("sessionStorage") && !source.contains("window.localStorage"),
+        "the remembered context is not confined to the tab that typed it"
+    );
+}

@@ -71,6 +71,105 @@
     return block;
   }
 
+  // src/context.ts
+  //! What you had typed, still there after the reload.
+  //!
+  //! An operator mid-incident loses a session to a refresh, a crashed tab, a
+  //! laptop lid. What they lose with it is a script they had built up, a name they
+  //! were looking at, a form half filled in — every one of which they will now
+  //! reconstruct from memory, in the worst conditions for reconstructing anything.
+  //!
+  //! # Not a password, ever
+  //!
+  //! Nothing whose control is `type="password"` is written here, and that is
+  //! enforced by reading the control rather than by keeping the list correct: a
+  //! field added to the list later cannot become a stored credential by somebody
+  //! forgetting which kind it was. The console's whole posture is that it holds a
+  //! token in memory and nothing on disk, and a remembered password would quietly
+  //! be the exception to that on a machine two people share.
+  //!
+  //! # `sessionStorage`, not `localStorage`
+  //!
+  //! Per tab, gone when the tab closes, never shared with another tab. A reload is
+  //! the interruption this exists for; a colleague opening the console tomorrow on
+  //! the same machine is not, and `localStorage` would hand them the namespace, the
+  //! account name and the statement somebody was working on last night.
+  //!
+  //! # What does NOT survive, said plainly
+  //!
+  //! A running follow does not resume. The token that authorised it lives in
+  //! memory and the reload took it, so re-establishing the socket would need a
+  //! sign-in the operator has not given yet. The fields come back and the screen
+  //! says the follow stopped — which is the honest half of the claim, where
+  //! silently not resuming would leave somebody watching a feed that is not there.
+  var KEY = "tessaridb.console.context";
+  var REMEMBERED = [
+    "script",
+    "lookup-name",
+    "user-filter",
+    "new-name",
+    "new-scope",
+    "change-name",
+    "remove-name",
+    "remove-why",
+    "change-why",
+    "namespace",
+    "database",
+    "table",
+    "from",
+    "search"
+  ];
+  function mayKeep(id) {
+    const control2 = at(id);
+    return !(control2 instanceof HTMLInputElement && control2.type === "password");
+  }
+  function held() {
+    try {
+      const found = window.sessionStorage.getItem(KEY);
+      return found === null ? {} : JSON.parse(found);
+    } catch {
+      return {};
+    }
+  }
+  function keep() {
+    const kept2 = {};
+    for (const id of REMEMBERED) {
+      if (!mayKeep(id)) {
+        continue;
+      }
+      const value2 = at(id).value;
+      if (value2 !== "") {
+        kept2[id] = value2;
+      }
+    }
+    try {
+      window.sessionStorage.setItem(KEY, JSON.stringify(kept2));
+    } catch {
+    }
+  }
+  function restore() {
+    const kept2 = held();
+    let brought = 0;
+    for (const id of REMEMBERED) {
+      const value2 = kept2[id];
+      if (value2 === void 0 || !mayKeep(id)) {
+        continue;
+      }
+      at(id).value = value2;
+      brought += 1;
+    }
+    if (brought > 0 && kept2["namespace"] !== void 0) {
+      at("watch-status").textContent = "the follow stopped at the reload — sign in and press Follow to resume it";
+    }
+  }
+  function wire() {
+    restore();
+    for (const id of REMEMBERED) {
+      at(id).addEventListener("input", keep);
+    }
+    window.addEventListener("beforeunload", keep);
+  }
+
   // src/tabs.ts
   //! Which section is on screen.
   //!
@@ -97,7 +196,7 @@
       window.location.hash = wanted2;
     }
   }
-  function wire() {
+  function wire2() {
     for (const tab of tabs()) {
       tab.addEventListener("click", () => show(tab.id.replace("tab-", "")));
       tab.addEventListener("keydown", (event) => {
@@ -221,7 +320,7 @@
     hide("log-sheet", true);
     at("log-open").setAttribute("aria-expanded", "false");
   }
-  function wire2() {
+  function wire3() {
     write("log-count", "0");
     at("log-open").addEventListener("click", () => {
       const opening = at("log-sheet").hidden;
@@ -246,8 +345,8 @@
   //! is ONE bundle: two bundles would each inline a copy of this module, so there
   //! would be two tokens, and signing in on one section would silently not sign
   //! in the other.
-  var held = null;
-  var token = () => held;
+  var held2 = null;
+  var token = () => held2;
   function typed() {
     const user = value("user");
     const password = value("password");
@@ -261,21 +360,21 @@
     return btoa(String.fromCharCode(...bytes));
   }
   function credential() {
-    if (held !== null) {
-      return "Bearer " + held;
+    if (held2 !== null) {
+      return "Bearer " + held2;
     }
     return typed();
   }
   function signedIn() {
     const user = value("user");
-    if (held !== null && user !== "") {
+    if (held2 !== null && user !== "") {
       write("signed-in", user);
       return;
     }
     write("signed-in", user === "" ? "not signed in" : user + " — not yet");
   }
   function ended() {
-    held = null;
+    held2 = null;
     signedIn();
     say("identity-status", "this session ended — sign in again", true);
   }
@@ -283,9 +382,9 @@
     try {
       const body = JSON.parse(text);
       if (typeof body === "object" && body !== null && "error" in body) {
-        const held3 = body.error;
-        if (typeof held3 === "string") {
-          return held3;
+        const held4 = body.error;
+        if (typeof held4 === "string") {
+          return held4;
         }
       }
       return text;
@@ -300,7 +399,7 @@
     }
     return found;
   }
-  function wire3() {
+  function wire4() {
     const identity = sheet();
     at("user").addEventListener("input", signedIn);
     at("sign-in").addEventListener("click", async () => {
@@ -324,7 +423,7 @@
           say("identity-status", reason(text), true);
           return;
         }
-        held = JSON.parse(text).token;
+        held2 = JSON.parse(text).token;
         setValue("password", "");
         say("identity-status", "");
         signedIn();
@@ -334,17 +433,17 @@
       }
     });
     at("sign-out").addEventListener("click", async () => {
-      if (held !== null) {
+      if (held2 !== null) {
         try {
           await fetch("/session", {
             method: "DELETE",
-            headers: { Authorization: "Bearer " + held },
+            headers: { Authorization: "Bearer " + held2 },
             credentials: "omit"
           });
         } catch {
         }
       }
-      held = null;
+      held2 = null;
       setValue("user", "");
       setValue("password", "");
       say("identity-status", "");
@@ -444,7 +543,7 @@
     const answered2 = body.results[body.results.length - 1];
     return answered2 === void 0 ? null : answered2;
   }
-  function held2(answered2) {
+  function held3(answered2) {
     if (answered2 === null || answered2.kind !== "value" || typeof answered2.value !== "object" || answered2.value === null) {
       return null;
     }
@@ -556,7 +655,7 @@
     hide("drawer", true);
     open = null;
   }
-  function wire4() {
+  function wire5() {
     for (const bit of BITS) {
       at(`drawer-${bit}`).addEventListener("change", preview);
     }
@@ -777,7 +876,7 @@
     );
     write("remove-preview", statement ?? "");
   }
-  function wire5() {
+  function wire6() {
     for (const field of [
       "new-name",
       "new-scope",
@@ -900,7 +999,7 @@
     block.textContent = rows.length === 0 || incomplete(rows) !== null ? "" : formation(rows);
     at("form-statement").appendChild(block);
   }
-  function wire6() {
+  function wire7() {
     for (let index = 0; index < ROWS; index += 1) {
       for (const field of [
         ...rowFields(index),
@@ -1003,11 +1102,11 @@
     clear(where2);
     at(where2).appendChild(shown(value2));
   }
-  function facts(where2, held3) {
+  function facts(where2, held4) {
     clear(where2);
     const table = made("table");
     const body = table.createTBody();
-    for (const [name, value2] of Object.entries(held3)) {
+    for (const [name, value2] of Object.entries(held4)) {
       const row = body.insertRow();
       const label = made("th");
       label.textContent = name;
@@ -1076,9 +1175,9 @@
   function lamps(has, wanted2) {
     const row = made("div", "lamps");
     for (const bit of BITS2) {
-      const held3 = has.includes(bit.name);
+      const held4 = has.includes(bit.name);
       const asked2 = wanted2 !== null && wanted2.includes(bit.name);
-      row.appendChild(lamp(bit.letter, held3 ? "held" : asked2 ? "wanted" : "off", bit.means));
+      row.appendChild(lamp(bit.letter, held4 ? "held" : asked2 ? "wanted" : "off", bit.means));
     }
     return row;
   }
@@ -1095,13 +1194,13 @@
     return line;
   }
   var told2 = (value2) => value2 === void 0 || value2 === null ? null : String(value2);
-  function lease(held3) {
-    if (held3 === void 0 || held3 === null) {
+  function lease(held4) {
+    if (held4 === void 0 || held4 === null) {
       return null;
     }
     const badge = made("div", "lease");
-    const held_ = held3;
-    const until = told2(held_.until ?? held_.expires ?? held3);
+    const held_ = held4;
+    const until = told2(held_.until ?? held_.expires ?? held4);
     badge.textContent = until === null ? "holds the lease" : `holds the lease until ${until}`;
     return badge;
   }
@@ -1214,7 +1313,7 @@
   async function readNode() {
     say("node-status", "asking…");
     try {
-      const answered2 = held2(await valueOf("INFO FOR NODE;", "Node"));
+      const answered2 = held3(await valueOf("INFO FOR NODE;", "Node"));
       const all2 = answered2 ?? {};
       const { cluster, ...mine } = all2;
       facts("node-facts", mine);
@@ -1246,7 +1345,7 @@
     );
     say("node-status", "");
   }
-  function wire7() {
+  function wire8() {
     at("node-refresh").addEventListener("click", readNode);
     let read = false;
     for (const tab of ["tab-this-node", "tab-cluster"]) {
@@ -1269,7 +1368,7 @@
     const differ = fresh !== "" && again !== "" && fresh !== again;
     say("mine-status", differ ? "the two new ones differ" : "", differ);
   }
-  function wire8() {
+  function wire9() {
     for (const field of ["mine-current", "mine-new", "mine-again"]) {
       at(field).addEventListener("input", shapeMine);
     }
@@ -1371,7 +1470,7 @@
       say("script-status", "the node did not answer: " + told(failure), true);
     }
   }
-  function wire9() {
+  function wire10() {
     for (const button of all("[data-shape]")) {
       button.addEventListener("click", () => {
         drawing = button.dataset["shape"] ?? "auto";
@@ -1474,7 +1573,7 @@
     }
     write("search-says", "nothing here answers to that name");
   }
-  function wire10() {
+  function wire11() {
     at("search").addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -1575,10 +1674,10 @@
     return everybody.filter((one2) => (one2.user ?? "").toLowerCase().includes(needle));
   }
   function tally(matched) {
-    const held3 = everybody.length;
+    const held4 = everybody.length;
     const filtered = wanted() !== "";
     if (matched.length <= SHOWN) {
-      return filtered ? `${matched.length} of ${held3}` : `${held3}`;
+      return filtered ? `${matched.length} of ${held4}` : `${held4}`;
     }
     return `showing ${SHOWN} of ${matched.length}${filtered ? "" : ` — type a name to narrow`}`;
   }
@@ -1606,7 +1705,7 @@
   async function listUsers() {
     state("user-status", "waiting", "asking the node who it knows about…");
     try {
-      const answer2 = held2(await valueOf("INFO FOR USERS;", "Users · list"));
+      const answer2 = held3(await valueOf("INFO FOR USERS;", "Users · list"));
       const listed = answer2 === null ? [] : answer2["users"];
       everybody = Array.isArray(listed) ? listed : [];
       forget();
@@ -1646,7 +1745,7 @@
     }
     write("user-count", tally(matched));
   }
-  function wire11() {
+  function wire12() {
     at("list").addEventListener("click", listUsers);
     at("user-filter").addEventListener("input", redraw);
     at("tab-access").addEventListener("click", () => {
@@ -1663,7 +1762,7 @@
       say("user-status", "asking…");
       try {
         const answered2 = await valueOf("INFO FOR USER " + name + ";", "Users · detail");
-        const one2 = held2(answered2);
+        const one2 = held3(answered2);
         if (one2 !== null) {
           facts("user-answer", one2);
         } else {
@@ -1789,7 +1888,7 @@
     }
     return wanted2;
   }
-  function wire12() {
+  function wire13() {
     at("follow").addEventListener("click", () => {
       stop();
       clear("changes");
@@ -1849,16 +1948,17 @@
   //! graph first reaches it, which makes the order of everything on this page an
   //! accident of who imports whom. One list is cheaper to read and cannot drift.
   write("where", "served by " + window.location.host);
-  wire2();
-  wire();
   wire3();
-  wire9();
-  wire10();
-  wire6();
+  wire2();
   wire4();
-  wire12();
-  wire5();
+  wire10();
   wire11();
   wire7();
+  wire5();
+  wire();
+  wire13();
+  wire6();
+  wire12();
   wire8();
+  wire9();
 })();

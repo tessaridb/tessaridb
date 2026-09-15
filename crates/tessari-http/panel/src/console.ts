@@ -17,6 +17,7 @@
 //! accident of who imports whom. One list is cheaper to read and cannot drift.
 
 import { write } from "./dom.js";
+import * as context from "./context.js";
 import * as drawer from "./drawer.js";
 import * as formation from "./formation.js";
 import * as log from "./log.js";
@@ -41,6 +42,10 @@ query.wire();
 search.wire();
 formation.wire();
 drawer.wire();
+
+// Last: a restored value fires the same handlers typing would, and those
+// handlers belong to modules that have to be wired before it does.
+context.wire();
 watch.wire();
 userForms.wire();
 users.wire();
