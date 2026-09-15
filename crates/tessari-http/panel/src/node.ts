@@ -1,0 +1,110 @@
+//! This machine, and what the cluster tab can say about it today.
+//!
+//! The operational routes here are the ones any monitor already scrapes, so
+//! nothing on this tab is a capability only the console has.
+
+import { held, scrape, valueOf } from "./api.js";
+import { at, clear, say } from "./dom.js";
+import { facts } from "./draw.js";
+import { told } from "./session.js";
+
+const HEALTH_ROUTE = "/health";
+const READY_ROUTE = "/ready";
+const METRICS_ROUTE = "/metrics";
+
+/**
+ * Prometheus text as the pairs it carries.
+ *
+ * Comment lines are the type and help, which a person reading a console does
+ * not need beside the number. A line's value is what follows its last space,
+ * because the name may carry labels and a label may carry a space.
+ */
+function readings(text: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const line of text.split("\n")) {
+    if (line.startsWith("#") || line.trim() === "") {
+      continue;
+    }
+    const cut = line.lastIndexOf(" ");
+    if (cut > 0) {
+      out[line.slice(0, cut)] = Number(line.slice(cut + 1));
+    }
+  }
+  return out;
+}
+
+/**
+ * One scraped route as a line.
+ *
+ * The status and the body say the same thing twice when both are well, and
+ * different things when they are not — which is the case worth reading, so each
+ * one is drawn as the status followed by what the node said.
+ */
+function answer(scraped: { status: number; body: unknown }): string {
+  const body = scraped.body;
+  const words =
+    typeof body === "object" && body !== null
+      ? Object.entries(body)
+          .map(([name, value]) => name + " " + String(value))
+          .join(", ")
+      : String(body).trim();
+  return scraped.status + " " + words;
+}
+
+export async function readNode(): Promise<void> {
+  say("node-status", "asking…");
+  try {
+    const answered = held(await valueOf("INFO FOR NODE;"));
+    const all = answered ?? {};
+    // `cluster` is its own object and belongs on the cluster tab; what is left
+    // is this machine, which is what this pane claims to show.
+    const { cluster, ...mine } = all;
+    facts("node-facts", mine);
+    const peers =
+      typeof cluster === "object" && cluster !== null
+        ? (cluster as { peers?: unknown }).peers
+        : undefined;
+    facts("cluster-facts", {
+      membership: all["membership"],
+      peers: peers ?? [],
+      endpoints: all["endpoints"],
+      id: all["id"],
+    });
+    say("cluster-status", "");
+  } catch (failure) {
+    clear("node-facts");
+    say("node-status", told(failure), true);
+    say("cluster-status", told(failure), true);
+    return;
+  }
+
+  const [health, ready, metrics] = await Promise.all([
+    scrape(HEALTH_ROUTE),
+    scrape(READY_ROUTE),
+    scrape(METRICS_ROUTE),
+  ]);
+  facts("node-health", { health: answer(health), ready: answer(ready) });
+  facts(
+    "node-metrics",
+    typeof metrics.body === "string"
+      ? readings(metrics.body)
+      : (metrics.body as Record<string, unknown>),
+  );
+  say("node-status", "");
+}
+
+export function wire(): void {
+  at("node-refresh").addEventListener("click", readNode);
+
+  // Read once when the section is first opened, rather than on load: a console
+  // left on the query tab should not be scraping a node nobody is looking at.
+  let read = false;
+  for (const tab of ["tab-node", "tab-cluster"]) {
+    at(tab).addEventListener("click", () => {
+      if (!read) {
+        read = true;
+        void readNode();
+      }
+    });
+  }
+}

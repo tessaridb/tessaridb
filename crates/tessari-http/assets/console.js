@@ -1,543 +1,984 @@
-// The console is a client of the public API and has no private path to it.
-// Every request below is one a `curl` could make against the same node, which
-// is the constraint that keeps the API the product surface rather than
-// something this page sits on top of.
-//
-// Nothing here is fetched from anywhere else: no framework, no CDN, no web
-// font. The page is meant to work on a machine with no route out at all, and a
-// single remote reference would quietly take that away.
-
 "use strict";
-
-// The two public routes this page uses. Named once, so what the console reaches
-// is greppable rather than spread through the file.
-const SCRIPT_ROUTE = "/script";
-const WATCH_ROUTE = "/watch";
-
-const at = (id) => document.getElementById(id);
-
-/**
- * The token this page is holding, or `null`.
- *
- * A password is spent once at `POST /session` and this is what comes back. It
- * lives in a variable and not in `localStorage` deliberately: a bearer token in
- * storage outlives the tab, survives the reader walking away, and is readable by
- * anything that ever manages to run script on this origin. Closing the tab
- * should end the session, and here it does.
- */
-let held = null;
-
-/** The `Authorization` value to send, or nothing when there is nothing to send. */
-function credential() {
-  // The token wins whenever there is one. It costs the node a hash-map lookup
-  // where a password costs nineteen mebibytes of Argon2, which is the whole
-  // reason `POST /session` exists.
-  if (held !== null) {
-    return "Bearer " + held;
+(() => {
+  // src/dom.ts
+  //! Runtime DOM. Everything here runs in the browser.
+  //!
+  //! The build-time twin is `html.ts`, which renders one string and is then gone.
+  //! This reaches for elements already on the page and builds nodes beside them —
+  //! a different problem with the same subject, which is why they are two files.
+  //!
+  //! Every reach for an id goes through `at`, which throws when the id is not
+  //! there. The page and this code are emitted by the same build from the same
+  //! source, so a missing id is a build defect rather than a runtime condition to
+  //! handle politely, and failing loudly is what makes it findable.
+  function at(id) {
+    const found = document.getElementById(id);
+    if (found === null) {
+      throw new Error(`the page has no element #${id}`);
+    }
+    return found;
   }
-  return typed();
-}
-
-/** A `Basic` value for what is in the two fields, or nothing when both are empty. */
-function typed() {
-  const user = at("user").value;
-  const password = at("password").value;
-  if (user === "" && password === "") {
-    return null;
+  var all = (selector) => Array.from(document.querySelectorAll(selector));
+  function control(id) {
+    const found = at(id);
+    if (found instanceof HTMLInputElement || found instanceof HTMLTextAreaElement || found instanceof HTMLSelectElement) {
+      return found;
+    }
+    throw new Error(`#${id} is not a control`);
   }
-  // `btoa` throws on any character above U+00FF, so a password with an accent
-  // in it would break the button rather than be refused by the node — and the
-  // node decodes the header as UTF-8, so it would have accepted one. Encode
-  // first, then base64 the bytes.
-  const bytes = new TextEncoder().encode(user + ":" + password);
-  return "Basic " + btoa(String.fromCharCode(...bytes));
-}
-
-/** Say something in a status line, marking a failure as one. */
-function say(id, words, failed) {
-  const line = at(id);
-  line.textContent = words;
-  line.classList.toggle("failed", failed === true);
-}
-
-/** Run a script against the node, and hand back the reply and its text. */
-async function ask(source) {
-  const headers = {};
-  const offered = credential();
-  if (offered !== null) {
-    headers["Authorization"] = offered;
+  var value = (id) => control(id).value;
+  var trimmed = (id) => control(id).value.trim();
+  function setValue(id, text) {
+    control(id).value = text;
   }
-  const reply = await fetch(SCRIPT_ROUTE, {
-    method: "POST",
-    headers: headers,
-    body: source,
-    // Without this the browser handles the node's `401` challenge itself and
-    // opens its own credential dialog on top of the page — a second sign-in
-    // this console did not ask for, cannot read and cannot clear, and which
-    // leaves the page's own request hanging behind it. The credential is in the
-    // header above; nothing here wants the browser to manage one.
-    credentials: "omit",
-  });
-  // A token that stopped working stopped for a reason worth acting on: somebody
-  // rotated the password, changed the role, or removed the account. Holding on
-  // to it would make every button afterwards fail with the same refusal and none
-  // of them say why.
-  if (reply.status === 401 && held !== null) {
+  function write(id, words) {
+    at(id).textContent = words;
+  }
+  function clear(id) {
+    at(id).textContent = "";
+  }
+  function hide(id, hidden) {
+    at(id).hidden = hidden;
+  }
+  function disable(id, disabled) {
+    const found = at(id);
+    if (found instanceof HTMLButtonElement || found instanceof HTMLInputElement) {
+      found.disabled = disabled;
+      return;
+    }
+    throw new Error(`#${id} cannot be disabled`);
+  }
+  function say(id, words, failed) {
+    const line = at(id);
+    line.textContent = words;
+    line.classList.toggle("failed", failed === true);
+  }
+  function made(tag, className) {
+    const element = document.createElement(tag);
+    if (className !== void 0) {
+      element.className = className;
+    }
+    return element;
+  }
+  function trailer(words) {
+    const line = made("p", "trailer");
+    line.textContent = words;
+    return line;
+  }
+  function shown(value2) {
+    const block = made("pre");
+    block.textContent = typeof value2 === "string" ? value2 : JSON.stringify(value2, null, 2);
+    return block;
+  }
+
+  // src/session.ts
+  //! Who this page is, and the token it is holding.
+  //!
+  //! The token lives in this module's scope. That is the whole reason the panel
+  //! is ONE bundle: two bundles would each inline a copy of this module, so there
+  //! would be two tokens, and signing in on one section would silently not sign
+  //! in the other.
+  var held = null;
+  var token = () => held;
+  function typed() {
+    const user = value("user");
+    const password = value("password");
+    if (user === "" && password === "") {
+      return null;
+    }
+    return "Basic " + basic(user, password);
+  }
+  function basic(user, password) {
+    const bytes = new TextEncoder().encode(user + ":" + password);
+    return btoa(String.fromCharCode(...bytes));
+  }
+  function credential() {
+    if (held !== null) {
+      return "Bearer " + held;
+    }
+    return typed();
+  }
+  function signedIn() {
+    const user = value("user");
+    if (held !== null && user !== "") {
+      write("signed-in", user);
+      return;
+    }
+    write("signed-in", user === "" ? "not signed in" : user + " — not yet");
+  }
+  function ended() {
     held = null;
     signedIn();
     say("identity-status", "this session ended — sign in again", true);
   }
-  return { reply: reply, text: await reply.text() };
-}
-
-// ------------------------------------------------------------------- tabs
-
-// Hash routing, so a section is a link somebody can send and a refresh keeps
-// you where you were. A panel nobody can link to is a panel people describe to
-// each other in words.
-const tabs = () => Array.from(document.querySelectorAll('[role="tab"]'));
-
-function show(name) {
-  const wanted = tabs().some((tab) => tab.id === "tab-" + name) ? name : "query";
-  for (const tab of tabs()) {
-    const chosen = tab.id === "tab-" + wanted;
-    tab.setAttribute("aria-selected", String(chosen));
-    tab.tabIndex = chosen ? 0 : -1;
-    at(tab.getAttribute("aria-controls")).hidden = !chosen;
-  }
-  if (window.location.hash !== "#" + wanted) {
-    window.location.hash = wanted;
-  }
-}
-
-for (const tab of tabs()) {
-  tab.addEventListener("click", () => show(tab.id.replace("tab-", "")));
-  // Arrow keys move between tabs, which is what a tablist owes anybody not
-  // using a mouse — the roles alone promise it and do not provide it.
-  tab.addEventListener("keydown", (event) => {
-    const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
-    if (step === 0) {
-      return;
-    }
-    event.preventDefault();
-    const all = tabs();
-    const here = all.indexOf(tab);
-    const next = all[(here + step + all.length) % all.length];
-    next.focus();
-    show(next.id.replace("tab-", ""));
-  });
-}
-
-window.addEventListener("hashchange", () =>
-  show(window.location.hash.replace("#", "")),
-);
-
-// --------------------------------------------------------------- identity
-
-/** Keep the collapsed identity control honest about whether there is a session. */
-function signedIn() {
-  const user = at("user").value;
-  if (held !== null && user !== "") {
-    at("signed-in").textContent = user;
-    return;
-  }
-  // A name typed but not yet exchanged for a token is not a session, and saying
-  // so is the difference between "this will work" and "this might".
-  at("signed-in").textContent = user === "" ? "not signed in" : user + " — not yet";
-}
-
-at("user").addEventListener("input", signedIn);
-
-/** The disclosure this control lives in, closed by everything that should. */
-const identity = document.querySelector("details.identity");
-
-/** The `error` out of a refusal's body, or the body when it is not one. */
-function reason(text) {
-  try {
-    const body = JSON.parse(text);
-    return typeof body.error === "string" ? body.error : text;
-  } catch (ignored) {
-    // Not JSON, so the text is already the most useful thing there is.
-    return text;
-  }
-}
-
-/**
- * Spend the password once, keep the token, and close the sheet.
- *
- * This is a real sign-in and not a check any more: the node verifies the
- * password here and hands back a token, and every request after this one
- * carries the token instead. The password is then **cleared from the field**,
- * because there is nothing left that needs it and a credential sitting in a DOM
- * input is a credential in every screenshot, screen share and browser
- * extension that reads the page.
- */
-at("sign-in").addEventListener("click", async () => {
-  const offered = typed();
-  if (offered === null) {
-    say("identity-status", "a name and a password, or nothing at all", true);
-    return;
-  }
-  say("identity-status", "signing in…");
-  try {
-    const reply = await fetch("/session", {
-      method: "POST",
-      headers: { Authorization: offered },
-      // The same reason `ask` omits them: left to itself the browser answers
-      // the node's `401` challenge with its own credential dialog, which this
-      // console did not ask for and cannot clear.
-      credentials: "omit",
-    });
-    const text = await reply.text();
-    if (reply.status >= 400) {
-      say("identity-status", reason(text), true);
-      return;
-    }
-    held = JSON.parse(text).token;
-    at("password").value = "";
-    say("identity-status", "");
-    signedIn();
-    identity.open = false;
-  } catch (failure) {
-    say("identity-status", "the node did not answer: " + failure.message, true);
-  }
-});
-
-/**
- * Hand the token back, then forget it here.
- *
- * Told to the node rather than only dropped locally: a token this page forgets
- * without saying so stays live on the node until it expires, which is the
- * difference between signing out and closing your eyes.
- */
-at("sign-out").addEventListener("click", async () => {
-  if (held !== null) {
+  function reason(text) {
     try {
-      await fetch("/session", {
-        method: "DELETE",
-        headers: { Authorization: "Bearer " + held },
-        credentials: "omit",
+      const body = JSON.parse(text);
+      if (typeof body === "object" && body !== null && "error" in body) {
+        const held3 = body.error;
+        if (typeof held3 === "string") {
+          return held3;
+        }
+      }
+      return text;
+    } catch {
+      return text;
+    }
+  }
+  function sheet() {
+    const found = document.querySelector("details.identity");
+    if (!(found instanceof HTMLDetailsElement)) {
+      throw new Error("the page has no identity disclosure");
+    }
+    return found;
+  }
+  function wire() {
+    const identity = sheet();
+    at("user").addEventListener("input", signedIn);
+    at("sign-in").addEventListener("click", async () => {
+      const offered = typed();
+      if (offered === null) {
+        say("identity-status", "a name and a password, or nothing at all", true);
+        return;
+      }
+      say("identity-status", "signing in…");
+      try {
+        const reply = await fetch("/session", {
+          method: "POST",
+          headers: { Authorization: offered },
+          // The same reason `ask` omits them: left to itself the browser answers
+          // the node's `401` challenge with its own credential dialog, which this
+          // console did not ask for and cannot clear.
+          credentials: "omit"
+        });
+        const text = await reply.text();
+        if (reply.status >= 400) {
+          say("identity-status", reason(text), true);
+          return;
+        }
+        held = JSON.parse(text).token;
+        setValue("password", "");
+        say("identity-status", "");
+        signedIn();
+        identity.open = false;
+      } catch (failure) {
+        say("identity-status", "the node did not answer: " + told(failure), true);
+      }
+    });
+    at("sign-out").addEventListener("click", async () => {
+      if (held !== null) {
+        try {
+          await fetch("/session", {
+            method: "DELETE",
+            headers: { Authorization: "Bearer " + held },
+            credentials: "omit"
+          });
+        } catch {
+        }
+      }
+      held = null;
+      setValue("user", "");
+      setValue("password", "");
+      say("identity-status", "");
+      signedIn();
+      identity.open = false;
+    });
+    identity.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        identity.open = false;
+      }
+    });
+    document.addEventListener("click", (event) => {
+      const target = event.target;
+      if (identity.open && target instanceof globalThis.Node && !identity.contains(target)) {
+        identity.open = false;
+      }
+    });
+    signedIn();
+  }
+  function told(failure) {
+    return failure instanceof Error ? failure.message : String(failure);
+  }
+
+  // src/api.ts
+  //! Talking to the node.
+  //!
+  //! The console is a client of the public API and has no private path to it.
+  //! Every request below is one a `curl` could make against the same node, which
+  //! is the constraint that keeps the API the product surface rather than
+  //! something this page sits on top of.
+  var SCRIPT_ROUTE = "/script";
+  var WATCH_ROUTE = "/watch";
+  async function ask(source) {
+    const headers = {};
+    const offered = credential();
+    if (offered !== null) {
+      headers["Authorization"] = offered;
+    }
+    const reply = await fetch(SCRIPT_ROUTE, {
+      method: "POST",
+      headers,
+      body: source,
+      // Without this the browser handles the node's `401` challenge itself and
+      // opens its own credential dialog on top of the page — a second sign-in
+      // this console did not ask for, cannot read and cannot clear, and which
+      // leaves the page's own request hanging behind it. The credential is in the
+      // header above; nothing here wants the browser to manage one.
+      credentials: "omit"
+    });
+    if (reply.status === 401 && token() !== null) {
+      ended();
+    }
+    return { reply, text: await reply.text() };
+  }
+  async function valueOf(source) {
+    const { reply, text } = await ask(source);
+    let body;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      throw new Error(text.trim() === "" ? reply.status + " " + reply.statusText : text);
+    }
+    if (!Array.isArray(body.results)) {
+      throw new Error(typeof body.error === "string" ? body.error : text);
+    }
+    const answered2 = body.results[body.results.length - 1];
+    return answered2 === void 0 ? null : answered2;
+  }
+  function held2(answered2) {
+    if (answered2 === null || answered2.kind !== "value" || typeof answered2.value !== "object" || answered2.value === null) {
+      return null;
+    }
+    return answered2.value;
+  }
+  async function scrape(route) {
+    const reply = await fetch(route, { credentials: "omit" });
+    const text = await reply.text();
+    try {
+      return { status: reply.status, body: JSON.parse(text) };
+    } catch {
+      return { status: reply.status, body: text };
+    }
+  }
+
+  // src/draw.ts
+  //! Turning what the node said into something on screen.
+  //!
+  //! Every value drawn here arrives off the wire or out of the store, so every
+  //! one of them is written with `textContent`. A record that happens to hold a
+  //! `<script>` tag is data, not markup.
+  var flat = (value2) => value2 === null || typeof value2 !== "object";
+  function shape(records) {
+    let agreed = null;
+    for (const record of records) {
+      const inside = record.value;
+      if (inside === null || typeof inside !== "object" || Array.isArray(inside)) {
+        return null;
+      }
+      const fields = inside;
+      const here = Object.keys(fields).sort();
+      if (!here.every((field) => flat(fields[field]))) {
+        return null;
+      }
+      if (agreed === null) {
+        agreed = here;
+      } else if (agreed.length !== here.length || !agreed.every((f, i) => f === here[i])) {
+        return null;
+      }
+    }
+    return agreed !== null && agreed.length > 0 ? agreed : null;
+  }
+  var cell = (value2) => typeof value2 === "string" ? value2 : JSON.stringify(value2);
+  function drawn(records) {
+    const fields = shape(records);
+    if (fields === null) {
+      return null;
+    }
+    const values = records.map((record) => record.value);
+    const numeric = fields.map(
+      (field) => values.every((value2) => typeof value2[field] === "number")
+    );
+    const table = made("table");
+    const head = table.createTHead().insertRow();
+    for (const name of ["id", ...fields]) {
+      const column = made("th");
+      column.textContent = name;
+      head.appendChild(column);
+    }
+    const body = table.createTBody();
+    records.forEach((record, position) => {
+      const row = body.insertRow();
+      row.insertCell().textContent = record.id;
+      fields.forEach((field, index) => {
+        const box = row.insertCell();
+        box.textContent = cell(values[position]?.[field]);
+        if (numeric[index] === true) {
+          box.classList.add("number");
+        }
       });
-    } catch (ignored) {
-      // The node is unreachable. Forgetting it here is still right — the token
-      // expires on its own, and staying signed in because the network failed is
-      // the wrong way to be wrong.
-    }
+    });
+    return table;
   }
-  held = null;
-  at("user").value = "";
-  at("password").value = "";
-  say("identity-status", "");
-  signedIn();
-  identity.open = false;
-});
-
-// A sheet that hangs over the page until something else is clicked is the
-// complaint this control earned. Escape and a click outside both close it,
-// which is what every other disclosure on the web does.
-identity.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") {
-    identity.open = false;
+  function put(where2, value2) {
+    clear(where2);
+    at(where2).appendChild(shown(value2));
   }
-});
-
-document.addEventListener("click", (event) => {
-  if (identity.open && !identity.contains(event.target)) {
-    identity.open = false;
-  }
-});
-
-// ---------------------------------------------------------- drawing an answer
-
-/** Whether a value belongs in a cell: not an object, not an array. */
-function flat(value) {
-  return value === null || typeof value !== "object";
-}
-
-/**
- * The fields every record shares, or `null` when they do not share a shape.
- *
- * The same rule the terminal follows, and for the same reason. A union of the
- * field sets with blanks where a record has none would table more answers and
- * would make *absent* and *empty* look identical — in the rendering, which is
- * the last place a distinction should be lost.
- */
-function shape(records) {
-  let agreed = null;
-  for (const record of records) {
-    const held = record.value;
-    if (held === null || typeof held !== "object" || Array.isArray(held)) {
-      return null;
-    }
-    const here = Object.keys(held).sort();
-    if (!here.every((field) => flat(held[field]))) {
-      return null;
-    }
-    if (agreed === null) {
-      agreed = here;
-    } else if (agreed.length !== here.length || !agreed.every((f, i) => f === here[i])) {
-      return null;
-    }
-  }
-  return agreed !== null && agreed.length > 0 ? agreed : null;
-}
-
-/** One cell's text. Numbers stay numbers; everything else is JSON. */
-function cell(value) {
-  return typeof value === "string" ? value : JSON.stringify(value);
-}
-
-/** These records as a table element, or `null` if they are not one. */
-function drawn(records) {
-  const fields = shape(records);
-  if (fields === null) {
-    return null;
-  }
-  const numeric = fields.map((field) =>
-    records.every((record) => typeof record.value[field] === "number"),
-  );
-
-  const table = document.createElement("table");
-  const head = table.createTHead().insertRow();
-  for (const name of ["id", ...fields]) {
-    const column = document.createElement("th");
-    column.textContent = name;
-    head.appendChild(column);
-  }
-  const body = table.createTBody();
-  for (const record of records) {
-    const row = body.insertRow();
-    // `textContent` throughout: these values come out of the store, and a record
-    // that happens to hold a `<script>` tag is data, not markup.
-    row.insertCell().textContent = record.id;
-    fields.forEach((field, index) => {
+  function facts(where2, held3) {
+    clear(where2);
+    const table = made("table");
+    const body = table.createTBody();
+    for (const [name, value2] of Object.entries(held3)) {
+      const row = body.insertRow();
+      const label = made("th");
+      label.textContent = name;
+      row.appendChild(label);
       const box = row.insertCell();
-      box.textContent = cell(record.value[field]);
-      if (numeric[index]) {
+      box.textContent = typeof value2 === "string" ? value2 : JSON.stringify(value2);
+      if (typeof value2 === "number") {
         box.classList.add("number");
       }
+    }
+    at(where2).appendChild(table);
+  }
+
+  // src/node.ts
+  //! This machine, and what the cluster tab can say about it today.
+  //!
+  //! The operational routes here are the ones any monitor already scrapes, so
+  //! nothing on this tab is a capability only the console has.
+  var HEALTH_ROUTE = "/health";
+  var READY_ROUTE = "/ready";
+  var METRICS_ROUTE = "/metrics";
+  function readings(text) {
+    const out = {};
+    for (const line of text.split("\n")) {
+      if (line.startsWith("#") || line.trim() === "") {
+        continue;
+      }
+      const cut = line.lastIndexOf(" ");
+      if (cut > 0) {
+        out[line.slice(0, cut)] = Number(line.slice(cut + 1));
+      }
+    }
+    return out;
+  }
+  function answer(scraped) {
+    const body = scraped.body;
+    const words = typeof body === "object" && body !== null ? Object.entries(body).map(([name, value2]) => name + " " + String(value2)).join(", ") : String(body).trim();
+    return scraped.status + " " + words;
+  }
+  async function readNode() {
+    say("node-status", "asking…");
+    try {
+      const answered2 = held2(await valueOf("INFO FOR NODE;"));
+      const all2 = answered2 ?? {};
+      const { cluster, ...mine } = all2;
+      facts("node-facts", mine);
+      const peers = typeof cluster === "object" && cluster !== null ? cluster.peers : void 0;
+      facts("cluster-facts", {
+        membership: all2["membership"],
+        peers: peers ?? [],
+        endpoints: all2["endpoints"],
+        id: all2["id"]
+      });
+      say("cluster-status", "");
+    } catch (failure) {
+      clear("node-facts");
+      say("node-status", told(failure), true);
+      say("cluster-status", told(failure), true);
+      return;
+    }
+    const [health, ready, metrics] = await Promise.all([
+      scrape(HEALTH_ROUTE),
+      scrape(READY_ROUTE),
+      scrape(METRICS_ROUTE)
+    ]);
+    facts("node-health", { health: answer(health), ready: answer(ready) });
+    facts(
+      "node-metrics",
+      typeof metrics.body === "string" ? readings(metrics.body) : metrics.body
+    );
+    say("node-status", "");
+  }
+  function wire2() {
+    at("node-refresh").addEventListener("click", readNode);
+    let read = false;
+    for (const tab of ["tab-node", "tab-cluster"]) {
+      at(tab).addEventListener("click", () => {
+        if (!read) {
+          read = true;
+          void readNode();
+        }
+      });
+    }
+  }
+
+  // src/password.ts
+  //! Changing your own password.
+  function shapeMine() {
+    const current = value("mine-current");
+    const fresh = value("mine-new");
+    const again = value("mine-again");
+    disable("mine", current === "" || fresh === "" || fresh !== again);
+    const differ = fresh !== "" && again !== "" && fresh !== again;
+    say("mine-status", differ ? "the two new ones differ" : "", differ);
+  }
+  function wire3() {
+    for (const field of ["mine-current", "mine-new", "mine-again"]) {
+      at(field).addEventListener("input", shapeMine);
+    }
+    at("mine").addEventListener("click", async () => {
+      const name = trimmed("user");
+      if (name === "") {
+        say("mine-status", "sign in first — this changes your own password", true);
+        return;
+      }
+      say("mine-status", "changing…");
+      try {
+        const reply = await fetch("/password", {
+          method: "POST",
+          headers: { Authorization: "Basic " + basic(name, value("mine-current")) },
+          body: value("mine-new"),
+          credentials: "omit"
+        });
+        const text = await reply.text();
+        if (reply.status >= 400) {
+          say("mine-status", reason(text), true);
+          return;
+        }
+        for (const field of ["mine-current", "mine-new", "mine-again"]) {
+          setValue(field, "");
+        }
+        shapeMine();
+        at("sign-out").click();
+        say("identity-status", "password changed — sign in with the new one", false);
+      } catch (failure) {
+        say("mine-status", "the node did not answer: " + told(failure), true);
+      }
+    });
+    shapeMine();
+  }
+
+  // src/query.ts
+  //! Running a script, and showing what came back.
+  var drawing = "auto";
+  var answered = null;
+  function one(pane2, result) {
+    if (result.kind === "records" && Array.isArray(result.records)) {
+      const records = result.records;
+      const table = records.length === 0 ? null : drawn(records);
+      if (table === null) {
+        pane2.appendChild(shown(records.length === 0 ? "(no records)" : records));
+      } else {
+        pane2.appendChild(table);
+      }
+      pane2.appendChild(
+        trailer("(" + records.length + " record(s), via " + String(result.path) + ")")
+      );
+      return;
+    }
+    if (result.kind === "done") {
+      pane2.appendChild(trailer("ok"));
+      return;
+    }
+    pane2.appendChild(shown(result));
+  }
+  function paint() {
+    const pane2 = at("answer");
+    pane2.textContent = "";
+    if (answered === null) {
+      return;
+    }
+    if (drawing === "json" || !Array.isArray(answered.results)) {
+      pane2.appendChild(shown(answered));
+      return;
+    }
+    for (const result of answered.results) {
+      one(pane2, result);
+    }
+  }
+  async function run() {
+    say("script-status", "running…");
+    answered = null;
+    clear("answer");
+    try {
+      const { reply, text } = await ask(value("script"));
+      try {
+        answered = JSON.parse(text);
+      } catch {
+        answered = null;
+        const block = made("pre");
+        block.textContent = text;
+        at("answer").appendChild(block);
+      }
+      paint();
+      say("script-status", reply.status + " " + reply.statusText, reply.status >= 400);
+    } catch (failure) {
+      say("script-status", "the node did not answer: " + told(failure), true);
+    }
+  }
+  function wire4() {
+    for (const button of all("[data-shape]")) {
+      button.addEventListener("click", () => {
+        drawing = button.dataset["shape"] ?? "auto";
+        for (const other of all("[data-shape]")) {
+          other.classList.toggle("chosen", other === button);
+        }
+        paint();
+      });
+    }
+    at("run").addEventListener("click", run);
+    at("script").addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        void run();
+      }
     });
   }
-  return table;
-}
 
-/** How the answer pane is drawing things: by shape, or as the JSON that came. */
-let drawing = "auto";
-
-/** The parsed body of the last answer, so the toggle can redraw without asking. */
-let answered = null;
-
-function paint() {
-  const pane = at("answer");
-  pane.textContent = "";
-  if (answered === null) {
-    return;
+  // src/tabs.ts
+  //! Which section is on screen.
+  //!
+  //! Hash routing, so a section is a link somebody can send and a refresh keeps
+  //! you where you were. A panel nobody can link to is a panel people describe to
+  //! each other in words.
+  var tabs = () => all('[role="tab"]');
+  function pane(tab) {
+    const named = tab.getAttribute("aria-controls");
+    if (named === null) {
+      throw new Error(`the tab #${tab.id} controls nothing`);
+    }
+    return at(named);
   }
-  if (drawing === "json" || !Array.isArray(answered.results)) {
-    const shown = document.createElement("pre");
-    shown.textContent = JSON.stringify(answered, null, 2);
-    pane.appendChild(shown);
-    return;
+  function show(name) {
+    const wanted = tabs().some((tab) => tab.id === "tab-" + name) ? name : "query";
+    for (const tab of tabs()) {
+      const chosen = tab.id === "tab-" + wanted;
+      tab.setAttribute("aria-selected", String(chosen));
+      tab.tabIndex = chosen ? 0 : -1;
+      pane(tab).hidden = !chosen;
+    }
+    if (window.location.hash !== "#" + wanted) {
+      window.location.hash = wanted;
+    }
   }
-  for (const result of answered.results) {
-    if (result.kind === "records" && Array.isArray(result.records)) {
-      const table = result.records.length === 0 ? null : drawn(result.records);
-      if (table === null) {
-        const shown = document.createElement("pre");
-        shown.textContent =
-          result.records.length === 0
-            ? "(no records)"
-            : JSON.stringify(result.records, null, 2);
-        pane.appendChild(shown);
+  function wire5() {
+    for (const tab of tabs()) {
+      tab.addEventListener("click", () => show(tab.id.replace("tab-", "")));
+      tab.addEventListener("keydown", (event) => {
+        const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+        if (step === 0) {
+          return;
+        }
+        event.preventDefault();
+        const here = tabs();
+        const next = here[(here.indexOf(tab) + step + here.length) % here.length];
+        if (next === void 0) {
+          return;
+        }
+        next.focus();
+        show(next.id.replace("tab-", ""));
+      });
+    }
+    window.addEventListener(
+      "hashchange",
+      () => show(window.location.hash.replace("#", ""))
+    );
+    show(window.location.hash.replace("#", ""));
+  }
+
+  // src/user-forms.ts
+  //! The three user forms: what they describe, and what they show while typing.
+  //!
+  //! Only the statements and the previews live here. The buttons that RUN them
+  //! are in `users.ts`, beside the listing they have to redraw — which keeps the
+  //! two modules pointing one way instead of at each other.
+  function quoted(text) {
+    let out = "'";
+    for (const character of text) {
+      if (character === "'") {
+        out += "\\'";
+      } else if (character === "\\") {
+        out += "\\\\";
+      } else if (character === "\n") {
+        out += "\\n";
+      } else if (character === "\r") {
+        out += "\\r";
+      } else if (character === "	") {
+        out += "\\t";
       } else {
-        pane.appendChild(table);
+        out += character;
       }
-      // The trailer says how many and by which path. A scan should be visible
-      // rather than folklore, which is why the store reports the path at all.
-      const trailer = document.createElement("p");
-      trailer.className = "trailer";
-      trailer.textContent =
-        "(" + result.records.length + " record(s), via " + result.path + ")";
-      pane.appendChild(trailer);
-    } else if (result.kind === "done") {
-      // What the terminal prints for the same answer, and for the same reason:
-      // a script's `USE` and `DEFINE` statements each answer, and three lines of
-      // JSON apiece would bury the result somebody actually ran the script for.
-      const shown = document.createElement("p");
-      shown.className = "trailer";
-      shown.textContent = "ok";
-      pane.appendChild(shown);
-    } else {
-      const shown = document.createElement("pre");
-      shown.textContent = JSON.stringify(result, null, 2);
-      pane.appendChild(shown);
     }
+    return out + "'";
   }
-}
-
-for (const button of document.querySelectorAll("[data-shape]")) {
-  button.addEventListener("click", () => {
-    drawing = button.dataset.shape;
-    for (const other of document.querySelectorAll("[data-shape]")) {
-      other.classList.toggle("chosen", other === button);
+  var MEANS = {
+    viewer: "reads what the space holds, and nothing else.",
+    editor: "reads and writes records, and declares structure.",
+    owner: "everything in the space, users included.",
+    other: "a role this build may not know. It will be sent as typed, and the node's refusal is what you will see if it does not exist."
+  };
+  function reach() {
+    if (value("new-reach") === "node") {
+      return "";
     }
-    paint();
-  });
-}
+    const space = trimmed("new-scope");
+    return space === "" ? null : space;
+  }
+  function role() {
+    const chosen = value("new-role");
+    return chosen === "other" ? trimmed("new-role-other") : chosen;
+  }
+  function definition() {
+    const name = trimmed("new-name");
+    const named = role();
+    const space = reach();
+    if (name === "" || named === "" || space === null) {
+      return null;
+    }
+    return "DEFINE USER " + name + (space === "" ? "" : " ON " + space) + " ROLE " + named + " PASSWORD " + quoted(value("new-password")) + ";";
+  }
+  var redacted = (statement) => statement.replace(/PASSWORD '.*';$/, "PASSWORD '…';");
+  function missing() {
+    if (trimmed("new-name") === "") {
+      return "a name is needed";
+    }
+    if (role() === "") {
+      return "a role is needed";
+    }
+    return "a space is needed — or choose the whole node, which is not the same thing";
+  }
+  function preview() {
+    const statement = definition();
+    write("role-says", MEANS[value("new-role")] ?? "");
+    write("define-preview", statement === null ? missing() : redacted(statement));
+  }
+  function shapeTheForm() {
+    hide("scope-field", value("new-reach") === "node");
+    hide("role-other-field", value("new-role") !== "other");
+    preview();
+  }
+  function changedRole() {
+    const chosen = value("change-role");
+    return chosen === "other" ? trimmed("change-role-other") : chosen;
+  }
+  function alteration() {
+    const name = trimmed("change-name");
+    if (name === "") {
+      return null;
+    }
+    if (value("change-what") === "password") {
+      return "ALTER USER " + name + " SET PASSWORD " + quoted(value("change-password")) + ";";
+    }
+    const named = changedRole();
+    return named === "" ? null : "ALTER USER " + name + " SET ROLE " + named + ";";
+  }
+  function changeMissing() {
+    if (trimmed("change-name") === "") {
+      return "a name is needed";
+    }
+    return "a role is needed";
+  }
+  function shapeTheChange() {
+    const changing = value("change-what");
+    hide("change-password-field", changing !== "password");
+    hide("change-role-field", changing !== "role");
+    hide("change-role-other-field", changing !== "role" || value("change-role") !== "other");
+    const statement = alteration();
+    write("change-preview", statement === null ? changeMissing() : redacted(statement));
+  }
+  function removal() {
+    const name = trimmed("remove-name");
+    const again = trimmed("remove-confirm");
+    return name !== "" && name === again ? "DROP USER " + name + ";" : null;
+  }
+  function shapeTheRemoval() {
+    const statement = removal();
+    disable("remove", statement === null);
+    const name = trimmed("remove-name");
+    write(
+      "remove-preview",
+      statement !== null ? statement : name === "" ? "a name is needed" : "type the same name again to confirm"
+    );
+  }
+  function wire6() {
+    for (const field of [
+      "new-name",
+      "new-scope",
+      "new-role",
+      "new-role-other",
+      "new-password",
+      "new-reach"
+    ]) {
+      at(field).addEventListener("input", shapeTheForm);
+      at(field).addEventListener("change", shapeTheForm);
+    }
+    for (const field of [
+      "change-name",
+      "change-what",
+      "change-password",
+      "change-role",
+      "change-role-other"
+    ]) {
+      at(field).addEventListener("input", shapeTheChange);
+      at(field).addEventListener("change", shapeTheChange);
+    }
+    for (const field of ["remove-name", "remove-confirm"]) {
+      at(field).addEventListener("input", shapeTheRemoval);
+    }
+    shapeTheForm();
+    shapeTheChange();
+    shapeTheRemoval();
+  }
 
-// ------------------------------------------------------------- run a script
-
-async function runScript() {
-  say("script-status", "running…");
-  answered = null;
-  at("answer").textContent = "";
-  try {
-    const { reply, text } = await ask(at("script").value);
-    // Parsed when it is JSON and shown as it came when it is not: an error body
-    // is plain text and reformatting it would only hide it.
+  // src/users.ts
+  //! Who exists, and the buttons that change that.
+  //!
+  //! Everything here goes through a statement over `POST /script`. There is no
+  //! request on this page that a `curl` could not make, which is what keeps a
+  //! console feature from becoming a capability only the console has.
+  function pick(name) {
+    setValue("lookup-name", name);
+    setValue("change-name", name);
+    setValue("remove-name", name);
+    shapeTheChange();
+    shapeTheRemoval();
+    at("lookup").click();
+  }
+  function listing(everybody) {
+    const table = made("table");
+    const head = table.createTHead().insertRow();
+    for (const column of ["user", "role", "reach"]) {
+      const cell2 = made("th");
+      cell2.textContent = column;
+      head.appendChild(cell2);
+    }
+    const body = table.createTBody();
+    for (const one2 of everybody) {
+      const row = body.insertRow();
+      const name = one2.user ?? "";
+      row.insertCell().textContent = name;
+      row.insertCell().textContent = one2.role === "owner" && one2.namespace === void 0 ? "owner · admin" : one2.role ?? "";
+      row.insertCell().textContent = one2.namespace === void 0 ? "the whole node" : one2.namespace + (one2.database === void 0 ? "" : "." + one2.database);
+      row.addEventListener("click", () => pick(name));
+    }
+    return table;
+  }
+  async function listUsers() {
+    say("user-status", "asking…");
     try {
-      answered = JSON.parse(text);
-    } catch (ignored) {
-      answered = null;
-      const shown = document.createElement("pre");
-      shown.textContent = text;
-      at("answer").appendChild(shown);
+      const answer2 = held2(await valueOf("INFO FOR USERS;"));
+      const everybody = answer2 === null ? [] : answer2["users"];
+      clear("user-list");
+      if (!Array.isArray(everybody) || everybody.length === 0) {
+        at("user-list").appendChild(trailer("(no users — this store is open to anybody)"));
+        say("user-status", "");
+        return;
+      }
+      at("user-list").appendChild(listing(everybody));
+      say("user-status", "");
+    } catch (failure) {
+      clear("user-list");
+      say("user-status", told(failure), true);
     }
-    paint();
-    say("script-status", reply.status + " " + reply.statusText, reply.status >= 400);
-  } catch (failure) {
-    // A fetch rejects only when the request never got an answer, so this is a
-    // connection problem and never a refusal from the node.
-    say("script-status", "the node did not answer: " + failure.message, true);
   }
-}
-
-at("run").addEventListener("click", runScript);
-
-at("script").addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-    event.preventDefault();
-    runScript();
+  function wire7() {
+    at("list").addEventListener("click", listUsers);
+    at("tab-users").addEventListener("click", () => {
+      if (at("user-list").textContent === "") {
+        void listUsers();
+      }
+    });
+    at("lookup").addEventListener("click", async () => {
+      const name = trimmed("lookup-name");
+      if (name === "") {
+        say("user-status", "a name is needed — there is no listing to pick from", true);
+        return;
+      }
+      say("user-status", "asking…");
+      try {
+        const answered2 = await valueOf("INFO FOR USER " + name + ";");
+        const one2 = held2(answered2);
+        if (one2 !== null) {
+          facts("user-answer", one2);
+        } else {
+          put("user-answer", answered2);
+        }
+        say("user-status", "");
+      } catch (failure) {
+        clear("user-answer");
+        say("user-status", told(failure), true);
+      }
+    });
+    at("define").addEventListener("click", async () => {
+      const statement = definition();
+      if (statement === null) {
+        say("define-status", missing(), true);
+        return;
+      }
+      say("define-status", "running…");
+      try {
+        const answered2 = await valueOf(statement);
+        const finished = answered2 !== null && answered2.kind === "done";
+        say("define-status", finished ? "ok" : "");
+        if (!finished) {
+          put("user-answer", answered2);
+        }
+      } catch (failure) {
+        say("define-status", told(failure), true);
+      }
+    });
+    at("change").addEventListener("click", async () => {
+      const statement = alteration();
+      if (statement === null) {
+        say("change-status", changeMissing(), true);
+        return;
+      }
+      say("change-status", "running…");
+      try {
+        const answered2 = await valueOf(statement);
+        say("change-status", answered2 !== null && answered2.kind === "done" ? "ok" : "");
+        await listUsers();
+      } catch (failure) {
+        say("change-status", told(failure), true);
+      }
+    });
+    at("remove").addEventListener("click", async () => {
+      const statement = removal();
+      if (statement === null) {
+        say("remove-status", "the two names do not match", true);
+        return;
+      }
+      say("remove-status", "running…");
+      try {
+        const answered2 = await valueOf(statement);
+        say("remove-status", answered2 !== null && answered2.kind === "done" ? "removed" : "");
+        setValue("remove-name", "");
+        setValue("remove-confirm", "");
+        shapeTheRemoval();
+        await listUsers();
+      } catch (failure) {
+        say("remove-status", told(failure), true);
+      }
+    });
   }
-});
 
-// ------------------------------------------------------------ watch a table
-
-let following = null;
-
-function stopFollowing(words) {
-  if (following !== null) {
-    following.close();
-    following = null;
+  // src/watch.ts
+  //! Following a table as it changes.
+  var following = null;
+  function stop(words) {
+    if (following !== null) {
+      following.close();
+      following = null;
+    }
+    disable("follow", false);
+    disable("stop", true);
+    if (words !== void 0) {
+      say("watch-status", words);
+    }
   }
-  at("follow").disabled = false;
-  at("stop").disabled = true;
-  if (words !== undefined) {
-    say("watch-status", words);
+  function change(what) {
+    const line = made("li");
+    const became = typeof what.became === "string" ? what.became : "";
+    line.classList.add(became === "removed" ? "removed" : "written");
+    line.textContent = "#" + String(what.sequence) + "  " + String(what.table) + ":" + String(what.id) + "  " + became + (what.value === void 0 ? "" : "  " + JSON.stringify(what.value));
+    const list = at("changes");
+    list.insertBefore(line, list.firstChild);
   }
-}
-
-/** Add one change to the top of the list, as text and never as markup. */
-function change(what) {
-  const line = document.createElement("li");
-  const became = typeof what.became === "string" ? what.became : "";
-  line.classList.add(became === "removed" ? "removed" : "written");
-  line.textContent =
-    "#" +
-    what.sequence +
-    "  " +
-    what.table +
-    ":" +
-    what.id +
-    "  " +
-    became +
-    (what.value === undefined ? "" : "  " + JSON.stringify(what.value));
-  const list = at("changes");
-  list.insertBefore(line, list.firstChild);
-}
-
-at("follow").addEventListener("click", () => {
-  stopFollowing();
-  at("changes").textContent = "";
-
-  // Resolved against this page's own address rather than assembled from pieces:
-  // same origin by construction, and it leaves the route a plain readable
-  // literal instead of a fragment glued to a scheme. The scheme follows the
-  // page's own, because a console served over TLS must not open a plaintext
-  // socket.
-  const where = new URL(WATCH_ROUTE, window.location.href);
-  where.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const socket = new WebSocket(where);
-  following = socket;
-  at("follow").disabled = true;
-  at("stop").disabled = false;
-  say("watch-status", "connecting…");
-
-  socket.addEventListener("open", () => {
-    const asked = {
-      namespace: at("namespace").value,
-      database: at("database").value,
-      from: Number(at("from").value),
+  function where() {
+    const address = new URL(WATCH_ROUTE, window.location.href);
+    address.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return address;
+  }
+  function asked() {
+    const wanted = {
+      namespace: value("namespace"),
+      database: value("database"),
+      from: Number(value("from"))
     };
-    const table = at("table").value;
+    const table = value("table");
     if (table !== "") {
-      asked.table = table;
+      wanted.table = table;
     }
-    // A browser cannot set a header on a `WebSocket`, so whatever authenticates
-    // this travels in the message. A token when there is one — it expires and
-    // can be revoked, which a password does neither of, and it means following
-    // a table does not put a password into a message body.
-    if (held !== null) {
-      asked.token = held;
-    } else {
-      // Both halves or neither: a name without a password would be asking to be
-      // signed in without proof.
-      const user = at("user").value;
-      const password = at("password").value;
-      if (user !== "" || password !== "") {
-        asked.user = user;
-        asked.password = password;
-      }
+    const carried = token();
+    if (carried !== null) {
+      wanted.token = carried;
+      return wanted;
     }
-    socket.send(JSON.stringify({ ...asked }));
-    say("watch-status", "following");
-  });
-
-  socket.addEventListener("message", (event) => {
-    let what = null;
-    try {
-      what = JSON.parse(event.data);
-    } catch (ignored) {
-      say("watch-status", "the node sent something this page cannot read", true);
-      return;
+    const user = value("user");
+    const password = value("password");
+    if (user !== "" || password !== "") {
+      wanted.user = user;
+      wanted.password = password;
     }
-    // The node answers a request it will not serve in words rather than by
-    // going quiet, so an operator can tell "not permitted" from "nothing has
-    // happened yet".
-    if (typeof what.refused === "string") {
-      say("watch-status", what.refused, true);
-      return;
-    }
-    if (typeof what.error === "string") {
-      say("watch-status", what.error, true);
-      return;
-    }
-    change(what);
-  });
+    return wanted;
+  }
+  function wire8() {
+    at("follow").addEventListener("click", () => {
+      stop();
+      clear("changes");
+      const socket = new WebSocket(where());
+      following = socket;
+      disable("follow", true);
+      disable("stop", false);
+      say("watch-status", "connecting…");
+      socket.addEventListener("open", () => {
+        socket.send(JSON.stringify(asked()));
+        say("watch-status", "following");
+      });
+      socket.addEventListener("message", (event) => {
+        let what;
+        try {
+          what = JSON.parse(String(event.data));
+        } catch {
+          say("watch-status", "the node sent something this page cannot read", true);
+          return;
+        }
+        if (typeof what.refused === "string") {
+          say("watch-status", what.refused, true);
+          return;
+        }
+        if (typeof what.error === "string") {
+          say("watch-status", what.error, true);
+          return;
+        }
+        change(what);
+      });
+      socket.addEventListener("close", (event) => {
+        stop(event.code === 1001 ? "the node is stopping" : "stopped");
+      });
+      socket.addEventListener("error", () => {
+        say("watch-status", "the socket failed", true);
+      });
+    });
+    at("stop").addEventListener("click", () => stop("stopped"));
+  }
 
-  socket.addEventListener("close", (event) => {
-    // 1001 is this node stopping. The position is held by the client, so
-    // following again from the last sequence seen resumes exactly there.
-    stopFollowing(event.code === 1001 ? "the node is stopping" : "stopped");
-  });
-
-  socket.addEventListener("error", () => {
-    say("watch-status", "the socket failed", true);
-  });
-});
-
-at("stop").addEventListener("click", () => stopFollowing("stopped"));
-
-at("where").textContent = "served by " + window.location.host;
-signedIn();
-show(window.location.hash.replace("#", ""));
+  // src/console.ts
+  //! The console's entry point: everything the page does, started in one place.
+  //!
+  //! Nothing here is fetched from anywhere else: no framework, no CDN, no web
+  //! font. The page is meant to work on a machine with no route out at all, and a
+  //! single remote reference would quietly take that away.
+  //!
+  //! This is ONE bundle on purpose. `sections.js` used to be a second file that
+  //! read the first one's top-level names out of the global scope, and that
+  //! coupling is what turned a single `SyntaxError` in one file into a dead page
+  //! — every section of it, for nineteen days. Two bundles would be no better:
+  //! each would inline its own copy of `session.ts`, so there would be two tokens
+  //! and signing in on one section would silently not sign in the other.
+  //!
+  //! The start-up order is written out below rather than left to emerge from the
+  //! import graph. In a bundle, a module's top-level statements run when the
+  //! graph first reaches it, which makes the order of everything on this page an
+  //! accident of who imports whom. One list is cheaper to read and cannot drift.
+  write("where", "served by " + window.location.host);
+  wire5();
+  wire();
+  wire4();
+  wire8();
+  wire6();
+  wire7();
+  wire2();
+  wire3();
+})();

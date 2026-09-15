@@ -356,7 +356,6 @@ export const index = (): string =>
         tabs(DESTINATIONS),
         el("main", {}, query(), users(), node(), cluster()),
         el("script", { src: "/console.js" }),
-        el("script", { src: "/sections.js" }),
       ),
     ),
   );

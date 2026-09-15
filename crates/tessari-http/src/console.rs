@@ -6,7 +6,7 @@
 //!
 //! The assets are **committed**, so `cargo build` needs nothing but cargo, and
 //! they are listed **by hand** below rather than swept up by a macro that walks
-//! a directory: at three files a table is smaller than the dependency, and a
+//! a directory: at four files a table is smaller than the dependency, and a
 //! path that reaches one named thing is the same rule the rest of this surface
 //! follows.
 //!
@@ -23,8 +23,13 @@ type Asset = (&'static str, &'static str, &'static str);
 
 /// Everything the console is made of.
 ///
-/// `include_str!` rather than `include_bytes!` because all five are text, and
+/// `include_str!` rather than `include_bytes!` because all four are text, and
 /// text is what a reader of this file can check against the served answer.
+///
+/// One script, not two. `sections.js` used to sit beside `console.js` and read
+/// its top-level names out of the global scope; the page is now emitted from a
+/// bundler, so the two are one module graph with real imports and there is no
+/// global coupling left to break.
 const ASSETS: &[Asset] = &[
     (
         "/",
@@ -40,11 +45,6 @@ const ASSETS: &[Asset] = &[
         "/console.js",
         "text/javascript; charset=utf-8",
         include_str!("../assets/console.js"),
-    ),
-    (
-        "/sections.js",
-        "text/javascript; charset=utf-8",
-        include_str!("../assets/sections.js"),
     ),
     // Named by the page, so a browser asks for this instead of `/favicon.ico`
     // and the 404 that would otherwise sit in every operator's console.

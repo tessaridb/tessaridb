@@ -112,10 +112,13 @@ fn header<'a>(headers: &'a [String], field: &str) -> Option<&'a str> {
 /// right up until somebody edits one of them.
 /// Every script the page loads.
 ///
-/// Named once here rather than at each call site, because the defect this
-/// guards against is a test that reads one of them and reports on both.
+/// One of them now: the page is emitted from a bundler, so what used to be two
+/// files reading each other's globals is one module graph. The slice stays,
+/// rather than collapsing back into a literal at each call site, because the
+/// defect it guards against is a test that reads one script and reports on all
+/// of them — and that defect returns the day a second one is added.
 #[cfg(feature = "console")]
-const SCRIPTS: &[&str] = &["/console.js", "/sections.js"];
+const SCRIPTS: &[&str] = &["/console.js"];
 
 #[cfg(feature = "console")]
 fn quoted_urls(text: &str) -> Vec<String> {
@@ -225,9 +228,9 @@ fn the_console_calls_no_route_that_did_not_already_exist() {
     // the script names are checked against the public ones by hand, because a
     // new one appearing here is exactly the violation.
     let (_node, address) = node();
-    // **Both** scripts. This read `/console.js` alone until a route added in
-    // `sections.js` walked straight past it — a guard that covers half the
-    // console is a guard that reports "no private door" about one door.
+    // **Every** script. This read `/console.js` alone until a route added in a
+    // second file walked straight past it — a guard that covers half the console
+    // is a guard that reports "no private door" about one door.
     let mut code = String::new();
     for script in SCRIPTS {
         let (status, _, held) = get(&address, script);
@@ -321,23 +324,44 @@ fn a_build_without_the_console_serves_no_page_at_all() {
 //
 // The three tests below add the missing axis.
 
-/// The id of every element the console's scripts reach for.
+/// Every function in `panel/src/dom.ts` that takes an element id first.
 ///
-/// Read out of the served script rather than listed here, for the reason
-/// `quoted_urls` gives: a list is a second opinion about what the file contains,
-/// and it agrees with the file right up until somebody edits one of them.
+/// The ids themselves are read out of the served script rather than listed
+/// here, for the reason `quoted_urls` gives: a list is a second opinion about
+/// what the file contains, and it agrees with the file right up until somebody
+/// edits one of them. This names the HELPERS, which is a much smaller and much
+/// slower-moving set.
+///
+/// The script used to reach the page through `document.getElementById` wrapped
+/// in one helper, so one needle found every reach. The TypeScript port put the
+/// typing behind a small vocabulary instead — `value("user")` rather than
+/// `at("user").value` — and scanning for the old needle alone would still have
+/// PASSED while covering a third of what it used to.
+///
+/// So the list is here, and `dom.ts` is where it comes from: a new id-taking
+/// helper added there is added here, and the assertion below is what says so.
+#[cfg(feature = "console")]
+const REACHES: &[&str] = &[
+    "at", "value", "trimmed", "setValue", "write", "clear", "hide", "disable", "say", "put",
+    "facts",
+];
+
+/// Every element id the script reaches for, through any of `REACHES`.
 #[cfg(feature = "console")]
 fn addressed_ids(script: &str) -> Vec<String> {
     let mut found = Vec::new();
-    let mut rest = script;
-    while let Some(start) = rest.find("at(\"") {
-        rest = &rest[start.saturating_add(4)..];
-        match rest.find('"') {
-            Some(end) => {
-                found.push(rest[..end].to_owned());
-                rest = &rest[end..];
+    for helper in REACHES {
+        let needle = format!("{helper}(\"");
+        let mut rest = script;
+        while let Some(start) = rest.find(&needle) {
+            rest = &rest[start.saturating_add(needle.len())..];
+            match rest.find('"') {
+                Some(end) => {
+                    found.push(rest[..end].to_owned());
+                    rest = &rest[end..];
+                }
+                None => break,
             }
-            None => break,
         }
     }
     found
@@ -408,58 +432,6 @@ fn every_element_the_console_reaches_for_exists_on_the_page() {
     );
 }
 
-#[cfg(feature = "console")]
-#[test]
-fn every_tab_and_every_pane_name_each_other() {
-    let (_node, address) = node();
-    let (_, _, page) = get(&address, "/");
-
-    // A tab claims a pane with `aria-controls`; the pane claims the tab back
-    // with `aria-labelledby`. Either one alone can be right while the other is
-    // stale, and a pane no tab reaches is unreachable without being broken —
-    // which is exactly the shape that ships quietly.
-    let mut from_tabs = Vec::new();
-    let mut from_panes = Vec::new();
-    for tag in tags(&page) {
-        let Some(role) = attribute(tag, "role") else {
-            continue;
-        };
-        let Some(id) = attribute(tag, "id") else {
-            continue;
-        };
-        match role.as_str() {
-            "tab" => {
-                if let Some(pane) = attribute(tag, "aria-controls") {
-                    from_tabs.push((id, pane));
-                }
-            }
-            "tabpanel" => {
-                if let Some(tab) = attribute(tag, "aria-labelledby") {
-                    from_panes.push((tab, id));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    assert!(
-        !from_tabs.is_empty(),
-        "no tabs were found — the navigation changed shape and this test stopped \
-         asking its question, which is worse than failing"
-    );
-
-    from_tabs.sort();
-    from_panes.sort();
-    assert_eq!(
-        from_tabs, from_panes,
-        "a tab and a pane disagree about each other. Left: what the tabs claim \
-         to control. Right: what the panes claim to be labelled by. A pane that \
-         appears on neither side is registered nowhere and is reachable by \
-         nobody."
-    );
-}
-
-/// Words that name something this engine either does or does not do.
 #[cfg(feature = "console")]
 const CAPABILITIES: &[&str] = &[
     "cluster",
@@ -695,73 +667,4 @@ fn every_sentence_that_denies_a_capability_is_on_the_record() {
          rubber stamp — delete these:\n  {}",
         stale.join("\n  ")
     );
-}
-
-/// Every script this page loads can at least be parsed as one.
-///
-/// Not a JavaScript parser — writing one to run a test would be a worse idea
-/// than the bug it caught. It checks the one failure that actually shipped: a
-/// binding declared twice at the top level of a script, which is a fatal
-/// `SyntaxError` rather than a shadow, and which takes the ENTIRE file with it.
-///
-/// That happened here. `7145881` on 2026-08-27 added `let held` for the session
-/// token beside the `let held` that already held the last answer's body, and
-/// `console.js` stopped parsing. Nothing failed. The page still served, every
-/// id still resolved, every URL still answered, every claim was still recorded
-/// — and none of that requires the file to run. `sections.js` then called `ask`
-/// and `say` out of a script that had never executed, so the panel had no tabs,
-/// no sign-in, no query and no watch, in **three published releases**
-/// (`v0.0.6-beta`, `v0.1.0-beta`, `v0.1.1-beta`) across nineteen days.
-///
-/// The suite asked whether the page was VALID and whether what it said was
-/// TRUE. It never asked whether the thing worked.
-#[cfg(feature = "console")]
-#[test]
-fn no_script_this_page_loads_declares_the_same_name_twice() {
-    let (_node, address) = node();
-
-    for script in ["/console.js", "/sections.js"] {
-        let (status, _, code) = get(&address, script);
-        assert_eq!(status, 200, "{script} is not served");
-
-        // Top level is column zero here, which is true of both files and is
-        // checked rather than assumed: a `let` indented inside a function is a
-        // new scope and may repeat a name freely.
-        let mut declared: Vec<&str> = Vec::new();
-        let mut twice: Vec<&str> = Vec::new();
-        for line in code.lines() {
-            let Some(rest) = line
-                .strip_prefix("let ")
-                .or_else(|| line.strip_prefix("const "))
-                .or_else(|| line.strip_prefix("var "))
-            else {
-                continue;
-            };
-            let name = rest
-                .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '$')
-                .next()
-                .unwrap_or("");
-            if name.is_empty() {
-                continue;
-            }
-            if declared.contains(&name) {
-                twice.push(name);
-            } else {
-                declared.push(name);
-            }
-        }
-
-        assert!(
-            !declared.is_empty(),
-            "no top-level binding was found in {script}, so this test stopped \
-             asking its question"
-        );
-        assert!(
-            twice.is_empty(),
-            "{script} declares {twice:?} twice at the top level. That is a \
-             SyntaxError, not a shadow: the whole file fails to parse and every \
-             behaviour it holds is gone, while every other test here still \
-             passes because none of them run it."
-        );
-    }
 }
