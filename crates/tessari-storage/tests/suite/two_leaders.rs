@@ -41,7 +41,7 @@ use std::time::Instant;
 use tessari_encoding::{NODE_ID_LEN, Roles};
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_storage::{Catalog, Error, LEASE_TTL, Lease, Reach, RecordAddress, Store};
-use tessari_types::{DatabaseId, Epoch, NamespaceId, RecordId, TableId};
+use tessari_types::{DatabaseId, Epoch, NamespaceId, RecordId, ReplicationClass, TableId};
 
 /// The namespace the store under test leads.
 const MINE: u32 = 1;
@@ -419,4 +419,162 @@ fn two_ranges_advance_their_epochs_independently() {
     // and it is still the LOWER of the two having started as the higher — which
     // a single store-wide counter could not produce.
     assert_eq!(epochs(&store), (Some(MY_EPOCH + 3), Some(THEIR_EPOCH)));
+}
+
+/// A clustered node holding **no lease**, with a namespace declared under
+/// `class` and optionally already led by `led_by`.
+///
+/// Everything in ONE transaction for the reason [`between_two_leaders`] gives:
+/// ADR-0069 makes the first committed membership row put this node in a cluster,
+/// so a second statement would be judged against a catalog that had already
+/// fenced it — including the declaration that is meant to exempt it.
+///
+/// The namespace is **created** rather than named: `admits_two_writers` reads a
+/// definition, and a namespace id nothing defined answers `false` whatever was
+/// intended for it — which would make a declared-range test pass for the same
+/// reason an undeclared one does.
+fn clustered_with(
+    class: Option<ReplicationClass>,
+    led_by: Option<[u8; NODE_ID_LEN]>,
+) -> (Store, NamespaceId, DatabaseId) {
+    let store = store();
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    catalog
+        .create_replica(
+            "other",
+            THEIR_ENDPOINT,
+            Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING),
+            Some(THEIR_NODE),
+            None,
+        )
+        .unwrap();
+    let namespace = catalog.create_namespace("prod").unwrap();
+    let database = catalog.create_database(namespace.id, "orders").unwrap();
+    if let Some(class) = class {
+        catalog.set_replication_class(namespace.id, class).unwrap();
+    }
+    if let Some(node) = led_by {
+        catalog
+            .record_leadership(
+                Reach::Namespace(namespace.id),
+                node,
+                Epoch::new(THEIR_EPOCH),
+            )
+            .unwrap();
+    }
+    transaction.commit().unwrap();
+    (store, namespace.id, database.id)
+}
+
+/// One put into that range. No `hold` anywhere — this node was granted nothing.
+fn write_into(
+    store: &Store,
+    namespace: NamespaceId,
+    database: DatabaseId,
+    id: &str,
+) -> Result<(), Error> {
+    let mut transaction = store.begin()?;
+    transaction.put(
+        RecordAddress::new(namespace, database, TableId::new(1), RecordId::from(id)),
+        b"{}".to_vec(),
+    );
+    transaction.commit().map(|_| ())
+}
+
+#[test]
+fn a_clustered_node_with_no_lease_refuses_an_undeclared_range_and_writes_a_declared_one() {
+    // G027 S2.3, both halves in one test because the pair IS the criterion: the
+    // older refusal has to survive, and the declaration has to be what lifts it.
+    // Asserting only the acceptance would pass with the fence deleted.
+    let (silent, namespace, database) = clustered_with(None, None);
+    let refused = write_into(&silent, namespace, database, "nobody granted this").unwrap_err();
+    assert!(
+        matches!(refused, Error::NoLeadershipYet),
+        "a clustered node with no lease wrote an undeclared range, or refused it \
+         with the wrong sentence: {refused:?}"
+    );
+
+    let (declared, namespace, database) = clustered_with(Some(ReplicationClass::MultiMaster), None);
+    write_into(&declared, namespace, database, "two masters means two")
+        .expect("a range declared MULTI MASTER has no single leadership to wait for");
+}
+
+#[test]
+fn a_clustered_node_writes_a_declared_range_another_node_already_leads() {
+    // The other refusal, and the one that would otherwise make the exemption
+    // above useless in a real cluster: the FIRST master's leadership row is in
+    // the catalog, so a second master meets `WriteIsElsewhere` rather than
+    // `NoLeadershipYet` and is redirected to the node it is supposed to be
+    // writing beside.
+    let (silent, namespace, database) = clustered_with(None, Some(THEIR_NODE));
+    let refused = write_into(&silent, namespace, database, "theirs").unwrap_err();
+    assert!(
+        matches!(refused, Error::WriteIsElsewhere { node, .. } if node == THEIR_NODE),
+        "an undeclared range another node leads stopped redirecting: {refused:?}"
+    );
+
+    let (declared, namespace, database) =
+        clustered_with(Some(ReplicationClass::MultiMaster), Some(THEIR_NODE));
+    write_into(
+        &declared,
+        namespace,
+        database,
+        "beside them, not instead of them",
+    )
+    .expect("a declared range has no elsewhere to be redirected to");
+}
+
+#[test]
+fn a_declared_range_does_not_exempt_an_undeclared_one_written_beside_it() {
+    // The hole a per-transaction exemption would open. Both ranges are written
+    // in one transaction; one is declared and the other is not, and the
+    // undeclared one still has a single leader that this node is not.
+    let store = store();
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    catalog
+        .create_replica(
+            "other",
+            THEIR_ENDPOINT,
+            Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING),
+            Some(THEIR_NODE),
+            None,
+        )
+        .unwrap();
+    let open = catalog.create_namespace("prod").unwrap();
+    let open_db = catalog.create_database(open.id, "orders").unwrap();
+    catalog
+        .set_replication_class(open.id, ReplicationClass::MultiMaster)
+        .unwrap();
+    let closed = catalog.create_namespace("ledger").unwrap();
+    let closed_db = catalog.create_database(closed.id, "entries").unwrap();
+    catalog
+        .record_leadership(
+            Reach::Namespace(closed.id),
+            THEIR_NODE,
+            Epoch::new(THEIR_EPOCH),
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+
+    let mut transaction = store.begin().unwrap();
+    transaction.put(
+        RecordAddress::new(open.id, open_db.id, TableId::new(1), RecordId::from("a")),
+        b"{}".to_vec(),
+    );
+    transaction.put(
+        RecordAddress::new(
+            closed.id,
+            closed_db.id,
+            TableId::new(1),
+            RecordId::from("b"),
+        ),
+        b"{}".to_vec(),
+    );
+    let refused = transaction.commit().unwrap_err();
+    assert!(
+        matches!(refused, Error::WriteIsElsewhere { node, .. } if node == THEIR_NODE),
+        "an undeclared range travelled under a declared one's cover: {refused:?}"
+    );
 }

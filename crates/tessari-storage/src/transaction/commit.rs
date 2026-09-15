@@ -210,6 +210,21 @@ impl Transaction<'_> {
     /// address: a leadership whose range this node cannot read is one it cannot
     /// place, and placing it wrongly is the failure this whole function exists to
     /// prevent.
+    /// Whether **every** range this transaction writes was declared multi-master.
+    ///
+    /// All of them and not any of them. A transaction that writes a declared
+    /// range and an undeclared one is still a write into a range that has a
+    /// single leader, and exempting it because one of its ranges was declared
+    /// would let the undeclared write travel under the declared one's cover.
+    fn every_range_admits_two_writers(&self, ranges: &BTreeSet<Reach>) -> Result<bool> {
+        for range in ranges {
+            if !self.store.admits_two_writers(*range)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     fn ranges_written(&self) -> Result<BTreeSet<Reach>> {
         self.writes
             .iter()
@@ -256,15 +271,25 @@ impl Transaction<'_> {
         // node write HERE* stopped being one question the moment two nodes could
         // lead two namespaces.
         let identity = self.store.node_identity()?;
-        self.store
-            .refuse_if_led_elsewhere(&self.ranges_written()?, &identity.id)?;
+        // Resolved once and asked twice: both admission questions are about the
+        // ranges this transaction writes, and deriving them separately is how
+        // two questions about one thing come to disagree about what that thing
+        // was.
+        let ranges = self.ranges_written()?;
+        self.store.refuse_if_led_elsewhere(&ranges, &identity.id)?;
         // And the other half of *the effective role is the lease* (ADR-0064):
         // a node that takes part in deciding writes under a leadership and at
         // no other time. Asked here rather than only at the statement layer for
         // the reason the paragraph above gives — `dry_run` must rehearse it, and
         // a refusal a `VERIFY` cannot see is one an operator meets for the first
         // time in production.
-        if self.store.awaiting(&identity.id)? {
+        // G027 S2.3 — and the declaration is what exempts it, by the SAME
+        // predicate the divergence fence and the redirect consult, with no new
+        // setting anywhere. The order matters and the `&&` is load-bearing:
+        // `awaiting` returns on an in-memory lease read, so a node that holds a
+        // leadership never reaches the catalog lookup, and the exemption is paid
+        // for only by a commit that was otherwise about to be refused.
+        if self.store.awaiting(&identity.id)? && !self.every_range_admits_two_writers(&ranges)? {
             return Err(Error::NoLeadershipYet);
         }
         let record = self.log_record(identity.id)?;

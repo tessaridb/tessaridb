@@ -481,12 +481,34 @@ impl Store {
         let held = crate::catalog::Catalog::new(&mut transaction).leaderships()?;
         drop(transaction);
         let mine = self.leading();
-        let Some(elsewhere) = ranges
-            .iter()
-            .filter_map(|range| crate::catalog::covering(&held, *range))
-            .find(|leader| leader.node != *me && mine.is_none_or(|mine| mine <= leader.epoch))
-            .copied()
-        else {
+        let mut refused = None;
+        for range in ranges {
+            let Some(leader) = crate::catalog::covering(&held, *range) else {
+                continue;
+            };
+            if leader.node == *me || mine.is_some_and(|mine| mine > leader.epoch) {
+                continue;
+            }
+            // G027 S2.3 — asked HERE, on the range that is about to be refused,
+            // and not in front of the loop. A range declared `MULTI MASTER` has
+            // no single leader to be writing *elsewhere* from: the row naming
+            // another node is a second master, which is what the declaration
+            // says the range admits. Reading it costs a catalog lookup, so it is
+            // paid only by a write that was otherwise going to be redirected —
+            // a leader writing its own range never reaches this line, because
+            // `leader.node == *me` sent it back round.
+            //
+            // Per range and not once for the transaction, because a transaction
+            // touching a declared range and an undeclared one must still be
+            // refused for the undeclared one. Exempting on the first offender
+            // would let the second travel under its cover.
+            if self.admits_two_writers(*range)? {
+                continue;
+            }
+            refused = Some(*leader);
+            break;
+        }
+        let Some(elsewhere) = refused else {
             return Ok(());
         };
         let mut transaction = self.begin()?;
@@ -1606,7 +1628,7 @@ impl Store {
     /// enforced. A class stored by a later build that this one cannot read is a
     /// decoding failure from the catalog and propagates as one, rather than
     /// being read as either answer.
-    fn admits_two_writers(&self, home: Reach) -> Result<bool> {
+    pub(crate) fn admits_two_writers(&self, home: Reach) -> Result<bool> {
         let (Some(namespace), _) = home.parts() else {
             return Ok(false);
         };
