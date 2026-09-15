@@ -696,3 +696,72 @@ fn every_sentence_that_denies_a_capability_is_on_the_record() {
         stale.join("\n  ")
     );
 }
+
+/// Every script this page loads can at least be parsed as one.
+///
+/// Not a JavaScript parser — writing one to run a test would be a worse idea
+/// than the bug it caught. It checks the one failure that actually shipped: a
+/// binding declared twice at the top level of a script, which is a fatal
+/// `SyntaxError` rather than a shadow, and which takes the ENTIRE file with it.
+///
+/// That happened here. `7145881` on 2026-08-27 added `let held` for the session
+/// token beside the `let held` that already held the last answer's body, and
+/// `console.js` stopped parsing. Nothing failed. The page still served, every
+/// id still resolved, every URL still answered, every claim was still recorded
+/// — and none of that requires the file to run. `sections.js` then called `ask`
+/// and `say` out of a script that had never executed, so the panel had no tabs,
+/// no sign-in, no query and no watch, in **three published releases**
+/// (`v0.0.6-beta`, `v0.1.0-beta`, `v0.1.1-beta`) across nineteen days.
+///
+/// The suite asked whether the page was VALID and whether what it said was
+/// TRUE. It never asked whether the thing worked.
+#[cfg(feature = "console")]
+#[test]
+fn no_script_this_page_loads_declares_the_same_name_twice() {
+    let (_node, address) = node();
+
+    for script in ["/console.js", "/sections.js"] {
+        let (status, _, code) = get(&address, script);
+        assert_eq!(status, 200, "{script} is not served");
+
+        // Top level is column zero here, which is true of both files and is
+        // checked rather than assumed: a `let` indented inside a function is a
+        // new scope and may repeat a name freely.
+        let mut declared: Vec<&str> = Vec::new();
+        let mut twice: Vec<&str> = Vec::new();
+        for line in code.lines() {
+            let Some(rest) = line
+                .strip_prefix("let ")
+                .or_else(|| line.strip_prefix("const "))
+                .or_else(|| line.strip_prefix("var "))
+            else {
+                continue;
+            };
+            let name = rest
+                .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '$')
+                .next()
+                .unwrap_or("");
+            if name.is_empty() {
+                continue;
+            }
+            if declared.contains(&name) {
+                twice.push(name);
+            } else {
+                declared.push(name);
+            }
+        }
+
+        assert!(
+            !declared.is_empty(),
+            "no top-level binding was found in {script}, so this test stopped \
+             asking its question"
+        );
+        assert!(
+            twice.is_empty(),
+            "{script} declares {twice:?} twice at the top level. That is a \
+             SyntaxError, not a shadow: the whole file fails to parse and every \
+             behaviour it holds is gone, while every other test here still \
+             passes because none of them run it."
+        );
+    }
+}

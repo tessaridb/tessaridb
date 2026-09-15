@@ -325,21 +325,21 @@ function drawn(records) {
 let drawing = "auto";
 
 /** The parsed body of the last answer, so the toggle can redraw without asking. */
-let held = null;
+let answered = null;
 
 function paint() {
   const pane = at("answer");
   pane.textContent = "";
-  if (held === null) {
+  if (answered === null) {
     return;
   }
-  if (drawing === "json" || !Array.isArray(held.results)) {
+  if (drawing === "json" || !Array.isArray(answered.results)) {
     const shown = document.createElement("pre");
-    shown.textContent = JSON.stringify(held, null, 2);
+    shown.textContent = JSON.stringify(answered, null, 2);
     pane.appendChild(shown);
     return;
   }
-  for (const result of held.results) {
+  for (const result of answered.results) {
     if (result.kind === "records" && Array.isArray(result.records)) {
       const table = result.records.length === 0 ? null : drawn(result.records);
       if (table === null) {
@@ -389,16 +389,16 @@ for (const button of document.querySelectorAll("[data-shape]")) {
 
 async function runScript() {
   say("script-status", "running…");
-  held = null;
+  answered = null;
   at("answer").textContent = "";
   try {
     const { reply, text } = await ask(at("script").value);
     // Parsed when it is JSON and shown as it came when it is not: an error body
     // is plain text and reformatting it would only hide it.
     try {
-      held = JSON.parse(text);
+      answered = JSON.parse(text);
     } catch (ignored) {
-      held = null;
+      answered = null;
       const shown = document.createElement("pre");
       shown.textContent = text;
       at("answer").appendChild(shown);
