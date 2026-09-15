@@ -373,7 +373,7 @@ demanding first user.
 | **Real-time** | Change subscriptions as a first-class feature, not polling |
 | **Honest about cost** | An index changes what a read costs and never what it answers — and where that cannot hold, as with an approximate vector search, the read says so in its own result |
 | **Specified, not just implemented** | The wire and value protocol is published with a shared conformance corpus, so a client is written from the spec rather than from our source |
-| **Deployable three ways** | Embedded library · single self-hosted node · multi-node cluster with sharding and replication |
+| **Deployable three ways** | Embedded library · single self-hosted node · multi-node cluster with replication, elected leadership and a read that may name how stale an answer it accepts |
 | **Multiple interfaces** | CLI, HTTP + WebSocket, and a socket protocol for connection, control and maintenance |
 
 ## Non-goals
@@ -413,9 +413,10 @@ crates/
   tessari-bench        bin    workload harness, exact percentiles, recorded baselines
 ```
 
-Cluster membership, sharding and replication have no crate yet; they will be
-derived from the feature matrix when the node grows past one. The list above is
-what exists, not a plan.
+Cluster membership, leadership and replication have no crate of their own: they
+live in `tessari-wire` and `tessari-storage`, beside the wire and the log they
+are written in terms of. Sharding has no crate because it is not built. The list
+above is what exists, not a plan.
 
 ## Building
 
