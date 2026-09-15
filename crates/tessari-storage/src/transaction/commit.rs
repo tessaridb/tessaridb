@@ -326,7 +326,7 @@ impl Transaction<'_> {
             // a caller that retries meets the concurrency on the next attempt —
             // which is the right order to learn them in, because a stale write
             // has nothing useful to say about a conflict it never saw.
-            self.refuse_a_contested_record()?;
+            let discarded = self.refuse_a_contested_record()?;
             // Inside the loop with the conflict check, and for the same reason:
             // both are read against the committed state this attempt builds on,
             // and a schema that moved between attempts must be re-read rather
@@ -371,7 +371,17 @@ impl Transaction<'_> {
             }
 
             match self.store.backend().apply(batch) {
-                Ok(()) => return Ok(commit_at),
+                Ok(()) => {
+                    // Counted HERE and not where it was decided. The decision is
+                    // re-taken on every attempt, so an attempt that loses its
+                    // batch would otherwise count a loss it never caused — and
+                    // the `Settle::Discard` return above this line skips it for
+                    // the same reason, because a rehearsal discards nothing.
+                    if discarded > 0 {
+                        self.store.discarded(discarded);
+                    }
+                    return Ok(commit_at);
+                }
                 // The position moved between reading it and applying, so the
                 // conflict check above was made against a stale state and the
                 // whole attempt is repeated rather than patched up — after
@@ -435,11 +445,21 @@ impl Transaction<'_> {
         Ok(LogRecord::new(mutations))
     }
 
-    /// Refuse the commit if any written record's stored versions disagree.
+    /// Refuse the commit if any written record's stored versions disagree, and
+    /// answer how many writes a declared last-writer-wins discarded instead.
     ///
     /// G027 S3.1 and the rule the goal exists for: a write concurrent with the
     /// stored version is **refused and named, never silently ranked**
     /// (ADR-0075).
+    ///
+    /// # Unless the table said otherwise, and then it is counted
+    ///
+    /// G027 S3.2. A table that declares `LAST WRITER WINS` takes the write, and
+    /// the survivors it does not descend are returned as a count — spent by the
+    /// caller only once the batch has actually landed. A count is the one thing
+    /// that makes the discard observable: the losing version stays on disk
+    /// byte-intact and vanishes from every answer, so without it an operator
+    /// auditing storage finds both versions and concludes nothing was lost.
     ///
     /// # Why the refusal is here and not on the apply path
     ///
@@ -461,8 +481,17 @@ impl Transaction<'_> {
     ///
     /// One scan of that record's versions per written address, bounded by the
     /// versions above the reclaim floor. Asked of the addresses this transaction
-    /// writes and of nothing else.
-    fn refuse_a_contested_record(&self) -> Result<()> {
+    /// writes and of nothing else. The table's declaration is read only after
+    /// two survivors have been found, so a settled record never reaches the
+    /// catalog for it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ConcurrentVersions`] when a contested record's table has not
+    /// declared what to do, and the backend's failure when the versions or the
+    /// declaration cannot be read.
+    fn refuse_a_contested_record(&self) -> Result<u64> {
+        let mut discarded = 0_u64;
         for address in self.writes.keys() {
             let surviving = self.surviving_versions(address)?;
             let (Some((ours, our_stamp)), Some((theirs, their_stamp))) =
@@ -470,6 +499,28 @@ impl Transaction<'_> {
             else {
                 continue;
             };
+            // G027 S3.2 — unless the table said what to do, in which case this
+            // is not a refusal at all. The lookup sits HERE, after two
+            // survivors have been found, so it is paid for only by a commit
+            // that was otherwise about to be refused: an ordinary write leaves
+            // `surviving_versions` with one version and never reaches the
+            // catalog. That is W291's placement, and the unedited
+            // `counted_reads` admission test is what holds it.
+            //
+            // The last writer is this caller, not a timestamp. Nothing here
+            // reads a clock: the incoming write supersedes every surviving
+            // version including the ones it never saw, so the writes discarded
+            // are the survivors it does not descend — every one but the newest,
+            // which is the one the stamp producer stood on.
+            if self
+                .store
+                .conflict_policy(address.table)?
+                .discards_the_loser()
+            {
+                let lost = surviving.len().saturating_sub(1);
+                discarded = discarded.saturating_add(u64::try_from(lost).unwrap_or(u64::MAX));
+                continue;
+            }
             // The node whose write `theirs` carries and `ours` does not. There
             // is one for every two-master case this engine can produce, and the
             // first in node order is named when there is more than one — the
@@ -488,7 +539,7 @@ impl Transaction<'_> {
                 node: unseen,
             });
         }
-        Ok(())
+        Ok(discarded)
     }
 
     /// Refuse the commit if any written record has moved since the snapshot.

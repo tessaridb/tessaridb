@@ -15,7 +15,7 @@ use tessari_encoding::{
     NODE_ID_LEN, NodeIdentity, REACH_LEN, Roles, StoreKey, StoreValue, VersionPositionKey, Writer,
 };
 use tessari_kv::{Key, KeyRange, KvBackend, ScanDirection, ScanRequest, WriteBatch};
-use tessari_types::{Epoch, Sequence};
+use tessari_types::{ConflictPolicy, Epoch, Sequence, TableId};
 
 use crate::catalog::Reach;
 
@@ -63,6 +63,17 @@ pub struct Health {
     /// It is here rather than nowhere because a detector added after the first
     /// incident is a detector that was absent during it.
     pub log_divergences: u64,
+    /// Writes discarded by a table that declared `LAST WRITER WINS`.
+    ///
+    /// The only record that a write stopped being reachable. W292 measured what
+    /// its absence looks like: the losing version stays on disk byte-intact and
+    /// disappears from every answer, so an operator auditing storage for data
+    /// loss finds both versions and concludes nothing was lost. Counting it at
+    /// the commit is what makes a declared last-writer-wins honest rather than
+    /// silent (ADR-0075, G027 S3.2).
+    ///
+    /// Not persisted, for the reason [`Health::log_divergences`] gives.
+    pub discarded_writes: u64,
     /// Leadership rounds this node has stood in.
     ///
     /// Here for the reason the divergence count is, and for one more: a healthy
@@ -155,6 +166,11 @@ pub struct Store {
     /// two handles to one store are not two stores, and a count split between
     /// them is a count nobody can read.
     divergences: Arc<AtomicU64>,
+    /// Writes discarded under a declared last-writer-wins since this process
+    /// opened the store.
+    ///
+    /// Shared with every handle for the reason the divergence count is.
+    discarded: Arc<AtomicU64>,
     /// Leadership rounds stood since this process opened the store.
     campaigns: Arc<AtomicU64>,
     /// What this process has given each follower, and when.
@@ -235,6 +251,7 @@ impl Store {
             audit: Arc::new(crate::audit::AuditTrail::default()),
             series: Arc::new(crate::series::SeriesRegistry::default()),
             divergences: Arc::new(AtomicU64::new(0)),
+            discarded: Arc::new(AtomicU64::new(0)),
             campaigns: Arc::new(AtomicU64::new(0)),
             followers: Arc::new(Followers::default()),
             collections: Arc::new(crate::collections::Collections::default()),
@@ -868,6 +885,7 @@ impl Store {
             background_errors: self.backend.background_errors()?,
             committed: self.committed_tail(self.own_log(UNPARTITIONED_REPORT_HOME)?)?,
             log_divergences: self.divergences.load(Ordering::Relaxed),
+            discarded_writes: self.discarded.load(Ordering::Relaxed),
             campaigns: self.campaigns.load(Ordering::Relaxed),
             lease_remaining: self.lease.remaining(),
         })
@@ -1612,6 +1630,36 @@ impl Store {
             held,
             offered,
         })
+    }
+
+    /// Record that a declared last-writer-wins discarded writes.
+    ///
+    /// Called from the commit path and by nothing else. A store method rather
+    /// than a counter in the serving process for the reason [`Store::campaigned`]
+    /// is one: the scrape reads the store's health, so a detector that lives
+    /// anywhere else is a detector an operator cannot see.
+    pub(crate) fn discarded(&self, writes: u64) {
+        self.discarded.fetch_add(writes, Ordering::Relaxed);
+    }
+
+    /// What a table does with a write it cannot order (G027 S3.2).
+    ///
+    /// **Silence is refusal**, deliberately and not as a fallback — it is what
+    /// ADR-0075 has every table do and what every table written before the
+    /// clause existed has always had done for it. A policy stored by a later
+    /// build that this one cannot read is a decoding failure from the catalog
+    /// and propagates as one, rather than being read as either answer.
+    ///
+    /// A table that is gone while a write to it is still in flight answers
+    /// refusal for the same reason [`Store::admits_two_writers`] answers `false`
+    /// on a missing namespace: an absent declaration is not a declaration, and
+    /// of the two readings it is the one that loses nothing.
+    pub(crate) fn conflict_policy(&self, table: TableId) -> Result<ConflictPolicy> {
+        let mut transaction = self.begin()?;
+        let Some(definition) = crate::catalog::Catalog::new(&mut transaction).table(table)? else {
+            return Ok(ConflictPolicy::Refuse);
+        };
+        Ok(definition.conflict.unwrap_or(ConflictPolicy::Refuse))
     }
 
     /// Whether the range this log belongs to was **declared** multi-master

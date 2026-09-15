@@ -13,8 +13,8 @@
 use std::collections::BTreeMap;
 
 use tessari_types::{
-    DatabaseId, Duration, GraphId, IdentityKind, IndexId, NamespaceId, Number, Path, Replication,
-    ReplicationClass, TableId, Value,
+    ConflictPolicy, DatabaseId, Duration, GraphId, IdentityKind, IndexId, NamespaceId, Number,
+    Path, Replication, ReplicationClass, TableId, Value,
 };
 
 use tessari_vault::{KeyId, Wrapped};
@@ -58,6 +58,7 @@ const FIELD_DIMENSION: &str = "dimension";
 const FIELD_DISTANCE: &str = "distance";
 const FIELD_REPLICATION: &str = "replication";
 const FIELD_REPLICATION_CLASS: &str = "replication_class";
+const FIELD_CONFLICT: &str = "conflict";
 
 /// A namespace: the outermost tenancy level.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,6 +161,20 @@ pub struct TableDefinition {
     /// every respect that matters — selected from, inserted into, indexed,
     /// granted on — and differs by exactly this one fact (Q-314).
     pub graph: Option<GraphId>,
+    /// What the table does with a write it cannot order (G027 S3.2).
+    ///
+    /// `None` is **never stated** and reads as [`ConflictPolicy::Refuse`], which
+    /// is what ADR-0075 has every table do and what every table that existed
+    /// before the clause did has always had done for it — so nothing on disk is
+    /// rewritten and no migration step is owed.
+    ///
+    /// On the **table** rather than the namespace, where the replication class
+    /// went, because the two answer different questions at the levels they
+    /// belong to: a namespace says whether a second writer may exist at all, a
+    /// table says what to do when two of them have written one record without
+    /// seeing each other. A counter can tolerate a dropped update beside a
+    /// ledger row in the same namespace that cannot (Q-633).
+    pub conflict: Option<ConflictPolicy>,
 }
 
 impl TableDefinition {
@@ -387,6 +402,13 @@ impl TableDefinition {
         if let Some(graph) = self.graph {
             fields.insert(FIELD_GRAPH.to_owned(), number(graph.get()));
         }
+        // Written only when the operator said something, for the reason the
+        // graph membership above is: silence and a declared refusal are
+        // different facts, and a policy word written for every table would make
+        // them the same one.
+        if let Some(conflict) = self.conflict {
+            fields.insert(FIELD_CONFLICT.to_owned(), conflict.to_value());
+        }
         // A declaration is not a flag, so it is written only by the edge table
         // that has one. Absent is how every edge table declared without a pair
         // reads, which is the same compatibility contract the flags keep: the
@@ -515,6 +537,16 @@ impl TableDefinition {
                 Some(_) => Some(GraphId::new(field_id(fields, FIELD_GRAPH, "table")?)),
                 None => None,
             },
+            conflict: match fields.get(FIELD_CONFLICT) {
+                None => None,
+                Some(held) => Some(ConflictPolicy::from_value(held).ok_or(
+                    Error::CatalogMalformed {
+                        entity: "table",
+                        field: FIELD_CONFLICT,
+                        found: "a conflict policy this build does not have",
+                    },
+                )?),
+            },
         })
     }
 }
@@ -544,6 +576,13 @@ pub struct TableShape {
     pub identity: IdentityKind,
     /// The graph the table belongs to, when the declaration named one.
     pub graph: Option<GraphId>,
+    /// What the table does with a write it cannot order, when it said.
+    ///
+    /// Carried on the shape for the reason every other field here is: a
+    /// declaration passed beside the shape is a declaration a later caller can
+    /// forget to pass, and a table silently refusing writes its operator asked
+    /// to be taken looks like nothing at all being wrong.
+    pub conflict: Option<ConflictPolicy>,
 }
 
 /// Which engine's rules a table plays by.
@@ -1915,6 +1954,7 @@ mod tests {
             // trips perfectly as long as both ends agree on what it is when
             // absent, which is exactly the bug this assertion is for.
             identity: IdentityKind::Uuid,
+            conflict: None,
         };
         assert_eq!(
             TableDefinition::from_value(&table.to_value()).unwrap(),
@@ -2036,6 +2076,7 @@ mod tests {
                 }),
             })),
             identity: IdentityKind::Int,
+            conflict: None,
         };
         assert_eq!(
             TableDefinition::from_value(&table.to_value()).unwrap(),
@@ -2087,6 +2128,7 @@ mod tests {
                 distance: VectorDistance::Euclidean,
             }),
             identity: IdentityKind::Int,
+            conflict: None,
         };
         assert_eq!(
             TableDefinition::from_value(&table.to_value()).unwrap(),

@@ -11,7 +11,9 @@ use tessari_ql::{
     Approximation, BinaryOp, EdgeClause, Error, ExprKind, Identity, InfoSubject, Projection,
     RecordTarget, Script, Source, StatementKind, parse,
 };
-use tessari_types::{Datetime, FieldKind, Number, RecordId, Replication, ReplicationClass, Value};
+use tessari_types::{
+    ConflictPolicy, Datetime, FieldKind, Number, RecordId, Replication, ReplicationClass, Value,
+};
 
 /// A replication factor, which is never zero.
 fn factor(n: u32) -> Replication {
@@ -1341,6 +1343,71 @@ fn a_namespace_declares_how_many_copies_it_wants() {
         panic!("DEFINE NAMESPACE REPLICATION FACTOR");
     };
     assert_eq!(replication, Some(factor(3)));
+}
+
+/// The clause a table declares its conflict rule with (G027 S3.2).
+///
+/// On the TABLE and not the namespace, where the writer count sits, because the
+/// two are different questions at different levels: a namespace says whether a
+/// second writer may exist, a table says what to do when two of them have
+/// written one record without seeing each other (Q-633).
+#[test]
+fn a_table_declares_what_it_does_with_a_write_it_cannot_order() {
+    let StatementKind::DefineTable { conflict, .. } = one("DEFINE TABLE ledger (amount int);")
+    else {
+        panic!("DEFINE TABLE");
+    };
+    assert_eq!(conflict, None, "a bare definition states nothing");
+
+    let StatementKind::DefineTable { conflict, .. } =
+        one("DEFINE TABLE counter (hits int) LAST WRITER WINS;")
+    else {
+        panic!("DEFINE TABLE … LAST WRITER WINS");
+    };
+    assert_eq!(conflict, Some(ConflictPolicy::LastWriterWins));
+
+    let StatementKind::DefineTable { conflict, .. } =
+        one("DEFINE TABLE ledger (amount int) REFUSE CONFLICTS;")
+    else {
+        panic!("DEFINE TABLE … REFUSE CONFLICTS");
+    };
+    assert_eq!(
+        conflict,
+        Some(ConflictPolicy::Refuse),
+        "a stated refusal is not the same fact as a silence, and the grammar \
+         has to let an operator say which one they mean"
+    );
+
+    // Order-free, like every other adjective on the statement, and it composes
+    // with them rather than displacing one.
+    let StatementKind::DefineTable {
+        conflict,
+        identity,
+        schemafull,
+        ..
+    } = one("DEFINE TABLE hits (n int) LAST WRITER WINS SCHEMALESS IDENTITY uuid;")
+    else {
+        panic!("DEFINE TABLE with three clauses");
+    };
+    assert_eq!(conflict, Some(ConflictPolicy::LastWriterWins));
+    assert_eq!(identity, tessari_types::IdentityKind::Uuid);
+    assert!(!schemafull);
+}
+
+/// The words the clause is built from reserve nothing.
+///
+/// `last`, `wins`, `refuse` and `conflicts` are ordinary English that a stored
+/// script may already use as a name, and a clause that reserved one would refuse
+/// every script that did — silently, at the next upgrade.
+#[test]
+fn the_conflict_clause_reserves_none_of_its_words() {
+    for statement in [
+        "DEFINE TABLE last (wins int);",
+        "DEFINE TABLE conflicts (refuse int);",
+        "DEFINE TABLE writer (last int, wins int, refuse int, conflicts int);",
+    ] {
+        parse(statement).unwrap_or_else(|error| panic!("{statement} was refused: {error:?}"));
+    }
 }
 
 /// The clause a namespace declares its **writers** with (G027 S2.1), which is a

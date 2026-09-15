@@ -4,8 +4,8 @@ use core::num::NonZeroU32;
 
 use super::Parser;
 use tessari_types::{
-    Assertion, FieldKind, Filter, IdentityKind, Number, Path, Replication, ReplicationClass, Step,
-    parse_uuid,
+    Assertion, ConflictPolicy, FieldKind, Filter, IdentityKind, Number, Path, Replication,
+    ReplicationClass, Step, parse_uuid,
 };
 
 use crate::ast::{
@@ -750,6 +750,7 @@ impl Parser<'_> {
                 let mut edge: Option<EdgeClause> = None;
                 let mut identity: Option<IdentityKind> = None;
                 let mut graph: Option<Name> = None;
+                let mut conflict: Option<ConflictPolicy> = None;
                 loop {
                     if strictness.is_none() && self.eat_keyword(Keyword::Schemafull) {
                         strictness = Some(true);
@@ -761,6 +762,21 @@ impl Parser<'_> {
                         identity = Some(self.identity_kind()?);
                     } else if graph.is_none() && self.eat_keyword(Keyword::In) {
                         graph = Some(self.name()?);
+                    // `LAST WRITER WINS` / `REFUSE CONFLICTS` — contextual
+                    // words, reserving nothing, for the reason
+                    // `replication_class_clause` gives about `MULTI MASTER`:
+                    // `last`, `wins`, `refuse` and `conflicts` are ordinary
+                    // English that a stored script may already use as a name,
+                    // and reserving one retroactively refuses every script that
+                    // did. The phrase is what an operator already calls the
+                    // thing, so what they type is what `INFO FOR` reads back.
+                    } else if conflict.is_none() && self.eat_word("last") {
+                        self.expect_word("writer", "`WRITER` after `LAST`")?;
+                        self.expect_word("wins", "`WINS` after `LAST WRITER`")?;
+                        conflict = Some(ConflictPolicy::LastWriterWins);
+                    } else if conflict.is_none() && self.eat_word("refuse") {
+                        self.expect_word("conflicts", "`CONFLICTS` after `REFUSE`")?;
+                        conflict = Some(ConflictPolicy::Refuse);
                     } else {
                         break;
                     }
@@ -792,6 +808,7 @@ impl Parser<'_> {
                     edge,
                     identity: identity.unwrap_or_default(),
                     graph,
+                    conflict,
                     if_not_exists,
                 })
             }

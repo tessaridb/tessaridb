@@ -255,6 +255,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             kind: shape.kind,
             identity: shape.identity,
             graph: shape.graph,
+            conflict: shape.conflict,
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());

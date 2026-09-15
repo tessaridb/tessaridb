@@ -16,10 +16,12 @@ use tessari_encoding::{
     encode_payload,
 };
 use tessari_kv::{Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value};
-use tessari_storage::{Catalog, EDGE_IN, EDGE_OUT, Error, Reach, RecordAddress, Store, TableShape};
+use tessari_storage::{
+    Catalog, EDGE_IN, EDGE_OUT, Error, Reach, RecordAddress, Store, TableKind, TableShape,
+};
 use tessari_types::{
-    DatabaseId, Epoch, NamespaceId, RecordId, RecordRef, ReplicationClass, Sequence, TableId,
-    Value as FieldValue,
+    ConflictPolicy, DatabaseId, Epoch, IdentityKind, NamespaceId, RecordId, RecordRef,
+    ReplicationClass, Sequence, TableId, Value as FieldValue,
 };
 
 /// How many records the log is read in one go. Larger than any test writes.
@@ -1482,5 +1484,198 @@ fn a_writer_that_has_seen_both_versions_supersedes_them_and_is_not_refused() {
             .unwrap(),
         Some(b"and on we go".to_vec()),
         "a record whose versions were reconciled stayed writable"
+    );
+}
+
+/// A multi-master range whose table SAID what to do with a write it cannot
+/// order (G027 S3.2).
+///
+/// Everything in one transaction, per ADR-0069: the first committed membership
+/// row puts the node in a cluster, so an arrangement declared across two
+/// transactions is a node that joins halfway through describing itself.
+///
+/// The table is **created** rather than named, which `declared` never had to do
+/// — its records name `TableId::new(1)` and no table backs them. A declaration
+/// is read from the catalog, so a test for one needs a catalog entry to read.
+fn declaring(policy: Option<ConflictPolicy>) -> (Store, NamespaceId, DatabaseId, TableId) {
+    let store = store_on(&backend());
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let namespace = catalog.create_namespace("prod").unwrap();
+    let database = catalog.create_database(namespace.id, "orders").unwrap();
+    catalog
+        .set_replication_class(namespace.id, ReplicationClass::MultiMaster)
+        .unwrap();
+    let table = catalog
+        .create_table(
+            namespace.id,
+            database.id,
+            "ledger",
+            TableShape {
+                schemafull: false,
+                kind: TableKind::Table,
+                identity: IdentityKind::default(),
+                graph: None,
+                conflict: policy,
+            },
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+    (store, namespace.id, database.id, table.id)
+}
+
+/// One record of the table `declaring` built.
+///
+/// Separate from [`address_in`], which hard-codes table 1 because the records it
+/// addresses have no table behind them at all.
+fn address_at(
+    namespace: NamespaceId,
+    database: DatabaseId,
+    table: TableId,
+    id: &str,
+) -> RecordAddress {
+    RecordAddress::new(namespace, database, table, RecordId::from(id))
+}
+
+/// One committed put into that table, through the ordinary write path.
+fn put_at(
+    store: &Store,
+    namespace: NamespaceId,
+    database: DatabaseId,
+    table: TableId,
+    id: &str,
+    payload: &[u8],
+) {
+    let mut transaction = store.begin().unwrap();
+    transaction.put(address_at(namespace, database, table, id), payload.to_vec());
+    transaction.commit().unwrap();
+}
+
+/// Two nodes write one record without seeing each other, and a third holds both.
+///
+/// The concurrency is produced the only way it can be — by replication. A local
+/// commit derives its stamp from the version it replaces, so it always DESCENDS
+/// it; the concurrency a store meets is one that arrived.
+fn contested_on_a_third(
+    policy: Option<ConflictPolicy>,
+) -> (Store, NamespaceId, DatabaseId, TableId) {
+    let (first, namespace, database, table) = declaring(policy);
+    let (second, ..) = declaring(policy);
+    let (third, ..) = declaring(policy);
+    let home = Reach::Database(namespace, database);
+
+    put_at(
+        &first,
+        namespace,
+        database,
+        table,
+        "shared",
+        b"first-writes-it",
+    );
+    put_at(
+        &second,
+        namespace,
+        database,
+        table,
+        "shared",
+        b"second-writes-it",
+    );
+    replay_range(&first, &third, home);
+    replay_range(&second, &third, home);
+    (third, namespace, database, table)
+}
+
+#[test]
+fn a_table_declaring_last_writer_wins_takes_a_contested_write_and_counts_it() {
+    // G027 S3.2, and the half that makes S3.1 honest rather than a dead end.
+    // Where a table SAYS what to do, the write is taken — and the write it
+    // discards is counted, because a count is the only thing that records the
+    // loss. W292 measured the alternative: the losing version stays on disk
+    // byte-intact and vanishes from every answer, so an operator auditing
+    // storage finds both versions and concludes nothing was lost.
+    let (third, namespace, database, table) =
+        contested_on_a_third(Some(ConflictPolicy::LastWriterWins));
+
+    assert_eq!(
+        third.health().unwrap().discarded_writes,
+        0,
+        "a store that has discarded nothing counts nothing — the assertion \
+         below is a change and not a coincidence"
+    );
+
+    let mut transaction = third.begin().unwrap();
+    transaction.put(
+        address_at(namespace, database, table, "shared"),
+        b"the third node decides".to_vec(),
+    );
+    transaction
+        .commit()
+        .expect("a table that declared last-writer-wins takes the contested write");
+
+    assert_eq!(
+        third.health().unwrap().discarded_writes,
+        1,
+        "the version this write did not descend was discarded, and the counter \
+         is what says so"
+    );
+    let transaction = third.begin().unwrap();
+    assert_eq!(
+        transaction
+            .get(&address_at(namespace, database, table, "shared"))
+            .unwrap(),
+        Some(b"the third node decides".to_vec()),
+        "the last writer is the caller, not a clock — the incoming write is what \
+         the record reads as"
+    );
+}
+
+#[test]
+fn a_rehearsed_commit_discards_nothing_and_counts_nothing() {
+    // `VERIFY` runs every check a commit runs and then throws the work away, so
+    // a counter incremented where the decision is taken rather than where the
+    // batch lands would report a loss that never happened — and a count of
+    // losses nobody suffered is worse than no count, because it is the one
+    // number an operator would act on.
+    let (third, namespace, database, table) =
+        contested_on_a_third(Some(ConflictPolicy::LastWriterWins));
+
+    let mut transaction = third.begin().unwrap();
+    transaction.put(
+        address_at(namespace, database, table, "shared"),
+        b"rehearsed only".to_vec(),
+    );
+    transaction.dry_run().expect("a rehearsal of a taken write");
+
+    assert_eq!(
+        third.health().unwrap().discarded_writes,
+        0,
+        "a rehearsal discarded nothing, so it counted nothing"
+    );
+}
+
+#[test]
+fn a_table_that_declares_nothing_still_refuses_a_contested_write() {
+    // Silence is a refusal, deliberately and not as a fallback (ADR-0075). This
+    // is the guard the declaration needs: without it the LWW branch could be
+    // taken by every table and the test above would still pass, which is W288's
+    // lesson — a criterion whose fixture never reaches the declaration passes
+    // with the gate removed and teaches nothing.
+    let (third, namespace, database, table) = contested_on_a_third(None);
+
+    let mut transaction = third.begin().unwrap();
+    transaction.put(
+        address_at(namespace, database, table, "shared"),
+        b"nobody said i could".to_vec(),
+    );
+    let refused = transaction.commit().unwrap_err();
+
+    assert!(
+        matches!(refused, Error::ConcurrentVersions { .. }),
+        "a table that declared nothing refuses the contested write: {refused:?}"
+    );
+    assert_eq!(
+        third.health().unwrap().discarded_writes,
+        0,
+        "a refusal discards nothing, so it counts nothing"
     );
 }

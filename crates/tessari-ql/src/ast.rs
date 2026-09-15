@@ -21,8 +21,8 @@
 //! [`TableId`]: tessari_types::TableId
 
 use tessari_types::{
-    Assertion, Duration, FieldKind, Filter, IdentityKind, Path, RecordId, Replication,
-    ReplicationClass, Value,
+    Assertion, ConflictPolicy, Duration, FieldKind, Filter, IdentityKind, Path, RecordId,
+    Replication, ReplicationClass, Value,
 };
 
 use crate::function::Function;
@@ -143,6 +143,19 @@ pub enum StatementKind {
         /// An edge kind is the asymmetric case and gets its own word, because it
         /// is never selected from and its entries are not records.
         graph: Option<Name>,
+        /// What the table does with a write it cannot order, when the statement
+        /// said: `DEFINE TABLE ledger (…) LAST WRITER WINS` (G027 S3.2).
+        ///
+        /// `None` is a table that **said nothing**, which reads as a refusal
+        /// wherever it is asked — what ADR-0075 has every table do. It is kept
+        /// apart from a stated [`ConflictPolicy::Refuse`] because an operator
+        /// who answered the question has told the cluster something a silence
+        /// has not.
+        ///
+        /// On the table rather than the namespace, where the replication class
+        /// sits, because a counter can tolerate a dropped update beside a ledger
+        /// row in the same namespace that cannot (Q-633).
+        conflict: Option<ConflictPolicy>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
