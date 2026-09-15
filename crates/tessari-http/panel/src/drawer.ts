@@ -55,6 +55,26 @@ export interface Subject {
 
 let open: Subject | null = null;
 
+/** What to do once the node has accepted a declaration from this drawer. */
+const changed: (() => void)[] = [];
+
+/**
+ * Be told when a declaration lands.
+ *
+ * The drawer must not read the map back itself — the map is what draws the
+ * drawer, so importing it here would be a cycle. So the screen that owns the
+ * reading registers for the news instead.
+ *
+ * It exists because W319 declared `coordinating` from this drawer against a
+ * running node, the node accepted it, the drawer said `declared`, and the lamp
+ * two inches away went on showing the role as not held. A console that reports
+ * a change and then displays the state the change replaced is worse than one
+ * that reports nothing.
+ */
+export function afterChange(todo: () => void): void {
+  changed.push(todo);
+}
+
 const BITS = ["serving", "writable", "coordinating"] as const;
 
 /** The roles the drawer's ticks currently describe. */
@@ -148,7 +168,13 @@ export function wire(): void {
     say("drawer-status", "running…");
     try {
       const answered = await valueOf(statement, "Cluster · roles");
-      say("drawer-status", answered !== null && answered.kind === "done" ? "declared" : "");
+      const done = answered !== null && answered.kind === "done";
+      say("drawer-status", done ? "declared" : "");
+      if (done) {
+        for (const todo of changed) {
+          todo();
+        }
+      }
     } catch (failure) {
       say("drawer-status", told(failure), true);
     }

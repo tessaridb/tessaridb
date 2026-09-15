@@ -7,7 +7,9 @@ import { held, scrape, valueOf } from "./api.js";
 import { at, clear, say } from "./dom.js";
 import { facts } from "./draw.js";
 import { draw as drawMap, type Seen } from "./map.js";
+import { afterChange } from "./drawer.js";
 import { told } from "./session.js";
+import { onArrival } from "./tabs.js";
 
 const HEALTH_ROUTE = "/health";
 const READY_ROUTE = "/ready";
@@ -106,15 +108,20 @@ export async function readNode(): Promise<void> {
 export function wire(): void {
   at("node-refresh").addEventListener("click", readNode);
 
-  // Read once when the section is first opened, rather than on load: a console
-  // left on the query tab should not be scraping a node nobody is looking at.
-  let read = false;
-  for (const tab of ["tab-this-node", "tab-cluster"]) {
-    at(tab).addEventListener("click", () => {
-      if (!read) {
-        read = true;
-        void readNode();
-      }
-    });
-  }
+  // Read once when either section is first REACHED, rather than on load: a
+  // console left on the query tab should not be scraping a node nobody is
+  // looking at.
+  //
+  // On arrival rather than on a click of the tab, which is what this listened
+  // for until W319 measured it. ⌘2, the tablist's arrow keys, a link somebody
+  // shared and a plain reload all reach the cluster map without clicking
+  // anything, and each one used to leave it empty with an empty status beside
+  // it — a blank map that an operator has no way to tell from a cluster with
+  // nothing in it.
+  onArrival(["cluster", "this-node"], () => void readNode());
+
+  // A declaration that the node accepted has changed what the map draws, so the
+  // map is read again. Without this the drawer says `declared`, the node agrees,
+  // and the lamp beside it keeps showing the role that was just replaced.
+  afterChange(() => void readNode());
 }

@@ -30,8 +30,20 @@
 //! silently not resuming would leave somebody watching a feed that is not there.
 
 import { at } from "./dom.js";
+import { isFollowing } from "./watch.js";
 
 const KEY = "tessaridb.console.context";
+
+/**
+ * Whether a follow was running when the page went away.
+ *
+ * Not a field, so it is kept beside them under a name no field can have. It
+ * replaces `kept["namespace"] !== undefined`, which was a test of whether the
+ * Namespace box had text in it — and that box is PREFILLED by the served page.
+ * So every restore announced *the follow stopped at the reload* to operators
+ * who had never pressed Follow, which is a small lie told reliably.
+ */
+const FOLLOWING = "#following";
 
 /**
  * Every field whose content is the operator's own work.
@@ -86,6 +98,9 @@ function keep(): void {
       kept[id] = value;
     }
   }
+  if (isFollowing()) {
+    kept[FOLLOWING] = "yes";
+  }
   try {
     window.sessionStorage.setItem(KEY, JSON.stringify(kept));
   } catch {
@@ -96,17 +111,16 @@ function keep(): void {
 /** Put back what was there, and say what could not come back with it. */
 function restore(): void {
   const kept = held();
-  let brought = 0;
   for (const id of REMEMBERED) {
     const value = kept[id];
     if (value === undefined || !mayKeep(id)) {
       continue;
     }
     (at(id) as HTMLInputElement | HTMLTextAreaElement).value = value;
-    brought += 1;
   }
-  if (brought > 0 && kept["namespace"] !== undefined) {
-    // The one thing that does not come back, said where it was happening.
+  if (kept[FOLLOWING] === "yes") {
+    // The one thing that does not come back, said where it was happening — and
+    // said only to somebody who actually lost one.
     at("watch-status").textContent =
       "the follow stopped at the reload — sign in and press Follow to resume it";
   }

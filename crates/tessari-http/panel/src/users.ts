@@ -26,6 +26,7 @@ import { facts, put } from "./draw.js";
 import { forget, remember } from "./roster.js";
 import { told } from "./session.js";
 import { settled, state } from "./states.js";
+import { onArrival } from "./tabs.js";
 import {
   alteration,
   changeMissing,
@@ -165,7 +166,14 @@ export async function listUsers(): Promise<void> {
     }
     redraw();
   } catch (failure) {
+    everybody = [];
+    forget();
     clear("user-list");
+    // The tally goes with the list. It read `6 of 29` beside an empty list and a
+    // refusal, because it was the PREVIOUS identity's count — so a viewer who
+    // had just been told they may not be told who exists was being told how
+    // many there are, by a console that no longer knew.
+    write("user-count", "");
     // The node's own words, and then what to do with them — a refusal here is
     // usually the tenancy rule working, and an operator who is told only that
     // it refused goes looking for a bug instead of for an owner.
@@ -216,7 +224,10 @@ export function wire(): void {
   // keystroke would be a cost this arrangement was chosen to avoid.
   at("user-filter").addEventListener("input", redraw);
 
-  at("tab-access").addEventListener("click", () => {
+  // On arrival rather than on a click of the tab: ⌘3, the tablist's arrow keys,
+  // a shared link and a reload all reach this screen without one, and each used
+  // to land on an empty list with nothing said about why.
+  onArrival(["access"], () => {
     if (at("user-list").textContent === "") {
       void listUsers();
     }

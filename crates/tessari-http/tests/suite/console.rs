@@ -1581,3 +1581,119 @@ fn explanation_does_not_stand_in_the_operators_way() {
          disclosure or cut them: {wordy:?}"
     );
 }
+
+/// Every question the search field puts to the node carries its own selection.
+///
+/// W319 drove the field against a running node and found two of its five shapes
+/// broken by the same cause. A bare `INFO FOR TABLE orders` answers *no namespace
+/// selected* every single time, because each `/script` request is its own
+/// session — so the table shape could never resolve at all. And `split(".", 2)`
+/// on `prod.library.orders` kept the first two parts, matched a real database,
+/// and opened a sheet headed *database · prod.library.orders* showing that
+/// database's tables: a wrong answer, under a name nothing is called, reported
+/// as a success.
+///
+/// Neither failed anything. A candidate that cannot resolve simply falls through
+/// to the next, and a candidate that resolves the wrong thing looks exactly like
+/// one that resolved the right thing. So the invariant is asserted on the source
+/// instead: a candidate that names a table, a database or a record must carry
+/// the `USE` that gives it a namespace and a database to be named in.
+#[test]
+fn every_question_the_search_field_puts_carries_its_own_selection() {
+    let source = panel_sources()
+        .into_iter()
+        .find(|(name, _)| name == "search.ts")
+        .map(|(_, body)| body)
+        .expect("the search module");
+
+    let candidates: Vec<String> = source
+        .split("out.push({")
+        .skip(1)
+        .map(|piece| piece.split("land:").next().unwrap_or(piece).to_owned())
+        .collect();
+
+    // Two assertions before the one this test is for. Without them a rename of
+    // `out.push` collects nothing and the loop below passes by running zero
+    // times, which is the shape a scanning test fails in.
+    assert_eq!(
+        candidates.len(),
+        5,
+        "the field is a CLOSED list of five shapes — a record, a table, a \
+         database, an account and a namespace; {} were found, so either a shape \
+         was added without a decision or the scan stopped matching",
+        candidates.len()
+    );
+
+    let mut selected = 0_usize;
+    for candidate in &candidates {
+        let needs = candidate.contains("INFO FOR TABLE")
+            || candidate.contains("INFO FOR DATABASE")
+            || candidate.contains("SELECT ");
+        if !needs {
+            continue;
+        }
+        selected = selected.saturating_add(1);
+        assert!(
+            candidate.contains("USE NAMESPACE") && candidate.contains("USE DATABASE"),
+            "this candidate names something that lives inside a database and \
+             carries no selection, so the node will answer `no namespace \
+             selected` and the field will silently try the next shape: \
+             {candidate}"
+        );
+    }
+    assert!(
+        selected >= 3,
+        "only {selected} candidates were found to need a selection, and three do \
+         — the record, the table and the database. A vocabulary change has made \
+         this test stop looking at what it is for"
+    );
+}
+
+/// No screen waits for a CLICK on its tab before reading what it draws.
+///
+/// The cluster map and the account list each listened for a click on their own
+/// tab, and every other way in left them blank AND silent: the console's own
+/// ⌘1…⌘4, the arrow keys its tablist provides, a link somebody shared, a plain
+/// reload. W319 followed a link to `#cluster` and got an empty map with an empty
+/// status beside it — which an operator has no way to tell from a cluster that
+/// holds nothing.
+///
+/// `show` is the one place a destination becomes visible, so `onArrival` is the
+/// one place a first reading belongs. The guard is that no screen names a tab at
+/// all: `tabs.ts` and `ui.ts` BUILD the ids and are the two exceptions, and a
+/// third module mentioning one is a screen reaching for the input again.
+#[test]
+fn no_screen_waits_for_a_click_on_a_tab_to_read_what_it_draws() {
+    let sources = panel_sources();
+    assert!(
+        sources.len() >= 20,
+        "only {} panel sources were read, so this scan is looking at almost \
+         nothing",
+        sources.len()
+    );
+
+    let naming: Vec<&String> = sources
+        .iter()
+        .filter(|(name, _)| name != "tabs.ts" && name != "ui.ts")
+        .filter(|(_, body)| body.contains("tab-"))
+        .map(|(name, _)| name)
+        .collect();
+    assert!(
+        naming.is_empty(),
+        "these modules name a tab, and the only reasons to are to build the id \
+         (ui.ts) or to route (tabs.ts) — anything else is a screen listening for \
+         a click it will not always get: {naming:?}"
+    );
+
+    let registered = sources
+        .iter()
+        .filter(|(_, body)| body.contains("onArrival("))
+        .count();
+    assert!(
+        registered >= 3,
+        "only {registered} modules mention the arrival hook, and three should — \
+         the one that declares it and the two screens that read on arrival. \
+         Either a screen stopped reading at all, or the hook was renamed and \
+         this guard now watches nothing"
+    );
+}

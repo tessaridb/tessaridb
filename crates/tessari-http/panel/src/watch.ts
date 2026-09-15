@@ -7,6 +7,14 @@ import { token } from "./session.js";
 /** The socket this page is holding open, or `null`. */
 let following: WebSocket | null = null;
 
+/**
+ * Whether a follow is running right now.
+ *
+ * Asked on the way out, so a reload can say what was actually lost instead of
+ * guessing from a field that happened to have text in it.
+ */
+export const isFollowing = (): boolean => following !== null;
+
 /** What the node sends for one change, or instead of one. */
 interface Change {
   readonly sequence?: number;

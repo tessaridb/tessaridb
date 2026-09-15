@@ -16,12 +16,20 @@
 //! the same reason the listing draws the role the node reported rather than one
 //! the panel inferred.
 //!
-//! The order is fixed and stated, because "whichever answers first" is only
-//! unambiguous if the sequence is: a record key, then a database, then an
-//! account, then a namespace, then a table. The two punctuated forms come first
-//! because punctuation makes them unambiguous, and `ada` resolving to the
-//! account before the table of the same name is the right guess for a console
-//! whose destructive screens are all about accounts.
+//! The shapes are told apart by their PUNCTUATION rather than by which question
+//! happens to answer first: a colon is a record, three dotted parts are a table,
+//! two are a database, and one bare word is an account or a namespace. Only that
+//! last pair overlaps, and there `ada` resolving to the account first is the
+//! right guess for a console whose destructive screens are all about accounts.
+//!
+//! It was an ORDER until W319 drove the field against a running node. A bare
+//! `orders` asked `INFO FOR TABLE orders`, which can never resolve — every
+//! `/script` request is its own session, so there is no selected namespace for
+//! it to be a table IN — and `prod.library.orders` took the first two parts as a
+//! database, found one, and opened a sheet headed *database · prod.library.orders*
+//! listing that database's tables. A wrong answer, under a name nothing is
+//! called, reported as success. The record key had already been fixed this way
+//! four lines above; the table had not.
 
 import { valueOf, type Result } from "./api.js";
 import { hide as hideDetail, show as showDetail } from "./detail.js";
@@ -49,7 +57,7 @@ const inDetail = (kind: string, name: string) => (answered: Result | null) =>
   showDetail(kind, name, answered);
 
 /**
- * What `text` might be, in the order the questions are put.
+ * What `text` might be, chosen by its shape and asked in turn.
  *
  * Deliberately a closed list rather than an open query surface: the field
  * accepts five shapes and composes nothing else, so it cannot become a way to
@@ -65,8 +73,9 @@ function splitAt(text: string, separator: string): [string, string] {
 
 function candidates(text: string): readonly Candidate[] {
   const record = text.includes(":");
-  const qualified = text.includes(".") && !record;
-  const [namespace, database] = qualified ? text.split(".", 2) : ["", ""];
+  // Every dot, not the first two — `split(".", 2)` threw the rest away, which is
+  // exactly how a table's full name came back as a database.
+  const parts = record ? [] : text.split(".");
   const out: Candidate[] = [];
 
   if (record) {
@@ -92,7 +101,20 @@ function candidates(text: string): readonly Candidate[] {
       });
     }
   }
-  if (qualified) {
+  if (parts.length === 3) {
+    const [namespace, database, table] = parts as [string, string, string];
+    // A table carries its own selection for the same reason a record does, and
+    // the bare `INFO FOR TABLE orders` this replaced answered `no namespace
+    // selected` every single time it was asked.
+    out.push({
+      kind: "table",
+      statement:
+        `USE NAMESPACE ${namespace}; USE DATABASE ${database}; INFO FOR TABLE ${table};`,
+      land: inDetail("table", text),
+    });
+  }
+  if (parts.length === 2) {
+    const [namespace, database] = parts as [string, string];
     out.push({
       kind: "database",
       statement:
@@ -100,7 +122,7 @@ function candidates(text: string): readonly Candidate[] {
       land: inDetail("database", text),
     });
   }
-  if (!record && !qualified) {
+  if (parts.length === 1) {
     out.push({
       kind: "account",
       statement: "INFO FOR USER " + text + ";",
@@ -117,11 +139,6 @@ function candidates(text: string): readonly Candidate[] {
       kind: "namespace",
       statement: "USE NAMESPACE " + text + "; INFO FOR NAMESPACE;",
       land: inDetail("namespace", text),
-    });
-    out.push({
-      kind: "table",
-      statement: "INFO FOR TABLE " + text + ";",
-      land: inDetail("table", text),
     });
   }
   return out;
@@ -161,7 +178,10 @@ async function look(): Promise<void> {
     "search-says",
     text.includes(":")
       ? "nothing here answers to that — name a record in full, as namespace.database.table:key"
-      : "nothing here answers to that name",
+      : text.includes(".")
+        ? "nothing here answers to that name"
+        : "nothing here answers to that name — a table is named in full, as " +
+          "namespace.database.table",
   );
 }
 

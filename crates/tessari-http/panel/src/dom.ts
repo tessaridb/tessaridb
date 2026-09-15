@@ -75,6 +75,12 @@ export function say(id: string, words: string, failed?: boolean): void {
   const line = at(id);
   line.textContent = words;
   line.classList.toggle("failed", failed === true);
+  // A refusal is announced, not merely rendered — the same rule `state` applies
+  // to its `wrong`, applied here so the two do not disagree about one idea.
+  // Without it, the screens that matter most were the quiet ones: the listing's
+  // refusal was announced and the REMOVAL's was not, because one screen had been
+  // moved to the four states and the destructive forms had not.
+  line.setAttribute("aria-live", failed === true ? "assertive" : "polite");
 }
 
 /** A fresh element, optionally classed. */
