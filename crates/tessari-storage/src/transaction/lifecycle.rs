@@ -7,7 +7,9 @@
 use std::collections::BTreeMap;
 use std::ops::Bound;
 
-use tessari_encoding::{RecordKey, RecordValue, StampedValue, StoreKey, StoreValue};
+use tessari_encoding::{
+    CausalStamp, CausalVersions, RecordKey, RecordValue, StampedValue, StoreKey, StoreValue,
+};
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{DatabaseId, NamespaceId, Sequence, TableId};
 
@@ -220,6 +222,65 @@ impl<'a> Transaction<'a> {
     ) -> Result<Option<(Sequence, StampedValue)>> {
         let prefix = address.versions_prefix();
         self.first_in_range(KeyRange::prefix(&prefix))
+    }
+
+    /// The versions of a record that nothing has superseded, newest first.
+    ///
+    /// One whenever the record is settled, which is every record on a
+    /// single-leader range and most records on a multi-master one. More than
+    /// one means two nodes wrote it without seeing each other, and that is the
+    /// state a commit is refused on rather than resolved (ADR-0075, G027 S3.1).
+    ///
+    /// # Every version, and not a walk that stops early
+    ///
+    /// Stopping at the first version the newest descends is O(1) and **wrong**:
+    /// with versions `{B:1}`, `{A:1}`, `{A:2}` the newest descends the one
+    /// before it and the walk stops, while `{B:1}` is concurrent with it and
+    /// survives. The scan is bounded by the versions above the reclaim floor —
+    /// which `crate::reclaim` already manages and which is a function of
+    /// snapshot lifetime, not of how long the record has existed.
+    ///
+    /// # Supersession is decided in one place
+    ///
+    /// [`CausalVersions::record`] owns the rule and this folds every stamp
+    /// through it, then maps the survivors back to the versions they came from.
+    /// Re-implementing the two lines of that rule here is how two routines
+    /// answering one question come to disagree, and the disagreement would be a
+    /// live version quietly dropped or a superseded one quietly refused over.
+    ///
+    /// An unstamped version carries the empty stamp, and two empty stamps are
+    /// `Same` — so a store written before stamps existed folds to exactly one
+    /// survivor and is never contested.
+    pub(super) fn surviving_versions(
+        &self,
+        address: &RecordAddress,
+    ) -> Result<Vec<(Sequence, CausalStamp)>> {
+        let prefix = address.versions_prefix();
+        let request = ScanRequest {
+            keyspace: RecordKey::keyspace(),
+            range: KeyRange::prefix(&prefix),
+            direction: ScanDirection::Forward,
+            limit: None,
+        };
+        let mut held: Vec<(Sequence, CausalStamp)> = Vec::new();
+        for (key, value) in self.store.backend().scan(&request)? {
+            let version = RecordKey::decode(key.as_slice())?.version;
+            let stamp = StampedValue::decode(value.as_slice())?.stamp().clone();
+            held.push((version, stamp));
+        }
+        let mut surviving = CausalVersions::new();
+        for (_, stamp) in &held {
+            surviving.record(stamp.clone());
+        }
+        Ok(surviving
+            .stamps()
+            .iter()
+            .filter_map(|stamp| {
+                held.iter()
+                    .find(|(_, candidate)| candidate == stamp)
+                    .map(|(version, _)| (*version, stamp.clone()))
+            })
+            .collect())
     }
 
     /// The newest version of a record at or before `snapshot`.

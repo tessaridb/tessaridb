@@ -235,6 +235,46 @@ pub enum Error {
         epoch: Epoch,
     },
 
+    /// A write met a record whose stored versions disagree with each other.
+    ///
+    /// Two nodes wrote this record without either having seen the other's
+    /// write, and both versions survive because neither supersedes the other.
+    /// A third write cannot be taken: the writer holds one of them, and
+    /// committing on top would discard the other with nothing recording that it
+    /// had ever existed. **That silent discard is the whole of what this engine
+    /// refuses** (ADR-0075) — the alternative is not "resolving" the conflict,
+    /// it is picking a winner and calling it an answer.
+    ///
+    /// Retryable in the only sense that matters: the caller reads the record,
+    /// sees both versions, decides which the data means, and writes the decision
+    /// having seen both — at which point its stamp descends them and this
+    /// refusal does not fire. Retrying the same write unchanged meets it again,
+    /// correctly.
+    ///
+    /// Named rather than counted. A refusal that said only *contested* would
+    /// leave the caller unable to fetch what it has to choose between, which is
+    /// the same dead end a redirect with no address gives.
+    #[error(
+        "the record {id} holds versions {ours} and {theirs} that neither \
+         supersedes: they were written without seeing each other. \
+         Version {theirs} carries a write from node {}, which version {ours} \
+         has not seen. Read both and write what they mean.",
+        tessari_types::RecordId::Uuid(*node)
+    )]
+    ConcurrentVersions {
+        /// The record. The caller addressed it and this names which of the
+        /// addresses in a multi-record commit was the one that stopped it.
+        id: RecordId,
+        /// The surviving version this store read first — the newest of them.
+        ours: Sequence,
+        /// The surviving version it is concurrent with.
+        theirs: Sequence,
+        /// A node whose write `theirs` carries and `ours` does not. The first in
+        /// node order when there is more than one, and there is exactly one for
+        /// every two-master case this engine can currently produce.
+        node: [u8; tessari_encoding::NODE_ID_LEN],
+    },
+
     /// A log record was offered out of order.
     ///
     /// State is a deterministic function of the log, so a gap is not something
@@ -591,7 +631,9 @@ impl Error {
     #[must_use]
     pub fn category(&self) -> ErrorCategory {
         match self {
-            Self::Conflict { .. } | Self::LogDivergence { .. } => ErrorCategory::Conflict,
+            Self::Conflict { .. }
+            | Self::LogDivergence { .. }
+            | Self::ConcurrentVersions { .. } => ErrorCategory::Conflict,
             Self::CommitContention { .. } => ErrorCategory::Busy,
             // Unavailable rather than Busy or Conflict, because it is the only
             // one of the three that is true: the write was not wrong and

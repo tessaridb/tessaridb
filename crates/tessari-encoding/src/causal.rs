@@ -293,6 +293,19 @@ impl CausalVersions {
     pub fn is_contested(&self) -> bool {
         self.stamps.len() > 1
     }
+
+    /// The surviving stamps themselves.
+    ///
+    /// A refusal has to NAME what it refused over — both versions and the node
+    /// that wrote the other one (G027 S3.1) — and a count cannot be named. The
+    /// order is the order they were recorded in, which is the order the store
+    /// read them back, because nothing here has an opinion about which of two
+    /// concurrent versions comes first and inventing one would be the ranking
+    /// this type exists to refuse.
+    #[must_use]
+    pub fn stamps(&self) -> &[CausalStamp] {
+        &self.stamps
+    }
 }
 
 #[cfg(test)]

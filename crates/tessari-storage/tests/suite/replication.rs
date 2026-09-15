@@ -1357,3 +1357,130 @@ fn two_nodes_writing_one_range_replay_into_a_third_that_names_the_conflict() {
         "and it has to say the same thing from the other side"
     );
 }
+
+#[test]
+fn a_write_onto_a_record_two_nodes_contested_is_refused_and_names_both() {
+    // G027 S3.1, and the sentence the whole goal exists for: a concurrent write
+    // is REFUSED and NAMED, never silently ranked (ADR-0075).
+    //
+    // The concurrency is produced the only way it can be — by replication, not
+    // by a fixture asserting two stamps at each other. A local commit derives
+    // its stamp from the version it replaces, so it always descends it; the
+    // concurrency a store meets is one that arrived.
+    let (first, _, namespace, database) = declared(Some(ReplicationClass::MultiMaster));
+    let (second, ..) = declared(Some(ReplicationClass::MultiMaster));
+    let (third, ..) = declared(Some(ReplicationClass::MultiMaster));
+    let home = Reach::Database(namespace, database);
+
+    put_in(&first, namespace, database, "shared", b"first-writes-it");
+    put_in(&second, namespace, database, "shared", b"second-writes-it");
+    put_in(
+        &first,
+        namespace,
+        database,
+        "settled",
+        b"nobody-contests-this",
+    );
+    replay_range(&first, &third, home);
+    replay_range(&second, &third, home);
+
+    let mut transaction = third.begin().unwrap();
+    transaction.put(
+        address_in(namespace, database, "shared"),
+        b"the third node decides".to_vec(),
+    );
+    let refused = transaction.commit().unwrap_err();
+
+    let Error::ConcurrentVersions {
+        id,
+        ours,
+        theirs,
+        node,
+    } = refused
+    else {
+        panic!("a write onto a contested record was not refused as one: {refused:?}");
+    };
+    assert_eq!(id, RecordId::from("shared"), "the refusal names the record");
+    assert_ne!(
+        ours, theirs,
+        "the refusal names two versions and they are two"
+    );
+    assert_eq!(
+        node,
+        wrote(&first).bytes(),
+        "the refusal names the node that wrote the version this store's newest \
+         has not seen, and that is the FIRST node — the second's write was \
+         applied last, so it is the one the refusal calls ours"
+    );
+
+    // And the other half, which is what stops this being a store that refuses
+    // everything: a record nobody contested still takes a write.
+    put_in(
+        &third,
+        namespace,
+        database,
+        "settled",
+        b"and this one lands",
+    );
+    let transaction = third.begin().unwrap();
+    assert_eq!(
+        transaction
+            .get(&address_in(namespace, database, "settled"))
+            .unwrap(),
+        Some(b"and this one lands".to_vec())
+    );
+    assert_eq!(
+        transaction
+            .get(&address_in(namespace, database, "shared"))
+            .unwrap(),
+        Some(b"second-writes-it".to_vec()),
+        "the refused write left nothing behind"
+    );
+}
+
+#[test]
+fn a_writer_that_has_seen_both_versions_supersedes_them_and_is_not_refused() {
+    // The refusal has to be escapable or it is a dead end rather than a rule.
+    // A writer whose stamp descends BOTH surviving versions has seen what it is
+    // replacing, which is the entire condition, and the store must take it.
+    //
+    // Built by hand at the log because nothing in this engine yet offers a
+    // caller a way to say *I have read both* — that surface is S4.3's, and its
+    // absence is exactly why this test constructs the stamp rather than asking
+    // for it.
+    let (first, _, namespace, database) = declared(Some(ReplicationClass::MultiMaster));
+    let (second, ..) = declared(Some(ReplicationClass::MultiMaster));
+    let (third, ..) = declared(Some(ReplicationClass::MultiMaster));
+    let home = Reach::Database(namespace, database);
+
+    put_in(&first, namespace, database, "shared", b"first-writes-it");
+    put_in(&second, namespace, database, "shared", b"second-writes-it");
+    replay_range(&first, &third, home);
+    replay_range(&second, &third, home);
+
+    let mut seen = CausalStamp::new();
+    seen.advance(wrote(&first).bytes());
+    seen.advance(wrote(&second).bytes());
+    seen.advance(wrote(&third).bytes());
+    let reconciled = LogRecord::new(vec![Mutation {
+        namespace,
+        database,
+        table: TableId::new(1),
+        id: RecordId::from("shared"),
+        value: StampedValue::stamped(seen, RecordValue::Present(b"reconciled".to_vec())),
+    }]);
+    let own = third.own_log(home).unwrap();
+    let at = Sequence::new(third.committed_tail(own).unwrap().get().saturating_add(1));
+    third.apply_record(wrote(&third), at, &reconciled).unwrap();
+
+    // One surviving version now, so the next write is taken rather than refused.
+    put_in(&third, namespace, database, "shared", b"and on we go");
+    let transaction = third.begin().unwrap();
+    assert_eq!(
+        transaction
+            .get(&address_in(namespace, database, "shared"))
+            .unwrap(),
+        Some(b"and on we go".to_vec()),
+        "a record whose versions were reconciled stayed writable"
+    );
+}

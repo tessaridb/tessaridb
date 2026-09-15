@@ -316,6 +316,17 @@ impl Transaction<'_> {
 
             let tail = self.store.committed_tail(log)?;
             self.check_for_conflicts()?;
+            // Beside the conflict check, inside the loop, and for the same
+            // reason: both ask whether the committed state this attempt builds
+            // on will take the write, and a state that moved between attempts
+            // must be re-read rather than assumed.
+            //
+            // AFTER it rather than before, so a record that is both moved and
+            // contested answers `Conflict` first. That is the retryable one, and
+            // a caller that retries meets the concurrency on the next attempt —
+            // which is the right order to learn them in, because a stale write
+            // has nothing useful to say about a conflict it never saw.
+            self.refuse_a_contested_record()?;
             // Inside the loop with the conflict check, and for the same reason:
             // both are read against the committed state this attempt builds on,
             // and a schema that moved between attempts must be re-read rather
@@ -422,6 +433,62 @@ impl Transaction<'_> {
             });
         }
         Ok(LogRecord::new(mutations))
+    }
+
+    /// Refuse the commit if any written record's stored versions disagree.
+    ///
+    /// G027 S3.1 and the rule the goal exists for: a write concurrent with the
+    /// stored version is **refused and named, never silently ranked**
+    /// (ADR-0075).
+    ///
+    /// # Why the refusal is here and not on the apply path
+    ///
+    /// A replica applying a record concurrent with what it holds must **accept**
+    /// it. Refusing there would stop two masters' logs from ever meeting, which
+    /// is what S2.2 asserts they do; holding several surviving versions is the
+    /// whole purpose [`tessari_encoding::CausalVersions`] was built for.
+    ///
+    /// # And why it is not the incoming write compared against the stored one
+    ///
+    /// [`Self::log_record`] derives a commit's stamp *from* the newest stored
+    /// version, so a local write always **descends** what it replaces and can
+    /// never be concurrent with it. The concurrency a store meets is one that
+    /// **arrived**, and what is refused is the next write made on top of it —
+    /// by a writer holding one of two surviving versions, which cannot supersede
+    /// the other without having seen it.
+    ///
+    /// # What it costs a settled record
+    ///
+    /// One scan of that record's versions per written address, bounded by the
+    /// versions above the reclaim floor. Asked of the addresses this transaction
+    /// writes and of nothing else.
+    fn refuse_a_contested_record(&self) -> Result<()> {
+        for address in self.writes.keys() {
+            let surviving = self.surviving_versions(address)?;
+            let (Some((ours, our_stamp)), Some((theirs, their_stamp))) =
+                (surviving.first(), surviving.get(1))
+            else {
+                continue;
+            };
+            // The node whose write `theirs` carries and `ours` does not. There
+            // is one for every two-master case this engine can produce, and the
+            // first in node order is named when there is more than one — the
+            // stamp is held in node order, so "first" is a property of the
+            // bytes rather than of the order they were read in.
+            let unseen = their_stamp
+                .entries()
+                .iter()
+                .find(|(node, seen)| *seen > our_stamp.count(node))
+                .map(|(node, _)| *node)
+                .unwrap_or_default();
+            return Err(Error::ConcurrentVersions {
+                id: address.id.clone(),
+                ours: *ours,
+                theirs: *theirs,
+                node: unseen,
+            });
+        }
+        Ok(())
     }
 
     /// Refuse the commit if any written record has moved since the snapshot.
