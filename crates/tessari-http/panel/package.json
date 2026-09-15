@@ -1,0 +1,17 @@
+{
+  "name": "tessaridb-console",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Source for the console the database serves at /. The build's output is committed to ../assets/ and embedded into the binary by include_str!, so nothing here is needed to build or run the database.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "node build.mjs",
+    "check": "npm run typecheck && npm run build",
+    "verify": "bash verify.sh"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10",
+    "typescript": "5.9.3"
+  }
+}

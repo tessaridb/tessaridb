@@ -35,3 +35,8 @@
 CLAUDE.md
 AGENTS.md
 MEMORY.md
+
+# The panel's build-time toolchain. The emitted assets under
+# crates/tessari-http/assets/ ARE committed — the Rust build, the Docker build
+# and the release must never need Node (ADR-0076 D3).
+node_modules/
