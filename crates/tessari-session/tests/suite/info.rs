@@ -18,10 +18,12 @@
 
 use std::sync::Arc;
 
+use std::collections::BTreeMap;
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
-use tessari_storage::Store;
-use tessari_types::Value;
+
+use tessari_storage::{Catalog, Reach, Store};
+use tessari_types::{Sequence, Value};
 
 const PASSWORD: &str = "correct horse battery";
 
@@ -1568,5 +1570,219 @@ fn a_reported_declaration_rebuilds_the_policy_it_described() {
         taking.replace("takes", "rebuilt"),
         "the table rebuilt from its own reported declaration describes itself \
          differently from the one it claimed to reproduce"
+    );
+}
+
+// ------------------------------------------------- surviving versions
+
+/// Three stores declared identically, so allocation gives them the same ids and
+/// a record written on one replays onto another.
+///
+/// The DDL runs through a session rather than the catalog, because the point of
+/// this group is what an operator can ask after doing what an operator does.
+fn multi_master() -> (Store, Store, Store) {
+    let raise = || {
+        let store = store();
+        let mut session = Session::new(&store);
+        session
+            .run(
+                "DEFINE NAMESPACE shared MULTI MASTER; USE NAMESPACE shared;\n\
+                 DEFINE DATABASE books; USE DATABASE books;\n\
+                 DEFINE TABLE note SCHEMALESS;",
+            )
+            .unwrap();
+        store
+    };
+    (raise(), raise(), raise())
+}
+
+/// The range the three stores share, resolved rather than assumed.
+///
+/// Read back from the catalog, because a test that hard-coded `1` here would
+/// pass for the wrong reason the day allocation changes.
+fn shared_range(store: &Store) -> Reach {
+    let mut transaction = store.begin().unwrap();
+    let catalog = Catalog::new(&mut transaction);
+    let namespace = catalog.namespace_id("shared").unwrap().unwrap();
+    let database = catalog.database_id(namespace, "books").unwrap().unwrap();
+    Reach::Database(namespace, database)
+}
+
+/// One write, through a session, on the store that accepts it.
+fn write_note(store: &Store, id: &str, body: &str) {
+    let mut session = Session::new(store);
+    session
+        .run(&format!(
+            "USE NAMESPACE shared; USE DATABASE books;\n\
+             CREATE note:{id} = {{ body: '{body}' }};"
+        ))
+        .unwrap();
+}
+
+/// One overwrite of a record that already exists.
+fn rewrite_note(store: &Store, id: &str, body: &str) {
+    let mut session = Session::new(store);
+    session
+        .run(&format!(
+            "USE NAMESPACE shared; USE DATABASE books;\n\
+             UPDATE note:{id} = {{ body: '{body}' }};"
+        ))
+        .unwrap();
+}
+
+/// Apply every log `source` holds for `home` into `target`, under its writer.
+///
+/// Each record is filed under the writer that WROTE it. Re-attributing them to
+/// the target would leave the source's logs empty on a store holding all of
+/// their records.
+fn replay(source: &Store, target: &Store, home: Reach) {
+    for log in source.logs_of(home).unwrap() {
+        for (at, record) in source.log_records(log, Sequence::ZERO, 1024).unwrap() {
+            target
+                .apply_record(log.writer, at, &record)
+                .expect("a follower applies both logs without a gap refusal");
+        }
+    }
+}
+
+/// The report, read through a session on `store`.
+fn versions(store: &Store, record: &str) -> BTreeMap<String, Value> {
+    let mut session = Session::new(store);
+    let script =
+        format!("USE NAMESPACE shared; USE DATABASE books; INFO FOR VERSIONS OF {record};");
+    let Value::Object(fields) = report(&mut session, &script) else {
+        panic!("expected an object");
+    };
+    fields
+}
+
+/// The node named on one row of the report.
+fn node_of(row: &Value) -> String {
+    let Value::Object(fields) = row else {
+        panic!("expected a version row, got {row:?}");
+    };
+    let Some(Value::String(node)) = fields.get("node") else {
+        panic!("a version row named no node: {fields:?}");
+    };
+    node.clone()
+}
+
+/// G027 **S4.3**: a record two nodes wrote without seeing each other reports
+/// both survivors, the node that wrote each, and that they are concurrent.
+///
+/// The concurrency is produced by replication and never by a fixture asserting
+/// two stamps at each other: a local commit derives its stamp from the version
+/// it replaces, so it always DESCENDS it, and the concurrency a store meets is
+/// one that arrived.
+///
+/// The two nodes are asserted to be **different** rather than against literal
+/// ids, which the store mints. That is the whole claim — a report naming one
+/// node for both versions would say a single writer produced a conflict with
+/// itself.
+#[test]
+fn a_contested_record_reports_that_another_version_survives() {
+    let (first, second, third) = multi_master();
+    write_note(&first, "1", "the first node");
+    write_note(&second, "1", "the second node");
+
+    let home = shared_range(&first);
+    replay(&first, &third, home);
+    replay(&second, &third, home);
+
+    let fields = versions(&third, "note:1");
+    assert_eq!(
+        fields.get("concurrent"),
+        Some(&Value::Bool(true)),
+        "two nodes wrote this record without seeing each other and the report \
+         calls it settled"
+    );
+    let Some(Value::Array(rows)) = fields.get("versions") else {
+        panic!("the report listed no versions: {fields:?}");
+    };
+    assert_eq!(rows.len(), 2, "one survivor was not returned: {rows:?}");
+    assert_ne!(
+        node_of(&rows[0]),
+        node_of(&rows[1]),
+        "both surviving versions are attributed to one node, which would be a \
+         writer in conflict with itself"
+    );
+
+    // The version an ordinary read resolves to is the newest survivor, and it
+    // is named with the node that wrote it rather than left for the caller to
+    // pick out of the list.
+    let Some(answered) = fields.get("answered") else {
+        panic!("the report did not say which version answered: {fields:?}");
+    };
+    assert_eq!(&rows[0], answered);
+}
+
+/// G027 **S4.3**, the other half: a settled record says so.
+///
+/// Without this the criterion is satisfied by a report that returns `true`
+/// unconditionally — and an operator who cannot tell a settled value from a
+/// contested one is exactly what it exists to prevent. It also holds the
+/// deliberate decision that the statement answers on a range with one writer:
+/// refusing there would make the question unanswerable precisely where somebody
+/// who has just declared a namespace multi-master wants to ask it.
+#[test]
+fn a_settled_record_reports_one_version_and_no_concurrency() {
+    let (first, ..) = multi_master();
+    write_note(&first, "2", "written once");
+
+    let fields = versions(&first, "note:2");
+    assert_eq!(fields.get("concurrent"), Some(&Value::Bool(false)));
+    let Some(Value::Array(rows)) = fields.get("versions") else {
+        panic!("the report listed no versions: {fields:?}");
+    };
+    assert_eq!(rows.len(), 1, "a record written once has one survivor");
+    assert_eq!(fields.get("answered"), Some(&rows[0]));
+}
+
+/// G027 **S4.3**, the case where *which node wrote this* has a wrong answer that
+/// looks right.
+///
+/// A stamp counts writes per node, so it records what a version has SEEN and not
+/// who wrote it. Here the first node writes five times, the second replays all
+/// five and then writes once, so the second node's version carries `{first: 5,
+/// second: 1}` — and the largest entry belongs to the node that did **not**
+/// write it.
+///
+/// Without this fixture the two derivations agree. Every other test in this
+/// group produces single-entry stamps, where *the node with the highest count*
+/// and *the node whose count this version advanced* are the same node, so a
+/// report built on the wrong rule would pass all of them. That is the shape of a
+/// test whose fixture never reaches the thing it is guarding.
+#[test]
+fn the_node_that_wrote_a_version_is_not_the_one_it_has_seen_most_of() {
+    let (first, second, ..) = multi_master();
+    let home = shared_range(&first);
+    write_note(&first, "3", "the first node");
+    for turn in 0..4 {
+        rewrite_note(&first, "3", &format!("the first node again, {turn}"));
+    }
+    replay(&first, &second, home);
+    rewrite_note(&second, "3", "the second node, once");
+
+    let fields = versions(&second, "note:3");
+    assert_eq!(
+        fields.get("concurrent"),
+        Some(&Value::Bool(false)),
+        "the second node had seen every one of the first node's writes, so its \
+         write supersedes them rather than competing with them"
+    );
+    let Some(answered) = fields.get("answered") else {
+        panic!("the report did not say which version answered: {fields:?}");
+    };
+
+    // The node the SECOND store writes under, taken from the log it owns rather
+    // than from the report being tested.
+    let mine = second.own_log(home).unwrap().writer;
+    let theirs = first.own_log(home).unwrap().writer;
+    assert_ne!(mine, theirs, "the two stores share a writer id");
+    assert_eq!(
+        node_of(answered),
+        tessari_types::RecordId::Uuid(mine.bytes()).to_string(),
+        "the report named the node this version had seen most of, rather than \
+         the node that wrote it"
     );
 }

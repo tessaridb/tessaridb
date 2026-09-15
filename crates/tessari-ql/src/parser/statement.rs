@@ -539,6 +539,10 @@ impl Parser<'_> {
                 self.expect_word("of", "`OF` and the record")?;
                 InfoSubject::Recipients(self.record_target()?)
             }
+            _ if self.eat_word("versions") => {
+                self.expect_word("of", "`OF` and the record")?;
+                InfoSubject::Versions(self.record_target()?)
+            }
             _ if self.eat_word("audit") => InfoSubject::Audit(self.audited_actor()?),
             _ => {
                 // Every subject the arms above accept, and in their order, so
@@ -549,7 +553,7 @@ impl Parser<'_> {
                 // list wrong is worse than one that lists none, because a caller
                 // reads it as the whole truth and stops looking.
                 return Err(self.error_here(
-                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `GRAPH`, `BUCKET`, `USER`, `USERS`, `ACCESS`, `NODE`, `KAFKA CONSUMER`, `KAFKA CONSUMERS`, `VECTOR`, `GEO`, `VAULT`, `RECIPIENTS OF` or `AUDIT`",
+                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `GRAPH`, `BUCKET`, `USER`, `USERS`, `ACCESS`, `NODE`, `KAFKA CONSUMER`, `KAFKA CONSUMERS`, `VECTOR`, `GEO`, `VAULT`, `RECIPIENTS OF`, `VERSIONS OF` or `AUDIT`",
                 ));
             }
         };

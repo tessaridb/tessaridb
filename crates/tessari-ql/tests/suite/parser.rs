@@ -1510,3 +1510,31 @@ fn the_new_words_are_still_usable_as_names() {
         StatementKind::DefineNamespace { .. }
     ));
 }
+
+#[test]
+fn a_record_is_asked_which_of_its_versions_survive() {
+    // G027 S4.3. The sibling of `INFO FOR RECIPIENTS OF`, and parsed the same
+    // way: the subject word, `OF`, and a record target.
+    assert!(matches!(
+        one("INFO FOR VERSIONS OF person:1;"),
+        StatementKind::Info {
+            subject: InfoSubject::Versions(_),
+        }
+    ));
+}
+
+#[test]
+fn the_versions_subject_reserves_none_of_its_words() {
+    // `VERSIONS` is contextual, like every other subject word. A table called
+    // `versions`, a field called `versions`, and a record in one must all still
+    // parse — a subject word that took a name out of circulation would break
+    // schemas that predate the statement.
+    assert!(matches!(
+        one("DEFINE TABLE versions (of int);"),
+        StatementKind::DefineTable { .. }
+    ));
+    assert!(matches!(
+        one("SELECT versions FROM audit;"),
+        StatementKind::Select(_)
+    ));
+}

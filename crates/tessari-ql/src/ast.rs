@@ -1654,6 +1654,17 @@ pub enum InfoSubject {
     /// it is not a recipient anybody added, and listing it would invite an
     /// attempt to remove the one entry that must never go.
     Recipients(RecordTarget),
+    /// `INFO FOR VERSIONS OF person:1` — every surviving version of one record,
+    /// the node that wrote each, and whether they are contested.
+    ///
+    /// Its own subject rather than fields on an ordinary read, for the reason
+    /// [`InfoSubject::Recipients`] is one: a per-record fact that almost no
+    /// record has does not belong as a column on every read in the product. On a
+    /// single-leader range the answer is one version and `concurrent: false`,
+    /// and it answers there deliberately — a report that refused outside
+    /// multi-master would make *is this contested?* unanswerable exactly where
+    /// an operator who has just changed a namespace's class most wants to ask.
+    Versions(RecordTarget),
     /// `INFO FOR AUDIT` — every recorded vault read; `BY 'ada'` narrows to one
     /// actor.
     ///

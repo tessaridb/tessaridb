@@ -4,11 +4,13 @@
 //! the newest version at or before it — and the transaction's own writes are
 //! consulted first, so it sees what it has done.
 
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::ops::Bound;
 
 use tessari_encoding::{
-    CausalStamp, CausalVersions, RecordKey, RecordValue, StampedValue, StoreKey, StoreValue,
+    CausalStamp, CausalVersions, NODE_ID_LEN, RecordKey, RecordValue, StampedValue, StoreKey,
+    StoreValue,
 };
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{DatabaseId, NamespaceId, Sequence, TableId};
@@ -255,19 +257,7 @@ impl<'a> Transaction<'a> {
         &self,
         address: &RecordAddress,
     ) -> Result<Vec<(Sequence, CausalStamp)>> {
-        let prefix = address.versions_prefix();
-        let request = ScanRequest {
-            keyspace: RecordKey::keyspace(),
-            range: KeyRange::prefix(&prefix),
-            direction: ScanDirection::Forward,
-            limit: None,
-        };
-        let mut held: Vec<(Sequence, CausalStamp)> = Vec::new();
-        for (key, value) in self.store.backend().scan(&request)? {
-            let version = RecordKey::decode(key.as_slice())?.version;
-            let stamp = StampedValue::decode(value.as_slice())?.stamp().clone();
-            held.push((version, stamp));
-        }
+        let held = self.held_versions(address)?;
         let mut surviving = CausalVersions::new();
         for (_, stamp) in &held {
             surviving.record(stamp.clone());
@@ -281,6 +271,78 @@ impl<'a> Transaction<'a> {
                     .map(|(version, _)| (*version, stamp.clone()))
             })
             .collect())
+    }
+
+    /// Every surviving version of a record, each with the node that wrote it,
+    /// and whether they are contested (G027 S4.3).
+    ///
+    /// # The path that returns a version a read resolved away
+    ///
+    /// A record with two survivors answers every ordinary read with the newest
+    /// of them, and the other is still on disk, byte-intact, reachable by
+    /// nothing. An operator auditing for data loss finds both versions and
+    /// concludes nothing was lost — the bytes are there, and what is missing is
+    /// any path that returns them. This is that path.
+    ///
+    /// # Which node wrote a version, and why it cannot be read off one stamp
+    ///
+    /// A stamp counts writes per node, so it says what a version has SEEN and
+    /// not who wrote it. `{A:5, B:1}` was written by B, which had seen all five
+    /// of A's writes, and the largest entry is A's — so "the node with the
+    /// highest count" is wrong in exactly the two-master case this exists for.
+    ///
+    /// The derivation is comparative: the writer of a version is the node whose
+    /// count exceeds its count in the newest version this one descends. A first
+    /// version descends nothing, and its writer is the only node with a count at
+    /// all. This is the same comparison `refuse_a_contested_record` makes to
+    /// name the unseen node, so the report and the refusal cannot name different
+    /// nodes for one version.
+    ///
+    /// # The contested flag is not computed here
+    ///
+    /// [`CausalVersions::is_contested`] answers it, for the reason
+    /// [`Self::surviving_versions`] folds through [`CausalVersions::record`]:
+    /// two routines answering one question come to disagree, and here the
+    /// disagreement would be a contested record reported as settled.
+    pub fn surviving_writers(
+        &self,
+        address: &RecordAddress,
+    ) -> Result<(Vec<WrittenVersion>, bool)> {
+        let held = self.held_versions(address)?;
+        let mut surviving = CausalVersions::new();
+        for (_, stamp) in &held {
+            surviving.record(stamp.clone());
+        }
+        let mut answered = Vec::new();
+        for stamp in surviving.stamps() {
+            let Some((version, _)) = held.iter().find(|(_, candidate)| candidate == stamp) else {
+                continue;
+            };
+            answered.push((*version, writer_of(stamp, &held, *version)));
+        }
+        answered.sort_by_key(|(at, _)| Reverse(*at));
+        Ok((answered, surviving.is_contested()))
+    }
+
+    /// Every version of a record above the reclaim floor, with its stamp.
+    ///
+    /// Extracted so that the survivor walk and the writer walk read one scan
+    /// rather than two that could drift apart.
+    fn held_versions(&self, address: &RecordAddress) -> Result<Vec<(Sequence, CausalStamp)>> {
+        let prefix = address.versions_prefix();
+        let request = ScanRequest {
+            keyspace: RecordKey::keyspace(),
+            range: KeyRange::prefix(&prefix),
+            direction: ScanDirection::Forward,
+            limit: None,
+        };
+        let mut held: Vec<(Sequence, CausalStamp)> = Vec::new();
+        for (key, value) in self.store.backend().scan(&request)? {
+            let version = RecordKey::decode(key.as_slice())?.version;
+            let stamp = StampedValue::decode(value.as_slice())?.stamp().clone();
+            held.push((version, stamp));
+        }
+        Ok(held)
     }
 
     /// The newest version of a record at or before `snapshot`.
@@ -322,5 +384,42 @@ impl<'a> Transaction<'a> {
         let decoded_key = RecordKey::decode(key.as_slice())?;
         let decoded_value = StampedValue::decode(value.as_slice())?;
         Ok(Some((decoded_key.version, decoded_value)))
+    }
+}
+
+/// One surviving version of a record, and the node that wrote it.
+///
+/// Named rather than spelled out at the two places it appears, so that the pair
+/// reads as one fact instead of as a tuple whose halves a caller has to
+/// re-derive the meaning of.
+pub type WrittenVersion = (Sequence, [u8; NODE_ID_LEN]);
+
+/// The node that wrote one version, derived against the version it descends.
+///
+/// See [`Transaction::surviving_writers`] for why this cannot be read off a
+/// single stamp. `unwrap_or_default` where no node distinguishes the two is the
+/// unstamped case — a store written before stamps existed carries the empty
+/// stamp everywhere, and every comparison over it is `Same`.
+fn writer_of(
+    stamp: &CausalStamp,
+    held: &[(Sequence, CausalStamp)],
+    version: Sequence,
+) -> [u8; NODE_ID_LEN] {
+    let base = held
+        .iter()
+        .filter(|(at, other)| *at < version && other != stamp && stamp.descends(other))
+        .max_by_key(|(at, _)| *at)
+        .map(|(_, other)| other);
+    match base {
+        Some(base) => stamp
+            .entries()
+            .iter()
+            .find(|(node, count)| *count > base.count(node))
+            .map_or_else(<[u8; NODE_ID_LEN]>::default, |(node, _)| *node),
+        None => stamp
+            .entries()
+            .iter()
+            .find(|(_, count)| *count > 0)
+            .map_or_else(<[u8; NODE_ID_LEN]>::default, |(node, _)| *node),
     }
 }

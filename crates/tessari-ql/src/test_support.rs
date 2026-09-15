@@ -169,7 +169,9 @@ fn erase_statement(statement: &mut Statement) {
             | InfoSubject::Node
             | InfoSubject::Consumers => {}
             InfoSubject::Table(table) | InfoSubject::Access(table) => erase_table(table),
-            InfoSubject::Recipients(target) => erase_record(target),
+            InfoSubject::Recipients(target) | InfoSubject::Versions(target) => {
+                erase_record(target);
+            }
             // The only subject whose name is optional, so it cannot join the
             // list below without unwrapping there.
             InfoSubject::Audit(actor) => {

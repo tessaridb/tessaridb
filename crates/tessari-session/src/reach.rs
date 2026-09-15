@@ -152,6 +152,15 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
             subject: InfoSubject::Recipients(target),
         } => vec![&target.table],
 
+        // A record's versions name the table it lives in, and this arm is not
+        // optional for the reason the one above is not: it would otherwise fall
+        // through to the empty list and pass the grant loop vacuously, and
+        // `INFO FOR VERSIONS OF` would tell any caller which nodes have written
+        // any record in the store — including that the record exists at all.
+        StatementKind::Info {
+            subject: InfoSubject::Versions(target),
+        } => vec![&target.table],
+
         // A consumer names the table it will write into, and that is the whole
         // reason it appears here at all: without it the grant loop would pass
         // over `DEFINE KAFKA CONSUMER` vacuously, and a caller could point a

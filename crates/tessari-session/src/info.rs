@@ -44,7 +44,7 @@
 
 use std::collections::BTreeMap;
 
-use tessari_encoding::{SpatialRefinement, VectorRecall};
+use tessari_encoding::{NODE_ID_LEN, SpatialRefinement, VectorRecall};
 use tessari_ql::{
     Answer, Identity as RecordIdentity, InfoSubject, Name, Projection, RecordTarget, Select,
     Source, Span, StatementKind, TableRef,
@@ -54,7 +54,7 @@ use tessari_storage::{
     GrantDefinition, IndexDefinition, MEASURED_RELATION, Progress, Reach, ReplicaDefinition,
     TableDefinition, TableKind, Transaction, UserDefinition,
 };
-use tessari_types::{DatabaseId, NamespaceId, Number, TableId, Value};
+use tessari_types::{DatabaseId, NamespaceId, Number, RecordId, Sequence, TableId, Value};
 
 use crate::describe;
 use crate::error::{Error, Result};
@@ -82,6 +82,7 @@ impl Session<'_> {
             InfoSubject::Vault(name) => self.info_vault(transaction, name, span)?,
             InfoSubject::Bucket(name) => self.info_bucket(transaction, name, span)?,
             InfoSubject::Recipients(target) => self.info_recipients(transaction, target, span)?,
+            InfoSubject::Versions(target) => self.info_versions(transaction, target, span)?,
             InfoSubject::Audit(actor) => self.info_audit(actor.as_ref())?,
             InfoSubject::User(name) => self.info_user(transaction, name, span)?,
             InfoSubject::Users => self.info_users(transaction)?,
@@ -339,6 +340,71 @@ impl Session<'_> {
             "recipients".to_owned(),
             Value::Object(entries),
         )]))
+    }
+
+    /// `INFO FOR VERSIONS OF person:1` — every surviving version of one record,
+    /// the node that wrote each, and whether they are contested (G027 S4.3).
+    ///
+    /// # What this exists to return
+    ///
+    /// A record two nodes wrote without seeing each other holds two versions
+    /// that neither supersedes. Every ordinary read answers with the newest of
+    /// them; the other is still on disk, byte-intact, and reachable by nothing.
+    /// An operator auditing for data loss finds both versions and concludes
+    /// nothing was lost — the bytes are there, and what was missing until this
+    /// statement is any path that returns them.
+    ///
+    /// # Three fields, and one of them is derived
+    ///
+    /// `answered` is the version an ordinary read resolves to, with the node
+    /// that wrote it. `versions` is every survivor, newest first — one row on a
+    /// settled record, which is most of them. `concurrent` is the flag the
+    /// criterion names and it comes from `CausalVersions::is_contested`, the
+    /// type that owns supersession, rather than from the length of the list: two
+    /// routines answering one question come to disagree, and the disagreement
+    /// here would be a contested record reported as settled.
+    ///
+    /// # It answers on a single-leader range too
+    ///
+    /// With one version and `concurrent: false`. A report that refused outside
+    /// multi-master would make *is this contested?* unanswerable exactly where
+    /// an operator who has just changed a namespace's class most wants to ask.
+    fn info_versions(
+        &self,
+        transaction: &mut Transaction<'_>,
+        target: &RecordTarget,
+        span: Span,
+    ) -> Result<BTreeMap<String, Value>> {
+        let (_, address) = self.address(transaction, target)?;
+        let (surviving, concurrent) = transaction.surviving_writers(&address)?;
+        let Some((newest, writer)) = surviving.first() else {
+            return Err(Error::NoSuchRecord {
+                id: address.id.to_string(),
+                span,
+            });
+        };
+        let described = |at: Sequence, node: &[u8; NODE_ID_LEN]| {
+            Value::Object(BTreeMap::from([
+                ("version".to_owned(), Value::from(at.to_string())),
+                (
+                    "node".to_owned(),
+                    Value::from(RecordId::Uuid(*node).to_string()),
+                ),
+            ]))
+        };
+        Ok(BTreeMap::from([
+            ("answered".to_owned(), described(*newest, writer)),
+            (
+                "versions".to_owned(),
+                Value::Array(
+                    surviving
+                        .iter()
+                        .map(|(at, node)| described(*at, node))
+                        .collect(),
+                ),
+            ),
+            ("concurrent".to_owned(), Value::Bool(concurrent)),
+        ]))
     }
 
     /// `INFO FOR AUDIT` — every recorded vault read, oldest first.
