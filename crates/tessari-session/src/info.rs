@@ -133,10 +133,26 @@ impl Session<'_> {
     ) -> Result<BTreeMap<String, Value>> {
         let namespace = self.namespace_id(transaction, span)?;
         let own = self.identity.user().and_then(|user| user.database);
-        let replication = Catalog::new(transaction)
-            .namespace(namespace)?
+        let held = Catalog::new(transaction).namespace(namespace)?;
+        let replication = held
+            .as_ref()
             .and_then(|definition| definition.replication)
             .map_or(Value::None, tessari_types::Replication::to_value);
+        // G027 S4.1. How many writers the range admits is not derivable from
+        // anything else in this report, and it decides what a write to it MEANS:
+        // on a multi-master range a concurrent write is refused and named
+        // (ADR-0075), and on a single-leader one it cannot arise. An operator
+        // who cannot read the class from the engine is guessing which semantics
+        // their data has.
+        //
+        // `NONE` where nothing was declared, rather than the key being absent:
+        // silence is a decision here — an undeclared namespace is single-leader
+        // — and a missing key and a key holding `NONE` are different statements
+        // to anything reading this report. Its neighbour above already uses the
+        // same convention for the same reason.
+        let class = held
+            .and_then(|definition| definition.class)
+            .map_or(Value::None, tessari_types::ReplicationClass::to_value);
         let mut names = Vec::new();
         for database in Catalog::new(transaction).databases_in(namespace)? {
             if own.is_some_and(|id| id != database.id) {
@@ -147,6 +163,7 @@ impl Session<'_> {
         Ok(BTreeMap::from([
             ("databases".to_owned(), by_name(names)),
             ("replication".to_owned(), replication),
+            ("class".to_owned(), class),
         ]))
     }
 
@@ -1532,6 +1549,25 @@ fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> {
         (
             "identity".to_owned(),
             Value::from(definition.identity.name()),
+        ),
+        // G027 S4.1, and reported for the reason `collection` and `vault` above
+        // are, with the consequence one step further out. A table that declares
+        // `LAST WRITER WINS` and one that declares nothing accept the same
+        // writes and differ only in what happens to a write they cannot order:
+        // the first takes it and counts the loss, the second refuses and names
+        // both versions. Omit this and the two describe themselves identically,
+        // and the declaration rebuilt below loses the words that decide which
+        // one it is.
+        //
+        // `NONE` where nothing was declared, rather than an absent key: silence
+        // is a refusal by decision (ADR-0075), not by default, and a report that
+        // says nothing about it cannot be distinguished from one taken off a
+        // build that had never heard of the clause.
+        (
+            "conflict".to_owned(),
+            definition
+                .conflict
+                .map_or(Value::None, tessari_types::ConflictPolicy::to_value),
         ),
     ]);
     // Present only on a view, and it carries the read rather than a flag. A

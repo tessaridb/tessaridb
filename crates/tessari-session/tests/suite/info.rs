@@ -727,20 +727,28 @@ fn a_listing_carries_the_names_and_nothing_that_counts_what_was_dropped() {
     //
     // This fails the day a field is added, which is the point: adding one is a
     // decision, and this is where it gets made rather than noticed later. It
-    // has fired once. `INFO FOR NAMESPACE` gained `replication`, and the
+    // has fired twice. `INFO FOR NAMESPACE` gained `replication`, and the
     // decision taken was that it may stand there, because it is a property of
     // **the namespace the caller is already inside** rather than a count over
     // the databases beneath it: it does not move when a database is filtered
-    // out, so it cannot report one. The list below is the whole report and it
-    // is written out per statement rather than as "the names plus anything",
-    // so the next field fires this again.
+    // out, so it cannot report one. It then gained `class` (G027 S4.1) and the
+    // same decision was taken for the same reason, with one more behind it: the
+    // class says how many writers the range admits, which decides what a write
+    // to it MEANS, and an operator who cannot read it from the engine is
+    // guessing which semantics their data has. Like its neighbour it is
+    // constant across callers, so it reports nothing about the filter. The list
+    // below is the whole report and it is written out per statement rather than
+    // as "the names plus anything", so the next field fires this again.
     let store = store();
     two_scopes(&store);
     let mut nina = signed_in(&store, "nina");
 
     for (statement, expected) in [
         ("INFO FOR STORE;", vec!["namespaces"]),
-        ("INFO FOR NAMESPACE;", vec!["databases", "replication"]),
+        (
+            "INFO FOR NAMESPACE;",
+            vec!["class", "databases", "replication"],
+        ),
     ] {
         let Value::Object(fields) = report(&mut nina, statement) else {
             panic!("expected an object from {statement}");
@@ -1409,5 +1417,156 @@ fn a_namespace_defined_before_the_peer_is_still_altered_in_both_directions_after
         policy(&mut session),
         Value::from("none"),
         "a policy that cannot be withdrawn is one an operator hesitates to set"
+    );
+}
+
+// ------------------------------------------------- replication class and policy
+
+/// G027 **S4.1**: how many writers a range admits is read back from the engine.
+///
+/// The third assertion is the one carrying weight, and it is the same shape as
+/// its `replication` neighbour above. A namespace that said nothing reads as
+/// `NONE` — *nothing was stated* — and a namespace that said `SINGLE LEADER`
+/// reads as the word. On one node the two arrangements behave identically,
+/// which is exactly why they must be different values now: the day a second
+/// writer exists, one range refuses a concurrent write and the other cannot
+/// produce one, and by then the namespaces exist and nothing tells them apart.
+#[test]
+fn a_namespace_declares_how_many_writers_it_admits_and_reads_it_back() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE shared MULTI MASTER;\n\
+             DEFINE NAMESPACE ledger SINGLE LEADER;\n\
+             DEFINE NAMESPACE unsaid;",
+        )
+        .unwrap();
+
+    let class = |session: &mut Session<'_>, namespace: &str| {
+        let script = format!("USE NAMESPACE {namespace}; INFO FOR NAMESPACE;");
+        let Value::Object(fields) = report(session, &script) else {
+            panic!("expected an object");
+        };
+        fields.get("class").cloned().unwrap()
+    };
+
+    assert_eq!(class(&mut session, "shared"), Value::from("multi-master"));
+    assert_eq!(class(&mut session, "ledger"), Value::from("single-leader"));
+    assert_eq!(
+        class(&mut session, "unsaid"),
+        Value::None,
+        "a namespace that said nothing must not read as one that chose"
+    );
+}
+
+/// G027 **S4.1**: what a table does with a write it cannot order is read back.
+///
+/// Two tables that differ only in this accept the same writes and declare the
+/// same fields. The difference lands on a write neither can order: the declaring
+/// one takes it and counts the loss, the silent one refuses and names both
+/// versions. A report that omits the policy describes them identically.
+#[test]
+fn a_table_reports_what_it_does_with_a_write_it_cannot_order() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE shared MULTI MASTER; USE NAMESPACE shared;\n\
+             DEFINE DATABASE books; USE DATABASE books;\n\
+             DEFINE TABLE takes SCHEMALESS LAST WRITER WINS;\n\
+             DEFINE TABLE names SCHEMALESS REFUSE CONFLICTS;\n\
+             DEFINE TABLE silent SCHEMALESS;",
+        )
+        .unwrap();
+
+    let policy = |session: &mut Session<'_>, table: &str| {
+        let script = format!("INFO FOR TABLE {table};");
+        let Value::Object(fields) = report(session, &script) else {
+            panic!("expected an object");
+        };
+        fields.get("conflict").cloned().unwrap()
+    };
+
+    assert_eq!(
+        policy(&mut session, "takes"),
+        Value::from("last-writer-wins")
+    );
+    assert_eq!(policy(&mut session, "names"), Value::from("refuse"));
+    assert_eq!(
+        policy(&mut session, "silent"),
+        Value::None,
+        "a table that never asked must not read as one that declared the refusal"
+    );
+}
+
+/// G027 **S4.1**, the half a report alone does not buy: the declaration the
+/// report hands back rebuilds the same table.
+///
+/// `INFO FOR TABLE` returns a `DEFINE TABLE …` script rebuilt from the catalog,
+/// and until this wave it did not carry the conflict clause — so a table
+/// declaring `LAST WRITER WINS` described itself as one that refuses, and
+/// re-executing its own reported declaration produced a table whose writes
+/// behave differently. Nothing was in an error state and the two reports agreed,
+/// because the field that would have differed was the field nobody reported.
+///
+/// The silent table is the other half: its declaration must NOT gain a word its
+/// author did not write. Silence is a refusal by decision rather than by
+/// default, so emitting `REFUSE CONFLICTS` here would be a different claim about
+/// what was declared.
+#[test]
+fn a_reported_declaration_rebuilds_the_policy_it_described() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE shared MULTI MASTER; USE NAMESPACE shared;\n\
+             DEFINE DATABASE books; USE DATABASE books;\n\
+             DEFINE TABLE takes SCHEMALESS LAST WRITER WINS;\n\
+             DEFINE TABLE silent SCHEMALESS;",
+        )
+        .unwrap();
+
+    let described = |session: &mut Session<'_>, table: &str| {
+        let script = format!("INFO FOR TABLE {table};");
+        let Value::Object(fields) = report(session, &script) else {
+            panic!("expected an object");
+        };
+        let Some(Value::String(script)) = fields.get("definition") else {
+            panic!("expected a definition for {table}");
+        };
+        script.clone()
+    };
+
+    let taking = described(&mut session, "takes");
+    assert!(
+        taking.contains("LAST WRITER WINS"),
+        "the declaration dropped the clause that decides what a write it cannot \
+         order does: {taking}"
+    );
+    let quiet = described(&mut session, "silent");
+    assert!(
+        !quiet.contains("CONFLICTS") && !quiet.contains("WINS"),
+        "a table that declared nothing gained a word its author did not write: \
+         {quiet}"
+    );
+
+    // Re-executed under a second name, and described again. A round trip that
+    // stopped at the text would pass on a script the parser rejects, and one
+    // that stopped at re-execution would pass on a table that came back
+    // different — so it runs the whole way and compares the two descriptions.
+    //
+    // Compared as DECLARATIONS rather than by reading the report's `conflict`
+    // field, which is how this was first written. Hiding that field then failed
+    // this test as well as its own, and a falsification arm that takes two tests
+    // down is measuring one thing twice: the read-back and the rebuild are
+    // separate claims and each needs an arm that can fail alone.
+    let rebuilt = taking.replace("takes", "rebuilt");
+    session.run(&rebuilt).unwrap();
+    assert_eq!(
+        described(&mut session, "rebuilt"),
+        taking.replace("takes", "rebuilt"),
+        "the table rebuilt from its own reported declaration describes itself \
+         differently from the one it claimed to reproduce"
     );
 }
