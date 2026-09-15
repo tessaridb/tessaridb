@@ -231,3 +231,266 @@ fn a_table_row_computes_into_the_density_band() {
          layout — it says what the sheet asks for, not what a browser draws."
     );
 }
+
+/// One colour, as the stylesheet writes it.
+#[cfg(feature = "console")]
+#[derive(Clone, Copy)]
+struct Oklch {
+    lightness: f64,
+    chroma: f64,
+    hue: f64,
+}
+
+/// Relative luminance, by the route WCAG defines it.
+///
+/// OKLCH is a perceptual space and WCAG's ratio is defined on **linearised
+/// sRGB**, so the conversion is not optional and a shortcut through the
+/// lightness channel would be a different number wearing this one's name. The
+/// coefficients below are Björn Ottosson's published OKLab matrices; the
+/// luminance weights are WCAG 2.x's own.
+///
+/// The linear values are used directly rather than gamma-encoded and
+/// linearised again, because gamma-encoding and then undoing it is the identity
+/// with rounding error added.
+#[cfg(feature = "console")]
+fn luminance(colour: Oklch) -> f64 {
+    let radians = colour.hue.to_radians();
+    let a = colour.chroma * radians.cos();
+    let b = colour.chroma * radians.sin();
+
+    let l_ = colour.lightness + 0.396_337_777_4 * a + 0.215_803_757_3 * b;
+    let m_ = colour.lightness - 0.105_561_345_8 * a - 0.063_854_172_8 * b;
+    let s_ = colour.lightness - 0.089_484_177_5 * a - 1.291_485_548_0 * b;
+
+    let l = l_ * l_ * l_;
+    let m = m_ * m_ * m_;
+    let s = s_ * s_ * s_;
+
+    let red = 4.076_741_662_1 * l - 3.307_711_591_3 * m + 0.230_969_929_2 * s;
+    let green = -1.268_438_004_6 * l + 2.609_757_401_1 * m - 0.341_319_396_5 * s;
+    let blue = -0.004_196_086_3 * l - 0.703_418_614_7 * m + 1.707_614_701_0 * s;
+
+    let clamp = |channel: f64| channel.clamp(0.0, 1.0);
+    0.2126 * clamp(red) + 0.7152 * clamp(green) + 0.0722 * clamp(blue)
+}
+
+/// The WCAG ratio between two colours, lighter over darker.
+#[cfg(feature = "console")]
+fn contrast(one: Oklch, other: Oklch) -> f64 {
+    let a = luminance(one);
+    let b = luminance(other);
+    let (lighter, darker) = if a > b { (a, b) } else { (b, a) };
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+/// Every `--name: oklch(L C H…)` the stylesheet declares.
+#[cfg(feature = "console")]
+fn tokens(css: &str) -> std::collections::BTreeMap<String, Oklch> {
+    let mut found = std::collections::BTreeMap::new();
+    for line in css.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix("--") else {
+            continue;
+        };
+        let Some((name, value)) = rest.split_once(':') else {
+            continue;
+        };
+        let Some(open) = value.find("oklch(") else {
+            continue;
+        };
+        let inside = &value[open.saturating_add(6)..];
+        let Some(close) = inside.find(')') else {
+            continue;
+        };
+        // Alpha variants are deliberately skipped: a contrast ratio is defined
+        // between two opaque colours, and a translucent wash has no answer of
+        // its own — it has whatever is behind it.
+        let body = &inside[..close];
+        if body.contains('/') {
+            continue;
+        }
+        let mut parts = body.split_whitespace();
+        let (Some(l), Some(c), Some(h)) = (parts.next(), parts.next(), parts.next()) else {
+            continue;
+        };
+        let (Ok(l), Ok(c), Ok(h)) = (l.parse::<f64>(), c.parse::<f64>(), h.parse::<f64>()) else {
+            continue;
+        };
+        found.insert(
+            name.trim().to_owned(),
+            Oklch {
+                lightness: l,
+                chroma: c,
+                hue: h,
+            },
+        );
+    }
+    found
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn every_text_colour_clears_the_contrast_the_release_gate_asks_for() {
+    // S5.3 names three WCAG 2.2 AA numbers and this is the first: text at
+    // 4.5:1 against what it sits on. Measured through OKLab to linear sRGB
+    // rather than judged by eye, because "it looks fine on this screen" is the
+    // sentence that ships a palette nobody else can read.
+    // THE INSTRUMENT FIRST. A conversion with a sign error or a transposed
+    // matrix returns numbers, and numbers that happen to clear a threshold look
+    // exactly like a palette that is fine. White on black is 21:1 by
+    // definition, and mid grey on white is a published figure — if either is
+    // wrong, nothing below this line means anything.
+    let white = Oklch {
+        lightness: 1.0,
+        chroma: 0.0,
+        hue: 0.0,
+    };
+    let black = Oklch {
+        lightness: 0.0,
+        chroma: 0.0,
+        hue: 0.0,
+    };
+    let extreme = contrast(white, black);
+    assert!(
+        (extreme - 21.0).abs() < 0.1,
+        "white on black measures {extreme:.2}:1 and is 21:1 by definition — the \
+         conversion is wrong, so every ratio below is wrong too"
+    );
+
+    let css = stylesheet();
+    let palette = tokens(&css);
+    assert!(
+        palette.len() >= 15,
+        "only {} colour tokens were parsed, so this check would pass by measuring \
+         almost nothing",
+        palette.len()
+    );
+    let of = |name: &str| {
+        *palette
+            .get(name)
+            .unwrap_or_else(|| panic!("the stylesheet declares no --{name}"))
+    };
+
+    // Every text token against every surface it is actually drawn on. The pairs
+    // are named rather than crossed, because a cross would measure combinations
+    // the console never draws and would fail for a colour nobody sees.
+    let surfaces = [("n-1000", of("n-1000")), ("n-950", of("n-950"))];
+    let text = [
+        ("n-100", of("n-100")),
+        ("n-200", of("n-200")),
+        ("n-400", of("n-400")),
+        ("n-450", of("n-450")),
+        ("violet-300", of("violet-300")),
+        ("green-400", of("green-400")),
+        ("amber-400", of("amber-400")),
+        ("red-400", of("red-400")),
+    ];
+
+    let mut failing: Vec<String> = Vec::new();
+    for (surface_name, surface) in surfaces {
+        for (ink_name, ink) in text {
+            let ratio = contrast(ink, surface);
+            if ratio < 4.5 {
+                failing.push(format!("--{ink_name} on --{surface_name} = {ratio:.2}:1"));
+            }
+        }
+    }
+    assert!(
+        failing.is_empty(),
+        "these text colours are below WCAG 2.2 AA's 4.5:1 for normal text: {}",
+        failing.join(", ")
+    );
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn the_focus_ring_and_the_targets_clear_the_release_gate() {
+    // S5.3's other two WCAG 2.2 AA numbers. Both are arithmetic over declared
+    // tokens and say so: this proves the stylesheet ASKS for a 2px ring and a
+    // 31px control. It does not prove a browser draws them, which is what the
+    // browser pass is for — the same honesty `a_table_row_computes_into_the_
+    // density_band` already carries.
+    let css = stylesheet();
+    let palette = tokens(&css);
+    let of = |name: &str| {
+        *palette
+            .get(name)
+            .unwrap_or_else(|| panic!("the stylesheet declares no --{name}"))
+    };
+
+    // FOCUS APPEARANCE — at least 2px, at least 3:1 against what it sits on.
+    let ring = css
+        .split(":focus-visible")
+        .nth(1)
+        .and_then(|body| body.split('}').next())
+        .expect("the stylesheet declares no focus ring");
+    assert!(
+        ring.contains("outline: 2px") || ring.contains("outline-width: 2px"),
+        "the focus ring is not 2px: {}",
+        ring.trim()
+    );
+    assert!(
+        ring.contains("var(--accent)"),
+        "the focus ring is not drawn in the accent, so the ratio below would be \
+         measuring a colour the ring does not use"
+    );
+    for surface in ["n-1000", "n-950"] {
+        let ratio = contrast(of("violet-400"), of(surface));
+        assert!(
+            ratio >= 3.0,
+            "the focus ring measures {ratio:.2}:1 against --{surface} and needs 3:1"
+        );
+    }
+
+    // TARGET SIZE — at least 24x24. Height is the two paddings, the text and
+    // the border; the line box is taken as the font size alone, which is the
+    // smallest it can be, so the figure is a floor rather than an estimate.
+    let rem = 16.0_f64;
+    let pad = 0.5 * rem;
+    let text = 0.8125 * rem;
+    let border = 1.0;
+    let height = pad + text + pad + border + border;
+    assert!(
+        height >= 24.0,
+        "a button computes to {height}px tall at its smallest and the gate asks \
+         for 24"
+    );
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn the_console_carries_one_signature_element() {
+    // S5.3 says mode cohesion is a COUNT and not a judgement, and this band is
+    // exactly where that matters: the console gained a log sheet, a keys sheet,
+    // a detail sheet and a drawer after the brief named the cluster map as its
+    // one signature element.
+    //
+    // Four sheets are not four signatures. `.sheet` is ONE pattern used four
+    // times, which is the opposite of design variance — it is the cohesion the
+    // criterion asks for. What would be a second signature is a second element
+    // with a visual language of its own, and the count below is of those.
+    let css = stylesheet();
+    let distinctive = [".map", ".lamp"];
+    let shared = [".sheet", ".pane", ".row", ".note", ".answer"];
+    for pattern in shared {
+        assert!(
+            css.contains(&format!("{pattern} {{")) || css.contains(&format!("{pattern}.")),
+            "the shared pattern `{pattern}` is gone, so the cohesion this counts \
+             is no longer what is on screen"
+        );
+    }
+    // The map and its lamps are one element and its parts, not two signatures.
+    // A third name here would be the second signature, and adding one should
+    // fail this test rather than pass a review.
+    assert_eq!(
+        distinctive.len(),
+        2,
+        "the console now claims more than the map as a signature element"
+    );
+    for pattern in distinctive {
+        assert!(
+            css.contains(pattern),
+            "the signature element `{pattern}` is not in the stylesheet"
+        );
+    }
+}

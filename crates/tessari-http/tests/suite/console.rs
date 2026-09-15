@@ -1427,3 +1427,64 @@ fn every_shortcut_the_console_answers_to_is_written_down_somewhere() {
         "the key list has nowhere to render"
     );
 }
+
+#[cfg(feature = "console")]
+#[test]
+fn nothing_invisible_rides_along_in_a_delivered_asset() {
+    // The emitted assets are shipped inside the image, so a zero-width space or
+    // a bidi control arriving in a copied string would be there for the life of
+    // the build — and invisible in every review, because reading the file is
+    // precisely the check that cannot find it.
+    //
+    // The joiners are NOT blanket-forbidden: U+200D is load-bearing in emoji
+    // sequences and in Arabic, Indic, Thai and Hangul shaping, and a scan that
+    // banned it outright would corrupt real text the day the console is
+    // translated. What is forbidden is the set with no shaping role here.
+    const INVISIBLE: &[(u32, &str)] = &[
+        (0x200B, "zero-width space"),
+        (0x2060, "word joiner"),
+        (0xFEFF, "byte-order mark"),
+        (0x00AD, "soft hyphen"),
+        (0x115F, "Hangul choseong filler"),
+        (0x1160, "Hangul jungseong filler"),
+        (0x3164, "Hangul filler"),
+        (0x180E, "Mongolian vowel separator"),
+        (0x202A, "left-to-right embedding"),
+        (0x202B, "right-to-left embedding"),
+        (0x202D, "left-to-right override"),
+        (0x202E, "right-to-left override"),
+        (0x2066, "left-to-right isolate"),
+        (0x2067, "right-to-left isolate"),
+        (0x2068, "first strong isolate"),
+    ];
+
+    let (_node, address) = node();
+    let mut carried: Vec<String> = Vec::new();
+    for path in ["/", "/console.js", "/console.css", "/favicon.svg"] {
+        let (status, _, served) = get(&address, path);
+        assert_eq!(status, 200, "{path} is not served");
+        assert!(
+            !served.is_empty(),
+            "{path} came back empty, so this scan would pass by reading nothing"
+        );
+        for (point, name) in INVISIBLE {
+            if let Some(found) = char::from_u32(*point) {
+                if served.contains(found) {
+                    carried.push(format!("{path} carries {name} (U+{point:04X})"));
+                }
+            }
+        }
+        // Unicode tag characters smuggle arbitrary ASCII and have no legitimate
+        // use in any of these files.
+        if served
+            .chars()
+            .any(|c| ('\u{E0000}'..'\u{E0080}').contains(&c))
+        {
+            carried.push(format!("{path} carries Unicode tag characters"));
+        }
+    }
+    assert!(
+        carried.is_empty(),
+        "invisible codepoints reached a delivered asset: {carried:?}"
+    );
+}
