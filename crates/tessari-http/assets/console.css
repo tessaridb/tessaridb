@@ -460,6 +460,21 @@ button.quiet.chosen {
   color: var(--accent-text);
 }
 
+/* The pressed state, and it is not decoration. Without it a click that has
+   landed looks exactly like a click that has not — so on a slow node the
+   operator presses again, and the action this console most needs pressed once
+   is the one that does not come back. */
+button:active:not(:disabled) {
+  background: var(--accent-edge);
+  border-color: var(--accent);
+  transform: translateY(1px);
+}
+
+.node[role="button"]:active {
+  border-color: var(--accent);
+  transform: translateY(1px);
+}
+
 button:disabled {
   opacity: 0.45;
   cursor: default;

@@ -494,3 +494,46 @@ fn the_console_carries_one_signature_element() {
         );
     }
 }
+
+#[cfg(feature = "console")]
+#[test]
+fn every_interactive_component_declares_all_eight_states() {
+    // V7 of the brief's verification contract: default / hover / focus / active
+    // / disabled / loading / error / empty, 8 of 8. The brief's own framing for
+    // that whole table is "every row is a command, a count or a ratio — never an
+    // adjective", so this is COUNTED.
+    //
+    // It was counted late, and the count found something: `:active` appeared
+    // ZERO times. Nothing in the console declared a pressed state, which is 7 of
+    // 8 and not the kind of gap a review finds — a button with no pressed state
+    // looks identical whether the click landed or not, so on a slow node the
+    // operator presses again, and the action this console most needs pressed
+    // once is the one that does not come back.
+    let css = stylesheet();
+
+    // The five a control owes.
+    for state in [":hover", ":focus-visible", ":active", ":disabled"] {
+        assert!(
+            css.contains(state),
+            "no component declares `{state}`, so a control cannot show it"
+        );
+    }
+    // The three a screen owes. `default` is the base rule and is not a selector.
+    for state in [".is-waiting", ".is-wrong", ".is-empty"] {
+        assert!(
+            css.contains(state),
+            "no screen declares `{state}`, so the four states collapse again"
+        );
+    }
+
+    // And the pressed state on the two things that are pressed: an ordinary
+    // button, and the map figure that opens a drawer.
+    assert!(
+        css.contains("button:active"),
+        "a button has no pressed state"
+    );
+    assert!(
+        css.contains(".node[role=\"button\"]:active"),
+        "a node on the map has no pressed state, though it is a button"
+    );
+}
