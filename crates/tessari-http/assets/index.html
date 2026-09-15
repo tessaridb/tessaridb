@@ -352,6 +352,7 @@
     <footer class="tray">
       <button id="log-open" type="button" class="quiet" aria-controls="log-sheet" aria-expanded="false">Statements <span id="log-count" class="count">0</span></button>
       <span class="faint">everything this panel sent for you</span>
+      <button id="keys-open" type="button" class="quiet" aria-controls="keys-sheet">Keys ?</button>
     </footer>
     <div id="log-sheet" class="sheet log" hidden role="region" aria-label="Statements">
       <div class="pane-head">
@@ -360,6 +361,13 @@
       </div>
       <p class="note">The panel's own record, newest first — not the store's. <code>INFO FOR AUDIT</code> answers a different question, for a different reader, and keeps its answer. This holds no credential, lasts as long as this tab, and makes no claim to survive it.</p>
       <div id="log-list"></div>
+    </div>
+    <div id="keys-sheet" class="sheet keys-sheet" hidden>
+      <div class="row spread">
+        <h2>Keys</h2>
+        <button id="keys-close" type="button" class="quiet">Close</button>
+      </div>
+      <div id="keys-list"></div>
     </div>
     <script src="/console.js"></script>
   </body>

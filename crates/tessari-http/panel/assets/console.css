@@ -821,6 +821,38 @@ details.tucked > summary {
   padding: var(--s-1) 0;
 }
 
+/* ──────────────────────────────────────────────────────── the keys ── */
+
+.sheet.keys-sheet {
+  position: fixed;
+  left: 50%;
+  bottom: 4.5rem;
+  transform: translateX(-50%);
+  z-index: 11;
+  width: min(30rem, calc(100vw - 2rem));
+}
+
+.keys {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--s-2) var(--s-3);
+  margin: 0;
+}
+
+.keys dt {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-12);
+  color: var(--accent-text);
+  white-space: nowrap;
+}
+
+.keys dd {
+  margin: 0;
+  font-size: var(--t-13);
+  color: var(--text-muted);
+}
+
 /* ─────────────────────────────────────────── the four states ── */
 
 /* Four states rendered four ways, so the difference between "nothing here" and

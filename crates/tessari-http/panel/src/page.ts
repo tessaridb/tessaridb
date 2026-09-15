@@ -178,6 +178,21 @@ const node = (): Node =>
  * and it never opens itself — §5 of the brief is explicit that the record is
  * behind a control and never in the flow.
  */
+/**
+ * Every key the console answers to, in one place.
+ *
+ * Opened by `?` and by the control in the tray. A shortcut nobody can find is
+ * not reachable, and the three the console already had were known only to
+ * whoever wrote them.
+ */
+const keysSheet = (): Node =>
+  el(
+    "div",
+    { id: "keys-sheet", class: "sheet keys-sheet", hidden: true },
+    row("spread", el("h2", {}, "Keys"), button("keys-close", "Close", "quiet")),
+    el("div", { id: "keys-list" }),
+  );
+
 const tray = (): Node =>
   el(
     "footer",
@@ -198,6 +213,14 @@ const tray = (): Node =>
       el("span", { id: "log-count", class: "count" }, "0"),
     ),
     el("span", { class: "faint" }, "everything this panel sent for you"),
+    // The keys, reachable by mouse as well as by the key that opens them —
+    // a shortcut list you can only open with a shortcut is a joke played on
+    // exactly the person who needs it.
+    el(
+      "button",
+      { id: "keys-open", type: "button", class: "quiet", "aria-controls": "keys-sheet" },
+      "Keys ?",
+    ),
   );
 
 const logSheet = (): Node =>
@@ -231,6 +254,7 @@ export const index = (): string =>
         el("main", {}, query(), cluster(), access(), node()),
         tray(),
         logSheet(),
+        keysSheet(),
         el("script", { src: "/console.js" }),
       ),
     ),

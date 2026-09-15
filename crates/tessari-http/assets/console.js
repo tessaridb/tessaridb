@@ -1582,13 +1582,87 @@
     });
     document.addEventListener("keydown", (event) => {
       const focused = document.activeElement;
-      const typing = focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || focused instanceof HTMLSelectElement;
+      const typing2 = focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || focused instanceof HTMLSelectElement;
       const shortcut = event.key === "k" && (event.metaKey || event.ctrlKey);
-      if (shortcut || event.key === "/" && !typing) {
+      if (shortcut || event.key === "/" && !typing2) {
         event.preventDefault();
         at("search").focus();
         at("search").select();
       }
+    });
+  }
+
+  // src/shortcuts.ts
+  //! Every key this console answers to, and one place that says so.
+  //!
+  //! A shortcut nobody can find is not reachable. Three handlers scattered through
+  //! three modules is what the console had: `/` and `⌘K` for the search, `⌘↵` for
+  //! the script, `Escape` for whatever was open — each real, each known only to
+  //! whoever wrote it or read the source.
+  //!
+  //! So the list below is the ONE place they are written down, the sheet renders
+  //! it, and `?` opens the sheet. The handlers still live with the screens they
+  //! belong to, because a module that owned every key on the page would be a
+  //! module that has to know about every screen.
+  //!
+  //! # Why the list is data and not prose
+  //!
+  //! It is rendered, so a shortcut added without a row here is a shortcut with no
+  //! row in the sheet — visible immediately to anybody who opens it, rather than
+  //! a documentation drift nobody notices for a year.
+  var KEYS = [
+    { press: "/", does: "find an account, a table, a namespace or a record" },
+    { press: "⌘K  ·  Ctrl-K", does: "the same, from inside a field" },
+    { press: "⌘1 … ⌘4", does: "Run, Cluster, Access, This node" },
+    { press: "⌘↵  ·  Ctrl-↵", does: "run what is in the script box" },
+    { press: "?", does: "this list" },
+    { press: "Esc", does: "close the log, the drawer, or this list" }
+  ];
+  function typing() {
+    const focused = document.activeElement;
+    return focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || focused instanceof HTMLSelectElement;
+  }
+  function draw3() {
+    clear("keys-list");
+    const list = made("dl", "keys");
+    for (const key of KEYS) {
+      const press = made("dt");
+      press.textContent = key.press;
+      const does = made("dd");
+      does.textContent = key.does;
+      list.append(press, does);
+    }
+    at("keys-list").appendChild(list);
+  }
+  function closeIt3() {
+    at("keys-sheet").hidden = true;
+  }
+  var DESTINATIONS = ["run", "cluster", "access", "this-node"];
+  function wire12() {
+    draw3();
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !at("keys-sheet").hidden) {
+        closeIt3();
+        return;
+      }
+      if (event.key === "?" && !typing()) {
+        event.preventDefault();
+        at("keys-sheet").hidden = !at("keys-sheet").hidden;
+        return;
+      }
+      if (!(event.metaKey || event.ctrlKey)) {
+        return;
+      }
+      const at_ = Number.parseInt(event.key, 10) - 1;
+      const wanted2 = DESTINATIONS[at_];
+      if (wanted2 !== void 0) {
+        event.preventDefault();
+        show(wanted2);
+      }
+    });
+    at("keys-close").addEventListener("click", closeIt3);
+    at("keys-open").addEventListener("click", () => {
+      at("keys-sheet").hidden = !at("keys-sheet").hidden;
     });
   }
 
@@ -1745,7 +1819,7 @@
     }
     write("user-count", tally(matched));
   }
-  function wire12() {
+  function wire13() {
     at("list").addEventListener("click", listUsers);
     at("user-filter").addEventListener("input", redraw);
     at("tab-access").addEventListener("click", () => {
@@ -1888,7 +1962,7 @@
     }
     return wanted2;
   }
-  function wire13() {
+  function wire14() {
     at("follow").addEventListener("click", () => {
       stop();
       clear("changes");
@@ -1953,12 +2027,13 @@
   wire4();
   wire10();
   wire11();
+  wire12();
   wire7();
   wire5();
   wire();
-  wire13();
+  wire14();
   wire6();
-  wire12();
+  wire13();
   wire8();
   wire9();
 })();

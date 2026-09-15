@@ -26,6 +26,7 @@ import * as password from "./password.js";
 import * as query from "./query.js";
 import * as search from "./search.js";
 import * as session from "./session.js";
+import * as shortcuts from "./shortcuts.js";
 import * as tabs from "./tabs.js";
 import * as userForms from "./user-forms.js";
 import * as users from "./users.js";
@@ -40,6 +41,7 @@ tabs.wire();
 session.wire();
 query.wire();
 search.wire();
+shortcuts.wire();
 formation.wire();
 drawer.wire();
 

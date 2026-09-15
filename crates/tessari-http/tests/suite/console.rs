@@ -1370,3 +1370,46 @@ fn nothing_the_console_remembers_is_a_credential() {
         "the remembered context is not confined to the tab that typed it"
     );
 }
+
+#[cfg(feature = "console")]
+#[test]
+fn every_shortcut_the_console_answers_to_is_written_down_somewhere() {
+    // S5.2 asks for reachable AND DISCOVERABLE. The console had three global
+    // handlers scattered through three modules, each real and each known only
+    // to whoever wrote it — which is reachable and not discoverable, and the
+    // distinction is the whole criterion.
+    //
+    // The arm this guards against is deleting the HINT and keeping the handler:
+    // a test that only checked the handler would stay green while the shortcut
+    // became invisible again.
+    let sources = panel_sources();
+    let keys = sources
+        .iter()
+        .find(|(name, _)| name == "shortcuts.ts")
+        .map(|(_, text)| text.as_str())
+        .expect("shortcuts.ts is not among the sources this test read");
+
+    // The list is data and it is rendered, so a shortcut with no row here is a
+    // shortcut with no row in the sheet.
+    for advertised in ["\"/\"", "⌘K", "⌘1", "⌘↵", "\"?\"", "Esc"] {
+        assert!(
+            keys.contains(advertised),
+            "the key list no longer mentions {advertised}"
+        );
+    }
+
+    // And a way in that is not itself a shortcut. A list you can only open with
+    // a key is a joke played on exactly the person who needed the list.
+    let (_node, address) = node();
+    let (status, _, page) = get(&address, "/");
+    assert_eq!(status, 200, "the console's page is not served");
+    assert!(
+        page.contains(r#"id="keys-open""#),
+        "there is no control that opens the key list, so it is reachable only by \
+         knowing the key that opens the list of keys"
+    );
+    assert!(
+        page.contains(r#"id="keys-sheet""#),
+        "the key list has nowhere to render"
+    );
+}
