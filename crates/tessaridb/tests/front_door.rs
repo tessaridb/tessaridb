@@ -132,7 +132,11 @@ fn the_change_feed_reaches_the_surface() {
     session.run("DELETE users:1;").unwrap();
 
     let answer = db
-        .changes_since(FIXTURE_HOME, Sequence::ZERO, 1024)
+        .changes_since(
+            db.store().own_log(FIXTURE_HOME).unwrap(),
+            Sequence::ZERO,
+            1024,
+        )
         .unwrap();
     let kinds: Vec<&ChangeKind> = answer.changes.iter().map(|c| &c.kind).collect();
     assert_eq!(kinds.len(), 2, "{kinds:?}");
@@ -146,7 +150,11 @@ fn a_subscription_is_a_value_the_caller_keeps() {
     let mut session = db.session();
     session.run(READY).unwrap();
 
-    let mut watching = Db::subscribe(FIXTURE_HOME, Sequence::ZERO, Watch::default());
+    let mut watching = Db::subscribe(
+        db.store().own_log(FIXTURE_HOME).unwrap(),
+        Sequence::ZERO,
+        Watch::default(),
+    );
     session.run("CREATE users:1 = { name: 'ada' };").unwrap();
     let first: Vec<Change> = db.poll(&mut watching, 1024).unwrap();
     assert_eq!(first.len(), 1);
@@ -161,7 +169,9 @@ fn a_subscription_is_a_value_the_caller_keeps() {
     // It does not repeat, and a skip past the tail is counted rather than
     // silent.
     session.run("CREATE users:2 = { name: 'grace' };").unwrap();
-    let tail = db.committed_tail(FIXTURE_HOME).unwrap();
+    let tail = db
+        .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+        .unwrap();
     let skipped = db
         .skip(&mut watching, Sequence::new(tail.get() + 1))
         .unwrap();

@@ -32,7 +32,7 @@
 //! ```text
 //! head     "TESSARILOG" <format:u8> <codec:u8> <writer:u32*3> <sections:u32>
 //! frame    <tag:u8>
-//!   tag 1  section  <home:9> <from:u64> <tail:u64>
+//!   tag 1  section  <home:9> <writer:16> <from:u64> <tail:u64>
 //!   tag 2  record   <length:u32> <sequence:u64> <crc32:u32> <bytes…>
 //! ```
 //!
@@ -91,7 +91,7 @@
 
 use std::io::{Read, Write};
 
-use tessari_encoding::{LogRecord, NodeVersion, StoreValue};
+use tessari_encoding::{LogId, LogRecord, NodeVersion, StoreValue, Writer};
 use tessari_storage::Store;
 use tessari_types::{DatabaseId, NamespaceId, Reach, Sequence};
 
@@ -132,12 +132,33 @@ const FRAME_SECTION: u8 = 1;
 /// A frame that carries one log record, belonging to the section above it.
 const FRAME_RECORD: u8 = 2;
 
-/// A reach as the nine fixed bytes a log key carries it in.
+/// A log as the twenty-five fixed bytes a section names it with.
 ///
 /// Written out here rather than borrowed from the key encoding because a backup
 /// file is its own format: the key grammar may be re-laid out without every file
 /// ever written becoming unreadable, and the two moving together by accident is
 /// exactly what a separate format is for.
+///
+/// The writer is part of the name and not an optional tail. A section that named
+/// the home alone would restore two writers' logs into one — silently, because
+/// every record in them is valid and only the counters collide — which is the
+/// failure a per-writer log exists to prevent.
+fn log_bytes(log: LogId) -> [u8; 25] {
+    let mut bytes = [0_u8; 25];
+    bytes[..9].copy_from_slice(&home_bytes(log.home));
+    bytes[9..].copy_from_slice(&log.writer.bytes());
+    bytes
+}
+
+/// The log [`log_bytes`] wrote, or `None` for a reach variant this build does
+/// not know.
+fn log_in(bytes: [u8; 25]) -> Option<LogId> {
+    let homed: [u8; 9] = bytes[..9].try_into().ok()?;
+    let writer: [u8; 16] = bytes[9..].try_into().ok()?;
+    Some(LogId::new(home_in(homed)?, Writer::new(writer)))
+}
+
+/// A reach as the nine fixed bytes a log key carries it in.
 fn home_bytes(home: Reach) -> [u8; 9] {
     let (variant, namespace, database) = match home {
         Reach::Store => (0_u8, 0_u32, 0_u32),
@@ -277,7 +298,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LogSpan {
     /// The log the section holds.
-    pub home: Reach,
+    pub log: LogId,
     /// The first sequence of it the section holds.
     pub from: Sequence,
     /// The sequence that log was at when the section was taken.
@@ -355,7 +376,7 @@ pub struct Restored {
 ///
 /// Returns an error when the store or the stream fails.
 pub fn write(store: &Store, out: &mut impl Write) -> Result<Written> {
-    let homes = store.homes()?;
+    let homes = store.logs()?;
     let sections = u32::try_from(homes.len()).unwrap_or(u32::MAX);
     let writer = write_head(out, sections)?;
     let mut records = 0_u64;
@@ -390,11 +411,11 @@ pub fn write(store: &Store, out: &mut impl Write) -> Result<Written> {
 pub fn write_from(
     store: &Store,
     out: &mut impl Write,
-    home: Reach,
+    log: LogId,
     from: Sequence,
 ) -> Result<Written> {
     let writer = write_head(out, 1)?;
-    let (records, span) = write_section(store, out, home, from)?;
+    let (records, span) = write_section(store, out, log, from)?;
     Ok(Written {
         records,
         logs: vec![span],
@@ -410,17 +431,17 @@ pub fn write_from(
 /// log's sequence `n` and leave every other log out of a file that reads as
 /// whole (Q-624).
 ///
-/// An empty store answers [`Reach::Store`] — it has no log yet, and the store's
-/// own is where its first record will go.
+/// An empty store answers the store's own log, unattributed — it has no log
+/// yet, and nothing has written into one to name a writer for.
 ///
 /// # Errors
 ///
 /// Returns [`Error::ManyLogs`] when the store holds more than one log, and the
 /// store's own failure when they cannot be listed.
-pub fn only_log(store: &Store) -> Result<Reach> {
-    match store.homes()?.as_slice() {
-        [] => Ok(Reach::Store),
-        [home] => Ok(*home),
+pub fn only_log(store: &Store) -> Result<LogId> {
+    match store.logs()?.as_slice() {
+        [] => Ok(LogId::unattributed(Reach::Store)),
+        [log] => Ok(*log),
         many => Err(Error::ManyLogs {
             what: "an incremental backup",
             logs: many.len(),
@@ -451,21 +472,21 @@ fn write_head(out: &mut impl Write, sections: u32) -> Result<NodeVersion> {
 fn write_section(
     store: &Store,
     out: &mut impl Write,
-    home: Reach,
+    log: LogId,
     from: Sequence,
 ) -> Result<(u64, LogSpan)> {
     let start = Sequence::new(from.get().max(1));
-    let tail = store.committed_tail(home)?;
+    let tail = store.committed_tail(log)?;
     out.write_all(&[FRAME_SECTION])?;
     // The home before the bounds, because the bounds mean nothing without it:
     // a position counts in one log, and a section that named a range without
     // naming which log it counted in would restore onto the wrong base with no
     // error (Q-621).
-    out.write_all(&home_bytes(home))?;
+    out.write_all(&log_bytes(log))?;
     out.write_all(&start.get().to_be_bytes())?;
     out.write_all(&tail.get().to_be_bytes())?;
     let span = LogSpan {
-        home,
+        log,
         from: start,
         tail,
     };
@@ -473,7 +494,7 @@ fn write_section(
     let mut written = 0_u64;
     let mut from = start;
     loop {
-        let page = store.log_records(home, from, PAGE)?;
+        let page = store.log_records(log, from, PAGE)?;
         if page.is_empty() {
             break;
         }
@@ -546,6 +567,9 @@ pub fn read_until(
     }
 
     let mut applied = 0_u64;
+    // The logs this file has opened, so a later section can tell *a range this
+    // file is restoring* from *a range the target already held*.
+    let mut opened: Vec<LogId> = Vec::new();
     let mut logs: Vec<LogSpan> = Vec::new();
     let mut open: Option<(LogSpan, Sequence)> = None;
     let mut truncated = false;
@@ -563,7 +587,7 @@ pub fn read_until(
                 // zero: a whole backup continues from an empty log and an
                 // incremental one continues from where its predecessor stopped,
                 // and both are the same question.
-                let at = store.committed_tail(span.home)?;
+                let at = store.committed_tail(span.log)?;
                 let needs = span.from.get().saturating_sub(1);
                 if at.get() != needs {
                     return Err(Error::WrongBase {
@@ -571,13 +595,33 @@ pub fn read_until(
                         found: at.get(),
                     });
                 }
+                // And the same question asked of the RANGE, which the check
+                // above stopped answering the moment a home could hold more
+                // than one log. A file restored into a store that already holds
+                // that range under a DIFFERENT writer passes the line above
+                // perfectly — the target's copy of this log is empty, because
+                // it never had one — and merges two stores that were never a
+                // cluster, silently. What a restore may continue from is what
+                // this file has itself put there.
+                for held in store.logs_of(span.log.home)? {
+                    if held == span.log || opened.contains(&held) {
+                        continue;
+                    }
+                    if store.committed_tail(held)?.get() > 0 {
+                        return Err(Error::WrongBase {
+                            needs: 0,
+                            found: store.committed_tail(held)?.get(),
+                        });
+                    }
+                }
+                opened.push(span.log);
                 if let Some((span, reached)) = open.replace((span, at)) {
                     truncated = truncated || reached.get() < span.tail.get();
                     logs.push(span);
                 }
             }
             Frame::Record { sequence, body } => {
-                let Some((_, reached)) = open.as_mut() else {
+                let Some((section, reached)) = open.as_mut() else {
                     // A record before any section names the log it belongs to.
                     // There is no defensible guess: applying it into the store's
                     // own log would put a range's records in the wrong counter.
@@ -591,7 +635,12 @@ pub fn read_until(
                     break;
                 }
                 let record = LogRecord::decode(&body)?;
-                store.apply_record(sequence, &record)?;
+                // The writer the SECTION named, which is the same fact the
+                // home already was: a restore files a record where the backup
+                // read it from and never where the restoring node happens to
+                // write. Deriving the writer from the record is not available
+                // and would be wrong if it were.
+                store.apply_record(section.log.writer, sequence, &record)?;
                 applied = applied.saturating_add(1);
                 *reached = sequence;
             }
@@ -630,7 +679,7 @@ pub struct Bootstrapped {
     /// what the prefix said it held — see [`bootstrap`]. One entry per log,
     /// because a node holding several has several positions and a single number
     /// would be right about one of them (Q-620, Q-621).
-    pub follow_from: Vec<(Reach, Sequence)>,
+    pub follow_from: Vec<(LogId, Sequence)>,
     /// Whether the prefix ended mid-record.
     ///
     /// A truncated prefix leaves a node that is a correct copy of an *earlier*
@@ -669,9 +718,9 @@ pub struct Bootstrapped {
 pub fn bootstrap(store: &Store, input: &mut impl Read) -> Result<Bootstrapped> {
     let restored = read(store, input)?;
     let mut follow_from = Vec::with_capacity(restored.logs.len());
-    for home in store.homes()? {
-        let reached = store.committed_tail(home)?;
-        follow_from.push((home, Sequence::new(reached.get().saturating_add(1))));
+    for log in store.logs()? {
+        let reached = store.committed_tail(log)?;
+        follow_from.push((log, Sequence::new(reached.get().saturating_add(1))));
     }
     Ok(Bootstrapped {
         written_by: restored.written_by,
@@ -875,18 +924,18 @@ impl Frame {
         }
     }
 
-    /// A section frame: the home, then the bounds that count inside it.
+    /// A section frame: the log, then the bounds that count inside it.
     fn section(input: &mut impl Read) -> Result<Option<Self>> {
-        let mut raw = [0_u8; 25];
+        let mut raw = [0_u8; 41];
         if !matches!(fill(input, &mut raw)?, Filled::Whole) {
             return Ok(Some(Self::Cut));
         }
-        let (homed, bounds) = raw.split_at(9);
-        let homed: [u8; 9] = homed.try_into().map_err(|_| Error::NotABackup)?;
-        let home = home_in(homed).ok_or(Error::NotABackup)?;
+        let (named, bounds) = raw.split_at(25);
+        let named: [u8; 25] = named.try_into().map_err(|_| Error::NotABackup)?;
+        let log = log_in(named).ok_or(Error::NotABackup)?;
         let (from, tail) = bounds.split_at(8);
         Ok(Some(Self::Section(LogSpan {
-            home,
+            log,
             from: Sequence::new(u64::from_be_bytes(
                 from.try_into().map_err(|_| Error::NotABackup)?,
             )),

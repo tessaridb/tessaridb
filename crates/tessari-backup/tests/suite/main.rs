@@ -18,20 +18,21 @@ mod vault_shredding;
 mod version;
 
 use tessari_backup::LogSpan;
+use tessari_encoding::LogId;
 use tessari_storage::Store;
-use tessari_types::{Reach, Sequence};
+use tessari_types::Sequence;
 
 /// Every log the store holds, with the sequence each stands at.
 ///
 /// A store holds a log per range now (S6.2), so a single `committed_tail()` is
 /// an answer about one of them — which is why these helpers exist rather than
 /// each case picking a home and hoping it picked the busy one.
-pub(crate) fn tails(store: &Store) -> Vec<(Reach, Sequence)> {
+pub(crate) fn tails(store: &Store) -> Vec<(LogId, Sequence)> {
     store
-        .homes()
+        .logs()
         .unwrap()
         .into_iter()
-        .map(|home| (home, store.committed_tail(home).unwrap()))
+        .map(|log| (log, store.committed_tail(log).unwrap()))
         .collect()
 }
 
@@ -52,7 +53,7 @@ pub(crate) fn records_held(store: &Store) -> u64 {
 /// checks every log rather than one, and it catches a file that quietly left a
 /// log out — the failure the sections exist to prevent.
 pub(crate) fn covers(logs: &[LogSpan], store: &Store) {
-    let held: Vec<(Reach, Sequence)> = logs.iter().map(|log| (log.home, log.tail)).collect();
+    let held: Vec<(LogId, Sequence)> = logs.iter().map(|log| (log.log, log.tail)).collect();
     assert_eq!(
         held,
         tails(store),

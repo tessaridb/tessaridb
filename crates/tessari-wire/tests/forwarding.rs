@@ -38,7 +38,7 @@ fn replicate(leader: &Db, follower: &Db) -> u64 {
     // in `homes()` order, so the definitions a range's records depend on arrive
     // before those records do.
     let mut carried_in_all = 0_u64;
-    for home in leader.store().homes().unwrap() {
+    for home in leader.store().logs().unwrap() {
         // `saturating_add` rather than `+`, matching what `bootstrap` itself
         // does: the workspace denies bare arithmetic, and the next sequence
         // after the tail is exactly the shape that lint exists for.

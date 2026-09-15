@@ -21,6 +21,7 @@
 
 use std::io::{Read, Write};
 
+use tessari_encoding::{LogId, NODE_ID_LEN, Writer};
 use tessari_types::{DatabaseId, NamespaceId, Reach};
 
 use crate::error::{Error, Result};
@@ -418,6 +419,34 @@ pub(crate) fn take_reach(from: &[u8], at: usize) -> Result<(Reach, usize)> {
         _ => return Err(Error::Malformed),
     };
     Ok((reach, at))
+}
+
+/// A log's name on the wire: its home, then the writer allocating into it.
+///
+/// Fixed width for the reason [`put_reach`] is, and the writer is written
+/// always rather than only where a range admits two — a body that followed a
+/// sometimes-present field would start at two offsets, and a peer that guessed
+/// wrong would read a sequence out of a node identifier.
+pub(crate) fn put_log(into: &mut Vec<u8>, log: LogId) {
+    put_reach(into, log.home);
+    into.extend_from_slice(&log.writer.bytes());
+}
+
+/// Read one back.
+///
+/// # Errors
+///
+/// Returns [`Error::Malformed`] when the bytes are short or the home names a
+/// variant this build does not have.
+pub(crate) fn take_log(from: &[u8], at: usize) -> Result<(LogId, usize)> {
+    let (home, at) = take_reach(from, at)?;
+    let end = at.checked_add(NODE_ID_LEN).ok_or(Error::Malformed)?;
+    let writer: [u8; NODE_ID_LEN] = from
+        .get(at..end)
+        .ok_or(Error::Malformed)?
+        .try_into()
+        .map_err(|_| Error::Malformed)?;
+    Ok((LogId::new(home, Writer::new(writer)), end))
 }
 
 #[cfg(test)]

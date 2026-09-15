@@ -43,20 +43,35 @@ use tessari_types::{DatabaseId, NamespaceId, Reach};
 /// a record carrying nothing) name their own home at the call site.
 pub(crate) const FIXTURE_HOME: Reach = Reach::Database(NamespaceId::new(1), DatabaseId::new(1));
 
+/// The fixture store's OWN log for [`FIXTURE_HOME`].
+///
+/// A home no longer names a log on its own: a range that admits two writers has
+/// one per writer, so a test reading back what the fixture wrote has to say
+/// which writer it means, and the fixture wrote as itself.
+pub(crate) fn fixture_log(store: &tessari_storage::Store) -> tessari_encoding::LogId {
+    store
+        .own_log(FIXTURE_HOME)
+        .expect("the store's own identity")
+}
+
 /// Replay every log a store holds into another, and answer how many records.
 ///
-/// Every log, in the order `homes()` lists them — the store's own first, so the
+/// Every log, in the order `logs()` lists them — the store's own first, so the
 /// namespace, database and table definitions a range's records depend on arrive
 /// before those records do. A replay that read one log would reproduce part of a
 /// store and then be compared against the whole of it (S6.2, Q-620).
+///
+/// Each record is filed under the writer that WROTE it, which is what the log's
+/// own name carries: a replay that re-attributed them to the target would leave
+/// the source's logs empty on a store that holds all of their records.
 pub(crate) fn replay(source: &tessari_storage::Store, target: &tessari_storage::Store) -> usize {
     let mut applied = 0_usize;
-    for home in source.homes().unwrap() {
+    for log in source.logs().unwrap() {
         for (sequence, record) in source
-            .log_records(home, tessari_types::Sequence::ZERO, 4096)
+            .log_records(log, tessari_types::Sequence::ZERO, 4096)
             .unwrap()
         {
-            target.apply_record(sequence, &record).unwrap();
+            target.apply_record(log.writer, sequence, &record).unwrap();
             applied = applied.saturating_add(1);
         }
     }

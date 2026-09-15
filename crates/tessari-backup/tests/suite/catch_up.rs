@@ -19,11 +19,12 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use tessari_encoding::LogId;
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_lsm::{Durability, LsmBackend, StoreConfig};
 use tessari_session::Session;
 use tessari_storage::Store;
-use tessari_types::{Reach, Sequence};
+use tessari_types::Sequence;
 
 /// The same fixture `bootstrap.rs` uses, so the two files' sequences stay
 /// comparable when one of them moves.
@@ -101,10 +102,10 @@ fn interrogate(store: &Store) -> Vec<String> {
 ///
 /// One per log, because the store holds a log per range now and a single number
 /// would be right about one of them (Q-620, Q-626).
-fn resume_from(store: &Store) -> Vec<(Reach, Sequence)> {
+fn resume_from(store: &Store) -> Vec<(LogId, Sequence)> {
     crate::tails(store)
         .into_iter()
-        .map(|(home, tail)| (home, Sequence::new(tail.get().saturating_add(1))))
+        .map(|(log, tail)| (log, Sequence::new(tail.get().saturating_add(1))))
         .collect()
 }
 

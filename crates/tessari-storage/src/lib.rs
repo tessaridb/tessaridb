@@ -80,7 +80,7 @@ pub use sealing::{
     open_field, recipients, remove_recipient, reseal_named, seal_secrets, vault_key_scope,
 };
 pub use store::{Health, Store};
-pub use tessari_encoding::{BUILD_VERSION, NODE_ID_LEN, Roles};
+pub use tessari_encoding::{BUILD_VERSION, LogId, NODE_ID_LEN, Roles, Writer};
 pub use transaction::{
     Expansion, Nearby, Neighbour, RecordAddress, Region, StoredRecord, Transaction,
 };

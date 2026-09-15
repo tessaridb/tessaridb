@@ -32,7 +32,7 @@
 
 use std::sync::Arc;
 
-use tessari_encoding::{LogKey, StoreKey};
+use tessari_encoding::{LogId, LogKey, StoreKey};
 use tessari_kv::{KvBackend, MemoryBackend, WriteBatch};
 use tessari_session::Session;
 use tessari_storage::Store;
@@ -109,7 +109,10 @@ fn leader() -> (Arc<dyn KvBackend>, Store) {
     assert_eq!(
         crate::tails(&store),
         vec![
-            (Reach::Store, Sequence::new(STORE_RECORDS)),
+            (
+                store.own_log(Reach::Store).unwrap(),
+                Sequence::new(STORE_RECORDS)
+            ),
             (data_log(&store), Sequence::new(DATA_RECORDS)),
         ],
         "the fixture no longer has the shape this file's constants describe"
@@ -118,10 +121,10 @@ fn leader() -> (Arc<dyn KvBackend>, Store) {
 }
 
 /// The log the fixture's records land in — the database's, not the store's.
-fn data_log(store: &Store) -> Reach {
-    let mut homes = store.homes().unwrap();
-    homes.retain(|home| *home != Reach::Store);
-    match homes.as_slice() {
+fn data_log(store: &Store) -> LogId {
+    let mut logs = store.logs().unwrap();
+    logs.retain(|log| log.home != Reach::Store);
+    match logs.as_slice() {
         [one] => *one,
         many => panic!("expected one data log, found {}", many.len()),
     }
@@ -137,7 +140,13 @@ fn follower_at(leader: &Store, upto: u64) -> Store {
     let home = data_log(leader);
 
     let mut definitions = Vec::new();
-    tessari_backup::write_from(leader, &mut definitions, Reach::Store, Sequence::new(1)).unwrap();
+    tessari_backup::write_from(
+        leader,
+        &mut definitions,
+        leader.own_log(Reach::Store).unwrap(),
+        Sequence::new(1),
+    )
+    .unwrap();
     tessari_backup::read(&store, &mut definitions.as_slice()).unwrap();
 
     let mut records = Vec::new();
@@ -152,7 +161,7 @@ fn follower_at(leader: &Store, upto: u64) -> Store {
 }
 
 /// Remove one record from the middle of a log.
-fn cut(backend: &Arc<dyn KvBackend>, home: Reach, sequence: u64) {
+fn cut(backend: &Arc<dyn KvBackend>, home: LogId, sequence: u64) {
     let batch = WriteBatch::new().delete(
         LogKey::keyspace(),
         LogKey::new(home, Sequence::new(sequence)).encode(),

@@ -162,11 +162,17 @@ pub fn follow(
     // through a session's read path, so a field grant reaches it here or not at
     // all — and "not at all" means pushing a field nobody granted.
     let mut visible: BTreeMap<TableId, Visible> = BTreeMap::new();
-    // The log of the tenancy this session selected. Before the log was
-    // partitioned there was one to read and the filter below did the whole job;
-    // now the home is what makes the position mean anything, and the filter
-    // stays because a database's log still carries every table in it.
-    let mut subscription = Db::subscribe(Reach::Database(tenancy.0, tenancy.1), asked.from, watch);
+    // The log of the tenancy this session selected — this node's own, which is
+    // the one a local feed has always read. Before the log was partitioned there
+    // was one to read and the filter below did the whole job; now the home is
+    // what makes the position mean anything, the writer is what picks one log
+    // out of a range that admits two, and the filter stays because a database's
+    // log still carries every table in it.
+    let log = match db.store().own_log(Reach::Database(tenancy.0, tenancy.1)) {
+        Ok(log) => log,
+        Err(failure) => return Err(failure.to_string()),
+    };
+    let mut subscription = Db::subscribe(log, asked.from, watch);
     let mut seen = 0;
     loop {
         // A staged shutdown reaches a feed here. A pusher spends its life

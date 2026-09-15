@@ -196,6 +196,7 @@ fn explaining_a_read_does_not_run_it() {
         tessari_types::NamespaceId::new(1),
         tessari_types::DatabaseId::new(1),
     );
+    let home = store.own_log(home).unwrap();
     let before = store.committed_tail(home).unwrap();
     session
         .run("EXPLAIN SELECT * FROM users WHERE city = 'Paris';")

@@ -28,7 +28,7 @@
 //! authorization holes on the change feed, and the answer is that both questions
 //! are asked here rather than a second time somewhere else.
 
-use tessari_encoding::{LogRecord, NODE_ID_LEN};
+use tessari_encoding::{LogId, LogRecord, NODE_ID_LEN};
 use tessari_ql::StatementKind;
 use tessari_storage::{Catalog, Kind, Reach, Role, Store, Verb};
 use tessari_types::{Sequence, TableId};
@@ -200,12 +200,12 @@ impl<'a> Session<'a> {
         store: &Store,
         node: [u8; NODE_ID_LEN],
         over: Reach,
-        home: Reach,
+        log: LogId,
         from: Sequence,
         limit: usize,
     ) -> Result<Vec<(Sequence, LogRecord)>> {
         self.may_replicate(store, over)?;
-        let records = store.log_records_within(over, home, from, limit)?;
+        let records = store.log_records_within(over, log, from, limit)?;
         // What the follower now holds: the last sequence it was handed, or —
         // when it was handed nothing — the position it told us it was at.
         let reached = records.last().map_or_else(
@@ -215,7 +215,7 @@ impl<'a> Session<'a> {
         // Recorded here because the door is the only way through, so a peer
         // read that goes unrecorded is not expressible. That is the same
         // argument the door itself was built on.
-        store.follower_served(node, home, reached);
+        store.follower_served(node, log.home, reached);
         Ok(records)
     }
 

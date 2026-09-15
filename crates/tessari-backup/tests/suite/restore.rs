@@ -12,7 +12,8 @@
 use std::sync::Arc;
 
 use tessari_encoding::{
-    CausalStamp, LogRecord, Mutation, NODE_ID_LEN, RecordKey, RecordValue, StampedValue, StoreValue,
+    CausalStamp, LogId, LogRecord, Mutation, NODE_ID_LEN, RecordKey, RecordValue, StampedValue,
+    StoreValue,
 };
 use tessari_kv::{KeyRange, Keyspace, KvBackend, MemoryBackend, ScanDirection, ScanRequest};
 use tessari_session::{Outcome, Session};
@@ -90,8 +91,10 @@ const MAGIC_LEN: usize = 10;
 /// per-log section, and added the section count in their place (Q-624).
 const HEADER_LEN: usize = MAGIC_LEN + 1 + 1 + (4 + 4 + 4) + 4;
 
-/// One section's frame: its tag, its home, and the bounds that count in it.
-const SECTION_LEN: usize = 1 + 9 + 8 + 8;
+/// One section's frame: its tag, the log it names — a home and the writer that
+/// allocated into it, since a range may hold more than one (G027 S2.2) — and the
+/// bounds that count in that log.
+const SECTION_LEN: usize = 1 + 9 + 16 + 8 + 8;
 
 /// One record's frame: its tag, its length, its sequence, and its checksum.
 const FRAME_LEN: usize = 1 + 4 + 8 + 4;
@@ -148,8 +151,8 @@ fn one_log() -> (Arc<dyn KvBackend>, Store, Vec<u8>) {
             .unwrap();
     }
     assert_eq!(
-        store.homes().unwrap(),
-        vec![Reach::Store],
+        store.logs().unwrap(),
+        vec![store.own_log(Reach::Store).unwrap()],
         "the fixture was supposed to hold one log"
     );
     let mut taken = Vec::new();
@@ -161,13 +164,13 @@ fn one_log() -> (Arc<dyn KvBackend>, Store, Vec<u8>) {
 ///
 /// The base file names every log it holds and where each stood, so this is a
 /// comparison rather than a guess — which is the property the sections bought.
-fn moved_since(base: &[u8], store: &Store) -> (Reach, Sequence) {
+fn moved_since(base: &[u8], store: &Store) -> (LogId, Sequence) {
     let held = tessari_backup::verify(&mut &base[..]).unwrap();
-    let mut moved: Vec<(Reach, Sequence)> = Vec::new();
+    let mut moved: Vec<(LogId, Sequence)> = Vec::new();
     for log in &held.logs {
-        let now = store.committed_tail(log.span.home).unwrap();
+        let now = store.committed_tail(log.span.log).unwrap();
         if now.get() > log.span.tail.get() {
-            moved.push((log.span.home, log.span.tail));
+            moved.push((log.span.log, log.span.tail));
         }
     }
     match moved.as_slice() {
@@ -331,7 +334,9 @@ fn a_stamped_record_survives_a_backup_and_a_restore() {
             ),
         }],
     );
-    source.apply_record(Sequence::new(1), &record).unwrap();
+    source
+        .apply_record(source.writer().unwrap(), Sequence::new(1), &record)
+        .unwrap();
 
     let mut taken = Vec::new();
     tessari_backup::write(&source, &mut taken).unwrap();
@@ -737,7 +742,7 @@ fn a_backup_can_be_verified_without_being_applied_to_anything() {
         verified
             .logs
             .iter()
-            .map(|log| (log.span.home, log.span.tail))
+            .map(|log| (log.span.log, log.span.tail))
             .collect::<Vec<_>>(),
         crate::tails(&held)
     );
@@ -864,7 +869,9 @@ fn a_restore_can_stop_at_a_chosen_point() {
     // nothing to undo. One log, because the sequence a caller stops at counts in
     // one; the multi-log case is the refusal below.
     let (_, held, taken) = one_log();
-    let whole = held.committed_tail(tessari_types::Reach::Store).unwrap();
+    let whole = held
+        .committed_tail(held.own_log(tessari_types::Reach::Store).unwrap())
+        .unwrap();
     let midpoint = tessari_types::Sequence::new(whole.get() / 2);
     assert!(
         midpoint.get() > 0,
@@ -875,7 +882,12 @@ fn a_restore_can_stop_at_a_chosen_point() {
     let outcome =
         tessari_backup::read_until(&rebuilt, &mut taken.as_slice(), Some(midpoint)).unwrap();
     assert_eq!(
-        rebuilt.committed_tail(tessari_types::Reach::Store).unwrap(),
+        // The log the FILE holds, which is the one it was restored into: a
+        // record is filed under the writer that wrote it, never under the one
+        // reading the file.
+        rebuilt
+            .committed_tail(held.own_log(tessari_types::Reach::Store).unwrap())
+            .unwrap(),
         midpoint
     );
     assert!(
@@ -917,7 +929,7 @@ fn an_incremental_backup_of_a_store_holding_several_logs_is_refused() {
     // refusal belongs to the surface that has only a sequence to go on — the
     // `FROM n` of a statement or a command line (Q-625).
     let (_, held, _) = original();
-    assert!(held.homes().unwrap().len() > 1, "the fixture holds one log");
+    assert!(held.logs().unwrap().len() > 1, "the fixture holds one log");
     let refused = tessari_backup::only_log(&held).unwrap_err();
     assert!(
         matches!(refused, tessari_backup::Error::ManyLogs { .. }),

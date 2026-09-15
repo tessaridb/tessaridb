@@ -176,7 +176,10 @@ fn an_acknowledged_commit_survives_the_writer_being_killed() {
     // the two regions were recovered to different points.
     let (_, last) = acknowledged.last().unwrap();
     assert!(
-        reopened.committed_tail(HOME).unwrap() >= *last,
+        reopened
+            .committed_tail(reopened.own_log(HOME).unwrap())
+            .unwrap()
+            >= *last,
         "the committed position was recovered behind the records it accounts for"
     );
 }
@@ -319,7 +322,10 @@ fn an_acknowledged_commit_survives_a_kill_after_the_store_has_flushed() {
 
     let (_, last) = acknowledged.last().unwrap();
     assert!(
-        reopened.committed_tail(HOME).unwrap() >= *last,
+        reopened
+            .committed_tail(reopened.own_log(HOME).unwrap())
+            .unwrap()
+            >= *last,
         "the committed position was recovered behind the records it accounts for"
     );
 }

@@ -13,8 +13,8 @@
 #![allow(clippy::unwrap_used)]
 
 use tessari_encoding::{
-    AppliedPositionKey, CODEC_VERSION, FormatVersion, FormatVersionKey, KeyKind, RecordKey,
-    RecordValue, StoreKey, StoreValue, TABLE_PREFIX_LEN,
+    AppliedPositionKey, CODEC_VERSION, FormatVersion, FormatVersionKey, KeyKind, LogId, RecordKey,
+    RecordValue, StoreKey, StoreValue, TABLE_PREFIX_LEN, Writer,
 };
 use tessari_types::{DatabaseId, NamespaceId, Reach, RecordId, Sequence, TableId};
 
@@ -115,18 +115,30 @@ fn singleton_meta_keys_match_their_tags() {
     );
     assert_eq!(FormatVersionKey.encode().into_bytes(), vec![0x30]);
     // The applied position stopped being a singleton when the log became
-    // per-range: the tag now leads nine bytes of home. `Reach::Store` writes the
-    // variant and two zeroed identifiers, which is the home every record in a
-    // store written before this change belongs to.
+    // per-range, and stopped being one per home when a range gained two
+    // writers: the tag now leads nine bytes of home and sixteen of writer.
+    // `Reach::Store` writes the variant and two zeroed identifiers, which is the
+    // home every record in a store written before the first of those changes
+    // belongs to; `Writer::UNATTRIBUTED` is sixteen zeroes, which is what the
+    // second migration attributes them to.
+    let mut store_log = vec![0x31, 0x00, 0, 0, 0, 0, 0, 0, 0, 0];
+    store_log.extend_from_slice(&[0; 16]);
     assert_eq!(
-        AppliedPositionKey::new(Reach::Store).encode().into_bytes(),
-        vec![0x31, 0x00, 0, 0, 0, 0, 0, 0, 0, 0]
-    );
-    assert_eq!(
-        AppliedPositionKey::new(Reach::Database(NamespaceId::new(1), DatabaseId::new(2)))
+        AppliedPositionKey::new(LogId::unattributed(Reach::Store))
             .encode()
             .into_bytes(),
-        vec![0x31, 0x02, 0, 0, 0, 1, 0, 0, 0, 2]
+        store_log
+    );
+    let mut database_log = vec![0x31, 0x02, 0, 0, 0, 1, 0, 0, 0, 2];
+    database_log.extend_from_slice(&[0xcd; 16]);
+    assert_eq!(
+        AppliedPositionKey::new(LogId::new(
+            Reach::Database(NamespaceId::new(1), DatabaseId::new(2)),
+            Writer::new([0xcd; 16]),
+        ))
+        .encode()
+        .into_bytes(),
+        database_log
     );
 }
 

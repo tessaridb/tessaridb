@@ -2979,8 +2979,8 @@ fn what_is_stored_is_a_hash_and_no_plaintext_reaches_the_log() {
     // The log is what a replica and a backup receive, so a plaintext there is a
     // plaintext everywhere.
     // Every log, because a plaintext hiding in one of several is a plaintext.
-    for home in store.homes().unwrap() {
-        for (_, record) in store.log_records(home, Sequence::ZERO, 4096).unwrap() {
+    for log in store.logs().unwrap() {
+        for (_, record) in store.log_records(log, Sequence::ZERO, 4096).unwrap() {
             let bytes = format!("{record:?}");
             assert!(
                 !bytes.contains("correct horse"),

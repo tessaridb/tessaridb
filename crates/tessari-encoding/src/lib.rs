@@ -33,6 +33,7 @@ mod index_keys;
 mod index_value;
 mod keys;
 mod kind;
+mod log_id;
 mod node;
 mod order;
 mod payload;
@@ -50,10 +51,11 @@ pub use index_keys::{
     VectorRecallKey,
 };
 pub use keys::{
-    AppliedPositionKey, FormatVersionKey, LogKey, NodeIdentityKey, ReclaimFloorKey, RecordKey,
-    StoreKey, TABLE_PREFIX_LEN, VersionPositionKey,
+    AppliedPositionKey, FormatVersionKey, LogKey, NodeIdentityKey, REACH_LEN, ReclaimFloorKey,
+    RecordKey, StoreKey, TABLE_PREFIX_LEN, VersionPositionKey,
 };
 pub use kind::KeyKind;
+pub use log_id::{LogId, Writer};
 pub use node::{BUILD_VERSION, Membership, NODE_ID_LEN, NodeIdentity, NodeVersion, Roles};
 pub use order::{KeyReader, KeyWriter};
 pub use payload::{decode as decode_payload, encode as encode_payload};

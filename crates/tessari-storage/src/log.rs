@@ -79,10 +79,11 @@
 //! from being a slogan: there is no second write path that could drift.
 
 use tessari_encoding::{
-    AppliedPositionKey, LogKey, LogRecord, RecordKey, StoreKey, StoreValue, VersionPositionKey,
+    AppliedPositionKey, LogId, LogKey, LogRecord, RecordKey, StoreKey, StoreValue,
+    VersionPositionKey,
 };
 use tessari_kv::WriteBatch;
-use tessari_types::{Reach, Sequence};
+use tessari_types::Sequence;
 
 /// The batch that applies one log record.
 ///
@@ -93,17 +94,17 @@ use tessari_types::{Reach, Sequence};
 /// partitioned. See the module header for why the last two are two parameters
 /// and not one, and why the first joined them.
 pub(crate) fn apply_batch(
-    home: Reach,
+    log: LogId,
     at: Sequence,
     version: Sequence,
     record: &LogRecord,
 ) -> WriteBatch {
-    let applied_key = AppliedPositionKey::new(home).encode();
+    let applied_key = AppliedPositionKey::new(log).encode();
     let version_key = VersionPositionKey.encode();
     let previous_position = Sequence::new(at.get().saturating_sub(1));
     let previous_version = Sequence::new(version.get().saturating_sub(1));
 
-    // A home's first record finds no position key at all, because a home does
+    // A log's first record finds no position key at all, because a log does
     // not exist until something is written into it — there is no list of homes
     // to seed at open, and inventing one would mean deciding in advance which
     // databases a store will ever hold. `Absent` is the same guarantee
@@ -111,8 +112,8 @@ pub(crate) fn apply_batch(
     // both assert it, and exactly one wins. Asserting `ZERO` instead would
     // refuse every first record, because an absent key does not satisfy a value
     // assertion.
-    let first_in_this_home = at == Sequence::new(1);
-    let mut batch = if first_in_this_home {
+    let first_in_this_log = at == Sequence::new(1);
+    let mut batch = if first_in_this_log {
         WriteBatch::new().expect_absent(AppliedPositionKey::keyspace(), applied_key.clone())
     } else {
         WriteBatch::new().expect_value(
@@ -134,7 +135,7 @@ pub(crate) fn apply_batch(
     )
     .put(
         LogKey::keyspace(),
-        LogKey::new(home, at).encode(),
+        LogKey::new(log, at).encode(),
         record.encode(),
     );
 
@@ -156,13 +157,15 @@ mod tests {
     // Test assertions are exactly where a panic is the correct outcome.
     #![allow(clippy::panic, clippy::unwrap_used)]
 
-    use tessari_encoding::{Mutation, RecordValue, StampedValue};
+    use tessari_encoding::{LogId, Mutation, RecordValue, StampedValue};
     use tessari_kv::{Keyspace, Precondition};
+    use tessari_types::Reach;
     use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
 
     /// The home every record in these tests belongs to — the database its one
     /// mutation is written in, which is what `home_of` answers for it.
-    const HOME: Reach = Reach::Database(NamespaceId::new(1), DatabaseId::new(1));
+    const HOME: LogId =
+        LogId::unattributed(Reach::Database(NamespaceId::new(1), DatabaseId::new(1)));
 
     use super::*;
 
@@ -261,7 +264,7 @@ mod tests {
         // Homed at the store, which is where `home_of` puts a record carrying
         // nothing: there is no mutation to take a narrower home from.
         let batch = apply_batch(
-            Reach::Store,
+            LogId::unattributed(Reach::Store),
             Sequence::new(2),
             Sequence::new(2),
             &LogRecord::new(Vec::new()),

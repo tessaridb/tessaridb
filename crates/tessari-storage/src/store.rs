@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use tessari_encoding::{
-    AppliedPositionKey, FormatVersion, FormatVersionKey, KeyKind, LogKey, LogRecord, NODE_ID_LEN,
-    NodeIdentity, Roles, StoreKey, StoreValue, VersionPositionKey,
+    AppliedPositionKey, FormatVersion, FormatVersionKey, KeyKind, LogId, LogKey, LogRecord,
+    NODE_ID_LEN, NodeIdentity, REACH_LEN, Roles, StoreKey, StoreValue, VersionPositionKey, Writer,
 };
 use tessari_kv::{Key, KeyRange, KvBackend, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::{Epoch, Sequence};
@@ -219,6 +219,7 @@ impl Store {
             Some(found) => {
                 found.check_supported()?;
                 give_an_older_log_its_home(&backend, found)?;
+                give_an_older_log_its_writer(&backend, found)?;
             }
             None => write_initial_metadata(&backend)?,
         }
@@ -843,7 +844,7 @@ impl Store {
     pub fn health(&self) -> Result<Health> {
         Ok(Health {
             background_errors: self.backend.background_errors()?,
-            committed: self.committed_tail(UNPARTITIONED_REPORT_HOME)?,
+            committed: self.committed_tail(self.own_log(UNPARTITIONED_REPORT_HOME)?)?,
             log_divergences: self.divergences.load(Ordering::Relaxed),
             campaigns: self.campaigns.load(Ordering::Relaxed),
             lease_remaining: self.lease.remaining(),
@@ -901,7 +902,7 @@ impl Store {
             // The tail of the follower's OWN log. Reading one log's tail against
             // a position taken in another is not an approximation — the two
             // counters are unrelated and the subtraction is meaningless (Q-622).
-            let tail = self.committed_tail(held.home)?;
+            let tail = self.committed_tail(self.own_log(held.home)?)?;
             rows.push(FollowerLag {
                 node,
                 home: held.home,
@@ -935,7 +936,12 @@ impl Store {
     ///
     /// Returns the backend's failure when the committed tail cannot be read.
     pub fn mark_tail(&self, home: Reach) -> Result<()> {
-        self.tailmarks.mark(home, self.committed_tail(home)?);
+        // This node's OWN log for the home, which is what a diagnostic asking
+        // *how far is this range* has always meant here. A home with two
+        // writers has a second tail this mark does not carry, and reporting it
+        // is Q-622's, not this diagnostic's.
+        let log = self.own_log(home)?;
+        self.tailmarks.mark(home, self.committed_tail(log)?);
         Ok(())
     }
 
@@ -1006,31 +1012,71 @@ impl Store {
         self.lease.spent()
     }
 
-    /// Every home this store holds a log for, in key order.
+    /// Every log this store holds, in key order.
     ///
     /// Read from the applied-position keys rather than from a registry kept
-    /// beside them: a home exists exactly when something has been written into
+    /// beside them: a log exists exactly when something has been written into
     /// it, and that is exactly when its position key exists. A second list would
     /// be a second fact about the same thing, and the failure of a list that
     /// drifts is a log nobody backs up or replicates.
+    ///
+    /// **Asked of the store and never reasoned from the type** (Q-632). A home
+    /// may hold no log, one, or — once it admits two writers — several, and
+    /// none of that is derivable from a [`Reach`].
     ///
     /// # Errors
     ///
     /// Returns the substrate's failure, and a decoding failure when a key in
     /// that keyspace is not an applied position.
-    pub fn homes(&self) -> Result<Vec<Reach>> {
+    pub fn logs(&self) -> Result<Vec<LogId>> {
         let prefix = vec![KeyKind::AppliedPosition.tag()];
+        self.logs_under(&prefix)
+    }
+
+    /// Every log of one home, in key order.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::logs`].
+    pub fn logs_of(&self, home: Reach) -> Result<Vec<LogId>> {
+        self.logs_under(&AppliedPositionKey::prefix_for_home(home))
+    }
+
+    /// The logs whose position keys carry `prefix`.
+    fn logs_under(&self, prefix: &[u8]) -> Result<Vec<LogId>> {
         let request = ScanRequest {
             keyspace: AppliedPositionKey::keyspace(),
-            range: KeyRange::prefix(&prefix),
+            range: KeyRange::prefix(prefix),
             direction: ScanDirection::Forward,
             limit: None,
         };
         self.backend
             .scan(&request)?
             .into_iter()
-            .map(|(key, _)| Ok(AppliedPositionKey::decode(key.as_slice())?.home))
+            .map(|(key, _)| Ok(AppliedPositionKey::decode(key.as_slice())?.log))
             .collect()
+    }
+
+    /// The writer this node allocates positions as.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoIdentity`] when the store holds no identity, which is
+    /// a store that was never opened rather than a node without a name.
+    pub fn writer(&self) -> Result<Writer> {
+        Ok(Writer::new(self.node_identity()?.id))
+    }
+
+    /// This node's own log for `home`.
+    ///
+    /// The log a commit here allocates into, and the one a reporting caller
+    /// means when it asks *how far is this range* without naming a writer.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::writer`].
+    pub fn own_log(&self, home: Reach) -> Result<LogId> {
+        Ok(LogId::new(home, self.writer()?))
     }
 
     /// The highest sequence committed in one home's log.
@@ -1047,8 +1093,8 @@ impl Store {
     /// # Errors
     ///
     /// Returns an error when the value cannot be read or decoded.
-    pub fn committed_tail(&self, home: Reach) -> Result<Sequence> {
-        let key = AppliedPositionKey::new(home).encode();
+    pub fn committed_tail(&self, log: LogId) -> Result<Sequence> {
+        let key = AppliedPositionKey::new(log).encode();
         let stored = self.backend.get(AppliedPositionKey::keyspace(), &key)?;
         match stored {
             Some(value) => Ok(Sequence::decode(value.as_slice())?),
@@ -1106,14 +1152,14 @@ impl Store {
     ///
     /// Returns an error when the tail cannot be read, or when the record stored
     /// at it cannot be inspected — which is corruption rather than an absence.
-    pub fn tail_leadership(&self, home: Reach) -> Result<Epoch> {
-        let tail = self.committed_tail(home)?;
+    pub fn tail_leadership(&self, log: LogId) -> Result<Epoch> {
+        let tail = self.committed_tail(log)?;
         if tail == Sequence::ZERO {
             return Ok(Epoch::ZERO);
         }
         let stored = self
             .backend
-            .get(LogKey::keyspace(), &LogKey::new(home, tail).encode())?;
+            .get(LogKey::keyspace(), &LogKey::new(log, tail).encode())?;
         // A tail naming a record the log does not hold is the retention case
         // Q-529 owns, and the honest answer here is the same one
         // `refuse_a_parted_history` gives: nothing to compare against. A node
@@ -1157,8 +1203,8 @@ impl Store {
     /// Returns an error when the backend fails, or when a record or a payload
     /// cannot be decoded. A payload that cannot be decoded is corruption rather
     /// than a change to skip.
-    pub fn changes_since(&self, home: Reach, from: Sequence, limit: usize) -> Result<Changes> {
-        let records = self.log_records(home, from, limit)?;
+    pub fn changes_since(&self, log: LogId, from: Sequence, limit: usize) -> Result<Changes> {
+        let records = self.log_records(log, from, limit)?;
         let next = records.last().map_or(from, |(sequence, _)| {
             Sequence::new(sequence.get().saturating_add(1))
         });
@@ -1187,16 +1233,16 @@ impl Store {
     /// decoded.
     pub fn log_records(
         &self,
-        home: Reach,
+        log: LogId,
         from: Sequence,
         limit: usize,
     ) -> Result<Vec<(Sequence, LogRecord)>> {
-        let prefix = LogKey::prefix_for(home);
+        let prefix = LogKey::prefix_for(log);
         let bounds = KeyRange::prefix(&prefix);
         let request = ScanRequest {
             keyspace: LogKey::keyspace(),
             range: KeyRange::from_bounds(
-                Bound::Included(LogKey::new(home, from).encode()),
+                Bound::Included(LogKey::new(log, from).encode()),
                 bounds.end().clone(),
             ),
             direction: ScanDirection::Forward,
@@ -1246,7 +1292,7 @@ impl Store {
     pub fn log_records_within(
         &self,
         subscription: Reach,
-        home: Reach,
+        log: LogId,
         from: Sequence,
         limit: usize,
     ) -> Result<Vec<(Sequence, LogRecord)>> {
@@ -1256,10 +1302,10 @@ impl Store {
             // record to arrive at the same bytes would cost a clone per mutation
             // on the path every follower that exists today takes, to prove
             // something the type already says.
-            return self.log_records(home, from, limit);
+            return self.log_records(log, from, limit);
         }
         let mut carried = Vec::new();
-        for (sequence, record) in self.log_records(home, from, limit)? {
+        for (sequence, record) in self.log_records(log, from, limit)? {
             let mut kept = Vec::new();
             for mutation in record.mutations() {
                 if crate::catalog::carried_to(mutation)?.reaches(subscription) {
@@ -1314,13 +1360,13 @@ impl Store {
     /// [`Self::apply_record`] returns otherwise.
     pub fn apply_from_stream(
         &self,
-        home: Reach,
+        log: LogId,
         at: Sequence,
         previous: Epoch,
         record: &LogRecord,
     ) -> Result<()> {
-        self.refuse_a_parted_history(home, at, previous)?;
-        self.apply_record_in(home, at, record)
+        self.refuse_a_parted_history(log, at, previous)?;
+        self.apply_record_in(log, at, record)
     }
 
     /// Apply one log record into a log the caller names.
@@ -1340,8 +1386,8 @@ impl Store {
     /// # Errors
     ///
     /// The same as [`Self::apply_record`].
-    pub fn apply_record_in(&self, home: Reach, at: Sequence, record: &LogRecord) -> Result<()> {
-        self.apply_at(home, at, record)
+    pub fn apply_record_in(&self, log: LogId, at: Sequence, record: &LogRecord) -> Result<()> {
+        self.apply_at(log, at, record)
     }
 
     /// Apply one log record, at the sequence it carries.
@@ -1371,7 +1417,7 @@ impl Store {
     /// Returns [`Error::LogDivergence`] when another leadership wrote this position,
     /// [`Error::LogGap`] when the record is not the next one, and the mapped
     /// backend or decoding failure otherwise.
-    pub fn apply_record(&self, at: Sequence, record: &LogRecord) -> Result<()> {
+    pub fn apply_record(&self, writer: Writer, at: Sequence, record: &LogRecord) -> Result<()> {
         // Derived from the record rather than taken as a parameter, because it
         // is a property of the record and deriving it here is what makes a
         // replica file it where the leader filed it. A home the sender chose and
@@ -1385,14 +1431,25 @@ impl Store {
         // gap. So the filtered path names the log it collected from, which is a
         // fact about the collect and not a second authority over the record
         // (Q-620, Q-621). See `apply_record_in`.
-        self.apply_at(crate::catalog::home_of(record)?, at, record)
+        //
+        // The WRITER is the other half and it is taken rather than derived,
+        // because a record carries no writer to derive one from. That is not an
+        // omission: the writer is named the way `apply_record_in` already names
+        // the home for a selective subscriber — a fact about the COLLECT, not a
+        // second authority over the record. The leader answered from a log; the
+        // caller files what it was given where it was read from.
+        self.apply_at(
+            LogId::new(crate::catalog::home_of(record)?, writer),
+            at,
+            record,
+        )
     }
 
     /// Apply one record into `home`, whatever named it.
-    fn apply_at(&self, home: Reach, at: Sequence, record: &LogRecord) -> Result<()> {
-        let applied = self.committed_tail(home)?;
+    fn apply_at(&self, log: LogId, at: Sequence, record: &LogRecord) -> Result<()> {
+        let applied = self.committed_tail(log)?;
         if at.get() <= applied.get() {
-            self.refuse_a_divergence(home, at, record.epoch())?;
+            self.refuse_a_divergence(log, at, record.epoch())?;
             return Ok(());
         }
         let expected = Sequence::new(applied.get().saturating_add(1));
@@ -1415,7 +1472,7 @@ impl Store {
         let batch = crate::index::maintain(
             self,
             record,
-            crate::log::apply_batch(home, at, version, record),
+            crate::log::apply_batch(log, at, version, record),
         )?;
         // Derived here as well as in the commit, because that is the whole
         // reason it is derived from the record: a follower that skipped this
@@ -1460,7 +1517,7 @@ impl Store {
     ///
     /// Costs the same as its sibling: one point read and a fixed eight-byte
     /// inspection, no decode of the mutations.
-    fn refuse_a_parted_history(&self, home: Reach, at: Sequence, previous: Epoch) -> Result<()> {
+    fn refuse_a_parted_history(&self, log: LogId, at: Sequence, previous: Epoch) -> Result<()> {
         let Some(before) = at.get().checked_sub(1) else {
             return Ok(());
         };
@@ -1481,7 +1538,7 @@ impl Store {
         }
         let stored = self
             .backend
-            .get(LogKey::keyspace(), &LogKey::new(home, before).encode())?;
+            .get(LogKey::keyspace(), &LogKey::new(log, before).encode())?;
         // Nothing to compare against — this store is behind the sender by more
         // than one record, and `apply_record` refuses that with `LogGap`, which
         // is the more accurate answer. The truncation case is Q-529's, the same
@@ -1502,10 +1559,10 @@ impl Store {
         })
     }
 
-    fn refuse_a_divergence(&self, home: Reach, at: Sequence, offered: Epoch) -> Result<()> {
+    fn refuse_a_divergence(&self, log: LogId, at: Sequence, offered: Epoch) -> Result<()> {
         let stored = self
             .backend
-            .get(LogKey::keyspace(), &LogKey::new(home, at).encode())?;
+            .get(LogKey::keyspace(), &LogKey::new(log, at).encode())?;
         // Nothing to compare against. Unreachable today because the log keyspace
         // is never truncated, and it becomes reachable the day retention reaches
         // it — at which point a node that was away long enough is exactly the
@@ -1524,7 +1581,7 @@ impl Store {
         // is behind the epoch comparison rather than in front of it: the branch
         // above is the ordinary retry, it is the common case by a wide margin,
         // and it pays nothing for this.
-        if self.admits_two_writers(home)? {
+        if self.admits_two_writers(log.home)? {
             return Ok(());
         }
         self.divergences.fetch_add(1, Ordering::Relaxed);
@@ -1639,7 +1696,7 @@ fn give_an_older_log_its_home(backend: &Arc<dyn KvBackend>, found: FormatVersion
         };
         batch = batch.delete(LogKey::keyspace(), key).put(
             LogKey::keyspace(),
-            LogKey::new(Reach::Store, sequence).encode(),
+            LogKey::new(LogId::unattributed(Reach::Store), sequence).encode(),
             value,
         );
     }
@@ -1652,9 +1709,89 @@ fn give_an_older_log_its_home(backend: &Arc<dyn KvBackend>, found: FormatVersion
             .delete(AppliedPositionKey::keyspace(), homeless_applied)
             .put(
                 AppliedPositionKey::keyspace(),
-                AppliedPositionKey::new(Reach::Store).encode(),
+                AppliedPositionKey::new(LogId::unattributed(Reach::Store)).encode(),
                 value,
             );
+    }
+    batch = batch.put(
+        FormatVersionKey::keyspace(),
+        FormatVersionKey.encode(),
+        FormatVersion::HOMED_LOG.encode(),
+    );
+    backend.apply(batch)?;
+    Ok(())
+}
+
+/// Rewrite a log written before its entries named their writer, once, at open.
+///
+/// # Why this rewrites rather than reads two shapes
+///
+/// The writer could have been written only where a range has two of them,
+/// leaving a short key and a long one under one tag and telling them apart by
+/// length on the read path. [`give_an_older_log_its_home`] already met that
+/// choice for the home and refused it, in the sentence directly above: a choice
+/// made by length there is a choice made on **every record forever**, instead of
+/// once. The same refusal applies to the writer, and it buys more here — a
+/// fixed-width writer is what keeps [`LogKey::prefix_for`] exact, and an exact
+/// per-log prefix is what stops a scan of one writer's log quietly returning
+/// another's.
+///
+/// # What writer an existing entry gets
+///
+/// [`Writer::UNATTRIBUTED`], and not this node's own identifier. A store being
+/// migrated may be a follower, and a follower's log holds the records the
+/// *leader* wrote — attributing them to the machine that happens to be opening
+/// the file would be a lie the store then carries as fact. Nobody is the only
+/// true answer available.
+///
+/// One batch, so a store is either rewritten or untouched, with the format
+/// version moving inside it — which is what makes a failure retry on the next
+/// open rather than leave half a log in each shape.
+///
+/// # Errors
+///
+/// Returns the substrate's failure, and a decoding failure when a log key of
+/// the expected old shape does not hold a sequence.
+fn give_an_older_log_its_writer(backend: &Arc<dyn KvBackend>, found: FormatVersion) -> Result<()> {
+    if found >= FormatVersion::WRITER_QUALIFIED_LOG {
+        return Ok(());
+    }
+    let mut batch = WriteBatch::new();
+    let entries = ScanRequest {
+        keyspace: LogKey::keyspace(),
+        range: KeyRange::prefix(&LogKey::prefix()),
+        direction: ScanDirection::Forward,
+        limit: None,
+    };
+    for (key, value) in backend.scan(&entries)? {
+        let Some((home, sequence)) = an_unqualified_log_key(key.as_slice())? else {
+            continue;
+        };
+        batch = batch.delete(LogKey::keyspace(), key).put(
+            LogKey::keyspace(),
+            LogKey::new(LogId::unattributed(home), sequence).encode(),
+            value,
+        );
+    }
+    // The applied position moved the same way, from one key per home to one per
+    // log. Rewritten in the same batch as the entries it accounts for, because a
+    // store holding one of the two shapes is a store whose next commit builds on
+    // a tail nothing wrote.
+    let positions = ScanRequest {
+        keyspace: AppliedPositionKey::keyspace(),
+        range: KeyRange::prefix(&[KeyKind::AppliedPosition.tag()]),
+        direction: ScanDirection::Forward,
+        limit: None,
+    };
+    for (key, value) in backend.scan(&positions)? {
+        let Some(home) = an_unqualified_position_key(key.as_slice())? else {
+            continue;
+        };
+        batch = batch.delete(AppliedPositionKey::keyspace(), key).put(
+            AppliedPositionKey::keyspace(),
+            AppliedPositionKey::new(LogId::unattributed(home)).encode(),
+            value,
+        );
     }
     batch = batch.put(
         FormatVersionKey::keyspace(),
@@ -1663,6 +1800,67 @@ fn give_an_older_log_its_home(backend: &Arc<dyn KvBackend>, found: FormatVersion
     );
     backend.apply(batch)?;
     Ok(())
+}
+
+/// The home and sequence in a log key written before log keys carried a writer,
+/// or `None` when the key is already qualified.
+///
+/// Told apart by length, which is exact **here** and nowhere else: both shapes
+/// are fixed-width and differ by the sixteen bytes of the writer. That this is
+/// a one-time read at open is the whole difference from making the same test on
+/// the replication read path.
+///
+/// # Errors
+///
+/// Returns a decoding failure when a key of the old shape does not hold a
+/// readable home.
+fn an_unqualified_log_key(key: &[u8]) -> Result<Option<(Reach, Sequence)>> {
+    const UNQUALIFIED_LEN: usize = 1 + REACH_LEN + 8;
+    if key.len() != UNQUALIFIED_LEN {
+        return Ok(None);
+    }
+    let home = reach_in(key)?;
+    let Some(tail) = key.get(1usize.saturating_add(REACH_LEN)..) else {
+        return Ok(None);
+    };
+    let Ok(bytes) = <[u8; 8]>::try_from(tail) else {
+        return Ok(None);
+    };
+    Ok(Some((home, Sequence::new(u64::from_be_bytes(bytes)))))
+}
+
+/// The home in an applied-position key written before positions named a writer,
+/// or `None` when the key is already qualified.
+///
+/// # Errors
+///
+/// Returns a decoding failure when a key of the old shape does not hold a
+/// readable home.
+fn an_unqualified_position_key(key: &[u8]) -> Result<Option<Reach>> {
+    const UNQUALIFIED_LEN: usize = 1 + REACH_LEN;
+    if key.len() != UNQUALIFIED_LEN {
+        return Ok(None);
+    }
+    Ok(Some(reach_in(key)?))
+}
+
+/// The home an old-shape key leads with, read through the key type that owns
+/// the encoding rather than by slicing bytes here.
+///
+/// The reach sits at the same offset in both keyspaces, so the bytes are
+/// re-tagged as an applied position and decoded by the type that owns the
+/// layout. Reading nine bytes here by hand would be a second decoder for one
+/// encoding, which is the thing this layer exists to prevent.
+fn reach_in(key: &[u8]) -> Result<Reach> {
+    let mut qualified =
+        Vec::with_capacity(1usize.saturating_add(REACH_LEN).saturating_add(NODE_ID_LEN));
+    qualified.push(KeyKind::AppliedPosition.tag());
+    qualified.extend_from_slice(
+        key.get(1..1usize.saturating_add(REACH_LEN))
+            .unwrap_or_default(),
+    );
+    qualified.extend_from_slice(&Writer::UNATTRIBUTED.bytes());
+    Ok(AppliedPositionKey::decode(&qualified)?.log.home)
 }
 
 /// The sequence in a log key written before log keys carried a home, or `None`
@@ -1704,7 +1902,7 @@ fn seed_version_position(backend: &Arc<dyn KvBackend>) -> Result<()> {
     }
     // The store home, because a store written before the log was partitioned
     // had exactly one log and this is where the migration files it.
-    let applied_key = AppliedPositionKey::new(Reach::Store).encode();
+    let applied_key = AppliedPositionKey::new(LogId::unattributed(Reach::Store)).encode();
     let applied = match backend.get(AppliedPositionKey::keyspace(), &applied_key)? {
         Some(value) => Sequence::decode(value.as_slice())?,
         None => Sequence::ZERO,
@@ -1739,8 +1937,13 @@ mod tests {
     #[test]
     fn a_fresh_store_writes_its_format_and_starts_at_sequence_zero() {
         let store = Store::open(backend()).unwrap();
-        assert_eq!(store.committed_tail(Reach::Store).unwrap(), Sequence::ZERO);
-        assert!(store.homes().unwrap().is_empty(), "nothing written yet");
+        assert_eq!(
+            store
+                .committed_tail(store.own_log(Reach::Store).unwrap())
+                .unwrap(),
+            Sequence::ZERO
+        );
+        assert!(store.logs().unwrap().is_empty(), "nothing written yet");
         assert_eq!(
             read_format_version(store.backend()).unwrap(),
             Some(FormatVersion::CURRENT)
@@ -1766,7 +1969,7 @@ mod tests {
                 WriteBatch::new()
                     .put(
                         AppliedPositionKey::keyspace(),
-                        AppliedPositionKey::new(Reach::Store).encode(),
+                        AppliedPositionKey::new(LogId::unattributed(Reach::Store)).encode(),
                         Sequence::new(7).encode(),
                     )
                     .delete(VersionPositionKey::keyspace(), VersionPositionKey.encode()),
@@ -1819,10 +2022,14 @@ mod tests {
         );
 
         store
-            .apply_record(Sequence::new(1), &LogRecord::new(Vec::new()))
+            .apply_record(
+                Writer::UNATTRIBUTED,
+                Sequence::new(1),
+                &LogRecord::new(Vec::new()),
+            )
             .unwrap();
         let (_, record) = store
-            .log_records(Reach::Store, Sequence::new(1), 1)
+            .log_records(LogId::unattributed(Reach::Store), Sequence::new(1), 1)
             .unwrap()
             .pop()
             .expect("the record just applied");
@@ -1831,6 +2038,105 @@ mod tests {
             tessari_types::Epoch::ZERO,
             "a build that elects nobody writes the first and only leadership"
         );
+    }
+
+    #[test]
+    fn a_log_written_before_it_had_writers_is_rewritten_and_attributed_to_nobody() {
+        // The second migration, end to end and against real bytes: a store
+        // standing in the shape version 4 left — a homed log key and one
+        // position per home, neither naming a writer — is opened, and every
+        // record it held is readable afterwards at the position it held, in the
+        // log nobody is recorded as having written.
+        let shared = backend();
+        Store::open(Arc::clone(&shared)).unwrap();
+        let home = Reach::Database(
+            tessari_types::NamespaceId::new(1),
+            tessari_types::DatabaseId::new(2),
+        );
+        let mut batch = WriteBatch::new().put(
+            FormatVersionKey::keyspace(),
+            FormatVersionKey.encode(),
+            FormatVersion::HOMED_LOG.encode(),
+        );
+        for sequence in 1_u64..=3 {
+            // The old shape, written out here rather than built by a helper:
+            // this test is the only thing left that knows it, which is the same
+            // reason its predecessor above spells its own out.
+            let mut key = vec![KeyKind::LogEntry.tag()];
+            key.extend_from_slice(&unqualified_home(home));
+            key.extend_from_slice(&sequence.to_be_bytes());
+            batch = batch.put(
+                LogKey::keyspace(),
+                Key::from(key),
+                LogRecord::new(Vec::new()).encode(),
+            );
+        }
+        let mut position = vec![KeyKind::AppliedPosition.tag()];
+        position.extend_from_slice(&unqualified_home(home));
+        batch = batch.put(
+            AppliedPositionKey::keyspace(),
+            Key::from(position),
+            Sequence::new(3).encode(),
+        );
+        shared.apply(batch).unwrap();
+
+        let store = Store::open(Arc::clone(&shared)).unwrap();
+        let migrated = LogId::unattributed(home);
+        assert_eq!(
+            store.logs().unwrap(),
+            vec![migrated],
+            "the log kept its home and was attributed to nobody, because \
+             nothing recorded who wrote it"
+        );
+        assert_ne!(
+            migrated,
+            store.own_log(home).unwrap(),
+            "and NOT to the node that happened to open the file — a follower's \
+             log holds the records its leader wrote"
+        );
+        assert_eq!(store.committed_tail(migrated).unwrap(), Sequence::new(3));
+        let positions: Vec<Sequence> = store
+            .log_records(migrated, Sequence::new(1), 16)
+            .unwrap()
+            .into_iter()
+            .map(|(sequence, _)| sequence)
+            .collect();
+        assert_eq!(
+            positions,
+            vec![Sequence::new(1), Sequence::new(2), Sequence::new(3)],
+            "every record kept the position it held"
+        );
+
+        // Done once: a second open finds nothing of the old shape and leaves
+        // the store exactly as the first left it.
+        drop(store);
+        let reopened = Store::open(shared).unwrap();
+        assert_eq!(
+            read_format_version(reopened.backend()).unwrap(),
+            Some(FormatVersion::CURRENT)
+        );
+        assert_eq!(reopened.logs().unwrap(), vec![migrated]);
+        assert_eq!(
+            reopened
+                .log_records(migrated, Sequence::new(1), 16)
+                .unwrap()
+                .len(),
+            3
+        );
+    }
+
+    /// A home as the nine bytes a key carried it in before writers were named.
+    ///
+    /// Taken from the qualified encoding rather than written out by hand, which
+    /// is exact: the writer is a fixed-width suffix, so the leading bytes of a
+    /// qualified key ARE the unqualified one.
+    fn unqualified_home(home: Reach) -> Vec<u8> {
+        AppliedPositionKey::new(LogId::unattributed(home))
+            .encode()
+            .into_bytes()
+            .get(1..1 + REACH_LEN)
+            .unwrap()
+            .to_vec()
     }
 
     #[test]
@@ -1866,16 +2172,19 @@ mod tests {
 
         let store = Store::open(Arc::clone(&shared)).unwrap();
         assert_eq!(
-            store.homes().unwrap(),
-            vec![Reach::Store],
-            "one leader wrote all of it, so the store's own log is its home"
+            store.logs().unwrap(),
+            vec![LogId::unattributed(Reach::Store)],
+            "one leader wrote all of it, so the store's own log is its home — \
+             and nobody recorded which node that leader was"
         );
         assert_eq!(
-            store.committed_tail(Reach::Store).unwrap(),
+            store
+                .committed_tail(LogId::unattributed(Reach::Store))
+                .unwrap(),
             Sequence::new(3)
         );
         let positions: Vec<Sequence> = store
-            .log_records(Reach::Store, Sequence::new(1), 16)
+            .log_records(LogId::unattributed(Reach::Store), Sequence::new(1), 16)
             .unwrap()
             .into_iter()
             .map(|(sequence, _)| sequence)
@@ -1892,7 +2201,7 @@ mod tests {
         let reopened = Store::open(shared).unwrap();
         assert_eq!(
             reopened
-                .log_records(Reach::Store, Sequence::new(1), 16)
+                .log_records(LogId::unattributed(Reach::Store), Sequence::new(1), 16)
                 .unwrap()
                 .len(),
             3

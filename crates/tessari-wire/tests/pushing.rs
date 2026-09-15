@@ -83,7 +83,11 @@ fn a_change_written_after_a_subscribe_arrives() {
     let feed = feeding(
         selected(&address),
         &Follow {
-            from: db.committed_tail(FIXTURE_HOME).unwrap().get() + 1,
+            from: db
+                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .unwrap()
+                .get()
+                + 1,
             table: None,
         },
     );
@@ -111,7 +115,10 @@ fn a_subscription_from_an_earlier_position_replays_what_it_missed() {
     let (_node, address) = serving(Arc::clone(&db));
     let mut writer = Client::connect(&address).unwrap();
     writer.run(READY, None).unwrap();
-    let before = db.committed_tail(FIXTURE_HOME).unwrap().get();
+    let before = db
+        .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+        .unwrap()
+        .get();
     writer
         .run(
             "CREATE users:1 = { name: 'ada' }; CREATE users:2 = { name: 'grace' };",
@@ -143,7 +150,11 @@ fn watching_one_table_is_not_told_about_another() {
     let feed = feeding(
         selected(&address),
         &Follow {
-            from: db.committed_tail(FIXTURE_HOME).unwrap().get() + 1,
+            from: db
+                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .unwrap()
+                .get()
+                + 1,
             table: Some("orders".to_owned()),
         },
     );
@@ -173,7 +184,11 @@ fn a_removal_is_told_apart_from_a_write() {
     let feed = feeding(
         selected(&address),
         &Follow {
-            from: db.committed_tail(FIXTURE_HOME).unwrap().get() + 1,
+            from: db
+                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .unwrap()
+                .get()
+                + 1,
             table: None,
         },
     );
@@ -196,7 +211,11 @@ fn a_pushed_value_is_the_value_it_was_and_not_a_projection() {
     let feed = feeding(
         selected(&address),
         &Follow {
-            from: db.committed_tail(FIXTURE_HOME).unwrap().get() + 1,
+            from: db
+                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .unwrap()
+                .get()
+                + 1,
             table: None,
         },
     );
@@ -356,7 +375,11 @@ fn a_subscription_is_confined_to_the_database_the_session_selected() {
     let feed = feeding(
         selected(&address),
         &Follow {
-            from: db.committed_tail(FIXTURE_HOME).unwrap().get() + 1,
+            from: db
+                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .unwrap()
+                .get()
+                + 1,
             table: None,
         },
     );
@@ -516,7 +539,11 @@ fn a_grant_governed_subscriber_is_told_only_about_tables_it_was_granted() {
     let feed = feeding(
         ada,
         &Follow {
-            from: db.committed_tail(FIXTURE_HOME).unwrap().get() + 1,
+            from: db
+                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .unwrap()
+                .get()
+                + 1,
             table: None,
         },
     );
@@ -580,7 +607,11 @@ fn a_field_grant_reaches_the_feed_too() {
     let feed = feeding(
         ada,
         &Follow {
-            from: db.committed_tail(FIXTURE_HOME).unwrap().get() + 1,
+            from: db
+                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .unwrap()
+                .get()
+                + 1,
             table: Some("users".to_owned()),
         },
     );

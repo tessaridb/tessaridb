@@ -90,7 +90,14 @@ fn collects(store: &Store, node: [u8; 16], from: Sequence, limit: usize) -> usiz
     // mean anything: `behind` counts in one log, and a single `from` spread over
     // several would be a bound in none of them (Q-625).
     follower
-        .replicate_from(store, node, Reach::Store, DATA_LOG, from, limit)
+        .replicate_from(
+            store,
+            node,
+            Reach::Store,
+            store.own_log(DATA_LOG).unwrap(),
+            from,
+            limit,
+        )
         .unwrap()
         .len()
 }

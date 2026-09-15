@@ -575,7 +575,34 @@ const TABLES: &[Table] = &[
         // Its re-classification trigger: a second caller. The argument above is
         // entirely about there being one, and a caller that names a log it was
         // not served from writes a range's records into another range's counter.
-        expected: 35,
+        //
+        // 36-38 since the log gained its writer (G027 **S2.2**, Q-641). One
+        // method left — `homes` — and four arrived, and they are classified
+        // together because they answer one question the log's new name raises:
+        // *which logs are there, and which of them is mine.*
+        //
+        // `Store::logs` replaces `homes` and is classified on exactly the
+        // ground `homes` was, unchanged: it lists the logs something has been
+        // written into, which the catalog already publishes the existence of.
+        // `Store::logs_of` is the same list bounded to one home and inherits
+        // the classification with it.
+        //
+        // `Store::writer` and `Store::own_log` are classified **exempt, and on
+        // a narrower ground than anything above**: neither reads a record.
+        // `writer` returns this node's own identifier, which is already in
+        // every greeting this node sends and is `$node`'s answer to any caller
+        // who may run a query at all; `own_log` pairs it with a `Reach` the
+        // caller already holds. They disclose nothing the node does not publish
+        // and they reach no data.
+        //
+        // Their re-classification trigger is the one the writer creates rather
+        // than the one the list does: the day a caller can name ANOTHER node's
+        // writer and be served that node's log, the enforcement point is
+        // wherever that name is accepted — and it is `log_records` and
+        // `log_records_within`, already classified above, that would owe the
+        // check. Naming your own log is not a permission; being served somebody
+        // else's is.
+        expected: 38,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -643,7 +670,11 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     );
     // 88 since the log became per-range: `Store::homes`, `Store::apply_record_in`
     // and `backup::only_log`, each classified in the block above (G025 S6.2).
-    assert_eq!(total, 88, "the counted tables no longer sum to 88");
+    //
+    // 91 since the log gained its writer: `Store::homes` became `Store::logs`,
+    // and `logs_of`, `writer` and `own_log` joined it — a net three, each
+    // classified in the block above (G027 S2.2, Q-641).
+    assert_eq!(total, 91, "the counted tables no longer sum to 91");
 }
 
 /// Every `.rs` file under a directory.
@@ -741,7 +772,7 @@ const RAW_FEED: &[&str] = &[
 /// and both now also name the LOG the follower asked for, which the door has
 /// already checked the subscription reaches. The two arguments answer two
 /// questions and neither substitutes for the other: `over` is what this peer may
-/// SEE, `home` is which counter the cursor counts in. They are still the only
+/// SEE, `log` is which counter the cursor counts in. They are still the only
 /// callers of `log_records_within` in any crate this test scans. The second one earned its place here: it read at `Reach::Store` until
 /// this rule was written, for an answer a scoped read gives identically, which
 /// is how a rule acquires a hole nobody would have looked for. It is the
@@ -752,23 +783,24 @@ const RAW_FEED: &[&str] = &[
 /// this test — which is the property the one-caller argument rests on.
 const CLASSIFIED: &[(&str, &str)] = &[
     // The same four paths as before the log became per-range; each now names the
-    // log it reads, which is a fact about the read and changes none of the
-    // classifications above (Q-621).
+    // log it reads — the home AND the writer that allocated into it since S2.2 —
+    // which is a fact about the read and changes none of the classifications
+    // above (Q-621, Q-641).
     (
         "tessari-cli/src/main.rs",
-        ".committed_tail(tessari_types::Reach::Store)",
+        "let tail = store.committed_tail(own).map_err(|why| why.to_string())?;",
     ),
     (
         "tessari-cli/src/main.rs",
-        "let seed = match store.committed_tail(home) {",
+        "let seed = match store.committed_tail(log) {",
     ),
     (
         "tessari-wire/src/collection.rs",
-        ".log_records_within(over, home, cursor, room.min(COLLECTION_PAGE_RECORDS))",
+        ".log_records_within(over, log, cursor, room.min(COLLECTION_PAGE_RECORDS))",
     ),
     (
         "tessari-wire/src/collection.rs",
-        ".log_records_within(over, home, before, 1)",
+        ".log_records_within(over, log, before, 1)",
     ),
 ];
 

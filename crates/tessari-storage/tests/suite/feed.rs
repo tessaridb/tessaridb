@@ -63,7 +63,11 @@ impl Fixture {
 
     fn changes(&self) -> Vec<Change> {
         self.store
-            .changes_since(crate::FIXTURE_HOME, Sequence::ZERO, 1024)
+            .changes_since(
+                self.store.own_log(crate::FIXTURE_HOME).unwrap(),
+                Sequence::ZERO,
+                1024,
+            )
             .unwrap()
             .changes
     }
@@ -163,7 +167,11 @@ fn the_catalog_is_not_in_the_feed_and_the_records_beside_it_are() {
     // knowing before a subscriber is written against it.
     let changes = fixture
         .store
-        .changes_since(tessari_types::Reach::Store, Sequence::ZERO, 1024)
+        .changes_since(
+            fixture.store.own_log(tessari_types::Reach::Store).unwrap(),
+            Sequence::ZERO,
+            1024,
+        )
         .unwrap()
         .changes;
     assert_eq!(changes.len(), 1, "{changes:?}");
@@ -183,17 +191,28 @@ fn reading_from_a_sequence_returns_what_follows_it() {
 
     let later = fixture
         .store
-        .changes_since(crate::FIXTURE_HOME, after(first), 1024)
+        .changes_since(
+            fixture.store.own_log(crate::FIXTURE_HOME).unwrap(),
+            after(first),
+            1024,
+        )
         .unwrap();
     assert_eq!(later.changes.len(), 1);
     assert_eq!(named(&later.changes[0]).as_deref(), Some("grace"));
 
     // And a reader that has caught up sees nothing rather than the last change
     // again.
-    let tail = fixture.store.committed_tail(crate::FIXTURE_HOME).unwrap();
+    let tail = fixture
+        .store
+        .committed_tail(fixture.store.own_log(crate::FIXTURE_HOME).unwrap())
+        .unwrap();
     let caught_up = fixture
         .store
-        .changes_since(crate::FIXTURE_HOME, after(tail), 1024)
+        .changes_since(
+            fixture.store.own_log(crate::FIXTURE_HOME).unwrap(),
+            after(tail),
+            1024,
+        )
         .unwrap();
     assert!(caught_up.changes.is_empty());
     // …and it is told to stay where it is rather than being moved backwards.
@@ -220,7 +239,7 @@ fn a_replicas_feed_is_the_leaders_feed() {
 
     assert_eq!(
         replica
-            .changes_since(crate::FIXTURE_HOME, Sequence::ZERO, 1024)
+            .changes_since(crate::fixture_log(&fixture.store), Sequence::ZERO, 1024)
             .unwrap()
             .changes,
         fixture.changes()
@@ -254,7 +273,11 @@ fn a_commit_that_changes_no_records_still_moves_the_reader_forward() {
     // homes at the store and not in the range they describe (Q-620).
     let answer = fixture
         .store
-        .changes_since(tessari_types::Reach::Store, Sequence::ZERO, 1024)
+        .changes_since(
+            fixture.store.own_log(tessari_types::Reach::Store).unwrap(),
+            Sequence::ZERO,
+            1024,
+        )
         .unwrap();
     assert!(answer.changes.is_empty(), "the catalog is not in the feed");
     assert!(
@@ -270,7 +293,11 @@ fn a_commit_that_changes_no_records_still_moves_the_reader_forward() {
     transaction.commit().unwrap();
     let next = fixture
         .store
-        .changes_since(crate::FIXTURE_HOME, Sequence::ZERO, 1024)
+        .changes_since(
+            fixture.store.own_log(crate::FIXTURE_HOME).unwrap(),
+            Sequence::ZERO,
+            1024,
+        )
         .unwrap();
     assert_eq!(next.changes.len(), 1);
 }
@@ -293,14 +320,22 @@ fn a_limit_bounds_commits_and_never_splits_one() {
     // reached rather than inferring it.
     let first = fixture
         .store
-        .changes_since(crate::FIXTURE_HOME, Sequence::ZERO, 2)
+        .changes_since(
+            fixture.store.own_log(crate::FIXTURE_HOME).unwrap(),
+            Sequence::ZERO,
+            2,
+        )
         .unwrap();
     assert_eq!(first.changes.len(), 4, "two data commits, both whole");
     assert_eq!(first.changes[0].sequence, first.changes[1].sequence);
 
     let second = fixture
         .store
-        .changes_since(crate::FIXTURE_HOME, first.next, 2)
+        .changes_since(
+            fixture.store.own_log(crate::FIXTURE_HOME).unwrap(),
+            first.next,
+            2,
+        )
         .unwrap();
     assert_eq!(second.changes.len(), 2, "the third commit, whole");
     // The two halves of one commit share a sequence, and the commit before them
@@ -356,7 +391,11 @@ fn a_subscription_receives_every_change_across_several_polls() {
         write(&fixture, fixture.table, &format!("u{round}"), "ada");
     }
 
-    let mut subscription = Subscription::new(crate::FIXTURE_HOME, Sequence::ZERO, Watch::default());
+    let mut subscription = Subscription::new(
+        crate::fixture_log(&fixture.store),
+        Sequence::ZERO,
+        Watch::default(),
+    );
     let mut received = Vec::new();
     loop {
         let batch = subscription.poll(&fixture.store, 2).unwrap();
@@ -365,7 +404,12 @@ fn a_subscription_receives_every_change_across_several_polls() {
         if subscription.position() == before && received.len() >= 5 {
             break;
         }
-        if subscription.position() > fixture.store.committed_tail(crate::FIXTURE_HOME).unwrap() {
+        if subscription.position()
+            > fixture
+                .store
+                .committed_tail(fixture.store.own_log(crate::FIXTURE_HOME).unwrap())
+                .unwrap()
+        {
             break;
         }
     }
@@ -386,7 +430,7 @@ fn a_filtered_subscription_receives_only_its_table_and_still_advances() {
     write(&fixture, fixture.table, "u1", "ada");
 
     let mut subscription = Subscription::new(
-        crate::FIXTURE_HOME,
+        crate::fixture_log(&fixture.store),
         Sequence::ZERO,
         Watch::table(fixture.table),
     );
@@ -409,10 +453,17 @@ fn what_was_delivered_plus_what_was_dropped_is_what_was_emitted() {
     let emitted = u64::try_from(fixture.changes().len()).expect("a count");
     assert_eq!(emitted, 10);
 
-    let mut subscription = Subscription::new(crate::FIXTURE_HOME, Sequence::ZERO, Watch::default());
+    let mut subscription = Subscription::new(
+        crate::fixture_log(&fixture.store),
+        Sequence::ZERO,
+        Watch::default(),
+    );
     // Take a few, then decide to be current rather than complete.
     let first = subscription.poll(&fixture.store, 3).unwrap();
-    let tail = fixture.store.committed_tail(crate::FIXTURE_HOME).unwrap();
+    let tail = fixture
+        .store
+        .committed_tail(fixture.store.own_log(crate::FIXTURE_HOME).unwrap())
+        .unwrap();
     let skipped = subscription.skip_to(&fixture.store, after(tail)).unwrap();
     let rest = subscription.poll(&fixture.store, 1024).unwrap();
 
@@ -442,11 +493,14 @@ fn a_skip_counts_only_what_the_subscription_watches() {
     }
 
     let mut subscription = Subscription::new(
-        crate::FIXTURE_HOME,
+        crate::fixture_log(&fixture.store),
         Sequence::ZERO,
         Watch::table(fixture.table),
     );
-    let tail = fixture.store.committed_tail(crate::FIXTURE_HOME).unwrap();
+    let tail = fixture
+        .store
+        .committed_tail(fixture.store.own_log(crate::FIXTURE_HOME).unwrap())
+        .unwrap();
     let skipped = subscription.skip_to(&fixture.store, after(tail)).unwrap();
     assert_eq!(
         skipped, 3,
@@ -461,7 +515,11 @@ fn a_skip_backwards_does_nothing_and_a_poll_after_one_does_not_repeat() {
         write(&fixture, fixture.table, &format!("u{round}"), "ada");
     }
 
-    let mut subscription = Subscription::new(crate::FIXTURE_HOME, Sequence::ZERO, Watch::default());
+    let mut subscription = Subscription::new(
+        crate::fixture_log(&fixture.store),
+        Sequence::ZERO,
+        Watch::default(),
+    );
     let taken = subscription.poll(&fixture.store, 3).unwrap();
     let reached = subscription.position();
 
@@ -492,10 +550,18 @@ fn two_subscriptions_at_different_positions_do_not_interfere() {
         write(&fixture, fixture.table, &format!("u{round}"), "ada");
     }
 
-    let mut ahead = Subscription::new(crate::FIXTURE_HOME, Sequence::ZERO, Watch::default());
+    let mut ahead = Subscription::new(
+        crate::fixture_log(&fixture.store),
+        Sequence::ZERO,
+        Watch::default(),
+    );
     ahead.poll(&fixture.store, 1024).unwrap();
 
-    let mut behind = Subscription::new(crate::FIXTURE_HOME, Sequence::ZERO, Watch::default());
+    let mut behind = Subscription::new(
+        crate::fixture_log(&fixture.store),
+        Sequence::ZERO,
+        Watch::default(),
+    );
     let all = behind.poll(&fixture.store, 1024).unwrap();
 
     assert_eq!(all, fixture.changes());
@@ -509,7 +575,11 @@ fn a_position_carries_to_another_store_holding_the_same_log() {
     // where it stopped.
     let fixture = Fixture::new();
     write(&fixture, fixture.table, "u1", "ada");
-    let mut subscription = Subscription::new(crate::FIXTURE_HOME, Sequence::ZERO, Watch::default());
+    let mut subscription = Subscription::new(
+        crate::fixture_log(&fixture.store),
+        Sequence::ZERO,
+        Watch::default(),
+    );
     subscription.poll(&fixture.store, 1024).unwrap();
     write(&fixture, fixture.table, "u2", "grace");
 

@@ -526,12 +526,16 @@ fn a_replica_reaches_the_same_verdict_about_a_required_field() {
     // Everything the leader committed applies; nothing it refused is in the log.
     assert_eq!(
         replica
-            .log_records(crate::FIXTURE_HOME, Sequence::ZERO, 1024)
+            .log_records(crate::fixture_log(&fixture.store), Sequence::ZERO, 1024)
             .unwrap()
             .len(),
         fixture
             .store
-            .log_records(crate::FIXTURE_HOME, Sequence::ZERO, 1024)
+            .log_records(
+                fixture.store.own_log(crate::FIXTURE_HOME).unwrap(),
+                Sequence::ZERO,
+                1024
+            )
             .unwrap()
             .len()
     );

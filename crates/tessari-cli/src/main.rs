@@ -888,10 +888,20 @@ fn collect_from_upstream(
                 }
             };
             for home in logs {
+                // This node's own copy of that log. The collector asks the peer
+                // for the PEER's log and files what arrives under the peer's
+                // name, so a cursor is per (home, peer) exactly as the log is.
+                let log = match store.own_log(home) {
+                    Ok(log) => log,
+                    Err(why) => {
+                        log::warn!("this node cannot name its own log for {home:?}: {why}");
+                        continue;
+                    }
+                };
                 // The seed for a log with no cursor yet: the first position
                 // this node does not hold THERE. Read here rather than inside
                 // the collector, which may not reach the feed.
-                let seed = match store.committed_tail(home) {
+                let seed = match store.committed_tail(log) {
                     Ok(tail) => tessari_types::Sequence::new(tail.get().saturating_add(1)),
                     Err(why) => {
                         log::warn!("this node cannot say how far {home:?} reaches: {why}");
@@ -1203,9 +1213,10 @@ fn bind_the_greeter(db: &Db, node: [u8; tessari_storage::NODE_ID_LEN]) {
 fn greeting(db: &Db) -> Result<tessari_wire::Hello, String> {
     let store = db.store();
     let identity = store.node_identity().map_err(|why| why.to_string())?;
-    let tail = store
-        .committed_tail(tessari_types::Reach::Store)
+    let own = store
+        .own_log(tessari_types::Reach::Store)
         .map_err(|why| why.to_string())?;
+    let tail = store.committed_tail(own).map_err(|why| why.to_string())?;
     let current_as_of = store.current_as_of().map_err(|why| why.to_string())?;
     // The leadership this node is actually writing under — and the trigger the
     // previous version of this line named has now fired.
@@ -1230,9 +1241,7 @@ fn greeting(db: &Db) -> Result<tessari_wire::Hello, String> {
     // what this node holds, rather than the one it holds a lease under. A voter
     // ranks candidates on this pair, and ranking on `leading` instead would put
     // a follower carrying the newest records below an ex-leader carrying fewer.
-    let tail_leadership = store
-        .tail_leadership(tessari_types::Reach::Store)
-        .map_err(|why| why.to_string())?;
+    let tail_leadership = store.tail_leadership(own).map_err(|why| why.to_string())?;
     Ok(tessari_wire::Hello::about(
         &identity,
         leading,
@@ -1273,7 +1282,7 @@ fn backup(db: &Db, path: &std::path::Path, from: Option<u64>) -> Result<(), Stri
     for log in &written.logs {
         println!(
             "  {} sequences {}..={}",
-            log_name(log.home),
+            log_name(log.log.home),
             log.from,
             log.tail
         );
@@ -1291,7 +1300,7 @@ fn restore(db: &Db, path: &std::path::Path, upto: Option<u64>) -> Result<(), Str
         .map_err(|failure| format!("{}: {failure}", path.display()))?;
     println!("{} record(s) from {}", held.records, path.display());
     for log in &held.logs {
-        println!("  {} through {}", log_name(log.home), log.tail);
+        println!("  {} through {}", log_name(log.log.home), log.tail);
     }
     if held.truncated {
         // Said loudly and on the error stream, because a partial restore that
@@ -1337,7 +1346,7 @@ fn verify(path: &std::path::Path) -> Result<Ended, String> {
     for log in &held.logs {
         println!(
             "  {} sequences {}..={}, good through {}",
-            log_name(log.span.home),
+            log_name(log.span.log.home),
             log.span.from,
             log.span.tail,
             log.good_through
@@ -1351,7 +1360,7 @@ fn verify(path: &std::path::Path) -> Result<Ended, String> {
             if log.good_through.get() < log.span.tail.get() {
                 eprintln!(
                     "  {} says it holds through {} and reads through {}",
-                    log_name(log.span.home),
+                    log_name(log.span.log.home),
                     log.span.tail,
                     log.good_through
                 );

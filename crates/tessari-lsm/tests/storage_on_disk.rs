@@ -103,13 +103,15 @@ fn versions_and_the_committed_position_come_back_together_after_a_reopen() {
         write(&store, "other", b"value");
         // These writes carry no namespace, so they home at the store — the one
         // log this fixture has (S6.2).
-        store.committed_tail(tessari_types::Reach::Store).unwrap()
+        store
+            .committed_tail(store.own_log(tessari_types::Reach::Store).unwrap())
+            .unwrap()
     };
 
     let reopened = open(&path);
     assert_eq!(
         reopened
-            .committed_tail(tessari_types::Reach::Store)
+            .committed_tail(reopened.own_log(tessari_types::Reach::Store).unwrap())
             .unwrap(),
         tail
     );
@@ -159,9 +161,9 @@ fn a_log_replayed_between_two_stores_on_disk_reproduces_them_byte_for_byte() {
 
     // Every log, not the store's alone: a replay that read one would reproduce
     // part of a store and compare it against the whole (S6.2).
-    for home in source.homes().unwrap() {
-        for (sequence, record) in source.log_records(home, Sequence::ZERO, 1024).unwrap() {
-            replica.apply_record(sequence, &record).unwrap();
+    for log in source.logs().unwrap() {
+        for (sequence, record) in source.log_records(log, Sequence::ZERO, 1024).unwrap() {
+            replica.apply_record(log.writer, sequence, &record).unwrap();
         }
     }
 
@@ -203,7 +205,9 @@ fn a_commit_after_a_reopen_continues_the_sequence_instead_of_restarting_it() {
     let before = {
         let store = open(&path);
         write(&store, "r", b"value");
-        store.committed_tail(tessari_types::Reach::Store).unwrap()
+        store
+            .committed_tail(store.own_log(tessari_types::Reach::Store).unwrap())
+            .unwrap()
     };
 
     let reopened = open(&path);

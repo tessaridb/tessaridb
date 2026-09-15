@@ -1585,9 +1585,9 @@ impl Session<'_> {
         }
         if let Some(class) = class {
             // The same route for the same reason. No `ALTER` sets the class
-            // today (G027 S2.1 needs only a declaration, BGV-MINIMAL-001), and
-            // the setter exists in the shape an `ALTER` would use so that
-            // adding one later is a statement rather than a second write path.
+            // today — G027 S2.1 needs only a declaration — and the setter
+            // exists in the shape an `ALTER` would use so that adding one later
+            // is a statement rather than a second write path.
             Catalog::new(transaction).set_replication_class(definition.id, class)?;
         }
         Ok(Outcome::Done)

@@ -17,10 +17,11 @@
 
 use std::sync::Arc;
 
+use tessari_encoding::LogId;
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
 use tessari_storage::Store;
-use tessari_types::{Reach, Sequence};
+use tessari_types::Sequence;
 
 /// Enough of the store to be worth copying, and small enough to read.
 ///
@@ -77,10 +78,10 @@ fn leader() -> (Store, Vec<u8>) {
 ///
 /// One per log, because a node holds a log per range now and a single number
 /// would be right about one of them (Q-620, Q-626).
-fn following(held: &Store) -> Vec<(Reach, Sequence)> {
+fn following(held: &Store) -> Vec<(LogId, Sequence)> {
     crate::tails(held)
         .into_iter()
-        .map(|(home, tail)| (home, Sequence::new(tail.get().saturating_add(1))))
+        .map(|(log, tail)| (log, Sequence::new(tail.get().saturating_add(1))))
         .collect()
 }
 

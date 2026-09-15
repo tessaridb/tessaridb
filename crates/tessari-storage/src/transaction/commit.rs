@@ -11,7 +11,7 @@ use std::hash::{BuildHasher, Hasher};
 use std::time::Duration;
 
 use tessari_constants::{COMMIT_BACKOFF_CEILING, COMMIT_BACKOFF_STEP, MAX_COMMIT_ATTEMPTS};
-use tessari_encoding::{LogRecord, Mutation, RecordValue, StampedValue, decode_payload};
+use tessari_encoding::{LogId, LogRecord, Mutation, RecordValue, StampedValue, decode_payload};
 use tessari_types::Sequence;
 
 use super::{RecordAddress, Transaction};
@@ -229,9 +229,10 @@ impl Transaction<'_> {
             // committed, so neither answer is a position anything was written
             // at — but the return names a log position, and the snapshot stopped
             // being one when the version was separated from it (Q-614).
-            return self
-                .store
-                .committed_tail(crate::store::UNPARTITIONED_REPORT_HOME);
+            return self.store.committed_tail(
+                self.store
+                    .own_log(crate::store::UNPARTITIONED_REPORT_HOME)?,
+            );
         }
         // First, and after the empty check rather than before it. First because
         // a node that has run out of leadership should not be doing schema
@@ -270,7 +271,11 @@ impl Transaction<'_> {
         // what is being written, not of the state being written onto. The
         // position is allocated from this home's counter, which is the whole of
         // what "the sequence is per-range" means at the write end.
-        let home = crate::catalog::home_of(&record)?;
+        // And the writer, which is THIS node: a commit allocates into its own
+        // log and never into another writer's. That is the whole of what S2.2
+        // means at the write end — two masters on one range are two counters,
+        // and a node that allocated from the other's would be back to one.
+        let log = LogId::new(crate::catalog::home_of(&record)?, self.store.writer()?);
 
         let mut attempt = 0_u32;
         loop {
@@ -282,7 +287,7 @@ impl Transaction<'_> {
                 });
             }
 
-            let tail = self.store.committed_tail(home)?;
+            let tail = self.store.committed_tail(log)?;
             self.check_for_conflicts()?;
             // Inside the loop with the conflict check, and for the same reason:
             // both are read against the committed state this attempt builds on,
@@ -307,7 +312,7 @@ impl Transaction<'_> {
             let batch = crate::index::maintain(
                 self.store,
                 &record,
-                crate::log::apply_batch(home, commit_at, commit_version, &record),
+                crate::log::apply_batch(log, commit_at, commit_version, &record),
             )?;
             // Adjacency is derived in the same place and for the same reason: a
             // replica reaches its state by replaying this record, so entries the

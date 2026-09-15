@@ -557,7 +557,15 @@ impl FormatVersion {
     /// **not** rewritten, and the bump buys the same single thing the first one
     /// did — a store created by this build is refused by an older one at `open`
     /// rather than at whichever read first meets a flag bit it does not know.
-    pub const CURRENT: Self = Self(4);
+    ///
+    /// Moved to 5 when a log key gained its writer (G027 S2.2). Unlike the three
+    /// bumps before it, a store below 5 **is** rewritten at open: the writer is
+    /// a fixed-width field in the key rather than a flag bit in a value, so an
+    /// old key and a new one differ in length, and telling two key shapes apart
+    /// by their length on the replication read path is a choice made on every
+    /// record forever rather than once. `give_an_older_log_its_home` already
+    /// refused that trade for the home; this is the same refusal for the writer.
+    pub const CURRENT: Self = Self(5);
 
     /// The first format whose log keys carry a home.
     ///
@@ -566,6 +574,11 @@ impl FormatVersion {
     /// and a literal `3` sitting in the storage layer would move with whichever
     /// of the two the next author happened to be reading.
     pub const HOMED_LOG: Self = Self(3);
+
+    /// The first format whose log keys carry the writer that allocated them.
+    ///
+    /// Named for the reason [`Self::HOMED_LOG`] is named.
+    pub const WRITER_QUALIFIED_LOG: Self = Self(5);
 
     /// Wrap a raw format version.
     #[must_use]

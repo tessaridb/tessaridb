@@ -34,7 +34,7 @@ use std::net::SocketAddr;
 use rustls::pki_types::CertificateDer;
 
 use tessari_constants::{COLLECTION_BUDGET_BYTES, COLLECTION_PAGE_RECORDS};
-use tessari_encoding::{LogRecord, NODE_ID_LEN, StoreValue};
+use tessari_encoding::{LogId, LogRecord, NODE_ID_LEN, StoreValue};
 use tessari_storage::{Catalog, Currency, Reach, Store};
 use tessari_types::{Epoch, Sequence};
 
@@ -107,6 +107,23 @@ impl Collect {
 /// What a leader answers a collection with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Collected {
+    /// The log these records were read out of.
+    ///
+    /// # Why the ANSWER names it and not the ask
+    ///
+    /// A follower asks for a range; a leader answers from the log it allocates
+    /// into for that range, and since a range may admit two writers the home
+    /// alone no longer picks one out. The follower cannot supply the missing
+    /// half: the identity a peer is reached and verified BY is its credential's,
+    /// and the identity it WRITES under is its store's — two values that agree
+    /// in a deployment and are not the same field.
+    ///
+    /// So the leader states it, and the follower files what it was given where
+    /// it was read from. That is the same sentence
+    /// [`tessari_storage::Store::apply_record_in`] already makes about the home
+    /// and for the same reason: a fact about the collect, not a second authority
+    /// over the record.
+    pub log: LogId,
     /// The leadership that wrote the record **before** the first one carried
     /// here, or [`Epoch::ZERO`] when the ask began at the first position and
     /// nothing precedes it.
@@ -139,6 +156,7 @@ impl Collected {
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut body = Vec::new();
+        frame::put_log(&mut body, self.log);
         frame::put_u64(&mut body, self.previous.get());
         frame::put_u64(
             &mut body,
@@ -161,7 +179,8 @@ impl Collected {
     /// Returns [`Error::Malformed`] when the body is not the shape an answer
     /// takes, and the encoding's own failure when a record cannot be decoded.
     pub fn decode(body: &[u8]) -> Result<Self> {
-        let (previous, at) = frame::take_u64(body, 0)?;
+        let (log, at) = frame::take_log(body, 0)?;
+        let (previous, at) = frame::take_u64(body, at)?;
         let (count, at) = frame::take_u64(body, at)?;
         // Deliberately not `with_capacity(count)`: the count came from the other
         // end, and a reader that allocated whatever it was told would be one
@@ -181,6 +200,7 @@ impl Collected {
         // byte and the byte it would have written say the same thing.
         let stopped_early = body.get(at).is_some_and(|flag| *flag != 0);
         Ok(Self {
+            log,
             previous: Epoch::new(previous),
             records,
             stopped_early,
@@ -384,12 +404,19 @@ impl Origin for Serving<'_> {
         if !(over.contains(asked.home) || asked.home.contains(over)) {
             return Err(Error::Unsubscribed);
         }
-        let previous = preceding(self.log, over, asked.home, asked.from)?;
+        // The log this leader allocates into for the range asked for. The ask
+        // names the range and the answer names the log, because the follower
+        // cannot name the writer: the identity a peer is verified BY is its
+        // credential's and the identity it WRITES under is its store's.
+        let served = self.log.own_log(asked.home).map_err(|why| Error::Refused {
+            message: why.to_string(),
+        })?;
+        let previous = preceding(self.log, over, served, asked.from)?;
         // A `u64` from a peer against a `usize` here: on a platform where the
         // two differ the ask is larger than anything this node could answer, so
         // the whole log is the honest ceiling.
         let limit = usize::try_from(asked.limit).unwrap_or(usize::MAX);
-        let (records, stopped_early) = self.fill(over, asked.home, asked.from, limit)?;
+        let (records, stopped_early) = self.fill(over, served, asked.from, limit)?;
         // What the follower now holds: the last position it was handed, or —
         // when it was handed nothing — the one it told us it was at. The same
         // rule the leader's own door uses, because it is the same event.
@@ -402,6 +429,7 @@ impl Origin for Serving<'_> {
         // two unrelated counters subtracted (Q-630).
         self.log.follower_served(follower, asked.home, reached);
         Ok(Collected {
+            log: served,
             previous,
             records,
             stopped_early,
@@ -435,7 +463,7 @@ impl Serving<'_> {
     fn fill(
         &self,
         over: Reach,
-        home: Reach,
+        log: LogId,
         from: Sequence,
         limit: usize,
     ) -> Result<(Vec<(Sequence, LogRecord)>, bool)> {
@@ -451,12 +479,12 @@ impl Serving<'_> {
                 return Ok((carried, false));
             }
             // Two reaches and they answer two different questions: `over` is
-            // what this follower may SEE, and `home` is which log the cursor
+            // what this follower may SEE, and `log` is which log the cursor
             // counts in. They were one value while a frame carried no log, and
             // that made every ask a read of one link of the chain (Q-618).
             let page = self
                 .log
-                .log_records_within(over, home, cursor, room.min(COLLECTION_PAGE_RECORDS))
+                .log_records_within(over, log, cursor, room.min(COLLECTION_PAGE_RECORDS))
                 .map_err(refused)?;
             if page.is_empty() {
                 return Ok((carried, false));
@@ -487,7 +515,7 @@ impl Serving<'_> {
 /// # Errors
 ///
 /// Returns [`Error::Uncollectable`] when this node holds nothing at `from - 1`.
-fn preceding(store: &Store, over: Reach, home: Reach, from: Sequence) -> Result<Epoch> {
+fn preceding(store: &Store, over: Reach, log: LogId, from: Sequence) -> Result<Epoch> {
     if from.get() <= 1 {
         // Nothing precedes the first position, and a store that never elected
         // anybody writes exactly this epoch — so the answer is the same value a
@@ -502,7 +530,7 @@ fn preceding(store: &Store, over: Reach, home: Reach, from: Sequence) -> Result<
     // the subscription exists to prevent, in the one place a reach was not
     // threaded through — which is how a rule acquires a hole.
     let held = store
-        .log_records_within(over, home, before, 1)
+        .log_records_within(over, log, before, 1)
         .map_err(|why| Error::Refused {
             message: why.to_string(),
         })?;
@@ -575,6 +603,17 @@ impl Collector<'_> {
     /// that disagrees with the history this node holds arrives as the store's
     /// own divergence, unchanged: rewording it would give an operator two
     /// accounts of one event.
+    /// # Which log, and why the ANSWER names it
+    ///
+    /// This node asks for a **range**; the leader answers from the log it
+    /// allocates into for that range and says which log that was. The ask could
+    /// not carry the writer: a peer is reached and verified by its credential's
+    /// identity, and it writes under its store's — two values a deployment keeps
+    /// equal and the protocol must not assume are one field.
+    ///
+    /// So the records are filed where they were read from, which is the sentence
+    /// `Store::apply_record_in` already makes about the home: a fact about the
+    /// collect, and not a second authority over the record.
     pub fn collect(&self, into: &Store, home: Reach, from: Sequence) -> Result<Sequence> {
         let held = Sequence::new(from.get().saturating_sub(1));
         let (_, answered) = call(
@@ -595,6 +634,7 @@ impl Collector<'_> {
             });
         };
 
+        let log = collected.log;
         let carried = u64::try_from(collected.records.len()).unwrap_or(u64::MAX);
         let mut previous = collected.previous;
         let mut reached = held;
@@ -605,7 +645,7 @@ impl Collector<'_> {
             // every record in its OWN store log, so the sequences counted in a
             // counter they never came from and nothing was in an error state to
             // say so.
-            into.apply_from_stream(home, *at, previous, record)
+            into.apply_from_stream(log, *at, previous, record)
                 .map_err(refused)?;
             previous = record.epoch();
             reached = *at;
@@ -687,8 +727,8 @@ fn refused(why: tessari_storage::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::{
-        COLLECTION_BUDGET_BYTES, Collect, Collected, Collector, Reach, Result, Serving, StoreValue,
-        logs_to_collect,
+        COLLECTION_BUDGET_BYTES, Collect, Collected, Collector, LogId, NODE_ID_LEN, Reach, Result,
+        Serving, StoreValue, logs_to_collect,
     };
     use tessari_types::{DatabaseId, NamespaceId};
 
@@ -701,7 +741,7 @@ mod tests {
     use std::sync::Arc;
     use std::thread::JoinHandle;
     use std::time::Duration;
-    use tessari_encoding::{LogRecord, NODE_ID_LEN};
+    use tessari_encoding::{LogRecord, Writer};
     use tessari_types::{Epoch, Sequence};
     use tessaridb::Db;
 
@@ -735,6 +775,26 @@ mod tests {
     /// to tell apart.
     fn logged(epochs: &[u64]) -> Arc<Db> {
         let db = Arc::new(Db::in_memory().expect("an in-memory store"));
+        let writer = db.store().writer().expect("an identity");
+        logging(&db, writer, epochs);
+        db
+    }
+
+    /// The same, in the log `writer` allocates into.
+    ///
+    /// A follower's copy of a leader's log is filed under the LEADER's name, so
+    /// a fixture that stands a follower part-way through one has to say whose
+    /// log it is standing in. Seeding it under the follower's own name builds a
+    /// second log that the collect below never reads, and the symptom is a gap
+    /// at position one rather than the disagreement the test is about.
+    fn logged_as(writer: Writer, epochs: &[u64]) -> Arc<Db> {
+        let db = Arc::new(Db::in_memory().expect("an in-memory store"));
+        logging(&db, writer, epochs);
+        db
+    }
+
+    /// Apply one empty record per epoch, into `writer`'s log.
+    fn logging(db: &Arc<Db>, writer: Writer, epochs: &[u64]) {
         for (index, epoch) in epochs.iter().enumerate() {
             let at = Sequence::new(
                 u64::try_from(index)
@@ -742,10 +802,16 @@ mod tests {
                     .saturating_add(1),
             );
             db.store()
-                .apply_record(at, &LogRecord::at(Epoch::new(*epoch), Vec::new()))
+                .apply_record(writer, at, &LogRecord::at(Epoch::new(*epoch), Vec::new()))
                 .expect("an empty record applies at the next position");
         }
-        db
+    }
+
+    /// The store's own log, as the node that wrote it names it.
+    fn store_log(db: &Arc<Db>) -> LogId {
+        db.store()
+            .own_log(Reach::Store)
+            .expect("the store's own identity")
     }
 
     /// What one empty record costs in the answer, measured rather than assumed.
@@ -763,7 +829,7 @@ mod tests {
         // the whole log — which is the ask nothing caps.
         let serving = Serving::within(db.store(), &Everything, one_record() * 2);
         let (records, stopped_early) = serving
-            .fill(Reach::Store, Reach::Store, Sequence::new(1), usize::MAX)
+            .fill(Reach::Store, store_log(&db), Sequence::new(1), usize::MAX)
             .expect("a store-reach read of its own log");
 
         assert_eq!(
@@ -782,7 +848,7 @@ mod tests {
         let db = logged(&[1, 1, 1, 1, 1, 1]);
         let serving = Serving::within(db.store(), &Everything, one_record() * 2);
         let (first, _) = serving
-            .fill(Reach::Store, Reach::Store, Sequence::new(1), usize::MAX)
+            .fill(Reach::Store, store_log(&db), Sequence::new(1), usize::MAX)
             .expect("a store-reach read of its own log");
         let next = Sequence::new(
             first
@@ -798,7 +864,7 @@ mod tests {
         // position, which is what a follower actually does.
         let roomy = Serving::within(db.store(), &Everything, one_record() * 64);
         let (second, stopped_early) = roomy
-            .fill(Reach::Store, Reach::Store, next, usize::MAX)
+            .fill(Reach::Store, store_log(&db), next, usize::MAX)
             .expect("a store-reach read of its own log");
 
         assert_eq!(second.len(), 4, "the rest of the log, and none of it twice");
@@ -814,7 +880,7 @@ mod tests {
         let db = logged(&[1, 1, 1]);
         let serving = Serving::within(db.store(), &Everything, 0);
         let (records, stopped_early) = serving
-            .fill(Reach::Store, Reach::Store, Sequence::new(1), usize::MAX)
+            .fill(Reach::Store, store_log(&db), Sequence::new(1), usize::MAX)
             .expect("a store-reach read of its own log");
 
         // A budget that could answer nothing would leave a follower asking for
@@ -828,7 +894,7 @@ mod tests {
         let db = logged(&[1, 1, 1]);
         let serving = Serving::within(db.store(), &Everything, one_record() * 64);
         let (records, stopped_early) = serving
-            .fill(Reach::Store, Reach::Store, Sequence::new(1), usize::MAX)
+            .fill(Reach::Store, store_log(&db), Sequence::new(1), usize::MAX)
             .expect("a store-reach read of its own log");
 
         assert_eq!(records.len(), 3);
@@ -1027,8 +1093,9 @@ mod tests {
             limit: 64,
         };
         assert_eq!(Collect::decode(&asked.encode()).expect("an ask"), asked);
-        // The log is the field a number means nothing without, so it round-trips
-        // at every level rather than at the one the fixture happened to pick.
+        // The range is the field a number means nothing without, so it
+        // round-trips at every level rather than at the one the fixture happened
+        // to pick.
         for home in [
             Reach::Store,
             Reach::Namespace(NamespaceId::new(1)),
@@ -1043,6 +1110,7 @@ mod tests {
         }
 
         let answer = Collected {
+            log: LogId::unattributed(Reach::Store),
             previous: Epoch::new(3),
             records: vec![
                 (Sequence::new(7), LogRecord::at(Epoch::new(4), Vec::new())),
@@ -1112,6 +1180,7 @@ mod tests {
             }],
         );
         let answer = Collected {
+            log: LogId::unattributed(Reach::Store),
             previous: Epoch::new(3),
             records: vec![(Sequence::new(7), record)],
             stopped_early: false,
@@ -1412,15 +1481,15 @@ mod tests {
         // the reaches its mutations carried to, and a `CREATE` inside one
         // database joins to that database. The leader holds no namespace-level
         // log at all, which is worth knowing before writing an assertion about
-        // one — `leader.store().homes()` answers it and compiles nothing.
+        // one — `leader.store().logs()` answers it and compiles nothing.
         let inside = leader
             .store()
-            .homes()
+            .logs()
             .expect("the leader's own logs")
             .into_iter()
-            .find(|home| matches!(home, Reach::Database(namespace, _) if namespace.get() == 1))
+            .find(|log| matches!(log.home, Reach::Database(namespace, _) if namespace.get() == 1))
             .expect("the fixture writes records inside prod's database");
-        for home in [Reach::Store, inside] {
+        for home in [Reach::Store, inside.home] {
             collector
                 .collect(follower.store(), home, Sequence::new(1))
                 .expect("a subscribed peer collects");
@@ -1430,9 +1499,9 @@ mod tests {
         // Positions rather than a count, because the defect being closed put the
         // right records in the wrong counter: a follower that folded them into
         // its store log would hold every record and no position in this one.
-        let at = |db: &Db, home| -> Vec<Sequence> {
+        let at = |db: &Db, log| -> Vec<Sequence> {
             db.store()
-                .log_records(home, Sequence::ZERO, 64)
+                .log_records(log, Sequence::ZERO, 64)
                 .expect("a log reads back")
                 .into_iter()
                 .map(|(sequence, _)| sequence)
@@ -1452,7 +1521,7 @@ mod tests {
         assert!(
             follower
                 .store()
-                .homes()
+                .logs()
                 .expect("the follower's logs")
                 .contains(&inside),
             "and the log must exist on the follower rather than its records \
@@ -1573,7 +1642,7 @@ mod tests {
         assert_eq!(
             follower
                 .store()
-                .log_records(tessari_types::Reach::Store, Sequence::new(1), 64)
+                .log_records(store_log(&leader), Sequence::new(1), 64)
                 .expect("the log can be read")
                 .len(),
             3,
@@ -1613,7 +1682,11 @@ mod tests {
         let leader = logged(&[9, 9, 9]);
         let (address, door) = serving(&authority, &leader, 1);
 
-        let follower = logged(&[1, 1]);
+        // Standing in the LEADER's log, two records in. That is where a
+        // follower's copy of it lives, and it is the only place the histories
+        // can disagree at all: two writers' logs are two counters, so a record
+        // of one never lands at a position of the other.
+        let follower = logged_as(leader.store().writer().expect("an identity"), &[1, 1]);
         let mine = authority.issue(THERE, Purpose::Peer);
         let der = authority.der();
         let said = hello(THERE);
@@ -1641,7 +1714,7 @@ mod tests {
         assert_eq!(
             follower
                 .store()
-                .log_records(tessari_types::Reach::Store, Sequence::new(1), 64)
+                .log_records(store_log(&leader), Sequence::new(1), 64)
                 .expect("the log can be read")
                 .len(),
             2,
