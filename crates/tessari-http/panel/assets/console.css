@@ -608,6 +608,19 @@ hr.between {
   margin: 1.25rem 0 0.25rem;
 }
 
+/* A checkbox and its word, reading left to right like the sentence it is. The
+   other `field`s on the page put the label above the control; a tick reads the
+   other way round, and forcing it into the column shape would put a word above
+   a box that is narrower than it. */
+label.tick {
+  display: inline-flex;
+  flex-direction: row-reverse;
+  align-items: center;
+  gap: var(--s-1);
+  font-size: var(--t-12);
+  color: var(--text-muted);
+}
+
 /* ──────────────────────────────────────────────────── the cluster map ── */
 
 .map {

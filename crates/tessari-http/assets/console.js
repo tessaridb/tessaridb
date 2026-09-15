@@ -460,6 +460,365 @@
     }
   }
 
+  // src/roster.ts
+  //! What the panel has been told about who exists.
+  //!
+  //! The blast radius a destructive form shows — *who loses what* — has to come
+  //! from somewhere, and the only honest source is the listing the node already
+  //! answered. This holds it, so that the forms can read it without importing the
+  //! listing that draws it: `users.ts` writes here and `user-forms.ts` reads, which
+  //! keeps the two modules pointing one way instead of at each other.
+  //!
+  //! It is deliberately not a cache. Nothing here is asked for on a miss, nothing
+  //! expires, and a name this module has never heard of returns `null` so the form
+  //! can say it does not know rather than invent a reach. A radius drawn from a
+  //! guess is worse than no radius at all — it is the panel narrating an answer
+  //! the node never gave.
+  var known = /* @__PURE__ */ new Map();
+  function forget() {
+    known.clear();
+  }
+  function remember(name, one2) {
+    known.set(name, one2);
+  }
+  function lookup(name) {
+    return known.get(name) ?? null;
+  }
+
+  // src/user-says.ts
+  //! What a button will do, said in the reader's language.
+  //!
+  //! Three sentences and nothing else. They take what they describe as ARGUMENTS
+  //! rather than reading the form, which is what lets them be read — and one day
+  //! tested — without a form existing at all. `user-forms.ts` reads the controls
+  //! and calls these; the split is along that line and not an arbitrary one.
+  //!
+  //! The rule every sentence here obeys: **say what the statement changes and
+  //! stop.** A consequence the engine has not been asked about is the panel
+  //! inventing an answer, which is the same defect as drawing a metric it does not
+  //! have. Where a sentence does claim a consequence — that a session ends — the
+  //! claim is backed by a test in the suite and not by reasoning from the
+  //! mechanism.
+  function definitionSays(name, role2, space) {
+    return "Creates " + name + " as " + role2 + (space === "" ? " of the whole node — an administrator" : " in " + space) + ", with the password typed above.";
+  }
+  function alterationSays(name, what, role2) {
+    const today = lookup(name);
+    const standing = today === null ? " This panel has not been told what " + name + " reaches — press List to find out." : " Today " + name + " is " + today.role + " in " + today.reach + ", and that is unchanged.";
+    if (what === "password") {
+      return "Sets a new password for " + name + ". The one they have stops working and any session they are holding ends, so they sign in again with the new one." + standing;
+    }
+    return "Makes " + name + " " + role2 + ". Any session they are holding ends, so they sign in again." + standing;
+  }
+  function removalSays(name) {
+    const today = lookup(name);
+    if (today === null) {
+      return name + " loses access entirely, and their grants go with them. This panel has not been told what " + name + " reaches — press List above to find out before you do this.";
+    }
+    return name + " loses access entirely: " + today.role + " in " + today.reach + ", and the grants go with them. A new user of the same name inherits none of it.";
+  }
+
+  // src/user-forms.ts
+  //! The three user forms: what they describe, and what they show while typing.
+  //!
+  //! Only the statements and the previews live here. The buttons that RUN them
+  //! are in `users.ts`, beside the listing they have to redraw — which keeps the
+  //! two modules pointing one way instead of at each other.
+  //!
+  //! What a pane shows before it runs is **what will happen**, in words, and not
+  //! the statement that will do it. The statement is not hidden — it is in the
+  //! log the moment it is sent, and on the one pane that cannot come back it sits
+  //! behind a disclosure. The difference matters because reading TessariQL to find
+  //! out what a button does makes the language the interface, and then everybody
+  //! who cannot read it is guessing.
+  function quoted(text) {
+    let out = "'";
+    for (const character of text) {
+      if (character === "'") {
+        out += "\\'";
+      } else if (character === "\\") {
+        out += "\\\\";
+      } else if (character === "\n") {
+        out += "\\n";
+      } else if (character === "\r") {
+        out += "\\r";
+      } else if (character === "	") {
+        out += "\\t";
+      } else {
+        out += character;
+      }
+    }
+    return out + "'";
+  }
+  var MEANS = {
+    viewer: "reads what the space holds, and nothing else.",
+    editor: "reads and writes records, and declares structure.",
+    owner: "everything in the space, users included.",
+    other: "a role this build may not know. It will be sent as typed, and the node's refusal is what you will see if it does not exist."
+  };
+  function reach() {
+    if (value("new-reach") === "node") {
+      return "";
+    }
+    const space = trimmed("new-scope");
+    return space === "" ? null : space;
+  }
+  function role() {
+    const chosen = value("new-role");
+    return chosen === "other" ? trimmed("new-role-other") : chosen;
+  }
+  function definition() {
+    const name = trimmed("new-name");
+    const named = role();
+    const space = reach();
+    if (name === "" || named === "" || space === null) {
+      return null;
+    }
+    return "DEFINE USER " + name + (space === "" ? "" : " ON " + space) + " ROLE " + named + " PASSWORD " + quoted(value("new-password")) + ";";
+  }
+  function missing() {
+    if (trimmed("new-name") === "") {
+      return "a name is needed";
+    }
+    if (role() === "") {
+      return "a role is needed";
+    }
+    return "a space is needed — or choose the whole node, which is not the same thing";
+  }
+  function preview() {
+    write("role-says", MEANS[value("new-role")] ?? "");
+    const space = reach();
+    const statement = definition();
+    write(
+      "define-preview",
+      statement === null || space === null ? missing() : definitionSays(trimmed("new-name"), role(), space)
+    );
+  }
+  function shapeTheForm() {
+    hide("scope-field", value("new-reach") === "node");
+    hide("role-other-field", value("new-role") !== "other");
+    preview();
+  }
+  function changedRole() {
+    const chosen = value("change-role");
+    return chosen === "other" ? trimmed("change-role-other") : chosen;
+  }
+  function alteration() {
+    const name = trimmed("change-name");
+    if (name === "") {
+      return null;
+    }
+    if (value("change-what") === "password") {
+      return "ALTER USER " + name + " SET PASSWORD " + quoted(value("change-password")) + ";";
+    }
+    const named = changedRole();
+    return named === "" ? null : "ALTER USER " + name + " SET ROLE " + named + ";";
+  }
+  function changeMissing() {
+    if (trimmed("change-name") === "") {
+      return "a name is needed";
+    }
+    return "a role is needed";
+  }
+  function changeWhy() {
+    return trimmed("change-why");
+  }
+  function shapeTheChange() {
+    const changing = value("change-what");
+    hide("change-password-field", changing !== "password");
+    hide("change-role-field", changing !== "role");
+    hide("change-role-other-field", changing !== "role" || value("change-role") !== "other");
+    write(
+      "change-preview",
+      alteration() === null ? changeMissing() : alterationSays(
+        trimmed("change-name"),
+        value("change-what") === "password" ? "password" : "role",
+        changedRole()
+      )
+    );
+  }
+  function removal() {
+    const name = trimmed("remove-name");
+    const again = trimmed("remove-confirm");
+    return name !== "" && name === again ? "DROP USER " + name + ";" : null;
+  }
+  function removeWhy() {
+    return trimmed("remove-why");
+  }
+  function shapeTheRemoval() {
+    const statement = removal();
+    disable("remove", statement === null);
+    const name = trimmed("remove-name");
+    write(
+      "remove-radius",
+      statement !== null ? removalSays(name) : name === "" ? "a name is needed" : "type the same name again to confirm"
+    );
+    write("remove-preview", statement ?? "");
+  }
+  function wire4() {
+    for (const field of [
+      "new-name",
+      "new-scope",
+      "new-role",
+      "new-role-other",
+      "new-password",
+      "new-reach"
+    ]) {
+      at(field).addEventListener("input", shapeTheForm);
+      at(field).addEventListener("change", shapeTheForm);
+    }
+    for (const field of [
+      "change-name",
+      "change-what",
+      "change-password",
+      "change-role",
+      "change-role-other",
+      "change-why"
+    ]) {
+      at(field).addEventListener("input", shapeTheChange);
+      at(field).addEventListener("change", shapeTheChange);
+    }
+    for (const field of ["remove-name", "remove-confirm", "remove-why"]) {
+      at(field).addEventListener("input", shapeTheRemoval);
+    }
+    shapeTheForm();
+    shapeTheChange();
+    shapeTheRemoval();
+  }
+
+  // src/formation.ts
+  //! Declaring the cluster's membership, in one transaction.
+  //!
+  //! # The cliff this form exists to not build
+  //!
+  //! Declaring peers one statement at a time STRANDS the operator, and it was
+  //! reproduced twice against a running node:
+  //!
+  //! ```text
+  //! DEFINE REPLICA warsaw …;  → ok
+  //! DEFINE REPLICA lisbon …;  → error: this node is in a cluster and holds no
+  //!                             leadership: it does not accept writes until a
+  //!                             majority grants it one
+  //! ```
+  //!
+  //! The first declaration makes the node clustered, which costs it `writable`,
+  //! which is what the second declaration needs. Wrapping both in
+  //! `BEGIN; … COMMIT;` succeeds.
+  //!
+  //! So a per-row Add button would build that cliff into the interface, and the
+  //! operator would meet it halfway through a membership with no way forward and
+  //! no way back. The whole intended membership is one form and one transaction.
+  //!
+  //! # Not a wizard either
+  //!
+  //! There are no ordered stages here — a membership is a set, declared at once.
+  //! A wizard would impose an order the domain does not have and would make the
+  //! last step the one that fails.
+  var ROWS = 5;
+  var rowFields = (at_) => [
+    `peer-${at_}-name`,
+    `peer-${at_}-endpoint`,
+    `peer-${at_}-node`
+  ];
+  function intended() {
+    const found = [];
+    for (let index = 0; index < ROWS; index += 1) {
+      const name = trimmed(`peer-${index}-name`);
+      const endpoint = trimmed(`peer-${index}-endpoint`);
+      const node = trimmed(`peer-${index}-node`);
+      if (name === "" && endpoint === "" && node === "") {
+        continue;
+      }
+      const roles = [];
+      for (const bit of ["serving", "writable", "coordinating"]) {
+        if (at(`peer-${index}-${bit}`).checked) {
+          roles.push(bit);
+        }
+      }
+      found.push({ name, endpoint, node, roles });
+    }
+    return found;
+  }
+  function incomplete(rows) {
+    for (const [index, row] of rows.entries()) {
+      const missing2 = row.name === "" ? "a name" : row.endpoint === "" ? "an address" : row.node === "" ? "a node id" : row.roles.length === 0 ? "at least one role" : null;
+      if (missing2 !== null) {
+        return `row ${index + 1} needs ${missing2}`;
+      }
+    }
+    return null;
+  }
+  function formation(rows) {
+    const declarations = rows.map(
+      (row) => `DEFINE REPLICA ${row.name} AT ${quoted(row.endpoint)} NODE ${quoted(row.node)} ROLES ${row.roles.join(", ")};`
+    );
+    return ["BEGIN;", ...declarations, "COMMIT;"].join("\n");
+  }
+  function preview2() {
+    const rows = intended();
+    const missing2 = incomplete(rows);
+    if (rows.length === 0) {
+      say("form-says", "Nothing declared yet.");
+      return;
+    }
+    if (missing2 !== null) {
+      say("form-says", missing2, true);
+      return;
+    }
+    const named = rows.map((row) => row.name).join(", ");
+    say(
+      "form-says",
+      `Declares ${rows.length === 1 ? "one peer" : `${rows.length} peers`} — ${named} — in a single transaction. All of them or none.`
+    );
+  }
+  function showStatement() {
+    const rows = intended();
+    clear("form-statement");
+    const block = made("pre");
+    block.textContent = rows.length === 0 || incomplete(rows) !== null ? "" : formation(rows);
+    at("form-statement").appendChild(block);
+  }
+  function wire5() {
+    for (let index = 0; index < ROWS; index += 1) {
+      for (const field of [
+        ...rowFields(index),
+        `peer-${index}-serving`,
+        `peer-${index}-writable`,
+        `peer-${index}-coordinating`
+      ]) {
+        at(field).addEventListener("input", () => {
+          preview2();
+          showStatement();
+        });
+        at(field).addEventListener("change", () => {
+          preview2();
+          showStatement();
+        });
+      }
+    }
+    at("form-cluster").addEventListener("click", async () => {
+      const rows = intended();
+      if (rows.length === 0) {
+        say("form-status", "nothing to declare", true);
+        return;
+      }
+      const missing2 = incomplete(rows);
+      if (missing2 !== null) {
+        say("form-status", missing2, true);
+        return;
+      }
+      say("form-status", "running…");
+      try {
+        const answered2 = await valueOf(formation(rows), "Cluster · form");
+        say("form-status", answered2 !== null && answered2.kind === "done" ? "declared" : "");
+      } catch (failure) {
+        say("form-status", told(failure), true);
+      }
+    });
+    preview2();
+    showStatement();
+  }
+
   // src/draw.ts
   //! Turning what the node said into something on screen.
   //!
@@ -747,7 +1106,7 @@
     );
     say("node-status", "");
   }
-  function wire4() {
+  function wire6() {
     at("node-refresh").addEventListener("click", readNode);
     let read = false;
     for (const tab of ["tab-this-node", "tab-cluster"]) {
@@ -770,7 +1129,7 @@
     const differ = fresh !== "" && again !== "" && fresh !== again;
     say("mine-status", differ ? "the two new ones differ" : "", differ);
   }
-  function wire5() {
+  function wire7() {
     for (const field of ["mine-current", "mine-new", "mine-again"]) {
       at(field).addEventListener("input", shapeMine);
     }
@@ -872,7 +1231,7 @@
       say("script-status", "the node did not answer: " + told(failure), true);
     }
   }
-  function wire6() {
+  function wire8() {
     for (const button of all("[data-shape]")) {
       button.addEventListener("click", () => {
         drawing = button.dataset["shape"] ?? "auto";
@@ -975,7 +1334,7 @@
     }
     write("search-says", "nothing here answers to that name");
   }
-  function wire7() {
+  function wire9() {
     at("search").addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -992,232 +1351,6 @@
         at("search").select();
       }
     });
-  }
-
-  // src/roster.ts
-  //! What the panel has been told about who exists.
-  //!
-  //! The blast radius a destructive form shows — *who loses what* — has to come
-  //! from somewhere, and the only honest source is the listing the node already
-  //! answered. This holds it, so that the forms can read it without importing the
-  //! listing that draws it: `users.ts` writes here and `user-forms.ts` reads, which
-  //! keeps the two modules pointing one way instead of at each other.
-  //!
-  //! It is deliberately not a cache. Nothing here is asked for on a miss, nothing
-  //! expires, and a name this module has never heard of returns `null` so the form
-  //! can say it does not know rather than invent a reach. A radius drawn from a
-  //! guess is worse than no radius at all — it is the panel narrating an answer
-  //! the node never gave.
-  var known = /* @__PURE__ */ new Map();
-  function forget() {
-    known.clear();
-  }
-  function remember(name, one2) {
-    known.set(name, one2);
-  }
-  function lookup(name) {
-    return known.get(name) ?? null;
-  }
-
-  // src/user-says.ts
-  //! What a button will do, said in the reader's language.
-  //!
-  //! Three sentences and nothing else. They take what they describe as ARGUMENTS
-  //! rather than reading the form, which is what lets them be read — and one day
-  //! tested — without a form existing at all. `user-forms.ts` reads the controls
-  //! and calls these; the split is along that line and not an arbitrary one.
-  //!
-  //! The rule every sentence here obeys: **say what the statement changes and
-  //! stop.** A consequence the engine has not been asked about is the panel
-  //! inventing an answer, which is the same defect as drawing a metric it does not
-  //! have. Where a sentence does claim a consequence — that a session ends — the
-  //! claim is backed by a test in the suite and not by reasoning from the
-  //! mechanism.
-  function definitionSays(name, role2, space) {
-    return "Creates " + name + " as " + role2 + (space === "" ? " of the whole node — an administrator" : " in " + space) + ", with the password typed above.";
-  }
-  function alterationSays(name, what, role2) {
-    const today = lookup(name);
-    const standing = today === null ? " This panel has not been told what " + name + " reaches — press List to find out." : " Today " + name + " is " + today.role + " in " + today.reach + ", and that is unchanged.";
-    if (what === "password") {
-      return "Sets a new password for " + name + ". The one they have stops working and any session they are holding ends, so they sign in again with the new one." + standing;
-    }
-    return "Makes " + name + " " + role2 + ". Any session they are holding ends, so they sign in again." + standing;
-  }
-  function removalSays(name) {
-    const today = lookup(name);
-    if (today === null) {
-      return name + " loses access entirely, and their grants go with them. This panel has not been told what " + name + " reaches — press List above to find out before you do this.";
-    }
-    return name + " loses access entirely: " + today.role + " in " + today.reach + ", and the grants go with them. A new user of the same name inherits none of it.";
-  }
-
-  // src/user-forms.ts
-  //! The three user forms: what they describe, and what they show while typing.
-  //!
-  //! Only the statements and the previews live here. The buttons that RUN them
-  //! are in `users.ts`, beside the listing they have to redraw — which keeps the
-  //! two modules pointing one way instead of at each other.
-  //!
-  //! What a pane shows before it runs is **what will happen**, in words, and not
-  //! the statement that will do it. The statement is not hidden — it is in the
-  //! log the moment it is sent, and on the one pane that cannot come back it sits
-  //! behind a disclosure. The difference matters because reading TessariQL to find
-  //! out what a button does makes the language the interface, and then everybody
-  //! who cannot read it is guessing.
-  function quoted(text) {
-    let out = "'";
-    for (const character of text) {
-      if (character === "'") {
-        out += "\\'";
-      } else if (character === "\\") {
-        out += "\\\\";
-      } else if (character === "\n") {
-        out += "\\n";
-      } else if (character === "\r") {
-        out += "\\r";
-      } else if (character === "	") {
-        out += "\\t";
-      } else {
-        out += character;
-      }
-    }
-    return out + "'";
-  }
-  var MEANS = {
-    viewer: "reads what the space holds, and nothing else.",
-    editor: "reads and writes records, and declares structure.",
-    owner: "everything in the space, users included.",
-    other: "a role this build may not know. It will be sent as typed, and the node's refusal is what you will see if it does not exist."
-  };
-  function reach() {
-    if (value("new-reach") === "node") {
-      return "";
-    }
-    const space = trimmed("new-scope");
-    return space === "" ? null : space;
-  }
-  function role() {
-    const chosen = value("new-role");
-    return chosen === "other" ? trimmed("new-role-other") : chosen;
-  }
-  function definition() {
-    const name = trimmed("new-name");
-    const named = role();
-    const space = reach();
-    if (name === "" || named === "" || space === null) {
-      return null;
-    }
-    return "DEFINE USER " + name + (space === "" ? "" : " ON " + space) + " ROLE " + named + " PASSWORD " + quoted(value("new-password")) + ";";
-  }
-  function missing() {
-    if (trimmed("new-name") === "") {
-      return "a name is needed";
-    }
-    if (role() === "") {
-      return "a role is needed";
-    }
-    return "a space is needed — or choose the whole node, which is not the same thing";
-  }
-  function preview() {
-    write("role-says", MEANS[value("new-role")] ?? "");
-    const space = reach();
-    const statement = definition();
-    write(
-      "define-preview",
-      statement === null || space === null ? missing() : definitionSays(trimmed("new-name"), role(), space)
-    );
-  }
-  function shapeTheForm() {
-    hide("scope-field", value("new-reach") === "node");
-    hide("role-other-field", value("new-role") !== "other");
-    preview();
-  }
-  function changedRole() {
-    const chosen = value("change-role");
-    return chosen === "other" ? trimmed("change-role-other") : chosen;
-  }
-  function alteration() {
-    const name = trimmed("change-name");
-    if (name === "") {
-      return null;
-    }
-    if (value("change-what") === "password") {
-      return "ALTER USER " + name + " SET PASSWORD " + quoted(value("change-password")) + ";";
-    }
-    const named = changedRole();
-    return named === "" ? null : "ALTER USER " + name + " SET ROLE " + named + ";";
-  }
-  function changeMissing() {
-    if (trimmed("change-name") === "") {
-      return "a name is needed";
-    }
-    return "a role is needed";
-  }
-  function changeWhy() {
-    return trimmed("change-why");
-  }
-  function shapeTheChange() {
-    const changing = value("change-what");
-    hide("change-password-field", changing !== "password");
-    hide("change-role-field", changing !== "role");
-    hide("change-role-other-field", changing !== "role" || value("change-role") !== "other");
-    write(
-      "change-preview",
-      alteration() === null ? changeMissing() : alterationSays(
-        trimmed("change-name"),
-        value("change-what") === "password" ? "password" : "role",
-        changedRole()
-      )
-    );
-  }
-  function removal() {
-    const name = trimmed("remove-name");
-    const again = trimmed("remove-confirm");
-    return name !== "" && name === again ? "DROP USER " + name + ";" : null;
-  }
-  function removeWhy() {
-    return trimmed("remove-why");
-  }
-  function shapeTheRemoval() {
-    const statement = removal();
-    disable("remove", statement === null);
-    const name = trimmed("remove-name");
-    write(
-      "remove-radius",
-      statement !== null ? removalSays(name) : name === "" ? "a name is needed" : "type the same name again to confirm"
-    );
-    write("remove-preview", statement ?? "");
-  }
-  function wire8() {
-    for (const field of [
-      "new-name",
-      "new-scope",
-      "new-role",
-      "new-role-other",
-      "new-password",
-      "new-reach"
-    ]) {
-      at(field).addEventListener("input", shapeTheForm);
-      at(field).addEventListener("change", shapeTheForm);
-    }
-    for (const field of [
-      "change-name",
-      "change-what",
-      "change-password",
-      "change-role",
-      "change-role-other",
-      "change-why"
-    ]) {
-      at(field).addEventListener("input", shapeTheChange);
-      at(field).addEventListener("change", shapeTheChange);
-    }
-    for (const field of ["remove-name", "remove-confirm", "remove-why"]) {
-      at(field).addEventListener("input", shapeTheRemoval);
-    }
-    shapeTheForm();
-    shapeTheChange();
-    shapeTheRemoval();
   }
 
   // src/users.ts
@@ -1320,7 +1453,7 @@
     }
     write("user-count", tally(matched));
   }
-  function wire9() {
+  function wire10() {
     at("list").addEventListener("click", listUsers);
     at("user-filter").addEventListener("input", redraw);
     at("tab-access").addEventListener("click", () => {
@@ -1463,7 +1596,7 @@
     }
     return wanted2;
   }
-  function wire10() {
+  function wire11() {
     at("follow").addEventListener("click", () => {
       stop();
       clear("changes");
@@ -1526,11 +1659,12 @@
   wire2();
   wire();
   wire3();
-  wire6();
-  wire7();
-  wire10();
   wire8();
   wire9();
-  wire4();
   wire5();
+  wire11();
+  wire4();
+  wire10();
+  wire6();
+  wire7();
 })();

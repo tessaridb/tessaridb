@@ -17,6 +17,7 @@
 //! accident of who imports whom. One list is cheaper to read and cannot drift.
 
 import { write } from "./dom.js";
+import * as formation from "./formation.js";
 import * as log from "./log.js";
 import * as node from "./node.js";
 import * as password from "./password.js";
@@ -37,6 +38,7 @@ tabs.wire();
 session.wire();
 query.wire();
 search.wire();
+formation.wire();
 watch.wire();
 userForms.wire();
 users.wire();

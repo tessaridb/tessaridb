@@ -1065,13 +1065,164 @@ fn the_console_draws_no_field_the_engine_no_longer_answers() {
     // The engine no longer answers it. This asserts the console does not draw
     // it from anywhere else, including from a literal somebody re-adds while
     // reading an older screenshot.
-    let (_node, address) = node();
-    for path in ["/", "/console.js"] {
-        let (status, _, served) = get(&address, path);
-        assert_eq!(status, 200, "{path} is not served");
+    // Scanned for the FIELD and not for the word. The first version forbade the
+    // string `membership` anywhere in the served page, which was fine until the
+    // cluster screen legitimately wrote "Declare the membership" in a heading —
+    // and then the guard failed for a sentence rather than for a defect. The
+    // subject is a field the panel reads off an answer, so the shapes below are
+    // how it would be read, and prose is left alone.
+    let sources = panel_sources();
+    assert!(
+        sources.len() >= 10,
+        "the panel's sources were not found: {} file(s)",
+        sources.len()
+    );
+    let reading: Vec<&str> = sources
+        .iter()
+        .filter(|(_, text)| {
+            text.contains("[\"membership\"]")
+                || text.contains("membership:")
+                || text.contains(".membership")
+        })
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert!(
+        reading.is_empty(),
+        "these modules read `membership` off an answer the engine does not \
+         carry it in: {reading:?}"
+    );
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn the_map_draws_no_figure_the_engine_cannot_answer() {
+    // S4.2. Two values are excluded for the same reason and it is not taste:
+    // the engine has no answer, so any number on screen would be invented.
+    //
+    // REPLICATION LAG — there is no follower loop, so a non-writing node's copy
+    // has no last collection to measure a lag from. The only honest value is
+    // absent, and a lag figure is the single most reassuring thing a cluster
+    // screen can display, which is exactly why it must not display one.
+    //
+    // PER-RANGE PLACEMENT — there is no sharding. Every node holding a
+    // namespace holds all of it, and a placement diagram would describe a
+    // topology the product does not have.
+    //
+    // Scanned on the SOURCE the map is built from rather than on the rendered
+    // page, because a figure that is drawn only when a cluster is present would
+    // not appear on a page served by a lone node — and the lone node is what
+    // this suite has.
+    let sources = panel_sources();
+    assert!(
+        sources.len() >= 10,
+        "the panel's sources were not found: {} file(s)",
+        sources.len()
+    );
+    let map = sources
+        .iter()
+        .find(|(name, _)| name == "map.ts")
+        .map(|(_, text)| text.as_str())
+        .expect("map.ts is not among the sources this test read");
+
+    // The words are checked where they would be DRAWN — a string the map puts
+    // on screen — and not in prose. The header above says `lag` and `sharding`
+    // several times on purpose: a scan that forbade the word outright would
+    // forbid explaining why it is forbidden.
+    for forbidden in [
+        "\"lag\"",
+        "\"replication lag\"",
+        "\"ranges\"",
+        "\"placement\"",
+    ] {
         assert!(
-            !served.contains("membership"),
-            "{path} still carries `membership`, which the engine does not answer"
+            !map.contains(forbidden),
+            "the map draws {forbidden}, which the engine cannot answer"
         );
     }
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn the_map_draws_three_lamps_and_the_lease_carries_its_expiry() {
+    // Both halves were GAPS found by falsification, not by design: deleting the
+    // `writable` lamp and deleting the lease's expiry each left every test in
+    // this suite green. They are asserted together because they are the same
+    // claim — the map says exactly what the engine says and no less.
+    //
+    // THREE LAMPS. A role is three independent bits, so there are eight
+    // combinations and no taxonomy of leader / follower / standby to collapse
+    // them into. Two lamps cannot distinguish a drained node from a serving
+    // one that does not write, and that distinction is the operator's own drain.
+    //
+    // THE LEASE'S EXPIRY. `coordinating` says the node may stand for
+    // leadership; `cluster.lease` says whether it holds it, and a lease is a
+    // grant with a clock. A marker without one implies a permanence the engine
+    // never promised — and the engine's source carries a note about an earlier
+    // version that read the role where it should have read the lease.
+    let sources = panel_sources();
+    let map = sources
+        .iter()
+        .find(|(name, _)| name == "map.ts")
+        .map(|(_, text)| text.as_str())
+        .expect("map.ts is not among the sources this test read");
+
+    for bit in ["serving", "writable", "coordinating"] {
+        assert!(
+            map.contains(&format!("name: \"{bit}\"")),
+            "the map no longer draws a lamp for `{bit}`"
+        );
+    }
+    // `letter: "` and not `letter:` — the bare form also matches the function's
+    // own parameter and the call site that passes it, which counted five for
+    // three lamps. A needle that catches the declaration and its plumbing is
+    // measuring the wrong thing even when the number happens to be right.
+    let lamps = map.matches("letter: \"").count();
+    assert_eq!(lamps, 3, "the map draws {lamps} lamps rather than three");
+
+    assert!(
+        map.contains("holds the lease until"),
+        "the lease marker no longer carries its expiry"
+    );
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn forming_the_cluster_is_one_transaction_and_one_button() {
+    // T4.7, and the trap behind it was reproduced twice against a running node:
+    //
+    //   DEFINE REPLICA warsaw …;  → ok
+    //   DEFINE REPLICA lisbon …;  → error: this node is in a cluster and holds
+    //                               no leadership
+    //
+    // The first declaration makes the node clustered, which costs it `writable`,
+    // which is what the second needs. A per-row Add button would build that
+    // cliff into the interface and strand the operator halfway through a
+    // membership, with no way forward and no way back.
+    let sources = panel_sources();
+    let form = sources
+        .iter()
+        .find(|(name, _)| name == "formation.ts")
+        .map(|(_, text)| text.as_str())
+        .expect("formation.ts is not among the sources this test read");
+
+    assert!(
+        form.contains("\"BEGIN;\"") && form.contains("\"COMMIT;\""),
+        "the membership is no longer declared in one transaction"
+    );
+
+    // One submit control on the whole screen, asserted on the served page so a
+    // per-row button added to the markup is caught wherever it is written.
+    let (_node, address) = node();
+    let (status, _, page) = get(&address, "/");
+    assert_eq!(status, 200, "the console's page is not served");
+    let buttons = page.matches("id=\"form-cluster").count();
+    assert_eq!(
+        buttons, 1,
+        "the formation screen carries {buttons} declare controls; one membership \
+         is one decision and one transaction"
+    );
+    assert!(
+        !page.contains("id=\"peer-0-add") && !page.contains("Add peer"),
+        "a per-row Add button builds the engine's own cliff into the interface"
+    );
 }

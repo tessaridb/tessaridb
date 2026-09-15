@@ -104,6 +104,61 @@
         </div>
         <div class="pane">
           <div class="pane-head">
+            <h2>Declare the membership</h2>
+            <span id="form-status" class="status" role="status"></span>
+          </div>
+          <p class="note">Every peer at once, in one transaction. Declaring them one at a time strands you: the first declaration makes this node clustered, which costs it the authority to accept the second. All of them, or none.</p>
+          <div class="row">
+            <label>Name <input id="peer-0-name" type="text" placeholder="warsaw" /></label>
+            <label>Address <input id="peer-0-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
+            <label>Node id <input id="peer-0-node" type="text" placeholder="9f2c4e1a-…" /></label>
+            <label class="tick">serving <input id="peer-0-serving" type="checkbox" /></label>
+            <label class="tick">writable <input id="peer-0-writable" type="checkbox" /></label>
+            <label class="tick">coordinating <input id="peer-0-coordinating" type="checkbox" /></label>
+          </div>
+          <div class="row">
+            <label>Name <input id="peer-1-name" type="text" placeholder="warsaw" /></label>
+            <label>Address <input id="peer-1-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
+            <label>Node id <input id="peer-1-node" type="text" placeholder="9f2c4e1a-…" /></label>
+            <label class="tick">serving <input id="peer-1-serving" type="checkbox" /></label>
+            <label class="tick">writable <input id="peer-1-writable" type="checkbox" /></label>
+            <label class="tick">coordinating <input id="peer-1-coordinating" type="checkbox" /></label>
+          </div>
+          <div class="row">
+            <label>Name <input id="peer-2-name" type="text" placeholder="warsaw" /></label>
+            <label>Address <input id="peer-2-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
+            <label>Node id <input id="peer-2-node" type="text" placeholder="9f2c4e1a-…" /></label>
+            <label class="tick">serving <input id="peer-2-serving" type="checkbox" /></label>
+            <label class="tick">writable <input id="peer-2-writable" type="checkbox" /></label>
+            <label class="tick">coordinating <input id="peer-2-coordinating" type="checkbox" /></label>
+          </div>
+          <div class="row">
+            <label>Name <input id="peer-3-name" type="text" placeholder="warsaw" /></label>
+            <label>Address <input id="peer-3-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
+            <label>Node id <input id="peer-3-node" type="text" placeholder="9f2c4e1a-…" /></label>
+            <label class="tick">serving <input id="peer-3-serving" type="checkbox" /></label>
+            <label class="tick">writable <input id="peer-3-writable" type="checkbox" /></label>
+            <label class="tick">coordinating <input id="peer-3-coordinating" type="checkbox" /></label>
+          </div>
+          <div class="row">
+            <label>Name <input id="peer-4-name" type="text" placeholder="warsaw" /></label>
+            <label>Address <input id="peer-4-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
+            <label>Node id <input id="peer-4-node" type="text" placeholder="9f2c4e1a-…" /></label>
+            <label class="tick">serving <input id="peer-4-serving" type="checkbox" /></label>
+            <label class="tick">writable <input id="peer-4-writable" type="checkbox" /></label>
+            <label class="tick">coordinating <input id="peer-4-coordinating" type="checkbox" /></label>
+          </div>
+          <p id="form-says" class="note says"></p>
+          <details class="tucked">
+            <summary>The transaction this will send</summary>
+            <div id="form-statement" class="answer small"></div>
+          </details>
+          <div class="row">
+            <button id="form-cluster" type="button" class="primary">Declare it</button>
+          </div>
+        </div>
+        <div class="pane">
+          <div class="pane-head">
             <h2>What is here, and what is not</h2>
           </div>
           <p class="note">What the pane above shows is what this node itself knows: its own roles, the peers it has been told about, and the addresses it answers on. It is read from the node, not from anything standing beside it.</p>

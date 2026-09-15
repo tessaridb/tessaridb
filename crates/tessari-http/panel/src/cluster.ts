@@ -6,7 +6,8 @@
 import { el, type Node } from "./html.js";
 import { to } from "./destinations.js";
 import {
-  answer, behindDisclosure, note, pane, paneHead, panel, status, warning,
+  answer, behindDisclosure, button, field, note, pane, paneHead, panel, row,
+  says, status, text, warning,
 } from "./ui.js";
 
 export const cluster = (): Node =>
@@ -21,6 +22,35 @@ export const cluster = (): Node =>
       // follows for statements.
       el("div", { id: "cluster-map", class: "map" }),
       behindDisclosure("The answer this was drawn from", answer("cluster-facts", "small")),
+    ),
+    pane(
+      paneHead("Declare the membership", status("form-status")),
+      note(
+        "Every peer at once, in one transaction. Declaring them one at a time " +
+          "strands you: the first declaration makes this node clustered, which " +
+          "costs it the authority to accept the second. All of them, or none.",
+      ),
+      ...Array.from({ length: 5 }, (_, at) =>
+        row(
+          "default",
+          field("Name", text(`peer-${at}-name`, { placeholder: "warsaw" })),
+          field("Address", text(`peer-${at}-endpoint`, { placeholder: "10.0.0.2:9000" })),
+          field("Node id", text(`peer-${at}-node`, { placeholder: "9f2c4e1a-…" })),
+          ...["serving", "writable", "coordinating"].map((bit) =>
+            field(
+              bit,
+              el("input", { id: `peer-${at}-${bit}`, type: "checkbox" }),
+              { class: "tick" },
+            ),
+          ),
+        ),
+      ),
+      says("form-says"),
+      behindDisclosure(
+        "The transaction this will send",
+        el("div", { id: "form-statement", class: "answer small" }),
+      ),
+      row("default", button("form-cluster", "Declare it", "primary")),
     ),
     pane(
       paneHead("What is here, and what is not"),
