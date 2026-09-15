@@ -1063,13 +1063,13 @@
     { name: "writable", letter: "W", means: "accepts writes rather than forwarding them" },
     { name: "coordinating", letter: "C", means: "takes part in deciding, not only in storing" }
   ];
-  function lamp(letter, state, title) {
-    const one2 = made("span", "lamp " + state);
+  function lamp(letter, state2, title) {
+    const one2 = made("span", "lamp " + state2);
     one2.textContent = letter;
     one2.title = title;
     one2.setAttribute(
       "aria-label",
-      `${title} — ${state === "held" ? "held" : state === "wanted" ? "declared, not yet held" : "not held"}`
+      `${title} — ${state2 === "held" ? "held" : state2 === "wanted" ? "declared, not yet held" : "not held"}`
     );
     return one2;
   }
@@ -1493,6 +1493,47 @@
     });
   }
 
+  // src/states.ts
+  //! The four things a screen can be, said as four things.
+  //!
+  //! `say(id, words, failed?)` carries one string and one boolean, so the five
+  //! situations an operator actually meets render as two. The two that collapse
+  //! are the expensive ones: **nothing here** and **some of it** look identical,
+  //! and an operator who reads a bounded page as the whole list concludes an
+  //! account does not exist when it is simply not on screen.
+  //!
+  //! # Each state names a NEXT ACTION, and that is the half worth guarding
+  //!
+  //! "No users" is a state. "No users — this store is open to anybody, and the
+  //! first `DEFINE USER` closes it" is a state that tells the reader what to do
+  //! about it. A screen full of correct nouns and no verbs is a screen that makes
+  //! the operator go and ask somebody.
+  //!
+  //! # Why not simply widen `say`
+  //!
+  //! Because a wider `say` would let a screen render a partial state by passing
+  //! the wrong argument, and nothing would say so. Four named calls make the wrong
+  //! one a thing you have to type on purpose. `say` keeps its two-state job for
+  //! the many places that genuinely have two — this is not a rewrite of all
+  //! sixty-six of its call sites, and it must not become one.
+  function state(id, kind, words) {
+    const line = at(id);
+    line.textContent = words;
+    for (const other of ["waiting", "empty", "partial", "wrong"]) {
+      line.classList.toggle(`is-${other}`, other === kind);
+    }
+    line.classList.toggle("failed", kind === "wrong");
+    line.setAttribute("aria-live", kind === "wrong" ? "assertive" : "polite");
+  }
+  function settled(id) {
+    const line = at(id);
+    line.textContent = "";
+    for (const other of ["waiting", "empty", "partial", "wrong"]) {
+      line.classList.remove(`is-${other}`);
+    }
+    line.classList.remove("failed");
+  }
+
   // src/users.ts
   //! Who exists, and the buttons that change that.
   //!
@@ -1563,7 +1604,7 @@
   var said2 = (one2) => one2.role === "owner" && one2.namespace === void 0 ? "owner · admin" : one2.role ?? "";
   var reach2 = (one2) => one2.namespace === void 0 ? "the whole node" : one2.namespace + (one2.database === void 0 ? "" : "." + one2.database);
   async function listUsers() {
-    say("user-status", "asking…");
+    state("user-status", "waiting", "asking the node who it knows about…");
     try {
       const answer2 = held2(await valueOf("INFO FOR USERS;", "Users · list"));
       const listed = answer2 === null ? [] : answer2["users"];
@@ -1573,23 +1614,35 @@
         remember(one2.user ?? "", { role: said2(one2), reach: reach2(one2) });
       }
       redraw();
-      say("user-status", "");
     } catch (failure) {
       clear("user-list");
-      say("user-status", told(failure), true);
+      state(
+        "user-status",
+        "wrong",
+        `${told(failure)} — a listing is answered to whoever administers the tenancy.`
+      );
     }
   }
   function redraw() {
     const matched = matching();
     clear("user-list");
     if (matched.length === 0) {
-      at("user-list").appendChild(
-        trailer(
-          everybody.length === 0 ? "(no users — this store is open to anybody)" : "(no account here matches that)"
-        )
+      state(
+        "user-status",
+        "empty",
+        everybody.length === 0 ? "No accounts — this store is open to anybody, and the first DEFINE USER closes it." : `No account matches that — clear the filter to see all ${everybody.length} of them.`
       );
-    } else {
+      at("user-list").appendChild(trailer("(nothing to show)"));
+    } else if (matched.length > SHOWN) {
+      state(
+        "user-status",
+        "partial",
+        `Showing ${SHOWN} of ${matched.length} — type part of a name to narrow it.`
+      );
       at("user-list").appendChild(listing(matched.slice(0, SHOWN)));
+    } else {
+      settled("user-status");
+      at("user-list").appendChild(listing(matched));
     }
     write("user-count", tally(matched));
   }

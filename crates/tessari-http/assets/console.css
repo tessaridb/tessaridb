@@ -821,6 +821,32 @@ details.tucked > summary {
   padding: var(--s-1) 0;
 }
 
+/* ─────────────────────────────────────────── the four states ── */
+
+/* Four states rendered four ways, so the difference between "nothing here" and
+   "some of it" is visible before a word is read. The two that used to collapse
+   are the expensive pair: an operator who takes a bounded page for the whole
+   list concludes an account does not exist when it is simply not on screen. */
+.is-waiting {
+  color: var(--text-muted);
+}
+
+.is-empty {
+  color: var(--text-muted);
+}
+
+/* Partial is the one that must not read as finished. It carries the accent
+   rather than the muted grey, because it is the state that asks the reader to
+   do something — and it is the only one of the four whose absence of urgency
+   would be a lie. */
+.is-partial {
+  color: var(--accent-text);
+}
+
+.is-wrong {
+  color: var(--warn);
+}
+
 /* ─────────────────────────────────────────────── the statement log ── */
 
 /* The tray is where the session's record lives, and it is the only element on

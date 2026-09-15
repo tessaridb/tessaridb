@@ -25,6 +25,7 @@ import { at, clear, made, say, setValue, trailer, trimmed, write } from "./dom.j
 import { facts, put } from "./draw.js";
 import { forget, remember } from "./roster.js";
 import { told } from "./session.js";
+import { settled, state } from "./states.js";
 import {
   alteration,
   changeMissing,
@@ -148,7 +149,7 @@ const reach = (one: Listed): string =>
 
 /** Everybody the caller is allowed to be told about. */
 export async function listUsers(): Promise<void> {
-  say("user-status", "asking…");
+  state("user-status", "waiting", "asking the node who it knows about…");
   try {
     const answer = held(await valueOf("INFO FOR USERS;", "Users · list"));
     const listed = answer === null ? [] : answer["users"];
@@ -163,10 +164,16 @@ export async function listUsers(): Promise<void> {
       remember(one.user ?? "", { role: said(one), reach: reach(one) });
     }
     redraw();
-    say("user-status", "");
   } catch (failure) {
     clear("user-list");
-    say("user-status", told(failure), true);
+    // The node's own words, and then what to do with them — a refusal here is
+    // usually the tenancy rule working, and an operator who is told only that
+    // it refused goes looking for a bug instead of for an owner.
+    state(
+      "user-status",
+      "wrong",
+      `${told(failure)} — a listing is answered to whoever administers the tenancy.`,
+    );
   }
 }
 
@@ -175,15 +182,28 @@ function redraw(): void {
   const matched = matching();
   clear("user-list");
   if (matched.length === 0) {
-    at("user-list").appendChild(
-      trailer(
-        everybody.length === 0
-          ? "(no users — this store is open to anybody)"
-          : "(no account here matches that)",
-      ),
+    // Two different emptinesses, and conflating them sends the reader to the
+    // wrong remedy: one is a store with no accounts, the other is a filter that
+    // excluded every account there is.
+    state(
+      "user-status",
+      "empty",
+      everybody.length === 0
+        ? "No accounts — this store is open to anybody, and the first DEFINE USER closes it."
+        : "No account matches that — clear the filter to see all " +
+            `${everybody.length} of them.`,
     );
-  } else {
+    at("user-list").appendChild(trailer("(nothing to show)"));
+  } else if (matched.length > SHOWN) {
+    state(
+      "user-status",
+      "partial",
+      `Showing ${SHOWN} of ${matched.length} — type part of a name to narrow it.`,
+    );
     at("user-list").appendChild(listing(matched.slice(0, SHOWN)));
+  } else {
+    settled("user-status");
+    at("user-list").appendChild(listing(matched));
   }
   write("user-count", tally(matched));
 }

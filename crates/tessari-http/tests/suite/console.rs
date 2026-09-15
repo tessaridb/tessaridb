@@ -1231,3 +1231,79 @@ fn forming_the_cluster_is_one_transaction_and_one_button() {
         "a per-row Add button builds the engine's own cliff into the interface"
     );
 }
+
+#[cfg(feature = "console")]
+#[test]
+fn the_four_states_are_four_renderings_and_four_messages() {
+    // S5.1's own falsification, made into a test: force a partial and a failure
+    // and find the same words. Before this band `say(id, words, failed?)` was
+    // one string and one boolean, so five situations rendered as two — and the
+    // pair that collapsed was the expensive one, because an operator reading a
+    // bounded page as the whole list concludes an account is absent when it is
+    // merely off screen.
+    let sources = panel_sources();
+    let states = sources
+        .iter()
+        .find(|(name, _)| name == "states.ts")
+        .map(|(_, text)| text.as_str())
+        .expect("states.ts is not among the sources this test read");
+    for kind in ["waiting", "empty", "partial", "wrong"] {
+        assert!(
+            states.contains(&format!("\"{kind}\"")),
+            "the state vocabulary no longer carries `{kind}`"
+        );
+    }
+
+    // Four DISTINCT renderings, asserted on the stylesheet the node serves.
+    // Four classes that all resolved to the same declarations would satisfy the
+    // vocabulary and none of the criterion.
+    let (_node, address) = node();
+    let (status, _, css) = get(&address, "/console.css");
+    assert_eq!(status, 200, "the console's stylesheet is not served");
+    let mut painted: Vec<String> = Vec::new();
+    for kind in ["waiting", "empty", "partial", "wrong"] {
+        let rule = format!(".is-{kind} {{");
+        let at = css
+            .find(&rule)
+            .unwrap_or_else(|| panic!("the stylesheet draws no `.is-{kind}`"));
+        let body = css[at.saturating_add(rule.len())..]
+            .split('}')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+        painted.push(body);
+    }
+    // `waiting` and `empty` may legitimately share a treatment — both are quiet
+    // and neither is urgent. What must differ is the pair the criterion names:
+    // partial from empty, and wrong from everything.
+    assert_ne!(
+        painted[1], painted[2],
+        "`empty` and `partial` are drawn identically, which is the collapse this \
+         criterion exists to prevent"
+    );
+    assert!(
+        painted[3] != painted[0] && painted[3] != painted[1] && painted[3] != painted[2],
+        "`wrong` is drawn like another state"
+    );
+
+    // And four distinct MESSAGES on the one path that has all four.
+    let users = sources
+        .iter()
+        .find(|(name, _)| name == "users.ts")
+        .map(|(_, text)| text.as_str())
+        .expect("users.ts is not among the sources this test read");
+    // The KINDS and not the call shape: `state("user-status"` misses every call
+    // the formatter wrapped across lines, which is three of the four here. A
+    // needle that depends on where a formatter chose to break a line is
+    // measuring the formatter.
+    let unspoken: Vec<&str> = ["waiting", "empty", "partial", "wrong"]
+        .into_iter()
+        .filter(|kind| !users.contains(&format!("\"{kind}\"")))
+        .collect();
+    assert!(
+        unspoken.is_empty(),
+        "the listing never reaches these states, though that screen has all \
+         four: {unspoken:?}"
+    );
+}
