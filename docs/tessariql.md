@@ -466,6 +466,45 @@ again. Nothing is redistributed by the statement and no repair step follows it:
 the log already holds every write the namespace ever took, so a node that begins
 replicating it replays that history from origin.
 
+**`MULTI MASTER` and `SINGLE LEADER` say how many nodes may WRITE a namespace**,
+which is a different question from how many copies of it exist. `DEFINE NAMESPACE
+shared MULTI MASTER` admits writes on more than one node; `SINGLE LEADER` admits
+them on one. The clause is optional and silence means a single leader — but a
+namespace that never said is still not a namespace that said `SINGLE LEADER`,
+kept apart for the reason the replication clause keeps its two, and `INFO FOR
+NAMESPACE` reports `class` alongside `replication` so the difference is readable
+rather than inferred.
+
+**What multi-master gives up is single-copy semantics, and it is a loss rather
+than a feature.** On a single-leader range every write passes through one node,
+so the versions of a record form a line and the newest of them is the answer. On
+a multi-master range two nodes can each accept a write to one record without
+having seen the other's, and the result is two versions of which **neither is
+newer**. There is no clock that settles it: the nodes' clocks are not
+comparable, and the order the versions happen to reach a third node is the order
+that node heard about them, not the order they were made. The engine cannot tell
+you which is right because nothing knows.
+
+**So it refuses, and names both.** A write onto a record that is in that state is
+rejected with the record's id, both surviving versions, and a node whose write
+one of them carries and the other has not seen — enough to go and read both and
+write what they mean. The refusal is the point: once a write is accepted on top
+of a contested record, no later read, dump or backup comparison can tell a record
+that was reconciled from one that was silently ranked, so the moment of the
+refusal is the only moment at which the choice is visible.
+
+**`LAST WRITER WINS` is the alternative, and its cost is that a write is
+discarded.** A table may declare `DEFINE TABLE ledger SCHEMALESS LAST WRITER
+WINS`, and on such a table a write onto a contested record is taken instead of
+refused: the incoming write supersedes every version it did not see. The last
+writer is the **caller** — the one whose write is being committed — and not a
+timestamp, so no clock is read. What is given up is the versions it did not see.
+They stay on disk, byte-intact, and they are gone from every answer; an operator
+auditing the store for data loss finds them and concludes nothing was lost. The
+engine therefore counts each one, and the count is readable, because a loss
+nobody records is a loss nobody can check. `REFUSE CONFLICTS` writes the default
+down where a reader can see it; a table that says neither refuses.
+
 **A consumer is ingestion the catalog holds rather than a script somebody
 remembered to start.** One `DEFINE KAFKA CONSUMER` says what to read (`FROM` brokers,
 `TOPIC`), under which group, in what `FORMAT`, where it lands (`INTO`), which
@@ -1734,6 +1773,18 @@ An edge table is the exception, and not really an exception: `DEFINE TABLE
 follows EDGE` declares no columns because nobody writes `out` and `in` by hand,
 so it is not a declaration with nothing in it — it is one whose fields the store
 supplies.
+
+**`LAST WRITER WINS` and `REFUSE CONFLICTS` say what the table does with a write
+it cannot order**, and they are table words because the answer differs from one
+table to the next inside one namespace: a ledger and a cache sit in the same
+database and do not want the same one. The clause composes with the others in any
+order — `DEFINE TABLE ledger SCHEMALESS LAST WRITER WINS` and `DEFINE TABLE
+ledger LAST WRITER WINS SCHEMALESS` declare the same table — and none of its four
+words is reserved, so a table called `wins` and a field called `last` still
+parse. `INFO FOR TABLE` reports `conflict`, and reports it as the empty value for
+a table that never said: silence here is a refusal by decision and not by
+default, and the two are told apart for the reason the namespace clause tells its
+two apart. The section on namespaces above says what is being chosen between.
 
 The flags stand after the column list, never before it — `DEFINE TABLE t
 SCHEMAFULL (…)` reads as though the parentheses qualified `SCHEMAFULL`, so it is
@@ -6215,10 +6266,21 @@ INFO FOR TABLE users;
 INFO FOR USER ada;
 INFO FOR ACCESS TO TABLE users;
 INFO FOR NODE;
+INFO FOR VERSIONS OF person:1;
 ```
 
 Each answers with an object read **from the catalog**, not from a description
 kept beside it — so a report cannot describe a schema the store no longer has:
+
+`INFO FOR VERSIONS OF` is the one that does not read the catalog: it reads one
+record's versions, and it is how a contested record is looked at. It answers with
+`answered` — the version an ordinary read resolves to, and the node that wrote it
+— `versions`, every surviving version newest first, and `concurrent`, which says
+whether more than one survives. On a settled record, which is nearly all of them,
+it reports one version and `concurrent: false`; it answers on a single-leader
+range too, because *is this contested?* is a question worth being able to ask
+anywhere. The node is the node that **wrote** the version, which is not always
+the node the version has seen the most writes from.
 
 ```json
 {"tables": ["orders", "users"]}

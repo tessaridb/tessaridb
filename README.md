@@ -138,6 +138,26 @@ possible rather than aspirational.
 | **Operable** | health and readiness endpoints, Prometheus metrics, graceful drain, log-as-backup with replay-as-restore |
 | **Specified** | the wire and value protocol is [published](https://github.com/TessariDB/TessariDB-protocol) with a shared conformance corpus, so a client in any language is written from the spec and not from our source |
 
+### Two writers on one range
+
+A namespace says how many nodes may write it. Declare `MULTI MASTER` and two
+nodes may each accept writes to the same record — which gives up single-copy
+semantics: two versions can exist of which **neither is newer**, and no clock
+settles it, because the nodes' clocks are not comparable and the order versions
+arrive somewhere is the order that node heard about them.
+
+The engine does not guess. A write onto a record in that state is **refused, and
+names both versions and a node whose write one of them has not seen** — enough to
+read both and write what they mean. Refusing is the point: once a write lands on
+top of a contested record, nothing afterwards can tell a record that was
+reconciled from one that was silently ranked.
+
+A table may choose otherwise. `LAST WRITER WINS` takes the write instead of
+refusing it, and the cost is stated rather than implied: the versions it did not
+see are discarded — still on disk, gone from every answer — so the engine counts
+each one and the count is readable. `INFO FOR VERSIONS OF person:1` returns every
+surviving version and the node that wrote it.
+
 ## Status
 
 **Stage: active development · `0.1.1-beta` · not published to crates.io.** What

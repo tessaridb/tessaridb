@@ -1052,3 +1052,77 @@ fn a_write_claims_no_epoch_it_was_not_already_carrying() {
         CARRIER.1, CARRIER.0,
     );
 }
+
+/// What the language reference must say about two writers on one range, and
+/// where.
+///
+/// Each row is a phrase and the file that must carry it. The clause words are
+/// the grammar; `single-copy semantics` and `discarded` are the GUARANTEE, and
+/// they are separate rows deliberately — a reference that listed the clauses
+/// without saying what choosing one costs would tell a reader how to ask for
+/// something and not what they were agreeing to.
+const PROMISED: [(&str, &str); 10] = [
+    ("docs/tessariql.md", "MULTI MASTER"),
+    ("docs/tessariql.md", "SINGLE LEADER"),
+    ("docs/tessariql.md", "LAST WRITER WINS"),
+    ("docs/tessariql.md", "REFUSE CONFLICTS"),
+    ("docs/tessariql.md", "INFO FOR VERSIONS OF"),
+    ("docs/tessariql.md", "single-copy semantics"),
+    ("docs/tessariql.md", "neither is newer"),
+    ("README.md", "MULTI MASTER"),
+    ("README.md", "single-copy semantics"),
+    ("README.md", "LAST WRITER WINS"),
+];
+
+#[test]
+fn the_documentation_says_what_multi_master_gives_up() {
+    // G027 S4.2. Four waves shipped this grammar and, until the wave that added
+    // this test, the language reference contained none of it — not one of the
+    // clauses and not a word about what declaring one costs.
+    //
+    // It is asserted rather than trusted for the reason a stored flag missing
+    // from `INFO FOR TABLE` is a defect rather than an omission: documentation
+    // that has fallen behind the engine reads exactly like documentation that
+    // has not, and nothing is in an error state while a reader acts on it.
+    //
+    // Phrases, not paraphrase. A test that searched for the IDEA would pass on
+    // any page that mentioned replication, and a test that compared whole
+    // paragraphs would fail on every edit that improved one.
+    let mut silent = Vec::new();
+    for (file, phrase) in PROMISED {
+        let path = repo().join(file);
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|why| panic!("{} is not readable: {why}", path.display()));
+        if !flattened(&text).contains(phrase) {
+            silent.push(format!("{file} does not say `{phrase}`"));
+        }
+    }
+
+    assert!(
+        silent.is_empty(),
+        "the engine promises something its own documentation does not state:\n  {}\n\n\
+         A multi-master range gives up single-copy semantics: two versions of a \
+         record can exist of which neither is newer, and no clock settles it. \
+         The engine refuses a write onto that record and names both versions, \
+         and a table may declare `LAST WRITER WINS` instead — at the cost of \
+         discarding the versions the incoming write did not see. A reader who \
+         cannot find that in the reference finds it in production.",
+        silent.join("\n  "),
+    );
+}
+
+/// Prose with its line breaks and emphasis taken out, so a phrase can be looked
+/// for as a phrase.
+///
+/// These files are hard-wrapped and the sentences worth asserting carry bold
+/// inside them, so `single-copy semantics` is genuinely present while
+/// `contains` says it is not — the words are split by a newline, or by a `**`
+/// that closes in the middle. Rewording the prose to keep each asserted phrase
+/// on one unemphasised line would make every later edit to a paragraph a test
+/// failure, which teaches the next author to delete the assertion.
+fn flattened(text: &str) -> String {
+    text.replace('*', "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
