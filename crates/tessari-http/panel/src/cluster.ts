@@ -21,6 +21,31 @@ export const cluster = (): Node =>
       // thing it was read from — that is the same rule the statement log
       // follows for statements.
       el("div", { id: "cluster-map", class: "map" }),
+      // The drawer sits inside the pane and over the map, so opening it never
+      // costs the view the decision is being made against.
+      el(
+        "div",
+        { id: "drawer", class: "sheet drawer", hidden: true },
+        row(
+          "spread",
+          el("h3", { id: "drawer-title" }, "a node"),
+          button("drawer-close", "Close", "quiet"),
+        ),
+        el("div", { id: "drawer-missing" }),
+        row(
+          "default",
+          ...["serving", "writable", "coordinating"].map((bit) =>
+            field(bit, el("input", { id: `drawer-${bit}`, type: "checkbox" }), { class: "tick" }),
+          ),
+        ),
+        says("drawer-says"),
+        row("default", button("drawer-apply", "Declare it", "primary"), status("drawer-status")),
+        note(
+          "Draining this node and handing leadership over are the other two things " +
+            "you would come here for, and neither has a statement behind it yet — so " +
+            "this drawer does not offer a control that would compose nothing.",
+        ),
+      ),
       behindDisclosure("The answer this was drawn from", answer("cluster-facts", "small")),
     ),
     pane(
@@ -79,14 +104,12 @@ export const cluster = (): Node =>
           "case this engine does not serve.",
       ),
       note(
-        el("strong", {}, "This pane is not yet a cluster surface."),
-        " Nothing here manages anything: roles, failover, standby nodes, data " +
-          "placement and a live map of cluster state are being designed, and are " +
-          "deliberately absent rather than stubbed. Nor does it draw lag or " +
-          "leadership for other nodes — nothing pulls a replica forward on a timer, " +
-          "so a node that is not writing has no last collection its copy could be " +
-          "measured from, and a number invented here would be the dashboard drawn " +
-          "ahead of the engine that makes the rest of this console untrustworthy.",
+        el("strong", {}, "No lag figure, and no leadership for other nodes."),
+        " Nothing pulls a replica forward on a timer, so a node that is not writing " +
+          "has no last collection its copy could be measured from; and this node " +
+          "knows which lease it holds, never which lease somebody else holds. A " +
+          "number invented for either would be the dashboard drawn ahead of the " +
+          "engine, which is what makes the rest of a console untrustworthy.",
       ),
     ),
   );

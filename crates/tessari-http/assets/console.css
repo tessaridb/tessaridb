@@ -608,6 +608,31 @@ hr.between {
   margin: 1.25rem 0 0.25rem;
 }
 
+/* Over the map, not instead of it. The map is the context the decision is being
+   made in — a node during a failover is being read relative to the others — so a
+   navigation that replaced the view would take away the reason it was opened. */
+.sheet.drawer {
+  position: absolute;
+  left: var(--s-3);
+  right: var(--s-3);
+  top: var(--s-5);
+  z-index: 8;
+  max-width: 34rem;
+}
+
+.pane {
+  position: relative;
+}
+
+.node[role="button"] {
+  cursor: pointer;
+  text-align: left;
+}
+
+.node[role="button"]:hover {
+  border-color: var(--line-strong);
+}
+
 /* A checkbox and its word, reading left to right like the sentence it is. The
    other `field`s on the page put the label above the control; a tick reads the
    other way round, and forcing it into the column shape would put a word above

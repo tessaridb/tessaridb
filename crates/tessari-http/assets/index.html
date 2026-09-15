@@ -97,6 +97,24 @@
             <span id="cluster-status" class="status" role="status"></span>
           </div>
           <div id="cluster-map" class="map"></div>
+          <div id="drawer" class="sheet drawer" hidden>
+            <div class="row spread">
+              <h3 id="drawer-title">a node</h3>
+              <button id="drawer-close" type="button" class="quiet">Close</button>
+            </div>
+            <div id="drawer-missing"></div>
+            <div class="row">
+              <label class="tick">serving <input id="drawer-serving" type="checkbox" /></label>
+              <label class="tick">writable <input id="drawer-writable" type="checkbox" /></label>
+              <label class="tick">coordinating <input id="drawer-coordinating" type="checkbox" /></label>
+            </div>
+            <p id="drawer-says" class="note says"></p>
+            <div class="row">
+              <button id="drawer-apply" type="button" class="primary">Declare it</button>
+              <span id="drawer-status" class="status" role="status"></span>
+            </div>
+            <p class="note">Draining this node and handing leadership over are the other two things you would come here for, and neither has a statement behind it yet — so this drawer does not offer a control that would compose nothing.</p>
+          </div>
           <details class="tucked">
             <summary>The answer this was drawn from</summary>
             <div id="cluster-facts" class="answer small" aria-live="polite"></div>
@@ -164,7 +182,7 @@
           <p class="note">What the pane above shows is what this node itself knows: its own roles, the peers it has been told about, and the addresses it answers on. It is read from the node, not from anything standing beside it.</p>
           <p class="note">Membership is a record and not a control plane: a node learns its peers through the same log it replicates data with, so there is nothing to stand up beside the database. A namespace declares how many copies the cluster keeps, and a peer's subscription decides which of them it receives. A leader holds a renewable lease granted by a majority and stops writing before that lease expires, measured on elapsed time rather than on the clock. A read may name the staleness it will accept, and a bound tighter than the cluster can know about itself is refused with the floor named. A write sent to the wrong node comes back as a redirect carrying the endpoint, the node and the epoch it was decided under. A divergence is refused at the first divergent record and counted, never silently ranked.</p>
           <p class="note warn"><strong>There is no sharding.</strong> Every node that holds a namespace holds all of it; one dataset is not split across machines by key. A namespace larger than one machine is the case this engine does not serve.</p>
-          <p class="note"><strong>This pane is not yet a cluster surface.</strong> Nothing here manages anything: roles, failover, standby nodes, data placement and a live map of cluster state are being designed, and are deliberately absent rather than stubbed. Nor does it draw lag or leadership for other nodes — nothing pulls a replica forward on a timer, so a node that is not writing has no last collection its copy could be measured from, and a number invented here would be the dashboard drawn ahead of the engine that makes the rest of this console untrustworthy.</p>
+          <p class="note"><strong>No lag figure, and no leadership for other nodes.</strong> Nothing pulls a replica forward on a timer, so a node that is not writing has no last collection its copy could be measured from; and this node knows which lease it holds, never which lease somebody else holds. A number invented for either would be the dashboard drawn ahead of the engine, which is what makes the rest of a console untrustworthy.</p>
         </div>
       </section>
       <section id="panel-access" role="tabpanel" aria-labelledby="tab-access" tabindex="0" hidden>

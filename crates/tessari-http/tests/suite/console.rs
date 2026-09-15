@@ -522,17 +522,22 @@ const ACCEPTED_NEGATIONS: &[(&str, &str)] = &[
         "Membership is a record and not a control plane: a node learns its peers through the same log it replicates data with, so there is nothing to stand up beside the database.",
         "True: membership is stored as a record, so no separate coordination service exists.",
     ),
+    // The entry that used to sit here said "This pane is not yet a cluster
+    // surface", with a note to delete it when the map shipped. The map shipped
+    // in W317, the sentence became false, and this test is what said so —
+    // which is the whole reason the record carries a deletion condition rather
+    // than a permanent blessing.
     (
-        "This pane is not yet a cluster surface.",
-        "True while the pane draws facts rather than managing anything. Delete when the cluster map ships (G026 S4).",
+        "No lag figure, and no leadership for other nodes.",
+        "True: there is no follower loop, so a non-writing node's copy has no last collection to measure a lag from; and `cluster.lease` is this node's own lease, never a peer's.",
     ),
     (
-        "Nothing here manages anything: roles, failover, standby nodes, data placement and a live map of cluster state are being designed, and are deliberately absent rather than stubbed.",
-        "True while G026 S4 is open. Delete when the map and the node drawer ship.",
+        "Nothing pulls a replica forward on a timer, so a node that is not writing has no last collection its copy could be measured from; and this node knows which lease it holds, never which lease somebody else holds.",
+        "True: the same two absences as the heading above it, stated as the reason rather than as the claim. Recorded separately because the splitter ends a sentence at the strong tag, so a heading and its explanation are two entries.",
     ),
     (
-        "Nor does it draw lag or leadership for other nodes — nothing pulls a replica forward on a timer, so a node that is not writing has no last collection its copy could be measured from, and a number invented here would be the dashboard drawn ahead of the engine that makes the rest of this console untrustworthy.",
-        "True: there is no follower loop, so per-node lag has no honest value.",
+        "Draining this node and handing leadership over are the other two things you would come here for, and neither has a statement behind it yet — so this drawer does not offer a control that would compose nothing.",
+        "True, and measured (Q-682, Q-683): `ROLES NONE` and `ROLES ;` are parse errors, there is no `DRAIN`, omitting `ROLES` means leave them alone, and the grammar carries no HANDOVER / STEP DOWN / YIELD. Delete when either verb exists.",
     ),
 ];
 

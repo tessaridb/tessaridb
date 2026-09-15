@@ -460,6 +460,128 @@
     }
   }
 
+  // src/drawer.ts
+  //! One node, over the map.
+  //!
+  //! A drawer rather than a screen, because the map is the context the decision is
+  //! being made in: an operator looking at a node during a failover is looking at
+  //! it *relative to the others*, and a navigation that replaces the view takes
+  //! away the reason they opened it.
+  //!
+  //! # It carries one action, and says why it is one
+  //!
+  //! The band asks for three — a role change, a drain, and a hand-over. Only the
+  //! first has a statement behind it, and that was searched rather than assumed:
+  //!
+  //! - **drain** — `Roles::NONE` is a real state and the engine's source calls it
+  //!   the operator's own drain, but `ROLES NONE` and `ROLES ;` are parse errors,
+  //!   there is no `DRAIN`, and omitting `ROLES` means *leave them alone*.
+  //! - **hand-over** — no `HANDOVER`, `STEP DOWN` or `YIELD` in the grammar.
+  //!
+  //! So the drawer names them and offers no control for them. A button that
+  //! composes no statement is a button that lies, and on this screen it would lie
+  //! about the one thing an operator opens the screen to do.
+  //!
+  //! # A peer cannot be changed from here at all, and that was measured
+  //!
+  //! The drawer first offered the role change on any node. A running node refused
+  //! it, which is the right way to learn it:
+  //!
+  //! - `DEFINE REPLICA warsaw …` again → *"the name rp:warsaw is already in use"*
+  //! - `ALTER REPLICA warsaw SET ROLES …` → `ALTER` takes only `NAMESPACE`,
+  //!   `USER` or `TABLE`
+  //! - `DROP REPLICA warsaw` → *"this node is in a cluster and holds no
+  //!   leadership: it does not accept writes until a majority grants it one"*
+  //!
+  //! So a clustered node can declare its membership once and then cannot amend it
+  //! from the query surface. **This node's own roles are the exception**, because
+  //! `DEFINE NODE` writes to the local `META` keyspace rather than through the
+  //! log, so the fence does not apply — verified on the same clustered node.
+  //!
+  //! The drawer therefore offers the control on this node and, on a peer, says
+  //! what it would take. Offering it everywhere would have composed a statement
+  //! that always fails, which is a button that lies in the slower way: it looks
+  //! right until the one moment somebody needs it.
+  var open = null;
+  var BITS = ["serving", "writable", "coordinating"];
+  function ticked() {
+    return BITS.filter((bit) => at(`drawer-${bit}`).checked);
+  }
+  function change(subject, roles) {
+    if (subject === null || roles.length === 0) {
+      return null;
+    }
+    return subject.self ? `DEFINE NODE ROLES ${roles.join(", ")};` : null;
+  }
+  function preview() {
+    if (open === null) {
+      return;
+    }
+    if (!open.self) {
+      say(
+        "drawer-says",
+        `A peer's row cannot be amended from here: there is no ALTER REPLICA, a second DEFINE REPLICA is refused for the name already in use, and DROP REPLICA is refused while this node holds no leadership.`
+      );
+      return;
+    }
+    const roles = ticked();
+    if (roles.length === 0) {
+      say("drawer-says", "at least one role — there is no statement that clears them all", true);
+      return;
+    }
+    say("drawer-says", `Sets this node's roles to ${roles.join(", ")}.`);
+  }
+  function show2(subject) {
+    open = subject;
+    at("drawer-title").textContent = subject.self ? "This node" : subject.name;
+    for (const bit of BITS) {
+      at(`drawer-${bit}`).checked = subject.roles.includes(bit);
+    }
+    clear("drawer-missing");
+    for (const bit of BITS) {
+      at(`drawer-${bit}`).disabled = !subject.self;
+    }
+    hide("drawer-apply", !subject.self);
+    if (!subject.self) {
+      const note = made("p", "faint");
+      note.textContent = `${subject.name} answers on ${subject.endpoint ?? "an address this node did not record"}.`;
+      at("drawer-missing").appendChild(note);
+    }
+    say("drawer-status", "");
+    preview();
+    hide("drawer", false);
+    at("drawer-close").focus();
+  }
+  function closeIt2() {
+    hide("drawer", true);
+    open = null;
+  }
+  function wire4() {
+    for (const bit of BITS) {
+      at(`drawer-${bit}`).addEventListener("change", preview);
+    }
+    at("drawer-close").addEventListener("click", closeIt2);
+    document.addEventListener("keydown", (pressed) => {
+      if (pressed.key === "Escape" && !at("drawer").hidden) {
+        closeIt2();
+      }
+    });
+    at("drawer-apply").addEventListener("click", async () => {
+      const statement = change(open, ticked());
+      if (statement === null) {
+        say("drawer-status", "there is nothing this drawer can send for that", true);
+        return;
+      }
+      say("drawer-status", "running…");
+      try {
+        const answered2 = await valueOf(statement, "Cluster · roles");
+        say("drawer-status", answered2 !== null && answered2.kind === "done" ? "declared" : "");
+      } catch (failure) {
+        say("drawer-status", told(failure), true);
+      }
+    });
+  }
+
   // src/roster.ts
   //! What the panel has been told about who exists.
   //!
@@ -585,7 +707,7 @@
     }
     return "a space is needed — or choose the whole node, which is not the same thing";
   }
-  function preview() {
+  function preview2() {
     write("role-says", MEANS[value("new-role")] ?? "");
     const space = reach();
     const statement = definition();
@@ -597,7 +719,7 @@
   function shapeTheForm() {
     hide("scope-field", value("new-reach") === "node");
     hide("role-other-field", value("new-role") !== "other");
-    preview();
+    preview2();
   }
   function changedRole() {
     const chosen = value("change-role");
@@ -655,7 +777,7 @@
     );
     write("remove-preview", statement ?? "");
   }
-  function wire4() {
+  function wire5() {
     for (const field of [
       "new-name",
       "new-scope",
@@ -754,7 +876,7 @@
     );
     return ["BEGIN;", ...declarations, "COMMIT;"].join("\n");
   }
-  function preview2() {
+  function preview3() {
     const rows = intended();
     const missing2 = incomplete(rows);
     if (rows.length === 0) {
@@ -778,7 +900,7 @@
     block.textContent = rows.length === 0 || incomplete(rows) !== null ? "" : formation(rows);
     at("form-statement").appendChild(block);
   }
-  function wire5() {
+  function wire6() {
     for (let index = 0; index < ROWS; index += 1) {
       for (const field of [
         ...rowFields(index),
@@ -787,11 +909,11 @@
         `peer-${index}-coordinating`
       ]) {
         at(field).addEventListener("input", () => {
-          preview2();
+          preview3();
           showStatement();
         });
         at(field).addEventListener("change", () => {
-          preview2();
+          preview3();
           showStatement();
         });
       }
@@ -815,7 +937,7 @@
         say("form-status", told(failure), true);
       }
     });
-    preview2();
+    preview3();
     showStatement();
   }
 
@@ -936,7 +1058,7 @@
   //! drawn as declarations and labelled as declarations; drawing them filled, like
   //! this node's reported ones, would be the map claiming an observation nobody
   //! made.
-  var BITS = [
+  var BITS2 = [
     { name: "serving", letter: "S", means: "answers client requests" },
     { name: "writable", letter: "W", means: "accepts writes rather than forwarding them" },
     { name: "coordinating", letter: "C", means: "takes part in deciding, not only in storing" }
@@ -953,7 +1075,7 @@
   }
   function lamps(has, wanted2) {
     const row = made("div", "lamps");
-    for (const bit of BITS) {
+    for (const bit of BITS2) {
       const held3 = has.includes(bit.name);
       const asked2 = wanted2 !== null && wanted2.includes(bit.name);
       row.appendChild(lamp(bit.letter, held3 ? "held" : asked2 ? "wanted" : "off", bit.means));
@@ -984,8 +1106,18 @@
     return badge;
   }
   var drained = (has) => has.length === 0;
-  function figure(title, has, wanted2, facts2, kind) {
+  function figure(title, has, wanted2, facts2, kind, subject) {
     const box = made("article", "node " + kind);
+    box.tabIndex = 0;
+    box.setAttribute("role", "button");
+    box.setAttribute("aria-label", `${title} — open its drawer`);
+    box.addEventListener("click", () => show2(subject));
+    box.addEventListener("keydown", (pressed) => {
+      if (pressed.key === "Enter" || pressed.key === " ") {
+        pressed.preventDefault();
+        show2(subject);
+      }
+    });
     const head = made("div", "node-head");
     const name = made("h3");
     name.textContent = title;
@@ -1025,7 +1157,8 @@
         fact("collecting from here", String((cluster.followers ?? []).length)),
         wanted2 === null ? null : fact("declared for it", wanted2.join(", "))
       ],
-      "self"
+      "self",
+      { name: "This node", self: true, endpoint: null, node: null, roles: mine }
     );
     into.appendChild(self);
     for (const peer of cluster.peers ?? []) {
@@ -1039,7 +1172,14 @@
             fact("id", told2(peer.node)),
             fact("replicates", told2(peer.replicates))
           ],
-          "peer"
+          "peer",
+          {
+            name: peer.name ?? "",
+            self: false,
+            endpoint: peer.endpoint ?? null,
+            node: peer.node ?? null,
+            roles: peer.roles ?? []
+          }
         )
       );
     }
@@ -1106,7 +1246,7 @@
     );
     say("node-status", "");
   }
-  function wire6() {
+  function wire7() {
     at("node-refresh").addEventListener("click", readNode);
     let read = false;
     for (const tab of ["tab-this-node", "tab-cluster"]) {
@@ -1129,7 +1269,7 @@
     const differ = fresh !== "" && again !== "" && fresh !== again;
     say("mine-status", differ ? "the two new ones differ" : "", differ);
   }
-  function wire7() {
+  function wire8() {
     for (const field of ["mine-current", "mine-new", "mine-again"]) {
       at(field).addEventListener("input", shapeMine);
     }
@@ -1231,7 +1371,7 @@
       say("script-status", "the node did not answer: " + told(failure), true);
     }
   }
-  function wire8() {
+  function wire9() {
     for (const button of all("[data-shape]")) {
       button.addEventListener("click", () => {
         drawing = button.dataset["shape"] ?? "auto";
@@ -1334,7 +1474,7 @@
     }
     write("search-says", "nothing here answers to that name");
   }
-  function wire9() {
+  function wire10() {
     at("search").addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -1453,7 +1593,7 @@
     }
     write("user-count", tally(matched));
   }
-  function wire10() {
+  function wire11() {
     at("list").addEventListener("click", listUsers);
     at("user-filter").addEventListener("input", redraw);
     at("tab-access").addEventListener("click", () => {
@@ -1560,7 +1700,7 @@
       say("watch-status", words);
     }
   }
-  function change(what) {
+  function change2(what) {
     const line = made("li");
     const became = typeof what.became === "string" ? what.became : "";
     line.classList.add(became === "removed" ? "removed" : "written");
@@ -1596,7 +1736,7 @@
     }
     return wanted2;
   }
-  function wire11() {
+  function wire12() {
     at("follow").addEventListener("click", () => {
       stop();
       clear("changes");
@@ -1625,7 +1765,7 @@
           say("watch-status", what.error, true);
           return;
         }
-        change(what);
+        change2(what);
       });
       socket.addEventListener("close", (event) => {
         stop(event.code === 1001 ? "the node is stopping" : "stopped");
@@ -1659,12 +1799,13 @@
   wire2();
   wire();
   wire3();
-  wire8();
   wire9();
-  wire5();
-  wire11();
-  wire4();
   wire10();
   wire6();
+  wire4();
+  wire12();
+  wire5();
+  wire11();
   wire7();
+  wire8();
 })();

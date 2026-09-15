@@ -36,6 +36,7 @@
 //! made.
 
 import { made } from "./dom.js";
+import { show, type Subject } from "./drawer.js";
 
 /** The three bits, in the order the engine defines them. */
 const BITS: readonly { readonly name: string; readonly letter: string; readonly means: string }[] =
@@ -148,8 +149,23 @@ function figure(
   wanted: readonly string[] | null,
   facts: readonly (HTMLElement | null)[],
   kind: "self" | "peer",
+  subject: Subject,
 ): HTMLElement {
+  // A figure is a button, not a div with a click handler: the drawer is reached
+  // by keyboard and named to a screen reader for the same reason every other
+  // control on this page is, and the map is the one place where "it is just a
+  // diagram" would have been the excuse for skipping it.
   const box = made("article", "node " + kind);
+  box.tabIndex = 0;
+  box.setAttribute("role", "button");
+  box.setAttribute("aria-label", `${title} — open its drawer`);
+  box.addEventListener("click", () => show(subject));
+  box.addEventListener("keydown", (pressed) => {
+    if (pressed.key === "Enter" || pressed.key === " ") {
+      pressed.preventDefault();
+      show(subject);
+    }
+  });
   const head = made("div", "node-head");
   const name = made("h3");
   name.textContent = title;
@@ -196,6 +212,7 @@ export function draw(into: HTMLElement, seen: Seen): void {
       wanted === null ? null : fact("declared for it", wanted.join(", ")),
     ],
     "self",
+    { name: "This node", self: true, endpoint: null, node: null, roles: mine },
   );
   into.appendChild(self);
 
@@ -211,6 +228,13 @@ export function draw(into: HTMLElement, seen: Seen): void {
           fact("replicates", told(peer.replicates)),
         ],
         "peer",
+        {
+          name: peer.name ?? "",
+          self: false,
+          endpoint: peer.endpoint ?? null,
+          node: peer.node ?? null,
+          roles: peer.roles ?? [],
+        },
       ),
     );
   }
