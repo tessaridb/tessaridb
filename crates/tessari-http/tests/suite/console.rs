@@ -877,15 +877,22 @@ fn no_screen_but_run_asks_the_operator_to_read_a_statement() {
             *id, "remove-preview",
             "a screen outside Run draws a statement for the operator to read"
         );
-        let disclosure = page
-            .find("<details class=\"statement\">")
+        // The NEAREST enclosing disclosure, not the first one on the page. The
+        // first version took `<details class="statement">` as a stand-in for
+        // *the disclosure holding this preview*, which held only while there
+        // was one on the page — the cluster map's raw answer arrived behind a
+        // second one, earlier in document order, and the assertion inverted.
+        // The class is now named for the pattern rather than for a content it
+        // once had, and this looks backwards from the element itself.
+        let disclosure = page[..at]
+            .rfind("<details class=\"tucked\">")
             .expect("the removal's statement sits behind a disclosure");
         let closed = page[disclosure..]
             .find("</details>")
             .map(|end| disclosure.saturating_add(end))
             .expect("the disclosure closes");
         assert!(
-            disclosure < at && at < closed,
+            at < closed,
             "the removal's statement is not inside the disclosure that should \
              hold it"
         );

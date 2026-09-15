@@ -190,16 +190,16 @@
     why.textContent = one2.why === void 0 ? "" : "Why: " + one2.why;
     why.hidden = one2.why === void 0;
     const actions = made("div", "row tight");
-    const told2 = made("span", "status");
+    const told3 = made("span", "status");
     const copied = made("button", "quiet");
     copied.type = "button";
     copied.textContent = "Copy";
-    copied.addEventListener("click", () => copy(one2.what, what, told2));
+    copied.addEventListener("click", () => copy(one2.what, what, told3));
     const opened = made("button", "quiet");
     opened.type = "button";
     opened.textContent = "Open in Run";
     opened.addEventListener("click", () => reopen(one2.what));
-    actions.append(copied, opened, told2);
+    actions.append(copied, opened, told3);
     row.append(head, what, said3, why, actions);
     return row;
   }
@@ -540,6 +540,152 @@
     at(where2).appendChild(table);
   }
 
+  // src/map.ts
+  //! The cluster, drawn.
+  //!
+  //! The one signature element of this console, and the thing the owner asked for
+  //! by name. Everything here comes from `INFO FOR NODE` and nothing is inferred:
+  //! the fields, and the reasons each may or may not be drawn, are settled in the
+  //! data contract at `reports/2026-09-15-190000-g026-cluster-map-data-contract.md`,
+  //! which was itself derived by running a node rather than by reading anything.
+  //!
+  //! # Three lamps, not one badge
+  //!
+  //! A role is three INDEPENDENT bits — serving, writable, coordinating — so there
+  //! are eight combinations and no taxonomy of *leader / follower / standby* to
+  //! draw. Three mutually exclusive badges would be inventing one, and would have
+  //! no way at all to show the state the engine calls out as the operator's own
+  //! drain mechanism: no roles at all, which is a node still holding its data and
+  //! answering nothing.
+  //!
+  //! Each lamp carries its LETTER. Meaning never rests on colour alone — not for a
+  //! reader who cannot separate two of them, and not on a projector at the back of
+  //! an incident room.
+  //!
+  //! # Leadership is a lease, not a role
+  //!
+  //! `coordinating` means the node may STAND FOR leadership. Whether it holds it
+  //! is `cluster.lease`, and the lease has an expiry. A leadership marker without
+  //! a clock implies a permanence the engine never promised — and the engine's own
+  //! source carries a note about an earlier version that read the role where it
+  //! should have read the lease.
+  //!
+  //! # A peer's lamps are DECLARED and say so
+  //!
+  //! This node knows what it declared about a peer. It has not asked the peer what
+  //! it reports, and there is no field that would answer. So a peer's lamps are
+  //! drawn as declarations and labelled as declarations; drawing them filled, like
+  //! this node's reported ones, would be the map claiming an observation nobody
+  //! made.
+  var BITS = [
+    { name: "serving", letter: "S", means: "answers client requests" },
+    { name: "writable", letter: "W", means: "accepts writes rather than forwarding them" },
+    { name: "coordinating", letter: "C", means: "takes part in deciding, not only in storing" }
+  ];
+  function lamp(letter, state, title) {
+    const one2 = made("span", "lamp " + state);
+    one2.textContent = letter;
+    one2.title = title;
+    one2.setAttribute(
+      "aria-label",
+      `${title} — ${state === "held" ? "held" : state === "wanted" ? "declared, not yet held" : "not held"}`
+    );
+    return one2;
+  }
+  function lamps(has, wanted2) {
+    const row = made("div", "lamps");
+    for (const bit of BITS) {
+      const held3 = has.includes(bit.name);
+      const asked2 = wanted2 !== null && wanted2.includes(bit.name);
+      row.appendChild(lamp(bit.letter, held3 ? "held" : asked2 ? "wanted" : "off", bit.means));
+    }
+    return row;
+  }
+  function fact(label, said3) {
+    if (said3 === null) {
+      return null;
+    }
+    const line = made("div", "fact");
+    const name = made("span", "faint");
+    name.textContent = label;
+    const value2 = made("span", "fact-value");
+    value2.textContent = said3;
+    line.append(name, value2);
+    return line;
+  }
+  var told2 = (value2) => value2 === void 0 || value2 === null ? null : String(value2);
+  function lease(held3) {
+    if (held3 === void 0 || held3 === null) {
+      return null;
+    }
+    const badge = made("div", "lease");
+    const held_ = held3;
+    const until = told2(held_.until ?? held_.expires ?? held3);
+    badge.textContent = until === null ? "holds the lease" : `holds the lease until ${until}`;
+    return badge;
+  }
+  var drained = (has) => has.length === 0;
+  function figure(title, has, wanted2, facts2, kind) {
+    const box = made("article", "node " + kind);
+    const head = made("div", "node-head");
+    const name = made("h3");
+    name.textContent = title;
+    head.append(name, lamps(has, wanted2));
+    box.appendChild(head);
+    if (drained(has)) {
+      const note = made("p", "note warn");
+      note.textContent = kind === "self" ? "Drained — it holds its data and answers nothing." : "Declared with no roles — drained.";
+      box.appendChild(note);
+    }
+    if (kind === "peer") {
+      const note = made("p", "faint");
+      note.textContent = "lamps as declared here; this node has not asked it";
+      box.appendChild(note);
+    }
+    for (const one2 of facts2) {
+      if (one2 !== null) {
+        box.appendChild(one2);
+      }
+    }
+    return box;
+  }
+  function draw2(into, seen) {
+    const cluster = seen.cluster ?? {};
+    const mine = seen.roles ?? [];
+    const wanted2 = cluster.desired ?? null;
+    const self = figure(
+      "This node",
+      mine,
+      wanted2,
+      [
+        lease(cluster.lease),
+        fact("id", told2(seen.id)),
+        fact("answers on", (seen.endpoints ?? []).join(", ") || null),
+        fact("epoch", told2(cluster.epoch)),
+        fact("campaigns", told2(cluster.campaigns)),
+        fact("collecting from here", String((cluster.followers ?? []).length)),
+        wanted2 === null ? null : fact("declared for it", wanted2.join(", "))
+      ],
+      "self"
+    );
+    into.appendChild(self);
+    for (const peer of cluster.peers ?? []) {
+      into.appendChild(
+        figure(
+          peer.name ?? "(unnamed peer)",
+          peer.roles ?? [],
+          null,
+          [
+            fact("answers on", told2(peer.endpoint)),
+            fact("id", told2(peer.node)),
+            fact("replicates", told2(peer.replicates))
+          ],
+          "peer"
+        )
+      );
+    }
+  }
+
   // src/node.ts
   //! This machine, and what the cluster tab can say about it today.
   //!
@@ -574,6 +720,8 @@
       const { cluster, ...mine } = all2;
       facts("node-facts", mine);
       const peers = typeof cluster === "object" && cluster !== null ? cluster.peers : void 0;
+      clear("cluster-map");
+      draw2(at("cluster-map"), all2);
       facts("cluster-facts", {
         roles: all2["roles"],
         peers: peers ?? [],

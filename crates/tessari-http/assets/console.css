@@ -608,6 +608,113 @@ hr.between {
   margin: 1.25rem 0 0.25rem;
 }
 
+/* ──────────────────────────────────────────────────── the cluster map ── */
+
+.map {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  margin: 0 0 var(--s-3);
+}
+
+.node {
+  flex: 1 1 18rem;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--s-3);
+  background: var(--surface-raised);
+}
+
+/* This node is the one the reader is connected to, and the border says so. A
+   second colour would be a second thing to learn; a stronger line is read
+   without being explained. */
+.node.self {
+  border-color: var(--accent-edge);
+}
+
+.node-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  margin-bottom: var(--s-2);
+}
+
+.node-head h3 {
+  font-size: var(--t-14);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.lamps {
+  display: flex;
+  gap: var(--s-1);
+  flex: 0 0 auto;
+}
+
+/* Each lamp carries its letter, so the three states are legible without colour
+   at all: filled, outlined, and faint. A reader who cannot separate two hues
+   still reads S, W and C, and so does a projector at the back of a room. */
+.lamp {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: var(--radius-small);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-12);
+  border: 1px solid var(--line-strong);
+  color: var(--text-muted);
+}
+
+.lamp.held {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--surface);
+}
+
+/* Declared and not yet reported: an outline in the accent, which is a
+   reconciliation in progress and the only honest way to draw a failover while
+   it is happening. */
+.lamp.wanted {
+  border-color: var(--accent);
+  border-style: dashed;
+  color: var(--accent-text);
+}
+
+.lamp.off {
+  opacity: 0.55;
+}
+
+.lease {
+  font-size: var(--t-12);
+  color: var(--accent-text);
+  border: 1px solid var(--accent-edge);
+  border-radius: var(--radius-small);
+  padding: var(--s-1) var(--s-2);
+  margin-bottom: var(--s-2);
+  display: inline-block;
+}
+
+.fact {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s-3);
+  font-size: var(--t-12);
+  padding: var(--s-1) 0;
+  border-top: 1px solid var(--line);
+}
+
+.fact-value {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
 /* ──────────────────────────────────────────────── finding a thing ── */
 
 /* The search field sits in the bar between the mark and the identity, so it is
@@ -665,11 +772,11 @@ label.wide input {
    the thing that runs, and that needs it readable rather than read. The marker
    is the browser's own, because a disclosure nobody recognises as one is a
    paragraph with a strange margin. */
-details.statement {
+details.tucked {
   margin: 0 0 var(--s-3);
 }
 
-details.statement > summary {
+details.tucked > summary {
   color: var(--text-faint);
   font-size: var(--t-12);
   cursor: pointer;

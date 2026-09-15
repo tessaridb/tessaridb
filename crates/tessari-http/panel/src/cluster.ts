@@ -5,13 +5,23 @@
 
 import { el, type Node } from "./html.js";
 import { to } from "./destinations.js";
-import { answer, note, pane, paneHead, panel, status, warning } from "./ui.js";
+import {
+  answer, behindDisclosure, note, pane, paneHead, panel, status, warning,
+} from "./ui.js";
 
 export const cluster = (): Node =>
   panel(
     to("cluster"),
     false,
-    pane(paneHead("Membership", status("cluster-status")), answer("cluster-facts", "small")),
+    pane(
+      paneHead("The cluster, as this node sees it", status("cluster-status")),
+      // The map, and the raw answer under it. Both, because the map is a
+      // reading of the answer and an operator who doubts the reading needs the
+      // thing it was read from — that is the same rule the statement log
+      // follows for statements.
+      el("div", { id: "cluster-map", class: "map" }),
+      behindDisclosure("The answer this was drawn from", answer("cluster-facts", "small")),
+    ),
     pane(
       paneHead("What is here, and what is not"),
       note(

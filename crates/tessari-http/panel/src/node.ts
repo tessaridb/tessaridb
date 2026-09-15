@@ -6,6 +6,7 @@
 import { held, scrape, valueOf } from "./api.js";
 import { at, clear, say } from "./dom.js";
 import { facts } from "./draw.js";
+import { draw as drawMap, type Seen } from "./map.js";
 import { told } from "./session.js";
 
 const HEALTH_ROUTE = "/health";
@@ -70,6 +71,9 @@ export async function readNode(): Promise<void> {
     // a claim, on the one screen where that claim mattered most. `roles` is what
     // answers the question it looked like it was answering, and it comes from
     // the authority the node actually holds.
+    // The map first, then the answer it was read from.
+    clear("cluster-map");
+    drawMap(at("cluster-map"), all as Seen);
     facts("cluster-facts", {
       roles: all["roles"],
       peers: peers ?? [],

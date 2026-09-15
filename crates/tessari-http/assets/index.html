@@ -93,10 +93,14 @@
       <section id="panel-cluster" role="tabpanel" aria-labelledby="tab-cluster" tabindex="0" hidden>
         <div class="pane">
           <div class="pane-head">
-            <h2>Membership</h2>
+            <h2>The cluster, as this node sees it</h2>
             <span id="cluster-status" class="status" role="status"></span>
           </div>
-          <div id="cluster-facts" class="answer small" aria-live="polite"></div>
+          <div id="cluster-map" class="map"></div>
+          <details class="tucked">
+            <summary>The answer this was drawn from</summary>
+            <div id="cluster-facts" class="answer small" aria-live="polite"></div>
+          </details>
         </div>
         <div class="pane">
           <div class="pane-head">
@@ -216,7 +220,7 @@
               <label class="wide">Why <input id="remove-why" type="text" placeholder="left the team on Friday" /></label>
             </div>
             <p id="remove-radius" class="note says"></p>
-            <details class="statement">
+            <details class="tucked">
               <summary>The statement this will send</summary>
               <pre id="remove-preview" class="answer small"></pre>
             </details>

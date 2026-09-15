@@ -62,9 +62,17 @@ export const preview = (id: string): Node => el("pre", { id, class: "answer smal
  */
 export const says = (id: string): Node => el("p", { id, class: "note says" });
 
-/** A statement kept reachable without being in the way. */
+/**
+ * Something kept reachable without being in the way.
+ *
+ * `tucked` and not `statement`: the pattern is about the READER's attention and
+ * not about what is inside it, and the first screen to reuse it put an answer
+ * there rather than a statement. A class named for one of its contents invites
+ * a test to key on it as a proxy for that content — which is exactly what
+ * happened, and what broke when the second use arrived.
+ */
 export const behindDisclosure = (summary: string, ...children: Child[]): Node =>
-  el("details", { class: "statement" }, el("summary", {}, summary), ...children);
+  el("details", { class: "tucked" }, el("summary", {}, summary), ...children);
 
 export type Weight = "primary" | "quiet" | "default";
 
