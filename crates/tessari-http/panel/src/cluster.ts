@@ -84,18 +84,26 @@ export const cluster = (): Node =>
           "roles, the peers it has been told about, and the addresses it answers " +
           "on. It is read from the node, not from anything standing beside it.",
       ),
-      note(
-        "Membership is a record and not a control plane: a node learns its peers " +
-          "through the same log it replicates data with, so there is nothing to stand " +
-          "up beside the database. A namespace declares how many copies the cluster " +
-          "keeps, and a peer's subscription decides which of them it receives. A " +
-          "leader holds a renewable lease granted by a majority and stops writing " +
-          "before that lease expires, measured on elapsed time rather than on the " +
-          "clock. A read may name the staleness it will accept, and a bound tighter " +
-          "than the cluster can know about itself is refused with the floor named. A " +
-          "write sent to the wrong node comes back as a redirect carrying the " +
-          "endpoint, the node and the epoch it was decided under. A divergence is " +
-          "refused at the first divergent record and counted, never silently ranked.",
+      // 141 words of explanation, moved behind a disclosure rather than deleted.
+      // The brief's rule is that prose paragraphs are not a UI element and that
+      // explanation lives behind a disclosure, in the docs, or nowhere — and an
+      // operator on their fiftieth visit is not reading this, while somebody on
+      // their first may want it.
+      behindDisclosure(
+        "How membership works",
+        note(
+          "Membership is a record and not a control plane: a node learns its peers " +
+            "through the same log it replicates data with, so there is nothing to stand " +
+            "up beside the database. A namespace declares how many copies the cluster " +
+            "keeps, and a peer's subscription decides which of them it receives. A " +
+            "leader holds a renewable lease granted by a majority and stops writing " +
+            "before that lease expires, measured on elapsed time rather than on the " +
+            "clock. A read may name the staleness it will accept, and a bound tighter " +
+            "than the cluster can know about itself is refused with the floor named. A " +
+            "write sent to the wrong node comes back as a redirect carrying the " +
+            "endpoint, the node and the epoch it was decided under. A divergence is " +
+            "refused at the first divergent record and counted, never silently ranked.",
+        ),
       ),
       warning(
         el("strong", {}, "There is no sharding."),
@@ -103,13 +111,16 @@ export const cluster = (): Node =>
           "split across machines by key. A namespace larger than one machine is the " +
           "case this engine does not serve.",
       ),
-      note(
-        el("strong", {}, "No lag figure, and no leadership for other nodes."),
-        " Nothing pulls a replica forward on a timer, so a node that is not writing " +
-          "has no last collection its copy could be measured from; and this node " +
-          "knows which lease it holds, never which lease somebody else holds. A " +
-          "number invented for either would be the dashboard drawn ahead of the " +
-          "engine, which is what makes the rest of a console untrustworthy.",
+      note(el("strong", {}, "No lag figure, and no leadership for other nodes.")),
+      behindDisclosure(
+        "Why neither is drawn",
+        note(
+          "Nothing pulls a replica forward on a timer, so a node that is not writing " +
+            "has no last collection its copy could be measured from; and this node " +
+            "knows which lease it holds, never which lease somebody else holds. A " +
+            "number invented for either would be the dashboard drawn ahead of the " +
+            "engine, which is what makes the rest of a console untrustworthy.",
+        ),
       ),
     ),
   );

@@ -17,12 +17,15 @@ import {
 const whoThereIs = (): Node =>
   pane(
     paneHead("Who there is", row("tight", status("user-status"), button("list", "Refresh", "quiet"))),
-    note(
-      "What you are shown is the tenancy you administer. An owner of a space sees " +
-        "that space; an ",
-      el("strong", {}, "admin"),
-      " — an owner with no space at all — sees the whole node. It refuses rather " +
-        "than narrowing, so a short list is a short tenancy and never a filtered one.",
+    note("What you are shown is the tenancy you administer."),
+    behindDisclosure(
+      "What that means for a short list",
+      note(
+        "An owner of a space sees that space; an ",
+        el("strong", {}, "admin"),
+        " — an owner with no space at all — sees the whole node. It refuses rather " +
+          "than narrowing, so a short list is a short tenancy and never a filtered one.",
+      ),
     ),
     row(
       "spread",
@@ -73,12 +76,15 @@ const defineOne = (): Node =>
 const changeOne = (): Node =>
   pane(
     paneHead("Change one", status("change-status")),
-    note(
-      "One field per change, and the other is left exactly as it was: a password " +
-        "rotation does not touch a role, and a role correction does not invalidate " +
-        "a password. A space cannot be changed here at all — widening somebody's " +
-        "reach is the one change an owner of a part could use to reach the whole, " +
-        "so it is not offered.",
+    note("One field per change. A space cannot be changed here at all."),
+    behindDisclosure(
+      "Why a space is not offered",
+      note(
+        "A password rotation does not touch a role, and a role correction does not " +
+          "invalidate a password. Widening somebody's reach is the one change an " +
+          "owner of a part could use to reach the whole, so it is not offered here " +
+          "at all.",
+      ),
     ),
     row(
       "default",
@@ -142,10 +148,14 @@ const removeOne = (): Node =>
     row("default", button("remove", "Remove", "default", { disabled: true })),
     el("hr", { class: "between" }),
     paneHead("Your own password", status("mine-status")),
-    note(
-      "The pane above is for somebody else's credential and needs an owner. This " +
-        "one is yours, and any role may use it — a viewer whose password may have " +
-        "leaked should not have to ask an owner to choose them a new one.",
+    note("Yours, and any role may use it."),
+    behindDisclosure(
+      "Why this one is not the pane above",
+      note(
+        "That pane is for somebody else's credential and needs an owner. A viewer " +
+          "whose password may have leaked should not have to ask an owner to choose " +
+          "them a new one.",
+      ),
     ),
     row(
       "default",
@@ -154,11 +164,16 @@ const removeOne = (): Node =>
       field("New again", secret("mine-again", "new-password")),
     ),
     row("default", button("mine", "Change it", "default", { disabled: true })),
-    note(
-      "The current one is asked for because being signed in is not proof of a " +
-        "password — otherwise a token copied off this connection would be a way to " +
-        "take the account rather than borrow it. Changing it ends every session you " +
-        "hold, this one included, so you will be asked to sign in again.",
+    // The CONSEQUENCE stays in the flow and the REASON goes behind the
+    // disclosure. Somebody about to press this needs to know they will be signed
+    // out; why the current password is asked for is a thing they can look up.
+    note("Changing it ends every session you hold, this one included."),
+    behindDisclosure(
+      "Why the current one is asked for",
+      note(
+        "Being signed in is not proof of a password — otherwise a token copied off " +
+          "this connection would be a way to take the account rather than borrow it.",
+      ),
     ),
   );
 
@@ -175,10 +190,17 @@ const giveOrTake = (): Node =>
   pane(
     paneHead("Give or take away", status("grant-status")),
     note(
-      "A grant is not only an addition. A user with no table grants is governed " +
-        "by their role; a user with one reaches exactly what they were granted — " +
-        "so the first grant narrows, and taking the last one away widens. The line " +
-        "under the form says which of the two you are about to do.",
+      el("strong", {}, "A grant is not only an addition."),
+      " The line under the form says which of the two this one is.",
+    ),
+    behindDisclosure(
+      "Why a grant can narrow",
+      note(
+        "A user with no table grants is governed by their role; a user with one " +
+          "reaches exactly what they were granted. So the first grant narrows, and " +
+          "taking the last one away widens them back to the role — which the node " +
+          "refuses.",
+      ),
     ),
     row(
       "default",

@@ -180,9 +180,16 @@
             <h2>What is here, and what is not</h2>
           </div>
           <p class="note">What the pane above shows is what this node itself knows: its own roles, the peers it has been told about, and the addresses it answers on. It is read from the node, not from anything standing beside it.</p>
-          <p class="note">Membership is a record and not a control plane: a node learns its peers through the same log it replicates data with, so there is nothing to stand up beside the database. A namespace declares how many copies the cluster keeps, and a peer's subscription decides which of them it receives. A leader holds a renewable lease granted by a majority and stops writing before that lease expires, measured on elapsed time rather than on the clock. A read may name the staleness it will accept, and a bound tighter than the cluster can know about itself is refused with the floor named. A write sent to the wrong node comes back as a redirect carrying the endpoint, the node and the epoch it was decided under. A divergence is refused at the first divergent record and counted, never silently ranked.</p>
+          <details class="tucked">
+            <summary>How membership works</summary>
+            <p class="note">Membership is a record and not a control plane: a node learns its peers through the same log it replicates data with, so there is nothing to stand up beside the database. A namespace declares how many copies the cluster keeps, and a peer's subscription decides which of them it receives. A leader holds a renewable lease granted by a majority and stops writing before that lease expires, measured on elapsed time rather than on the clock. A read may name the staleness it will accept, and a bound tighter than the cluster can know about itself is refused with the floor named. A write sent to the wrong node comes back as a redirect carrying the endpoint, the node and the epoch it was decided under. A divergence is refused at the first divergent record and counted, never silently ranked.</p>
+          </details>
           <p class="note warn"><strong>There is no sharding.</strong> Every node that holds a namespace holds all of it; one dataset is not split across machines by key. A namespace larger than one machine is the case this engine does not serve.</p>
-          <p class="note"><strong>No lag figure, and no leadership for other nodes.</strong> Nothing pulls a replica forward on a timer, so a node that is not writing has no last collection its copy could be measured from; and this node knows which lease it holds, never which lease somebody else holds. A number invented for either would be the dashboard drawn ahead of the engine, which is what makes the rest of a console untrustworthy.</p>
+          <p class="note"><strong>No lag figure, and no leadership for other nodes.</strong></p>
+          <details class="tucked">
+            <summary>Why neither is drawn</summary>
+            <p class="note">Nothing pulls a replica forward on a timer, so a node that is not writing has no last collection its copy could be measured from; and this node knows which lease it holds, never which lease somebody else holds. A number invented for either would be the dashboard drawn ahead of the engine, which is what makes the rest of a console untrustworthy.</p>
+          </details>
         </div>
       </section>
       <section id="panel-access" role="tabpanel" aria-labelledby="tab-access" tabindex="0" hidden>
@@ -195,7 +202,11 @@
                 <button id="list" type="button" class="quiet">Refresh</button>
               </div>
             </div>
-            <p class="note">What you are shown is the tenancy you administer. An owner of a space sees that space; an <strong>admin</strong> — an owner with no space at all — sees the whole node. It refuses rather than narrowing, so a short list is a short tenancy and never a filtered one.</p>
+            <p class="note">What you are shown is the tenancy you administer.</p>
+            <details class="tucked">
+              <summary>What that means for a short list</summary>
+              <p class="note">An owner of a space sees that space; an <strong>admin</strong> — an owner with no space at all — sees the whole node. It refuses rather than narrowing, so a short list is a short tenancy and never a filtered one.</p>
+            </details>
             <div class="row spread">
               <label>Filter <input id="user-filter" type="text" placeholder="part of a name" /></label>
               <span id="user-count" class="status" role="status"></span>
@@ -248,7 +259,11 @@
               <h2>Change one</h2>
               <span id="change-status" class="status" role="status"></span>
             </div>
-            <p class="note">One field per change, and the other is left exactly as it was: a password rotation does not touch a role, and a role correction does not invalidate a password. A space cannot be changed here at all — widening somebody's reach is the one change an owner of a part could use to reach the whole, so it is not offered.</p>
+            <p class="note">One field per change. A space cannot be changed here at all.</p>
+            <details class="tucked">
+              <summary>Why a space is not offered</summary>
+              <p class="note">A password rotation does not touch a role, and a role correction does not invalidate a password. Widening somebody's reach is the one change an owner of a part could use to reach the whole, so it is not offered here at all.</p>
+            </details>
             <div class="row">
               <label>Who <input id="change-name" type="text" placeholder="ada" /></label>
               <label>
@@ -305,7 +320,11 @@
               <h2>Your own password</h2>
               <span id="mine-status" class="status" role="status"></span>
             </div>
-            <p class="note">The pane above is for somebody else's credential and needs an owner. This one is yours, and any role may use it — a viewer whose password may have leaked should not have to ask an owner to choose them a new one.</p>
+            <p class="note">Yours, and any role may use it.</p>
+            <details class="tucked">
+              <summary>Why this one is not the pane above</summary>
+              <p class="note">That pane is for somebody else's credential and needs an owner. A viewer whose password may have leaked should not have to ask an owner to choose them a new one.</p>
+            </details>
             <div class="row">
               <label>Current <input id="mine-current" type="password" autocomplete="current-password" /></label>
               <label>New <input id="mine-new" type="password" autocomplete="new-password" /></label>
@@ -314,7 +333,11 @@
             <div class="row">
               <button id="mine" type="button" disabled>Change it</button>
             </div>
-            <p class="note">The current one is asked for because being signed in is not proof of a password — otherwise a token copied off this connection would be a way to take the account rather than borrow it. Changing it ends every session you hold, this one included, so you will be asked to sign in again.</p>
+            <p class="note">Changing it ends every session you hold, this one included.</p>
+            <details class="tucked">
+              <summary>Why the current one is asked for</summary>
+              <p class="note">Being signed in is not proof of a password — otherwise a token copied off this connection would be a way to take the account rather than borrow it.</p>
+            </details>
           </div>
         </div>
         <div class="pane">
@@ -322,7 +345,11 @@
             <h2>Give or take away</h2>
             <span id="grant-status" class="status" role="status"></span>
           </div>
-          <p class="note">A grant is not only an addition. A user with no table grants is governed by their role; a user with one reaches exactly what they were granted — so the first grant narrows, and taking the last one away widens. The line under the form says which of the two you are about to do.</p>
+          <p class="note"><strong>A grant is not only an addition.</strong> The line under the form says which of the two this one is.</p>
+          <details class="tucked">
+            <summary>Why a grant can narrow</summary>
+            <p class="note">A user with no table grants is governed by their role; a user with one reaches exactly what they were granted. So the first grant narrows, and taking the last one away widens them back to the role — which the node refuses.</p>
+          </details>
           <div class="row">
             <label>Who <input id="grant-who" type="text" placeholder="ada" /></label>
             <label>
@@ -394,7 +421,11 @@
         <h2>Statements this session</h2>
         <button id="log-close" type="button" class="quiet">Close</button>
       </div>
-      <p class="note">The panel's own record, newest first — not the store's. <code>INFO FOR AUDIT</code> answers a different question, for a different reader, and keeps its answer. This holds no credential, lasts as long as this tab, and makes no claim to survive it.</p>
+      <p class="note">The panel's own record, newest first — not the store's, and it lasts as long as this tab.</p>
+      <details class="tucked">
+        <summary>How this differs from the store's audit</summary>
+        <p class="note"><code>INFO FOR AUDIT</code> answers a different question, for a different reader, and keeps its answer. This holds no credential and makes no claim to survive the tab.</p>
+      </details>
       <div id="log-list"></div>
     </div>
     <div id="keys-sheet" class="sheet keys-sheet" hidden>
@@ -410,7 +441,11 @@
         <button id="detail-close" type="button" class="quiet">Close</button>
       </div>
       <div id="detail-facts"></div>
-      <p class="note">What is here is what the node answers about this right now. There is no history of it: the store records no events for a namespace, a table or a record, and a timeline drawn from anything else would be this panel inventing one.</p>
+      <p class="note">There is no history of it: the store records no events for these.</p>
+      <details class="tucked">
+        <summary>Why there is no timeline</summary>
+        <p class="note">What is here is what the node answers about this right now. A timeline drawn from anything else would be this panel inventing one.</p>
+      </details>
     </div>
     <script src="/console.js"></script>
   </body>

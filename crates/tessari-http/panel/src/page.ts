@@ -14,8 +14,8 @@ import { access } from "./access.js";
 import { cluster } from "./cluster.js";
 import { DESTINATIONS, to } from "./destinations.js";
 import {
-  answer, button, field, note, number, pane, paneHead, panel, row, secret,
-  split, status, tabs, text, warning,
+  answer, behindDisclosure, button, field, note, number, pane, paneHead, panel,
+  row, says, secret, split, status, tabs, text, warning,
 } from "./ui.js";
 
 
@@ -216,11 +216,13 @@ const detailSheet = (): Node =>
       button("detail-close", "Close", "quiet"),
     ),
     el("div", { id: "detail-facts" }),
-    note(
-      "What is here is what the node answers about this right now. There is no " +
-        "history of it: the store records no events for a namespace, a table or a " +
-        "record, and a timeline drawn from anything else would be this panel " +
-        "inventing one.",
+    note("There is no history of it: the store records no events for these."),
+    behindDisclosure(
+      "Why there is no timeline",
+      note(
+        "What is here is what the node answers about this right now. A timeline " +
+          "drawn from anything else would be this panel inventing one.",
+      ),
     ),
   );
 
@@ -260,11 +262,16 @@ const logSheet = (): Node =>
     { id: "log-sheet", class: "sheet log", hidden: true, role: "region", "aria-label": "Statements" },
     paneHead("Statements this session", button("log-close", "Close", "quiet")),
     note(
-      "The panel's own record, newest first — not the store's. ",
-      el("code", {}, "INFO FOR AUDIT"),
-      " answers a different question, for a different reader, and keeps its answer. " +
-        "This holds no credential, lasts as long as this tab, and makes no claim to " +
-        "survive it.",
+      "The panel's own record, newest first — not the store's, and it lasts as " +
+        "long as this tab.",
+    ),
+    behindDisclosure(
+      "How this differs from the store's audit",
+      note(
+        el("code", {}, "INFO FOR AUDIT"),
+        " answers a different question, for a different reader, and keeps its " +
+          "answer. This holds no credential and makes no claim to survive the tab.",
+      ),
     ),
     el("div", { id: "log-list" }),
   );

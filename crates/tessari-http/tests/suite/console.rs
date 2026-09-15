@@ -542,8 +542,12 @@ const ACCEPTED_NEGATIONS: &[(&str, &str)] = &[
         "True: there is no follower loop, so a non-writing node's copy has no last collection to measure a lag from; and `cluster.lease` is this node's own lease, never a peer's.",
     ),
     (
-        "There is no history of it: the store records no events for a namespace, a table or a record, and a timeline drawn from anything else would be this panel inventing one.",
+        "There is no history of it: the store records no events for these.",
         "True, and measured (Q-685): `INFO FOR VERSIONS` answered ONE version after three writes — it reports whether a record is contested, never what happened to it — `INFO FOR NAMESPACE` answers a list of databases, and `INFO FOR AUDIT` is the vault's audit and holds recorded vault reads alone. Delete when the store records object events.",
+    ),
+    (
+        "Why there is no timeline",
+        "A disclosure summary rather than a claim, and it is on the record because the splitter reads it as a sentence. The claim it opens is the row above.",
     ),
     (
         "Nothing pulls a replica forward on a timer, so a node that is not writing has no last collection its copy could be measured from; and this node knows which lease it holds, never which lease somebody else holds.",
@@ -1486,5 +1490,94 @@ fn nothing_invisible_rides_along_in_a_delivered_asset() {
     assert!(
         carried.is_empty(),
         "invisible codepoints reached a delivered asset: {carried:?}"
+    );
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn explanation_does_not_stand_in_the_operators_way() {
+    // The brief's fourth register rule: prose paragraphs are not a UI element,
+    // and explanation lives behind a disclosure, in the docs, or nowhere. It was
+    // measured before it was enforced — the page carried 986 words across 21
+    // paragraphs, eleven of them over forty words and one at a hundred and
+    // forty-one.
+    //
+    // Two exclusions, and both are the rule rather than exceptions to it:
+    //
+    // A `note warn` is a CONSEQUENCE and not an explanation. Putting the cost of
+    // an irreversible action behind a disclosure is precisely backwards, and the
+    // destructive warning is deliberately long and deliberately in the way.
+    //
+    // Anything inside a `<details>` is already where the rule says explanation
+    // belongs, so it is not counted at all — the rule is about what stands
+    // between an operator and their task, not about total words.
+    let (_node, address) = node();
+    let (status, _, page) = get(&address, "/");
+    assert_eq!(status, 200, "the console's page is not served");
+
+    // Every `<details>…</details>` span removed, so what remains is the flow.
+    let mut flow = String::with_capacity(page.len());
+    let mut rest = page.as_str();
+    while let Some(open) = rest.find("<details") {
+        flow.push_str(&rest[..open]);
+        let after = &rest[open..];
+        match after.find("</details>") {
+            Some(close) => rest = &after[close.saturating_add(10)..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    flow.push_str(rest);
+
+    let mut wordy: Vec<(usize, String)> = Vec::new();
+    let mut seen = 0_usize;
+    for piece in flow.split("<p class=\"note") {
+        let Some(body) = piece.split_once('>').map(|(_, rest)| rest) else {
+            continue;
+        };
+        if piece.starts_with(" warn") || piece.starts_with("note warn") {
+            continue;
+        }
+        let Some(text) = body.split("</p>").next() else {
+            continue;
+        };
+        // Tags out, words counted.
+        let mut plain = String::new();
+        let mut inside = false;
+        for character in text.chars() {
+            match character {
+                '<' => inside = true,
+                '>' => inside = false,
+                _ if !inside => plain.push(character),
+                _ => {}
+            }
+        }
+        let words = plain.split_whitespace().count();
+        if words == 0 {
+            continue;
+        }
+        seen = seen.saturating_add(1);
+        if words > 40 {
+            wordy.push((
+                words,
+                plain
+                    .split_whitespace()
+                    .take(9)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ));
+        }
+    }
+    assert!(
+        seen >= 8,
+        "only {seen} notes were found in the flow, so this would pass by reading \
+         almost nothing"
+    );
+    assert!(
+        wordy.is_empty(),
+        "these explanations stand in the operator's way; put them behind a \
+         disclosure or cut them: {wordy:?}"
     );
 }
