@@ -23,7 +23,8 @@
 //! account before the table of the same name is the right guess for a console
 //! whose destructive screens are all about accounts.
 
-import { valueOf } from "./api.js";
+import { valueOf, type Result } from "./api.js";
+import { hide as hideDetail, show as showDetail } from "./detail.js";
 import { at, setValue, trimmed, write } from "./dom.js";
 import { show } from "./tabs.js";
 
@@ -32,15 +33,20 @@ interface Candidate {
   readonly kind: string;
   readonly statement: string;
   /** Where the answer belongs, once the node has confirmed the thing exists. */
-  readonly land: () => void;
+  readonly land: (answered: Result | null) => void;
 }
 
-/** Put the statement in Run and show its answer there. */
-function inRun(statement: string): void {
-  setValue("script", statement);
-  show("run");
-  at("run").click();
-}
+/**
+ * Open the detail sheet on what was found.
+ *
+ * W316 routed these into Run with the statement pre-filled, and recorded that as
+ * a compromise pending a detail surface. This is that surface: a namespace, a
+ * database, a table and a record are all *things you look at*, and sending
+ * somebody to the statement screen to look at one made the language the way in
+ * again — the exact thing §5 of the brief corrected.
+ */
+const inDetail = (kind: string, name: string) => (answered: Result | null) =>
+  showDetail(kind, name, answered);
 
 /**
  * What `text` might be, in the order the questions are put.
@@ -49,6 +55,14 @@ function inRun(statement: string): void {
  * accepts five shapes and composes nothing else, so it cannot become a way to
  * run arbitrary TessariQL from the top bar of every screen.
  */
+/** Split once, at the first `separator`. */
+function splitAt(text: string, separator: string): [string, string] {
+  const at = text.indexOf(separator);
+  return at < 0
+    ? [text, ""]
+    : [text.slice(0, at), text.slice(at + separator.length)];
+}
+
 function candidates(text: string): readonly Candidate[] {
   const record = text.includes(":");
   const qualified = text.includes(".") && !record;
@@ -56,13 +70,35 @@ function candidates(text: string): readonly Candidate[] {
   const out: Candidate[] = [];
 
   if (record) {
-    const statement = "SELECT * FROM " + text + ";";
-    out.push({ kind: "record", statement, land: () => inRun(statement) });
+    // A record is read inside a selected namespace and database, and every
+    // `/script` request is its own session — so a `USE` run on the Run screen
+    // does not carry here, and a bare `orders:1` can never resolve. Measured,
+    // not assumed: it was tried after selecting, and it still missed.
+    //
+    // So the qualified form is what the field accepts, and it carries its own
+    // selection. `app.main.orders:1` is three parts and a key, which is also the
+    // only shape that identifies a record without ambiguity when two databases
+    // hold a table of the same name.
+    const [reach, key] = splitAt(text, ":");
+    const parts = reach.split(".");
+    if (parts.length === 3) {
+      const [namespaceOf, databaseOf, table] = parts as [string, string, string];
+      out.push({
+        kind: "record",
+        statement:
+          `USE NAMESPACE ${namespaceOf}; USE DATABASE ${databaseOf}; ` +
+          `SELECT * FROM ${table}:${key};`,
+        land: inDetail("record", text),
+      });
+    }
   }
   if (qualified) {
-    const statement =
-      "USE NAMESPACE " + namespace + "; USE DATABASE " + database + "; INFO FOR DATABASE;";
-    out.push({ kind: "database", statement, land: () => inRun(statement) });
+    out.push({
+      kind: "database",
+      statement:
+        "USE NAMESPACE " + namespace + "; USE DATABASE " + database + "; INFO FOR DATABASE;",
+      land: inDetail("database", text),
+    });
   }
   if (!record && !qualified) {
     out.push({
@@ -77,14 +113,16 @@ function candidates(text: string): readonly Candidate[] {
         at("lookup").click();
       },
     });
-    const namespaceStatement = "USE NAMESPACE " + text + "; INFO FOR NAMESPACE;";
     out.push({
       kind: "namespace",
-      statement: namespaceStatement,
-      land: () => inRun(namespaceStatement),
+      statement: "USE NAMESPACE " + text + "; INFO FOR NAMESPACE;",
+      land: inDetail("namespace", text),
     });
-    const tableStatement = "INFO FOR TABLE " + text + ";";
-    out.push({ kind: "table", statement: tableStatement, land: () => inRun(tableStatement) });
+    out.push({
+      kind: "table",
+      statement: "INFO FOR TABLE " + text + ";",
+      land: inDetail("table", text),
+    });
   }
   return out;
 }
@@ -96,22 +134,35 @@ async function look(): Promise<void> {
     return;
   }
   write("search-says", "looking…");
+  // Closed before the first question. A miss used to leave the PREVIOUS thing's
+  // sheet open, and a sheet showing something is read as the answer to what was
+  // just asked — the console answering a question nobody asked with a fact about
+  // something else.
+  hideDetail();
   for (const candidate of candidates(text)) {
     try {
-      await valueOf(candidate.statement, "Search · " + candidate.kind);
+      const answered = await valueOf(candidate.statement, "Search · " + candidate.kind);
+      write("search-says", "");
+      candidate.land(answered);
+      return;
     } catch {
       // A refusal here is an answer: this is not that kind of thing. The next
       // question is asked, and only the last failure is reported.
       continue;
     }
-    write("search-says", "");
-    candidate.land();
-    return;
   }
   // Never a guess about WHY. The panel knows the node said no to every shape it
   // knows; it does not know whether the thing is absent or simply not the
   // caller's to see, and saying either would be inventing one.
-  write("search-says", "nothing here answers to that name");
+  // A record key is answered against the SELECTED namespace and database, which
+  // this field cannot guess — so the one shape with a likely innocent
+  // explanation gets it, rather than the flat refusal the others deserve.
+  write(
+    "search-says",
+    text.includes(":")
+      ? "nothing here answers to that — name a record in full, as namespace.database.table:key"
+      : "nothing here answers to that name",
+  );
 }
 
 export function wire(): void {

@@ -15,7 +15,7 @@
         <p id="where" class="faint">served by this node</p>
       </div>
       <div class="finding">
-        <label>Find <input id="search" type="text" placeholder="an account, a table, person:1  —  / or ⌘K" /></label>
+        <label>Find <input id="search" type="text" placeholder="an account, a table, app.main.orders:1  —  / or ⌘K" /></label>
         <span id="search-says" class="status" role="status"></span>
       </div>
       <details class="identity">
@@ -368,6 +368,14 @@
         <button id="keys-close" type="button" class="quiet">Close</button>
       </div>
       <div id="keys-list"></div>
+    </div>
+    <div id="detail-sheet" class="sheet detail-sheet" hidden>
+      <div class="row spread">
+        <h2><span id="detail-kind" class="faint">thing</span> <span id="detail-name"></span></h2>
+        <button id="detail-close" type="button" class="quiet">Close</button>
+      </div>
+      <div id="detail-facts"></div>
+      <p class="note">What is here is what the node answers about this right now. There is no history of it: the store records no events for a namespace, a table or a record, and a timeline drawn from anything else would be this panel inventing one.</p>
     </div>
     <script src="/console.js"></script>
   </body>

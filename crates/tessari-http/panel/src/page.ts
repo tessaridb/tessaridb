@@ -87,7 +87,7 @@ const bar = (): Node =>
       { class: "finding" },
       field(
         "Find",
-        text("search", { placeholder: "an account, a table, person:1  —  / or ⌘K" }),
+        text("search", { placeholder: "an account, a table, app.main.orders:1  —  / or ⌘K" }),
       ),
       status("search-says"),
     ),
@@ -193,6 +193,37 @@ const keysSheet = (): Node =>
     el("div", { id: "keys-list" }),
   );
 
+/**
+ * One thing, looked at — a sheet rather than a destination.
+ *
+ * The cap is four destinations and a detail view is not a place you go. It also
+ * carries the sentence that keeps it honest: nothing here is a history, because
+ * the store records no events for any of these objects.
+ */
+const detailSheet = (): Node =>
+  el(
+    "div",
+    { id: "detail-sheet", class: "sheet detail-sheet", hidden: true },
+    row(
+      "spread",
+      el(
+        "h2",
+        {},
+        el("span", { id: "detail-kind", class: "faint" }, "thing"),
+        " ",
+        el("span", { id: "detail-name" }, ""),
+      ),
+      button("detail-close", "Close", "quiet"),
+    ),
+    el("div", { id: "detail-facts" }),
+    note(
+      "What is here is what the node answers about this right now. There is no " +
+        "history of it: the store records no events for a namespace, a table or a " +
+        "record, and a timeline drawn from anything else would be this panel " +
+        "inventing one.",
+    ),
+  );
+
 const tray = (): Node =>
   el(
     "footer",
@@ -255,6 +286,7 @@ export const index = (): string =>
         tray(),
         logSheet(),
         keysSheet(),
+        detailSheet(),
         el("script", { src: "/console.js" }),
       ),
     ),

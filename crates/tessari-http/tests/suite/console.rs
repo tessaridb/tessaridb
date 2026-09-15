@@ -480,6 +480,16 @@ const CAPABILITIES: &[&str] = &[
     "failover",
     "leader",
     "lease",
+    // Widened in W318. The list began as the cluster vocabulary, because a false
+    // cluster claim is what shipped in two published images. The defect is not
+    // about clusters: it is a sentence claiming the engine does or does not do
+    // something, and the console now says several such things about HISTORY —
+    // which it is right about, and which therefore belongs on the record beside
+    // everything else it is right about. Widening a scan is the cheap direction;
+    // a narrow one goes on passing while its reach shrinks.
+    "history",
+    "timeline",
+    "audit",
 ];
 
 /// Words that turn a sentence about a capability into a claim it is absent.
@@ -530,6 +540,10 @@ const ACCEPTED_NEGATIONS: &[(&str, &str)] = &[
     (
         "No lag figure, and no leadership for other nodes.",
         "True: there is no follower loop, so a non-writing node's copy has no last collection to measure a lag from; and `cluster.lease` is this node's own lease, never a peer's.",
+    ),
+    (
+        "There is no history of it: the store records no events for a namespace, a table or a record, and a timeline drawn from anything else would be this panel inventing one.",
+        "True, and measured (Q-685): `INFO FOR VERSIONS` answered ONE version after three writes — it reports whether a record is contested, never what happened to it — `INFO FOR NAMESPACE` answers a list of databases, and `INFO FOR AUDIT` is the vault's audit and holds recorded vault reads alone. Delete when the store records object events.",
     ),
     (
         "Nothing pulls a replica forward on a timer, so a node that is not writing has no last collection its copy could be measured from; and this node knows which lease it holds, never which lease somebody else holds.",

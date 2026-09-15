@@ -821,6 +821,24 @@ details.tucked > summary {
   padding: var(--s-1) 0;
 }
 
+/* One thing, looked at. Over whatever you were doing and never instead of it —
+   the cap is four destinations, and a detail view is not a place you go. */
+.sheet.detail-sheet {
+  position: fixed;
+  left: 50%;
+  top: 6rem;
+  transform: translateX(-50%);
+  z-index: 11;
+  width: min(42rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 12rem);
+  overflow-y: auto;
+}
+
+.detail-sheet h2 {
+  font-size: var(--t-15);
+  margin: 0;
+}
+
 /* ──────────────────────────────────────────────────────── the keys ── */
 
 .sheet.keys-sheet {

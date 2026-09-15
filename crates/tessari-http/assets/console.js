@@ -170,6 +170,154 @@
     window.addEventListener("beforeunload", keep);
   }
 
+  // src/draw.ts
+  //! Turning what the node said into something on screen.
+  //!
+  //! Every value drawn here arrives off the wire or out of the store, so every
+  //! one of them is written with `textContent`. A record that happens to hold a
+  //! `<script>` tag is data, not markup.
+  var flat = (value2) => value2 === null || typeof value2 !== "object";
+  function shape(records) {
+    let agreed = null;
+    for (const record2 of records) {
+      const inside = record2.value;
+      if (inside === null || typeof inside !== "object" || Array.isArray(inside)) {
+        return null;
+      }
+      const fields = inside;
+      const here = Object.keys(fields).sort();
+      if (!here.every((field) => flat(fields[field]))) {
+        return null;
+      }
+      if (agreed === null) {
+        agreed = here;
+      } else if (agreed.length !== here.length || !agreed.every((f, i) => f === here[i])) {
+        return null;
+      }
+    }
+    return agreed !== null && agreed.length > 0 ? agreed : null;
+  }
+  var cell = (value2) => typeof value2 === "string" ? value2 : JSON.stringify(value2);
+  function drawn(records) {
+    const fields = shape(records);
+    if (fields === null) {
+      return null;
+    }
+    const values = records.map((record2) => record2.value);
+    const numeric = fields.map(
+      (field) => values.every((value2) => typeof value2[field] === "number")
+    );
+    const table = made("table");
+    const head = table.createTHead().insertRow();
+    for (const name of ["id", ...fields]) {
+      const column = made("th");
+      column.textContent = name;
+      head.appendChild(column);
+    }
+    const body = table.createTBody();
+    records.forEach((record2, position) => {
+      const row = body.insertRow();
+      row.insertCell().textContent = record2.id;
+      fields.forEach((field, index) => {
+        const box = row.insertCell();
+        box.textContent = cell(values[position]?.[field]);
+        if (numeric[index] === true) {
+          box.classList.add("number");
+        }
+      });
+    });
+    return table;
+  }
+  function put(where2, value2) {
+    clear(where2);
+    at(where2).appendChild(shown(value2));
+  }
+  function facts(where2, held4) {
+    clear(where2);
+    const table = made("table");
+    const body = table.createTBody();
+    for (const [name, value2] of Object.entries(held4)) {
+      const row = body.insertRow();
+      const label = made("th");
+      label.textContent = name;
+      row.appendChild(label);
+      const box = row.insertCell();
+      box.textContent = typeof value2 === "string" ? value2 : JSON.stringify(value2);
+      if (typeof value2 === "number") {
+        box.classList.add("number");
+      }
+    }
+    at(where2).appendChild(table);
+  }
+
+  // src/detail.ts
+  //! One thing, looked at.
+  //!
+  //! A sheet over whatever you were doing, not a destination. The cap is four
+  //! destinations and a detail view is not a place you go — it is a thing you
+  //! open, look at, and close, and it has to leave you where you were.
+  //!
+  //! It draws whatever the node answered, as facts, under a heading that names
+  //! what kind of thing it is. The same sheet serves a namespace, a database, a
+  //! table and a record, because the difference between them is the question that
+  //! was asked and not the shape of the answer.
+  //!
+  //! # No timeline, and the screen says why
+  //!
+  //! T5.2 asked for a timeline on each of these. Measured on a running node, there
+  //! is no event source for any of them: `INFO FOR VERSIONS` answers ONE version
+  //! after three writes — it reports whether a record is CONTESTED, never what
+  //! happened to it — `INFO FOR NAMESPACE` answers a list of databases, and
+  //! `INFO FOR AUDIT` is the vault's audit and holds recorded vault reads alone.
+  //!
+  //! So nothing here is drawn as a history. A timeline assembled on the client
+  //! would be the console inventing an event nobody recorded, which is the same
+  //! failure as a replication-lag figure with no follower loop behind it — and
+  //! that one this console already refuses by name.
+  function show(kind, name, answered2) {
+    at("detail-kind").textContent = kind;
+    at("detail-name").textContent = name;
+    clear("detail-facts");
+    if (Array.isArray(answered2?.records)) {
+      for (const row of answered2.records) {
+        const id = made("p", "faint");
+        id.textContent = row.id;
+        at("detail-facts").appendChild(id);
+        if (typeof row.value === "object" && row.value !== null) {
+          const into = made("div");
+          into.id = `detail-row-${row.id.replace(/[^a-zA-Z0-9]/g, "-")}`;
+          at("detail-facts").appendChild(into);
+          facts(into.id, row.value);
+        }
+      }
+      if (answered2.records.length === 0) {
+        const nothing = made("p", "note");
+        nothing.textContent = "The node answered, and there is no such record.";
+        at("detail-facts").appendChild(nothing);
+      }
+    } else if (typeof answered2?.value === "object" && answered2.value !== null) {
+      facts("detail-facts", answered2.value);
+    } else {
+      const nothing = made("p", "note");
+      nothing.textContent = "The node answered, and the answer carries no fields.";
+      at("detail-facts").appendChild(nothing);
+    }
+    at("detail-sheet").hidden = false;
+    at("detail-close").focus();
+  }
+  function closeIt() {
+    at("detail-sheet").hidden = true;
+  }
+  var hide2 = closeIt;
+  function wire2() {
+    at("detail-close").addEventListener("click", closeIt);
+    document.addEventListener("keydown", (pressed) => {
+      if (pressed.key === "Escape" && !at("detail-sheet").hidden) {
+        closeIt();
+      }
+    });
+  }
+
   // src/tabs.ts
   //! Which section is on screen.
   //!
@@ -184,7 +332,7 @@
     }
     return at(named);
   }
-  function show(name) {
+  function show2(name) {
     const wanted2 = tabs().some((tab) => tab.id === "tab-" + name) ? name : "run";
     for (const tab of tabs()) {
       const chosen = tab.id === "tab-" + wanted2;
@@ -196,9 +344,9 @@
       window.location.hash = wanted2;
     }
   }
-  function wire2() {
+  function wire3() {
     for (const tab of tabs()) {
-      tab.addEventListener("click", () => show(tab.id.replace("tab-", "")));
+      tab.addEventListener("click", () => show2(tab.id.replace("tab-", "")));
       tab.addEventListener("keydown", (event) => {
         const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
         if (step === 0) {
@@ -211,14 +359,14 @@
           return;
         }
         next.focus();
-        show(next.id.replace("tab-", ""));
+        show2(next.id.replace("tab-", ""));
       });
     }
     window.addEventListener(
       "hashchange",
-      () => show(window.location.hash.replace("#", ""))
+      () => show2(window.location.hash.replace("#", ""))
     );
-    show(window.location.hash.replace("#", ""));
+    show2(window.location.hash.replace("#", ""));
   }
 
   // src/log.ts
@@ -250,7 +398,7 @@
   function reopen(what) {
     setValue("script", what);
     hide("log-sheet", true);
-    show("run");
+    show2("run");
     at("script").focus();
   }
   function copy(what, where2, said3) {
@@ -316,11 +464,11 @@
     }
     at("log-list").appendChild(list);
   }
-  function closeIt() {
+  function closeIt2() {
     hide("log-sheet", true);
     at("log-open").setAttribute("aria-expanded", "false");
   }
-  function wire3() {
+  function wire4() {
     write("log-count", "0");
     at("log-open").addEventListener("click", () => {
       const opening = at("log-sheet").hidden;
@@ -330,10 +478,10 @@
         draw();
       }
     });
-    at("log-close").addEventListener("click", closeIt);
+    at("log-close").addEventListener("click", closeIt2);
     document.addEventListener("keydown", (pressed) => {
       if (pressed.key === "Escape" && !at("log-sheet").hidden) {
-        closeIt();
+        closeIt2();
       }
     });
   }
@@ -399,7 +547,7 @@
     }
     return found;
   }
-  function wire4() {
+  function wire5() {
     const identity = sheet();
     at("user").addEventListener("input", signedIn);
     at("sign-in").addEventListener("click", async () => {
@@ -630,7 +778,7 @@
     }
     say("drawer-says", `Sets this node's roles to ${roles.join(", ")}.`);
   }
-  function show2(subject) {
+  function show3(subject) {
     open = subject;
     at("drawer-title").textContent = subject.self ? "This node" : subject.name;
     for (const bit of BITS) {
@@ -651,18 +799,18 @@
     hide("drawer", false);
     at("drawer-close").focus();
   }
-  function closeIt2() {
+  function closeIt3() {
     hide("drawer", true);
     open = null;
   }
-  function wire5() {
+  function wire6() {
     for (const bit of BITS) {
       at(`drawer-${bit}`).addEventListener("change", preview);
     }
-    at("drawer-close").addEventListener("click", closeIt2);
+    at("drawer-close").addEventListener("click", closeIt3);
     document.addEventListener("keydown", (pressed) => {
       if (pressed.key === "Escape" && !at("drawer").hidden) {
-        closeIt2();
+        closeIt3();
       }
     });
     at("drawer-apply").addEventListener("click", async () => {
@@ -876,7 +1024,7 @@
     );
     write("remove-preview", statement ?? "");
   }
-  function wire6() {
+  function wire7() {
     for (const field of [
       "new-name",
       "new-scope",
@@ -999,7 +1147,7 @@
     block.textContent = rows.length === 0 || incomplete(rows) !== null ? "" : formation(rows);
     at("form-statement").appendChild(block);
   }
-  function wire7() {
+  function wire8() {
     for (let index = 0; index < ROWS; index += 1) {
       for (const field of [
         ...rowFields(index),
@@ -1038,86 +1186,6 @@
     });
     preview3();
     showStatement();
-  }
-
-  // src/draw.ts
-  //! Turning what the node said into something on screen.
-  //!
-  //! Every value drawn here arrives off the wire or out of the store, so every
-  //! one of them is written with `textContent`. A record that happens to hold a
-  //! `<script>` tag is data, not markup.
-  var flat = (value2) => value2 === null || typeof value2 !== "object";
-  function shape(records) {
-    let agreed = null;
-    for (const record2 of records) {
-      const inside = record2.value;
-      if (inside === null || typeof inside !== "object" || Array.isArray(inside)) {
-        return null;
-      }
-      const fields = inside;
-      const here = Object.keys(fields).sort();
-      if (!here.every((field) => flat(fields[field]))) {
-        return null;
-      }
-      if (agreed === null) {
-        agreed = here;
-      } else if (agreed.length !== here.length || !agreed.every((f, i) => f === here[i])) {
-        return null;
-      }
-    }
-    return agreed !== null && agreed.length > 0 ? agreed : null;
-  }
-  var cell = (value2) => typeof value2 === "string" ? value2 : JSON.stringify(value2);
-  function drawn(records) {
-    const fields = shape(records);
-    if (fields === null) {
-      return null;
-    }
-    const values = records.map((record2) => record2.value);
-    const numeric = fields.map(
-      (field) => values.every((value2) => typeof value2[field] === "number")
-    );
-    const table = made("table");
-    const head = table.createTHead().insertRow();
-    for (const name of ["id", ...fields]) {
-      const column = made("th");
-      column.textContent = name;
-      head.appendChild(column);
-    }
-    const body = table.createTBody();
-    records.forEach((record2, position) => {
-      const row = body.insertRow();
-      row.insertCell().textContent = record2.id;
-      fields.forEach((field, index) => {
-        const box = row.insertCell();
-        box.textContent = cell(values[position]?.[field]);
-        if (numeric[index] === true) {
-          box.classList.add("number");
-        }
-      });
-    });
-    return table;
-  }
-  function put(where2, value2) {
-    clear(where2);
-    at(where2).appendChild(shown(value2));
-  }
-  function facts(where2, held4) {
-    clear(where2);
-    const table = made("table");
-    const body = table.createTBody();
-    for (const [name, value2] of Object.entries(held4)) {
-      const row = body.insertRow();
-      const label = made("th");
-      label.textContent = name;
-      row.appendChild(label);
-      const box = row.insertCell();
-      box.textContent = typeof value2 === "string" ? value2 : JSON.stringify(value2);
-      if (typeof value2 === "number") {
-        box.classList.add("number");
-      }
-    }
-    at(where2).appendChild(table);
   }
 
   // src/map.ts
@@ -1210,11 +1278,11 @@
     box.tabIndex = 0;
     box.setAttribute("role", "button");
     box.setAttribute("aria-label", `${title} — open its drawer`);
-    box.addEventListener("click", () => show2(subject));
+    box.addEventListener("click", () => show3(subject));
     box.addEventListener("keydown", (pressed) => {
       if (pressed.key === "Enter" || pressed.key === " ") {
         pressed.preventDefault();
-        show2(subject);
+        show3(subject);
       }
     });
     const head = made("div", "node-head");
@@ -1345,7 +1413,7 @@
     );
     say("node-status", "");
   }
-  function wire8() {
+  function wire9() {
     at("node-refresh").addEventListener("click", readNode);
     let read = false;
     for (const tab of ["tab-this-node", "tab-cluster"]) {
@@ -1368,7 +1436,7 @@
     const differ = fresh !== "" && again !== "" && fresh !== again;
     say("mine-status", differ ? "the two new ones differ" : "", differ);
   }
-  function wire9() {
+  function wire10() {
     for (const field of ["mine-current", "mine-new", "mine-again"]) {
       at(field).addEventListener("input", shapeMine);
     }
@@ -1470,7 +1538,7 @@
       say("script-status", "the node did not answer: " + told(failure), true);
     }
   }
-  function wire10() {
+  function wire11() {
     for (const button of all("[data-shape]")) {
       button.addEventListener("click", () => {
         drawing = button.dataset["shape"] ?? "auto";
@@ -1513,10 +1581,10 @@
   //! because punctuation makes them unambiguous, and `ada` resolving to the
   //! account before the table of the same name is the right guess for a console
   //! whose destructive screens are all about accounts.
-  function inRun(statement) {
-    setValue("script", statement);
-    show("run");
-    at("run").click();
+  var inDetail = (kind, name) => (answered2) => show(kind, name, answered2);
+  function splitAt(text, separator) {
+    const at2 = text.indexOf(separator);
+    return at2 < 0 ? [text, ""] : [text.slice(0, at2), text.slice(at2 + separator.length)];
   }
   function candidates(text) {
     const record2 = text.includes(":");
@@ -1524,12 +1592,23 @@
     const [namespace, database] = qualified ? text.split(".", 2) : ["", ""];
     const out = [];
     if (record2) {
-      const statement = "SELECT * FROM " + text + ";";
-      out.push({ kind: "record", statement, land: () => inRun(statement) });
+      const [reach3, key] = splitAt(text, ":");
+      const parts = reach3.split(".");
+      if (parts.length === 3) {
+        const [namespaceOf, databaseOf, table] = parts;
+        out.push({
+          kind: "record",
+          statement: `USE NAMESPACE ${namespaceOf}; USE DATABASE ${databaseOf}; SELECT * FROM ${table}:${key};`,
+          land: inDetail("record", text)
+        });
+      }
     }
     if (qualified) {
-      const statement = "USE NAMESPACE " + namespace + "; USE DATABASE " + database + "; INFO FOR DATABASE;";
-      out.push({ kind: "database", statement, land: () => inRun(statement) });
+      out.push({
+        kind: "database",
+        statement: "USE NAMESPACE " + namespace + "; USE DATABASE " + database + "; INFO FOR DATABASE;",
+        land: inDetail("database", text)
+      });
     }
     if (!record2 && !qualified) {
       out.push({
@@ -1539,19 +1618,21 @@
         // in Run would answer the question and lose the four things you reached
         // for the account in order to do.
         land: () => {
-          show("access");
+          show2("access");
           setValue("lookup-name", text);
           at("lookup").click();
         }
       });
-      const namespaceStatement = "USE NAMESPACE " + text + "; INFO FOR NAMESPACE;";
       out.push({
         kind: "namespace",
-        statement: namespaceStatement,
-        land: () => inRun(namespaceStatement)
+        statement: "USE NAMESPACE " + text + "; INFO FOR NAMESPACE;",
+        land: inDetail("namespace", text)
       });
-      const tableStatement = "INFO FOR TABLE " + text + ";";
-      out.push({ kind: "table", statement: tableStatement, land: () => inRun(tableStatement) });
+      out.push({
+        kind: "table",
+        statement: "INFO FOR TABLE " + text + ";",
+        land: inDetail("table", text)
+      });
     }
     return out;
   }
@@ -1561,19 +1642,23 @@
       return;
     }
     write("search-says", "looking…");
+    hide2();
     for (const candidate of candidates(text)) {
       try {
-        await valueOf(candidate.statement, "Search · " + candidate.kind);
+        const answered2 = await valueOf(candidate.statement, "Search · " + candidate.kind);
+        write("search-says", "");
+        candidate.land(answered2);
+        return;
       } catch {
         continue;
       }
-      write("search-says", "");
-      candidate.land();
-      return;
     }
-    write("search-says", "nothing here answers to that name");
+    write(
+      "search-says",
+      text.includes(":") ? "nothing here answers to that — name a record in full, as namespace.database.table:key" : "nothing here answers to that name"
+    );
   }
-  function wire11() {
+  function wire12() {
     at("search").addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -1634,15 +1719,15 @@
     }
     at("keys-list").appendChild(list);
   }
-  function closeIt3() {
+  function closeIt4() {
     at("keys-sheet").hidden = true;
   }
   var DESTINATIONS = ["run", "cluster", "access", "this-node"];
-  function wire12() {
+  function wire13() {
     draw3();
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !at("keys-sheet").hidden) {
-        closeIt3();
+        closeIt4();
         return;
       }
       if (event.key === "?" && !typing()) {
@@ -1657,10 +1742,10 @@
       const wanted2 = DESTINATIONS[at_];
       if (wanted2 !== void 0) {
         event.preventDefault();
-        show(wanted2);
+        show2(wanted2);
       }
     });
-    at("keys-close").addEventListener("click", closeIt3);
+    at("keys-close").addEventListener("click", closeIt4);
     at("keys-open").addEventListener("click", () => {
       at("keys-sheet").hidden = !at("keys-sheet").hidden;
     });
@@ -1819,7 +1904,7 @@
     }
     write("user-count", tally(matched));
   }
-  function wire13() {
+  function wire14() {
     at("list").addEventListener("click", listUsers);
     at("user-filter").addEventListener("input", redraw);
     at("tab-access").addEventListener("click", () => {
@@ -1962,7 +2047,7 @@
     }
     return wanted2;
   }
-  function wire14() {
+  function wire15() {
     at("follow").addEventListener("click", () => {
       stop();
       clear("changes");
@@ -2022,18 +2107,19 @@
   //! graph first reaches it, which makes the order of everything on this page an
   //! accident of who imports whom. One list is cheaper to read and cannot drift.
   write("where", "served by " + window.location.host);
-  wire3();
-  wire2();
   wire4();
-  wire10();
+  wire3();
+  wire5();
   wire11();
   wire12();
-  wire7();
-  wire5();
-  wire();
-  wire14();
-  wire6();
   wire13();
   wire8();
+  wire6();
+  wire2();
+  wire();
+  wire15();
+  wire7();
+  wire14();
   wire9();
+  wire10();
 })();

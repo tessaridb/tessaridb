@@ -18,6 +18,7 @@
 
 import { write } from "./dom.js";
 import * as context from "./context.js";
+import * as detail from "./detail.js";
 import * as drawer from "./drawer.js";
 import * as formation from "./formation.js";
 import * as log from "./log.js";
@@ -44,6 +45,7 @@ search.wire();
 shortcuts.wire();
 formation.wire();
 drawer.wire();
+detail.wire();
 
 // Last: a restored value fires the same handlers typing would, and those
 // handlers belong to modules that have to be wired before it does.
