@@ -12,7 +12,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use tessari_encoding::{
-    LogId, LogRecord, Mutation, RecordValue, StampedValue, Writer, encode_payload,
+    CausalOrder, CausalStamp, LogId, LogRecord, Mutation, RecordValue, StampedValue, Writer,
+    encode_payload,
 };
 use tessari_kv::{Key, KeyRange, Keyspace, KvBackend, MemoryBackend, ScanRequest, Value};
 use tessari_storage::{Catalog, EDGE_IN, EDGE_OUT, Error, Reach, RecordAddress, Store, TableShape};
@@ -1175,5 +1176,184 @@ fn the_most_specific_leadership_covering_a_range_is_the_one_that_answers() {
             .unwrap()
             .range,
         Reach::Store
+    );
+}
+
+/// One record in the range `declared` builds, rather than in [`FIXTURE_HOME`].
+///
+/// `declared` allocates the namespace and database through the catalog, so the
+/// ids are whatever allocation gave — a test that hard-coded `1` here would pass
+/// for the wrong reason the day allocation changes.
+fn address_in(namespace: NamespaceId, database: DatabaseId, id: &str) -> RecordAddress {
+    RecordAddress::new(namespace, database, TableId::new(1), RecordId::from(id))
+}
+
+/// One committed put into that range, through the ordinary write path.
+///
+/// Through `commit` and not through `apply_record`, because the point of S2.2 is
+/// two nodes that each **accept a write**: a record placed straight into the log
+/// would prove the replay and skip the half that produces what the replay
+/// carries.
+fn put_in(
+    store: &Store,
+    namespace: NamespaceId,
+    database: DatabaseId,
+    id: &str,
+    payload: &[u8],
+) -> Sequence {
+    let mut transaction = store.begin().unwrap();
+    transaction.put(address_in(namespace, database, id), payload.to_vec());
+    transaction.commit().unwrap()
+}
+
+/// Apply every log `source` holds for `home` into `target`, under its writer.
+///
+/// `logs_of` is asked rather than reasoned from the type (Q-632), and each
+/// record is filed under the writer that WROTE it — re-attributing them to the
+/// target would leave the source's logs empty on a store holding all of their
+/// records.
+fn replay_range(source: &Store, target: &Store, home: Reach) {
+    for log in source.logs_of(home).unwrap() {
+        for (at, record) in source.log_records(log, Sequence::ZERO, PLENTY).unwrap() {
+            target
+                .apply_record(log.writer, at, &record)
+                .expect("a follower applies both logs without a gap refusal");
+        }
+    }
+}
+
+/// The stamp the newest version of `id` carries in `log`.
+fn stamp_in(store: &Store, log: LogId, id: &str) -> CausalStamp {
+    let wanted = RecordId::from(id);
+    store
+        .log_records(log, Sequence::ZERO, PLENTY)
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find_map(|(_, record)| {
+            record
+                .mutations()
+                .iter()
+                .find(|mutation| mutation.id == wanted)
+                .map(|mutation| mutation.value.stamp().clone())
+        })
+        .expect("the record was written into this log")
+}
+
+#[test]
+fn a_commit_stamps_the_version_with_what_this_node_had_seen() {
+    // The producer on its own, before the three-store scenario exercises it.
+    // Two writes from one node leave one entry at two, because a stamp counts
+    // writes per node and not nodes per record.
+    let (store, _, namespace, database) = declared(Some(ReplicationClass::MultiMaster));
+    let log = store.own_log(Reach::Database(namespace, database)).unwrap();
+
+    put_in(&store, namespace, database, "r", b"first");
+    let after_one = stamp_in(&store, log, "r");
+    assert_eq!(after_one.len(), 1, "one node wrote, so one entry");
+    assert_eq!(after_one.count(&wrote(&store).bytes()), 1);
+
+    put_in(&store, namespace, database, "r", b"second");
+    let after_two = stamp_in(&store, log, "r");
+    assert_eq!(
+        after_two.len(),
+        1,
+        "the same node wrote again, not a new one"
+    );
+    assert_eq!(
+        after_two.count(&wrote(&store).bytes()),
+        2,
+        "the second write carried the first forward rather than starting over"
+    );
+    assert_eq!(
+        after_two.compare(&after_one),
+        CausalOrder::After,
+        "a write that saw the version it replaced is not concurrent with it"
+    );
+}
+
+#[test]
+fn two_nodes_writing_one_range_replay_into_a_third_that_names_the_conflict() {
+    // G027 S2.2, whole. Two nodes accept writes to one declared range, a third
+    // replays both, and the record set is compared by CONTENT — a count would
+    // be satisfied by four records of which two were the wrong ones.
+    let (first, _, namespace, database) = declared(Some(ReplicationClass::MultiMaster));
+    let (second, ..) = declared(Some(ReplicationClass::MultiMaster));
+    let (third, ..) = declared(Some(ReplicationClass::MultiMaster));
+    let home = Reach::Database(namespace, database);
+
+    put_in(&first, namespace, database, "only-first", b"the-first-node");
+    put_in(
+        &second,
+        namespace,
+        database,
+        "only-second",
+        b"the-second-node",
+    );
+    put_in(&first, namespace, database, "shared", b"first-writes-it");
+    put_in(&second, namespace, database, "shared", b"second-writes-it");
+
+    // Each allocates in its OWN log: one log apiece, and not the same one.
+    assert_eq!(first.logs_of(home).unwrap().len(), 1);
+    assert_eq!(second.logs_of(home).unwrap().len(), 1);
+    assert_ne!(
+        first.own_log(home).unwrap(),
+        second.own_log(home).unwrap(),
+        "two writers on one range are two logs, or the positions collide"
+    );
+
+    replay_range(&first, &third, home);
+    replay_range(&second, &third, home);
+
+    assert_eq!(
+        third.logs_of(home).unwrap().len(),
+        2,
+        "the follower holds a log per writer, not a merged one"
+    );
+    assert_eq!(
+        third.health().unwrap().log_divergences,
+        0,
+        "applying both logs is not a divergence — they were never one log"
+    );
+
+    // By content. The private records are each their writer's, and the
+    // contested one holds what the later-applied writer wrote.
+    let transaction = third.begin().unwrap();
+    assert_eq!(
+        transaction
+            .get(&address_in(namespace, database, "only-first"))
+            .unwrap(),
+        Some(b"the-first-node".to_vec())
+    );
+    assert_eq!(
+        transaction
+            .get(&address_in(namespace, database, "only-second"))
+            .unwrap(),
+        Some(b"the-second-node".to_vec())
+    );
+    assert_eq!(
+        transaction
+            .get(&address_in(namespace, database, "shared"))
+            .unwrap(),
+        Some(b"second-writes-it".to_vec()),
+        "the newest version answers — which is exactly why the engine must be \
+         able to say that the other one is not superseded"
+    );
+    drop(transaction);
+
+    // Q-636's line: S1.1 proved the third answer is REPRESENTABLE, and this is
+    // the first place two real writes exist to try it on. Both stamps are read
+    // out of the THIRD store, so what is compared is what the replay carried.
+    let ours = stamp_in(&third, first.own_log(home).unwrap(), "shared");
+    let theirs = stamp_in(&third, second.own_log(home).unwrap(), "shared");
+    assert_eq!(
+        ours.compare(&theirs),
+        CausalOrder::Concurrent,
+        "neither writer saw the other, and the engine has to be able to say so"
+    );
+    assert_eq!(
+        theirs.compare(&ours),
+        CausalOrder::Concurrent,
+        "and it has to say the same thing from the other side"
     );
 }

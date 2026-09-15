@@ -32,7 +32,7 @@
 
 use std::collections::BTreeMap;
 
-use tessari_encoding::{RecordKey, RecordValue, StoreKey, StoreValue};
+use tessari_encoding::{RecordKey, RecordValue, StampedValue, StoreKey, StoreValue};
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
 
@@ -133,7 +133,7 @@ impl Store {
                 continue;
             }
             let present = matches!(
-                RecordValue::decode(value.as_slice())?,
+                StampedValue::decode(value.as_slice())?.into_value(),
                 RecordValue::Present(_)
             );
             newest.insert(decoded.id, present);

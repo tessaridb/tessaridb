@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::ops::Bound;
 
-use tessari_encoding::{RecordKey, RecordValue, StoreKey, StoreValue};
+use tessari_encoding::{RecordKey, RecordValue, StampedValue, StoreKey, StoreValue};
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{DatabaseId, NamespaceId, Sequence, TableId};
 
@@ -139,7 +139,9 @@ impl<'a> Transaction<'a> {
             .first_of_each(RecordKey::keyspace(), &ranges)?;
         for (index, pair) in asked.into_iter().zip(found) {
             let Some((_, value)) = pair else { continue };
-            if let RecordValue::Present(payload) = RecordValue::decode(value.as_slice())? {
+            if let RecordValue::Present(payload) =
+                StampedValue::decode(value.as_slice())?.into_value()
+            {
                 answers[index] = Some(payload);
             }
         }
@@ -200,6 +202,22 @@ impl<'a> Transaction<'a> {
         &self,
         address: &RecordAddress,
     ) -> Result<Option<(Sequence, RecordValue)>> {
+        Ok(self
+            .read_newest_stamped(address)?
+            .map(|(version, stamped)| (version, stamped.into_value())))
+    }
+
+    /// The same version, with the causal context its writer had seen.
+    ///
+    /// What the commit path's stamp producer reads. A write carries forward
+    /// every count the version it replaces held and raises only its own, and
+    /// that carrying is the entire reason a later comparison can tell ignorance
+    /// from sequence — a producer that started from an empty stamp would make
+    /// every write concurrent with every other one.
+    pub(super) fn read_newest_stamped(
+        &self,
+        address: &RecordAddress,
+    ) -> Result<Option<(Sequence, StampedValue)>> {
         let prefix = address.versions_prefix();
         self.first_in_range(KeyRange::prefix(&prefix))
     }
@@ -216,10 +234,20 @@ impl<'a> Transaction<'a> {
             Bound::Included(address.key_at(snapshot).encode()),
             bounds.end().clone(),
         );
-        self.first_in_range(range)
+        Ok(self
+            .first_in_range(range)?
+            .map(|(version, stamped)| (version, stamped.into_value())))
     }
 
-    fn first_in_range(&self, range: KeyRange) -> Result<Option<(Sequence, RecordValue)>> {
+    /// The newest entry in a span of one record's versions, stamp and all.
+    ///
+    /// Decodes as [`StampedValue`] rather than as `RecordValue` because that is
+    /// what the store holds: `RecordValue::decode` allows only the tombstone
+    /// flag and *refuses* a stamped value outright, so a reader that took the
+    /// narrower type would start failing the day commits began carrying a
+    /// stamp. One decode site for the reason the codec gives for its splitters
+    /// — two readings of one byte string is a thing that can come to disagree.
+    fn first_in_range(&self, range: KeyRange) -> Result<Option<(Sequence, StampedValue)>> {
         let request = ScanRequest {
             keyspace: RecordKey::keyspace(),
             range,
@@ -231,7 +259,7 @@ impl<'a> Transaction<'a> {
             return Ok(None);
         };
         let decoded_key = RecordKey::decode(key.as_slice())?;
-        let decoded_value = RecordValue::decode(value.as_slice())?;
+        let decoded_value = StampedValue::decode(value.as_slice())?;
         Ok(Some((decoded_key.version, decoded_value)))
     }
 }

@@ -11,7 +11,9 @@ use std::hash::{BuildHasher, Hasher};
 use std::time::Duration;
 
 use tessari_constants::{COMMIT_BACKOFF_CEILING, COMMIT_BACKOFF_STEP, MAX_COMMIT_ATTEMPTS};
-use tessari_encoding::{LogId, LogRecord, Mutation, RecordValue, StampedValue, decode_payload};
+use tessari_encoding::{
+    CausalStamp, LogId, LogRecord, Mutation, RecordValue, StampedValue, decode_payload,
+};
 use tessari_types::Sequence;
 
 use super::{RecordAddress, Transaction};
@@ -265,7 +267,7 @@ impl Transaction<'_> {
         if self.store.awaiting(&identity.id)? {
             return Err(Error::NoLeadershipYet);
         }
-        let record = self.log_record();
+        let record = self.log_record(identity.id)?;
         // The log this commit belongs to, derived from the record before the
         // loop because it cannot change between attempts: it is a property of
         // what is being written, not of the state being written onto. The
@@ -357,19 +359,44 @@ impl Transaction<'_> {
     /// Built once, before the retry loop: the mutations do not depend on which
     /// sequence the commit eventually wins, so rebuilding them per attempt would
     /// be work that also invites the two attempts to differ.
-    fn log_record(&self) -> LogRecord {
-        LogRecord::new(
-            self.writes
-                .iter()
-                .map(|(address, value)| Mutation {
-                    namespace: address.namespace,
-                    database: address.database,
-                    table: address.table,
-                    id: address.id.clone(),
-                    value: StampedValue::new(value.clone()),
-                })
-                .collect(),
-        )
+    ///
+    /// # The stamp is produced here, and here is the only place it can be
+    ///
+    /// Each version carries what its writer had **seen**: the stamp standing on
+    /// the version this write replaces, with this node's own count raised by one
+    /// and every other node's carried across unchanged. That carrying is the
+    /// mechanism — it is what lets a later comparison tell a write that saw
+    /// another from a write that was made in ignorance of it, which is the only
+    /// distinction a multi-master range has to work from (G027 S2.2, Q-636).
+    ///
+    /// `node` is the identity the caller already read for the leadership checks
+    /// rather than one fetched again, and it is the same value the log's own
+    /// name carries as its [`tessari_encoding::Writer`] — one node axis, used by
+    /// the key and by the stamp, so the two cannot come to disagree about which
+    /// node wrote a record.
+    ///
+    /// **What it deliberately does not do.** The stamp is advanced from the
+    /// **newest** stored version and not from the merge of every surviving one.
+    /// A store holding two concurrent versions at once needs the merge — and it
+    /// cannot hold two until the engine decides what a write meeting a
+    /// concurrency does, which is S3's question and not this criterion's
+    /// (Q-645).
+    fn log_record(&self, node: [u8; tessari_encoding::NODE_ID_LEN]) -> Result<LogRecord> {
+        let mut mutations = Vec::with_capacity(self.writes.len());
+        for (address, value) in &self.writes {
+            let mut stamp = self
+                .read_newest_stamped(address)?
+                .map_or_else(CausalStamp::new, |(_, stamped)| stamped.stamp().clone());
+            stamp.advance(node);
+            mutations.push(Mutation {
+                namespace: address.namespace,
+                database: address.database,
+                table: address.table,
+                id: address.id.clone(),
+                value: StampedValue::stamped(stamp, value.clone()),
+            });
+        }
+        Ok(LogRecord::new(mutations))
     }
 
     /// Refuse the commit if any written record has moved since the snapshot.
