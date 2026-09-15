@@ -115,6 +115,163 @@ fn peers(report: &std::collections::BTreeMap<String, Value>) -> Vec<(String, Str
         .collect()
 }
 
+/// What each named peer is subscribed to, as the report spells it.
+fn subscriptions(
+    report: &std::collections::BTreeMap<String, Value>,
+) -> Vec<(String, Option<String>)> {
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster group: {report:?}");
+    };
+    let Some(Value::Array(found)) = cluster.get("peers") else {
+        panic!("no peer list: {cluster:?}");
+    };
+    found
+        .iter()
+        .map(|peer| {
+            let Value::Object(fields) = peer else {
+                panic!("not a peer: {peer:?}");
+            };
+            let name = match fields.get("name") {
+                Some(Value::String(value)) => value.clone(),
+                other => panic!("name is {other:?}"),
+            };
+            let granted = match fields.get("replicates") {
+                Some(Value::String(value)) => Some(value.clone()),
+                // Present either way, and `null` is the answer rather than a
+                // missing key: *subscribed to nothing* is a state an operator
+                // has to be able to see.
+                Some(Value::Null) => None,
+                other => panic!("replicates is {other:?}"),
+            };
+            (name, granted)
+        })
+        .collect()
+}
+
+/// The id this node prints for itself.
+fn own_id(report: &std::collections::BTreeMap<String, Value>) -> String {
+    match report.get("id") {
+        Some(Value::String(text)) => text.clone(),
+        other => panic!("id is {other:?}"),
+    }
+}
+
+/// One role, as the text it is. `Display` would quote it.
+fn named(role: &Value) -> String {
+    match role {
+        Value::String(text) => text.clone(),
+        other => panic!("not a role name: {other:?}"),
+    }
+}
+
+/// The roles this node currently holds — the local half, from `META`.
+fn effective(report: &std::collections::BTreeMap<String, Value>) -> Vec<String> {
+    match report.get("roles") {
+        Some(Value::Array(found)) => found.iter().map(named).collect(),
+        other => panic!("roles is {other:?}"),
+    }
+}
+
+/// The roles the cluster says this node should hold — the replicated half.
+///
+/// `None` when no membership row names it, which is a different answer from an
+/// empty list and is asserted as such below.
+fn desired(report: &std::collections::BTreeMap<String, Value>) -> Option<Vec<String>> {
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster group: {report:?}");
+    };
+    match cluster.get("desired") {
+        Some(Value::Null) => None,
+        Some(Value::Array(found)) => Some(found.iter().map(named).collect()),
+        other => panic!("desired is {other:?}"),
+    }
+}
+
+/// How long this node says it may still write, as `INFO FOR NODE` answers it.
+///
+/// `None` when the field is `null` — a node nobody made a leader — which is a
+/// different answer from a duration of zero and is asserted as such below.
+fn lease(report: &std::collections::BTreeMap<String, Value>) -> Option<Value> {
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster group: {report:?}");
+    };
+    match cluster.get("lease") {
+        Some(Value::Null) => None,
+        Some(found) => Some(found.clone()),
+        None => panic!("no lease field: {cluster:?}"),
+    }
+}
+
+/// Which leadership this node says it is writing under.
+fn epoch(report: &std::collections::BTreeMap<String, Value>) -> Option<Value> {
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster group: {report:?}");
+    };
+    match cluster.get("epoch") {
+        Some(Value::Null) => None,
+        Some(found) => Some(found.clone()),
+        None => panic!("no epoch field: {cluster:?}"),
+    }
+}
+
+#[test]
+fn a_node_reports_the_leadership_it_writes_under_beside_the_time_left_on_it() {
+    // The pair, not either half. A lease heading toward zero says *how long*;
+    // the epoch says *what for*. Without the second a report cannot tell a node
+    // renewing the leadership it already held from one that has just taken it
+    // from somebody else — which is exactly the difference between a quiet
+    // cluster and a failover nobody observed.
+    let store = closed(&backend());
+    assert_eq!(
+        epoch(&reported(&store)),
+        None,
+        "a node no round ever granted anything to claimed a leadership"
+    );
+
+    // A lease taken locally has no round behind it, so it moves the lease and
+    // leaves the epoch alone: this is the fence without the cluster, which is
+    // what every single-node store runs.
+    store.hold_lease(Duration::from_secs(120));
+    assert!(lease(&reported(&store)).is_some());
+    assert_eq!(
+        epoch(&reported(&store)),
+        None,
+        "a locally taken lease invented a leadership nobody granted"
+    );
+
+    // And a granted one carries both across the seam together.
+    store.hold(
+        tessari_types::Epoch::new(6),
+        tessari_storage::Lease::taken(Duration::from_secs(120)),
+    );
+    assert_eq!(epoch(&reported(&store)), Some(Value::from(6_i64)));
+}
+
+#[test]
+fn a_node_nobody_made_a_leader_reports_no_lease_rather_than_none_left() {
+    // The field is present and `null`, not absent. An operator reading this has
+    // to be able to tell "no leadership here" from "leadership about to lapse",
+    // and a missing key answers neither.
+    let store = closed(&backend());
+    assert_eq!(lease(&reported(&store)), None);
+}
+
+#[test]
+fn a_node_holding_a_lease_reports_the_time_it_has_left() {
+    let store = closed(&backend());
+    store.hold_lease(Duration::from_secs(120));
+    let Some(Value::Duration(left)) = lease(&reported(&store)) else {
+        panic!("a granted lease is reported as a duration");
+    };
+    // Positive, and inside the fence rather than inside the grant: the δ the
+    // cluster waits before reassigning is not time this node may write in.
+    assert!(left.seconds() > 0, "the lease reports {left:?} remaining");
+    assert!(
+        left.seconds() <= 118,
+        "the lease reports {left:?}, which reaches past its own fence"
+    );
+}
+
 #[test]
 fn a_fresh_node_reports_both_halves_and_an_empty_topology() {
     // The shape before anything is configured, because that is what every later
@@ -380,4 +537,434 @@ fn a_table_called_node_is_still_an_ordinary_table() {
     // And the statement family still works beside it, which is what makes the
     // two genuinely unambiguous rather than merely both accepted.
     assert!(session.run("INFO FOR NODE;").is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// The role the panel writes, beside the role the node holds (G024 S5.2).
+//
+// `roles` is the **effective** role: what this process is running as, held in
+// `META`, which a backup does not carry. `cluster.desired` is the **desired**
+// role: the roles on the membership row bound to this node's id, which is an
+// ordinary catalog record and which every node therefore holds. They are two
+// values on purpose, they are allowed to differ, and the window in which they
+// do is what these tests read.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_node_no_membership_row_names_has_no_desired_role_at_all() {
+    // The baseline, and the reason this whole feature changes nothing for a
+    // store standing on its own. `null` rather than an empty list: nothing has
+    // an opinion about this node, which is a different statement from something
+    // having the opinion that it should do nothing.
+    let store = closed(&backend());
+    let report = reported(&store);
+    assert_eq!(desired(&report), None, "{report:?}");
+
+    // A peer that names no node leaves it that way — the row every existing
+    // declaration writes.
+    owner(&store)
+        .run("DEFINE REPLICA second AT 'there:9001' ROLES serving, writable;")
+        .unwrap();
+    let after = reported(&store);
+    assert_eq!(desired(&after), None, "{after:?}");
+}
+
+#[test]
+fn the_id_the_report_prints_is_the_id_the_clause_reads_back() {
+    // The property that makes binding a node something an operator can actually
+    // do: copy `id` out of the answer, paste it into the statement. A clause
+    // that would not take what the report gives has a conversion step in it, and
+    // an undocumented conversion step is where the first wrong binding comes
+    // from.
+    let store = closed(&backend());
+    let id = own_id(&reported(&store));
+    owner(&store)
+        .run(&format!(
+            "DEFINE REPLICA here AT 'here:9000' NODE '{id}' ROLES serving;"
+        ))
+        .unwrap();
+
+    let report = reported(&store);
+    assert_eq!(
+        desired(&report),
+        Some(vec!["serving".to_owned()]),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn declaring_a_desired_role_does_not_move_the_effective_one() {
+    // **The window S5.2 asks about.** The declaration commits, the catalog says
+    // what this node is supposed to be, and what it is actually running as has
+    // not moved — both readable, at the same instant, disagreeing.
+    let store = closed(&backend());
+    let id = own_id(&reported(&store));
+    let before = effective(&reported(&store));
+    assert_eq!(before, vec!["serving".to_owned(), "writable".to_owned()]);
+
+    owner(&store)
+        .run(&format!(
+            "DEFINE REPLICA here AT 'here:9000' NODE '{id}' ROLES serving, coordinating;"
+        ))
+        .unwrap();
+
+    let report = reported(&store);
+    assert_eq!(
+        effective(&report),
+        before,
+        "the effective role moved without the node reconciling: {report:?}"
+    );
+    assert_eq!(
+        desired(&report),
+        Some(vec!["serving".to_owned(), "coordinating".to_owned()]),
+        "{report:?}"
+    );
+    assert_ne!(
+        desired(&report).unwrap(),
+        effective(&report),
+        "the two halves cannot be observed differing: {report:?}"
+    );
+}
+
+#[test]
+fn reopening_the_store_converges_the_effective_role_on_the_desired_one() {
+    // The other half of the same window: the node reconciles at open, which is
+    // the moment it has a catalog to read and has answered nobody yet. Re-opened
+    // rather than re-read, for `what_the_statement_sets_survives_a_restart`'s
+    // reason — a live handle can answer from something it read earlier.
+    let held = backend();
+    let store = closed(&held);
+    let id = own_id(&reported(&store));
+    owner(&store)
+        .run(&format!(
+            "DEFINE REPLICA here AT 'here:9000' NODE '{id}' ROLES serving, coordinating;"
+        ))
+        .unwrap();
+    drop(store);
+
+    let reopened = Store::open(Arc::clone(&held)).unwrap();
+    let report = reported(&reopened);
+    assert_eq!(
+        effective(&report),
+        vec!["serving".to_owned(), "coordinating".to_owned()],
+        "{report:?}"
+    );
+    assert_eq!(
+        desired(&report).as_deref(),
+        Some(effective(&report).as_slice()),
+        "converged and then disagreed with itself: {report:?}"
+    );
+    // The id is what it was. Adopting a role is not becoming a different node.
+    assert_eq!(own_id(&report), id, "{report:?}");
+}
+
+#[test]
+fn a_row_bound_to_another_node_moves_nothing_here() {
+    // The property that lets a desired role replicate to every follower and
+    // still mean one machine. Without the id in the comparison this row would be
+    // *a* desired role and every node holding it would adopt it — which is the
+    // broadcast role that binding by id exists to make impossible.
+    let held = backend();
+    let store = closed(&held);
+    let before = effective(&reported(&store));
+    let adopted = store.node_identity().unwrap().roles;
+    owner(&store)
+        .run(&format!(
+            "DEFINE REPLICA elsewhere AT 'there:9001' NODE '{}' ROLES coordinating;",
+            "ab".repeat(16)
+        ))
+        .unwrap();
+    drop(store);
+
+    let reopened = Store::open(Arc::clone(&held)).unwrap();
+    let report = reported(&reopened);
+    assert_eq!(
+        desired(&report),
+        None,
+        "somebody else's row was read as ours: {report:?}"
+    );
+    assert_eq!(
+        reopened.node_identity().unwrap().roles,
+        adopted,
+        "the row moved what this node ADOPTED, which is the subject here: \
+         {report:?}"
+    );
+
+    // What it does move, and it is a different mechanism reached by the same
+    // statement: the catalog now names a peer, so this store is in a cluster
+    // and writes under a leadership it does not hold (G025 S3.1, ADR-0069).
+    // `before` was taken while it was still alone.
+    assert!(before.contains(&"writable".to_owned()));
+    assert!(
+        !effective(&report).contains(&"writable".to_owned()),
+        "a node in a cluster reports what it may actually do: {report:?}"
+    );
+}
+
+#[test]
+fn a_bound_row_that_names_no_roles_drains_the_node() {
+    // The sharp edge, pinned so that it is a decision rather than a discovery.
+    // An absent `ROLES` already means `Roles::NONE`, and `Roles::NONE` is
+    // already documented as how an operator drains a node without stopping it.
+    // Binding a row and saying nothing therefore drains this node at its next
+    // open — one value keeping one meaning, at the price of an edge. The
+    // alternative is a second spelling for absent, and two spellings for absent
+    // come to disagree.
+    let held = backend();
+    let store = closed(&held);
+    let id = own_id(&reported(&store));
+    owner(&store)
+        .run(&format!("DEFINE REPLICA here AT 'here:9000' NODE '{id}';"))
+        .unwrap();
+    drop(store);
+
+    let reopened = Store::open(Arc::clone(&held)).unwrap();
+    let report = reported(&reopened);
+    assert!(
+        effective(&report).is_empty(),
+        "a bound row with no roles left the node serving: {report:?}"
+    );
+    assert_eq!(desired(&report), Some(Vec::new()), "{report:?}");
+}
+
+#[test]
+fn the_binding_is_reported_beside_the_peer_it_binds() {
+    // A binding an operator can write and cannot read back is one they cannot
+    // check, and the mistake it hides is silent: a row bound to an id nobody
+    // has converges nothing and complains about nothing.
+    let store = closed(&backend());
+    let id = own_id(&reported(&store));
+    owner(&store)
+        .run(&format!(
+            "DEFINE REPLICA here AT 'here:9000' NODE '{id}';             DEFINE REPLICA second AT 'there:9001';"
+        ))
+        .unwrap();
+
+    let report = reported(&store);
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster group: {report:?}");
+    };
+    let Some(Value::Array(found)) = cluster.get("peers") else {
+        panic!("no peer list: {cluster:?}");
+    };
+    let bound: Vec<(String, Value)> = found
+        .iter()
+        .map(|peer| {
+            let Value::Object(fields) = peer else {
+                panic!("not a peer: {peer:?}");
+            };
+            let Some(Value::String(name)) = fields.get("name") else {
+                panic!("no name: {fields:?}");
+            };
+            (
+                name.clone(),
+                fields.get("node").cloned().unwrap_or(Value::Null),
+            )
+        })
+        .collect();
+    assert_eq!(bound[0].0, "here");
+    assert_eq!(bound[0].1.to_string(), format!("uuid:{id}"), "{bound:?}");
+    assert_eq!(bound[1].0, "second");
+    assert_eq!(
+        bound[1].1,
+        Value::Null,
+        "an unbound row named a node: {bound:?}"
+    );
+}
+
+#[test]
+fn a_node_id_that_is_not_one_is_refused_where_it_was_written() {
+    // Refused at the statement rather than stored: afterwards, a row naming a
+    // node nobody will ever be is indistinguishable from a row nobody bound.
+    let store = closed(&backend());
+    let failure = owner(&store)
+        .run("DEFINE REPLICA here AT 'here:9000' NODE 'not-an-id' ROLES serving;")
+        .unwrap_err();
+    assert!(
+        format!("{failure:?}").contains("Uuid"),
+        "refused for the wrong reason: {failure:?}"
+    );
+    assert!(
+        peers(&reported(&store)).is_empty(),
+        "a refused declaration left a row behind"
+    );
+}
+
+#[test]
+fn a_lapsed_lease_takes_writable_out_of_the_role_the_node_reports() {
+    // §6.1's *effective role is the lease*, read where an operator reads it.
+    // The desired row beside it is untouched, and must be: the pair is only
+    // worth anything while the two can differ, which is the half of S5.2 that
+    // was already true.
+    let store = closed(&backend());
+    let mut session = owner(&store);
+    session.run("DEFINE NODE ROLES serving, writable;").unwrap();
+    assert_eq!(
+        reported(&store).get("roles"),
+        Some(&Value::Array(vec![
+            Value::from("serving"),
+            Value::from("writable")
+        ]))
+    );
+
+    store.hold_lease(Duration::ZERO);
+    assert_eq!(
+        reported(&store).get("roles"),
+        Some(&Value::Array(vec![Value::from("serving")])),
+        "a node whose lease has lapsed may not write, and now says so"
+    );
+}
+
+#[test]
+fn the_node_record_and_the_node_report_give_one_answer_about_roles() {
+    // Two reports of one fact. A reader who compared them is entitled to the
+    // same answer, and before the lease reached the report they would not have
+    // got one.
+    let store = closed(&backend());
+    owner(&store)
+        .run("DEFINE NODE ROLES serving, writable;")
+        .unwrap();
+    store.hold_lease(Duration::ZERO);
+
+    let reported_roles = reported(&store).get("roles").cloned();
+    let selected = owner(&store).run("SELECT roles FROM $node;").unwrap();
+    let rendered = format!("{selected:?}");
+    assert!(!rendered.contains("writable"), "{rendered}");
+    assert_eq!(
+        reported_roles,
+        Some(Value::Array(vec![Value::from("serving")]))
+    );
+}
+
+#[test]
+fn a_lapsed_lease_refuses_a_write_as_the_clusters_fault_and_not_the_nodes_role() {
+    // The distinction the whole design of `effective_roles` rests on, and until
+    // this test existed nothing at the session level held it. Both refusals are
+    // available here and they say opposite things: *this node does not accept
+    // writes* blames a role an operator configured, while the lease refusal says
+    // the cluster took the leadership back and carries how long ago.
+    //
+    // Feeding the lease-adjusted roles into the write gate would have swapped
+    // one for the other and broken no test at all — which is exactly why this
+    // one is here.
+    let store = closed(&backend());
+    owner(&store)
+        .run("DEFINE NODE ROLES serving, writable;")
+        .unwrap();
+    store.hold_lease(Duration::ZERO);
+
+    let refused = owner(&store)
+        .run("DEFINE NAMESPACE prod;")
+        .expect_err("a node whose lease has lapsed takes no writes");
+    let said = refused.to_string();
+    assert!(said.contains("lease"), "{said}");
+    assert!(
+        !said.contains("does not accept writes (at"),
+        "the role refusal stood in for the lease refusal: {said}"
+    );
+}
+
+/// The id a `NODE` clause takes: thirty-two hex digits.
+const SOMEBODY: &str = "9f2c4e1a70bb43d5a1c6e2f480937d55";
+
+#[test]
+fn a_peer_declared_without_the_clause_is_subscribed_to_nothing() {
+    // The refusal, and it is structural rather than a rule: the row every build
+    // before this one wrote carries no subscription, so every peer declared by
+    // an earlier build receives nothing until somebody says otherwise. Absent
+    // and *explicitly none* are the same answer here only because there is no
+    // way yet to say the second — and the field is written only when stated, so
+    // the day there is one, the two are still distinguishable.
+    let store = closed(&backend());
+    let mut session = owner(&store);
+    session
+        .run("DEFINE REPLICA second AT 'there:9001';")
+        .unwrap();
+
+    assert_eq!(
+        subscriptions(&reported(&store)),
+        vec![("second".to_owned(), None)]
+    );
+}
+
+#[test]
+fn a_subscription_reads_back_in_the_spelling_that_wrote_it() {
+    // Names and not ids, and the clause's own words: what the report prints is
+    // what would be pasted back into the statement that corrects it. The same
+    // property `NODE` has, for the same reason — a setting an operator can
+    // write and cannot read back is one they cannot check before the bad day.
+    let store = closed(&backend());
+    let mut session = owner(&store);
+    // Every peer in ONE transaction, which is what declaring a cluster by hand
+    // looks like after G025 S3.1: the gate reads the COMMITTED membership, so a
+    // statement-per-transaction script gets its first `DEFINE REPLICA` through
+    // and is refused for the second — the node is in a cluster by then and
+    // holds no leadership. One commit is judged once, against a catalog that
+    // still names nobody.
+    session
+        .run(&format!(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
+             BEGIN; \
+             DEFINE REPLICA whole AT 'a:9001' NODE '{SOMEBODY}' REPLICATES STORE; \
+             DEFINE REPLICA part AT 'b:9001' NODE '{SOMEBODY}' REPLICATES NAMESPACE prod; \
+             DEFINE REPLICA sliver AT 'c:9001' NODE '{SOMEBODY}' \
+                 REPLICATES DATABASE prod.orders; \
+             COMMIT;"
+        ))
+        .unwrap();
+
+    assert_eq!(
+        subscriptions(&reported(&store)),
+        vec![
+            ("part".to_owned(), Some("NAMESPACE prod".to_owned())),
+            ("sliver".to_owned(), Some("DATABASE prod.orders".to_owned())),
+            ("whole".to_owned(), Some("STORE".to_owned())),
+        ],
+        "in name order, which is how the catalog answers"
+    );
+}
+
+#[test]
+fn a_subscription_on_a_row_that_names_no_node_is_declared_and_holds_nobody() {
+    // This was a refusal until W282, on the reasoning that a grant needs
+    // somebody to hold it: the door looks a follower up by the id its
+    // certificate proved, so a subscription on a row naming no node could never
+    // be found. What made that argument sound was that nothing could ever bind
+    // such a row. The first inbound greeting now does, so the grant is
+    // *pending* rather than *lost*, and refusing it would force an operator to
+    // type an id nobody has told them yet (Q-611).
+    //
+    // What has NOT changed is who can hold it, and that is the half worth
+    // asserting: an unbound row matches no follower, so the grant reaches
+    // nobody until a peer this cluster issued a credential to arrives and
+    // proves which node it is.
+    let store = closed(&backend());
+    let mut session = owner(&store);
+    session.run("DEFINE NAMESPACE prod;").unwrap();
+
+    session
+        .run("DEFINE REPLICA second AT 'there:9001' REPLICATES NAMESPACE prod;")
+        .expect("a peer declared before anybody has spoken to it");
+
+    assert_eq!(
+        subscriptions(&reported(&store)),
+        vec![("second".to_owned(), Some("NAMESPACE prod".to_owned()))],
+        "the reach the operator wrote is stored as written"
+    );
+}
+
+#[test]
+fn a_subscription_naming_a_namespace_that_is_not_there_is_refused() {
+    // Resolved with the same reader `DEFINE USER … ON` uses, so a subscription
+    // and a grant cannot come to disagree about which namespaces exist.
+    let store = closed(&backend());
+    let mut session = owner(&store);
+
+    let refused = session
+        .run(&format!(
+            "DEFINE REPLICA second AT 'there:9001' NODE '{SOMEBODY}' REPLICATES NAMESPACE ghost;"
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("ghost"), "{refused}");
 }

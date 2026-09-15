@@ -752,6 +752,142 @@ pub enum Error {
         span: Span,
     },
 
+    /// A read asked to be answered by a node fresher than this cluster can know.
+    ///
+    /// A staleness bound says how far behind an answering node may be. A bound
+    /// tighter than the interval at which a node learns anything about its peers
+    /// is a promise nothing can check — it would be enforced against a picture
+    /// whose own age exceeds the tolerance being compared to it.
+    ///
+    /// **The floor is named in the refusal, and that is the half that matters.**
+    /// A caller told only that their bound was too tight cannot write a
+    /// statement that would be accepted; a caller told the floor can.
+    #[error(
+        "a staleness bound of {written} (at {span}) is tighter than this cluster \
+         can know about itself: the floor is {floor}s"
+    )]
+    StalenessBelowFloor {
+        /// The bound as the statement wrote it.
+        written: String,
+        /// The tightest bound that would have been accepted, in seconds.
+        floor: u64,
+        /// Where the clause is.
+        span: Span,
+    },
+
+    /// A read named a tolerance for staleness that no copy in reach satisfies.
+    ///
+    /// `05_blocking-decisions.md` §C-05 decided both halves of this. Routing
+    /// **excludes** a node beyond the bound rather than serving it with a
+    /// marker, because a marker nobody is obliged to read is not a guarantee —
+    /// so a node outside the bound does not answer. And a read no node can
+    /// satisfy is **refused**, not sent to the leader: a silent promotion turns
+    /// a latency feature into a leader stampede exactly when the cluster is
+    /// already struggling, which is when every replica is behind at once.
+    ///
+    /// **It is the cluster that is short, not the statement.** The bound cleared
+    /// the floor, so it is a bound this cluster could in principle honour; what
+    /// is missing is a copy young enough to honour it with. A refusal that read
+    /// as a grammar complaint would send the caller to rewrite a statement that
+    /// was never wrong.
+    #[error(
+        "a staleness bound of {written} (at {span}) admits no copy in reach: \
+         neither this node's own copy nor any peer it has heard from is within \
+         it, and a read no node can satisfy is refused rather than sent to the \
+         leader"
+    )]
+    NoCopyWithinStaleness {
+        /// The bound as the statement wrote it.
+        written: String,
+        /// Where the clause is.
+        span: Span,
+    },
+
+    /// A read carrying a staleness bound belongs on another node, and this is
+    /// which one.
+    ///
+    /// The third answer, and it is a *success* wearing an error's clothes. C-07
+    /// settled the shape: **any node answers any request by serving it or by
+    /// returning a redirect carrying the node that should, and no node proxies
+    /// on a client's behalf.** A client holding no routing state at all is
+    /// therefore always correct, which is what makes a minimal third-party
+    /// client possible; caching the map and refreshing it on a redirect is the
+    /// optimisation and never the contract.
+    ///
+    /// **The node id travels beside the address**, because a redirect naming
+    /// only a place cannot be checked on arrival: a client that dialled it and
+    /// met a different node would have no way to notice.
+    ///
+    /// **It says what it did not do.** A caller who cannot tell a redirect from
+    /// a silent proxy has no way to know whether this node is now holding their
+    /// read open against a peer, which is the failure mode that made *no node
+    /// proxies* worth deciding.
+    #[error(
+        "a staleness bound of {written} (at {span}) is not satisfied by this \
+         node's copy, and the copy at {endpoint} is: read it there. This node \
+         redirects rather than fetching on your behalf. The node to expect is {}",
+        tessari_types::RecordId::Uuid(*node)
+    )]
+    ReadIsElsewhere {
+        /// The bound as the statement wrote it.
+        written: String,
+        /// The address to dial — the same string the declaration carried.
+        endpoint: String,
+        /// Who was last heard there, so the redirect is checkable on arrival.
+        node: [u8; tessari_encoding::NODE_ID_LEN],
+        /// The leadership that node itself last claimed was current.
+        ///
+        /// Carried so the surface rendering this can date the redirect. It is
+        /// the named peer's own claim and not this node's: a node redirecting a
+        /// bounded read is one whose own copy failed the bound, and it may hold
+        /// no leadership at all.
+        epoch: tessari_types::Epoch,
+        /// Where the clause is.
+        span: Span,
+    },
+
+    /// A namespace was defined without saying how many copies of it to keep, on
+    /// a store that has somewhere to keep them.
+    ///
+    /// ADR-0060 requires the clause so that a single-copy namespace is a
+    /// decision somebody took rather than a default nobody saw. W211 shipped it
+    /// optional, because with no peers declared the only clause an operator
+    /// could write was `REPLICATION NONE`, and a grammar that forces everybody
+    /// to type a refusal teaches them to decline without reading — which is the
+    /// inherited default the ADR abolishes, in a costume.
+    ///
+    /// **So the obligation is conditional on the risk existing.** A store that
+    /// declares no peers has nowhere to put a second copy, and there the bare
+    /// form is accepted and stored as *never stated*. A store that declares one
+    /// is a cluster, and there declining a copy is a choice — so it has to be
+    /// written down.
+    ///
+    /// **It is refused at execute and not at parse**, because how many peers
+    /// this store declares is a fact about the cluster and the parser has no
+    /// cluster. That is the placement `StalenessBelowFloor` already settled.
+    ///
+    /// **The refusal names both accepted clauses**, for the reason the staleness
+    /// floor is named in its own: a caller told only that something is missing
+    /// cannot write a statement that would be accepted.
+    ///
+    /// It does not fire for `IF NOT EXISTS` against a namespace that is already
+    /// there. That branch creates nothing, so there is no unstated namespace to
+    /// prevent, and refusing it would break every idempotent bootstrap script.
+    #[error(
+        "`{namespace}` (at {span}) does not say how many copies to keep, and this \
+         store declares {peers} peer(s) that could hold one: write \
+         `REPLICATION NONE` to keep a single copy deliberately, or \
+         `REPLICATION FACTOR <n>` to keep more"
+    )]
+    ReplicationUnstated {
+        /// The namespace as the statement named it.
+        namespace: String,
+        /// How many peers this store declares — why the clause is now required.
+        peers: usize,
+        /// Where the name is.
+        span: Span,
+    },
+
     /// A `SELECT` named a vault as its source.
     ///
     /// Refused rather than answered, and what it would have answered is worth
@@ -1206,6 +1342,36 @@ pub enum Error {
         /// The authority that is missing — the one being granted, or `govern`.
         kind: &'static str,
         /// Where the statement is.
+        span: Span,
+    },
+
+    /// An authority named at a reach its kind cannot be held at.
+    ///
+    /// One kind is store-only — `replicate`, because the log it hands over
+    /// carries the users, credentials and grants of every tenancy — so naming it
+    /// over a namespace or a database asks for something that does not exist at
+    /// that size.
+    ///
+    /// # Refused rather than accepted and quietly dropped
+    ///
+    /// The alternative was to store what can be held and discard the rest, which
+    /// is what a **role** does here: `ROLE owner` at a namespace is a name for a
+    /// set, and a set may narrow. An explicitly named kind is not a name for a
+    /// set — it is a request, and the operator's only evidence that a request
+    /// landed is the statement not complaining. Answering it with silence
+    /// produces a grant that reads as present in the script and is absent from
+    /// the store.
+    ///
+    /// Distinct from [`Self::CannotHandOut`], which is about the caller: that
+    /// one says *you do not hold this*, and is fixed by somebody granting it.
+    /// This one says *nobody holds this here*, and is fixed by asking at the
+    /// store. Distinct from [`Self::NotTheWholeStore`], which refuses a
+    /// subscription already authorized rather than the grant behind it.
+    #[error("{kind} is held over the whole store or not at all (at {span})")]
+    NotAtThatReach {
+        /// The authority that was named.
+        kind: &'static str,
+        /// Where it was named.
         span: Span,
     },
 

@@ -10,10 +10,10 @@ A real-time multi-model database, written in Rust, built for AI agents and the
 products around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.1.1--beta-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.2.0--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
-[![conformance](https://img.shields.io/badge/conformance-1349%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![conformance](https://img.shields.io/badge/conformance-1359%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/TessariDB/TessariDB-protocol) ·
@@ -22,7 +22,7 @@ products around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is a beta — `0.1.1-beta`.** It is released, tested and published as
+> **TessariDB is a beta — `0.2.0-beta`.** It is released, tested and published as
 > a container image, and the licence makes production use free, including inside
 > a commercial company.
 > What a beta does not promise yet is permanence of shape: before 1.0 the query
@@ -138,9 +138,29 @@ possible rather than aspirational.
 | **Operable** | health and readiness endpoints, Prometheus metrics, graceful drain, log-as-backup with replay-as-restore |
 | **Specified** | the wire and value protocol is [published](https://github.com/TessariDB/TessariDB-protocol) with a shared conformance corpus, so a client in any language is written from the spec and not from our source |
 
+### Two writers on one range
+
+A namespace says how many nodes may write it. Declare `MULTI MASTER` and two
+nodes may each accept writes to the same record — which gives up single-copy
+semantics: two versions can exist of which **neither is newer**, and no clock
+settles it, because the nodes' clocks are not comparable and the order versions
+arrive somewhere is the order that node heard about them.
+
+The engine does not guess. A write onto a record in that state is **refused, and
+names both versions and a node whose write one of them has not seen** — enough to
+read both and write what they mean. Refusing is the point: once a write lands on
+top of a contested record, nothing afterwards can tell a record that was
+reconciled from one that was silently ranked.
+
+A table may choose otherwise. `LAST WRITER WINS` takes the write instead of
+refusing it, and the cost is stated rather than implied: the versions it did not
+see are discarded — still on disk, gone from every answer — so the engine counts
+each one and the count is readable. `INFO FOR VERSIONS OF person:1` returns every
+surviving version and the node that wrote it.
+
 ## Status
 
-**Stage: active development · `0.1.1-beta` · not published to crates.io.** What
+**Stage: active development · `0.2.0-beta` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 
@@ -148,6 +168,31 @@ follows is what runs today, not a roadmap.
   WebSocket surface, the binary wire protocol (v1.0, with a published spec and
   conformance corpus), single-node serving with roles, endpoints and graceful
   drain, backup and restore.
+- ✅ **Clusters:** a node joins a running cluster with one flag and declares no
+  membership of its own; leadership is elected by a majority of the coordinating
+  members and held on a renewable lease, so a leader that has lost the cluster
+  **refuses writes before the cluster may replace it**; a namespace declares how
+  many copies are kept and how many nodes may write it; a read may name how stale
+  an answer it will accept, and that bound decides which nodes may answer rather
+  than labelling the answer it gets; a write for a range another node leads is
+  refused with the address, the node and the epoch to expect there; and a
+  namespace declared `MULTI MASTER` admits writes on more than one node, where a
+  write concurrent with the stored version is **refused and named** unless the
+  table declares `LAST WRITER WINS`, in which case what it discards is counted.
+  See [Clustering](https://docs.tessaridb.com/cluster/what-a-cluster-is).
+- ✅ **The storage and backup layer settled around that.** The log is kept **per
+  range** rather than per store, so a key carries its home and the sequence and
+  the leadership that wrote it are properties of a range instead of the whole
+  machine; a store written by an older build is rewritten once at open. A record's
+  **version is its own counter**, no longer doubling as the log position a replica
+  resumes from and the applied-position guard — three jobs one number could only
+  hold while a single leader made every timeline the same timeline. A backup file
+  therefore carries **one section per log**, and a backup or restore bounded by a
+  single sequence (`--from`, `--upto`) **refuses a multi-log store** rather than
+  presenting part of it as the whole. One correctness fix belongs here too: index
+  maintenance selected definitions **by table id alone**, and ids are handed out
+  store-wide — so a catalog write could select an unrelated user table's indexes
+  and write into that user's keyspace. It is selected by the whole tenancy now.
 - 🚧 **Partial:** geospatial can store a shape, answer eight predicates over
   whole shapes, measure geodesic distance and area, and be written as a literal
   in a script. `DEFINE INDEX … SPATIAL` writes and maintains a **spatial index**
@@ -167,10 +212,13 @@ follows is what runs today, not a roadmap.
   <!-- absent: distance-to-a-shape-larger-than-a-position -->
   <!-- absent: nearest-first-under-a-where -->
   <!-- absent: measured-covering-budget -->
-  Peers are declared and read back, but nothing replicates between them.
-- ⛔ **Not there:** sharding, replication, and cluster membership. The language
-  has words for them; the engine does not have the machinery yet.
-  <!-- absent: sharding-replication-cluster-membership -->
+- ⛔ **Not there:** sharding. A namespace lives where its replication says and
+  a range is led by one node or declared open to several, but the store does not
+  split a range across machines and there is no scatter-gather read. There is no
+  cross-range transaction either: a transaction is judged on the node leading
+  the range it writes.
+  <!-- absent: sharding-execution -->
+  <!-- absent: cross-range-transactions -->
 - 🔄 **Not promised yet:** before 1.0 the query language, the wire format and the
   on-disk format may still change, and there is no migration between versions.
   <!-- absent: migration-between-versions -->
@@ -249,6 +297,13 @@ tessaridb ./restored --restore ./monday.tessarilog --upto 3000
 no store, so a schedule can run it. `--from` writes an **incremental** whose
 header names what it continues from, and a restore onto a store standing
 somewhere else is refused rather than silently producing a store no log explains.
+
+**A store that leads more than one range holds more than one log, and a backup
+file carries one section per log.** A whole backup and a whole restore are
+unaffected. A *bounded* one is not: `--from` and `--upto` name a single sequence,
+and a sequence means nothing across several logs — so those forms **refuse** a
+multi-log store instead of quietly backing up one range and calling it the
+store.
 
 **A store's `*.log` files are not logs to tidy away — they are its newest data.**
 Removing the live one discards every write since the last flush, silently: the

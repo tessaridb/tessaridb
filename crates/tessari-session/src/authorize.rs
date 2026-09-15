@@ -28,9 +28,10 @@
 //! authorization holes on the change feed, and the answer is that both questions
 //! are asked here rather than a second time somewhere else.
 
+use tessari_encoding::{LogId, LogRecord, NODE_ID_LEN};
 use tessari_ql::StatementKind;
-use tessari_storage::{Catalog, Reach, Role, Store, Verb};
-use tessari_types::TableId;
+use tessari_storage::{Catalog, Kind, Reach, Role, Store, Verb};
+use tessari_types::{Sequence, TableId};
 
 use crate::error::{Error, Result};
 use crate::identity::{At, Identity, Needs};
@@ -70,6 +71,152 @@ impl<'a> Session<'a> {
         // and inventing one would put a caret under a character nobody wrote.
         self.identity
             .allows_needs(Needs::READ, open, tessari_ql::Span::new(0, 0))
+    }
+
+    /// Refuse when this session may not take the log.
+    ///
+    /// # Taking the log is not reading the records
+    ///
+    /// A subscription is a peer asking for the store's mutations as they were
+    /// written, and the log carries more than the records anybody can `SELECT`:
+    /// it carries the system tenancy too — the definitions, and the users,
+    /// credentials and grants that travel to every subscriber. So this demands
+    /// [`Kind::Replicate`] and not [`Kind::Read`], and a caller holding `read`
+    /// over the whole store is refused here. That is the disclosure the split
+    /// exists to prevent, and it is stated rather than left to be noticed.
+    ///
+    /// It is separate from [`Kind::Operate`] in the other direction: receiving
+    /// the log and reading what the cluster is doing are two grants, so a
+    /// replica need not be an operator and an observer need not be a replica.
+    ///
+    /// # Why it lives here and not where the request arrives
+    ///
+    /// The same reason [`Session::may_read`] does. A refusal decided in a
+    /// network surface is a second place for this question to be answered, and
+    /// the one that drifts is the one nobody is reading. This store has already
+    /// paid for that once on the change feed.
+    ///
+    /// # Why it re-reads, and why that makes it `&mut`
+    ///
+    /// Because its caller is a loop. Asked once and then streamed from for an
+    /// hour, the authorization would be bounded by the connection rather than by
+    /// anything a revocation could reach — [`Session::may_read`]'s reason,
+    /// lasting longer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NotSignedIn`] on a closed store with no identity,
+    /// [`Error::RoleForbids`] when the authority is not held at all, and
+    /// [`Error::NotTheWholeStore`] when it is held somewhere narrower than the
+    /// subscription asks for.
+    pub fn may_replicate(&mut self, store: &Store, over: Reach) -> Result<()> {
+        let open = self.refresh(store)?;
+        // A span over nothing: there is no script here to point into, and
+        // inventing one would put a caret under a character nobody wrote.
+        let span = tessari_ql::Span::new(0, 0);
+        let Some(user) = self.identity.user() else {
+            // Anonymous. On an open store that is allowed, here as everywhere
+            // else — a store nobody has closed has no identity to refuse, and a
+            // cluster has to be able to start before its first user exists. On a
+            // closed store it is `NotSignedIn`, which is a different answer from
+            // "I know you and no" and a client needs to tell them apart.
+            return if open {
+                Ok(())
+            } else {
+                Err(Error::NotSignedIn { span })
+            };
+        };
+        if !user
+            .authorities
+            .iter()
+            .any(|held| held.kind == Kind::Replicate)
+        {
+            return Err(Error::RoleForbids {
+                role: user.role.map_or("authorities", Role::name),
+                needs: Kind::Replicate.name(),
+                span,
+            });
+        }
+        if !user.authorities.permits(Kind::Replicate, over) {
+            // Held, but not this far. Reported as the reach it is rather than as
+            // a missing authority, because those two send the reader to
+            // different people: one needs a grant, the other needs a wider one.
+            return Err(Error::NotTheWholeStore {
+                user: user.name.clone(),
+                span,
+            });
+        }
+        Ok(())
+    }
+
+    /// Log records for a peer, and the only authorized way to reach them.
+    ///
+    /// # The door is the enforcement, not a rule somebody applies
+    ///
+    /// [`Session::may_replicate`] could have been left for each caller to ask
+    /// before reading the log itself. That is the arrangement that produced the
+    /// change feed's two holes: the check was attached to a mechanism, and the
+    /// next mechanism that read records inherited nothing. So the check and the
+    /// read are one call, and a surface that wants the log for a peer cannot get
+    /// it without passing through here.
+    ///
+    /// # The subscription's scope is the same object the authority is
+    ///
+    /// `over` is both halves of the question: what the caller must be permitted
+    /// for, and what the stream then carries. That is not a convenience — it is
+    /// what makes the two impossible to disagree. A design in which the check
+    /// took one value and the filter took another would have a state in which a
+    /// caller authorized for one namespace is served another, and nothing in
+    /// either call would be wrong on its own.
+    ///
+    /// A store-reach subscriber receives the whole log. A narrower one receives
+    /// every sequence, with the mutations outside its reach elided — including
+    /// the users, credentials and grants that are not its tenancy's, which is
+    /// the disclosure [`Reach`] is carrying here rather than merely naming.
+    ///
+    /// # The follower names itself, by the id it gave itself
+    ///
+    /// `node` is not decoration and it is not optional. A membership row that
+    /// names no node is a statement about every node holding the log; a pull
+    /// that names no follower is progress belonging to nobody, and a leader
+    /// cannot report per-follower lag over rows that are not per follower. The
+    /// id is the node's own sixteen bytes, so a follower restored from a backup
+    /// arrives as a new follower with no inherited progress — the same property
+    /// the desired-role binding relies on one level up.
+    ///
+    /// # An empty answer is still a collection
+    ///
+    /// A follower that is level asks and receives nothing. That pull is
+    /// recorded, because `from` is the follower's own assertion that it holds
+    /// `from - 1`, and because treating silence and being-up-to-date as the
+    /// same event would report a healthy follower as absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever [`Session::may_replicate`] refuses with, or an error
+    /// when the log cannot be read or a stored record cannot be decoded.
+    pub fn replicate_from(
+        &mut self,
+        store: &Store,
+        node: [u8; NODE_ID_LEN],
+        over: Reach,
+        log: LogId,
+        from: Sequence,
+        limit: usize,
+    ) -> Result<Vec<(Sequence, LogRecord)>> {
+        self.may_replicate(store, over)?;
+        let records = store.log_records_within(over, log, from, limit)?;
+        // What the follower now holds: the last sequence it was handed, or —
+        // when it was handed nothing — the position it told us it was at.
+        let reached = records.last().map_or_else(
+            || Sequence::new(from.get().saturating_sub(1)),
+            |(sequence, _)| *sequence,
+        );
+        // Recorded here because the door is the only way through, so a peer
+        // read that goes unrecorded is not expressible. That is the same
+        // argument the door itself was built on.
+        store.follower_served(node, log.home, reached);
+        Ok(records)
     }
 
     /// Which tables this session may read, when its user is grant-governed.

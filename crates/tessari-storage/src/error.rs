@@ -11,7 +11,7 @@
 //! be to do nothing.
 
 use tessari_kv::ErrorCategory;
-use tessari_types::{FieldKind, RecordId, Sequence, article};
+use tessari_types::{Epoch, FieldKind, RecordId, Sequence, article};
 
 /// Result alias for every fallible operation in this crate.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -148,6 +148,133 @@ pub enum Error {
         attempts: u32,
     },
 
+    /// The lease this node writes under has run out.
+    ///
+    /// Not a defect and not a conflict: this node was the leader and can no
+    /// longer prove it still is, so it stops writing rather than accepting work
+    /// the next leader will never see. The duration is how long the fence has
+    /// been closed, because a caller one second past it and a caller an hour
+    /// past it are in very different situations and the bare refusal spells
+    /// them the same way.
+    #[error(
+        "the lease this node writes under ran out {for_the_last:?} ago: \
+         it is no longer accepting writes"
+    )]
+    LeaseSpent {
+        /// How long the fence has been closed.
+        for_the_last: std::time::Duration,
+    },
+
+    /// This node is in a cluster and has not been given a leadership yet.
+    ///
+    /// A different state from [`Self::LeaseSpent`] and deliberately a different
+    /// refusal. *Your lease ran out* names a leadership this node held and lost,
+    /// and sends an operator to look at why it could not renew. *No leadership
+    /// yet* names one it has never had — a cluster that has not elected anybody,
+    /// or a node that has not yet won a round — and sends them somewhere else
+    /// entirely. Spelling both as the lapse would report a fence closing on a
+    /// node that was never behind one.
+    ///
+    /// # The sentence used to say *takes part in deciding*, and that became
+    /// false
+    ///
+    /// ADR-0069 moved the condition from the `coordinating` role to the
+    /// catalog, so this now reaches a node that was never declared to take part
+    /// in anything and simply has a peer. Such a node cannot win a round
+    /// either — nothing campaigns unless the role says to — so the message
+    /// names the remedy rather than only the state.
+    #[error(
+        "this node is in a cluster and holds no leadership: \
+         it does not accept writes until a majority grants it one. \
+         A node that should be leading needs the coordinating role \
+         (DEFINE NODE ROLES ... coordinating) so that it stands for one"
+    )]
+    NoLeadershipYet,
+
+    /// A write belongs to a range another node leads, and this is which one.
+    ///
+    /// The other half of the admission question, and the half ADR-0069 could
+    /// not ask. [`Self::NoLeadershipYet`] answers *nobody here holds one*; this
+    /// answers *somebody else holds this one*, and they are different sentences
+    /// to a caller: the first says wait, the second says go there.
+    ///
+    /// # Why this became possible to ask
+    ///
+    /// A lease is store-wide and a leadership is per-range, so *may this node
+    /// write* and *may this node write here* stopped being one question the
+    /// moment two nodes could lead two namespaces. A node holding a leadership
+    /// over one namespace and writing into another meets this while holding a
+    /// perfectly live lease — the arrangement G025's S6.1 exists to make
+    /// representable, and the one the store-wide gate accepted silently.
+    ///
+    /// # The three fields are [`tessari_session::Peer`]'s, deliberately
+    ///
+    /// This engine already has one spelling of *a copy you do not hold and
+    /// where to find it*, and a second one that carried different fields would
+    /// be two answers to one question. The node id is what makes the redirect
+    /// checkable on arrival: a client that dialled the address and met a
+    /// different node would otherwise have no way to notice. The epoch dates
+    /// the claim, so a client already told about a newer leadership can refuse
+    /// this one rather than follow it backwards.
+    ///
+    /// The range is not carried. The caller issued the write and knows what it
+    /// addressed; a field restating it would be a second source for a fact the
+    /// statement already holds.
+    #[error(
+        "this range is led by another node: write it at {endpoint}. \
+         This node refuses rather than forwarding on your behalf. \
+         The node to expect is {}, leading under epoch {epoch}",
+        tessari_types::RecordId::Uuid(*node)
+    )]
+    WriteIsElsewhere {
+        /// The address to dial — the same string the membership row carried.
+        endpoint: String,
+        /// Who the log says leads it, so the redirect is checkable on arrival.
+        node: [u8; tessari_encoding::NODE_ID_LEN],
+        /// The leadership that node took the range under.
+        epoch: Epoch,
+    },
+
+    /// A write met a record whose stored versions disagree with each other.
+    ///
+    /// Two nodes wrote this record without either having seen the other's
+    /// write, and both versions survive because neither supersedes the other.
+    /// A third write cannot be taken: the writer holds one of them, and
+    /// committing on top would discard the other with nothing recording that it
+    /// had ever existed. **That silent discard is the whole of what this engine
+    /// refuses** (ADR-0075) — the alternative is not "resolving" the conflict,
+    /// it is picking a winner and calling it an answer.
+    ///
+    /// Retryable in the only sense that matters: the caller reads the record,
+    /// sees both versions, decides which the data means, and writes the decision
+    /// having seen both — at which point its stamp descends them and this
+    /// refusal does not fire. Retrying the same write unchanged meets it again,
+    /// correctly.
+    ///
+    /// Named rather than counted. A refusal that said only *contested* would
+    /// leave the caller unable to fetch what it has to choose between, which is
+    /// the same dead end a redirect with no address gives.
+    #[error(
+        "the record {id} holds versions {ours} and {theirs} that neither \
+         supersedes: they were written without seeing each other. \
+         Version {theirs} carries a write from node {}, which version {ours} \
+         has not seen. Read both and write what they mean.",
+        tessari_types::RecordId::Uuid(*node)
+    )]
+    ConcurrentVersions {
+        /// The record. The caller addressed it and this names which of the
+        /// addresses in a multi-record commit was the one that stopped it.
+        id: RecordId,
+        /// The surviving version this store read first — the newest of them.
+        ours: Sequence,
+        /// The surviving version it is concurrent with.
+        theirs: Sequence,
+        /// A node whose write `theirs` carries and `ours` does not. The first in
+        /// node order when there is more than one, and there is exactly one for
+        /// every two-master case this engine can currently produce.
+        node: [u8; tessari_encoding::NODE_ID_LEN],
+    },
+
     /// A log record was offered out of order.
     ///
     /// State is a deterministic function of the log, so a gap is not something
@@ -159,6 +286,38 @@ pub enum Error {
         expected: Sequence,
         /// The sequence that was offered instead.
         found: Sequence,
+    },
+
+    /// Two leaderships wrote the same log position.
+    ///
+    /// The already-applied branch exists for an ordinary retry, and for a store
+    /// with one writer a retry is the only thing that can arrive at a position
+    /// it already holds. A cluster makes a second writer possible for the window
+    /// between a leader failing and being noticed, and the records those two
+    /// wrote collide. Accepting the offered one silently keeps whichever data
+    /// this node happened to have, with no error and no gap, so two nodes answer
+    /// differently while both report healthy.
+    ///
+    /// Not retryable: the same record will still be from the other branch. The
+    /// node re-bootstraps (ADR-0059).
+    ///
+    /// Named for what the databases call it. Kafka added a leader epoch to the
+    /// log for exactly this failure (KIP-101) after the high-watermark protocol
+    /// was found to diverge logs silently; PostgreSQL increments a timeline on
+    /// promotion; MongoDB carries a term in each oplog entry and rolls back to
+    /// the common point. It is not a chain's fork and the epoch is not a block
+    /// height.
+    #[error(
+        "log divergence at {sequence}: this store holds epoch {held}, \
+         and epoch {offered} was offered"
+    )]
+    LogDivergence {
+        /// The position both leaderships wrote.
+        sequence: Sequence,
+        /// The leadership whose record this store already applied.
+        held: Epoch,
+        /// The leadership whose record was offered instead.
+        offered: Epoch,
     },
 
     /// A catalog name is already in use at that level.
@@ -472,8 +631,17 @@ impl Error {
     #[must_use]
     pub fn category(&self) -> ErrorCategory {
         match self {
-            Self::Conflict { .. } => ErrorCategory::Conflict,
+            Self::Conflict { .. }
+            | Self::LogDivergence { .. }
+            | Self::ConcurrentVersions { .. } => ErrorCategory::Conflict,
             Self::CommitContention { .. } => ErrorCategory::Busy,
+            // Unavailable rather than Busy or Conflict, because it is the only
+            // one of the three that is true: the write was not wrong and
+            // retrying *here* will not help, but the cluster may well accept it
+            // somewhere else a moment from now.
+            Self::LeaseSpent { .. }
+            | Self::NoLeadershipYet
+            | Self::WriteIsElsewhere { .. } => ErrorCategory::Unavailable,
             Self::LogGap { .. }
             | Self::NameTaken { .. }
             | Self::NoSuchParent { .. }

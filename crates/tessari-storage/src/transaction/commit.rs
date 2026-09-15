@@ -6,14 +6,18 @@
 //! together.
 
 use std::cell::Cell;
+use std::collections::BTreeSet;
 use std::hash::{BuildHasher, Hasher};
 use std::time::Duration;
 
 use tessari_constants::{COMMIT_BACKOFF_CEILING, COMMIT_BACKOFF_STEP, MAX_COMMIT_ATTEMPTS};
-use tessari_encoding::{LogRecord, Mutation, RecordValue};
+use tessari_encoding::{
+    CausalStamp, LogId, LogRecord, Mutation, RecordValue, StampedValue, decode_payload,
+};
 use tessari_types::Sequence;
 
 use super::{RecordAddress, Transaction};
+use crate::catalog::Reach;
 use crate::error::{Error, Result};
 
 /// What becomes of a settled transaction's batch.
@@ -104,6 +108,17 @@ fn jitter() -> u64 {
     })
 }
 
+/// Is this address the leadership table?
+///
+/// A free function and not a method, because it is a fact about an address and
+/// nothing about the transaction holding it — and because the gate above reads
+/// better when the condition it turns on has a name.
+fn is_a_leadership(address: &RecordAddress) -> bool {
+    address.namespace == crate::catalog::system::SYSTEM_NAMESPACE
+        && address.database == crate::catalog::system::SYSTEM_DATABASE
+        && address.table == crate::catalog::system::LEADERSHIPS
+}
+
 impl Transaction<'_> {
     /// Buffer a write. Nothing reaches the store until commit.
     pub fn put(&mut self, address: RecordAddress, payload: Vec<u8>) {
@@ -163,11 +178,131 @@ impl Transaction<'_> {
         self.settle(Settle::Discard).map(|_| ())
     }
 
+    /// The ranges this transaction's writes address, deduplicated.
+    ///
+    /// A [`Reach::Database`] per write, because that is the narrowest range a
+    /// record belongs to and [`Reach::contains`] widens it: a leadership over
+    /// the namespace or over the whole store covers these without the gate
+    /// having to construct those ranges itself.
+    ///
+    /// # A leadership row is judged by the range it describes
+    ///
+    /// One exception, and it is the wall Q-597 named before anything could reach
+    /// it. A leadership row lives in the system tenancy, so by address it is a
+    /// write into `Reach::Database(0, 0)` — and in a cluster where somebody else
+    /// holds `Reach::Store`, that range is led elsewhere. A node that has just
+    /// won a round for `Namespace(Y)` would therefore be refused permission to
+    /// record the leadership a majority granted it: the lease is installed and
+    /// cannot fail, but the log never learns about it, so every other node goes
+    /// on routing `Namespace(Y)`'s writes to the store-wide leader.
+    ///
+    /// The row is a **claim about `Namespace(Y)`**, so the question worth asking
+    /// is who leads `Namespace(Y)` — which is this node, by construction, because
+    /// the row exists only because it won that round. Asking instead who leads
+    /// the tenancy the row happens to be stored in is asking about the filing
+    /// cabinet rather than the document.
+    ///
+    /// This is narrower than exempting the system tenancy, which was the other
+    /// way out and would have let any node holding any lease write any system
+    /// row — another node's membership included.
+    ///
+    /// A row that cannot be decoded is **refused** rather than judged by its
+    /// address: a leadership whose range this node cannot read is one it cannot
+    /// place, and placing it wrongly is the failure this whole function exists to
+    /// prevent.
+    /// Whether **every** range this transaction writes was declared multi-master.
+    ///
+    /// All of them and not any of them. A transaction that writes a declared
+    /// range and an undeclared one is still a write into a range that has a
+    /// single leader, and exempting it because one of its ranges was declared
+    /// would let the undeclared write travel under the declared one's cover.
+    fn every_range_admits_two_writers(&self, ranges: &BTreeSet<Reach>) -> Result<bool> {
+        for range in ranges {
+            if !self.store.admits_two_writers(*range)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    fn ranges_written(&self) -> Result<BTreeSet<Reach>> {
+        self.writes
+            .iter()
+            .map(|(address, value)| match value {
+                RecordValue::Present(payload) if is_a_leadership(address) => {
+                    let described = crate::catalog::LeadershipDefinition::from_value(
+                        &decode_payload(payload)?,
+                    )?;
+                    Ok(described.range)
+                }
+                _ => Ok(Reach::Database(address.namespace, address.database)),
+            })
+            .collect()
+    }
+
     fn settle(self, settle: Settle) -> Result<Sequence> {
         if self.writes.is_empty() {
-            return Ok(self.snapshot);
+            // The log position, not this transaction's snapshot. Nothing was
+            // committed, so neither answer is a position anything was written
+            // at — but the return names a log position, and the snapshot stopped
+            // being one when the version was separated from it (Q-614).
+            return self.store.committed_tail(
+                self.store
+                    .own_log(crate::store::UNPARTITIONED_REPORT_HOME)?,
+            );
         }
-        let record = self.log_record();
+        // First, and after the empty check rather than before it. First because
+        // a node that has run out of leadership should not be doing schema
+        // validation on work it is about to refuse; after the empty check
+        // because a transaction that writes nothing has nothing to fence, and
+        // refusing it would make a fenced node fail its readers' commits.
+        //
+        // Here rather than at the statement layer so that `dry_run` rehearses
+        // it — this function's own header is the argument, and a fence a
+        // `VERIFY` cannot see is a refusal an operator meets for the first time
+        // in production.
+        if let Some(for_the_last) = self.store.lease_spent() {
+            return Err(Error::LeaseSpent { for_the_last });
+        }
+        // And before the store-wide question, because the store-wide question
+        // returns early on a live lease and would therefore never reach a leader
+        // — while a leader writing into a range somebody else leads is exactly
+        // what this catches (G025 S6.1). *May this node write* and *may this
+        // node write HERE* stopped being one question the moment two nodes could
+        // lead two namespaces.
+        let identity = self.store.node_identity()?;
+        // Resolved once and asked twice: both admission questions are about the
+        // ranges this transaction writes, and deriving them separately is how
+        // two questions about one thing come to disagree about what that thing
+        // was.
+        let ranges = self.ranges_written()?;
+        self.store.refuse_if_led_elsewhere(&ranges, &identity.id)?;
+        // And the other half of *the effective role is the lease* (ADR-0064):
+        // a node that takes part in deciding writes under a leadership and at
+        // no other time. Asked here rather than only at the statement layer for
+        // the reason the paragraph above gives — `dry_run` must rehearse it, and
+        // a refusal a `VERIFY` cannot see is one an operator meets for the first
+        // time in production.
+        // G027 S2.3 — and the declaration is what exempts it, by the SAME
+        // predicate the divergence fence and the redirect consult, with no new
+        // setting anywhere. The order matters and the `&&` is load-bearing:
+        // `awaiting` returns on an in-memory lease read, so a node that holds a
+        // leadership never reaches the catalog lookup, and the exemption is paid
+        // for only by a commit that was otherwise about to be refused.
+        if self.store.awaiting(&identity.id)? && !self.every_range_admits_two_writers(&ranges)? {
+            return Err(Error::NoLeadershipYet);
+        }
+        let record = self.log_record(identity.id)?;
+        // The log this commit belongs to, derived from the record before the
+        // loop because it cannot change between attempts: it is a property of
+        // what is being written, not of the state being written onto. The
+        // position is allocated from this home's counter, which is the whole of
+        // what "the sequence is per-range" means at the write end.
+        // And the writer, which is THIS node: a commit allocates into its own
+        // log and never into another writer's. That is the whole of what S2.2
+        // means at the write end — two masters on one range are two counters,
+        // and a node that allocated from the other's would be back to one.
+        let log = LogId::new(crate::catalog::home_of(&record)?, self.store.writer()?);
 
         let mut attempt = 0_u32;
         loop {
@@ -179,8 +314,19 @@ impl Transaction<'_> {
                 });
             }
 
-            let tail = self.store.committed_tail()?;
+            let tail = self.store.committed_tail(log)?;
             self.check_for_conflicts()?;
+            // Beside the conflict check, inside the loop, and for the same
+            // reason: both ask whether the committed state this attempt builds
+            // on will take the write, and a state that moved between attempts
+            // must be re-read rather than assumed.
+            //
+            // AFTER it rather than before, so a record that is both moved and
+            // contested answers `Conflict` first. That is the retryable one, and
+            // a caller that retries meets the concurrency on the next attempt —
+            // which is the right order to learn them in, because a stale write
+            // has nothing useful to say about a conflict it never saw.
+            let discarded = self.refuse_a_contested_record()?;
             // Inside the loop with the conflict check, and for the same reason:
             // both are read against the committed state this attempt builds on,
             // and a schema that moved between attempts must be re-read rather
@@ -191,13 +337,20 @@ impl Transaction<'_> {
             // that a replica's apply does not. Everything after this line is the
             // shared path.
             let commit_at = Sequence::new(tail.get().saturating_add(1));
+            // And the version, separately, because it is a different fact: the
+            // position is what a replica resumes from and compares, the version
+            // is where this store's own history puts these records. Read inside
+            // the loop for the same reason the tail is — a lost attempt built on
+            // a state that has since moved (Q-614).
+            let commit_version =
+                Sequence::new(self.store.committed_version()?.get().saturating_add(1));
             // Index entries are derived here rather than carried in the record,
             // and they are derived inside the loop because they depend on the
             // committed state this attempt is building on (see `crate::index`).
             let batch = crate::index::maintain(
                 self.store,
                 &record,
-                crate::log::apply_batch(commit_at, &record),
+                crate::log::apply_batch(log, commit_at, commit_version, &record),
             )?;
             // Adjacency is derived in the same place and for the same reason: a
             // replica reaches its state by replaying this record, so entries the
@@ -209,7 +362,7 @@ impl Transaction<'_> {
             // for the same reason: the planner on a follower must read the same
             // number as the planner on the leader, or one query takes two access
             // paths depending on which node answered it.
-            let batch = crate::cardinality::maintain(self.store, &record, batch, commit_at)?;
+            let batch = crate::cardinality::maintain(self.store, &record, batch, commit_version)?;
             // Everything above this ran. This is the whole difference between a
             // rehearsal and a write, and it is one line so that it can only ever
             // be the whole difference.
@@ -218,7 +371,17 @@ impl Transaction<'_> {
             }
 
             match self.store.backend().apply(batch) {
-                Ok(()) => return Ok(commit_at),
+                Ok(()) => {
+                    // Counted HERE and not where it was decided. The decision is
+                    // re-taken on every attempt, so an attempt that loses its
+                    // batch would otherwise count a loss it never caused — and
+                    // the `Settle::Discard` return above this line skips it for
+                    // the same reason, because a rehearsal discards nothing.
+                    if discarded > 0 {
+                        self.store.discarded(discarded);
+                    }
+                    return Ok(commit_at);
+                }
                 // The position moved between reading it and applying, so the
                 // conflict check above was made against a stale state and the
                 // whole attempt is repeated rather than patched up — after
@@ -242,19 +405,141 @@ impl Transaction<'_> {
     /// Built once, before the retry loop: the mutations do not depend on which
     /// sequence the commit eventually wins, so rebuilding them per attempt would
     /// be work that also invites the two attempts to differ.
-    fn log_record(&self) -> LogRecord {
-        LogRecord::new(
-            self.writes
+    ///
+    /// # The stamp is produced here, and here is the only place it can be
+    ///
+    /// Each version carries what its writer had **seen**: the stamp standing on
+    /// the version this write replaces, with this node's own count raised by one
+    /// and every other node's carried across unchanged. That carrying is the
+    /// mechanism — it is what lets a later comparison tell a write that saw
+    /// another from a write that was made in ignorance of it, which is the only
+    /// distinction a multi-master range has to work from (G027 S2.2, Q-636).
+    ///
+    /// `node` is the identity the caller already read for the leadership checks
+    /// rather than one fetched again, and it is the same value the log's own
+    /// name carries as its [`tessari_encoding::Writer`] — one node axis, used by
+    /// the key and by the stamp, so the two cannot come to disagree about which
+    /// node wrote a record.
+    ///
+    /// **What it deliberately does not do.** The stamp is advanced from the
+    /// **newest** stored version and not from the merge of every surviving one.
+    /// A store holding two concurrent versions at once needs the merge — and it
+    /// cannot hold two until the engine decides what a write meeting a
+    /// concurrency does, which is S3's question and not this criterion's
+    /// (Q-645).
+    fn log_record(&self, node: [u8; tessari_encoding::NODE_ID_LEN]) -> Result<LogRecord> {
+        let mut mutations = Vec::with_capacity(self.writes.len());
+        for (address, value) in &self.writes {
+            let mut stamp = self
+                .read_newest_stamped(address)?
+                .map_or_else(CausalStamp::new, |(_, stamped)| stamped.stamp().clone());
+            stamp.advance(node);
+            mutations.push(Mutation {
+                namespace: address.namespace,
+                database: address.database,
+                table: address.table,
+                id: address.id.clone(),
+                value: StampedValue::stamped(stamp, value.clone()),
+            });
+        }
+        Ok(LogRecord::new(mutations))
+    }
+
+    /// Refuse the commit if any written record's stored versions disagree, and
+    /// answer how many writes a declared last-writer-wins discarded instead.
+    ///
+    /// G027 S3.1 and the rule the goal exists for: a write concurrent with the
+    /// stored version is **refused and named, never silently ranked**
+    /// (ADR-0075).
+    ///
+    /// # Unless the table said otherwise, and then it is counted
+    ///
+    /// G027 S3.2. A table that declares `LAST WRITER WINS` takes the write, and
+    /// the survivors it does not descend are returned as a count — spent by the
+    /// caller only once the batch has actually landed. A count is the one thing
+    /// that makes the discard observable: the losing version stays on disk
+    /// byte-intact and vanishes from every answer, so without it an operator
+    /// auditing storage finds both versions and concludes nothing was lost.
+    ///
+    /// # Why the refusal is here and not on the apply path
+    ///
+    /// A replica applying a record concurrent with what it holds must **accept**
+    /// it. Refusing there would stop two masters' logs from ever meeting, which
+    /// is what S2.2 asserts they do; holding several surviving versions is the
+    /// whole purpose [`tessari_encoding::CausalVersions`] was built for.
+    ///
+    /// # And why it is not the incoming write compared against the stored one
+    ///
+    /// [`Self::log_record`] derives a commit's stamp *from* the newest stored
+    /// version, so a local write always **descends** what it replaces and can
+    /// never be concurrent with it. The concurrency a store meets is one that
+    /// **arrived**, and what is refused is the next write made on top of it —
+    /// by a writer holding one of two surviving versions, which cannot supersede
+    /// the other without having seen it.
+    ///
+    /// # What it costs a settled record
+    ///
+    /// One scan of that record's versions per written address, bounded by the
+    /// versions above the reclaim floor. Asked of the addresses this transaction
+    /// writes and of nothing else. The table's declaration is read only after
+    /// two survivors have been found, so a settled record never reaches the
+    /// catalog for it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ConcurrentVersions`] when a contested record's table has not
+    /// declared what to do, and the backend's failure when the versions or the
+    /// declaration cannot be read.
+    fn refuse_a_contested_record(&self) -> Result<u64> {
+        let mut discarded = 0_u64;
+        for address in self.writes.keys() {
+            let surviving = self.surviving_versions(address)?;
+            let (Some((ours, our_stamp)), Some((theirs, their_stamp))) =
+                (surviving.first(), surviving.get(1))
+            else {
+                continue;
+            };
+            // G027 S3.2 — unless the table said what to do, in which case this
+            // is not a refusal at all. The lookup sits HERE, after two
+            // survivors have been found, so it is paid for only by a commit
+            // that was otherwise about to be refused: an ordinary write leaves
+            // `surviving_versions` with one version and never reaches the
+            // catalog. That is W291's placement, and the unedited
+            // `counted_reads` admission test is what holds it.
+            //
+            // The last writer is this caller, not a timestamp. Nothing here
+            // reads a clock: the incoming write supersedes every surviving
+            // version including the ones it never saw, so the writes discarded
+            // are the survivors it does not descend — every one but the newest,
+            // which is the one the stamp producer stood on.
+            if self
+                .store
+                .conflict_policy(address.table)?
+                .discards_the_loser()
+            {
+                let lost = surviving.len().saturating_sub(1);
+                discarded = discarded.saturating_add(u64::try_from(lost).unwrap_or(u64::MAX));
+                continue;
+            }
+            // The node whose write `theirs` carries and `ours` does not. There
+            // is one for every two-master case this engine can produce, and the
+            // first in node order is named when there is more than one — the
+            // stamp is held in node order, so "first" is a property of the
+            // bytes rather than of the order they were read in.
+            let unseen = their_stamp
+                .entries()
                 .iter()
-                .map(|(address, value)| Mutation {
-                    namespace: address.namespace,
-                    database: address.database,
-                    table: address.table,
-                    id: address.id.clone(),
-                    value: value.clone(),
-                })
-                .collect(),
-        )
+                .find(|(node, seen)| *seen > our_stamp.count(node))
+                .map(|(node, _)| *node)
+                .unwrap_or_default();
+            return Err(Error::ConcurrentVersions {
+                id: address.id.clone(),
+                ours: *ours,
+                theirs: *theirs,
+                node: unseen,
+            });
+        }
+        Ok(discarded)
     }
 
     /// Refuse the commit if any written record has moved since the snapshot.

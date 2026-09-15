@@ -18,10 +18,12 @@
 
 use std::sync::Arc;
 
+use std::collections::BTreeMap;
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
-use tessari_storage::Store;
-use tessari_types::Value;
+
+use tessari_storage::{Catalog, Reach, Store};
+use tessari_types::{Sequence, Value};
 
 const PASSWORD: &str = "correct horse battery";
 
@@ -720,30 +722,54 @@ fn a_database_scoped_user_lists_only_their_own_database() {
 #[test]
 fn a_listing_carries_the_names_and_nothing_that_counts_what_was_dropped() {
     // The ratchet under the two tests above. Both statements filter a scan
-    // rather than narrowing the read, and that is safe only while the report has
-    // no second field — a total, a page or an "of N" would report the tenancies
-    // the filter removed, in the one number nobody would think to redact.
+    // rather than narrowing the read, and that is safe only while every other
+    // field on the report is independent of what the filter removed — a total,
+    // a page or an "of N" would report the tenancies it dropped, in the one
+    // number nobody would think to redact.
     //
     // This fails the day a field is added, which is the point: adding one is a
-    // decision, and this is where it gets made rather than noticed later.
+    // decision, and this is where it gets made rather than noticed later. It
+    // has fired twice. `INFO FOR NAMESPACE` gained `replication`, and the
+    // decision taken was that it may stand there, because it is a property of
+    // **the namespace the caller is already inside** rather than a count over
+    // the databases beneath it: it does not move when a database is filtered
+    // out, so it cannot report one. It then gained `class` (G027 S4.1) and the
+    // same decision was taken for the same reason, with one more behind it: the
+    // class says how many writers the range admits, which decides what a write
+    // to it MEANS, and an operator who cannot read it from the engine is
+    // guessing which semantics their data has. Like its neighbour it is
+    // constant across callers, so it reports nothing about the filter. The list
+    // below is the whole report and it is written out per statement rather than
+    // as "the names plus anything", so the next field fires this again.
     let store = store();
     two_scopes(&store);
     let mut nina = signed_in(&store, "nina");
 
     for (statement, expected) in [
-        ("INFO FOR STORE;", "namespaces"),
-        ("INFO FOR NAMESPACE;", "databases"),
+        ("INFO FOR STORE;", vec!["namespaces"]),
+        (
+            "INFO FOR NAMESPACE;",
+            vec!["class", "databases", "replication"],
+        ),
     ] {
         let Value::Object(fields) = report(&mut nina, statement) else {
             panic!("expected an object from {statement}");
         };
         let keys: Vec<&str> = fields.keys().map(String::as_str).collect();
-        assert_eq!(
-            keys,
-            vec![expected],
-            "{statement} grew a field beside the names"
-        );
+        assert_eq!(keys, expected, "{statement} grew a field beside the names");
     }
+
+    // And the half the sentence above rests on: the field is the same whichever
+    // caller reads it, so nothing about it varies with what the filter removed.
+    let mut ada = signed_in(&store, "ada");
+    let Value::Object(narrowed) = report(&mut ada, "INFO FOR NAMESPACE;") else {
+        panic!("expected an object");
+    };
+    assert_eq!(
+        narrowed.get("replication"),
+        Some(&Value::None),
+        "a database-scoped caller read a different policy than the store-wide one"
+    );
 }
 
 // Every part the report shows, and the statement that changes it.
@@ -1106,4 +1132,657 @@ fn info_for_bucket_refuses_a_name_nothing_declared() {
     session
         .run("INFO FOR BUCKET absent;")
         .expect_err("nothing declared that name");
+}
+
+// ------------------------------------------------- namespace replication
+
+/// G024 **S2.1**: the clause is declared with the namespace, read back, and
+/// moved in both directions.
+///
+/// The half that carries the weight is the third assertion. A namespace that
+/// never stated a policy reads as `NONE` — the empty value, meaning *nothing
+/// was said* — and a namespace that declined reads as the word `none`. On one
+/// node the two describe the same arrangement, which is exactly why they have
+/// to be different **values** now: the day a second node exists, one is
+/// honoured and the other is refused, and by then the namespaces already exist
+/// and nothing can tell them apart (ADR-0060).
+#[test]
+fn a_namespace_declares_its_replication_and_reads_it_back() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE archive REPLICATION FACTOR 3;\n\
+             DEFINE NAMESPACE scratch REPLICATION NONE;\n\
+             DEFINE NAMESPACE unsaid;",
+        )
+        .unwrap();
+
+    let policy = |session: &mut Session<'_>, namespace: &str| {
+        let script = format!("USE NAMESPACE {namespace}; INFO FOR NAMESPACE;");
+        let Value::Object(fields) = report(session, &script) else {
+            panic!("expected an object");
+        };
+        fields.get("replication").cloned().unwrap()
+    };
+
+    assert_eq!(policy(&mut session, "archive"), Value::from(3_i64));
+    assert_eq!(policy(&mut session, "scratch"), Value::from("none"));
+    assert_eq!(
+        policy(&mut session, "unsaid"),
+        Value::None,
+        "a namespace that said nothing must not read as one that declined"
+    );
+}
+
+/// G024 **S2.1**, the other direction: owner requirement D12 — a namespace
+/// starts unreplicated and is switched on later, and the statement that
+/// switches it on can switch it off again. A policy that cannot be withdrawn is
+/// one an operator hesitates to set.
+#[test]
+fn replication_is_turned_on_after_the_fact_and_off_again() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run("DEFINE NAMESPACE prod; USE NAMESPACE prod;")
+        .unwrap();
+
+    let policy = |session: &mut Session<'_>| {
+        let Value::Object(fields) = report(session, "INFO FOR NAMESPACE;") else {
+            panic!("expected an object");
+        };
+        fields.get("replication").cloned().unwrap()
+    };
+
+    assert_eq!(policy(&mut session), Value::None);
+
+    session
+        .run("ALTER NAMESPACE prod REPLICATION FACTOR 2;")
+        .unwrap();
+    assert_eq!(policy(&mut session), Value::from(2_i64));
+
+    session
+        .run("ALTER NAMESPACE prod REPLICATION NONE;")
+        .unwrap();
+    assert_eq!(
+        policy(&mut session),
+        Value::from("none"),
+        "withdrawing replication must be a statement, not a return to silence"
+    );
+
+    session
+        .run("ALTER NAMESPACE prod REPLICATION FACTOR 5;")
+        .unwrap();
+    assert_eq!(policy(&mut session), Value::from(5_i64));
+}
+
+/// A re-run of a definition does not quietly re-set a policy on a namespace it
+/// did not create. `IF NOT EXISTS` means *this statement did nothing*, and a
+/// `DEFINE` that changed an existing namespace's replication would be an
+/// `ALTER` wearing a `DEFINE`'s spelling — which is how a redeployed schema
+/// script silently reverts an operator's change.
+#[test]
+fn a_definition_that_did_nothing_changes_no_policy() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod REPLICATION FACTOR 4;\n\
+             DEFINE NAMESPACE IF NOT EXISTS prod REPLICATION FACTOR 1;\n\
+             USE NAMESPACE prod;",
+        )
+        .unwrap();
+
+    let Value::Object(fields) = report(&mut session, "INFO FOR NAMESPACE;") else {
+        panic!("expected an object");
+    };
+    assert_eq!(fields.get("replication"), Some(&Value::from(4_i64)));
+}
+
+// ---------------------------------------------------------------------------
+// G024 S2.3 — the clause is required where the choice is real
+//
+// ADR-0060 requires a replication clause so that a single-copy namespace is a
+// decision somebody took rather than a default nobody saw. W211 shipped it
+// optional, and its reason was sound at the time: with no peers declared the
+// only clause an operator could write was `REPLICATION NONE`, and forcing
+// everybody to type a refusal is the inherited default in a costume.
+//
+// W241 removed that premise by shipping the placement vocabulary. So the
+// obligation attaches to the condition it was always about: **a store that has
+// somewhere to put a second copy**. These five hold both halves — that the
+// single-node form still works, and that the cluster form cannot say nothing.
+// ---------------------------------------------------------------------------
+
+/// The corpus's own shape, and the reason the refusal is conditional:
+/// `DEFINE NAMESPACE` appears 333 times across this workspace's five
+/// repositories, every one of them on a store with no peers. If this test ever
+/// goes red, the change under it broke all of them.
+#[test]
+fn a_store_with_no_peers_still_defines_a_namespace_that_says_nothing() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run("DEFINE NAMESPACE solo; USE NAMESPACE solo;")
+        .unwrap();
+
+    let Value::Object(fields) = report(&mut session, "INFO FOR NAMESPACE;") else {
+        panic!("expected an object");
+    };
+    assert_eq!(
+        fields.get("replication"),
+        Some(&Value::None),
+        "a namespace defined where no copy could go must still read as never \
+         stated — not as one that declined"
+    );
+}
+
+/// G024 **S2.3**. The refusal itself, and it is asserted by its parts rather
+/// than by a `contains` over the whole sentence: a message that names the peer
+/// count *and* both accepted clauses can lose any one of the three and still
+/// match a substring taken from the other two.
+#[test]
+fn a_store_that_declares_a_peer_refuses_a_namespace_that_says_nothing() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run("DEFINE REPLICA second AT 'there:9001';")
+        .unwrap();
+
+    let refusal = session
+        .run("DEFINE NAMESPACE prod;")
+        .expect_err("a namespace that says nothing has become a decision nobody wrote down");
+    let said = refusal.to_string();
+
+    assert!(
+        said.contains("prod"),
+        "the refusal must name the namespace: {said}"
+    );
+    assert!(
+        said.contains("1 peer"),
+        "the refusal must say why the clause became required — how many peers \
+         could hold a copy: {said}"
+    );
+    assert!(
+        said.contains("REPLICATION NONE"),
+        "a caller told only that something is missing cannot write a statement \
+         that would be accepted: {said}"
+    );
+    assert!(
+        said.contains("REPLICATION FACTOR"),
+        "and the other accepted clause, or the refusal teaches only the refusal: {said}"
+    );
+
+    // Nothing was written. A refusal that left the namespace standing would be
+    // worse than no refusal at all, because the next statement would find it.
+    // Asked of the store's own listing rather than of `USE NAMESPACE`, which
+    // accepts a name nothing has been defined under yet and would have passed
+    // whether or not the namespace was created.
+    assert!(
+        !listed(&report(&mut session, "INFO FOR STORE;"), "namespaces")
+            .contains(&"prod".to_owned()),
+        "the refused definition must not have created the namespace"
+    );
+}
+
+/// Both ways of answering are accepted on a peered store — including the
+/// refusal. `REPLICATION NONE` is the operator declining *deliberately*, which
+/// is the whole distinction ADR-0060 exists to preserve, and a rule that
+/// accepted only `FACTOR` would have abolished the choice instead of surfacing
+/// it.
+#[test]
+fn a_store_with_a_peer_accepts_either_answer_including_the_refusal() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE REPLICA second AT 'there:9001';\n\
+             DEFINE NAMESPACE archive REPLICATION FACTOR 3;\n\
+             DEFINE NAMESPACE scratch REPLICATION NONE;",
+        )
+        .unwrap();
+
+    let policy = |session: &mut Session<'_>, namespace: &str| {
+        let script = format!("USE NAMESPACE {namespace}; INFO FOR NAMESPACE;");
+        let Value::Object(fields) = report(session, &script) else {
+            panic!("expected an object");
+        };
+        fields.get("replication").cloned().unwrap()
+    };
+
+    assert_eq!(policy(&mut session, "archive"), Value::from(3_i64));
+    assert_eq!(
+        policy(&mut session, "scratch"),
+        Value::from("none"),
+        "declining on a store that has a peer is a decision, and it is honoured"
+    );
+}
+
+/// `IF NOT EXISTS` against a namespace that is already there creates nothing,
+/// so there is no unstated namespace to prevent. Refusing it would break every
+/// idempotent bootstrap script the moment its store gained a peer — which is
+/// the moment those scripts matter most.
+#[test]
+fn an_idempotent_redefinition_is_not_refused_after_the_store_gains_a_peer() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run("DEFINE NAMESPACE prod; DEFINE REPLICA second AT 'there:9001';")
+        .unwrap();
+
+    session
+        .run("DEFINE NAMESPACE IF NOT EXISTS prod;")
+        .expect("a statement that creates nothing leaves nothing unstated");
+
+    // And it did not quietly acquire a policy on the way through.
+    let Value::Object(fields) = report(&mut session, "USE NAMESPACE prod; INFO FOR NAMESPACE;")
+    else {
+        panic!("expected an object");
+    };
+    assert_eq!(fields.get("replication"), Some(&Value::None));
+}
+
+/// The owner's path, asserted rather than assumed: a namespace created on a
+/// single server, the store clusterised afterwards, and the policy set — and
+/// then withdrawn — with the peer standing. `ALTER` is how a namespace that
+/// said nothing is fixed, so a rule that made `DEFINE` stricter must leave it
+/// alone or the fix is unreachable.
+#[test]
+fn a_namespace_defined_before_the_peer_is_still_altered_in_both_directions_after_it() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run("DEFINE NAMESPACE prod; DEFINE REPLICA second AT 'there:9001';")
+        .unwrap();
+
+    let policy = |session: &mut Session<'_>| {
+        let Value::Object(fields) = report(session, "USE NAMESPACE prod; INFO FOR NAMESPACE;")
+        else {
+            panic!("expected an object");
+        };
+        fields.get("replication").cloned().unwrap()
+    };
+
+    assert_eq!(
+        policy(&mut session),
+        Value::None,
+        "it said nothing, and it was allowed to"
+    );
+    session
+        .run("ALTER NAMESPACE prod REPLICATION FACTOR 2;")
+        .unwrap();
+    assert_eq!(policy(&mut session), Value::from(2_i64));
+    session
+        .run("ALTER NAMESPACE prod REPLICATION NONE;")
+        .unwrap();
+    assert_eq!(
+        policy(&mut session),
+        Value::from("none"),
+        "a policy that cannot be withdrawn is one an operator hesitates to set"
+    );
+}
+
+// ------------------------------------------------- replication class and policy
+
+/// G027 **S4.1**: how many writers a range admits is read back from the engine.
+///
+/// The third assertion is the one carrying weight, and it is the same shape as
+/// its `replication` neighbour above. A namespace that said nothing reads as
+/// `NONE` — *nothing was stated* — and a namespace that said `SINGLE LEADER`
+/// reads as the word. On one node the two arrangements behave identically,
+/// which is exactly why they must be different values now: the day a second
+/// writer exists, one range refuses a concurrent write and the other cannot
+/// produce one, and by then the namespaces exist and nothing tells them apart.
+#[test]
+fn a_namespace_declares_how_many_writers_it_admits_and_reads_it_back() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE shared MULTI MASTER;\n\
+             DEFINE NAMESPACE ledger SINGLE LEADER;\n\
+             DEFINE NAMESPACE unsaid;",
+        )
+        .unwrap();
+
+    let class = |session: &mut Session<'_>, namespace: &str| {
+        let script = format!("USE NAMESPACE {namespace}; INFO FOR NAMESPACE;");
+        let Value::Object(fields) = report(session, &script) else {
+            panic!("expected an object");
+        };
+        fields.get("class").cloned().unwrap()
+    };
+
+    assert_eq!(class(&mut session, "shared"), Value::from("multi-master"));
+    assert_eq!(class(&mut session, "ledger"), Value::from("single-leader"));
+    assert_eq!(
+        class(&mut session, "unsaid"),
+        Value::None,
+        "a namespace that said nothing must not read as one that chose"
+    );
+}
+
+/// G027 **S4.1**: what a table does with a write it cannot order is read back.
+///
+/// Two tables that differ only in this accept the same writes and declare the
+/// same fields. The difference lands on a write neither can order: the declaring
+/// one takes it and counts the loss, the silent one refuses and names both
+/// versions. A report that omits the policy describes them identically.
+#[test]
+fn a_table_reports_what_it_does_with_a_write_it_cannot_order() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE shared MULTI MASTER; USE NAMESPACE shared;\n\
+             DEFINE DATABASE books; USE DATABASE books;\n\
+             DEFINE TABLE takes SCHEMALESS LAST WRITER WINS;\n\
+             DEFINE TABLE names SCHEMALESS REFUSE CONFLICTS;\n\
+             DEFINE TABLE silent SCHEMALESS;",
+        )
+        .unwrap();
+
+    let policy = |session: &mut Session<'_>, table: &str| {
+        let script = format!("INFO FOR TABLE {table};");
+        let Value::Object(fields) = report(session, &script) else {
+            panic!("expected an object");
+        };
+        fields.get("conflict").cloned().unwrap()
+    };
+
+    assert_eq!(
+        policy(&mut session, "takes"),
+        Value::from("last-writer-wins")
+    );
+    assert_eq!(policy(&mut session, "names"), Value::from("refuse"));
+    assert_eq!(
+        policy(&mut session, "silent"),
+        Value::None,
+        "a table that never asked must not read as one that declared the refusal"
+    );
+}
+
+/// G027 **S4.1**, the half a report alone does not buy: the declaration the
+/// report hands back rebuilds the same table.
+///
+/// `INFO FOR TABLE` returns a `DEFINE TABLE …` script rebuilt from the catalog,
+/// and until this wave it did not carry the conflict clause — so a table
+/// declaring `LAST WRITER WINS` described itself as one that refuses, and
+/// re-executing its own reported declaration produced a table whose writes
+/// behave differently. Nothing was in an error state and the two reports agreed,
+/// because the field that would have differed was the field nobody reported.
+///
+/// The silent table is the other half: its declaration must NOT gain a word its
+/// author did not write. Silence is a refusal by decision rather than by
+/// default, so emitting `REFUSE CONFLICTS` here would be a different claim about
+/// what was declared.
+#[test]
+fn a_reported_declaration_rebuilds_the_policy_it_described() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE shared MULTI MASTER; USE NAMESPACE shared;\n\
+             DEFINE DATABASE books; USE DATABASE books;\n\
+             DEFINE TABLE takes SCHEMALESS LAST WRITER WINS;\n\
+             DEFINE TABLE silent SCHEMALESS;",
+        )
+        .unwrap();
+
+    let described = |session: &mut Session<'_>, table: &str| {
+        let script = format!("INFO FOR TABLE {table};");
+        let Value::Object(fields) = report(session, &script) else {
+            panic!("expected an object");
+        };
+        let Some(Value::String(script)) = fields.get("definition") else {
+            panic!("expected a definition for {table}");
+        };
+        script.clone()
+    };
+
+    let taking = described(&mut session, "takes");
+    assert!(
+        taking.contains("LAST WRITER WINS"),
+        "the declaration dropped the clause that decides what a write it cannot \
+         order does: {taking}"
+    );
+    let quiet = described(&mut session, "silent");
+    assert!(
+        !quiet.contains("CONFLICTS") && !quiet.contains("WINS"),
+        "a table that declared nothing gained a word its author did not write: \
+         {quiet}"
+    );
+
+    // Re-executed under a second name, and described again. A round trip that
+    // stopped at the text would pass on a script the parser rejects, and one
+    // that stopped at re-execution would pass on a table that came back
+    // different — so it runs the whole way and compares the two descriptions.
+    //
+    // Compared as DECLARATIONS rather than by reading the report's `conflict`
+    // field, which is how this was first written. Hiding that field then failed
+    // this test as well as its own, and a falsification arm that takes two tests
+    // down is measuring one thing twice: the read-back and the rebuild are
+    // separate claims and each needs an arm that can fail alone.
+    let rebuilt = taking.replace("takes", "rebuilt");
+    session.run(&rebuilt).unwrap();
+    assert_eq!(
+        described(&mut session, "rebuilt"),
+        taking.replace("takes", "rebuilt"),
+        "the table rebuilt from its own reported declaration describes itself \
+         differently from the one it claimed to reproduce"
+    );
+}
+
+// ------------------------------------------------- surviving versions
+
+/// Three stores declared identically, so allocation gives them the same ids and
+/// a record written on one replays onto another.
+///
+/// The DDL runs through a session rather than the catalog, because the point of
+/// this group is what an operator can ask after doing what an operator does.
+fn multi_master() -> (Store, Store, Store) {
+    let raise = || {
+        let store = store();
+        let mut session = Session::new(&store);
+        session
+            .run(
+                "DEFINE NAMESPACE shared MULTI MASTER; USE NAMESPACE shared;\n\
+                 DEFINE DATABASE books; USE DATABASE books;\n\
+                 DEFINE TABLE note SCHEMALESS;",
+            )
+            .unwrap();
+        store
+    };
+    (raise(), raise(), raise())
+}
+
+/// The range the three stores share, resolved rather than assumed.
+///
+/// Read back from the catalog, because a test that hard-coded `1` here would
+/// pass for the wrong reason the day allocation changes.
+fn shared_range(store: &Store) -> Reach {
+    let mut transaction = store.begin().unwrap();
+    let catalog = Catalog::new(&mut transaction);
+    let namespace = catalog.namespace_id("shared").unwrap().unwrap();
+    let database = catalog.database_id(namespace, "books").unwrap().unwrap();
+    Reach::Database(namespace, database)
+}
+
+/// One write, through a session, on the store that accepts it.
+fn write_note(store: &Store, id: &str, body: &str) {
+    let mut session = Session::new(store);
+    session
+        .run(&format!(
+            "USE NAMESPACE shared; USE DATABASE books;\n\
+             CREATE note:{id} = {{ body: '{body}' }};"
+        ))
+        .unwrap();
+}
+
+/// One overwrite of a record that already exists.
+fn rewrite_note(store: &Store, id: &str, body: &str) {
+    let mut session = Session::new(store);
+    session
+        .run(&format!(
+            "USE NAMESPACE shared; USE DATABASE books;\n\
+             UPDATE note:{id} = {{ body: '{body}' }};"
+        ))
+        .unwrap();
+}
+
+/// Apply every log `source` holds for `home` into `target`, under its writer.
+///
+/// Each record is filed under the writer that WROTE it. Re-attributing them to
+/// the target would leave the source's logs empty on a store holding all of
+/// their records.
+fn replay(source: &Store, target: &Store, home: Reach) {
+    for log in source.logs_of(home).unwrap() {
+        for (at, record) in source.log_records(log, Sequence::ZERO, 1024).unwrap() {
+            target
+                .apply_record(log.writer, at, &record)
+                .expect("a follower applies both logs without a gap refusal");
+        }
+    }
+}
+
+/// The report, read through a session on `store`.
+fn versions(store: &Store, record: &str) -> BTreeMap<String, Value> {
+    let mut session = Session::new(store);
+    let script =
+        format!("USE NAMESPACE shared; USE DATABASE books; INFO FOR VERSIONS OF {record};");
+    let Value::Object(fields) = report(&mut session, &script) else {
+        panic!("expected an object");
+    };
+    fields
+}
+
+/// The node named on one row of the report.
+fn node_of(row: &Value) -> String {
+    let Value::Object(fields) = row else {
+        panic!("expected a version row, got {row:?}");
+    };
+    let Some(Value::String(node)) = fields.get("node") else {
+        panic!("a version row named no node: {fields:?}");
+    };
+    node.clone()
+}
+
+/// G027 **S4.3**: a record two nodes wrote without seeing each other reports
+/// both survivors, the node that wrote each, and that they are concurrent.
+///
+/// The concurrency is produced by replication and never by a fixture asserting
+/// two stamps at each other: a local commit derives its stamp from the version
+/// it replaces, so it always DESCENDS it, and the concurrency a store meets is
+/// one that arrived.
+///
+/// The two nodes are asserted to be **different** rather than against literal
+/// ids, which the store mints. That is the whole claim — a report naming one
+/// node for both versions would say a single writer produced a conflict with
+/// itself.
+#[test]
+fn a_contested_record_reports_that_another_version_survives() {
+    let (first, second, third) = multi_master();
+    write_note(&first, "1", "the first node");
+    write_note(&second, "1", "the second node");
+
+    let home = shared_range(&first);
+    replay(&first, &third, home);
+    replay(&second, &third, home);
+
+    let fields = versions(&third, "note:1");
+    assert_eq!(
+        fields.get("concurrent"),
+        Some(&Value::Bool(true)),
+        "two nodes wrote this record without seeing each other and the report \
+         calls it settled"
+    );
+    let Some(Value::Array(rows)) = fields.get("versions") else {
+        panic!("the report listed no versions: {fields:?}");
+    };
+    assert_eq!(rows.len(), 2, "one survivor was not returned: {rows:?}");
+    assert_ne!(
+        node_of(&rows[0]),
+        node_of(&rows[1]),
+        "both surviving versions are attributed to one node, which would be a \
+         writer in conflict with itself"
+    );
+
+    // The version an ordinary read resolves to is the newest survivor, and it
+    // is named with the node that wrote it rather than left for the caller to
+    // pick out of the list.
+    let Some(answered) = fields.get("answered") else {
+        panic!("the report did not say which version answered: {fields:?}");
+    };
+    assert_eq!(&rows[0], answered);
+}
+
+/// G027 **S4.3**, the other half: a settled record says so.
+///
+/// Without this the criterion is satisfied by a report that returns `true`
+/// unconditionally — and an operator who cannot tell a settled value from a
+/// contested one is exactly what it exists to prevent. It also holds the
+/// deliberate decision that the statement answers on a range with one writer:
+/// refusing there would make the question unanswerable precisely where somebody
+/// who has just declared a namespace multi-master wants to ask it.
+#[test]
+fn a_settled_record_reports_one_version_and_no_concurrency() {
+    let (first, ..) = multi_master();
+    write_note(&first, "2", "written once");
+
+    let fields = versions(&first, "note:2");
+    assert_eq!(fields.get("concurrent"), Some(&Value::Bool(false)));
+    let Some(Value::Array(rows)) = fields.get("versions") else {
+        panic!("the report listed no versions: {fields:?}");
+    };
+    assert_eq!(rows.len(), 1, "a record written once has one survivor");
+    assert_eq!(fields.get("answered"), Some(&rows[0]));
+}
+
+/// G027 **S4.3**, the case where *which node wrote this* has a wrong answer that
+/// looks right.
+///
+/// A stamp counts writes per node, so it records what a version has SEEN and not
+/// who wrote it. Here the first node writes five times, the second replays all
+/// five and then writes once, so the second node's version carries `{first: 5,
+/// second: 1}` — and the largest entry belongs to the node that did **not**
+/// write it.
+///
+/// Without this fixture the two derivations agree. Every other test in this
+/// group produces single-entry stamps, where *the node with the highest count*
+/// and *the node whose count this version advanced* are the same node, so a
+/// report built on the wrong rule would pass all of them. That is the shape of a
+/// test whose fixture never reaches the thing it is guarding.
+#[test]
+fn the_node_that_wrote_a_version_is_not_the_one_it_has_seen_most_of() {
+    let (first, second, ..) = multi_master();
+    let home = shared_range(&first);
+    write_note(&first, "3", "the first node");
+    for turn in 0..4 {
+        rewrite_note(&first, "3", &format!("the first node again, {turn}"));
+    }
+    replay(&first, &second, home);
+    rewrite_note(&second, "3", "the second node, once");
+
+    let fields = versions(&second, "note:3");
+    assert_eq!(
+        fields.get("concurrent"),
+        Some(&Value::Bool(false)),
+        "the second node had seen every one of the first node's writes, so its \
+         write supersedes them rather than competing with them"
+    );
+    let Some(answered) = fields.get("answered") else {
+        panic!("the report did not say which version answered: {fields:?}");
+    };
+
+    // The node the SECOND store writes under, taken from the log it owns rather
+    // than from the report being tested.
+    let mine = second.own_log(home).unwrap().writer;
+    let theirs = first.own_log(home).unwrap().writer;
+    assert_ne!(mine, theirs, "the two stores share a writer id");
+    assert_eq!(
+        node_of(answered),
+        tessari_types::RecordId::Uuid(mine.bytes()).to_string(),
+        "the report named the node this version had seen most of, rather than \
+         the node that wrote it"
+    );
 }

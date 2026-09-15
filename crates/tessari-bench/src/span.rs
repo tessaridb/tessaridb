@@ -61,7 +61,11 @@ fn lower(query: u64) -> u64 {
 }
 
 /// The identities one answer names.
-fn answered(outcomes: &[tessaridb::Outcome]) -> Vec<String> {
+///
+/// `pub(crate)` rather than private because `crate::guard` compares record
+/// sets for the same reason this module does, and two copies of a comparison
+/// that decides whether two reads agree would drift apart silently.
+pub(crate) fn answered(outcomes: &[tessaridb::Outcome]) -> Vec<String> {
     outcomes
         .first()
         .and_then(tessaridb::Outcome::records)

@@ -19,6 +19,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use tessari_encoding::LogId;
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_lsm::{Durability, LsmBackend, StoreConfig};
 use tessari_session::Session;
@@ -97,9 +98,15 @@ fn interrogate(store: &Store) -> Vec<String> {
         .collect()
 }
 
-/// Where a follower would resume, computed from nothing but the store itself.
-fn resume_from(store: &Store) -> Sequence {
-    Sequence::new(store.committed_tail().unwrap().get().saturating_add(1))
+/// Where a follower would resume each of its logs, from nothing but the store.
+///
+/// One per log, because the store holds a log per range now and a single number
+/// would be right about one of them (Q-620, Q-626).
+fn resume_from(store: &Store) -> Vec<(LogId, Sequence)> {
+    crate::tails(store)
+        .into_iter()
+        .map(|(log, tail)| (log, Sequence::new(tail.get().saturating_add(1))))
+        .collect()
 }
 
 #[test]
@@ -157,20 +164,24 @@ fn a_follower_that_was_down_catches_up_on_what_it_missed_without_replaying() {
 
     let reopened = durable(&path);
 
-    let mut missed = Vec::new();
-    let sent = tessari_backup::write_from(&held, &mut missed, resume_from(&reopened)).unwrap();
+    // One catch-up file per log the follower holds a position for: a sequence
+    // counts in one log, so "what I missed" is asked once per log (Q-620).
+    let mut sent_in_all = 0_u64;
+    for (home, from) in resume_from(&reopened) {
+        let mut missed = Vec::new();
+        let sent = tessari_backup::write_from(&held, &mut missed, home, from).unwrap();
+        let caught = tessari_backup::bootstrap(&reopened, &mut missed.as_slice()).unwrap();
+        // Nothing replayed: what arrived is exactly what was written during the
+        // outage, not that plus the history again.
+        assert_eq!(caught.records, sent.records);
+        sent_in_all = sent_in_all.saturating_add(sent.records);
+    }
     assert!(
-        sent.records > 0,
+        sent_in_all > 0,
         "the leader had nothing to send, so this test proves nothing"
     );
-
-    let caught_up = tessari_backup::bootstrap(&reopened, &mut missed.as_slice()).unwrap();
-
-    // Nothing replayed: what arrived is exactly what was written during the
-    // outage, not that plus the history again.
-    assert_eq!(caught_up.records, sent.records);
     // Nothing skipped: the two agree again, including about the field that only
     // the catalog knows.
     assert_eq!(interrogate(&held), interrogate(&reopened));
-    assert_eq!(caught_up.follow_from, resume_from(&held));
+    assert_eq!(resume_from(&reopened), resume_from(&held));
 }

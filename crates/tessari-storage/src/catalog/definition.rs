@@ -13,7 +13,8 @@
 use std::collections::BTreeMap;
 
 use tessari_types::{
-    DatabaseId, Duration, GraphId, IdentityKind, IndexId, NamespaceId, Number, Path, TableId, Value,
+    ConflictPolicy, DatabaseId, Duration, GraphId, IdentityKind, IndexId, NamespaceId, Number,
+    Path, Replication, ReplicationClass, TableId, Value,
 };
 
 use tessari_vault::{KeyId, Wrapped};
@@ -55,6 +56,9 @@ const FIELD_SERIES: &str = "series";
 const FIELD_RETAIN: &str = "retain";
 const FIELD_DIMENSION: &str = "dimension";
 const FIELD_DISTANCE: &str = "distance";
+const FIELD_REPLICATION: &str = "replication";
+const FIELD_REPLICATION_CLASS: &str = "replication_class";
+const FIELD_CONFLICT: &str = "conflict";
 
 /// A namespace: the outermost tenancy level.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +67,38 @@ pub struct NamespaceDefinition {
     pub id: NamespaceId,
     /// Its name, which may change without moving anything.
     pub name: String,
+    /// How many copies the cluster is asked to keep of it (ADR-0060).
+    ///
+    /// `None` is **never stated**, and every namespace in every store that
+    /// existed before this field did reads that way — which is the correct
+    /// reading and not a fallback, exactly as an absent epoch flag is epoch
+    /// zero. It is deliberately not [`Replication::None`]: a namespace that
+    /// declined replication is honoured, and a namespace nobody ever asked is
+    /// refused at the moment a second node would hold it. That difference is
+    /// unrecoverable once namespaces exist, which is why the field lands before
+    /// the cluster does rather than with it.
+    ///
+    /// The counter-argument is on the record and it is `replica.rs`'s own: a
+    /// field nothing reads is a decision taken with no way to find out it was
+    /// wrong. It applies to a copy count held on a **replica**, where the value
+    /// can be derived later from the peers that exist. It does not apply here,
+    /// because what is bought is not the number — it is the distinction between
+    /// silence and a stated answer, and silence cannot be reconstructed.
+    pub replication: Option<Replication>,
+    /// How many writers it admits — single-leader, or multi-master (G027 S2.1).
+    ///
+    /// `None` is **never stated** and reads as single-leader wherever it is
+    /// asked, which is what every namespace written before this field did and
+    /// what the engine has always enforced. It is kept apart from a stated
+    /// [`ReplicationClass::SingleLeader`] for the reason its neighbour keeps
+    /// its own two absences apart: an operator who considered the question and
+    /// answered it has told the cluster something, and `INFO FOR` reports a
+    /// decision differently from a silence.
+    ///
+    /// Separate from `replication` rather than folded into it because the two
+    /// are independent — how many copies and how many writers — and a namespace
+    /// declared multi-master still has a factor.
+    pub class: Option<ReplicationClass>,
 }
 
 /// A database within a namespace.
@@ -125,6 +161,20 @@ pub struct TableDefinition {
     /// every respect that matters — selected from, inserted into, indexed,
     /// granted on — and differs by exactly this one fact (Q-314).
     pub graph: Option<GraphId>,
+    /// What the table does with a write it cannot order (G027 S3.2).
+    ///
+    /// `None` is **never stated** and reads as [`ConflictPolicy::Refuse`], which
+    /// is what ADR-0075 has every table do and what every table that existed
+    /// before the clause did has always had done for it — so nothing on disk is
+    /// rewritten and no migration step is owed.
+    ///
+    /// On the **table** rather than the namespace, where the replication class
+    /// went, because the two answer different questions at the levels they
+    /// belong to: a namespace says whether a second writer may exist at all, a
+    /// table says what to do when two of them have written one record without
+    /// seeing each other. A counter can tolerate a dropped update beside a
+    /// ledger row in the same namespace that cannot (Q-633).
+    pub conflict: Option<ConflictPolicy>,
 }
 
 impl TableDefinition {
@@ -226,12 +276,24 @@ impl TableDefinition {
 
 impl NamespaceDefinition {
     /// The value written to the catalog.
+    ///
+    /// The replication field is written **only when it was stated**, so a
+    /// namespace that said nothing encodes to the exact object it encoded to
+    /// before this field existed. Nothing already stored is rewritten, and the
+    /// absence carries the meaning instead of a placeholder standing in for it.
     #[must_use]
     pub fn to_value(&self) -> Value {
-        Value::Object(BTreeMap::from([
+        let mut fields = BTreeMap::from([
             (FIELD_ID.to_owned(), number(self.id.get())),
             (FIELD_NAME.to_owned(), Value::from(self.name.as_str())),
-        ]))
+        ]);
+        if let Some(replication) = self.replication {
+            fields.insert(FIELD_REPLICATION.to_owned(), replication.to_value());
+        }
+        if let Some(class) = self.class {
+            fields.insert(FIELD_REPLICATION_CLASS.to_owned(), class.to_value());
+        }
+        Value::Object(fields)
     }
 
     /// Read a definition back.
@@ -239,12 +301,37 @@ impl NamespaceDefinition {
     /// # Errors
     ///
     /// Returns [`Error::CatalogMalformed`] when a field is missing or holds the
-    /// wrong type.
+    /// wrong type — including a replication policy this build does not
+    /// recognise, which refuses rather than reading as never-stated. A
+    /// namespace written by a later build under a placement policy must not be
+    /// served here as though nobody had ever declared one.
     pub fn from_value(value: &Value) -> Result<Self> {
         let fields = object(value, "namespace")?;
+        let replication = match fields.get(FIELD_REPLICATION) {
+            None => None,
+            Some(held) => Some(
+                Replication::from_value(held).ok_or(Error::CatalogMalformed {
+                    entity: "namespace",
+                    field: FIELD_REPLICATION,
+                    found: "a replication policy this build does not have",
+                })?,
+            ),
+        };
+        let class = match fields.get(FIELD_REPLICATION_CLASS) {
+            None => None,
+            Some(held) => Some(ReplicationClass::from_value(held).ok_or(
+                Error::CatalogMalformed {
+                    entity: "namespace",
+                    field: FIELD_REPLICATION_CLASS,
+                    found: "a replication class this build does not have",
+                },
+            )?),
+        };
         Ok(Self {
             id: NamespaceId::new(field_id(fields, FIELD_ID, "namespace")?),
             name: field_name(fields, "namespace")?,
+            replication,
+            class,
         })
     }
 }
@@ -314,6 +401,13 @@ impl TableDefinition {
         // future reader would have to know that about.
         if let Some(graph) = self.graph {
             fields.insert(FIELD_GRAPH.to_owned(), number(graph.get()));
+        }
+        // Written only when the operator said something, for the reason the
+        // graph membership above is: silence and a declared refusal are
+        // different facts, and a policy word written for every table would make
+        // them the same one.
+        if let Some(conflict) = self.conflict {
+            fields.insert(FIELD_CONFLICT.to_owned(), conflict.to_value());
         }
         // A declaration is not a flag, so it is written only by the edge table
         // that has one. Absent is how every edge table declared without a pair
@@ -443,6 +537,16 @@ impl TableDefinition {
                 Some(_) => Some(GraphId::new(field_id(fields, FIELD_GRAPH, "table")?)),
                 None => None,
             },
+            conflict: match fields.get(FIELD_CONFLICT) {
+                None => None,
+                Some(held) => Some(ConflictPolicy::from_value(held).ok_or(
+                    Error::CatalogMalformed {
+                        entity: "table",
+                        field: FIELD_CONFLICT,
+                        found: "a conflict policy this build does not have",
+                    },
+                )?),
+            },
         })
     }
 }
@@ -472,6 +576,13 @@ pub struct TableShape {
     pub identity: IdentityKind,
     /// The graph the table belongs to, when the declaration named one.
     pub graph: Option<GraphId>,
+    /// What the table does with a write it cannot order, when it said.
+    ///
+    /// Carried on the shape for the reason every other field here is: a
+    /// declaration passed beside the shape is a declaration a later caller can
+    /// forget to pass, and a table silently refusing writes its operator asked
+    /// to be taken looks like nothing at all being wrong.
+    pub conflict: Option<ConflictPolicy>,
 }
 
 /// Which engine's rules a table plays by.
@@ -1707,11 +1818,108 @@ mod tests {
 
     use super::*;
 
+    /// The bytes a namespace held before the replication clause existed.
+    ///
+    /// Pinned as a literal rather than produced by an encoder, so that this is
+    /// genuinely a stored value from an older build and not a round trip of
+    /// today's. A namespace written then must read as **never stated** — which
+    /// is the true reading of a store that had no way to say anything, not a
+    /// fallback — and must encode back to exactly the same object, so nothing
+    /// already on disk is rewritten by being read.
+    #[test]
+    fn a_namespace_stored_before_the_clause_reads_as_never_stated() {
+        let stored = Value::Object(BTreeMap::from([
+            ("id".to_owned(), number(7)),
+            ("name".to_owned(), Value::from("prod")),
+        ]));
+        let read = NamespaceDefinition::from_value(&stored).unwrap();
+        assert_eq!(read.replication, None);
+        assert_eq!(read.to_value(), stored, "a read must not rewrite it");
+    }
+
+    #[test]
+    fn a_stated_class_round_trips_and_a_definition_without_one_reads_as_silence() {
+        // G027 S2.1. The second half is the one that matters on disk: a
+        // namespace written before this field existed must still decode, and
+        // must decode as *never stated* rather than as either answer — the same
+        // property the replication clause bought, and the same reason nothing
+        // stored is rewritten.
+        for class in [
+            ReplicationClass::SingleLeader,
+            ReplicationClass::MultiMaster,
+        ] {
+            let namespace = NamespaceDefinition {
+                id: NamespaceId::new(7),
+                name: "prod".to_owned(),
+                replication: None,
+                class: Some(class),
+            };
+            let read = NamespaceDefinition::from_value(&namespace.to_value()).unwrap();
+            assert_eq!(read, namespace, "{class}");
+        }
+
+        // Pinned as a literal for its neighbour's reason: this is a namespace a
+        // build without the class field wrote, not a round trip of today's, and
+        // it must read as never stated and encode back unchanged.
+        let stored = Value::Object(BTreeMap::from([
+            ("id".to_owned(), number(7)),
+            ("name".to_owned(), Value::from("prod")),
+        ]));
+        let read = NamespaceDefinition::from_value(&stored).unwrap();
+        assert_eq!(read.class, None);
+        assert_eq!(read.to_value(), stored, "a read must not rewrite it");
+    }
+
+    #[test]
+    fn a_stated_policy_round_trips_and_is_not_silence() {
+        for policy in [
+            Replication::None,
+            Replication::Factor(core::num::NonZeroU32::new(3).unwrap()),
+        ] {
+            let namespace = NamespaceDefinition {
+                id: NamespaceId::new(7),
+                name: "prod".to_owned(),
+                replication: Some(policy),
+                class: None,
+            };
+            let read = NamespaceDefinition::from_value(&namespace.to_value()).unwrap();
+            assert_eq!(read, namespace, "{policy}");
+            assert_ne!(read.replication, None, "{policy}");
+        }
+    }
+
+    /// A policy a later build understands and this one does not refuses rather
+    /// than reading as silence — the same refusal a table's unknown identity
+    /// scheme takes, and for the same reason: serving a namespace as *nobody
+    /// ever declared one* when somebody did is the wrong answer given
+    /// confidently.
+    #[test]
+    fn a_policy_this_build_does_not_know_refuses() {
+        let stored = Value::Object(BTreeMap::from([
+            ("id".to_owned(), number(7)),
+            ("name".to_owned(), Value::from("prod")),
+            ("replication".to_owned(), Value::from("every-rack")),
+        ]));
+        let error = NamespaceDefinition::from_value(&stored).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::CatalogMalformed {
+                    field: "replication",
+                    ..
+                }
+            ),
+            "{error}"
+        );
+    }
+
     #[test]
     fn every_definition_round_trips_through_its_value() {
         let namespace = NamespaceDefinition {
             id: NamespaceId::new(7),
             name: "prod".to_owned(),
+            replication: None,
+            class: None,
         };
         assert_eq!(
             NamespaceDefinition::from_value(&namespace.to_value()).unwrap(),
@@ -1746,6 +1954,7 @@ mod tests {
             // trips perfectly as long as both ends agree on what it is when
             // absent, which is exactly the bug this assertion is for.
             identity: IdentityKind::Uuid,
+            conflict: None,
         };
         assert_eq!(
             TableDefinition::from_value(&table.to_value()).unwrap(),
@@ -1867,6 +2076,7 @@ mod tests {
                 }),
             })),
             identity: IdentityKind::Int,
+            conflict: None,
         };
         assert_eq!(
             TableDefinition::from_value(&table.to_value()).unwrap(),
@@ -1918,6 +2128,7 @@ mod tests {
                 distance: VectorDistance::Euclidean,
             }),
             identity: IdentityKind::Int,
+            conflict: None,
         };
         assert_eq!(
             TableDefinition::from_value(&table.to_value()).unwrap(),

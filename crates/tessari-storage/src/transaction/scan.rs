@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::ops::{Bound, ControlFlow};
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
-use tessari_encoding::{RecordKey, RecordValue, StoreKey, StoreValue};
+use tessari_encoding::{RecordKey, RecordValue, StampedValue, StoreKey, StoreValue};
 use tessari_kv::{Key, KeyRange, Keyspace, ScanDirection, ScanRequest};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
 
@@ -470,7 +470,10 @@ impl Transaction<'_> {
                 continue;
             }
             *resolved = Some(decoded.id.clone());
-            taken.push((decoded.id, RecordValue::decode(value.as_slice())?));
+            taken.push((
+                decoded.id,
+                StampedValue::decode(value.as_slice())?.into_value(),
+            ));
         }
         Ok(taken)
     }

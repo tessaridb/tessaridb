@@ -10,11 +10,12 @@
 //! record and every index entry that mentions it.
 
 use tessari_kv::{Key, Keyspace};
-use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
+use tessari_types::{DatabaseId, NamespaceId, Reach, RecordId, Sequence, TableId};
 
 use crate::error::Result;
 use crate::kind::KeyKind;
-use crate::node::NodeIdentity;
+use crate::log_id::{LogId, Writer};
+use crate::node::{NODE_ID_LEN, NodeIdentity};
 use crate::order::{KeyReader, KeyWriter};
 use crate::record_id;
 use crate::value::{FormatVersion, StoreValue};
@@ -26,6 +27,91 @@ use crate::value::{FormatVersion, StoreValue};
 /// leading byte count for a prefix filter to be able to extract it, and that
 /// constraint is the whole reason the identifiers are numbers rather than names.
 pub const TABLE_PREFIX_LEN: usize = 13;
+
+/// Bytes a [`Reach`] occupies inside a key: a variant byte, then the namespace
+/// and the database, both always written.
+///
+/// Fixed width on purpose, for the reason [`TABLE_PREFIX_LEN`] is. A log key is
+/// read by prefix, and writing the identifiers only where the variant uses them
+/// would start the sequence that follows at three different offsets — a scan
+/// over one home would then be a scan over whatever happened to sort into the
+/// same bytes.
+pub const REACH_LEN: usize = 9;
+
+/// The variant byte for [`Reach::Store`].
+const REACH_STORE: u8 = 0;
+/// The variant byte for [`Reach::Namespace`].
+const REACH_NAMESPACE: u8 = 1;
+/// The variant byte for [`Reach::Database`].
+const REACH_DATABASE: u8 = 2;
+
+/// Append a reach as [`REACH_LEN`] bytes.
+///
+/// The variant leads, so the three levels do not interleave and every home is
+/// one contiguous range. The order *between* homes carries no meaning — they
+/// are separate logs, and nothing compares a position in one against a position
+/// in another — so contiguity is the whole requirement.
+fn put_reach(writer: &mut KeyWriter, reach: Reach) {
+    let (variant, namespace, database) = match reach {
+        Reach::Store => (REACH_STORE, 0, 0),
+        Reach::Namespace(namespace) => (REACH_NAMESPACE, namespace.get(), 0),
+        Reach::Database(namespace, database) => (REACH_DATABASE, namespace.get(), database.get()),
+    };
+    writer.put_u8(variant).put_u32(namespace).put_u32(database);
+}
+
+/// Read a reach written by [`put_reach`].
+///
+/// A variant this build does not know is refused rather than widened to the
+/// store: a record filed under a home this binary cannot name is a record it
+/// cannot decide the destination of, and answering `Store` would hand it to
+/// every subscriber.
+///
+/// # Errors
+///
+/// Returns [`Error::UnknownReach`] for an unknown variant byte, and whatever
+/// the reader returns when the bytes are short.
+///
+/// [`Error::UnknownReach`]: crate::error::Error::UnknownReach
+fn take_reach(reader: &mut KeyReader<'_>) -> Result<Reach> {
+    let offset = reader.position();
+    let variant = reader.take_u8()?;
+    let namespace = NamespaceId::new(reader.take_u32()?);
+    let database = DatabaseId::new(reader.take_u32()?);
+    match variant {
+        REACH_STORE => Ok(Reach::Store),
+        REACH_NAMESPACE => Ok(Reach::Namespace(namespace)),
+        REACH_DATABASE => Ok(Reach::Database(namespace, database)),
+        found => Err(crate::error::Error::UnknownReach {
+            kind: reader.kind(),
+            found,
+            offset,
+        }),
+    }
+}
+
+/// Append a log's name: its home, then its writer.
+///
+/// The home leads so that every log of one range is one contiguous span, which
+/// is what lets a reader ask *which logs does this range have* with a single
+/// bound. The writer follows at a fixed width so the sequence after it starts at
+/// one offset and a per-log prefix stays exact.
+fn put_log(writer: &mut KeyWriter, log: LogId) {
+    put_reach(writer, log.home);
+    writer.put_fixed(&log.writer.bytes());
+}
+
+/// Read a log name written by [`put_log`].
+///
+/// # Errors
+///
+/// Returns whatever [`take_reach`] returns, and whatever the reader returns when
+/// the bytes are short.
+fn take_log(reader: &mut KeyReader<'_>) -> Result<LogId> {
+    let home = take_reach(reader)?;
+    let writer = Writer::new(reader.take_fixed::<NODE_ID_LEN>()?);
+    Ok(LogId::new(home, writer))
+}
 
 /// A key that addresses one kind of stored value.
 pub trait StoreKey: Sized {
@@ -164,8 +250,37 @@ impl StoreKey for RecordKey {
 /// Addresses one entry in the ordered log.
 ///
 /// ```text
-/// <0x20> <sequence:u64>
+/// <0x20> <home:9> <writer:16> <sequence:u64>
 /// ```
+///
+/// # The writer is part of the log's name, at a fixed width
+///
+/// A home used to name a log on its own, and did so exactly while one leader
+/// decided every write into a range. A range that admits two writers has two
+/// counters, and a position means nothing without the counter it came from — so
+/// the log is named by the pair (see [`LogId`]).
+///
+/// The writer is written **always**, not only when a range has two of them.
+/// Encoding it conditionally would leave two key shapes under one tag, told
+/// apart by their length on the replication read path, and this store has
+/// already met that choice and refused it: the migration that gave the log its
+/// home rewrote the keys rather than read them through a second decoder,
+/// because a choice made by length there is a choice made on every record
+/// forever. An older log is therefore rewritten once at open, to
+/// [`Writer::UNATTRIBUTED`].
+///
+/// # The home comes first, and that is what makes the log per-range
+///
+/// A position is a position *in a log*, and once two leaders allocate positions
+/// from independent counters there is no longer one log to be in. The home —
+/// the reach a record belongs to, decided by the partition function above this
+/// layer — leads the key, so each home's entries are one contiguous range and a
+/// scan resumes inside the log it names rather than inside whatever sorted
+/// nearby.
+///
+/// Two homes may therefore hold the same sequence, and must: that is the point.
+/// Nothing compares a position in one home against a position in another, and
+/// a reader that did would be comparing two unrelated counters.
 ///
 /// The sequence is written **ascending**, which is the opposite of the version
 /// suffix on a record key. That asymmetry is deliberate and both halves of it are
@@ -176,21 +291,58 @@ impl StoreKey for RecordKey {
 /// data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LogKey {
-    /// The position of this entry in the log.
+    /// The log this entry belongs to.
+    pub log: LogId,
+    /// The position of this entry in that log.
     pub sequence: Sequence,
 }
 
 impl LogKey {
-    /// Address a log entry.
+    /// Address a log entry in one log.
     #[must_use]
-    pub const fn new(sequence: Sequence) -> Self {
-        Self { sequence }
+    pub const fn new(log: LogId, sequence: Sequence) -> Self {
+        Self { log, sequence }
     }
 
-    /// The prefix shared by every log entry.
+    /// The prefix shared by every log entry, whatever its log.
+    ///
+    /// Still answers what it answered before the home existed — the whole
+    /// keyspace — because the callers that hold it are asking about the log as a
+    /// keyspace rather than about one log. A scan over a single log uses
+    /// [`Self::prefix_for`].
     #[must_use]
     pub fn prefix() -> Vec<u8> {
         vec![KeyKind::LogEntry.tag()]
+    }
+
+    /// The prefix shared by every entry of one log.
+    ///
+    /// Exact: [`REACH_LEN`] and [`NODE_ID_LEN`] are both fixed, so these bytes
+    /// lead an entry's key exactly when the entry belongs to this log. Nothing
+    /// else can sort into the range. That exactness is why the writer is written
+    /// at a fixed width and always — a conditionally-present field would make
+    /// this prefix cover *some* of another log as well, and the failure would be
+    /// a scan that silently read a writer it was never asked about.
+    #[must_use]
+    pub fn prefix_for(log: LogId) -> Vec<u8> {
+        let mut writer =
+            KeyWriter::with_capacity(1usize.saturating_add(REACH_LEN).saturating_add(NODE_ID_LEN));
+        writer.put_u8(KeyKind::LogEntry.tag());
+        put_log(&mut writer, log);
+        writer.finish()
+    }
+
+    /// The prefix shared by every log of one home, whichever writer holds it.
+    ///
+    /// The answer to *which logs does this range have* is asked of the store
+    /// rather than reasoned from the type (Q-632), and this is the bound that
+    /// asks it.
+    #[must_use]
+    pub fn prefix_for_home(home: Reach) -> Vec<u8> {
+        let mut writer = KeyWriter::with_capacity(1usize.saturating_add(REACH_LEN));
+        writer.put_u8(KeyKind::LogEntry.tag());
+        put_reach(&mut writer, home);
+        writer.finish()
     }
 }
 
@@ -200,17 +352,21 @@ impl StoreKey for LogKey {
     const KIND: KeyKind = KeyKind::LogEntry;
 
     fn encode(&self) -> Key {
-        let mut writer = KeyWriter::with_capacity(9);
-        writer.put_u8(Self::KIND.tag()).put_u64(self.sequence.get());
+        let mut writer =
+            KeyWriter::with_capacity(REACH_LEN.saturating_add(NODE_ID_LEN).saturating_add(9));
+        writer.put_u8(Self::KIND.tag());
+        put_log(&mut writer, self.log);
+        writer.put_u64(self.sequence.get());
         Key::from(writer.finish())
     }
 
     fn decode(bytes: &[u8]) -> Result<Self> {
         let mut reader = KeyReader::new(Self::KIND, bytes);
         reader.expect_kind()?;
+        let log = take_log(&mut reader)?;
         let sequence = Sequence::new(reader.take_u64()?);
         reader.finish()?;
-        Ok(Self { sequence })
+        Ok(Self { log, sequence })
     }
 }
 
@@ -237,17 +393,95 @@ impl StoreKey for FormatVersionKey {
     }
 }
 
-/// Addresses the log position whose effects are durably present in the state.
+/// Addresses the log position whose effects are durably present in the state,
+/// for one home's log.
+///
+/// ```text
+/// <0x31> <home:9> <writer:16>
+/// ```
 ///
 /// Written in the same batch as the state it describes, which is what turns
 /// recovery into a resumable replay instead of a guess.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct AppliedPositionKey;
+///
+/// One per log, because the position it records counts in that log and nowhere
+/// else. A single store-wide value would be the counter two leaders both
+/// allocate from, which is the thing the per-range log exists to stop — and one
+/// per *home* would be that same counter again as soon as a home has two
+/// writers.
+///
+/// This keyspace is also the register of which logs exist: a log exists exactly
+/// when something has been written into it, which is exactly when its position
+/// key exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppliedPositionKey {
+    /// The log this position belongs to.
+    pub log: LogId,
+}
+
+impl AppliedPositionKey {
+    /// Address one log's applied position.
+    #[must_use]
+    pub const fn new(log: LogId) -> Self {
+        Self { log }
+    }
+
+    /// The prefix shared by every applied position of one home.
+    #[must_use]
+    pub fn prefix_for_home(home: Reach) -> Vec<u8> {
+        let mut writer = KeyWriter::with_capacity(1usize.saturating_add(REACH_LEN));
+        writer.put_u8(KeyKind::AppliedPosition.tag());
+        put_reach(&mut writer, home);
+        writer.finish()
+    }
+}
 
 impl StoreKey for AppliedPositionKey {
     type Value = Sequence;
 
     const KIND: KeyKind = KeyKind::AppliedPosition;
+
+    fn encode(&self) -> Key {
+        let mut writer =
+            KeyWriter::with_capacity(1usize.saturating_add(REACH_LEN).saturating_add(NODE_ID_LEN));
+        writer.put_u8(Self::KIND.tag());
+        put_log(&mut writer, self.log);
+        Key::from(writer.finish())
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        let log = take_log(&mut reader)?;
+        reader.finish()?;
+        Ok(Self { log })
+    }
+}
+
+/// Addresses the newest record version this store has written.
+///
+/// A singleton, advanced in the same batch as the versions it accounts for.
+///
+/// # Why this is not the applied position
+///
+/// It held the same number for as long as one leader decided every write, and
+/// that is the only reason the two were ever one key. They answer different
+/// questions. The applied position is the log's — a fact several nodes must
+/// agree on, because a replica resumes at it and a divergence is detected by
+/// comparing it. A record version is a fact about one store's own visible
+/// history: it orders that store's records against each other and against the
+/// snapshot a reader holds, and nobody else reads it.
+///
+/// Once two leaders allocate log positions from independent counters, one
+/// number cannot be both. A transaction opened at a store-wide "5" would read
+/// one range as of its fifth record and another as of its fifth — two unrelated
+/// moments presented as one, with no error and plausible data (Q-614).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct VersionPositionKey;
+
+impl StoreKey for VersionPositionKey {
+    type Value = Sequence;
+
+    const KIND: KeyKind = KeyKind::VersionPosition;
 
     fn encode(&self) -> Key {
         Key::from(vec![Self::KIND.tag()])
@@ -339,6 +573,16 @@ mod tests {
         )
     }
 
+    /// A log of `home` whose writer nobody named — the migrated shape.
+    fn logged(home: Reach) -> LogId {
+        LogId::unattributed(home)
+    }
+
+    /// A log of `home` held by a distinguishable writer.
+    fn by(home: Reach, writer: u8) -> LogId {
+        LogId::new(home, Writer::new([writer; NODE_ID_LEN]))
+    }
+
     #[test]
     fn a_record_key_round_trips_every_id_variant() {
         let ids = [
@@ -406,21 +650,67 @@ mod tests {
     }
 
     #[test]
-    fn singleton_meta_keys_are_one_byte_and_round_trip() {
+    fn the_format_version_key_is_one_byte_and_round_trips() {
         let format = FormatVersionKey.encode();
         assert_eq!(format.len(), 1);
         assert_eq!(
             FormatVersionKey::decode(format.as_slice()).unwrap(),
             FormatVersionKey
         );
-
-        let applied = AppliedPositionKey.encode();
-        assert_eq!(applied.len(), 1);
-        assert_eq!(
-            AppliedPositionKey::decode(applied.as_slice()).unwrap(),
-            AppliedPositionKey
+        assert_ne!(
+            format.as_slice(),
+            AppliedPositionKey::new(logged(Reach::Store))
+                .encode()
+                .as_slice()
         );
-        assert_ne!(format.as_slice(), applied.as_slice());
+    }
+
+    #[test]
+    fn each_log_has_its_own_applied_position() {
+        // Not a singleton any more, and that is the whole of the per-range log:
+        // a position counts in one log, so the record of how far it has been
+        // applied is one per log. A single value would be the counter two
+        // leaders both allocate from — and one per HOME would be that same
+        // counter again the moment a home admits two writers, which is why the
+        // last two entries here share a home and differ only by writer.
+        let logs = [
+            logged(Reach::Store),
+            logged(Reach::Namespace(NamespaceId::new(1))),
+            logged(Reach::Database(NamespaceId::new(1), DatabaseId::new(2))),
+            logged(Reach::Database(NamespaceId::new(1), DatabaseId::new(3))),
+            by(Reach::Database(NamespaceId::new(1), DatabaseId::new(3)), 1),
+            by(Reach::Database(NamespaceId::new(1), DatabaseId::new(3)), 2),
+        ];
+        let mut seen = Vec::new();
+        for log in logs {
+            let key = AppliedPositionKey::new(log);
+            let encoded = key.encode();
+            assert_eq!(
+                encoded.len(),
+                26,
+                "the kind tag, the fixed reach and the fixed writer"
+            );
+            assert_eq!(AppliedPositionKey::decode(encoded.as_slice()).unwrap(), key);
+            assert!(!seen.contains(&encoded), "two logs share a position key");
+            seen.push(encoded);
+        }
+    }
+
+    #[test]
+    fn a_homes_applied_position_prefix_covers_its_writers_and_no_other_home() {
+        let home = Reach::Database(NamespaceId::new(1), DatabaseId::new(2));
+        let prefix = AppliedPositionKey::prefix_for_home(home);
+        assert_eq!(prefix.len(), 10, "the kind tag plus the fixed reach");
+        for writer in [0, 1, 255] {
+            let mine = AppliedPositionKey::new(by(home, writer)).encode();
+            assert!(mine.as_slice().starts_with(&prefix));
+        }
+        let sibling = AppliedPositionKey::new(by(
+            Reach::Database(NamespaceId::new(1), DatabaseId::new(3)),
+            1,
+        ))
+        .encode();
+        assert!(!sibling.as_slice().starts_with(&prefix));
     }
 
     #[test]
@@ -442,8 +732,8 @@ mod tests {
 
     #[test]
     fn log_entries_sort_oldest_first_which_is_the_opposite_of_record_versions() {
-        let older = LogKey::new(Sequence::new(5)).encode();
-        let newer = LogKey::new(Sequence::new(9)).encode();
+        let older = LogKey::new(logged(Reach::Store), Sequence::new(5)).encode();
+        let newer = LogKey::new(logged(Reach::Store), Sequence::new(9)).encode();
         assert!(
             older.as_slice() < newer.as_slice(),
             "a log reader resumes at a position and walks forward"
@@ -457,12 +747,43 @@ mod tests {
 
     #[test]
     fn a_log_key_round_trips_and_is_fixed_width() {
-        for sequence in [0, 1, u64::MAX] {
-            let original = LogKey::new(Sequence::new(sequence));
-            let encoded = original.encode();
-            assert_eq!(encoded.len(), 9);
-            assert_eq!(LogKey::decode(encoded.as_slice()).unwrap(), original);
+        let homes = [
+            Reach::Store,
+            Reach::Namespace(NamespaceId::new(3)),
+            Reach::Database(NamespaceId::new(3), DatabaseId::new(4)),
+        ];
+        for home in homes {
+            for sequence in [0, 1, u64::MAX] {
+                let original = LogKey::new(by(home, 9), Sequence::new(sequence));
+                let encoded = original.encode();
+                assert_eq!(
+                    encoded.len(),
+                    34,
+                    "tag, nine reach bytes, sixteen writer bytes, eight sequence"
+                );
+                assert_eq!(LogKey::decode(encoded.as_slice()).unwrap(), original);
+            }
         }
+    }
+
+    #[test]
+    fn two_homes_hold_the_same_position_without_colliding() {
+        // The whole of what the per-range log buys: two leaders allocate from
+        // independent counters, so the same number arrives twice and must land
+        // in two places. Before the home was part of the key these two were one
+        // key, and the second write silently replaced the first.
+        let position = Sequence::new(7);
+        let one = LogKey::new(
+            logged(Reach::Database(NamespaceId::new(1), DatabaseId::new(2))),
+            position,
+        );
+        let other = LogKey::new(
+            logged(Reach::Database(NamespaceId::new(1), DatabaseId::new(3))),
+            position,
+        );
+        assert_ne!(one.encode(), other.encode());
+        assert_eq!(LogKey::decode(one.encode().as_slice()).unwrap(), one);
+        assert_eq!(LogKey::decode(other.encode().as_slice()).unwrap(), other);
     }
 
     #[test]
@@ -470,9 +791,102 @@ mod tests {
         let prefix = LogKey::prefix();
         assert_eq!(prefix.len(), 1);
         for sequence in [0, 42, u64::MAX] {
-            let encoded = LogKey::new(Sequence::new(sequence)).encode();
+            let encoded = LogKey::new(logged(Reach::Store), Sequence::new(sequence)).encode();
             assert!(encoded.as_slice().starts_with(&prefix));
         }
+    }
+
+    #[test]
+    fn a_logs_prefix_leads_its_own_entries_and_no_others() {
+        let home = Reach::Database(NamespaceId::new(1), DatabaseId::new(2));
+        let prefix = LogKey::prefix_for(logged(home));
+        assert_eq!(
+            prefix.len(),
+            26,
+            "the kind tag, the fixed reach and the fixed writer"
+        );
+        for sequence in [0, 42, u64::MAX] {
+            let mine = LogKey::new(logged(home), Sequence::new(sequence)).encode();
+            assert!(mine.as_slice().starts_with(&prefix));
+        }
+        // The neighbours a scan over that prefix must not reach: the namespace
+        // above it, a sibling database, and the store.
+        let strangers = [
+            logged(Reach::Namespace(NamespaceId::new(1))),
+            logged(Reach::Database(NamespaceId::new(1), DatabaseId::new(3))),
+            logged(Reach::Store),
+            // And the one the writer adds: the same home, another writer. This
+            // is the neighbour a home-wide prefix would have swept in.
+            by(home, 1),
+        ];
+        for stranger in strangers {
+            let theirs = LogKey::new(stranger, Sequence::new(42)).encode();
+            assert!(!theirs.as_slice().starts_with(&prefix));
+        }
+    }
+
+    #[test]
+    fn two_writers_in_one_home_hold_the_same_position_without_colliding() {
+        // The per-range log stopped two RANGES sharing a counter. This is the
+        // same failure one level in: two masters on ONE range allocate the same
+        // number, and before the writer was part of the key the second write
+        // replaced the first with nothing in an error state.
+        let home = Reach::Database(NamespaceId::new(1), DatabaseId::new(2));
+        let position = Sequence::new(7);
+        let one = LogKey::new(by(home, 1), position);
+        let other = LogKey::new(by(home, 2), position);
+        assert_ne!(one.encode(), other.encode());
+        assert_eq!(LogKey::decode(one.encode().as_slice()).unwrap(), one);
+        assert_eq!(LogKey::decode(other.encode().as_slice()).unwrap(), other);
+    }
+
+    #[test]
+    fn a_homes_prefix_covers_every_writer_of_that_home_and_no_other_home() {
+        // Which logs a range has is asked of the store, and this is the bound
+        // that asks it (Q-632).
+        let home = Reach::Database(NamespaceId::new(1), DatabaseId::new(2));
+        let prefix = LogKey::prefix_for_home(home);
+        assert_eq!(prefix.len(), 10, "the kind tag plus the fixed reach");
+        for writer in [0, 1, 255] {
+            let mine = LogKey::new(by(home, writer), Sequence::new(3)).encode();
+            assert!(mine.as_slice().starts_with(&prefix));
+        }
+        let sibling = LogKey::new(
+            by(Reach::Database(NamespaceId::new(1), DatabaseId::new(3)), 1),
+            Sequence::new(3),
+        )
+        .encode();
+        assert!(!sibling.as_slice().starts_with(&prefix));
+    }
+
+    #[test]
+    fn one_writers_entries_stay_contiguous_and_ascending() {
+        // Two properties in one assertion because they are one requirement: a
+        // log reader resumes at a position and walks forward, and it must not
+        // walk into another writer's numbering on the way.
+        let home = Reach::Namespace(NamespaceId::new(4));
+        let mine_early = LogKey::new(by(home, 1), Sequence::new(1)).encode();
+        let mine_late = LogKey::new(by(home, 1), Sequence::new(u64::MAX)).encode();
+        let theirs_early = LogKey::new(by(home, 2), Sequence::new(1)).encode();
+        assert!(mine_early.as_slice() < mine_late.as_slice());
+        assert!(
+            mine_late.as_slice() < theirs_early.as_slice(),
+            "a writer's whole log sorts before the next writer's first entry"
+        );
+    }
+
+    #[test]
+    fn an_unknown_reach_variant_is_refused_rather_than_read_as_the_store() {
+        // Widening it to the store would file a record this build cannot place
+        // into the one log every subscriber reads.
+        let mut bytes = LogKey::new(logged(Reach::Store), Sequence::new(1))
+            .encode()
+            .into_bytes();
+        bytes[1] = 0x7f;
+        assert!(matches!(
+            LogKey::decode(&bytes).unwrap_err(),
+            Error::UnknownReach { found: 0x7f, .. }
+        ));
     }
 
     #[test]

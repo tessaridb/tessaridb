@@ -14,7 +14,7 @@ use tessari_types::Number;
 use super::Parser;
 use crate::ast::{
     DeleteBound, Expr, ExprKind, FieldPath, Hop, Ordering, Projection, RecordTarget, Source,
-    Timeout, Using, Version,
+    Staleness, Timeout, Using, Version,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Span, Token};
@@ -271,6 +271,40 @@ impl Parser<'_> {
             });
         }
         Ok(Some(Timeout { after, span: at }))
+    }
+
+    /// `STALENESS 30s`, when it is there.
+    ///
+    /// Contextual the way `timeout` is, and with the same guard: a field called
+    /// `staleness` is at least as likely as one called `timeout`, so the word
+    /// opens a clause only when a duration follows it.
+    ///
+    /// A literal rather than an expression, and no parameter in its place. A
+    /// tolerance a bound value could set is a tolerance a caller could widen,
+    /// and the point of the clause is that the statement says out loud how stale
+    /// an answer it will take.
+    pub(super) fn staleness(&mut self) -> Result<Option<Staleness>> {
+        if !self.eat_word("staleness") {
+            return Ok(None);
+        }
+        let expected = "a duration, like `30s` or `5m`";
+        let Some(Token::Duration(within)) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let within = *within;
+        let at = self.span_here();
+        self.advance();
+        // Refused here rather than at the read, for `timeout`'s reason: a
+        // tolerance of zero or less admits no node at all — not even the one
+        // being asked — so the clause could only ever refuse, and a clause that
+        // can only refuse is a mistake in the statement.
+        if within.seconds() < 0 || (within.seconds() == 0 && within.nanos() == 0) {
+            return Err(Error::EmptyStaleness {
+                written: within.to_literal(),
+                span: at,
+            });
+        }
+        Ok(Some(Staleness { within, span: at }))
     }
 
     /// `VERSION 42`, when it is there.

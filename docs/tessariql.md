@@ -380,6 +380,8 @@ strict, so a field nobody can declare is a field it cannot hold at all. The
 
 ```
 DEFINE NAMESPACE prod;
+DEFINE NAMESPACE archive REPLICATION FACTOR 3;
+DEFINE NAMESPACE scratch REPLICATION NONE;
 DEFINE DATABASE orders;
 DEFINE COLLECTION users;
 DEFINE SPACE sessions;
@@ -418,6 +420,9 @@ ALTER TABLE notes SET SCHEMALESS;
 ALTER USER grace SET ROLE editor;
 ALTER USER grace SET PASSWORD 'a longer one';
 
+ALTER NAMESPACE prod REPLICATION FACTOR 2;
+ALTER NAMESPACE prod REPLICATION NONE;
+
 DEFINE KAFKA CONSUMER orders_in
     FROM 'broker-1:9092', 'broker-2:9092'
     TOPIC 'orders'
@@ -438,6 +443,67 @@ credential. Two statements rather than one with two optional halves, because a
 statement that changed only what it named would make *leave the role alone* and
 *reset the role* the same sentence — the reason `ALTER FIELD` replaces a
 declaration whole is the reason this one does not.
+
+**`REPLICATION` says how many copies of a namespace the cluster keeps**, and it
+is declared where the namespace is declared rather than inherited from a
+store-wide setting — a default nobody chose is indistinguishable, afterwards,
+from a choice somebody made. `REPLICATION NONE` declines replication and
+`REPLICATION FACTOR 3` asks for three copies; `FACTOR 1` is accepted and
+describes the same number of copies as `NONE`, kept apart because one is a
+count and the other is a refusal.
+
+**A namespace that never said is not a namespace that said `NONE`.** The clause
+is optional, so `DEFINE NAMESPACE prod;` states nothing, and `INFO FOR
+NAMESPACE` reports `replication: NONE` — the empty value, not the policy — for
+such a namespace. The two are kept as different stored facts because the
+difference cannot be recovered later: on a cluster, a namespace that declined is
+honoured and a namespace nobody asked is refused rather than quietly given one
+copy.
+
+**`ALTER NAMESPACE … REPLICATION …` moves it in both directions**, so a
+namespace can start unreplicated and be switched on afterwards, and switched off
+again. Nothing is redistributed by the statement and no repair step follows it:
+the log already holds every write the namespace ever took, so a node that begins
+replicating it replays that history from origin.
+
+**`MULTI MASTER` and `SINGLE LEADER` say how many nodes may WRITE a namespace**,
+which is a different question from how many copies of it exist. `DEFINE NAMESPACE
+shared MULTI MASTER` admits writes on more than one node; `SINGLE LEADER` admits
+them on one. The clause is optional and silence means a single leader — but a
+namespace that never said is still not a namespace that said `SINGLE LEADER`,
+kept apart for the reason the replication clause keeps its two, and `INFO FOR
+NAMESPACE` reports `class` alongside `replication` so the difference is readable
+rather than inferred.
+
+**What multi-master gives up is single-copy semantics, and it is a loss rather
+than a feature.** On a single-leader range every write passes through one node,
+so the versions of a record form a line and the newest of them is the answer. On
+a multi-master range two nodes can each accept a write to one record without
+having seen the other's, and the result is two versions of which **neither is
+newer**. There is no clock that settles it: the nodes' clocks are not
+comparable, and the order the versions happen to reach a third node is the order
+that node heard about them, not the order they were made. The engine cannot tell
+you which is right because nothing knows.
+
+**So it refuses, and names both.** A write onto a record that is in that state is
+rejected with the record's id, both surviving versions, and a node whose write
+one of them carries and the other has not seen — enough to go and read both and
+write what they mean. The refusal is the point: once a write is accepted on top
+of a contested record, no later read, dump or backup comparison can tell a record
+that was reconciled from one that was silently ranked, so the moment of the
+refusal is the only moment at which the choice is visible.
+
+**`LAST WRITER WINS` is the alternative, and its cost is that a write is
+discarded.** A table may declare `DEFINE TABLE ledger SCHEMALESS LAST WRITER
+WINS`, and on such a table a write onto a contested record is taken instead of
+refused: the incoming write supersedes every version it did not see. The last
+writer is the **caller** — the one whose write is being committed — and not a
+timestamp, so no clock is read. What is given up is the versions it did not see.
+They stay on disk, byte-intact, and they are gone from every answer; an operator
+auditing the store for data loss finds them and concludes nothing was lost. The
+engine therefore counts each one, and the count is readable, because a loss
+nobody records is a loss nobody can check. `REFUSE CONFLICTS` writes the default
+down where a reader can see it; a table that says neither refuses.
 
 **A consumer is ingestion the catalog holds rather than a script somebody
 remembered to start.** One `DEFINE KAFKA CONSUMER` says what to read (`FROM` brokers,
@@ -555,6 +621,7 @@ So an authority is a pair: a **kind**, and the **reach** it holds over.
 | `manage` | create and drop the container's children — databases in a namespace, tables in a database — and define structure on them |
 | `govern` | declare users and move authority around |
 | `operate` | topology, replicas and the backup file: running the thing rather than using it |
+| `replicate` | take the log itself: subscribe as a peer and receive the store's mutations as they were written |
 
 The reach is `STORE`, `NAMESPACE <name>` or `DATABASE <namespace>.<name>`, and
 it is written as a keyword so that no table name can be read as a reach. A kind
@@ -571,6 +638,39 @@ DEFINE USER nadia ON NAMESPACE prod AUTHORITIES manage PASSWORD 'a long one';
 `ops` runs the node and reads no records. `ingest` writes into one database and
 cannot define a table there. `nadia` creates and drops databases in `prod` and
 reads nothing in them — the headline rule, said in one statement.
+
+`replicate` is the one kind nothing else implies, and the reason is what the log
+holds. It is not the records: it carries the definitions too, and the users,
+credentials and grants that a subscriber needs in order to admit anybody. So a
+caller holding `read` over the whole store may read every record and still not
+take the log, and a caller holding `operate` may run the node, read what the
+cluster is doing and still not take it. A peer that replicates is declared as
+one:
+
+```
+DEFINE USER replica AUTHORITIES replicate PASSWORD 'a long one';
+```
+
+Nothing is granted by default: a node that has joined and been given no
+`replicate` may ask for the log and is refused.
+
+The reach the authority is given at is also the reach of the stream. A peer
+granted `replicate` over the whole store receives the whole log; one granted it
+over a namespace receives that namespace's definitions and records, and the
+users declared inside it, and nothing else:
+
+```
+DEFINE USER shop_replica ON NAMESPACE prod AUTHORITIES replicate
+    PASSWORD 'a long one';
+```
+
+Such a peer receives **every** position in the log — the commits outside its
+reach arrive carrying nothing, so its position in the stream is the leader's
+position and not a count of what it was sent. What it does not receive is the
+rest of the store: another tenant's tables cannot be named on it, because they
+were never declared there, and the credentials of users outside its namespace
+never leave the store. A store-wide subscription is asked for separately and is
+not the sum of the namespaces.
 
 Authority moves the way a grant does, and the statements are the same two words:
 
@@ -1673,6 +1773,18 @@ An edge table is the exception, and not really an exception: `DEFINE TABLE
 follows EDGE` declares no columns because nobody writes `out` and `in` by hand,
 so it is not a declaration with nothing in it — it is one whose fields the store
 supplies.
+
+**`LAST WRITER WINS` and `REFUSE CONFLICTS` say what the table does with a write
+it cannot order**, and they are table words because the answer differs from one
+table to the next inside one namespace: a ledger and a cache sit in the same
+database and do not want the same one. The clause composes with the others in any
+order — `DEFINE TABLE ledger SCHEMALESS LAST WRITER WINS` and `DEFINE TABLE
+ledger LAST WRITER WINS SCHEMALESS` declare the same table — and none of its four
+words is reserved, so a table called `wins` and a field called `last` still
+parse. `INFO FOR TABLE` reports `conflict`, and reports it as the empty value for
+a table that never said: silence here is a refusal by decision and not by
+default, and the two are told apart for the reason the namespace clause tells its
+two apart. The section on namespaces above says what is being chosen between.
 
 The flags stand after the column list, never before it — `DEFINE TABLE t
 SCHEMAFULL (…)` reads as though the parentheses qualified `SCHEMAFULL`, so it is
@@ -5931,9 +6043,15 @@ second mechanism bolted beside it.
 
 ### Why it is a sequence and not a timestamp
 
-The number is a **log sequence** — the same one a transaction's snapshot is, and
-the same one the store reports as its committed tail. It is not a wall clock,
-and the clause deliberately does not accept one.
+The number is a **record version** — the same one a transaction's snapshot is.
+It is not a wall clock, and the clause deliberately does not accept one.
+
+It is **not** the log position the store reports as its committed tail. The two
+carry the same value while one leader decides every write, and they are separate
+numbers because they are separate facts: a log position is what a replica
+resumes from and what two nodes compare for divergence, while a record version
+is where this store's own history puts a record. A snapshot is a statement about
+the second of those.
 
 No log record carries a timestamp, so a time would have to be resolved through a
 mapping. More importantly it would be a spelling that looks more precise than
@@ -5997,6 +6115,50 @@ transaction's own snapshot.
 `SELECT version FROM releases` still reads it. Which reading is meant is settled
 by whether a sequence follows, the same way every other contextual word in this
 grammar is settled.
+
+## 7b‴″. Saying how stale an answer may be
+
+```
+SELECT * FROM orders STALENESS 30s;
+SELECT * FROM events WHERE at > 0 STALENESS 5m;
+```
+
+`STALENESS` is **optional** and says how far behind the node answering this read
+is allowed to be. It is a **candidate filter, never a marker**: it does not ask
+to be told that an answer was stale, it says which nodes may answer at all. A
+marker nobody is obliged to read is not a guarantee, which is also why a read no
+node can satisfy is refused rather than quietly promoted to the one node that
+certainly can.
+
+On a node standing alone the bound is **satisfied rather than ignored** — a
+node's own answer is never stale relative to itself.
+
+### There is a floor, and the refusal names it
+
+A bound tighter than the interval at which this node learns anything about its
+peers is a promise nothing can check: it would be enforced against a picture
+whose own age exceeds the tolerance being compared to it. Such a bound is
+refused, and the refusal **names the floor**, because a caller told only that
+their bound was too tight cannot write a statement that would be accepted.
+
+The floor is twice the awareness interval — one interval to learn something, and
+one more to notice that you did not.
+
+`STALENESS 0s`, and any negative span, admit no node at all including the one
+being asked, so they can only ever refuse. That is a mistake in the statement and
+is caught where the statement is read, exactly as `TIMEOUT 0s` is.
+
+### It cannot be combined with `VERSION`
+
+`VERSION` names one exact point in this store's history. A tolerance for how old
+that point may be is not a narrowing of it — it is a second answer to a question
+already answered, and there is no reading of the pair that is not a guess about
+which was meant. The two together are refused.
+
+`staleness` is **not** a reserved word — a field may still be called `staleness`,
+and `SELECT staleness FROM readings` still reads it. Which reading is meant is
+settled by whether a duration follows, the same way every other contextual word
+in this grammar is settled.
 
 ## 7b′. What the answer says without being asked
 
@@ -6104,10 +6266,21 @@ INFO FOR TABLE users;
 INFO FOR USER ada;
 INFO FOR ACCESS TO TABLE users;
 INFO FOR NODE;
+INFO FOR VERSIONS OF person:1;
 ```
 
 Each answers with an object read **from the catalog**, not from a description
 kept beside it — so a report cannot describe a schema the store no longer has:
+
+`INFO FOR VERSIONS OF` is the one that does not read the catalog: it reads one
+record's versions, and it is how a contested record is looked at. It answers with
+`answered` — the version an ordinary read resolves to, and the node that wrote it
+— `versions`, every surviving version newest first, and `concurrent`, which says
+whether more than one survives. On a settled record, which is nearly all of them,
+it reports one version and `concurrent: false`; it answers on a single-leader
+range too, because *is this contested?* is a question worth being able to ask
+anywhere. The node is the node that **wrote** the version, which is not always
+the node the version has seen the most writes from.
 
 ```json
 {"tables": ["orders", "users"]}
@@ -6272,6 +6445,91 @@ DEFINE REPLICA second AT 'db-2.internal:9000' ROLES serving, writable;
 INFO FOR NODE;
 ```
 
+**Declare every peer in one transaction.** A store is on its own until its
+catalog names somebody else, and from the moment the first `DEFINE REPLICA`
+naming another node commits, this node is in a cluster: it writes under a
+leadership, and until a majority grants it one it refuses every local write —
+including the `DEFINE REPLICA` statements that describe the rest of the cluster.
+A statement-at-a-time script therefore declares one peer and is refused for the
+second. One transaction is judged once, against a catalog that still names
+nobody:
+
+```
+BEGIN;
+DEFINE REPLICA second AT 'db-2.internal:9000'
+    NODE '9f2c4e1a70bb43d5a1c6e2f480937d55'
+    ROLES serving, coordinating;
+DEFINE REPLICA third AT 'db-3.internal:9000'
+    NODE 'c81b0f37a4e94a6f8d2e5417b90c3f26'
+    ROLES serving, coordinating;
+COMMIT;
+DEFINE NODE ROLES serving, writable, coordinating;
+```
+
+`DEFINE NODE ROLES` is not part of the transaction and does not need to be: what
+a node is for is written to the machine rather than to the log, so it takes
+effect immediately, locally, and is never refused by the leadership gate. Put it
+last anyway — it is the statement that makes the node stand for elections, and
+there is nothing to stand for until the peers are declared.
+
+After that, configuration is the leader's to write and the cluster's to receive,
+which is where a replicated membership belongs.
+
+### Adding a node to a cluster that already exists
+
+Everything above configures a cluster by writing to every node before any of them
+starts. That works, and it is not how a node is added to a cluster that is
+already running — for which the newcomer writes **nothing** about the membership
+at all.
+
+Two statements, one on each side. On the cluster, name the newcomer and grant it
+the log:
+
+```
+DEFINE REPLICA third AT 'db-3.internal:9000'
+    NODE 'c41d8f2b60ae47f5b9c3e1a780d24e66'
+    ROLES serving
+    REPLICATES STORE;
+```
+
+On the newcomer, say what it is for, and nothing else:
+
+```
+DEFINE NODE ROLES serving;
+```
+
+Then start it with one extra flag naming a node already in the cluster:
+
+```sh
+tessaridb /var/lib/tessaridb --serve 0.0.0.0:9080 \
+    --cluster-credential db-3.pem --cluster-key db-3.key \
+    --cluster-authority cluster-ca.pem \
+    --cluster-address db-3.internal:9000 \
+    --seed 9f2c4e1a70bb43d5a1c6e2f480937d55@db-1.internal:9000
+```
+
+**A seed names a node as well as an address.** Peers prove themselves to each
+other with a credential issued for the node's own identifier, and the handshake
+will not complete against any other node — so an address on its own is not
+something a node can dial. The identifier is the one `INFO FOR NODE` prints.
+
+**The newcomer declares no peers of its own, and that is the point.** A
+`DEFINE REPLICA` is a catalog write and therefore a record in the log, so a
+cluster whose nodes were each told their own membership before starting holds
+several logs carrying *different records at the same positions*. Nothing reports
+it, because a divergence check compares the leadership a record was written
+under and all of those were written under none. A newcomer that writes no
+membership row cannot produce that, and it does not need to: the membership
+reaches it through the same replication as everything else.
+
+The seed is read only while the newcomer's catalog names no peer **other than
+this node itself**. That qualification is the whole of it: the row the cluster
+wrote to admit the newcomer describes the *newcomer*, so it is the first row the
+newcomer collects and it answers nothing about who to follow. The catalog takes
+over the moment it names somebody else — a second member, or this cluster
+declaring its own — and until then the address on the command line is what keeps
+this node in touch, which is what it is for.
+
 `DEFINE REPLICA`'s `ROLES` is optional and is spelled exactly as `DEFINE NODE`'s
 is, because it is the same membership field seen from the other side — one
 written about a peer, one about this node, and two spellings for one set of words
@@ -6283,6 +6541,218 @@ naming it, where the opposite default would send a write to a node nobody said
 could take one. `INFO FOR NODE` reports each peer's roles for the same reason: a
 setting that decides routing but cannot be read back is one nobody can check
 before the bad day.
+
+### The role the cluster wants, beside the role the node has
+
+`DEFINE NODE ROLES` sets what this node *is* — immediately, locally, in the
+metadata a backup does not carry. That is the **effective** role. A cluster needs
+the other one as well: what the node is *supposed* to be, written once by
+whoever administers the cluster and readable on every node. That is the
+**desired** role, and it is a membership row bound to a node:
+
+```
+DEFINE REPLICA db_1 AT 'db-1.internal:9000'
+    NODE '9f2c4e1a70bb43d5a1c6e2f480937d55'
+    ROLES serving, writable;
+```
+
+`NODE` is optional. Without it the statement means what it always meant — a peer
+declared by name and address, which is all anyone can say about a machine they
+have not spoken to. With it, the row is about one specific node, named by the id
+that node gave itself and prints as `id` in `INFO FOR NODE`. Copy it from there;
+the clause reads back exactly what the report writes, and the hyphenated form
+too.
+
+Binding by the **id** rather than by the name is what makes a replicated role
+mean one machine. The row reaches every node, and every node compares it against
+its own id: exactly one matches. It also means a node that came up from a restore
+inherits no role at all — a restore reproduces the catalog but not the identity,
+so the restored node has a fresh id and matches nothing, which is the same
+property that stops it claiming the original's name.
+
+**The node reconciles when it opens the store.** Declaring a desired role does
+not move the running one; the next open does. So the two are allowed to disagree,
+and `INFO FOR NODE` reports both — `roles` for what this node holds, and
+`cluster.desired` for what the cluster says it should hold, `null` when no row
+names it. The gap between them is the useful part: it says an instruction has
+been given and not yet taken up. It follows that on a bound node
+`DEFINE NODE ROLES` is an override the next open discards, which is the point —
+a role is shared truth, and a local word that outlived the shared one is a
+disagreement nobody can see.
+
+A bound row with **no** `ROLES` clause desires no roles, and the node therefore
+drains at its next open. That is the same reading an absent `ROLES` already has
+for a peer — no roles means takes no writes — and no roles at all is how a node
+is drained without being stopped. One value, one meaning, and a sharp edge worth
+knowing about rather than a second spelling for absent.
+
+### What that peer may collect, and the refusal that comes with saying nothing
+
+A peer that has proved who it is at the door may still take nothing. What it may
+take is a **subscription**, written on its own row:
+
+```
+DEFINE REPLICA db_2 AT 'db-2.internal:9000'
+    NODE '3f9a1c04b7e2489db5610af3d82c7e46'
+    REPLICATES NAMESPACE prod;
+```
+
+`REPLICATES` takes the same three spellings a grant takes — `STORE`,
+`NAMESPACE <name>`, `DATABASE <namespace>.<database>` — because a subscription
+**is** a read grant over the addresses it names, and two spellings of one thing
+are two things that can come to disagree.
+
+**Without the clause a peer is subscribed to nothing, and that is the refusal
+rather than an oversight.** A node asking for records it was never granted is
+told so in one sentence naming the statement that would grant them; it is not
+answered with an empty collection, because *you may not ask* and *you are level*
+must never look alike. Every peer declared before this clause existed therefore
+receives nothing until somebody says otherwise, which is the direction a
+permission should fail in.
+
+**`REPLICATES` without `NODE` is a grant nobody holds *yet*.** A subscription
+grants to a machine, and the door looks a follower up by the id its certificate
+proved — so until the row names a node it matches no follower and hands over
+nothing. That is not a mistake to be refused, it is how a peer is admitted
+without being pre-registered: the row is bound by the first peer that dials this
+node and proves its identity with a credential this cluster issued, and the
+subscription takes effect at that moment.
+
+The binding writes the node id and **nothing else**. The address and the roles
+stay exactly as they were written here, so nothing a greeting carries — its
+epoch, its roles, how far its log reaches — can change what this row grants or
+what it says the peer is for.
+
+Two rows left unbound at once bind neither, and a row is never re-bound once it
+names a node. Nothing on an inbound connection could choose between two waiting
+rows, and guessing would put a node at another's address under another's roles —
+so peers are admitted one at a time, and an operator who wants the identity
+settled in advance writes `NODE` here and gets exactly the old behaviour.
+
+**What a subscription hands over is more than records.** The log is a stream of
+mutations and the identity class is in it, so a subscription carries the users,
+their credential hashes and their grants **inside its reach**. `REPLICATES
+STORE` therefore hands over every tenancy's, which is why it is something an
+operator writes deliberately and never a default. A narrower subscription
+receives every sequence with the mutations outside its reach removed — the
+follower's own schema and data arrive, and nothing else does.
+
+`INFO FOR NODE` reports it beside `roles` and `node`, in the spelling the clause
+takes, so what the report prints can be pasted into the statement that would
+correct it. `null` means subscribed to nothing — the quietest failure a cluster
+has, because every node is up, every greeting lands, and one copy simply never
+changes.
+
+
+### Which peers vote, and what a node that votes for nobody does
+
+A peer declared with the `coordinating` role is a **voting member**: a node that
+may write puts a ballot to every such peer when its lease approaches its fence,
+and leads for the next epoch if a majority grants it.
+
+```
+DEFINE REPLICA db_2 AT 'db-2.internal:9000'
+    NODE '3f9a1c04b7e2489db5610af3d82c7e46'
+    ROLES serving, coordinating;
+```
+
+**The majority is a majority of the membership, and the membership includes this
+node.** Three coordinating machines means a round is carried by two of them, one
+of which may be the candidate itself — so a cluster of three goes on electing
+after it loses one. The node counts its own ballot through the same memory a
+peer's ballot reaches, which is what stops it from granting one epoch twice.
+
+**A node with no peer declared is never fenced.** A single machine has nobody to
+diverge from, so it takes no lease, and a store that never needed leadership does
+not acquire a new way to stop accepting writes. Declaring the first peer that
+names another node is what turns the mechanism on — and it turns it on whatever
+roles that peer or this node carry, because being in a cluster is a fact about
+the catalog and not about a role.
+
+**So a node that has peers must also be able to lead.** The gate is satisfied by
+a leadership and nothing else, and nothing stands for one unless its own roles
+say `coordinating`. A machine declared `serving, writable` with a read-only
+replica beside it therefore stops accepting writes and never starts again: it is
+in a cluster, and it is not a candidate for anything. Declare it `coordinating`
+as well — a deciding set of one elects itself, a majority of one being itself —
+and it takes a leadership at once and goes on writing:
+
+```
+DEFINE NODE ROLES serving, writable, coordinating;
+```
+
+**Which roles let a node stand is what the catalog says, not what it is currently
+doing.** A leader that misses a round stops writing — that is the fence — but it
+goes on standing, because the role the operator wrote has not changed. A node the
+operator has not made `coordinating` never stands at all, however quiet the
+leader gets: which machines make up the deciding set is a decision the catalog
+holds.
+
+**Every coordinating node may stand, not only the writable one.** The role that
+lets a node put a ballot is `coordinating` — the same role that lets it answer
+one — because a failover with one eligible candidate is not a failover. `writable`
+still says which machine the operator *wants* to lead and is what a voter weighs;
+it is no longer the only machine that *can*. A single-node store is unaffected: a
+node with no `coordinating` role declared on itself stands for nothing, so
+nothing that has never needed a lease begins taking one.
+
+**A node in a cluster writes under a leadership and at no other time.** What
+makes a node part of a cluster is its **catalog**, not the roles it was given: a
+store whose membership rows name another node is in one, whatever it is declared
+to be. From then on its `writable` role is what the operator *wants* and the
+lease is what it *has*, and until a majority grants it one it refuses writes with
+*this node is in a cluster and holds no leadership*. That refusal is
+deliberately not the lease-ran-out one — a leadership never held and a leadership
+lost send you to different places. The consequence is worth stating plainly: **a
+cluster that has elected nobody takes no writes anywhere**, which is a real
+availability change from a set of nodes that each accepted writes the others
+would never see. A store that names no peer — every single-node deployment —
+is unaffected and goes on writing exactly as before, including one declared
+`coordinating`: a deciding set of one has nobody to diverge from.
+
+**And it writes the ranges it leads, not every range it can reach.** *May this
+node write* and *may this node write **here*** are two questions, and they had one
+answer only while one lease covered one store. Once two nodes lead two namespaces,
+a write arriving at the wrong one is refused with *this range is led by another
+node: write it at …*, naming the address, the node to expect there and the epoch
+that node took the range under. It is a routing answer rather than a failure: the
+write was correct, and there is a named place to take it. A node holding a
+perfectly live lease meets this refusal, which is the point — a leader over one
+namespace has no authority at all over another's.
+
+The two refusals say different things and it is worth telling them apart. *Holds
+no leadership* means **wait**: nobody has been elected for this range and there is
+nowhere to send you. *Is led by another node* means **go there**. A node that
+knows a leader names it rather than telling you to wait for a round that may never
+concern you.
+
+A node whose leadership covers the **whole store** — which is every cluster that
+has elected a single leader — is unaffected, because the whole store contains
+every namespace in it.
+
+**A follower collects from whichever peer says it may write, not from the row
+you marked writable.** In a cluster that can fail over, every coordinating node
+is also declared `writable` — otherwise the node that wins a round could not
+take writes — so the declaration cannot pick an upstream on its own. Each node
+therefore follows the declared peer whose most recent greeting says it may write
+right now, preferring the newer leadership when two of them do. A node that has
+just started follows nobody until its first greeting round lands, which is one
+awareness interval.
+
+**A voter refuses a candidate whose log is behind its own.** Opening the
+candidate set makes this necessary rather than merely tidy: a node holding less
+history could otherwise win a majority, lead, and silently drop every write it
+never received. The comparison is the pair *(leadership that wrote the tail,
+tail)* — a higher leadership wins outright, and the longer log decides only
+within one leadership, because a node that led an old epoch and then fell away
+can hold a higher sequence than the node carrying the history that actually won.
+The refusal names the **voter's** own position, so a candidate can tell *catch up
+and stand again* from *the history you hold is not the one that won*.
+
+`INFO FOR NODE` reports the epoch this node is leading under beside the time left
+on its lease. The pair is the one an operator watches: a lease heading toward
+zero on a node that is still writing is the split-brain window, and it is the
+only shape in which that window is visible at all.
 
 A node configured by a file beside a store configured by statements is **two
 sources of truth for one node** — they agree until the first restore and then do
@@ -6299,15 +6769,108 @@ machine become confused about which one it is?*
 | `ROLES` | this node's local metadata | a replica that inherited `writable` would accept writes it must forward |
 | `ENDPOINTS` | this node's local metadata | peers would be told to reach this machine at the original's address |
 | a peer | the catalog, replicated | every node learns the peer exists, which is the point of declaring one |
+| a peer's `NODE` | the catalog, replicated | every node learns which machine the row is about, and exactly one of them finds its own id |
+| a follower's progress | this process only | nothing — it is never written down, so there is nothing to replay |
+| the lease this node writes under | this process only | nothing — leadership is not a fact a backup may carry |
 
 So `INFO FOR NODE` reads both and answers them as **two named groups** rather
 than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.1.1", "build": "0.1.1-beta", "endpoints": ["db-1.internal:9000"],
- "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000"}]}}
+ "version": "0.2.0", "build": "0.2.0-beta", "endpoints": ["db-1.internal:9000"],
+ "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
+                        "roles": ["serving"], "node": null}],
+             "desired": ["serving", "writable"],
+             "followers": [{"node": "4b81…", "sequence": 812, "behind": 4,
+                            "quiet_for": "2s143ms", "copy_age": "11s"}],
+             "lease": "58s"}}
 ```
+
+### What the leader knows about a follower it never calls
+
+`cluster.followers` is not `cluster.peers` seen from another angle. A peer is
+what somebody **declared**; a follower is what has actually **collected**. A
+peer that has never asked this node for anything appears in the first list and
+not the second, and that gap is the most useful thing either list says.
+
+A follower collects by asking, so the leader has handled every record that
+follower holds and needs no connection back to it to say how far it has got —
+which matters, because a leader that dialled out to measure lag would lose the
+measurement exactly when the follower became unreachable.
+
+Each row carries **three** numbers, and each is blind to a failure the others
+see:
+
+| Field | What it says | The failure it catches alone |
+|---|---|---|
+| `sequence` | the highest log position this follower has been given | — |
+| `behind` | how many sequences short of this node's committed tail that is | a follower collecting steadily but unable to keep up |
+| `quiet_for` | how long since it last collected anything | a follower that has stopped, while this node is idle and there is nothing to be behind by |
+| `copy_age` | how old the data it holds is | a follower that is asking often and is still serving stale reads |
+
+`quiet_for` is time since the last collection, not the delay between a commit
+here and its application there. A follower that is level was current as of that
+long ago; one that is behind has not been trying for that long.
+
+`copy_age` is the other question, and the two come apart on an idle node: a
+follower that is perfectly level goes on reporting a `quiet_for` that grows for
+as long as there is nothing to collect, while the copy it holds stays current.
+The node answers it by dating its **own** committed tail once per awareness
+interval and reading each follower's position against that timeline, so the
+figure is an **upper bound** — it overstates by at most one interval and never
+understates, which refuses a copy that might have been fine rather than serving
+one that might not be.
+
+It is `null`, and not zero, when the copy predates everything this node has
+dated — a copy that far behind has no age this node can state, and a caller must
+read `null` as beyond every bound. A node that has just started reports `null`
+for every follower until its first interval has passed, for the same reason.
+
+An empty collection still counts: a follower that is level asks and receives
+nothing, and reading that as silence would report the healthiest follower there
+is as absent. A follower that asks again from an **earlier** position is
+recorded at the earlier position rather than at its best-ever one — asking
+backwards is what recovering from a divergence looks like, and a high-water mark
+would hide it.
+
+The list is not persisted. A restarted node reports no followers until one asks
+it for something, because a stored row saying a follower reached position 812
+four seconds ago would outlive the relationship it describes.
+
+### How long this node may still write
+
+`cluster.lease` is the time left before this node stops accepting writes on its
+own. It is `null` when no lease was ever granted, which is the ordinary state of
+a node standing alone — and `null` is a different answer from `"0s"`. A node
+nobody made a leader is not a leader running out of time, and reporting it as one
+would leave every single-node deployment permanently at the value that is
+supposed to mean trouble.
+
+When it is a duration it is the number to watch, because the dangerous state is
+exactly **this at zero while the node is still taking writes**. A leader that has
+lost the rest of the cluster does not know it has; it keeps accepting writes, and
+every one of them is a write the next leader will not have. The lease is the
+answer: leadership is held for a bounded time, it must be renewed to continue,
+and a holder that has not renewed refuses writes without being told to.
+
+The figure counts down to the moment **this node** stops, which is deliberately
+earlier than the moment the cluster is entitled to hand the leadership to
+somebody else. The gap between the two covers the difference in rate between two
+clocks nobody synchronised: if they coincided, a holder whose clock ran slightly
+slow would still be writing at the instant another node was told to start. So the
+number here is always the smaller, honest one — the window this node may actually
+use, not the window the grant nominally covers.
+
+It is measured on elapsed time and never on a calendar clock. A clock that steps
+backwards would *extend* a lease that should already have died, and a fence that
+an NTP adjustment can widen is not a fence.
+
+`tessari_lease_remaining_seconds` on the metrics endpoint is the same number.
+There, a node holding no lease publishes **no series at all** rather than a zero,
+for the reason the `null` exists here: a series that reads zero on every
+standalone node teaches whoever watches it to ignore the one reading that
+matters.
 
 `version` and `build` are both here because they answer different questions.
 `version` is three ordered numbers: it is what the node **stored** and what an

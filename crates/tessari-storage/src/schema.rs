@@ -148,7 +148,7 @@ pub(crate) fn validate(store: &Store, record: &LogRecord) -> Result<()> {
     let touched: BTreeSet<TableAddress> = record
         .mutations()
         .iter()
-        .filter(|mutation| matches!(mutation.value, RecordValue::Present(_)))
+        .filter(|mutation| matches!(mutation.value.value(), RecordValue::Present(_)))
         .map(|mutation| (mutation.namespace, mutation.database, mutation.table))
         .filter(|address| !is_system(address))
         .collect();
@@ -203,7 +203,7 @@ pub(crate) fn validate(store: &Store, record: &LogRecord) -> Result<()> {
         if is_system(&address) {
             continue;
         }
-        let RecordValue::Present(payload) = &mutation.value else {
+        let RecordValue::Present(payload) = mutation.value.value() else {
             continue;
         };
         let Some(schema) = schemas.get(&mutation.table) else {
@@ -663,7 +663,7 @@ fn rows_after(
         if (mutation.namespace, mutation.database, mutation.table) != *address {
             continue;
         }
-        match &mutation.value {
+        match mutation.value.value() {
             RecordValue::Present(payload) => rows.insert(mutation.id.clone(), payload.clone()),
             RecordValue::Tombstone => rows.remove(&mutation.id),
         };

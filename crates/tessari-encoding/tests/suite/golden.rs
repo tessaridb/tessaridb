@@ -13,10 +13,10 @@
 #![allow(clippy::unwrap_used)]
 
 use tessari_encoding::{
-    AppliedPositionKey, CODEC_VERSION, FormatVersion, FormatVersionKey, KeyKind, RecordKey,
-    RecordValue, StoreKey, StoreValue, TABLE_PREFIX_LEN,
+    AppliedPositionKey, CODEC_VERSION, FormatVersion, FormatVersionKey, KeyKind, LogId, RecordKey,
+    RecordValue, StoreKey, StoreValue, TABLE_PREFIX_LEN, Writer,
 };
-use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
+use tessari_types::{DatabaseId, NamespaceId, Reach, RecordId, Sequence, TableId};
 
 fn key_bytes(id: RecordId, version: u64) -> Vec<u8> {
     RecordKey::new(
@@ -114,7 +114,32 @@ fn singleton_meta_keys_match_their_tags() {
         vec![KeyKind::FormatVersion.tag()]
     );
     assert_eq!(FormatVersionKey.encode().into_bytes(), vec![0x30]);
-    assert_eq!(AppliedPositionKey.encode().into_bytes(), vec![0x31]);
+    // The applied position stopped being a singleton when the log became
+    // per-range, and stopped being one per home when a range gained two
+    // writers: the tag now leads nine bytes of home and sixteen of writer.
+    // `Reach::Store` writes the variant and two zeroed identifiers, which is the
+    // home every record in a store written before the first of those changes
+    // belongs to; `Writer::UNATTRIBUTED` is sixteen zeroes, which is what the
+    // second migration attributes them to.
+    let mut store_log = vec![0x31, 0x00, 0, 0, 0, 0, 0, 0, 0, 0];
+    store_log.extend_from_slice(&[0; 16]);
+    assert_eq!(
+        AppliedPositionKey::new(LogId::unattributed(Reach::Store))
+            .encode()
+            .into_bytes(),
+        store_log
+    );
+    let mut database_log = vec![0x31, 0x02, 0, 0, 0, 1, 0, 0, 0, 2];
+    database_log.extend_from_slice(&[0xcd; 16]);
+    assert_eq!(
+        AppliedPositionKey::new(LogId::new(
+            Reach::Database(NamespaceId::new(1), DatabaseId::new(2)),
+            Writer::new([0xcd; 16]),
+        ))
+        .encode()
+        .into_bytes(),
+        database_log
+    );
 }
 
 #[test]
@@ -127,9 +152,13 @@ fn stored_values_match_their_fixtures() {
         RecordValue::Tombstone.encode().into_bytes(),
         vec![0x01, 0x01]
     );
+    // A NAMED version rather than `CURRENT`, because `CURRENT` moves by design
+    // and a fixture that moves with it pins nothing. This one is the on-disk
+    // layout a store has to keep being able to recognise, so its bytes are the
+    // thing worth freezing.
     assert_eq!(
-        FormatVersion::CURRENT.encode().into_bytes(),
-        vec![0x01, 0x00, 0x00, 0x00, 0x00, 0x01]
+        FormatVersion::HOMED_LOG.encode().into_bytes(),
+        vec![0x01, 0x00, 0x00, 0x00, 0x00, 0x03]
     );
     assert_eq!(
         Sequence::new(258).encode().into_bytes(),
@@ -168,8 +197,11 @@ fn fixtures_still_decode_to_what_they_were_written_as() {
         RecordValue::decode(&[0x01, 0x01]).unwrap(),
         RecordValue::Tombstone
     );
+    // Version 1 rather than CURRENT: these are the bytes a store written before
+    // the log record carried an epoch holds, and this build still opens it.
     assert_eq!(
         FormatVersion::decode(&[0x01, 0x00, 0x00, 0x00, 0x00, 0x01]).unwrap(),
-        FormatVersion::CURRENT
+        FormatVersion::new(1)
     );
+    assert!(FormatVersion::new(1).check_supported().is_ok());
 }

@@ -50,7 +50,7 @@ use tessari_kv::{
     WriteBatch,
 };
 use tessari_storage::{
-    Catalog, EDGE_IN, EDGE_OUT, EdgeKindDefinition, FieldShape, IndexDefinition, IndexShape,
+    Catalog, EDGE_IN, EDGE_OUT, EdgeKindDefinition, FieldShape, IndexDefinition, IndexShape, Reach,
     RecordAddress, Store, TableShape,
 };
 use tessari_types::{
@@ -807,5 +807,157 @@ fn a_walk_over_the_whole_table_holds_one_batch_at_a_time() {
         fixture.counting.largest_fetch() <= RANGE_SCAN_BATCH_ENTRIES,
         "one fetch handed back {} of {RECORDS} records",
         fixture.counting.largest_fetch()
+    );
+}
+
+// ---------------------------------------------------------------- G025 · S3.1
+
+/// What the admission predicate costs a commit, measured rather than argued.
+///
+/// G025 S3.1 moved the write gate from a role bit — free, already in memory — to
+/// a question about the catalog, which is a read. Whether that is affordable is
+/// not a matter of opinion and this file is the instrument for it.
+///
+/// The two arms differ by ONE thing and it is a fact about the store rather than
+/// about the build: a node **holding a leadership** never reaches the catalog,
+/// because [`tessari_storage::Store`] asks the in-memory lease first and returns
+/// on it. So the difference between the arms is exactly the predicate's cost, on
+/// one binary, with no before-and-after tree to get wrong.
+///
+/// **Measured 2026-09-14 (W270): two round trips, and they are named** — the
+/// point read that `Store::begin` makes for the committed tail, and the one scan
+/// of `system::REPLICAS`. A leader pays neither.
+///
+/// The bound is the measurement, and it can be that tight because the two arms
+/// cancel: an unrelated change to the commit path lands on both and leaves the
+/// difference alone. What it catches is the thing that must never happen — this
+/// growing with the size of the store rather than with the size of the cluster.
+#[test]
+fn the_admission_predicate_costs_a_leader_nothing_and_a_follower_a_bounded_read() {
+    let counting = Counting::new();
+    let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+    let at = |id: &str| {
+        RecordAddress::new(
+            NamespaceId::new(1),
+            DatabaseId::new(1),
+            TableId::new(1),
+            RecordId::from(id),
+        )
+    };
+    let write = |id: &str| {
+        let mut transaction = store.begin().unwrap();
+        transaction.put(at(id), b"{}".to_vec());
+        transaction.commit().unwrap();
+    };
+
+    // Warm: the first commit of a store's life pays for metadata every later
+    // one finds in place, and measuring it would measure the fixture.
+    write("warm");
+
+    counting.reset();
+    write("without-a-lease");
+    let without = counting.round_trips();
+
+    store.hold(
+        tessari_types::Epoch::new(1),
+        tessari_storage::Lease::taken_at(std::time::Instant::now(), tessari_storage::LEASE_TTL),
+    );
+    counting.reset();
+    write("holding-a-lease");
+    let with = counting.round_trips();
+
+    assert!(
+        with < without,
+        "a node holding a leadership asked the backend {with} times and one \
+         without asked {without} — the lease is supposed to answer first"
+    );
+    assert!(
+        without.saturating_sub(with) <= 2,
+        "the predicate added {} round trips to a commit; it is a membership \
+         table with a handful of rows plus the transaction it opens, measured \
+         at two, and anything above that is a scan that has started tracking \
+         the store's size instead",
+        without.saturating_sub(with)
+    );
+}
+
+// ---------------------------------------------------------------- G025 · S6.1
+
+/// That the range gate tracks the cluster and never the store.
+///
+/// G025 S6.1 put a second catalog question on the commit path: *does the log
+/// name somebody else as the leader of a range this transaction writes*. It is a
+/// scan of `system::LEADERSHIPS`, and the one thing that must never be true of
+/// it is that its cost is proportional to the STATE rather than to the request.
+/// That is the classic way an embedded engine's introspection call becomes the
+/// dominant cost of a hot path, and it raises no error while it happens. A
+/// leadership table has one row per range a cluster has elected a leader for: it
+/// is O(members), and it is allowed to grow. The record count is not.
+///
+/// The two arms differ by ONE fact about the store and nothing about the build
+/// or the work: the same commit, taken against a store holding ten records and
+/// against one holding a thousand. Everything else about the commit path lands
+/// on both and cancels.
+///
+/// **Measured 2026-09-14 (W271): equal, and the difference is zero.** A commit
+/// on the thousand-record store asks the backend exactly what the ten-record
+/// store's commit asks.
+///
+/// # What this test is NOT, and it took two wrong versions to find out
+///
+/// It is not a measurement of *one scan however many ranges a transaction
+/// writes*. That was the first thing it tried, with arms of one namespace
+/// against three, and it read 19 against 31; widening the first arm to the same
+/// three records still read 23 against 31. Neither gap was the gate. A commit
+/// validates a schema and maintains indexes **per distinct tenancy**, so
+/// spreading writes across namespaces costs more for reasons that have nothing
+/// to do with leadership, and an instrument whose arms differ in two ways
+/// reports the sum and names it after whichever one it was written to find.
+/// That the table is read once and resolved in memory is held by construction —
+/// `Store::refuse_if_led_elsewhere` calls `Catalog::leaderships` once and then
+/// `catalog::covering` per range — and there is no arm pair through a commit
+/// that can isolate it.
+#[test]
+fn the_range_gate_costs_a_commit_the_same_on_a_large_store_as_on_a_small_one() {
+    let at = |namespace: u32, id: &str| {
+        RecordAddress::new(
+            NamespaceId::new(namespace),
+            DatabaseId::new(1),
+            TableId::new(1),
+            RecordId::from(id),
+        )
+    };
+
+    let measure = |filled: usize| {
+        let counting = Counting::new();
+        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+        let me = store.node_identity().unwrap().id;
+        let mut transaction = store.begin().unwrap();
+        Catalog::new(&mut transaction)
+            .record_leadership(Reach::Store, me, tessari_types::Epoch::new(1))
+            .unwrap();
+        transaction.commit().unwrap();
+        for nth in 0..filled {
+            let mut transaction = store.begin().unwrap();
+            transaction.put(at(1, &format!("filler-{nth}")), b"{}".to_vec());
+            transaction.commit().unwrap();
+        }
+        counting.reset();
+        let mut transaction = store.begin().unwrap();
+        transaction.put(at(1, "measured"), b"{}".to_vec());
+        transaction.commit().unwrap();
+        counting.round_trips()
+    };
+
+    let small = measure(10);
+    let large = measure(1_000);
+
+    assert_eq!(
+        small, large,
+        "a commit on a store holding a thousand records asked the backend \
+         {large} times and the same commit on one holding ten asked {small} — \
+         the leadership question is supposed to read a table with one row per \
+         range the cluster has elected, and a difference here means it has \
+         started tracking the size of the store instead"
     );
 }

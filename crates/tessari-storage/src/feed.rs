@@ -29,7 +29,7 @@
 //! into every subscription.
 
 use tessari_constants::SKIP_BATCH_RECORDS;
-use tessari_encoding::{LogRecord, RecordValue, decode_payload};
+use tessari_encoding::{LogId, LogRecord, RecordValue, decode_payload};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId, Value};
 
 use crate::catalog::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
@@ -99,7 +99,7 @@ pub(crate) fn changes_in(sequence: Sequence, record: &LogRecord) -> Result<Vec<C
         if mutation.namespace == SYSTEM_NAMESPACE && mutation.database == SYSTEM_DATABASE {
             continue;
         }
-        let kind = match &mutation.value {
+        let kind = match mutation.value.value() {
             RecordValue::Present(payload) => ChangeKind::Written(decode_payload(payload)?),
             RecordValue::Tombstone => ChangeKind::Removed,
         };
@@ -169,6 +169,7 @@ impl Watch {
 /// subscriber's own decision.**
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Subscription {
+    log: LogId,
     position: Sequence,
     watch: Watch,
     delivered: u64,
@@ -176,15 +177,28 @@ pub struct Subscription {
 }
 
 impl Subscription {
-    /// Watch from a position onward.
+    /// Watch one log from a position onward.
+    ///
+    /// The log is part of the cursor rather than an argument to each read: a
+    /// position counts in one log, so a subscription that could be polled
+    /// against a different log each time would be carrying a number from one
+    /// counter and spending it against another. Since a home may hold more than
+    /// one log, naming the home alone would be exactly that mistake.
     #[must_use]
-    pub const fn new(from: Sequence, watch: Watch) -> Self {
+    pub const fn new(log: LogId, from: Sequence, watch: Watch) -> Self {
         Self {
+            log,
             position: from,
             watch,
             delivered: 0,
             dropped: 0,
         }
+    }
+
+    /// The log this subscription reads.
+    #[must_use]
+    pub const fn log(self) -> LogId {
+        self.log
     }
 
     /// Where the next read will start.
@@ -218,7 +232,7 @@ impl Subscription {
     ///
     /// Returns an error when the backend fails or a record cannot be decoded.
     pub fn poll(&mut self, store: &Store, limit: usize) -> Result<Vec<Change>> {
-        let answer = store.changes_since(self.position, limit)?;
+        let answer = store.changes_since(self.log, self.position, limit)?;
         let watch = self.watch;
         let matched: Vec<Change> = answer
             .changes
@@ -248,7 +262,7 @@ impl Subscription {
     pub fn skip_to(&mut self, store: &Store, target: Sequence) -> Result<u64> {
         let mut skipped = 0_u64;
         while self.position < target {
-            let answer = store.changes_since(self.position, SKIP_BATCH_RECORDS)?;
+            let answer = store.changes_since(self.log, self.position, SKIP_BATCH_RECORDS)?;
             if answer.next == self.position {
                 // Nothing left in the log: the target is beyond its end, and the
                 // subscriber has skipped everything there was to skip.

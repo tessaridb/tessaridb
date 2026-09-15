@@ -284,6 +284,149 @@ pub const MAX_CONNECTIONS: usize = 400;
 /// cannot deliver them in ten seconds cannot carry a query either.
 pub const GREETING_SECONDS: u64 = 10;
 
+/// How often a node is expected to learn something about its peers.
+///
+/// Unit: seconds.
+///
+/// This is the period a node greets its peers on: the serving process runs a
+/// cadence at exactly this interval, dialling every peer the catalog declares.
+/// It is a **declaration** rather than a measurement, which is the same thing
+/// MongoDB's `heartbeatFrequencyMS` is: the number the floor below is derived
+/// from is configured, never observed.
+///
+/// Ten seconds for the reason [`GREETING_SECONDS`] is ten: it is short enough
+/// that a failure is noticed while somebody still cares, and long enough that a
+/// cluster of any size is not spending its bandwidth on being sure of itself.
+pub const AWARENESS_SECONDS: u64 = 10;
+
+/// How often a follower collects the records it does not hold.
+///
+/// Unit: seconds.
+///
+/// # Its own constant, because it fails differently
+///
+/// It is numerically equal to [`AWARENESS_SECONDS`] today and it is not that
+/// constant: a missed greeting costs the freshness of a routing reading, and a
+/// missed collection costs data. Two mechanisms whose failures differ get two
+/// periods, so that changing one is not silently changing the other.
+///
+/// # Where the number comes from
+///
+/// The API refuses a staleness bound tighter than [`STALENESS_FLOOR_SECONDS`],
+/// so a follower has to be able to satisfy the tightest bound the API admits.
+/// One collection period plus the transfer has to fit inside that floor; at half
+/// of it, a follower that misses a whole round is still inside the promise. A
+/// period at or above the floor would mean advertising a bound this node cannot
+/// meet even when everything is working.
+pub const COLLECTION_SECONDS: u64 = AWARENESS_SECONDS;
+
+/// The most records one collection carries.
+///
+/// Unit: records.
+///
+/// It is also what makes *level* observable: a peer serves `min(limit,
+/// available)`, so an answer shorter than this is the peer saying it had no
+/// more, and an answer exactly this long is contact rather than arrival. A
+/// ceiling too high would make a catching-up follower hold one connection for a
+/// whole log; too low and a follower that fell behind never catches up, because
+/// each round carries less than the interval produced.
+pub const COLLECTION_RECORDS: u64 = 1024;
+
+/// The most bytes of records one collection answer carries.
+///
+/// Unit: bytes.
+///
+/// # Why bytes and not only records
+///
+/// [`COLLECTION_RECORDS`] is what a follower *asks* for, and nothing caps what
+/// it may name. A peer asking for the whole log would otherwise make the leader
+/// read every record and build one frame out of them, with the frame writer's
+/// own ceiling refusing only after the reading had already happened — so the
+/// bound that protects the leader has to be checked while the answer is being
+/// filled, not when it is sent.
+///
+/// A record ceiling cannot be that bound. Records differ in size by orders of
+/// magnitude, so any count either throttles a follower carrying small commits or
+/// fails to protect against one carrying large ones. Both limits apply and
+/// whichever is reached first stops the answer.
+///
+/// Well under the frame ceiling, which this is not a second copy of: the frame
+/// ceiling refuses a frame, and this fills one.
+pub const COLLECTION_BUDGET_BYTES: usize = 4 * 1024 * 1024;
+
+/// The most records the leader reads from its log in one pass while filling a
+/// collection answer.
+///
+/// Unit: records.
+///
+/// The answer is bounded by [`COLLECTION_BUDGET_BYTES`], and a budget can only
+/// be honoured by a read that stops — so the log is read a page at a time and
+/// the pages stop when the budget is full. It bounds the leader's memory to one
+/// page plus the answer, whatever a follower names as its own limit.
+pub const COLLECTION_PAGE_RECORDS: usize = 256;
+
+/// How long a canvass of the voting members takes on this network, end to end.
+///
+/// Unit: seconds.
+///
+/// # It is a deadline, not a measurement
+///
+/// A candidate stands when its remaining writable window has shrunk to two of
+/// these, because a round that yields a lease dated from when it **opened** has
+/// to be in hand before the old fence shuts — and one round time lands exactly
+/// on the fence with nothing left for a round that is refused, lost or slow. Two
+/// is the latest opening that still allows one complete retry.
+///
+/// One second is a canvass of three to seven members on a local network, each a
+/// TLS handshake and one frame each way. It is the value this build ships and
+/// not a property of the engine: the day a cluster spans a region, this is the
+/// number that moves, and everything derived from it moves with it.
+pub const ROUND_SECONDS: u64 = 1;
+
+/// How often a leader checks whether it is time to stand again.
+///
+/// Unit: seconds.
+///
+/// # Where the number comes from
+///
+/// It is bounded by the window between *time to stand* and *the fence shuts*,
+/// and that window is exactly `2 × ROUND_SECONDS`: a holder's usable span begins
+/// at `LEASE_TTL - LEASE_GUARD` and standing opens when two round times are left
+/// of it. A cadence slower than that window can step straight over the moment it
+/// was supposed to act on, and a leader would then lose a lease it could have
+/// renewed — while nothing anywhere reported a failure, because no round was
+/// ever attempted.
+///
+/// So the period is half the window, which leaves room for one tick to be late.
+/// A check costs nothing when there is margin left: the decision to stand is
+/// taken **before** any socket is opened, precisely so that a frequent cadence is
+/// not a frequent canvass.
+pub const CAMPAIGN_SECONDS: u64 = ROUND_SECONDS;
+
+/// The tightest staleness bound a read may ask for.
+///
+/// Unit: seconds.
+///
+/// # Why a floor exists at all
+///
+/// A read may say how far behind a node answering it is allowed to be. A bound
+/// tighter than the interval at which this node learns anything about its peers
+/// is a promise nothing can check — it would be enforced against a picture whose
+/// age exceeds the tolerance it is being compared to. Refusing it, with the
+/// floor named, is what keeps the bound a guarantee rather than a hope.
+///
+/// # Twice the interval, and why not MongoDB's ninety
+///
+/// One interval to learn something, and one more to notice that we did not.
+///
+/// MongoDB refuses a `maxStalenessSeconds` below **90 seconds**, and that number
+/// comes from its client-side topology refresh and its idle-write period — two
+/// mechanisms this engine does not have. Taking the 90 would be taking a value
+/// whose derivation is absent, so what is taken is the **shape**: a floor
+/// derived from the interval at which the system learns, published in the
+/// refusal, and refused rather than silently raised.
+pub const STALENESS_FLOOR_SECONDS: u64 = AWARENESS_SECONDS * 2;
+
 /// The largest reassembled WebSocket message this node will read from a client.
 ///
 /// Unit: bytes.

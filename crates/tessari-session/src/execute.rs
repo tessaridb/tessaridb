@@ -1,10 +1,11 @@
 //! Running one statement against the store.
 
 use std::collections::BTreeMap;
-use tessari_encoding::{Roles, decode_payload, encode_payload};
+use tessari_encoding::{NODE_ID_LEN, Roles, decode_payload, encode_payload};
 use tessari_ql::{
     Answer, Assignment, ColumnDeclaration, ConsumerSource, CreateTarget, EdgeClause, Edit,
-    FieldMapping, FieldPath, Name, RecordTarget, Span, StatementKind, TableChange, TableRef,
+    FieldMapping, FieldPath, Name, ReachRef, RecordTarget, Span, StatementKind, TableChange,
+    TableRef,
 };
 use tessari_storage::{
     Catalog, ConsumerDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeOrder, FieldShape,
@@ -14,8 +15,8 @@ use tessari_storage::{
 };
 
 use tessari_types::{
-    Analyzer, FieldId, FieldKind, Filter, GraphId, IdentityKind, Path, RecordId, RecordRef, Step,
-    TableId, Value,
+    Analyzer, FieldId, FieldKind, Filter, GraphId, IdentityKind, Path, RecordId, RecordRef,
+    Replication, ReplicationClass, Step, TableId, Value,
 };
 
 use crate::condition::boolean;
@@ -39,6 +40,20 @@ const FORMAT_JSON: &str = "json";
 /// is not only clippy's preference: passing them as one borrow means a field
 /// added to the statement cannot be silently dropped on the way to the catalog,
 /// which is exactly the failure a long positional argument list invites.
+/// What a `DEFINE REPLICA` says about a peer.
+///
+/// A struct for the reason [`Declared`] is one: the statement's clauses outgrew
+/// what a function signature carries legibly, and grouping them keeps the caller
+/// reading as the statement it is rather than as eight positional arguments in
+/// an order nothing checks.
+struct Peer<'a> {
+    name: &'a Name,
+    endpoint: &'a str,
+    roles: Option<&'a [Name]>,
+    node: Option<[u8; NODE_ID_LEN]>,
+    replicates: Option<&'a ReachRef>,
+}
+
 struct Declared<'a> {
     name: &'a Name,
     source: &'a ConsumerSource,
@@ -62,7 +77,12 @@ impl Session<'_> {
             StatementKind::DefineNamespace {
                 name,
                 if_not_exists,
-            } => self.define_namespace(transaction, name, *if_not_exists),
+                replication,
+                class,
+            } => self.define_namespace(transaction, name, *if_not_exists, *replication, *class),
+            StatementKind::AlterNamespace { name, replication } => {
+                self.alter_namespace(transaction, name, *replication)
+            }
             StatementKind::DefineDatabase {
                 name,
                 if_not_exists,
@@ -74,6 +94,7 @@ impl Session<'_> {
                 edge,
                 identity,
                 graph,
+                conflict,
                 if_not_exists,
             } => {
                 // The endpoints are resolved **before** the table is created, so
@@ -96,6 +117,7 @@ impl Session<'_> {
                         kind,
                         identity: *identity,
                         graph,
+                        conflict: *conflict,
                     },
                     *if_not_exists,
                     span,
@@ -164,12 +186,18 @@ impl Session<'_> {
                 name,
                 endpoint,
                 roles,
+                node,
+                replicates,
                 if_not_exists,
             } => self.define_replica(
                 transaction,
-                name,
-                endpoint,
-                roles.as_deref(),
+                &Peer {
+                    name,
+                    endpoint,
+                    roles: roles.as_deref(),
+                    node: *node,
+                    replicates: replicates.as_ref(),
+                },
                 *if_not_exists,
             ),
             StatementKind::DefineConsumer {
@@ -600,6 +628,7 @@ impl Session<'_> {
                     kind: TableKind::Bucket(*max),
                     identity: IdentityKind::default(),
                     graph: None,
+                    conflict: None,
                 },
                 *if_not_exists,
                 span,
@@ -620,6 +649,7 @@ impl Session<'_> {
                     kind: TableKind::Collection,
                     identity: *identity,
                     graph: None,
+                    conflict: None,
                 },
                 *if_not_exists,
                 span,
@@ -677,6 +707,7 @@ impl Session<'_> {
                         }),
                         identity: IdentityKind::default(),
                         graph,
+                        conflict: None,
                     },
                     *if_not_exists,
                     span,
@@ -703,6 +734,7 @@ impl Session<'_> {
                     // keep the names they were given.
                     identity: IdentityKind::Uuid,
                     graph: None,
+                    conflict: None,
                 },
                 *if_not_exists,
                 span,
@@ -724,6 +756,7 @@ impl Session<'_> {
                     kind: TableKind::View(ViewDeclaration { read: read.clone() }),
                     identity: IdentityKind::default(),
                     graph: None,
+                    conflict: None,
                 },
                 *if_not_exists,
                 span,
@@ -1518,15 +1551,78 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         name: &Name,
         if_not_exists: bool,
+        replication: Option<Replication>,
+        class: Option<ReplicationClass>,
     ) -> Result<Outcome> {
         if if_not_exists
             && Catalog::new(transaction)
                 .namespace_id(&name.text)?
                 .is_some()
         {
+            // The clause is not applied on this branch, and that is the same
+            // reading `IF NOT EXISTS` already has everywhere else: the
+            // statement did nothing because the namespace was there, so it
+            // changes nothing about it either. A definition that quietly
+            // re-set a policy on a namespace it did not create would be an
+            // `ALTER` wearing a `DEFINE`'s spelling.
             return Ok(Outcome::Done);
         }
-        Catalog::new(transaction).create_namespace(&name.text)?;
+        // Asked only of the branch that actually creates one, and only when the
+        // statement said nothing: a store with no peers has nowhere to put a
+        // second copy, so there the bare form is what a single-node install has
+        // always written and is stored as *never stated*. A store that declares
+        // a peer is a cluster, and there a namespace holding one copy is a
+        // decision somebody is making — ADR-0060's whole point — so it is
+        // written down rather than inherited.
+        if replication.is_none() {
+            let peers = Catalog::new(transaction).replicas()?.len();
+            if peers > 0 {
+                return Err(Error::ReplicationUnstated {
+                    namespace: name.text.clone(),
+                    peers,
+                    span: name.span,
+                });
+            }
+        }
+        let definition = Catalog::new(transaction).create_namespace(&name.text)?;
+        if let Some(replication) = replication {
+            // Through the same call an `ALTER` makes, so the two statements
+            // cannot set this field differently.
+            Catalog::new(transaction).set_replication(definition.id, replication)?;
+        }
+        if let Some(class) = class {
+            // The same route for the same reason. No `ALTER` sets the class
+            // today — G027 S2.1 needs only a declaration — and the setter
+            // exists in the shape an `ALTER` would use so that adding one later
+            // is a statement rather than a second write path.
+            Catalog::new(transaction).set_replication_class(definition.id, class)?;
+        }
+        Ok(Outcome::Done)
+    }
+
+    /// `ALTER NAMESPACE prod REPLICATION FACTOR 3`
+    ///
+    /// Turning replication on for a namespace that already holds data, and off
+    /// again (owner requirement D12). **Nothing is redistributed**, and the
+    /// absence of a repair step is the point rather than an omission: the log
+    /// already holds every write the namespace ever took, so a follower that
+    /// begins subscribing replays it from origin. Cassandra's `ALTER KEYSPACE`
+    /// needs a `nodetool repair` afterwards because its replicas hold data
+    /// rather than a history; ours needs none because the history is the store.
+    fn alter_namespace(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        replication: Replication,
+    ) -> Result<Outcome> {
+        let Some(namespace) = Catalog::new(transaction).namespace_id(&name.text)? else {
+            return Err(Error::Unknown {
+                entity: "namespace",
+                name: name.text.clone(),
+                span: name.span,
+            });
+        };
+        Catalog::new(transaction).set_replication(namespace, replication)?;
         Ok(Outcome::Done)
     }
 
@@ -1607,6 +1703,7 @@ impl Session<'_> {
                 kind: TableKind::Collection,
                 identity: IdentityKind::default(),
                 graph: Some(graph.id),
+                conflict: None,
             },
             if_not_exists,
             span,
@@ -1990,6 +2087,7 @@ impl Session<'_> {
                 }),
                 identity: IdentityKind::default(),
                 graph: None,
+                conflict: None,
             },
             if_not_exists,
             span,
@@ -2196,6 +2294,7 @@ impl Session<'_> {
                 kind: TableKind::Geo,
                 identity: IdentityKind::default(),
                 graph: None,
+                conflict: None,
             },
             if_not_exists,
             span,
@@ -2304,6 +2403,7 @@ impl Session<'_> {
                 kind: TableKind::Vault(VaultDeclaration { key }),
                 identity: IdentityKind::default(),
                 graph: None,
+                conflict: None,
             },
             if_not_exists,
             span,
@@ -2792,23 +2892,48 @@ impl Session<'_> {
     fn define_replica(
         &self,
         transaction: &mut Transaction<'_>,
-        name: &Name,
-        endpoint: &str,
-        roles: Option<&[Name]>,
+        peer: &Peer<'_>,
         if_not_exists: bool,
     ) -> Result<Outcome> {
         let declared = Catalog::new(transaction)
             .replicas()?
             .into_iter()
-            .any(|found| found.name == name.text);
+            .any(|found| found.name == peer.name.text);
         if if_not_exists && declared {
             return Ok(Outcome::Done);
         }
         // The words are read before the name is claimed, so a misspelled role
         // leaves nothing behind: the statement either declares the peer it was
         // asked for or declares nothing.
-        let roles = roles.map(named_roles).transpose()?.unwrap_or(Roles::NONE);
-        Catalog::new(transaction).create_replica(&name.text, endpoint, roles)?;
+        let roles = peer
+            .roles
+            .map(named_roles)
+            .transpose()?
+            .unwrap_or(Roles::NONE);
+        // A subscription on a row that names no node used to be refused here,
+        // on the reasoning that a grant needs somebody to hold it and the peer
+        // door — which looks a follower up by the id its certificate proved —
+        // would never find one written against nobody. That was true while
+        // nothing could ever bind such a row, and W282 is the wave that makes it
+        // false: the row is bound by the first inbound greeting, and the grant
+        // becomes findable at the moment the peer arrives (Q-611).
+        //
+        // It is inert until then rather than broad: `Subscriptions::granted`
+        // matches `row.node == Some(follower)`, so an unbound row answers
+        // nobody. What changes is only *when* the grant takes effect, never who
+        // it can reach — and the recipient is still a node this cluster issued a
+        // peer credential to, which is the act that admits a member.
+        let replicates = match peer.replicates {
+            None => None,
+            Some(named) => Some(self.reach_of(transaction, named)?),
+        };
+        Catalog::new(transaction).create_replica(
+            &peer.name.text,
+            peer.endpoint,
+            roles,
+            peer.node,
+            replicates,
+        )?;
         Ok(Outcome::Done)
     }
 

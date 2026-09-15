@@ -92,7 +92,7 @@ pub(crate) fn maintain(
             batch = write_pair(batch, &kind, &from, &to, None);
         }
 
-        if let RecordValue::Present(payload) = &mutation.value
+        if let RecordValue::Present(payload) = mutation.value.value()
             && let Some((from, to, properties)) = endpoints(&decode_payload(payload)?)
         {
             batch = write_pair(batch, &kind, &from, &to, Some(&properties));

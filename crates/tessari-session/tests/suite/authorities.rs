@@ -29,8 +29,12 @@ use std::sync::Arc;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
-use tessari_storage::Store;
+use tessari_storage::{Reach, Store};
 use tessari_types::Value;
+
+/// Any follower. These tests are about who may collect and what they receive,
+/// never about which node did the collecting, so one id serves them all.
+const A_FOLLOWER: [u8; 16] = [7; 16];
 
 const PASSWORD: &str = "correct horse battery";
 
@@ -100,10 +104,18 @@ fn held(session: &mut Session<'_>, user: &str) -> Vec<String> {
 #[test]
 fn the_highest_authority_holds_every_kind_over_the_whole_store() {
     // Rule 1. And the shape of the answer matters as much as its content: the
-    // top is five ordinary authorities at store reach, not an `is_root` branch.
+    // top is six ordinary authorities at store reach, not an `is_root` branch.
     // A privileged branch is how a model acquires a path its negative tests
     // never cover, because there is nothing there to write a negative test
     // against.
+    //
+    // `replicate` is the sixth and it arrived after this test did, which is
+    // exactly what this assertion is for: a kind added to the closed set widens
+    // every owner that already exists, and that is an escalation delivered as a
+    // migration unless somebody decides it. It was decided — an owner *at the
+    // store* already holds `read` and `operate` there, which together are
+    // `BACKUP`, so the log shows them nothing a backup would not. The reasoning
+    // and its residue are in `Held::from_role`.
     let store = store();
     governed(&store);
     let mut root = signed_in(&store, "root");
@@ -114,6 +126,7 @@ fn the_highest_authority_holds_every_kind_over_the_whole_store() {
             "manage@store".to_owned(),
             "operate@store".to_owned(),
             "read@store".to_owned(),
+            "replicate@store".to_owned(),
             "write@store".to_owned(),
         ]
     );
@@ -734,4 +747,365 @@ fn a_reach_that_contains_the_subjects_tenancy_is_not_inert_and_is_allowed() {
     let mut pia = signed_in(&store, "pia");
     pia.run("USE NAMESPACE prod; DEFINE DATABASE extra;")
         .unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Taking the log is its own authority — G024 S4.1.
+//
+// A subscription reads records and never runs a statement, so nothing about
+// running one applies to it. That is not a new observation here: it is the
+// second time this store has met it. The first was the change feed, where an
+// anonymous connection received every write on a closed store while the same
+// connection's `SELECT` was refused, because the check had been attached to a
+// *mechanism* rather than to a *capability*.
+//
+// So the tests below are the shape that failure taught: the refusal first, the
+// success second so the refusal is not passing against a store that simply does
+// not work, and then the negatives that say what the authority is NOT — because
+// an authority that every other authority implies has not been added.
+
+/// The low-privilege probe, and it is the criterion.
+///
+/// Valid credentials, no replication authority, the log asked for directly —
+/// no panel, no statement, no wire. This is the call a peer's subscription
+/// request lands on, and the only thing standing between a node that joined the
+/// cluster and every byte in this store.
+#[test]
+fn a_node_with_credentials_and_no_authority_may_not_take_the_log() {
+    let store = store();
+    governed(&store);
+    let mut root = signed_in(&store, "root");
+    root.run("DEFINE USER node AUTHORITIES read PASSWORD 'correct horse battery';")
+        .unwrap();
+
+    let mut node = signed_in(&store, "node");
+    let refusal = node
+        .replicate_from(
+            &store,
+            A_FOLLOWER,
+            Reach::Store,
+            store.own_log(Reach::Store).unwrap(),
+            tessari_types::Sequence::new(1),
+            16,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(refusal, tessari_session::Error::RoleForbids { needs, .. } if needs == "replicate"),
+        "a node holding no replication authority must be refused the log, got {refusal:?}"
+    );
+}
+
+/// The other direction, so the refusal above means something.
+#[test]
+fn a_node_granted_replication_over_the_store_receives_the_log() {
+    let store = store();
+    governed(&store);
+    let mut root = signed_in(&store, "root");
+    root.run(
+        "DEFINE USER node AUTHORITIES replicate PASSWORD 'correct horse battery';\n\
+         USE NAMESPACE prod; USE DATABASE shop;\n\
+         CREATE orders:1 = { total: 1 };",
+    )
+    .unwrap();
+
+    let mut node = signed_in(&store, "node");
+    let records = node
+        .replicate_from(
+            &store,
+            A_FOLLOWER,
+            Reach::Store,
+            store.own_log(Reach::Store).unwrap(),
+            tessari_types::Sequence::new(1),
+            64,
+        )
+        .unwrap();
+    assert!(
+        !records.is_empty(),
+        "a node holding replication over the store reads the log it was granted"
+    );
+}
+
+/// Reading every record in the store is not authority to take the log.
+///
+/// The two are not the same question and merging them would be a disclosure
+/// rather than a convenience: the log carries the system tenancy, and the
+/// identity class — users, credentials, grants — travels to every subscriber.
+/// A reader who could subscribe would hold every credential hash in the store.
+#[test]
+fn reading_every_record_is_not_authority_to_take_the_log() {
+    let store = store();
+    governed(&store);
+    let mut root = signed_in(&store, "root");
+    root.run("DEFINE USER watcher AUTHORITIES read PASSWORD 'correct horse battery';")
+        .unwrap();
+
+    let mut watcher = signed_in(&store, "watcher");
+    let refusal = watcher
+        .replicate_from(
+            &store,
+            A_FOLLOWER,
+            Reach::Store,
+            store.own_log(Reach::Store).unwrap(),
+            tessari_types::Sequence::new(1),
+            16,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(refusal, tessari_session::Error::RoleForbids { needs, .. } if needs == "replicate"),
+        "read at store reach must not carry the log with it, got {refusal:?}"
+    );
+}
+
+/// Running the node is not authority to take the log either, and that split is
+/// deliberate: receiving the log and reading cluster status are two grants, so
+/// the panel's observer is not a replication principal.
+#[test]
+fn operating_the_node_is_not_authority_to_take_the_log() {
+    let store = store();
+    governed(&store);
+    let mut root = signed_in(&store, "root");
+    root.run("DEFINE USER ops AUTHORITIES operate PASSWORD 'correct horse battery';")
+        .unwrap();
+
+    let mut ops = signed_in(&store, "ops");
+    let refusal = ops
+        .replicate_from(
+            &store,
+            A_FOLLOWER,
+            Reach::Store,
+            store.own_log(Reach::Store).unwrap(),
+            tessari_types::Sequence::new(1),
+            16,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(refusal, tessari_session::Error::RoleForbids { needs, .. } if needs == "replicate"),
+        "operating the node must not carry the log with it, got {refusal:?}"
+    );
+}
+
+// G025 S4.1 — `replicate` is held over the whole store or not at all.
+//
+// The reach half used to be asserted one step later than this: a user was
+// declared with `replicate` over one namespace, and the *subscription* they then
+// opened over the store was refused. That test is gone because its premise is,
+// and the refusal moved earlier on purpose. An authority that reaches the
+// catalog is one a later reader has to interpret correctly every single time; an
+// authority that is refused at the statement never exists to be interpreted.
+//
+// The reason the kind is store-only at all is the log's cargo. It carries the
+// system tenancy — the definitions, and the users, credentials and grants of
+// every tenant — so whoever may subscribe sees every credential hash in the
+// store. The only principal that discloses nothing new to is one already
+// entitled to the whole store, which is exactly who is left.
+
+/// The criterion, run **as the namespace owner** rather than as an administrator.
+///
+/// That position is the criterion and not a detail. An administrator refused
+/// this proves the statement is guarded; a namespace owner refused it proves
+/// there is no road to the kind at that reach at all — and the owner is the one
+/// principal who would have had one, because `ROLE owner` is every kind their
+/// reach can hold and it used to hold this.
+#[test]
+fn a_namespace_owner_cannot_hand_out_replication_inside_their_namespace() {
+    let store = store();
+    governed(&store);
+    let mut root = signed_in(&store, "root");
+    root.run(
+        "DEFINE USER tenant ON NAMESPACE prod ROLE owner PASSWORD 'correct horse battery';\n\
+         DEFINE USER peer ON NAMESPACE prod AUTHORITIES read PASSWORD 'correct horse battery';",
+    )
+    .unwrap();
+
+    // Not a permissions failure of the owner: they govern `prod` and this is a
+    // grant inside `prod`, which `a_namespace_authority_can_now_hand_out_
+    // authority_inside_it` above proves they may make for every other kind.
+    let mut tenant = signed_in(&store, "tenant");
+    let refusal = tenant
+        .run("GRANT replicate ON NAMESPACE prod TO peer;")
+        .unwrap_err();
+    assert!(
+        matches!(refusal, tessari_session::Error::NotAtThatReach { kind, .. } if kind == "replicate"),
+        "a namespace owner must be told the kind does not come in that size, got {refusal:?}"
+    );
+}
+
+/// And the owner does not hold it either, which is what makes the refusal above
+/// mean what it says.
+///
+/// Asserted through `INFO FOR USER` rather than against the model directly: the
+/// bundle arrives from `Held::from_role`, a road nobody types, and reading it
+/// back through the statement is the only check that covers the whole trip.
+#[test]
+fn a_namespace_owner_does_not_hold_replication_over_their_namespace() {
+    let store = store();
+    governed(&store);
+    let mut root = signed_in(&store, "root");
+    root.run("DEFINE USER tenant ON NAMESPACE prod ROLE owner PASSWORD 'correct horse battery';")
+        .unwrap();
+
+    let held = held(&mut root, "tenant");
+    assert!(
+        !held.iter().any(|entry| entry.starts_with("replicate@")),
+        "a namespace owner holds every kind their reach can hold, and this is not one: {held:?}"
+    );
+    // The rest of the bundle is untouched, so the narrowing is the one kind and
+    // not a role that quietly stopped meaning anything.
+    for kind in ["govern", "manage", "operate", "read", "write"] {
+        assert!(
+            held.iter().any(|entry| entry.starts_with(kind)),
+            "{kind} must still travel with the role: {held:?}"
+        );
+    }
+}
+
+/// The declaration form of the same rule.
+///
+/// `DEFINE USER … AUTHORITIES replicate` and `GRANT replicate ON …` are the two
+/// places a caller names a kind and a reach together, and they are asked the
+/// question by one function so they cannot drift apart.
+#[test]
+fn replication_cannot_be_declared_over_one_namespace() {
+    let store = store();
+    governed(&store);
+    let mut root = signed_in(&store, "root");
+    let refusal = root
+        .run(
+            "DEFINE USER partial ON NAMESPACE prod AUTHORITIES replicate \
+             PASSWORD 'correct horse battery';",
+        )
+        .unwrap_err();
+    assert!(
+        matches!(refusal, tessari_session::Error::NotAtThatReach { kind, .. } if kind == "replicate"),
+        "the store owner is refused too, because nobody holds it there, got {refusal:?}"
+    );
+}
+
+/// A role at a narrower reach is **not** refused — it narrows.
+///
+/// The asymmetry is deliberate and this is where it is pinned. A role is a name
+/// for a set and a set may lose a member; an explicitly named kind is a request,
+/// and the operator's only evidence a request landed is the statement not
+/// complaining. Refusing the role would break every namespace owner anybody ever
+/// declares; accepting the named kind silently would store a grant that reads as
+/// present in the script and is absent from the store.
+#[test]
+fn a_role_at_a_namespace_still_declares_and_simply_carries_less() {
+    let store = store();
+    governed(&store);
+    let mut root = signed_in(&store, "root");
+    root.run("DEFINE USER tenant ON NAMESPACE prod ROLE owner PASSWORD 'correct horse battery';")
+        .expect("a namespace owner is an ordinary declaration and stays one");
+}
+
+/// The subscription a store-reach holder opens over one namespace still works.
+///
+/// The separation S4.1 drew, asserted rather than assumed: the authority answers
+/// *who may open a subscription*, the `over` argument answers *what it carries*,
+/// and narrowing the first must not have narrowed the second. `Reach::Store`
+/// contains a namespace inside it, so it does not.
+#[test]
+fn a_store_reach_holder_may_still_subscribe_over_one_namespace() {
+    let store = store();
+    governed(&store);
+    let mut root = signed_in(&store, "root");
+    root.run("DEFINE USER node AUTHORITIES replicate PASSWORD 'correct horse battery';")
+        .unwrap();
+
+    let namespace = {
+        let mut transaction = store.begin().unwrap();
+        tessari_storage::Catalog::new(&mut transaction)
+            .namespace_id("prod")
+            .unwrap()
+            .expect("prod was declared")
+    };
+    let mut node = signed_in(&store, "node");
+    node.replicate_from(
+        &store,
+        A_FOLLOWER,
+        Reach::Namespace(namespace),
+        store.own_log(Reach::Namespace(namespace)).unwrap(),
+        tessari_types::Sequence::new(1),
+        16,
+    )
+    .expect("a store-reach authority answers for a namespace inside the store");
+}
+
+/// A revocation reaches a subscription that is already running.
+///
+/// The reason this is asked at all is that a subscription is a *loop*. Checked
+/// once and then pushed for an hour, it would be bounded by the connection
+/// rather than by anything a revocation could reach — the longer-lived version
+/// of the defect the statement path already fixed by re-reading the user.
+#[test]
+fn a_revoked_replication_authority_stops_a_node_that_was_already_reading() {
+    let store = store();
+    governed(&store);
+    let mut root = signed_in(&store, "root");
+    root.run("DEFINE USER node AUTHORITIES replicate PASSWORD 'correct horse battery';")
+        .unwrap();
+
+    let mut node = signed_in(&store, "node");
+    node.replicate_from(
+        &store,
+        A_FOLLOWER,
+        Reach::Store,
+        store.own_log(Reach::Store).unwrap(),
+        tessari_types::Sequence::new(1),
+        16,
+    )
+    .expect("granted, so the first read is served");
+
+    root.run("REVOKE replicate ON STORE FROM node;").unwrap();
+
+    let refusal = node
+        .replicate_from(
+            &store,
+            A_FOLLOWER,
+            Reach::Store,
+            store.own_log(Reach::Store).unwrap(),
+            tessari_types::Sequence::new(1),
+            16,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(refusal, tessari_session::Error::RoleForbids { needs, .. } if needs == "replicate"),
+        "the next round after a revocation must be refused, got {refusal:?}"
+    );
+}
+
+/// A store nobody has closed answers everything, and this path is not an
+/// exception to that rule.
+///
+/// Pinned rather than left to be discovered: the alternative — a store with no
+/// users that refuses replication — would make a cluster impossible to bootstrap
+/// before its first user exists, and the rule that an empty store is open is the
+/// one that keeps it usable at all.
+#[test]
+fn an_open_store_hands_out_its_log_because_an_open_store_hands_out_everything() {
+    let store = store();
+    let mut opening = Session::new(&store);
+    opening
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE TABLE orders SCHEMALESS; CREATE orders:1 = { total: 1 };",
+        )
+        .unwrap();
+
+    let mut anybody = Session::new(&store);
+    let records = anybody
+        .replicate_from(
+            &store,
+            A_FOLLOWER,
+            Reach::Store,
+            store.own_log(Reach::Store).unwrap(),
+            tessari_types::Sequence::new(1),
+            64,
+        )
+        .unwrap();
+    assert!(
+        !records.is_empty(),
+        "an open store has no identity to refuse, here as everywhere else"
+    );
 }

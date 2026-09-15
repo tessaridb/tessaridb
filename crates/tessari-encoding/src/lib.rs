@@ -27,11 +27,13 @@
 #![forbid(unsafe_code)]
 
 mod adjacency;
+mod causal;
 mod error;
 mod index_keys;
 mod index_value;
 mod keys;
 mod kind;
+mod log_id;
 mod node;
 mod order;
 mod payload;
@@ -40,6 +42,7 @@ mod spatial_keys;
 mod value;
 
 pub use adjacency::{AdjacencyKey, Direction, EdgeProperties};
+pub use causal::{CausalOrder, CausalStamp, CausalVersions};
 pub use error::{Error, Result};
 pub use index_keys::{
     INDEX_PREFIX_LEN, IndexAddress, IndexTarget, IndexValues, NoPayload, Posting, PostingKey,
@@ -48,12 +51,15 @@ pub use index_keys::{
     VectorRecallKey,
 };
 pub use keys::{
-    AppliedPositionKey, FormatVersionKey, LogKey, NodeIdentityKey, ReclaimFloorKey, RecordKey,
-    StoreKey, TABLE_PREFIX_LEN,
+    AppliedPositionKey, FormatVersionKey, LogKey, NodeIdentityKey, REACH_LEN, ReclaimFloorKey,
+    RecordKey, StoreKey, TABLE_PREFIX_LEN, VersionPositionKey,
 };
 pub use kind::KeyKind;
+pub use log_id::{LogId, Writer};
 pub use node::{BUILD_VERSION, Membership, NODE_ID_LEN, NodeIdentity, NodeVersion, Roles};
 pub use order::{KeyReader, KeyWriter};
 pub use payload::{decode as decode_payload, encode as encode_payload};
 pub use spatial_keys::{SpatialExtent, SpatialIndexKey};
-pub use value::{CODEC_VERSION, FormatVersion, LogRecord, Mutation, RecordValue, StoreValue};
+pub use value::{
+    CODEC_VERSION, FormatVersion, LogRecord, Mutation, RecordValue, StampedValue, StoreValue,
+};

@@ -31,18 +31,39 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tessari_types::{DatabaseId, NamespaceId, Value};
+use tessari_types::{DatabaseId, NamespaceId, Number, Value};
 
+/// Re-exported so that `catalog::Reach` keeps resolving.
+///
+/// The shape moved a layer down when a log key had to carry it (a store key is
+/// encoded beneath this crate, and a type cannot be named from underneath the
+/// crate that defines it). Every caller in this tree reaches it through the
+/// catalog, so it is re-exported here rather than re-pointed in twenty files.
+pub use tessari_types::Reach;
+
+use super::definition::number;
 use super::user::Role;
 use crate::error::{Error, Result};
+
+/// The field naming which of the three shapes a stored reach carries.
+const FIELD_REACH: &str = "reach";
+const FIELD_NAMESPACE: &str = "namespace";
+const FIELD_DATABASE: &str = "database";
+
+const REACH_STORE: &str = "store";
+const REACH_NAMESPACE: &str = "namespace";
+const REACH_DATABASE: &str = "database";
 
 const ENTITY: &str = "authority";
 
 /// What an authority permits.
 ///
-/// Five, and each names a different thing that can be taken away on its own.
+/// Six, and each names a different thing that can be taken away on its own.
 /// The set is closed: a new kind is a new thing a store can refuse, which is a
-/// decision rather than an addition.
+/// decision rather than an addition. [`Kind::Replicate`] was the sixth and is
+/// the worked example of that sentence — it was added because taking the log is
+/// not reading the records and not operating the node, and neither of those two
+/// could be stretched to mean it without granting more than anybody asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Kind {
     /// Read records.
@@ -57,6 +78,19 @@ pub enum Kind {
     /// Topology, replicas and the backup file: running the thing rather than
     /// using it.
     Operate,
+    /// Take the log itself: subscribe as a peer and receive the store's
+    /// mutations as they were written.
+    ///
+    /// Separate from [`Self::Read`] because the log is not the records. It
+    /// carries the system tenancy as well — the definitions, and the users,
+    /// credentials and grants that travel to every subscriber — so a reader who
+    /// could subscribe would hold every credential hash in the store.
+    ///
+    /// Separate from [`Self::Operate`] because receiving the log and reading
+    /// what the cluster is doing are two different permissions, and a node
+    /// should be able to hold either without the other: a replica that is not
+    /// an operator, an observer that is not a replica.
+    Replicate,
 }
 
 impl Kind {
@@ -67,6 +101,7 @@ impl Kind {
         Self::Manage,
         Self::Govern,
         Self::Operate,
+        Self::Replicate,
     ];
 
     /// How the kind is written.
@@ -78,6 +113,7 @@ impl Kind {
             Self::Manage => "manage",
             Self::Govern => "govern",
             Self::Operate => "operate",
+            Self::Replicate => "replicate",
         }
     }
 
@@ -88,75 +124,147 @@ impl Kind {
     pub fn parse(text: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|held| held.name() == text)
     }
-}
 
-/// How far an authority reaches.
-///
-/// [`Self::Database`] carries its namespace as well as its database, so a
-/// database reach cannot be constructed without the namespace that contains it.
-/// The alternative — two `Option` fields — makes "a database in no namespace"
-/// a value somebody has to remember to reject.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Reach {
-    /// The whole store, every namespace in it.
-    Store,
-    /// One namespace, every database in it.
-    Namespace(NamespaceId),
-    /// One database.
-    Database(NamespaceId, DatabaseId),
-}
-
-impl Reach {
-    /// The reach a user's tenancy describes.
+    /// Whether this kind can be held at `reach` at all.
     ///
-    /// `None` for a database named without a namespace, which is not a place —
-    /// the caller decides whether that is corruption or a bad request, because
-    /// this type cannot tell which of its callers it is answering.
-    #[must_use]
-    pub const fn of(namespace: Option<NamespaceId>, database: Option<DatabaseId>) -> Option<Self> {
-        match (namespace, database) {
-            (None, None) => Some(Self::Store),
-            (Some(namespace), None) => Some(Self::Namespace(namespace)),
-            (Some(namespace), Some(database)) => Some(Self::Database(namespace, database)),
-            (None, Some(_)) => None,
-        }
-    }
-
-    /// The tenancy this reach describes — the inverse of [`Self::of`].
+    /// Every kind but one can be held anywhere, because every kind but one is
+    /// about the container it names. [`Self::Replicate`] is not: it is the right
+    /// to take the log, and the log carries the **system tenancy** — the
+    /// definitions, and the users, credentials and grants that travel to every
+    /// subscriber. A holder of it sees what the store *is*, not what one
+    /// namespace contains, so a namespace is not a size it comes in.
     ///
-    /// Paired with `of` so that the two directions cannot drift: a caller
-    /// holding a reach never has to rebuild the pair by hand and never has to
-    /// handle the database-without-a-namespace case, which this type makes
-    /// unconstructible.
+    /// # This is a refusal, not a narrowing
+    ///
+    /// The alternative was to keep the grant sayable and defend the credentials
+    /// in the stream's filter instead. That fails on its own terms: the identity
+    /// class is replicated **everywhere, always** — one set of users per cluster
+    /// — so there is no filter left to hide them behind. Whoever may subscribe
+    /// at all sees every credential hash in the store, and the only principal
+    /// for whom that discloses nothing new is one already entitled to the whole
+    /// store.
+    ///
+    /// # The selective stream is untouched, because two things were riding here
+    ///
+    /// A subscription has a gate and a filter, and they were both spelled with
+    /// this kind. The gate is who may open one; the filter is `over`, the reach
+    /// the log is narrowed to. Only the gate moves. A store-reach holder may
+    /// still subscribe over one namespace and receive only that tenancy —
+    /// [`Reach::contains`] runs downward, so the store answers for a namespace
+    /// inside it. What the narrowing stops being is a right a tenant holds, and
+    /// what it becomes is an arrangement the cluster makes.
     #[must_use]
-    pub const fn parts(self) -> (Option<NamespaceId>, Option<DatabaseId>) {
+    pub const fn may_be_held_at(self, reach: Reach) -> bool {
         match self {
-            Self::Store => (None, None),
-            Self::Namespace(namespace) => (Some(namespace), None),
-            Self::Database(namespace, database) => (Some(namespace), Some(database)),
+            Self::Replicate => matches!(reach, Reach::Store),
+            // Written out rather than left to a catch-all, so a seventh kind
+            // fails to compile here instead of silently answering `true`. The
+            // set is closed and a new member is a decision (see the type's own
+            // doc); this is one of the places that decision has to be made.
+            Self::Read | Self::Write | Self::Manage | Self::Govern | Self::Operate => true,
         }
     }
+}
 
-    /// Whether this reach contains `other`.
+/// The catalog's encoding of a [`Reach`].
+///
+/// A trait rather than inherent methods because the shape itself lives a layer
+/// below — a log key carries a reach, and store keys are encoded under this
+/// crate — while this encoding raises **this** crate's malformed-catalog error
+/// and belongs with the catalog that reads it. The method syntax at the call
+/// sites is unchanged.
+pub(crate) trait ReachCodec: Sized {
+    /// This reach, as a catalog record stores it.
+    fn to_value(self) -> Value;
+
+    /// Read one back.
     ///
-    /// The only implication in this model. Downward and nothing else: the store
-    /// contains a namespace, a namespace contains its databases, and a reach
-    /// contains itself.
-    #[must_use]
-    pub fn contains(self, other: Self) -> bool {
-        match (self, other) {
-            (Self::Store, _) => true,
-            (Self::Namespace(mine), Self::Namespace(theirs)) => mine == theirs,
-            (Self::Namespace(mine), Self::Database(theirs, _)) => mine == theirs,
-            (Self::Database(namespace, database), Self::Database(theirs, their_database)) => {
-                namespace == theirs && database == their_database
+    /// # Errors
+    ///
+    /// Returns [`Error::CatalogMalformed`] when the stored value is not a reach.
+    fn from_value(value: &Value, entity: &'static str, field: &'static str) -> Result<Reach>;
+}
+
+impl ReachCodec for Reach {
+    /// This reach, as a catalog record stores it.
+    ///
+    /// Tagged rather than inferred from which ids are present, because
+    /// [`Reach::Store`] carries no ids at all and an object with no ids would
+    /// then be the same bytes as an object somebody wrote wrong. The tag makes
+    /// the whole store a thing that was said rather than a thing the reader
+    /// assumed.
+    ///
+    /// # Why the codec lives beside the type and not beside its first caller
+    ///
+    /// It has two callers now — a peer's subscription and a leadership's range —
+    /// and a reach that encoded one way in one row and another way in the other
+    /// would be two on-disk spellings of one type. Two readings of the same
+    /// bytes is a thing that can disagree with itself, which is the reason the
+    /// log record carries no mutation count either.
+    fn to_value(self) -> Value {
+        let (namespace, database) = self.parts();
+        let mut fields = BTreeMap::from([(
+            FIELD_REACH.to_owned(),
+            Value::from(match self {
+                Reach::Store => REACH_STORE,
+                Reach::Namespace(_) => REACH_NAMESPACE,
+                Reach::Database(_, _) => REACH_DATABASE,
+            }),
+        )]);
+        if let Some(namespace) = namespace {
+            fields.insert(FIELD_NAMESPACE.to_owned(), number(namespace.get()));
+        }
+        if let Some(database) = database {
+            fields.insert(FIELD_DATABASE.to_owned(), number(database.get()));
+        }
+        Value::Object(fields)
+    }
+
+    /// Read a reach back from the value [`Self::to_value`] wrote.
+    ///
+    /// `entity` and `field` are carried so the refusal names the row the caller
+    /// was reading rather than this type: a malformed reach is a defect in some
+    /// definition, and a reader told only *reach* has to guess which one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CatalogMalformed`] when the value is not an object, the
+    /// tag is missing or unknown, or a tag's ids are absent or out of range.
+    fn from_value(value: &Value, entity: &'static str, field: &'static str) -> Result<Reach> {
+        let malformed = || Error::CatalogMalformed {
+            entity,
+            field,
+            found: "reach",
+        };
+        let Value::Object(inner) = value else {
+            return Err(Error::CatalogMalformed {
+                entity,
+                field,
+                found: value.type_name(),
+            });
+        };
+        let Some(Value::String(tag)) = inner.get(FIELD_REACH) else {
+            return Err(malformed());
+        };
+        let id = |field: &'static str| -> Option<u32> {
+            match inner.get(field) {
+                Some(Value::Number(Number::Integer(raw))) => u32::try_from(*raw).ok(),
+                _ => None,
             }
-            // A database reach does not contain the namespace above it, and a
-            // namespace reach does not contain the store. Written out rather
-            // than left to a catch-all so that adding a reach fails to compile
-            // here instead of silently answering `false`.
-            (Self::Namespace(_) | Self::Database(_, _), Self::Store)
-            | (Self::Database(_, _), Self::Namespace(_)) => false,
+        };
+        match tag.as_str() {
+            REACH_STORE => Ok(Reach::Store),
+            REACH_NAMESPACE => id(FIELD_NAMESPACE)
+                .map(|namespace| Reach::Namespace(NamespaceId::new(namespace)))
+                .ok_or_else(malformed),
+            REACH_DATABASE => match (id(FIELD_NAMESPACE), id(FIELD_DATABASE)) {
+                (Some(namespace), Some(database)) => Ok(Reach::Database(
+                    NamespaceId::new(namespace),
+                    DatabaseId::new(database),
+                )),
+                _ => Err(malformed()),
+            },
+            _ => Err(malformed()),
         }
     }
 }
@@ -178,9 +286,25 @@ impl Authority {
     }
 
     /// Whether holding this answers a demand for `kind` at `reach`.
+    ///
+    /// # An authority held where its kind cannot be held answers nothing
+    ///
+    /// The middle question looks redundant beside the two statements that refuse
+    /// such a grant, and it is the one that matters most: the refusals govern
+    /// what can be **said from now on**, and this governs what is **already
+    /// written down**. Every namespace owner declared before [`Kind`] gained its
+    /// reach rule holds `replicate` over their namespace in the catalog this
+    /// moment, put there by [`Held::every_kind_at`] rather than by anybody's
+    /// statement. Guarding only the statements would leave every one of those
+    /// rows live and the guard decorative — an upgrade that closes a door while
+    /// the ones already open stay open.
+    ///
+    /// Asked here rather than at each caller because this is the single
+    /// predicate every authorization read funnels through, and a rule applied at
+    /// call sites is a rule the next call site inherits nothing of.
     #[must_use]
     pub fn permits(self, kind: Kind, reach: Reach) -> bool {
-        self.kind == kind && self.reach.contains(reach)
+        self.kind == kind && self.kind.may_be_held_at(self.reach) && self.reach.contains(reach)
     }
 }
 
@@ -209,10 +333,22 @@ impl Held {
         Self(authorities.into_iter().collect())
     }
 
-    /// Every kind at one reach — the shape an owner of something has.
+    /// Every kind that can be held at one reach — the shape an owner of
+    /// something has.
+    ///
+    /// "Every kind" is filtered rather than literal, and the filter is the whole
+    /// point of putting it here. This is not a statement anybody types: it is
+    /// the bundle [`Self::from_role`] hands an owner, so a kind that must not
+    /// reach a namespace would arrive at every namespace owner in the store by a
+    /// road with no author. One filter, and the role follows it for free.
     #[must_use]
     pub fn every_kind_at(reach: Reach) -> Self {
-        Self::of(Kind::ALL.iter().map(|kind| Authority::new(*kind, reach)))
+        Self::of(
+            Kind::ALL
+                .iter()
+                .filter(|kind| kind.may_be_held_at(reach))
+                .map(|kind| Authority::new(*kind, reach)),
+        )
     }
 
     /// Add one.
@@ -296,6 +432,37 @@ impl Held {
     /// exists was declared under a promise that they may define structure, and
     /// narrowing them on upgrade is an outage delivered as a migration. What the
     /// change buys is that nobody has to accept the bundle any more.
+    ///
+    /// # An owner gained [`Kind::Replicate`] when the sixth kind arrived
+    ///
+    /// The mirror of the paragraph above — widening an existing principal on
+    /// upgrade is an escalation delivered as a migration — so it was decided
+    /// rather than inherited from [`Self::every_kind_at`].
+    ///
+    /// It stands, for two reasons and a residue. An owner **at the store**
+    /// already holds `read` and `operate` there, which together are `BACKUP`:
+    /// every record and every definition, in one file. The log discloses nothing
+    /// to them that they could not already take, so this widens what they may
+    /// *do* and not what they may *see*. And excluding it would make the kind
+    /// unreachable rather than merely explicit: nobody hands out what they do
+    /// not hold, so a store whose users were all declared by role could never
+    /// grant `replicate` to anybody, including to itself.
+    ///
+    /// The residue was an owner of one **namespace**, who gained an authority
+    /// that authorised nothing while the only subscription that could be served
+    /// was the whole store's — and which must not, once a selective stream
+    /// exists, carry the identity class with it. **That residue is now paid.**
+    /// [`Kind::may_be_held_at`] makes `replicate` a thing held over the store or
+    /// not at all, [`Self::every_kind_at`] filters by it, and this mapping
+    /// inherits the narrowing without an edit: an owner at the store still holds
+    /// every kind, an owner of a namespace no longer holds that one.
+    ///
+    /// Note which direction that moved. Narrowing a role on upgrade is the
+    /// outage this doc warns about two paragraphs above, and this is one — a
+    /// namespace owner loses an authority they were declared with. It is taken
+    /// anyway because what they lose is an authority that never authorised
+    /// anything, and what it buys is that the identity class can travel to every
+    /// follower without a tenant being able to ask for it.
     #[must_use]
     pub fn from_role(role: Role, reach: Reach) -> Self {
         match role {
@@ -625,8 +792,49 @@ mod tests {
 
         let owner = held_of(&fields, Some(Role::Owner), reach).expect("an owner");
         for kind in Kind::ALL {
-            assert!(owner.permits(*kind, reach));
+            assert_eq!(
+                owner.permits(*kind, reach),
+                kind.may_be_held_at(reach),
+                "an owner holds every kind this reach can hold and only those: {}",
+                kind.name()
+            );
         }
+        // Named as well as derived. The loop above compares the bundle against
+        // the rule, so both being wrong the same way would pass it; this says
+        // which kind the rule is about at a reach below the store.
+        assert!(
+            !owner.permits(Kind::Replicate, reach),
+            "an owner of one database does not hold the store's log"
+        );
+    }
+
+    /// The row an older binary already wrote, and the reason the rule is asked
+    /// in `permits` rather than only at the two statements that refuse it.
+    ///
+    /// Constructed directly because there is no longer any way to say it: every
+    /// road into the set now filters or refuses. That is the point — this is the
+    /// state of every store on disk that declared a namespace owner before the
+    /// rule existed, and a guard that only closes the door leaves all of those
+    /// standing open.
+    #[test]
+    fn a_stored_authority_at_a_reach_its_kind_cannot_reach_answers_nothing() {
+        let reach = Reach::Namespace(PROD);
+        let legacy = Held::of([
+            Authority::new(Kind::Replicate, reach),
+            Authority::new(Kind::Read, reach),
+        ]);
+
+        assert!(
+            !legacy.permits(Kind::Replicate, reach),
+            "a namespace-reach replication row from an older binary must authorise nothing"
+        );
+        assert!(
+            !legacy.permits(Kind::Replicate, Reach::Store),
+            "and it must not have been read upward into the store either"
+        );
+        // The neighbouring row is untouched, so this refuses one authority and
+        // not the record that carries it.
+        assert!(legacy.permits(Kind::Read, reach));
     }
 
     #[test]

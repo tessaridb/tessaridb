@@ -14,6 +14,15 @@
 //! elsewhere teaches that machine the same peers, which is correct. An endpoint
 //! replayed elsewhere tells peers to reach the wrong host, which is not.
 //!
+//! # A row may also be about this node
+//!
+//! Since the desired role arrived (`04_concept.md` §6.1), a row may carry the
+//! id of the node it is about — including this one's. That does not make the
+//! table local: the row still replicates, still describes topology, and still
+//! means the same thing on every node that holds it. What changes is that
+//! exactly one node finds its own id in it, and that node reads the row's roles
+//! as what it is *supposed* to be. See [`Catalog::desired_roles`].
+//!
 //! # What a replica does not carry yet
 //!
 //! Which ranges it holds, and how many copies of the data there should be. Both
@@ -23,9 +32,10 @@
 
 use std::collections::BTreeMap;
 
-use tessari_encoding::{Roles, decode_payload};
+use tessari_encoding::{NODE_ID_LEN, Roles, decode_payload};
 use tessari_types::{Number, RecordId, Value};
 
+use super::authority::{Reach, ReachCodec};
 use super::definition::{field_id, field_name, number, object};
 use super::{Catalog, Level, id_key, qualify, system};
 use crate::error::{Error, Result};
@@ -34,6 +44,8 @@ const FIELD_ID: &str = "id";
 const FIELD_NAME: &str = "name";
 const FIELD_ENDPOINT: &str = "endpoint";
 const FIELD_ROLES: &str = "roles";
+const FIELD_NODE: &str = "node";
+const FIELD_REPLICATES: &str = "replicates";
 
 const ENTITY: &str = "replica";
 
@@ -71,13 +83,64 @@ pub struct ReplicaDefinition {
     /// wrong is a refusal an operator can see and fix, where the other
     /// direction commits a write on a follower.
     pub roles: Roles,
+    /// Which node this row is about, when anybody knows.
+    ///
+    /// `None` is the row as it has always been: a peer an operator declared by
+    /// name and endpoint, before anything had spoken to it. Nothing can know
+    /// another node's generated id until first contact, so a row that names one
+    /// is a row somebody bound deliberately.
+    ///
+    /// # What the binding is for
+    ///
+    /// It is what makes [`roles`] a **desired role** rather than a note about
+    /// somebody else. A node compares this against its own id, and the row that
+    /// matches is the one the operator wrote about *it* — see
+    /// [`Catalog::desired_roles`].
+    ///
+    /// # Why the id and not the name
+    ///
+    /// The name is an operator's word and every node can read it, so a role
+    /// written against a name would arrive at whichever node happened to answer
+    /// to it. The id is sixteen bytes a node gave itself and never shares with
+    /// the log, so three things hold without a rule for any of them: the row
+    /// replicates to every follower and matches exactly one of them; a node that
+    /// restored a backup has a *fresh* id and therefore inherits no role, which
+    /// is ADR-0018 §1's property surviving this change untouched; and the value
+    /// an operator has to type is the one `INFO FOR NODE` already prints.
+    ///
+    /// [`roles`]: Self::roles
+    pub node: Option<[u8; NODE_ID_LEN]>,
+    /// How far this peer may collect this store's log, when it may at all.
+    ///
+    /// `None` is *never asked* and it is the refusal. It is deliberately not
+    /// spelled as an empty reach: a peer declared before this field existed was
+    /// never granted anything, and collapsing that into *granted nothing* would
+    /// make the two indistinguishable the moment somebody wants to tell them
+    /// apart. The field is written only when the declaration said so, so such a
+    /// row encodes back byte-identical.
+    ///
+    /// # It is one value on purpose
+    ///
+    /// This is both halves of the question the peer door asks — whether that
+    /// node may take the log at all, and how much of it it then receives. A
+    /// design in which the permission and the filter were two values has a
+    /// state in which a peer authorized for one namespace is served another,
+    /// and neither of the two calls is wrong about its own argument.
+    ///
+    /// # What granting it discloses
+    ///
+    /// The log is a stream of mutations and the identity class is in it, so a
+    /// subscription hands over the users, credential hashes and grants **inside
+    /// its reach**. [`Reach::Store`] therefore hands over every tenancy's, which
+    /// is why it is an operator's explicit word and never a default.
+    pub replicates: Option<Reach>,
 }
 
 impl ReplicaDefinition {
     /// The value written to the catalog.
     #[must_use]
     pub fn to_value(&self) -> Value {
-        Value::Object(BTreeMap::from([
+        let mut fields = BTreeMap::from([
             (FIELD_ID.to_owned(), number(self.id)),
             (FIELD_NAME.to_owned(), Value::from(self.name.as_str())),
             (
@@ -85,7 +148,19 @@ impl ReplicaDefinition {
                 Value::from(self.endpoint.as_str()),
             ),
             (FIELD_ROLES.to_owned(), number(u32::from(self.roles.bits()))),
-        ]))
+        ]);
+        // Written only when there is one, so an unbound row is byte-identical to
+        // the row this build's predecessor wrote. A stored `null` would be a
+        // second spelling of absent, and the reader would then have two.
+        if let Some(node) = self.node {
+            fields.insert(FIELD_NODE.to_owned(), Value::Uuid(node));
+        }
+        // Written only when it was stated, for the same reason and with more at
+        // stake: an absent subscription *is* the refusal.
+        if let Some(reach) = self.replicates {
+            fields.insert(FIELD_REPLICATES.to_owned(), reach.to_value());
+        }
+        Value::Object(fields)
     }
 
     /// Read a definition back.
@@ -108,8 +183,25 @@ impl ReplicaDefinition {
             name: field_name(fields, ENTITY)?,
             endpoint: endpoint.clone(),
             roles: roles_in(fields)?,
+            node: node_in(fields)?,
+            replicates: replicates_in(fields)?,
         })
     }
+}
+
+/// The subscription a stored definition carries.
+///
+/// Absent reads as `None` — no subscription — which is the rule every property
+/// added after the fact follows here and, uniquely among them, the rule that is
+/// also the safe direction. Anything present and not readable as a reach is
+/// **refused**: something well-formed that is not a subscription would otherwise
+/// be read as *this peer was granted nothing*, and a grant that silently
+/// evaporates is a follower that silently stops receiving.
+fn replicates_in(fields: &BTreeMap<String, Value>) -> Result<Option<Reach>> {
+    fields
+        .get(FIELD_REPLICATES)
+        .map(|found| Reach::from_value(found, ENTITY, FIELD_REPLICATES))
+        .transpose()
 }
 
 /// The roles a stored definition carries.
@@ -141,6 +233,25 @@ fn roles_in(fields: &BTreeMap<String, Value>) -> Result<Roles> {
         })
 }
 
+/// The node a stored definition names.
+///
+/// Absent reads as `None`, the rule every property added after the fact follows
+/// here. A value of the wrong type is **refused** rather than ignored, on
+/// `roles_in`'s reasoning and with more at stake: something well-formed that is
+/// not a node id would otherwise be read as *this row names nobody*, and a row
+/// that silently stops naming a node is a node that silently stops converging.
+fn node_in(fields: &BTreeMap<String, Value>) -> Result<Option<[u8; NODE_ID_LEN]>> {
+    match fields.get(FIELD_NODE) {
+        None => Ok(None),
+        Some(Value::Uuid(bytes)) => Ok(Some(*bytes)),
+        Some(found) => Err(Error::CatalogMalformed {
+            entity: ENTITY,
+            field: FIELD_NODE,
+            found: found.type_name(),
+        }),
+    }
+}
+
 impl Catalog<'_, '_> {
     /// Declare a peer.
     ///
@@ -152,6 +263,8 @@ impl Catalog<'_, '_> {
         name: &str,
         endpoint: &str,
         roles: Roles,
+        node: Option<[u8; NODE_ID_LEN]>,
+        replicates: Option<Reach>,
     ) -> Result<ReplicaDefinition> {
         let qualified = qualify(Level::Replica, &[], name);
         self.reserve_name(&qualified)?;
@@ -161,10 +274,40 @@ impl Catalog<'_, '_> {
             name: name.to_owned(),
             endpoint: endpoint.to_owned(),
             roles,
+            node,
+            replicates,
         };
         self.write(system::REPLICAS, id, &definition.to_value());
         self.claim_name(&qualified, id);
         Ok(definition)
+    }
+
+    /// Bind a declared row to the node whose greeting proved it.
+    ///
+    /// Writes the `node` field and nothing else. The endpoint, the roles and the
+    /// reach stay exactly as the operator declared them, because those are the
+    /// operator's decision and the greeting is evidence of an identity only.
+    ///
+    /// Answers `false` when there is no row under that id — the same shape
+    /// [`Self::drop_replica`] uses, and for the same reason: the caller is
+    /// reconciling against a list it read a moment ago, and a row that has since
+    /// been dropped is an ordinary race rather than a failure.
+    ///
+    /// It does **not** decide whether the row should be bound. That question has
+    /// two refusals in it and they live in [`the_row_a_greeting_binds`], which is
+    /// a pure function over the declarations and is therefore testable without a
+    /// store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored definitions cannot be read.
+    pub fn bind_replica_node(&mut self, id: u32, node: [u8; NODE_ID_LEN]) -> Result<bool> {
+        let Some(mut definition) = self.replicas()?.into_iter().find(|found| found.id == id) else {
+            return Ok(false);
+        };
+        definition.node = Some(node);
+        self.write(system::REPLICAS, id, &definition.to_value());
+        Ok(true)
     }
 
     /// Remove a peer's declaration and release its name.
@@ -214,5 +357,258 @@ impl Catalog<'_, '_> {
         }
         found.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(found)
+    }
+
+    /// What the cluster says a node should be, if anything says so.
+    ///
+    /// The **desired** role of `04_concept.md` §6.1: a replicated catalog record
+    /// an operator writes, against which a node reconciles what it actually
+    /// holds. `None` when no membership row names this node — which is every
+    /// store until somebody binds one, and is why this changes nothing for a
+    /// node standing on its own.
+    ///
+    /// # One place, so the two readers cannot disagree
+    ///
+    /// Two callers ask this question — the node reconciling itself at open, and
+    /// `INFO FOR NODE` reporting what it will reconcile to — and they must never
+    /// answer it differently, because the whole value of reporting a desired
+    /// role is that it predicts the one that will be adopted. So the rule for
+    /// *which row is mine* lives here and is called twice, rather than being
+    /// written twice and kept in step by hand.
+    ///
+    /// # The first match, and why there can only be one
+    ///
+    /// Nothing stops an operator binding two rows to one node, and nothing here
+    /// tries to arbitrate: `replicas` hands them back in **name order**, so the
+    /// answer is stable rather than dependent on declaration order, which is the
+    /// property that matters when two nodes compare what they think the cluster
+    /// says. A second binding is an operator error and is visible in
+    /// `INFO FOR NODE`'s peer list, where both rows are shown carrying the same
+    /// id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a stored definition cannot be read.
+    pub fn desired_roles(&self, node: &[u8; NODE_ID_LEN]) -> Result<Option<Roles>> {
+        Ok(self
+            .replicas()?
+            .into_iter()
+            .find(|found| found.node.as_ref() == Some(node))
+            .map(|found| found.roles))
+    }
+}
+
+/// Does the catalog name a peer that is not this node?
+///
+/// The one spelling of *this store is in a cluster*, and it lives here rather
+/// than beside either of its callers because it is a question about
+/// [`ReplicaDefinition`] and nothing else. `tessari_wire` re-exports it; a
+/// second copy over there would be a second definition of membership, and the
+/// two would agree until the day they did not.
+///
+/// # It is not "is the catalog empty"
+///
+/// [`Catalog::replicas`] returns every membership row, **including the one that
+/// describes THIS node** — and the row a cluster writes to admit a newcomer is
+/// exactly that row. So a joiner's first collection brings in one row, its own,
+/// and an emptiness bound reads that as *the catalog can answer* and stops
+/// dialling the seed, while `upstream` and the greeting round both skip the row
+/// naming this node. The node collects once, follows nobody afterwards, and
+/// nothing is in an error state while it happens (W260).
+///
+/// A row naming no node at all counts for nothing here, for the same reason it
+/// counts for nothing upstream: there is no identity to dial, and none to check
+/// a credential against.
+///
+/// # Why the write gate asks this and not what role the node was given
+///
+/// [`crate::Store::awaiting_leadership`] used to read `Roles::COORDINATING`, on
+/// the reasoning that [`Roles::ALONE`] is documented as *not `COORDINATING`,
+/// because there is nothing to coordinate with*, so the bit is already the line
+/// between a member of a deciding set and a store on its own.
+///
+/// That is true about the line it draws and it answers the wrong question. The
+/// roles are a **set**, not an enum, so `SERVING | WRITABLE` without
+/// `COORDINATING` is a legal and ordinary declaration — a writable node that
+/// does not vote. Such a node, sitting in a cluster beside an elected leader,
+/// carried no lease and was asked for none: the gate wanted a bit it does not
+/// have, so it wrote freely and silently, which is the failure the fence exists
+/// to prevent arriving through the one role combination the predicate missed.
+///
+/// *May this node take part in deciding* and *could there be a leader other
+/// than me* are two questions. The first is about the role. The second is about
+/// the catalog, and this is it.
+#[must_use]
+pub fn names_a_peer(declared: &[ReplicaDefinition], me: &[u8; NODE_ID_LEN]) -> bool {
+    declared
+        .iter()
+        .any(|peer| peer.node.is_some_and(|node| node != *me))
+}
+
+/// Could a node other than this one accept a write?
+///
+/// The question the write fence actually asks, and it is **not**
+/// [`names_a_peer`]. That one answers *is this store in a cluster*, which its
+/// two other callers need — a joiner deciding whether its catalog can yet name
+/// somebody to follow counts a read-only peer, and should.
+///
+/// A peer that carries neither [`Roles::WRITABLE`] nor [`Roles::COORDINATING`]
+/// can do neither thing this fence exists to guard against. It cannot be
+/// elected, because `driver::voters` will not ballot a row without
+/// `COORDINATING` and a majority counted over members that cannot be asked is a
+/// majority of a fiction; and it cannot write under somebody else's leadership,
+/// because the row declares that it takes no writes.
+///
+/// # What asking the wider question cost
+///
+/// A store whose only declared peer was a read-only follower was fenced against
+/// a leadership its own election machinery refuses to create, with no
+/// configuration that recovers it: a lease is written only by a completed round,
+/// no round is possible, and the store never writes again. That is the topology
+/// ADR-0067 documents — one node that is already a cluster, and a second told
+/// one address — so following the join procedure stopped the leader's writes on
+/// its first statement (Q-609).
+///
+/// # Why it is not narrowed to `COORDINATING` alone
+///
+/// Because that is the hole ADR-0069 closed, arriving by a different road. Two
+/// nodes declared `SERVING | WRITABLE` and neither `COORDINATING` can elect
+/// nobody, so neither would be fenced — and both would write. Under the wider
+/// reading they fence each other, which is a dead cluster an operator can see
+/// rather than a silent divergence. **Unable to write** is the property, and it
+/// takes both bits to be absent.
+///
+/// # A row that understates its peer
+///
+/// `roles` is what an operator declared, not what the peer has since become. A
+/// row that understates a peer defeats this, and it defeats the election and the
+/// forwarding lookup in exactly the same breath — they all read the same field,
+/// so the deciding set is what the catalog says it is, and one wrong row is one
+/// wrong answer rather than two that disagree.
+#[must_use]
+pub fn another_node_may_write(declared: &[ReplicaDefinition], me: &[u8; NODE_ID_LEN]) -> bool {
+    declared.iter().any(|peer| {
+        peer.node.is_some_and(|node| node != *me)
+            && (peer.roles.has(Roles::WRITABLE) || peer.roles.has(Roles::COORDINATING))
+    })
+}
+
+/// Which declared row, if any, the greeting of `node` binds itself to.
+///
+/// A row with no `node` is **declared but undiallable**: `Directory::greet_round`
+/// skips it, because opening a session derives the peer's transport name from
+/// its identifier and there is none to derive from. So a row nobody bound can
+/// never be bound from this side, and the only event that can ever bind it is
+/// that peer arriving here and proving who it is. The greeting supplies the
+/// **id and nothing else** — the endpoint, the roles and the reach are what the
+/// operator wrote, and a row that took its role from the wire would be a role
+/// somebody else's first packet got to assign.
+///
+/// # Two refusals, and the second is the load-bearing one
+///
+/// Nothing is bound when a row **already names** `node`: that peer is known, and
+/// binding a second row to one id would put one node in the catalog twice, where
+/// the two rows can disagree about its endpoint and its roles.
+///
+/// Nothing is bound when **more than one** row is unbound either, and this is
+/// the refusal that matters. An inbound connection carries no discriminator that
+/// could choose between them — the source port is ephemeral and two peers on one
+/// host share an address — so a binding taken among several would be a guess, and
+/// the cost of guessing wrong is a node running under somebody else's roles at
+/// somebody else's dial-back address. Declining leaves the operator with a row
+/// they can bind by hand with `NODE`, which is a visible non-event rather than a
+/// silent wrong answer.
+///
+/// One at a time is also the settled answer in this class of system: a cluster
+/// that has been told about a member it has not yet heard from holds further
+/// membership changes until it has, for exactly this reason. The comparison and
+/// its source are recorded in ADR-0072.
+#[must_use]
+pub fn the_row_a_greeting_binds(
+    declared: &[ReplicaDefinition],
+    node: &[u8; NODE_ID_LEN],
+) -> Option<u32> {
+    if declared.iter().any(|row| row.node == Some(*node)) {
+        return None;
+    }
+    let mut unbound = declared.iter().filter(|row| row.node.is_none());
+    let candidate = unbound.next()?;
+    if unbound.next().is_some() {
+        return None;
+    }
+    Some(candidate.id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReplicaDefinition, the_row_a_greeting_binds};
+    use tessari_encoding::{NODE_ID_LEN, Roles};
+
+    const GREETER: [u8; NODE_ID_LEN] = [9; NODE_ID_LEN];
+    const SOMEBODY_ELSE: [u8; NODE_ID_LEN] = [7; NODE_ID_LEN];
+
+    /// A row an operator declared with `NODE`.
+    fn bound(id: u32, name: &str, node: [u8; NODE_ID_LEN]) -> ReplicaDefinition {
+        ReplicaDefinition {
+            node: Some(node),
+            ..unbound(id, name)
+        }
+    }
+
+    /// A row an operator declared without `NODE`.
+    ///
+    /// The ids differ per row throughout, so that a rule taking the wrong
+    /// candidate is detectable rather than accidentally right.
+    fn unbound(id: u32, name: &str) -> ReplicaDefinition {
+        ReplicaDefinition {
+            id,
+            name: name.to_owned(),
+            endpoint: "10.0.0.2:9000".to_owned(),
+            roles: Roles::SERVING,
+            node: None,
+            replicates: None,
+        }
+    }
+
+    #[test]
+    fn the_one_row_nobody_bound_is_the_row_a_greeting_binds() {
+        let declared = [bound(1, "leader", SOMEBODY_ELSE), unbound(4, "joiner")];
+        assert_eq!(the_row_a_greeting_binds(&declared, &GREETER), Some(4));
+    }
+
+    #[test]
+    fn an_empty_catalog_binds_nothing_because_there_is_no_row_to_bind() {
+        assert_eq!(the_row_a_greeting_binds(&[], &GREETER), None);
+    }
+
+    #[test]
+    fn a_catalog_whose_every_row_is_bound_binds_nothing() {
+        let declared = [bound(1, "leader", SOMEBODY_ELSE)];
+        assert_eq!(the_row_a_greeting_binds(&declared, &GREETER), None);
+    }
+
+    /// The peer is already known, and knowing it twice is worse than once.
+    ///
+    /// Two rows for one id can disagree about that node's endpoint and its
+    /// roles, and every reader of the catalog then gets whichever it reaches
+    /// first. The unbound row beside it is what makes this a real test: without
+    /// it there would be nothing to bind either way.
+    #[test]
+    fn a_greeting_from_a_node_a_row_already_names_binds_nothing() {
+        let declared = [bound(1, "leader", GREETER), unbound(4, "joiner")];
+        assert_eq!(the_row_a_greeting_binds(&declared, &GREETER), None);
+    }
+
+    /// The refusal the whole rule is built around.
+    ///
+    /// Nothing on an inbound connection can choose between two unbound rows —
+    /// the source port is ephemeral and two peers on one host share an address
+    /// — so binding either would be a guess, and the cost of guessing wrong is
+    /// a node running under somebody else's roles at somebody else's dial-back
+    /// address.
+    #[test]
+    fn two_rows_nobody_bound_bind_nothing_because_neither_can_be_chosen() {
+        let declared = [unbound(4, "joiner"), unbound(5, "another")];
+        assert_eq!(the_row_a_greeting_binds(&declared, &GREETER), None);
     }
 }

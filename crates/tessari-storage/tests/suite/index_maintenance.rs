@@ -282,9 +282,7 @@ fn a_replica_derives_the_same_entries_from_the_same_log() {
 
     let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
-    for (sequence, record) in source.store.log_records(Sequence::ZERO, 1024).unwrap() {
-        replica.apply_record(sequence, &record).unwrap();
-    }
+    crate::replay(&source.store, &replica);
 
     let mirrored = Fixture {
         backend: replica_backend,
@@ -308,9 +306,7 @@ fn a_replica_builds_the_same_entries_for_an_index_defined_over_existing_rows() {
 
     let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
-    for (sequence, record) in source.store.log_records(Sequence::ZERO, 1024).unwrap() {
-        replica.apply_record(sequence, &record).unwrap();
-    }
+    crate::replay(&source.store, &replica);
 
     let mirrored = Fixture {
         backend: replica_backend,
@@ -707,9 +703,7 @@ fn a_replica_builds_the_same_entries_for_an_index_on_a_nested_value() {
 
     let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
-    for (sequence, record) in source.store.log_records(Sequence::ZERO, 1024).unwrap() {
-        replica.apply_record(sequence, &record).unwrap();
-    }
+    crate::replay(&source.store, &replica);
 
     let mirrored = Fixture {
         backend: replica_backend,

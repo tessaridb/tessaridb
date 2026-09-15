@@ -7,9 +7,21 @@
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
-use tessaridb::{AccessPath, Change, ChangeKind, Db, Exactness, RecordId, Sequence, Value, Watch};
+use tessaridb::{
+    AccessPath, Change, ChangeKind, Db, Exactness, Reach, RecordId, Sequence, Value, Watch,
+};
 
 /// The script every test starts from, so each one says only what it is about.
+/// Where `READY`'s records land.
+///
+/// The first namespace and the first database this fixture declares, which a log
+/// is now kept per (S6.2) — so a feed asked about the store's own log would find
+/// the definitions and none of the records.
+const FIXTURE_HOME: Reach = Reach::Database(
+    tessaridb::NamespaceId::new(1),
+    tessaridb::DatabaseId::new(1),
+);
+
 const READY: &str = "DEFINE NAMESPACE prod;\
                      USE NAMESPACE prod;\
                      DEFINE DATABASE orders;\
@@ -119,7 +131,13 @@ fn the_change_feed_reaches_the_surface() {
     session.run("CREATE users:1 = { name: 'ada' };").unwrap();
     session.run("DELETE users:1;").unwrap();
 
-    let answer = db.changes_since(Sequence::ZERO, 1024).unwrap();
+    let answer = db
+        .changes_since(
+            db.store().own_log(FIXTURE_HOME).unwrap(),
+            Sequence::ZERO,
+            1024,
+        )
+        .unwrap();
     let kinds: Vec<&ChangeKind> = answer.changes.iter().map(|c| &c.kind).collect();
     assert_eq!(kinds.len(), 2, "{kinds:?}");
     assert!(matches!(kinds[0], ChangeKind::Written(_)));
@@ -132,7 +150,11 @@ fn a_subscription_is_a_value_the_caller_keeps() {
     let mut session = db.session();
     session.run(READY).unwrap();
 
-    let mut watching = Db::subscribe(Sequence::ZERO, Watch::default());
+    let mut watching = Db::subscribe(
+        db.store().own_log(FIXTURE_HOME).unwrap(),
+        Sequence::ZERO,
+        Watch::default(),
+    );
     session.run("CREATE users:1 = { name: 'ada' };").unwrap();
     let first: Vec<Change> = db.poll(&mut watching, 1024).unwrap();
     assert_eq!(first.len(), 1);
@@ -147,7 +169,9 @@ fn a_subscription_is_a_value_the_caller_keeps() {
     // It does not repeat, and a skip past the tail is counted rather than
     // silent.
     session.run("CREATE users:2 = { name: 'grace' };").unwrap();
-    let tail = db.committed_tail().unwrap();
+    let tail = db
+        .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+        .unwrap();
     let skipped = db
         .skip(&mut watching, Sequence::new(tail.get() + 1))
         .unwrap();

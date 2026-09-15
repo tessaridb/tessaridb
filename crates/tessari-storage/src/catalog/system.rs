@@ -136,6 +136,15 @@ pub const VAULT_AUDIT: TableId = TableId::new(17);
 /// anywhere in an error state.
 pub const RECORD_COUNTS: TableId = TableId::new(18);
 
+/// Which node the log last showed leading a range, and under which leadership.
+///
+/// Reads like [`REPLICAS`] and is written for the opposite reason. A peer row is
+/// an operator's statement of what a node *should* be; this is the winner's own
+/// record of what it *became*, written at the moment a majority granted it and
+/// ordered by the log like any other record — which is what lets a partitioned
+/// node still answer *who leads this range* from what it had already applied.
+pub const LEADERSHIPS: TableId = TableId::new(19);
+
 /// The one record [`VAULT_ROOT`] holds.
 pub const VAULT_ROOT_ID: u32 = 1;
 
@@ -222,6 +231,30 @@ impl Level {
             Self::EdgeKind => "ek",
         }
     }
+
+    /// The level a tag names, the inverse of [`Self::tag`].
+    ///
+    /// Paired with it so the two directions cannot drift, which is the reason
+    /// `Reach::of` and `Reach::parts` are written as a pair: a reader of a
+    /// qualified name that rebuilt this mapping by hand would be a second place
+    /// for one fact, and the one that drifts is the one nobody is reading.
+    #[must_use]
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        Some(match tag {
+            "ns" => Self::Namespace,
+            "db" => Self::Database,
+            "tb" => Self::Table,
+            "ix" => Self::Index,
+            "fd" => Self::Field,
+            "an" => Self::Analyzer,
+            "us" => Self::User,
+            "rp" => Self::Replica,
+            "cs" => Self::Consumer,
+            "gr" => Self::Graph,
+            "ek" => Self::EdgeKind,
+            _ => return None,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -263,6 +296,7 @@ mod tests {
             VAULT_ROOT,
             VAULT_AUDIT,
             RECORD_COUNTS,
+            LEADERSHIPS,
         ];
         for (index, table) in ids.iter().enumerate() {
             assert!(

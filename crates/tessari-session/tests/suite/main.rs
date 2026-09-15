@@ -5,6 +5,9 @@
 //! target instead, so the cases sit beside this file and the crate pays that
 //! link once rather than once per case.
 
+#![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
+
+mod a_catalog_record_is_not_a_users_row;
 mod advice;
 mod alone;
 mod alter_user;
@@ -38,6 +41,7 @@ mod fetch;
 mod file_ranges;
 mod files;
 mod folds;
+mod follower_lag;
 mod full_tuple;
 mod fuzzy;
 mod generated;
@@ -86,6 +90,7 @@ mod scan_wins;
 mod scoring_source;
 mod scripts;
 mod search_field_grants;
+mod selective_stream;
 mod series;
 mod several;
 mod shaping;
@@ -93,6 +98,7 @@ mod sign_in_throttle;
 mod spatial_index;
 mod spatial_nearest_reads;
 mod spatial_reads;
+mod staleness;
 mod store_named_records;
 mod store_wide;
 mod strictness;
@@ -125,3 +131,49 @@ mod windows;
 mod write_answers;
 mod write_bounds;
 mod write_shapes;
+
+/// Replay every log a store holds into another, and answer how many records.
+///
+/// Every log, in the order `homes()` lists them — the store's own first, so the
+/// namespace, database and schema definitions a range's records depend on arrive
+/// before those records do. A replay that read one log would reproduce part of a
+/// store and then be compared against the whole of it (S6.2, Q-620).
+pub(crate) fn replay(source: &tessari_storage::Store, target: &tessari_storage::Store) -> usize {
+    let mut applied = 0_usize;
+    for log in source.logs().unwrap() {
+        for (sequence, record) in source
+            .log_records(log, tessari_types::Sequence::ZERO, 4096)
+            .unwrap()
+        {
+            target.apply_record(log.writer, sequence, &record).unwrap();
+            applied = applied.saturating_add(1);
+        }
+    }
+    applied
+}
+
+/// Entries with their version stamps removed, and the set of stamps removed.
+pub(crate) type Unversioned = (Vec<(Vec<u8>, Vec<u8>)>, Vec<Vec<u8>>);
+
+/// Every record entry with the version it is keyed by removed, and the set of
+/// those versions.
+///
+/// A replay across several logs applies records in a different order than the
+/// commits that produced them, so a node numbers them differently — a version is
+/// the node's own history and not the log's (Q-614, Q-627). What must still hold
+/// is that the same records come back with the same bytes at the same keys apart
+/// from that stamp, and that the SET of stamps is the same, which is what would
+/// show one skipped, duplicated or invented.
+pub(crate) fn unversioned(held: &[(tessari_kv::Key, tessari_kv::Value)]) -> Unversioned {
+    let mut stamps: Vec<Vec<u8>> = Vec::new();
+    let mut entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    for (key, value) in held {
+        let key = key.as_slice();
+        let cut = key.len().saturating_sub(8);
+        entries.push((key[..cut].to_vec(), value.as_slice().to_vec()));
+        stamps.push(key[cut..].to_vec());
+    }
+    stamps.sort();
+    stamps.dedup();
+    (entries, stamps)
+}

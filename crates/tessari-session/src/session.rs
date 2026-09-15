@@ -8,11 +8,14 @@
 //! error anywhere. The lookup is one catalog read per statement, and the store
 //! is the only thing entitled to say what a name currently means.
 
+use std::sync::Arc;
+
 use tessari_ql::{Parameters, Statement, StatementKind, parse};
 use tessari_storage::{Catalog, Store, Transaction};
 use tessari_types::Sequence;
 
 use crate::effect::{Effect, admits};
+use crate::elsewhere::Elsewhere;
 use crate::error::{Error, Result};
 use crate::identity::{self, Identity};
 use crate::outcome::Outcome;
@@ -55,6 +58,15 @@ pub struct Session<'a> {
     /// Visible to the crate because `queue.rs` writes it into a record and
     /// compares it on a release.
     pub(crate) consumer: Option<Consumer>,
+    /// What this node knows about the copies it does not hold.
+    ///
+    /// `None` on a node standing alone, which is every deployment that has not
+    /// been told about peers — and that is the reason it is optional rather than
+    /// a directory that happens to be empty. An empty directory and *no cluster
+    /// to ask* are different facts, and only the second one is true of a single
+    /// node. Visible to the crate because `evaluate.rs` is the one thing that
+    /// asks it anything.
+    pub(crate) elsewhere: Option<Arc<dyn Elsewhere>>,
 }
 
 /// Who a session is, to a queue.
@@ -85,7 +97,25 @@ impl<'a> Session<'a> {
             namespace: None,
             database: None,
             consumer: None,
+            elsewhere: None,
         }
+    }
+
+    /// Open this session among the peers `elsewhere` knows about.
+    ///
+    /// A bounded read this node's own copy cannot satisfy is redirected to a
+    /// copy that can, rather than refused — see [`Elsewhere`] for why the
+    /// question is asked that way round and [`crate::Error::ReadIsElsewhere`]
+    /// for what the client is told.
+    ///
+    /// Taken at the session and not at the store, because which peers exist is a
+    /// fact about this *process's* place in a cluster and a store knows nothing
+    /// about networks. A node that was never told about peers never calls this
+    /// and refuses exactly as it did before.
+    #[must_use]
+    pub fn among(mut self, elsewhere: Arc<dyn Elsewhere>) -> Self {
+        self.elsewhere = Some(elsewhere);
+        self
     }
 
     /// The namespace `USE` selected, if any.
@@ -350,6 +380,10 @@ impl<'a> Session<'a> {
             // carries no claimant. Copying one would let a permission probe
             // release the real session's work.
             consumer: None,
+            // Carried, unlike the claimant: what this node knows about its peers
+            // is the same fact whoever is asking, and a probe that lost it would
+            // answer a bounded read differently from the session that spawned it.
+            elsewhere: self.elsewhere.clone(),
         };
         probe.acting_as(id)?;
         Ok(probe)

@@ -208,11 +208,26 @@ impl Session<'_> {
     /// than left to be discovered by whoever backs up a large store first.
     pub(crate) fn backup(&self, from: Option<u64>) -> Result<Outcome> {
         let mut held = Vec::new();
-        tessari_backup::write_from(
-            self.store,
-            &mut held,
-            tessari_types::Sequence::new(from.unwrap_or(1).max(1)),
-        )
+        // No `FROM` backs up the store, which is every log it holds. A `FROM`
+        // names one sequence, and a sequence counts in one log — so it is the
+        // incremental path, and a store holding several refuses it rather than
+        // answering with a file that reads as whole and is missing the rest
+        // (Q-624).
+        match from.filter(|from| *from > 1) {
+            None => tessari_backup::write(self.store, &mut held),
+            Some(from) => {
+                let home =
+                    tessari_backup::only_log(self.store).map_err(|error| Error::BackupFailed {
+                        reason: error.to_string(),
+                    })?;
+                tessari_backup::write_from(
+                    self.store,
+                    &mut held,
+                    home,
+                    tessari_types::Sequence::new(from),
+                )
+            }
+        }
         .map_err(|error| Error::BackupFailed {
             reason: error.to_string(),
         })?;

@@ -45,7 +45,7 @@ INFO FOR NODE;
 --- expect: ok
 
 --- case: node is a contextual word, so it is still a table name
-DEFINE NAMESPACE prod;
+DEFINE NAMESPACE prod REPLICATION NONE;
 USE NAMESPACE prod;
 DEFINE DATABASE orders;
 USE DATABASE orders;
@@ -77,3 +77,57 @@ DEFINE NODE ROLES serving, writable;
 --- case: so the node takes writes again
 CREATE node:2 = { name: 'grace' };
 --- expect: ok
+
+# -------------------------------------------------- NAMESPACE REPLICATION
+
+# How many copies of a namespace the cluster keeps is declared where the
+# namespace is declared (ADR-0060), and it can be turned on after the fact
+# (D12). The clause is **optional today and mandatory at the release that
+# ships the cluster** — a sequencing decision recorded in W211's plan, not a
+# reversal: with no nodes to place copies on, a mandatory clause could only be
+# answered `NONE`, which trains an operator to decline without thinking and is
+# the inherited default the decision exists to abolish.
+#
+# What is bought now is the one thing that cannot be added later: a namespace
+# that said nothing and a namespace that said `NONE` stay different values.
+
+--- case: a namespace may declare how many copies it wants
+DEFINE NAMESPACE replicated REPLICATION FACTOR 3;
+--- expect: ok
+
+--- case: or decline replication, which is a statement and not a silence
+DEFINE NAMESPACE declined REPLICATION NONE;
+--- expect: ok
+
+--- case: a definition that says nothing is refused once a peer could hold a copy
+DEFINE NAMESPACE unsaid;
+--- expect: error ReplicationUnstated
+
+--- case: and the same namespace declining deliberately is accepted
+DEFINE NAMESPACE unsaid REPLICATION NONE;
+--- expect: ok
+
+--- case: replication is turned on for a namespace that already exists
+ALTER NAMESPACE unsaid REPLICATION FACTOR 2;
+--- expect: ok
+
+--- case: and turned off again, because a policy you cannot withdraw is one you hesitate to set
+ALTER NAMESPACE unsaid REPLICATION NONE;
+--- expect: ok
+
+--- case: a namespace reads its own policy back
+USE NAMESPACE replicated;
+INFO FOR NAMESPACE;
+--- expect: ok
+
+--- case: no copies at all is not a policy and is refused where it is written
+ALTER NAMESPACE unsaid REPLICATION FACTOR 0;
+--- expect: error UnexpectedToken
+
+--- case: the statement carries only what it came to change, so it must name it
+ALTER NAMESPACE unsaid;
+--- expect: error UnexpectedToken
+
+--- case: altering a namespace nobody declared is refused rather than creating one
+ALTER NAMESPACE ghost REPLICATION FACTOR 2;
+--- expect: error Unknown

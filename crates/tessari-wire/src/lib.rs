@@ -31,37 +31,95 @@
 //! codec the store writes records with, so seventeen types go out and seventeen
 //! come back, and neither end decides anything.
 //!
-//! # What it is not, yet
+//! # Encryption is on one of the two surfaces, and which one matters
 //!
-//! **Subscription push** is W2. The frames are kinded rather than a plain
-//! request-and-reply precisely so a server can send something the client did not
-//! ask for, and the tags above 3 are reserved for it.
+//! This crate carries **two** conversations and they are not protected alike.
 //!
-//! **There is no TLS.** A protocol that carries credentials in the clear belongs
-//! on a trusted network and nowhere else, and this says so rather than leaving it
-//! to be assumed.
+//! - The **peer link** (`link.rs`) is mutually authenticated TLS. Both ends
+//!   present a certificate issued by the cluster authority, each verifies the
+//!   other against it, and a peer's name is derived from its node id — so an
+//!   unidentified caller cannot reach the door at all.
+//! - The **serving surface** — the client-facing wire in `node.rs` — has **no
+//!   TLS**, and it is the one that carries a user's password. A protocol that
+//!   carries credentials in the clear belongs on a trusted network and nowhere
+//!   else, and this says so rather than leaving it to be assumed.
+//!
+//! The asymmetry is deliberate today and it is not settled: the peer link earns
+//! its certificates from a cluster that has an authority to issue them, and the
+//! serving surface has no equivalent. What follows from it — a replication
+//! stream carries every record of every tenant inside its reach — is an open
+//! question recorded outside this repository, not an oversight to be fixed by
+//! whoever reads this next.
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "server")]
+mod campaign;
 mod client;
+#[cfg(feature = "server")]
+mod collection;
+#[cfg(feature = "server")]
+mod credential;
+#[cfg(feature = "server")]
+mod directory;
+#[cfg(feature = "server")]
+mod driver;
 mod error;
 mod frame;
+#[cfg(feature = "server")]
+mod grant;
+#[cfg(feature = "server")]
+mod joining;
+#[cfg(feature = "server")]
+mod link;
 mod message;
 #[cfg(feature = "server")]
 mod node;
+#[cfg(feature = "server")]
+mod peer;
 mod push;
+mod redirect;
 
 #[cfg(feature = "server")]
 use std::time::Duration;
 
-pub use crate::client::{Client, Feed};
+#[cfg(feature = "server")]
+pub use crate::campaign::{Standing, Stood};
+pub use crate::client::{Client, Feed, Served};
+#[cfg(feature = "server")]
+pub use crate::collection::{
+    Collect, Collected, Collector, NoLog, Origin, Serving, Subscriptions, logs_to_collect,
+};
+#[cfg(feature = "server")]
+pub use crate::credential::{fingerprint, names, presented};
+#[cfg(feature = "server")]
+pub use crate::directory::{Destination, Directory, Heard};
+#[cfg(feature = "server")]
+pub use crate::driver::{
+    Collecting, Published, Renewing, bootstrap_from, due_in, every, heard_a_leader, names_a_peer,
+    stands, upstream, voters,
+};
 pub use crate::error::{Error, Result};
+#[cfg(feature = "server")]
+pub use crate::grant::{Ballot, Deciding, Leadership, Reached, Refused, Round, Vote, Voter};
+#[cfg(feature = "server")]
+pub use crate::joining::{Joining, Seed, Told};
+#[cfg(feature = "server")]
+pub use crate::link::{Answered, Ask, Credential, Met, Peers, call};
 #[cfg(feature = "server")]
 pub use crate::message::names_for;
 pub use crate::message::{Answer, Correction, Exact, Names, Remark, Request, Suggested, spell};
 #[cfg(feature = "server")]
 pub use crate::node::Node;
+#[cfg(feature = "server")]
+pub use crate::peer::{Hello, PeerFrame, Presented, Purpose, admit};
 pub use crate::push::{Became, Follow, Happened};
+
+pub use crate::redirect::{Elsewhere, Settlement};
+/// The authority a cluster is issued by, re-exported because [`Joining`] hands
+/// one out and a caller cannot otherwise name the type it holds.
+#[cfg(feature = "server")]
+pub use rustls::pki_types::CertificateDer;
 
 /// How long the node will wait for a subscriber to accept a change.
 ///

@@ -38,7 +38,7 @@ pub(crate) fn catalog_change(mutation: &Mutation) -> Result<Option<CatalogChange
     if mutation.namespace != SYSTEM_NAMESPACE || mutation.database != SYSTEM_DATABASE {
         return Ok(None);
     }
-    let present = match &mutation.value {
+    let present = match mutation.value.value() {
         RecordValue::Present(payload) => Some(decode_payload(payload)?),
         RecordValue::Tombstone => None,
     };
@@ -78,7 +78,7 @@ pub(crate) fn defined_index(mutation: &Mutation) -> Result<Option<IndexDefinitio
     // A dropped index has nothing to build. Its existing entries are left where
     // they are — unreachable, because index ids are never reused — and reclaiming
     // them is its own piece of work (Q-33), not this one's.
-    let RecordValue::Present(payload) = &mutation.value else {
+    let RecordValue::Present(payload) = mutation.value.value() else {
         return Ok(None);
     };
     IndexDefinition::from_value(&decode_payload(payload)?).map(Some)

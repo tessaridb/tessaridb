@@ -81,6 +81,7 @@ forms! {
     DefineAnalyzer => "DEFINE ANALYZER",
     DefineUser => "DEFINE USER",
     AlterUser => "ALTER USER",
+    AlterNamespace => "ALTER NAMESPACE",
     DefineNode => "DEFINE NODE",
     DefineReplica => "DEFINE REPLICA",
     DefineConsumer => "DEFINE KAFKA CONSUMER",
@@ -291,6 +292,7 @@ mod tests {
              INFO FOR STORE;\
              INFO FOR NODE;\
              ALTER USER u SET ROLE viewer;\
+             ALTER NAMESPACE prod REPLICATION FACTOR 3;\
              LET $x = 1;\
              RETURN $x;\
              BEGIN;\

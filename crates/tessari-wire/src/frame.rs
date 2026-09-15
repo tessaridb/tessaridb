@@ -21,6 +21,9 @@
 
 use std::io::{Read, Write};
 
+use tessari_encoding::{LogId, NODE_ID_LEN, Writer};
+use tessari_types::{DatabaseId, NamespaceId, Reach};
+
 use crate::error::{Error, Result};
 
 /// What every connection says first, in both directions.
@@ -55,7 +58,35 @@ pub(crate) const MAJOR: u8 = 1;
 /// This is why a new outcome kind is a minor change and a new value type is a
 /// major one: a value nested inside an array carries no length of its own, so an
 /// unknown one cannot be stepped over.
-pub(crate) const MINOR: u8 = 0;
+///
+/// # Why this is 1
+///
+/// It was 0 through the two waves that built the redirect — the frame kind and
+/// the client that can receive one — because **advertising a capability nothing
+/// sends is worse than the gap**: a peer that believed this build could redirect
+/// would have been believing something false. This build sends one, so the minor
+/// moves with the sender and not with the frame.
+pub(crate) const MINOR: u8 = 1;
+
+/// The minor at which a peer can be sent a [`Kind::Elsewhere`] frame.
+///
+/// Named rather than written as `1` at the comparison, because the number alone
+/// cannot say what it is a threshold *for*, and the next thing gated on a minor
+/// will need its own name beside this one rather than a second bare literal.
+pub(crate) const REDIRECTS: u8 = 1;
+
+/// This build's own client must be able to read what this build's node sends.
+///
+/// The two constants above answer different questions — what we speak, and what
+/// a peer must speak to be sent a redirect — so nothing but this line notices if
+/// they drift apart. A build advertising a minor below the one its own redirect
+/// needs would refuse to send a frame it can read perfectly well, and every test
+/// in the crate would pass.
+///
+/// Checked at compile time rather than in a test, because a threshold that is
+/// wrong is wrong for every caller at once and there is nothing to gain by
+/// finding out at run time.
+const _: () = assert!(MINOR >= REDIRECTS);
 
 /// The largest frame this build will read.
 ///
@@ -85,6 +116,14 @@ pub(crate) enum Kind {
     Subscribe,
     /// One change, sent because it happened.
     Change,
+    /// This read belongs somewhere else, and this is where.
+    ///
+    /// Numbered **13** rather than 6, which is where 1-5 leaves off, because the
+    /// peer link claims 6-12 out of the same byte. See
+    /// [`crate::peer::PeerFrame`] for what the two spaces owe each other — the
+    /// rule is that neither reader accepts the other's tags, and a contiguous
+    /// range was only ever a convenient way to say so.
+    Elsewhere,
 }
 
 impl Kind {
@@ -95,6 +134,7 @@ impl Kind {
             Self::Refusal => 3,
             Self::Subscribe => 4,
             Self::Change => 5,
+            Self::Elsewhere => 13,
         }
     }
 
@@ -105,10 +145,13 @@ impl Kind {
             3 => Some(Self::Refusal),
             4 => Some(Self::Subscribe),
             5 => Some(Self::Change),
-            // 6 and above stay unclaimed, and an unknown kind still closes the
-            // connection rather than being skipped: a protocol that ignores what
-            // it does not understand is one where a version mismatch looks like
-            // silence.
+            13 => Some(Self::Elsewhere),
+            // 6-12 belong to the peer link and are refused here on purpose, so a
+            // peer frame arriving on the client port closes the connection
+            // instead of being misread. Everything else is simply unclaimed, and
+            // an unknown kind closes the connection rather than being skipped: a
+            // protocol that ignores what it does not understand is one where a
+            // version mismatch looks like silence.
             _ => None,
         }
     }
@@ -122,11 +165,20 @@ impl Kind {
 /// ceiling — refused on the way out as well as in, because a server that emits
 /// what it would refuse to read has two protocols.
 pub(crate) fn write(out: &mut impl Write, kind: Kind, body: &[u8]) -> Result<()> {
+    write_tagged(out, kind.tag(), body)
+}
+
+/// Write one frame under a tag this module does not interpret.
+///
+/// The peer link has its own tag space (see [`crate::peer::PeerFrame`]) and the
+/// same header, so it shares the ceiling rather than carrying a second copy of
+/// it — a second copy is how two limits come to disagree.
+pub(crate) fn write_tagged(out: &mut impl Write, tag: u8, body: &[u8]) -> Result<()> {
     let length = u32::try_from(body.len()).unwrap_or(u32::MAX);
     if length > CEILING {
         return Err(Error::TooLarge { length });
     }
-    out.write_all(&[kind.tag()])?;
+    out.write_all(&[tag])?;
     out.write_all(&length.to_be_bytes())?;
     out.write_all(body)?;
     out.flush()?;
@@ -141,6 +193,21 @@ pub(crate) fn write(out: &mut impl Write, kind: Kind, body: &[u8]) -> Result<()>
 /// above the ceiling, [`Error::UnknownFrame`] for a kind this build does not
 /// have, and the stream's own failure otherwise.
 pub(crate) fn read(input: &mut impl Read) -> Result<Option<(Kind, Vec<u8>)>> {
+    let Some((tag, body)) = read_tagged(input)? else {
+        return Ok(None);
+    };
+    let Some(kind) = Kind::from_tag(tag) else {
+        return Err(Error::UnknownFrame { tag });
+    };
+    Ok(Some((kind, body)))
+}
+
+/// Read one frame without deciding what its tag means.
+///
+/// The tag is handed back raw because the peer link's tags are not this
+/// module's to know; the ceiling, the header shape and the clean-goodbye rule
+/// are, and they are the parts worth having in one place.
+pub(crate) fn read_tagged(input: &mut impl Read) -> Result<Option<(u8, Vec<u8>)>> {
     let mut header = [0_u8; 5];
     let mut held = 0;
     while held < header.len() {
@@ -159,9 +226,6 @@ pub(crate) fn read(input: &mut impl Read) -> Result<Option<(Kind, Vec<u8>)>> {
         held = held.saturating_add(read);
     }
 
-    let Some(kind) = Kind::from_tag(header[0]) else {
-        return Err(Error::UnknownFrame { tag: header[0] });
-    };
     let length = u32::from_be_bytes([header[1], header[2], header[3], header[4]]);
     // Checked before the allocation, which is the whole point of the ceiling.
     if length > CEILING {
@@ -169,7 +233,7 @@ pub(crate) fn read(input: &mut impl Read) -> Result<Option<(Kind, Vec<u8>)>> {
     }
     let mut body = vec![0_u8; usize::try_from(length).unwrap_or(0)];
     input.read_exact(&mut body).map_err(|_| Error::Truncated)?;
-    Ok(Some((kind, body)))
+    Ok(Some((header[0], body)))
 }
 
 /// Say hello, and hear one back.
@@ -311,6 +375,80 @@ impl<R: std::io::Read, W: std::io::Write> std::io::Write for Duplex<'_, R, W> {
     }
 }
 
+/// Append a log home as the nine fixed bytes a reach takes on this wire.
+///
+/// Written here rather than borrowed from the key encoding, for the reason
+/// `tessari-backup`'s own copy records: a wire format is its own format. The key
+/// grammar may be re-laid out without every peer in a running cluster having to
+/// be upgraded in the same breath, and two formats moving together by accident
+/// is exactly what keeping them apart prevents.
+///
+/// The variant leads, then the namespace and the database, both always written.
+/// Fixed width because a frame body that followed it would otherwise start at
+/// three different offsets.
+pub(crate) fn put_reach(into: &mut Vec<u8>, reach: Reach) {
+    let (variant, namespace, database) = match reach {
+        Reach::Store => (0_u8, 0_u32, 0_u32),
+        Reach::Namespace(namespace) => (1, namespace.get(), 0),
+        Reach::Database(namespace, database) => (2, namespace.get(), database.get()),
+    };
+    into.push(variant);
+    put_u32(into, namespace);
+    put_u32(into, database);
+}
+
+/// Read one back.
+///
+/// A variant this build does not know is refused rather than widened to the
+/// store, which is the key encoding's rule and holds for the same reason: a peer
+/// asking for a home this binary cannot name must not be answered with every
+/// tenancy's records.
+///
+/// # Errors
+///
+/// Returns [`Error::Malformed`] when the bytes are short or name a variant this
+/// build does not have.
+pub(crate) fn take_reach(from: &[u8], at: usize) -> Result<(Reach, usize)> {
+    let variant = *from.get(at).ok_or(Error::Malformed)?;
+    let (namespace, at) = take_u32(from, at.checked_add(1).ok_or(Error::Malformed)?)?;
+    let (database, at) = take_u32(from, at)?;
+    let reach = match variant {
+        0 => Reach::Store,
+        1 => Reach::Namespace(NamespaceId::new(namespace)),
+        2 => Reach::Database(NamespaceId::new(namespace), DatabaseId::new(database)),
+        _ => return Err(Error::Malformed),
+    };
+    Ok((reach, at))
+}
+
+/// A log's name on the wire: its home, then the writer allocating into it.
+///
+/// Fixed width for the reason [`put_reach`] is, and the writer is written
+/// always rather than only where a range admits two — a body that followed a
+/// sometimes-present field would start at two offsets, and a peer that guessed
+/// wrong would read a sequence out of a node identifier.
+pub(crate) fn put_log(into: &mut Vec<u8>, log: LogId) {
+    put_reach(into, log.home);
+    into.extend_from_slice(&log.writer.bytes());
+}
+
+/// Read one back.
+///
+/// # Errors
+///
+/// Returns [`Error::Malformed`] when the bytes are short or the home names a
+/// variant this build does not have.
+pub(crate) fn take_log(from: &[u8], at: usize) -> Result<(LogId, usize)> {
+    let (home, at) = take_reach(from, at)?;
+    let end = at.checked_add(NODE_ID_LEN).ok_or(Error::Malformed)?;
+    let writer: [u8; NODE_ID_LEN] = from
+        .get(at..end)
+        .ok_or(Error::Malformed)?
+        .try_into()
+        .map_err(|_| Error::Malformed)?;
+    Ok((LogId::new(home, Writer::new(writer)), end))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::panic)]
@@ -328,7 +466,14 @@ mod tests {
     /// exactly how this drifted to a five-byte greeting at version 3 while every
     /// test in the crate passed. The specification says six bytes; six bytes are
     /// written here by hand.
-    const SPECIFIED_GREETING: [u8; 6] = [b'T', b'E', b'S', b'S', 1, 0];
+    ///
+    /// The last byte moved from 0 to 1 in W267, and this test is the reason the
+    /// move was noticed at all: the minor bump was made in the engine, and the
+    /// **specification** is what had to be changed to match. Written out, the
+    /// constant makes a protocol change fail in this crate until somebody has
+    /// been to `spec/protocol-v1.md` §2.3 and §3.1 and changed the document a
+    /// third-party client is written against.
+    const SPECIFIED_GREETING: [u8; 6] = [b'T', b'E', b'S', b'S', 1, 1];
 
     /// A peer: what it will say, and what it hears.
     ///
@@ -373,7 +518,7 @@ mod tests {
             peer.heard, SPECIFIED_GREETING,
             "what this node puts on the wire is not what the specification says"
         );
-        assert_eq!(minor, 0, "the peer's minor is kept, not discarded");
+        assert_eq!(minor, 1, "the peer's minor is kept, not discarded");
     }
 
     #[test]

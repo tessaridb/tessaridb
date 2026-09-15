@@ -337,8 +337,32 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
         " SCHEMALESS"
     });
     write_identity(script, definition);
+    write_conflict(script, definition);
     script.push_str(";\n");
     Ok(())
+}
+
+/// What the table does with a write it cannot order, written only when the
+/// author said it.
+///
+/// Unlike the strictness word and the naming scheme, this is **not** written
+/// when it was never declared. Those two are always emitted because their
+/// defaults can MOVE between builds, so a declaration that omitted them would
+/// quietly mean something else on the next one. A silent conflict policy cannot
+/// drift that way: ADR-0075 defines the absence itself as a refusal, and it is
+/// the refusal the whole goal exists to make. Emitting `REFUSE CONFLICTS` here
+/// anyway would put a word into every existing table's declaration that its
+/// author did not write, which is a different claim about what was declared.
+///
+/// Written at all because without it a table that declares `LAST WRITER WINS`
+/// describes itself as one that refuses: the report and the declaration rebuilt
+/// from it would be identical for two tables whose writes behave differently,
+/// and a schema round trip would compare two agreeing reports having produced
+/// the wrong table.
+fn write_conflict(script: &mut String, definition: &TableDefinition) {
+    if let Some(policy) = definition.conflict {
+        let _ = write!(script, " {policy}");
+    }
 }
 
 /// The naming scheme, written for the same reason the strictness word is.

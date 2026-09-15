@@ -265,6 +265,11 @@ impl Select<Sourced> {
             // this API — a builder that has not seen an answer has nothing to
             // name.
             version: None,
+            // And no staleness tolerance. It says which nodes may answer, which
+            // is a routing decision an author takes about one read; a builder
+            // that carried one by default would be choosing where every read it
+            // assembles is allowed to land.
+            staleness: None,
             span: BUILT,
         };
         Ok(Query {

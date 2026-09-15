@@ -506,9 +506,16 @@ impl Needs {
             // authority as adding to it, and an `editor` of one database
             // undeclaring a namespace they hold no tenancy in is exactly what
             // this level exists to refuse.
-            StatementKind::DefineNamespace { .. } | StatementKind::DropNamespace { .. } => {
-                Self::MANAGE_STORE
-            }
+            //
+            // `ALTER NAMESPACE` joins them for the same reason a third time: it
+            // changes how many copies of a top-level container the cluster
+            // keeps, which is a decision about the store's shape rather than
+            // about anything stored in it. An `editor` of one database
+            // withdrawing replication from the namespace holding it would be a
+            // caller emptying a safety property they hold no tenancy over.
+            StatementKind::DefineNamespace { .. }
+            | StatementKind::AlterNamespace { .. }
+            | StatementKind::DropNamespace { .. } => Self::MANAGE_STORE,
             // **The fifteen that were `Write`, and this line is the owner's
             // fourth rule.** Creating and dropping the containers records live
             // in is `manage`, and changing the records is `write`, and neither
@@ -803,7 +810,14 @@ impl Session<'_> {
     /// existing reach check for `DEFINE USER … ON prod.orders` lives; the
     /// namespace spelling checks the same thing one level up, because a
     /// namespace nobody may reach is not a namespace they may grant in.
-    fn reach_of(&self, transaction: &mut Transaction<'_>, named: &ReachRef) -> Result<Reach> {
+    /// `pub(crate)` rather than private: `DEFINE REPLICA … REPLICATES` resolves
+    /// a subscription's reach and must resolve it with the same reader a grant
+    /// uses, or the two spellings of one thing acquire two meanings.
+    pub(crate) fn reach_of(
+        &self,
+        transaction: &mut Transaction<'_>,
+        named: &ReachRef,
+    ) -> Result<Reach> {
         match named {
             ReachRef::Store => Ok(Reach::Store),
             ReachRef::Namespace(name) => {
@@ -841,7 +855,9 @@ impl Session<'_> {
             UserGrant::Authorities(kinds) => {
                 let mut held = Held::nothing();
                 for named in kinds {
-                    held.add(Authority::new(kind_named(named)?, reach));
+                    let kind = kind_named(named)?;
+                    holdable_at(kind, reach, span)?;
+                    held.add(Authority::new(kind, reach));
                 }
                 Ok(held)
             }
@@ -866,6 +882,14 @@ impl Session<'_> {
         // kind reads as a mistyped kind rather than as an unknown user.
         let kinds = kinds.iter().map(kind_named).collect::<Result<Vec<_>>>()?;
         let reach = self.reach_of(transaction, reach)?;
+        // Before `may_hand_out`, and the order is the message. Asked after it, a
+        // namespace owner naming `replicate` would be told they do not hold it —
+        // which is true, and sends them to ask somebody for a grant that nobody
+        // can make. Asked here, they are told the kind does not come in that
+        // size.
+        for kind in &kinds {
+            holdable_at(*kind, reach, span)?;
+        }
         self.may_hand_out(&kinds, reach, span)?;
         let mut found = self.user_to_change(transaction, user, span)?;
         // And the reach has to meet the subject's own `ON` somewhere, or the
@@ -1134,8 +1158,8 @@ impl Session<'_> {
 /// The kind a word names, refused when it names none.
 ///
 /// The refusal carries the whole set rather than only the rejection, because
-/// there are five of them and a reader who mistyped one is a reader who does not
-/// yet know which five.
+/// there are six of them and a reader who mistyped one is a reader who does not
+/// yet know which six.
 fn kind_named(named: &Name) -> Result<Kind> {
     Kind::parse(&named.text).ok_or_else(|| Error::NoSuchAuthority {
         name: named.text.clone(),
@@ -1145,6 +1169,31 @@ fn kind_named(named: &Name) -> Result<Kind> {
             .collect::<Vec<_>>()
             .join(", "),
         span: named.span,
+    })
+}
+
+/// Refuse a kind named somewhere its kind cannot be held.
+///
+/// One function called from both statements, because the two are the same
+/// question about the same model and a rule written twice is a rule that will
+/// one day disagree with itself. `DEFINE USER … AUTHORITIES replicate` and
+/// `GRANT replicate ON NAMESPACE …` are the only two places a caller names a
+/// kind and a reach together.
+///
+/// Deliberately not asked of `REVOKE`: taking away an authority nobody can hold
+/// removes nothing and is already idempotent, and refusing it would stop an
+/// administrator cleaning up a row an older binary wrote.
+///
+/// # Errors
+///
+/// [`Error::NotAtThatReach`] when `kind` cannot be held at `reach`.
+fn holdable_at(kind: Kind, reach: Reach, span: Span) -> Result<()> {
+    if kind.may_be_held_at(reach) {
+        return Ok(());
+    }
+    Err(Error::NotAtThatReach {
+        kind: kind.name(),
+        span,
     })
 }
 

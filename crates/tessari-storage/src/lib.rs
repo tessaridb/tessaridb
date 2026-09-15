@@ -25,12 +25,15 @@ mod adjacency;
 mod audit;
 mod cardinality;
 mod catalog;
+mod collections;
 mod covering;
 mod error;
 mod expiry;
 mod feed;
+mod followers;
 mod graph;
 mod index;
+mod lease;
 mod log;
 mod node;
 mod reclaim;
@@ -40,6 +43,7 @@ mod sealing;
 mod series;
 mod snapshots;
 mod store;
+mod tailmarks;
 mod transaction;
 mod vault;
 
@@ -47,15 +51,17 @@ pub use catalog::{
     AnalyzerDefinition, Authority, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, Catalog,
     ConsumerDefinition, DatabaseDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeKindDefinition,
     EdgeOrder, FieldDefinition, FieldShape, GEO_FIELD, GrantDefinition, GraphDefinition, Held,
-    IndexDefinition, IndexShape, Kind, Mapped, NamespaceDefinition, OnFailure, QUEUE_ATTEMPTS,
-    QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, Reach,
-    ReplicaDefinition, Role, SYSTEM_DATABASE, SYSTEM_NAMESPACE, SeriesDeclaration, StoredKind,
-    TableDefinition, TableKind, TableShape, UserDefinition, VECTOR_FIELD, VaultDeclaration,
-    VectorDeclaration, VectorDistance, Verb, ViewDeclaration,
+    IndexDefinition, IndexShape, Kind, LeadershipDefinition, Mapped, NamespaceDefinition,
+    OnFailure, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration,
+    RECORD_LEVEL, Reach, ReplicaDefinition, Role, SYSTEM_DATABASE, SYSTEM_NAMESPACE,
+    SeriesDeclaration, StoredKind, TableDefinition, TableKind, TableShape, UserDefinition,
+    VECTOR_FIELD, VaultDeclaration, VectorDeclaration, VectorDistance, Verb, ViewDeclaration,
+    another_node_may_write, names_a_peer, the_row_a_greeting_binds,
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.
 pub use catalog::VaultRoot;
+pub use collections::{Collection, Collections, Currency};
 pub use covering::MEASURED_RELATION;
 pub use expiry::Expired;
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
@@ -63,7 +69,9 @@ pub use expiry::Expired;
 pub use audit::{AuditDevice, AuditTrail, VaultRead, entries as audit_entries, reads_by};
 pub use error::{Error, Result};
 pub use feed::{Change, ChangeKind, Changes, Subscription, Watch};
+pub use followers::FollowerLag;
 pub use graph::vector_of;
+pub use lease::{GUARD as LEASE_GUARD, Lease, TTL as LEASE_TTL};
 pub use reclaim::Reclaimed;
 pub use running::{Progress, Running};
 pub use schema::{Violation, violations};
@@ -72,7 +80,7 @@ pub use sealing::{
     open_field, recipients, remove_recipient, reseal_named, seal_secrets, vault_key_scope,
 };
 pub use store::{Health, Store};
-pub use tessari_encoding::{BUILD_VERSION, Roles};
+pub use tessari_encoding::{BUILD_VERSION, LogId, NODE_ID_LEN, Roles, Writer};
 pub use transaction::{
     Expansion, Nearby, Neighbour, RecordAddress, Region, StoredRecord, Transaction,
 };

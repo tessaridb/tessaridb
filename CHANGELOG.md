@@ -12,6 +12,106 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.2.0-beta — 2026-09-15
+
+**The cluster.** A node joins a running cluster, leadership is elected and
+fenced, a namespace says how many copies are kept and how many nodes may write
+it, a read may say how stale an answer it will take, and two nodes may write one
+range. The middle number moves because the language and the on-disk format both
+grew: a store written by `0.1.x` is rewritten once at open, and there is no way
+back.
+
+**A node joins rather than being configured.** The newcomer declares **no
+membership of its own** — one `--seed` naming a node and an address, and the
+membership reaches it through the same replication as everything else. That is
+not a convenience: a cluster whose nodes were each told their own membership
+before starting holds several logs carrying *different records at the same
+positions*, written under no leadership, so nothing reports it. A node that
+writes no membership row cannot produce that. The seed is read only while the
+catalog names no peer other than this node itself, so a restart needs no flag.
+
+**A leadership is a lease, and it fences before it is replaced.** A node whose
+catalog names another node writes under a leadership and at no other time; until
+a majority of the coordinating members grants it one it refuses writes, with a
+refusal that names the remedy. The lease counts down to the moment **this node**
+stops, deliberately earlier than the moment the cluster may hand the leadership
+to somebody else — the gap covers two clocks nobody synchronised. It is measured
+on elapsed time, because a clock that steps backwards would *extend* a fence.
+
+**A write for a range another node leads is refused with somewhere to go.** The
+refusal names the address, the node to expect there and the epoch that node took
+the range under, and it is a different sentence from *holds no leadership*: the
+first says go there, the second says wait. A redirect reaches a client as a
+**frame** with a `settled`/`transient` discriminator rather than as an error, and
+maps to `307` over HTTP.
+
+**A read may name how stale an answer it will accept.** `STALENESS` is a
+**candidate filter, never a marker** — it decides which nodes may answer rather
+than labelling the answer, because a marker nobody is obliged to read is not a
+guarantee. A bound tighter than twice the awareness interval is refused **with
+the floor named**, and a read no node can satisfy is refused rather than quietly
+promoted to the one node that certainly can.
+
+**Two writers on one range, and the conflict is named rather than resolved.**
+`DEFINE NAMESPACE … MULTI MASTER` admits writes on more than one node. What that
+gives up is single-copy semantics: two nodes can each write one record without
+seeing the other, and **neither version is newer** — no clock settles it, and the
+engine cannot tell you which is right because nothing knows. So a write onto such
+a record is **refused**, naming the record, both surviving versions and a node
+whose write one carries and the other has not seen. `DEFINE TABLE … LAST WRITER
+WINS` is the declared alternative; the last writer is the **caller** and not a
+timestamp, and every version it discards is **counted**, because a loss nobody
+records is a loss nobody can check. `INFO FOR VERSIONS OF person:1` reads it
+back, on a single-leader range too.
+
+**The log is per range, and a backup carries one section per log.** The sequence
+and the epoch are properties of a range rather than of the machine, so a key
+carries its home. A whole backup and a whole restore are unchanged; a **bounded**
+one — `--from`, `--upto` — refuses a multi-log store, because one sequence means
+nothing across several logs and backing up one range while calling it the store
+is the failure that would not announce itself.
+
+**A record's version is its own counter.** It had been the log position a replica
+resumes from, the version every mutation is stamped at, and the applied-position
+guard, all at once — which worked only while a single leader made every timeline
+the same timeline. The new counter is seeded at open from the applied position,
+so existing records keep the numbers they hold.
+
+**Index maintenance chose definitions by table id alone, and a table id is not a
+key on its own.** Ids are handed out store-wide while the system catalog reserves
+the first eighteen, so a catalog write selected the indexes of whatever user
+table shared its number and wrote its value into that user's keyspace. Two
+databases in different namespaces could not share a name, and a record could not
+hold a value that was also some database's name — both refused by an index
+neither statement mentioned, and only ever when a value happened to collide.
+Selected by the whole tenancy now.
+
+**`INFO FOR NODE` answers in two named groups**, the flat fields describing this
+machine and everything under `cluster` describing the topology, because that is
+the line a backup must not cross. It reports each peer's subscription, which
+followers have actually collected and how far behind each is in **both**
+sequences and time, and the time left on this node's lease.
+
+### What is still absent
+
+- **The nearest few is over positions, and the spatial index is untuned**, as in
+  `0.1.0-beta`.
+  <!-- absent: distance-to-a-shape-larger-than-a-position -->
+  <!-- absent: nearest-first-under-a-where -->
+  <!-- absent: measured-covering-budget -->
+- **No sharding.** A namespace lives where its replication says and a range is
+  led by one node or declared open to several, but the store does not split a
+  range across machines and there is no scatter-gather read.
+  <!-- absent: sharding-execution -->
+- **No cross-range transaction.** A transaction is judged on the node leading the
+  range it writes.
+  <!-- absent: cross-range-transactions -->
+- **Not published to crates.io.** Every crate carries `publish = false`.
+  <!-- absent: published-to-crates-io -->
+- **No migration between versions**, with the one exception above: a `0.1.x`
+  store is rewritten once at open, one way.
+  <!-- absent: migration-between-versions -->
+
 ## 0.1.1-beta — 2026-09-11
 
 A patch release, and the reason to cut one rather than wait is the first
@@ -215,7 +315,7 @@ rather than the view's records.
 holder at a time under a hold that lapses — `DEFINE QUEUE jobs TIMEOUT 30s
 ATTEMPTS 5`, then `CLAIM FROM jobs`, `DELETE jobs:7` when the work is done and
 `RELEASE jobs:7` to hand it back early. That makes ten engines over one substrate
-rather than nine. **1349 conformance cases** define the language and run in the
+rather than nine. **1359 conformance cases** define the language and run in the
 build, up from 1237.
 
 The design is the part worth reading, because a queue is normally where a store
@@ -1346,7 +1446,6 @@ absences is worse than one that is missing more.
 - **No sharding, no replication, no cluster membership.** Peers can be declared
   and read back; nothing replicates between them. The language has words for
   these; the engine does not have the machinery.
-  <!-- absent: sharding-replication-cluster-membership -->
 - **Not published to crates.io.** Every crate carries `publish = false`. Build it
   from source.
   <!-- absent: published-to-crates-io -->

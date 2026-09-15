@@ -33,6 +33,7 @@ mod context;
 mod describe;
 mod digest;
 mod effect;
+mod elsewhere;
 mod encoding;
 mod error;
 mod evaluate;
@@ -62,6 +63,7 @@ mod vector;
 mod view;
 
 pub use effect::{Effect, admits};
+pub use elsewhere::{Elsewhere, Peer};
 pub use error::{Depended, Error, Result};
 pub use outcome::{AccessPath, Exactness, Nearest, Note, Outcome, Suggestion};
 pub use plan::Plan;

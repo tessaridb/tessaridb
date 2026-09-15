@@ -24,7 +24,9 @@
 //! is not there, so the answer is unchanged — and a deleted record stops costing
 //! space, which is the whole point of deleting it.
 
-use tessari_encoding::{ReclaimFloorKey, RecordKey, RecordValue, StoreKey, StoreValue};
+use tessari_encoding::{
+    ReclaimFloorKey, RecordKey, RecordValue, StampedValue, StoreKey, StoreValue,
+};
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
 
@@ -100,7 +102,7 @@ impl Store {
                 // gives every one of those readers the same answer for less
                 // space.
                 if matches!(
-                    RecordValue::decode(value.as_slice())?,
+                    StampedValue::decode(value.as_slice())?.into_value(),
                     RecordValue::Tombstone
                 ) {
                     batch = batch.delete(RecordKey::keyspace(), key);

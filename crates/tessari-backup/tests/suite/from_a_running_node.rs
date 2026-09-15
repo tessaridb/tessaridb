@@ -89,28 +89,46 @@ fn a_backup_taken_through_the_language_verifies_and_restores() {
 }
 
 #[test]
-fn an_increment_carries_what_happened_after_it_and_the_two_together_are_the_whole() {
+fn an_increment_through_the_language_is_refused_where_a_sequence_names_no_log() {
+    // `BACKUP FROM n` gives the node one number, and a number counts in one log.
+    // This store holds several — the store's own and the shop's — so sequence
+    // `n` in each is a different moment, and a file bounded by one of them would
+    // read as whole while missing the rest (Q-625).
+    //
+    // This test used to take an increment here and prove the two files together
+    // were the whole store. It cannot any more, and the refusal is why: an
+    // increment names a log, and `FROM n` has no way to. What replaces it is
+    // `write_from`, which takes the log — exercised in `restore.rs` and
+    // `catch_up.rs` — until the statement can name one too.
     let source = store();
     let mut session = ready(&source);
     let base = taken(&mut session, "BACKUP;");
-    let at = tessari_backup::verify(&mut base.as_slice()).unwrap().tail;
-
-    session.run("CREATE orders:3 = { total: 11 };").unwrap();
-    let increment = taken(
-        &mut session,
-        &format!("BACKUP FROM {};", at.get().saturating_add(1)),
+    assert!(
+        tessari_backup::verify(&mut base.as_slice())
+            .unwrap()
+            .logs
+            .len()
+            > 1
     );
 
+    session.run("CREATE orders:3 = { total: 11 };").unwrap();
+    let refused = session.run("BACKUP FROM 2;").unwrap_err();
+    assert!(
+        refused.to_string().contains("one sequence"),
+        "refused for the wrong reason: {refused}"
+    );
+
+    // And the whole backup still answers with the whole store, which is the
+    // half that did not change.
     let restored_store = store();
     tessari_backup::read(&restored_store, &mut base.as_slice()).unwrap();
-    tessari_backup::read(&restored_store, &mut increment.as_slice()).unwrap();
     let mut restored = Session::new(&restored_store);
     restored
         .run("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
     assert_eq!(
         ids(&mut restored, "SELECT * FROM orders;"),
-        vec![RecordId::Int(1), RecordId::Int(2), RecordId::Int(3)]
+        vec![RecordId::Int(1), RecordId::Int(2)]
     );
 }
 

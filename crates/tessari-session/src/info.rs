@@ -44,17 +44,17 @@
 
 use std::collections::BTreeMap;
 
-use tessari_encoding::{SpatialRefinement, VectorRecall};
+use tessari_encoding::{NODE_ID_LEN, SpatialRefinement, VectorRecall};
 use tessari_ql::{
     Answer, Identity as RecordIdentity, InfoSubject, Name, Projection, RecordTarget, Select,
     Source, Span, StatementKind, TableRef,
 };
 use tessari_storage::{
-    BUILD_VERSION, Catalog, ConsumerDefinition, FieldDefinition, GEO_FIELD, GrantDefinition,
-    IndexDefinition, MEASURED_RELATION, Progress, Reach, ReplicaDefinition, TableDefinition,
-    TableKind, Transaction, UserDefinition,
+    BUILD_VERSION, Catalog, ConsumerDefinition, FieldDefinition, FollowerLag, GEO_FIELD,
+    GrantDefinition, IndexDefinition, MEASURED_RELATION, Progress, Reach, ReplicaDefinition,
+    TableDefinition, TableKind, Transaction, UserDefinition,
 };
-use tessari_types::{DatabaseId, NamespaceId, Number, TableId, Value};
+use tessari_types::{DatabaseId, NamespaceId, Number, RecordId, Sequence, TableId, Value};
 
 use crate::describe;
 use crate::error::{Error, Result};
@@ -82,6 +82,7 @@ impl Session<'_> {
             InfoSubject::Vault(name) => self.info_vault(transaction, name, span)?,
             InfoSubject::Bucket(name) => self.info_bucket(transaction, name, span)?,
             InfoSubject::Recipients(target) => self.info_recipients(transaction, target, span)?,
+            InfoSubject::Versions(target) => self.info_versions(transaction, target, span)?,
             InfoSubject::Audit(actor) => self.info_audit(actor.as_ref())?,
             InfoSubject::User(name) => self.info_user(transaction, name, span)?,
             InfoSubject::Users => self.info_users(transaction)?,
@@ -117,7 +118,15 @@ impl Session<'_> {
         Ok(BTreeMap::from([("namespaces".to_owned(), by_name(names))]))
     }
 
-    /// The databases in the selected namespace.
+    /// The databases in the selected namespace, and how many copies of it the
+    /// cluster is asked to keep.
+    ///
+    /// The replication key is **present either way**, and answers `NONE` — the
+    /// `Value::None` that means *no value here*, not the policy spelled
+    /// `REPLICATION NONE` — for a namespace that never stated one. Reporting it
+    /// only when it was set would make silence look like a missing feature
+    /// rather than an unanswered question, and this answer is the only place an
+    /// operator can see which of the two they have (ADR-0060).
     fn info_namespace(
         &self,
         transaction: &mut Transaction<'_>,
@@ -125,6 +134,26 @@ impl Session<'_> {
     ) -> Result<BTreeMap<String, Value>> {
         let namespace = self.namespace_id(transaction, span)?;
         let own = self.identity.user().and_then(|user| user.database);
+        let held = Catalog::new(transaction).namespace(namespace)?;
+        let replication = held
+            .as_ref()
+            .and_then(|definition| definition.replication)
+            .map_or(Value::None, tessari_types::Replication::to_value);
+        // G027 S4.1. How many writers the range admits is not derivable from
+        // anything else in this report, and it decides what a write to it MEANS:
+        // on a multi-master range a concurrent write is refused and named
+        // (ADR-0075), and on a single-leader one it cannot arise. An operator
+        // who cannot read the class from the engine is guessing which semantics
+        // their data has.
+        //
+        // `NONE` where nothing was declared, rather than the key being absent:
+        // silence is a decision here — an undeclared namespace is single-leader
+        // — and a missing key and a key holding `NONE` are different statements
+        // to anything reading this report. Its neighbour above already uses the
+        // same convention for the same reason.
+        let class = held
+            .and_then(|definition| definition.class)
+            .map_or(Value::None, tessari_types::ReplicationClass::to_value);
         let mut names = Vec::new();
         for database in Catalog::new(transaction).databases_in(namespace)? {
             if own.is_some_and(|id| id != database.id) {
@@ -132,7 +161,11 @@ impl Session<'_> {
             }
             names.push(database.name);
         }
-        Ok(BTreeMap::from([("databases".to_owned(), by_name(names))]))
+        Ok(BTreeMap::from([
+            ("databases".to_owned(), by_name(names)),
+            ("replication".to_owned(), replication),
+            ("class".to_owned(), class),
+        ]))
     }
 
     /// The tables in the selected database, narrowed to those this session may
@@ -307,6 +340,71 @@ impl Session<'_> {
             "recipients".to_owned(),
             Value::Object(entries),
         )]))
+    }
+
+    /// `INFO FOR VERSIONS OF person:1` — every surviving version of one record,
+    /// the node that wrote each, and whether they are contested (G027 S4.3).
+    ///
+    /// # What this exists to return
+    ///
+    /// A record two nodes wrote without seeing each other holds two versions
+    /// that neither supersedes. Every ordinary read answers with the newest of
+    /// them; the other is still on disk, byte-intact, and reachable by nothing.
+    /// An operator auditing for data loss finds both versions and concludes
+    /// nothing was lost — the bytes are there, and what was missing until this
+    /// statement is any path that returns them.
+    ///
+    /// # Three fields, and one of them is derived
+    ///
+    /// `answered` is the version an ordinary read resolves to, with the node
+    /// that wrote it. `versions` is every survivor, newest first — one row on a
+    /// settled record, which is most of them. `concurrent` is the flag the
+    /// criterion names and it comes from `CausalVersions::is_contested`, the
+    /// type that owns supersession, rather than from the length of the list: two
+    /// routines answering one question come to disagree, and the disagreement
+    /// here would be a contested record reported as settled.
+    ///
+    /// # It answers on a single-leader range too
+    ///
+    /// With one version and `concurrent: false`. A report that refused outside
+    /// multi-master would make *is this contested?* unanswerable exactly where
+    /// an operator who has just changed a namespace's class most wants to ask.
+    fn info_versions(
+        &self,
+        transaction: &mut Transaction<'_>,
+        target: &RecordTarget,
+        span: Span,
+    ) -> Result<BTreeMap<String, Value>> {
+        let (_, address) = self.address(transaction, target)?;
+        let (surviving, concurrent) = transaction.surviving_writers(&address)?;
+        let Some((newest, writer)) = surviving.first() else {
+            return Err(Error::NoSuchRecord {
+                id: address.id.to_string(),
+                span,
+            });
+        };
+        let described = |at: Sequence, node: &[u8; NODE_ID_LEN]| {
+            Value::Object(BTreeMap::from([
+                ("version".to_owned(), Value::from(at.to_string())),
+                (
+                    "node".to_owned(),
+                    Value::from(RecordId::Uuid(*node).to_string()),
+                ),
+            ]))
+        };
+        Ok(BTreeMap::from([
+            ("answered".to_owned(), described(*newest, writer)),
+            (
+                "versions".to_owned(),
+                Value::Array(
+                    surviving
+                        .iter()
+                        .map(|(at, node)| described(*at, node))
+                        .collect(),
+                ),
+            ),
+            ("concurrent".to_owned(), Value::Bool(concurrent)),
+        ]))
     }
 
     /// `INFO FOR AUDIT` — every recorded vault read, oldest first.
@@ -788,10 +886,47 @@ impl Session<'_> {
     /// second node to test against, is the mistake ADR-0018 §3 already made once.
     fn info_node(&self, transaction: &mut Transaction<'_>) -> Result<BTreeMap<String, Value>> {
         let identity = self.store.node_identity()?;
-        let peers = Catalog::new(transaction)
+        let catalog = Catalog::new(transaction);
+        let peers = catalog
             .replicas()?
             .iter()
-            .map(described_replica)
+            .map(|replica| described_replica(replica, &catalog))
+            .collect::<Result<Vec<_>>>()?;
+        let peers = Value::Array(peers);
+        // Asked of the catalog rather than computed from `peers` above, so that
+        // what is reported and what a reopen would adopt are one answer to one
+        // question. `null` when nothing names this node — which is a different
+        // statement from an empty role set, and the difference is the whole
+        // point: no row is *unbound*, an empty set is *drained*.
+        let desired = match catalog.desired_roles(&identity.id)? {
+            Some(roles) => Value::Array(roles.names().into_iter().map(Value::from).collect()),
+            None => Value::Null,
+        };
+        // Asked of the store rather than the catalog: `REPLICAS` is what the
+        // cluster was told, and this is what actually collected. A peer
+        // declared and never seen appears in `peers` and not here, which is
+        // the most useful thing either list says.
+        // Asked through `health()` rather than of the lease directly, so that
+        // this and `/metrics` are one answer to one question rather than two
+        // that can drift.
+        let held = self.store.health()?;
+        let campaigns = held.campaigns;
+        let lease = match held.lease_remaining {
+            Some(left) => tessari_types::Duration::new(
+                i64::try_from(left.as_secs()).unwrap_or(i64::MAX),
+                left.subsec_nanos(),
+            )
+            .map_or(Value::Null, Value::Duration),
+            None => Value::Null,
+        };
+        let leading = self.store.leading().map_or(Value::Null, |epoch| {
+            Value::from(i64::try_from(epoch.get()).unwrap_or(i64::MAX))
+        });
+        let followers = self
+            .store
+            .follower_lag()?
+            .into_iter()
+            .map(described_follower)
             .collect();
         Ok(BTreeMap::from([
             (
@@ -799,10 +934,16 @@ impl Session<'_> {
                 Value::from(identity.record_id().to_string().as_str()),
             ),
             (
+                // The **effective** role of §6.1, which is the adopted set as
+                // the lease leaves it — asked of the store rather than read off
+                // the identity, so that a node cannot report `writable` while
+                // its fence refuses every write. `cluster.desired` below is
+                // untouched by the lease and must be: the pair is only worth
+                // anything while the two can differ.
                 "roles".to_owned(),
                 Value::Array(
-                    identity
-                        .roles
+                    self.store
+                        .effective_roles()?
                         .names()
                         .into_iter()
                         .map(Value::from)
@@ -833,7 +974,53 @@ impl Session<'_> {
             ),
             (
                 "cluster".to_owned(),
-                Value::Object(BTreeMap::from([("peers".to_owned(), Value::Array(peers))])),
+                Value::Object(BTreeMap::from([
+                    ("peers".to_owned(), peers),
+                    // On the replicated side of ADR-0018's line, because that is
+                    // where it comes from: `roles` above is what this machine
+                    // holds and a backup would not carry, `desired` is what the
+                    // cluster says and every node does carry.
+                    ("desired".to_owned(), desired),
+                    // Beside the peers rather than inside them: a row here is
+                    // about a follower that has collected, and `peers` is about
+                    // what was declared. Joining them would put a lag figure on
+                    // a peer that has never asked for anything.
+                    ("followers".to_owned(), Value::Array(followers)),
+                    // `null` on a node nobody made a leader, which is a
+                    // different statement from zero: a store standing alone is
+                    // not a leader whose time has run out. When it is a
+                    // duration it is the one the concept names as the
+                    // split-brain signal — this at zero while writes are still
+                    // being taken is the state the fence exists to prevent.
+                    ("lease".to_owned(), lease),
+                    // The other half of the pair an operator watches. A lease
+                    // heading toward zero says *how long*, and this says *what
+                    // for* — without it a report cannot distinguish a node
+                    // renewing the leadership it already held from one that has
+                    // just taken it from somebody else, which is the difference
+                    // between a quiet cluster and a failover nobody saw.
+                    //
+                    // `null` on a node no round ever granted anything to, on the
+                    // same reasoning as the lease beside it: not leading is a
+                    // different statement from leading under the first epoch.
+                    ("epoch".to_owned(), leading),
+                    // The third of the pair, and the one that says whether the
+                    // cluster is QUIET. A healthy cluster's followers do not
+                    // stand against a leader they can hear (ADR-0066), so this
+                    // staying flat while somebody holds a lease is the
+                    // observable form of that rule — and a number climbing on a
+                    // node that is not leading says the gate has stopped
+                    // working, which nothing else here would show.
+                    //
+                    // Rounds STOOD and not rounds won: a round that loses is
+                    // exactly the noise worth seeing. From the same `health()`
+                    // the lease above comes from and `/metrics` reports, so the
+                    // two surfaces cannot drift.
+                    (
+                        "campaigns".to_owned(),
+                        Value::from(i64::try_from(campaigns).unwrap_or(i64::MAX)),
+                    ),
+                ])),
             ),
         ]))
     }
@@ -1071,8 +1258,8 @@ fn running_state(progress: Option<&Progress>) -> Value {
 /// An object rather than a bare endpoint, because a peer has a name an operator
 /// wrote and an address they may change, and a list of addresses could not say
 /// which one moved.
-fn described_replica(replica: &ReplicaDefinition) -> Value {
-    Value::Object(BTreeMap::from([
+fn described_replica(replica: &ReplicaDefinition, catalog: &Catalog<'_, '_>) -> Result<Value> {
+    Ok(Value::Object(BTreeMap::from([
         ("name".to_owned(), Value::from(replica.name.as_str())),
         (
             "endpoint".to_owned(),
@@ -1086,6 +1273,112 @@ fn described_replica(replica: &ReplicaDefinition) -> Value {
         (
             "roles".to_owned(),
             Value::Array(replica.roles.names().into_iter().map(Value::from).collect()),
+        ),
+        // Reported for the same reason `roles` is, one step further: a binding
+        // an operator can write and cannot read back is one they cannot check,
+        // and the mistake it hides is the quiet one — a row bound to the wrong
+        // id names a node that does not exist, so nothing converges and nothing
+        // complains. Rendered as the id's own spelling, which is what `id` above
+        // prints and what the `NODE` clause reads back.
+        (
+            "node".to_owned(),
+            replica.node.map_or(Value::Null, Value::Uuid),
+        ),
+        // The third of three, and the one with the quietest failure: a peer
+        // subscribed to nothing receives nothing, and a cluster in that state
+        // reports no error anywhere — every node is up, every greeting lands,
+        // and one copy simply never changes. Written back in the spelling the
+        // clause takes, so what this prints can be pasted into the statement
+        // that would correct it.
+        (
+            "replicates".to_owned(),
+            match replica.replicates {
+                None => Value::Null,
+                Some(reach) => Value::from(spelled_reach(reach, catalog)?.as_str()),
+            },
+        ),
+    ])))
+}
+
+/// A subscription's reach, written the way the clause writes it.
+///
+/// Names and not ids: an id is a number the operator never typed and cannot act
+/// on, and the whole reason to report a setting is that somebody can compare it
+/// against what they meant. A name the catalog has lost is reported as the id it
+/// could not resolve rather than omitted — a row pointing at a namespace that no
+/// longer exists is precisely the state worth seeing.
+fn spelled_reach(reach: Reach, catalog: &Catalog<'_, '_>) -> Result<String> {
+    Ok(match reach {
+        Reach::Store => "STORE".to_owned(),
+        Reach::Namespace(namespace) => {
+            format!("NAMESPACE {}", namespace_named(namespace, catalog)?)
+        }
+        Reach::Database(namespace, database) => {
+            let held = catalog
+                .databases_in(namespace)?
+                .into_iter()
+                .find(|found| found.id == database)
+                .map_or_else(|| database.get().to_string(), |found| found.name);
+            format!("DATABASE {}.{held}", namespace_named(namespace, catalog)?)
+        }
+    })
+}
+
+/// One namespace's name, or its id when the catalog no longer holds it.
+fn namespace_named(namespace: NamespaceId, catalog: &Catalog<'_, '_>) -> Result<String> {
+    Ok(catalog
+        .namespace(namespace)?
+        .map_or_else(|| namespace.get().to_string(), |found| found.name))
+}
+
+/// One follower, as the leader has experienced it.
+///
+/// Both units, because each has a blind spot the other covers. A follower that
+/// stopped collecting while this leader was idle is behind by nothing at all —
+/// `behind` reads zero and it looks well, because in sequences it *is* well;
+/// only `quiet_for` grows. A follower collecting steadily but unable to keep up
+/// has almost no `quiet_for`; only `behind` grows. That is why PostgreSQL
+/// publishes positions and lags from the primary rather than either alone.
+///
+/// `quiet_for` is time since this follower last collected. `copy_age` is the
+/// other question — how old the data it holds is — and the two come apart on an
+/// idle leader, where a perfectly level follower's `quiet_for` grows for as long
+/// as there is nothing to collect while its copy stays current. `copy_age` is
+/// read against the leader's own timeline of its tail, so it is an upper bound
+/// overstating by at most one sampling interval, and it is `null` when the copy
+/// predates everything this leader has sampled — beyond every bound, not zero.
+fn described_follower(lag: FollowerLag) -> Value {
+    Value::Object(BTreeMap::from([
+        ("node".to_owned(), Value::Uuid(lag.node)),
+        (
+            "sequence".to_owned(),
+            Value::Number(tessari_types::Number::Integer(
+                i64::try_from(lag.sequence.get()).unwrap_or(i64::MAX),
+            )),
+        ),
+        (
+            "behind".to_owned(),
+            Value::Number(tessari_types::Number::Integer(
+                i64::try_from(lag.behind).unwrap_or(i64::MAX),
+            )),
+        ),
+        (
+            "quiet_for".to_owned(),
+            tessari_types::Duration::new(
+                i64::try_from(lag.quiet_for.as_secs()).unwrap_or(i64::MAX),
+                lag.quiet_for.subsec_nanos(),
+            )
+            .map_or(Value::Null, Value::Duration),
+        ),
+        (
+            "copy_age".to_owned(),
+            lag.copy_age.map_or(Value::Null, |age| {
+                tessari_types::Duration::new(
+                    i64::try_from(age.as_secs()).unwrap_or(i64::MAX),
+                    age.subsec_nanos(),
+                )
+                .map_or(Value::Null, Value::Duration)
+            }),
         ),
     ]))
 }
@@ -1264,6 +1557,10 @@ fn reading(table: &TableRef) -> StatementKind {
         using: None,
         timeout: None,
         version: None,
+        // This statement is never sent anywhere: it exists to be judged against
+        // a grant. A tolerance for how stale an answering node may be has no
+        // bearing on whether the read would be permitted.
+        staleness: None,
         span: table.span,
     }))
 }
@@ -1318,6 +1615,25 @@ fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> {
         (
             "identity".to_owned(),
             Value::from(definition.identity.name()),
+        ),
+        // G027 S4.1, and reported for the reason `collection` and `vault` above
+        // are, with the consequence one step further out. A table that declares
+        // `LAST WRITER WINS` and one that declares nothing accept the same
+        // writes and differ only in what happens to a write they cannot order:
+        // the first takes it and counts the loss, the second refuses and names
+        // both versions. Omit this and the two describe themselves identically,
+        // and the declaration rebuilt below loses the words that decide which
+        // one it is.
+        //
+        // `NONE` where nothing was declared, rather than an absent key: silence
+        // is a refusal by decision (ADR-0075), not by default, and a report that
+        // says nothing about it cannot be distinguished from one taken off a
+        // build that had never heard of the clause.
+        (
+            "conflict".to_owned(),
+            definition
+                .conflict
+                .map_or(Value::None, tessari_types::ConflictPolicy::to_value),
         ),
     ]);
     // Present only on a view, and it carries the read rather than a flag. A

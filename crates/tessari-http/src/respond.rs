@@ -51,6 +51,18 @@ pub struct Answer {
     /// is bytes the store has no opinion about — it did not ask what they were
     /// when they went in, so it does not claim to know coming out.
     pub kind: &'static str,
+    /// Where this answer sends the caller instead, as a `Location`.
+    ///
+    /// `None` for every answer that is about this request, which is almost all
+    /// of them. It is a field rather than a decision at the writer because the
+    /// address is per-answer data — unlike the `WWW-Authenticate` challenge
+    /// beside a `401`, which is a constant and therefore follows from the status
+    /// alone.
+    ///
+    /// RFC 9110 is why it exists at all: a `307` without a `Location` is not a
+    /// redirect a client can act on, exactly as a `401` without a challenge is
+    /// not a `401` a client can act on.
+    pub location: Option<String>,
 }
 
 /// What an answer says it is.
@@ -69,6 +81,7 @@ impl Answer {
             status,
             body: body.into_bytes(),
             kind: JSON,
+            location: None,
         }
     }
 
@@ -79,6 +92,7 @@ impl Answer {
             status,
             body: body.into_bytes(),
             kind,
+            location: None,
         }
     }
 
@@ -89,6 +103,7 @@ impl Answer {
             status,
             body,
             kind: OCTETS,
+            location: None,
         }
     }
 
@@ -221,6 +236,38 @@ pub(crate) fn metrics(
             "tessari_background_errors {}\n",
             held.background_errors
         ));
+        // Any value above zero means this node was offered a record from a
+        // leadership other than the one it applied at that position, and refused
+        // it. It does not fall back to zero: the divergence an operator most
+        // needs to see is the one that stopped happening on its own.
+        out.push_str(
+            "# HELP tessari_log_divergences Log positions another leadership tried to rewrite.\n",
+        );
+        out.push_str("# TYPE tessari_log_divergences counter\n");
+        out.push_str(&format!(
+            "tessari_log_divergences {}\n",
+            held.log_divergences
+        ));
+
+        out.push_str("# HELP tessari_campaigns Leadership rounds this node has stood in.\n");
+        out.push_str("# TYPE tessari_campaigns counter\n");
+        out.push_str(&format!("tessari_campaigns {}\n", held.campaigns));
+        // Absent rather than zero on a node holding no lease, because a series
+        // that is always zero on every standalone store would train whoever
+        // watches it to ignore the one reading that matters. When it is here it
+        // is the split-brain signal: it heads toward zero, and zero while the
+        // node is still accepting writes is the state the lease exists to
+        // prevent.
+        if let Some(left) = held.lease_remaining {
+            out.push_str(
+                "# HELP tessari_lease_remaining_seconds Writable time left under this node's lease.\n",
+            );
+            out.push_str("# TYPE tessari_lease_remaining_seconds gauge\n");
+            out.push_str(&format!(
+                "tessari_lease_remaining_seconds {}\n",
+                left.as_secs_f64()
+            ));
+        }
     }
 
     // Worth a line of its own because it is the one number that says whether
@@ -763,6 +810,16 @@ pub(crate) fn failure(error: &Error) -> Answer {
         // refusal: nothing about the caller's authority is in question.
         Error::PasswordEmpty { .. } => 400,
         Error::Script(_) => 400,
+        // Not a failure at all. It is here because this surface has one door for
+        // everything the session returns, and it leaves through a different one.
+        //
+        // `307` and not `302`: only the temporary-redirect status promises that
+        // the method and the body survive the hop, and a `POST /script` whose
+        // script a client quietly dropped on the way to the other node is a
+        // worse outcome than the refusal this used to be. Not `301` or `308`
+        // either — both say *permanently*, and a redirect taken on how stale a
+        // copy is right now is the least permanent fact this store holds.
+        Error::ReadIsElsewhere { .. } => 307,
         // The caller wrote it right and the data says no. Retriable after a
         // change, which is the whole reason this is not a 400.
         //
@@ -790,7 +847,14 @@ pub(crate) fn failure(error: &Error) -> Answer {
     let mut body = String::from(r#"{"error":"#);
     json::string(&mut body, &error.to_string());
     body.push('}');
-    Answer::new(status, body)
+    let mut answer = Answer::new(status, body);
+    // The address travels in the header rather than only in the prose, for the
+    // same reason the challenge travels beside a `401`: a redirect whose target
+    // a client has to parse out of an error message is not a redirect.
+    if let Error::ReadIsElsewhere { endpoint, .. } = error {
+        answer.location = Some(endpoint.clone());
+    }
+    answer
 }
 
 #[cfg(test)]
@@ -798,14 +862,55 @@ mod corpus;
 
 #[cfg(test)]
 mod tests {
-    use tessaridb::{Outcome, Value};
+    use tessaridb::{Error, Outcome, Value};
 
-    use super::{encode, json};
+    use super::{encode, failure, json};
 
     fn rendered(outcome: &Outcome) -> String {
         let mut body = String::new();
         encode(&mut body, outcome, &json::Names::new());
         body
+    }
+
+    /// The redirect this node would answer with, as the session raises it.
+    fn sent_elsewhere() -> Error {
+        Error::ReadIsElsewhere {
+            written: "60s".to_owned(),
+            endpoint: "two.example:9080".to_owned(),
+            node: [3; tessari_encoding::NODE_ID_LEN],
+            epoch: tessari_types::Epoch::new(7),
+            span: tessari_ql::Span::new(0, 3),
+        }
+    }
+
+    #[test]
+    fn a_redirect_leaves_this_surface_as_a_307_and_not_as_a_bad_request() {
+        // It used to reach the catch-all and answer `400`, which tells a caller
+        // they wrote the request wrongly — the one thing they did not do. This
+        // is the same correction `NotGranted`, `RecordExists` and
+        // `StillDepended` each needed, and for the same reason.
+        let answer = failure(&sent_elsewhere());
+        assert_eq!(answer.status, 307);
+    }
+
+    #[test]
+    fn a_redirect_carries_the_address_in_the_header_and_not_only_in_the_prose() {
+        // RFC 9110: a `307` without a `Location` is not a redirect a client can
+        // act on. A client that had to parse the endpoint out of an error
+        // message would be doing by hand what the status exists to make
+        // automatic.
+        let answer = failure(&sent_elsewhere());
+        assert_eq!(answer.location.as_deref(), Some("two.example:9080"));
+    }
+
+    #[test]
+    fn an_ordinary_refusal_carries_no_location() {
+        // The field is about redirects and nothing else; a `Location` on a
+        // refusal would send a client somewhere over a failure that had no
+        // *somewhere*.
+        let answer = failure(&Error::SignInRefused);
+        assert_eq!(answer.status, 401);
+        assert!(answer.location.is_none());
     }
 
     #[test]

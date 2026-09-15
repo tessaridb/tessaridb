@@ -228,3 +228,115 @@ fn the_plan_for_a_node_read_names_the_source_rather_than_a_table() {
     assert_eq!(plan.get("access"), Some(&Value::from("record")));
     assert!(plan.get("table").is_none(), "a node is not a table");
 }
+
+// ------------------------------------ replication turned on after the fact
+
+/// G024 **S2.2**: switching replication on for a namespace that already holds
+/// data brings its history across, **with no repair step**.
+///
+/// The comparison is record by record and not by count, because a count is the
+/// assertion a partial replay passes. Everything written before the `ALTER` is
+/// there afterwards, and so is everything written after it — the interesting
+/// half is the first, since that is the data the policy did not exist to cover
+/// when it was written.
+///
+/// **Nothing in the alter path redistributes anything, and that is the claim.**
+/// A design whose replicas hold data rather than a history has to move that
+/// data, and needs a repair pass afterwards to find what the move missed. Here
+/// the log holds the history, so a node that begins replicating replays it from
+/// origin and the statement has nothing to do but record the policy. This test
+/// is what says so — the alternative would be believing a design note.
+#[test]
+fn replication_turned_on_later_brings_the_whole_history_with_it() {
+    let leader_backend = backend();
+    let leader = Store::open(Arc::clone(&leader_backend)).unwrap();
+
+    let mut session = Session::new(&leader);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE COLLECTION orders;",
+        )
+        .unwrap();
+
+    // Written while the namespace said nothing about replication at all.
+    for id in 1..=4 {
+        session
+            .run(&format!("CREATE orders:{id} = {{ total: {id} }};"))
+            .unwrap();
+    }
+    session
+        .run("UPDATE orders:2 SET total = 99;\nDELETE orders:3;")
+        .unwrap();
+
+    session
+        .run("ALTER NAMESPACE prod REPLICATION FACTOR 2;")
+        .unwrap();
+
+    // And written after it, so the replay has to cross the statement rather
+    // than stop at it.
+    session.run("CREATE orders:5 = { total: 5 };").unwrap();
+
+    // A follower that begins subscribing has nothing but the log.
+    let follower_backend = backend();
+    let follower = Store::open(Arc::clone(&follower_backend)).unwrap();
+    let applied = crate::replay(&leader, &follower);
+    assert!(applied > 0, "the leader wrote nothing to replay");
+
+    // Record by record, as raw bytes: "the same data" and "the same bytes" are
+    // different claims and a replica has to make the second one.
+    let records = |backend: &Arc<dyn KvBackend>| {
+        backend
+            .scan(&tessari_kv::ScanRequest::new(
+                tessari_kv::Keyspace::DATA,
+                tessari_kv::KeyRange::all(),
+            ))
+            .unwrap()
+    };
+    // Apart from the version each record is keyed by: the replay walks one log
+    // and then the next, which is not the order the commits interleaved in, and
+    // a node numbers its own records (Q-614, Q-627).
+    assert_eq!(
+        crate::unversioned(&records(&leader_backend)),
+        crate::unversioned(&records(&follower_backend)),
+        "the follower is missing or differs on a record the leader holds"
+    );
+
+    // And the same comparison in the reader's own terms, because the keyspace
+    // above also carries the catalog: a replay that brought the declarations
+    // across and none of the rows would satisfy a byte comparison of an empty
+    // table, and this is the assertion it could not pass.
+    let orders = |store: &Store| {
+        let mut session = Session::new(store);
+        let outcomes = session
+            .run("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM orders;")
+            .unwrap();
+        let Some(Outcome::Records { records, .. }) = outcomes.last() else {
+            panic!("not a read: {outcomes:?}");
+        };
+        records.clone()
+    };
+    let held = orders(&leader);
+    assert_eq!(
+        held.len(),
+        4,
+        "four live records — one deleted, one updated in place"
+    );
+    assert_eq!(
+        held,
+        orders(&follower),
+        "the follower answers a different set of records than the leader"
+    );
+
+    // The policy itself crossed too, because a namespace definition is a
+    // catalog record and the catalog replicates through the same apply path.
+    let mut reading = Session::new(&follower);
+    let outcomes = reading
+        .run("USE NAMESPACE prod; INFO FOR NAMESPACE;")
+        .unwrap();
+    let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
+        panic!("expected a report: {outcomes:?}");
+    };
+    assert_eq!(fields.get("replication"), Some(&Value::from(2_i64)));
+}

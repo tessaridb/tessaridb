@@ -21,6 +21,7 @@
 
 mod analyzer;
 mod authority;
+mod carried;
 mod change;
 mod consumer;
 // `pub(crate)` for the counter helpers: `crate::cardinality` stores a record
@@ -31,16 +32,21 @@ mod edge_kind;
 mod field;
 mod grant;
 mod graph;
+mod leadership;
 mod replica;
 pub(crate) mod system;
 mod user;
 mod vault;
 
 use tessari_encoding::{decode_payload, encode_payload};
-use tessari_types::{DatabaseId, FieldKind, IndexId, NamespaceId, Path, RecordId, TableId, Value};
+use tessari_types::{
+    DatabaseId, FieldKind, IndexId, NamespaceId, Path, RecordId, Replication, ReplicationClass,
+    TableId, Value,
+};
 
 pub use analyzer::AnalyzerDefinition;
 pub use authority::{Authority, Held, Kind, Reach};
+pub(crate) use carried::{carried_to, home_of};
 pub(crate) use change::{CatalogChange, catalog_change, defined_index};
 pub use consumer::{ConsumerDefinition, Mapped, OnFailure};
 pub use definition::{
@@ -54,7 +60,11 @@ pub use edge_kind::EdgeKindDefinition;
 pub use field::{FieldDefinition, FieldShape};
 pub use grant::GrantDefinition;
 pub use graph::GraphDefinition;
-pub use replica::ReplicaDefinition;
+pub use leadership::LeadershipDefinition;
+pub(crate) use leadership::covering;
+pub use replica::{
+    ReplicaDefinition, another_node_may_write, names_a_peer, the_row_a_greeting_binds,
+};
 pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
 pub use user::{Role, UserDefinition, Verb};
 pub use vault::VaultRoot;
@@ -94,9 +104,81 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         let definition = NamespaceDefinition {
             id,
             name: name.to_owned(),
+            // A namespace is created having said nothing about replication, and
+            // the clause is applied by [`Self::set_replication`] whether it
+            // arrived with the `DEFINE` or with a later `ALTER`. One write path
+            // rather than two: the two statements set the same field, and a
+            // second route for the creating case is a route that can disagree
+            // with the altering one. Both run inside the caller's transaction,
+            // whose pending writes are keyed by address, so a definition
+            // written and then amended still reaches the log as one mutation.
+            replication: None,
+            // The same, for the same reason: applied by
+            // [`Self::set_replication_class`] whichever statement carried it.
+            class: None,
         };
         self.write(system::NAMESPACES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
+        Ok(definition)
+    }
+
+    /// Set how many copies of a namespace the cluster is asked to keep.
+    ///
+    /// Moves between **stated** values in both directions (owner requirement
+    /// D12) and never back to never-stated: a namespace that was once asked has
+    /// been asked, and silence is a fact about its history rather than a
+    /// setting to restore.
+    ///
+    /// Nothing is redistributed here, and nothing needs to be. The log already
+    /// holds every write the namespace ever took, so a follower that begins
+    /// subscribing replays it, and this statement has nothing to do but record
+    /// the policy. See `Session::alter_namespace` for why that is a property of
+    /// the design rather than a step left out.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoSuchParent`] when the namespace does not exist, and a
+    /// substrate or decoding failure otherwise.
+    pub fn set_replication(
+        &mut self,
+        namespace: NamespaceId,
+        replication: Replication,
+    ) -> Result<NamespaceDefinition> {
+        let Some(mut definition) = self.namespace(namespace)? else {
+            return Err(Error::NoSuchParent {
+                entity: "namespace",
+                id: namespace.get(),
+            });
+        };
+        definition.replication = Some(replication);
+        self.write(system::NAMESPACES, namespace.get(), &definition.to_value());
+        Ok(definition)
+    }
+
+    /// Set how many writers a namespace admits (G027 S2.1).
+    ///
+    /// The sibling of [`Self::set_replication`] and deliberately the same shape,
+    /// so the class cannot acquire a second write path the count does not have.
+    /// It moves between **stated** values and never back to never-stated, for
+    /// that method's reason: a namespace that was once asked has been asked.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoSuchParent`] when the namespace does not exist, and
+    /// the substrate or decoding failure otherwise.
+    pub fn set_replication_class(
+        &mut self,
+        namespace: NamespaceId,
+        class: ReplicationClass,
+    ) -> Result<NamespaceDefinition> {
+        let Some(mut definition) = self.namespace(namespace)? else {
+            return Err(Error::NoSuchParent {
+                entity: "namespace",
+                id: namespace.get(),
+            });
+        };
+        definition.class = Some(class);
+        self.write(system::NAMESPACES, namespace.get(), &definition.to_value());
         Ok(definition)
     }
 
@@ -173,6 +255,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             kind: shape.kind,
             identity: shape.identity,
             graph: shape.graph,
+            conflict: shape.conflict,
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
@@ -817,6 +900,38 @@ fn id_key(id: u32) -> i64 {
 /// the same string, and one would be refused as a duplicate of something
 /// unrelated. Parent ids are numeric, so a `/` inside a name can never be
 /// mistaken for a separator that precedes it.
+/// Read a qualified name back into the level and parent ids it was built from.
+///
+/// The inverse of [`qualify`], and it lives beside it for the reason
+/// `Reach::of` and `Reach::parts` live beside each other: one format written in
+/// two places drifts, and the copy that drifts is the one nobody is reading.
+///
+/// `None` for anything this build did not write — an unknown tag, a missing
+/// separator, a parent that is not a number. A caller gets *cannot tell* rather
+/// than a guess, because the caller asking is the replication filter and its
+/// answer to *cannot tell* is to withhold.
+///
+/// The name itself is deliberately not returned. The one caller needs the
+/// tenancy and nothing else, and handing back a borrowed name would invite a
+/// second caller to compare strings the catalog compares by id.
+fn parse_qualified(qualified: &str) -> Option<(Level, Vec<u32>)> {
+    let (tag, rest) = qualified.split_once(':')?;
+    let level = Level::from_tag(tag)?;
+    let mut parents = Vec::new();
+    let mut rest = rest;
+    // A name may itself contain '/', which is why the parents are counted from
+    // the left rather than split from the right: every parent is a number, and
+    // the first segment that is not one is where the name begins.
+    while let Some((head, tail)) = rest.split_once('/') {
+        let Ok(parent) = head.parse::<u32>() else {
+            break;
+        };
+        parents.push(parent);
+        rest = tail;
+    }
+    Some((level, parents))
+}
+
 fn qualify(level: Level, parents: &[u32], name: &str) -> String {
     let mut qualified = String::from(level.tag());
     qualified.push(':');
@@ -830,7 +945,60 @@ fn qualify(level: Level, parents: &[u32], name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
+
+    /// The two directions of one format, asserted against each other.
+    ///
+    /// Written as a round trip rather than against literals because a literal
+    /// pins what somebody typed and a round trip pins what `qualify` produces —
+    /// and the reader exists to read exactly that.
+    #[test]
+    fn a_qualified_name_reads_back_as_the_level_and_parents_it_was_built_from() {
+        for (level, parents) in [
+            (Level::Namespace, vec![]),
+            (Level::Database, vec![7]),
+            (Level::Table, vec![7, 3]),
+            (Level::Index, vec![7, 3, 12]),
+            (Level::Field, vec![7, 3, 12]),
+            (Level::Graph, vec![7, 3]),
+            (Level::EdgeKind, vec![7, 3]),
+            (Level::Analyzer, vec![]),
+            (Level::User, vec![]),
+            (Level::Replica, vec![]),
+            (Level::Consumer, vec![]),
+        ] {
+            let qualified = qualify(level, &parents, "orders");
+            assert_eq!(
+                parse_qualified(&qualified),
+                Some((level, parents.clone())),
+                "{qualified} must read back as what built it"
+            );
+        }
+    }
+
+    /// A name that itself begins with a number and a slash is the case the level
+    /// tag was introduced for, and the reader must not mistake it for a parent
+    /// it does not have. Over-reading is harmless because the true parents are
+    /// always leftmost — but that is an argument, and this is the evidence.
+    #[test]
+    fn a_name_that_looks_like_a_parent_does_not_move_the_real_ones() {
+        let qualified = qualify(Level::Table, &[7, 3], "9/orders");
+        let (level, parents) = parse_qualified(&qualified).unwrap();
+        assert_eq!(level, Level::Table);
+        assert_eq!(parents.first(), Some(&7));
+        assert_eq!(parents.get(1), Some(&3));
+    }
+
+    /// Anything this build did not write reads as *cannot tell*, never as a
+    /// guess — the caller is the replication filter and its answer to that is to
+    /// withhold.
+    #[test]
+    fn an_unknown_qualified_name_reads_as_cannot_tell() {
+        assert_eq!(parse_qualified("orders"), None);
+        assert_eq!(parse_qualified("zz:7/orders"), None);
+    }
 
     #[test]
     fn the_level_tag_keeps_a_namespace_name_from_colliding_with_a_database_name() {

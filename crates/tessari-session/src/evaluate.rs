@@ -537,6 +537,75 @@ impl Session<'_> {
         // it, and a note reported against the *next* answer is worse than no note
         // at all.
         let mut notes = Vec::new();
+        // Before anything is read, and here rather than in the parser: the floor
+        // is a fact about the cluster and the parser has no cluster. A subquery
+        // carrying its own bound is checked by the same line, because it asks
+        // the same impossible thing.
+        if let Some(bound) = select.staleness {
+            let floor = tessari_constants::STALENESS_FLOOR_SECONDS;
+            // The parser has already refused a bound of zero or less, so the
+            // only comparison left here is against the floor. A sub-second
+            // remainder can only widen the bound, never narrow it, so whole
+            // seconds decide it.
+            if bound.within.seconds() < i64::try_from(floor).unwrap_or(i64::MAX) {
+                return Err(Error::StalenessBelowFloor {
+                    written: bound.within.to_literal(),
+                    floor,
+                    span: bound.span,
+                });
+            }
+            // The bound clears the floor, so it is one this cluster could in
+            // principle honour. Whether it can is a question about copies rather
+            // than about grammar, and §C-05 answers it by EXCLUDING: a node
+            // beyond the bound does not answer, and when that leaves nothing the
+            // read is refused rather than sent to the leader. A node whose copy
+            // has no known age is beyond every bound — see
+            // `Store::current_as_of` for why that is the honest reading and not
+            // a conservative one.
+            //
+            // Whole seconds again, and for the opposite reason to the floor's: a
+            // sub-second remainder can only widen the bound, so dropping it can
+            // only refuse a read that a wider bound would have admitted, which
+            // is the direction this refusal is already erring.
+            let within_bound =
+                core::time::Duration::from_secs(u64::try_from(bound.within.seconds()).unwrap_or(0));
+            if self
+                .store
+                .current_as_of()?
+                .is_none_or(|age| age > within_bound)
+            {
+                // Asked only here, and asked only this. *Here* has already been
+                // decided by the line above, so the directory is handed the
+                // bound and nothing else — see `elsewhere.rs` for why letting it
+                // re-decide a question already answered is the thing being
+                // avoided. A node nobody told about peers holds `None` and
+                // refuses exactly as it always has.
+                let written = bound.within.to_literal();
+                return Err(
+                    match self
+                        .elsewhere
+                        .as_ref()
+                        .and_then(|known| known.within(within_bound))
+                    {
+                        // C-07: this node names the one that should answer and
+                        // does not fetch on the client's behalf.
+                        Some(peer) => Error::ReadIsElsewhere {
+                            written,
+                            endpoint: peer.endpoint,
+                            node: peer.node,
+                            epoch: peer.epoch,
+                            span: bound.span,
+                        },
+                        // C-05's other half, unchanged: a read no node can
+                        // satisfy is refused rather than promoted to the leader.
+                        None => Error::NoCopyWithinStaleness {
+                            written,
+                            span: bound.span,
+                        },
+                    },
+                );
+            }
+        }
         // Narrowed by this statement's own clause, and never widened by it: a
         // subquery may set a tighter ceiling than the read holding it and may
         // not set a looser one.
@@ -3599,11 +3668,13 @@ fn table_named(source: &Source) -> Option<&str> {
 fn node_row(store: &Store) -> Result<(RecordId, Value)> {
     let identity = store.node_identity()?;
     let mut fields = BTreeMap::new();
+    // The effective role, matching `INFO FOR NODE` — both are reports of the
+    // same fact, and a reader comparing them is entitled to one answer.
     fields.insert(
         "roles".to_owned(),
         Value::Array(
-            identity
-                .roles
+            store
+                .effective_roles()?
                 .names()
                 .into_iter()
                 .map(Value::from)

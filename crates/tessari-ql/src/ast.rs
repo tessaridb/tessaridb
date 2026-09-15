@@ -20,7 +20,10 @@
 //!
 //! [`TableId`]: tessari_types::TableId
 
-use tessari_types::{Assertion, Duration, FieldKind, Filter, IdentityKind, Path, RecordId, Value};
+use tessari_types::{
+    Assertion, ConflictPolicy, Duration, FieldKind, Filter, IdentityKind, Path, RecordId,
+    Replication, ReplicationClass, Value,
+};
 
 use crate::function::Function;
 use crate::token::Span;
@@ -68,12 +71,39 @@ pub enum StatementKind {
         /// engine mints beside this, never this.
         consumer: Option<String>,
     },
-    /// `DEFINE NAMESPACE prod`
+    /// `DEFINE NAMESPACE prod REPLICATION FACTOR 3`
     DefineNamespace {
         /// The name to create.
         name: Name,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
+        /// How many copies the cluster is asked to keep, when the statement
+        /// said.
+        ///
+        /// `None` is a namespace that **said nothing**, which is not the same
+        /// as [`Replication::None`] and is deliberately not defaulted to it
+        /// (ADR-0060). The difference is the whole point of carrying the
+        /// clause this early: a namespace that declined replication is
+        /// honoured, and a namespace nobody asked is refused at the moment a
+        /// second node would hold it. Collapsing the two here would make that
+        /// distinction unrecoverable, because by then the namespaces exist.
+        ///
+        /// The clause is **optional today and mandatory later**. ADR-0060 asks
+        /// for mandatory, and this is a sequencing departure recorded in W211's
+        /// plan rather than a reversal: a clause made mandatory before there
+        /// are nodes to place copies on could only be answered with `NONE`,
+        /// which trains an operator to decline without thinking — the
+        /// inherited default the ADR exists to abolish, wearing a costume.
+        replication: Option<Replication>,
+        /// How many writers it admits, when the statement said (G027 S2.1).
+        ///
+        /// `None` is a namespace that **said nothing**, and that reads as
+        /// single-leader wherever it is asked — which is what this engine has
+        /// always done and what the two-leaderships refusal has always
+        /// enforced. It is kept apart from a stated
+        /// [`ReplicationClass::SingleLeader`] because an operator who answered
+        /// the question has told the cluster something a silence has not.
+        class: Option<ReplicationClass>,
     },
     /// `DEFINE DATABASE orders`
     DefineDatabase {
@@ -113,6 +143,19 @@ pub enum StatementKind {
         /// An edge kind is the asymmetric case and gets its own word, because it
         /// is never selected from and its entries are not records.
         graph: Option<Name>,
+        /// What the table does with a write it cannot order, when the statement
+        /// said: `DEFINE TABLE ledger (…) LAST WRITER WINS` (G027 S3.2).
+        ///
+        /// `None` is a table that **said nothing**, which reads as a refusal
+        /// wherever it is asked — what ADR-0075 has every table do. It is kept
+        /// apart from a stated [`ConflictPolicy::Refuse`] because an operator
+        /// who answered the question has told the cluster something a silence
+        /// has not.
+        ///
+        /// On the table rather than the namespace, where the replication class
+        /// sits, because a counter can tolerate a dropped update beside a ledger
+        /// row in the same namespace that cannot (Q-633).
+        conflict: Option<ConflictPolicy>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -430,6 +473,27 @@ pub enum StatementKind {
         /// What about them.
         change: UserChange,
     },
+    /// `ALTER NAMESPACE prod REPLICATION FACTOR 3`
+    ///
+    /// Turning replication on for a namespace that already holds data, and off
+    /// again — both directions, because a policy you cannot withdraw is a
+    /// policy you will hesitate to set (owner requirement D12).
+    ///
+    /// It carries only the replication, rather than a record of optional
+    /// fields, for the reason [`UserChange`] gives: a struct of `Option`s makes
+    /// *leave this alone* and *set this to nothing* the same shape, and the
+    /// executor is then trusted to tell them apart. Here there is nothing else
+    /// the statement can touch.
+    ///
+    /// There is no way to say *un-state it* — the clause moves between stated
+    /// values and never back to never-stated, because never-stated is a fact
+    /// about a namespace's history and not a setting.
+    AlterNamespace {
+        /// The namespace being changed.
+        name: Name,
+        /// What its replication becomes.
+        replication: Replication,
+    },
     /// `DEFINE NODE ROLES serving, writable ENDPOINTS 'host:9000'`
     ///
     /// The settings that describe **this machine**, written to the local `META`
@@ -470,6 +534,21 @@ pub enum StatementKind {
         /// `None` when the declaration did not say, which reads as no roles: a
         /// peer nobody has said takes writes does not take them.
         roles: Option<Vec<Name>>,
+        /// Which node the row is about, when the declaration bound one.
+        ///
+        /// Already sixteen bytes rather than the text that was written: the
+        /// spelling is checked where the span is, so a mistyped id is refused
+        /// at the statement that wrote it instead of becoming a row that names
+        /// a node nobody will ever be.
+        node: Option<[u8; 16]>,
+        /// How far that peer may collect this store's log, when it may at all.
+        ///
+        /// `None` is the declaration saying nothing, which is the refusal: a
+        /// peer nobody subscribed receives no records. Spelled with the same
+        /// [`ReachRef`] a grant is spelled with, because a subscription **is** a
+        /// read grant over the addresses it names, and two spellings of one
+        /// thing are two things that can come to disagree.
+        replicates: Option<ReachRef>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -1575,6 +1654,17 @@ pub enum InfoSubject {
     /// it is not a recipient anybody added, and listing it would invite an
     /// attempt to remove the one entry that must never go.
     Recipients(RecordTarget),
+    /// `INFO FOR VERSIONS OF person:1` — every surviving version of one record,
+    /// the node that wrote each, and whether they are contested.
+    ///
+    /// Its own subject rather than fields on an ordinary read, for the reason
+    /// [`InfoSubject::Recipients`] is one: a per-record fact that almost no
+    /// record has does not belong as a column on every read in the product. On a
+    /// single-leader range the answer is one version and `concurrent: false`,
+    /// and it answers there deliberately — a report that refused outside
+    /// multi-master would make *is this contested?* unanswerable exactly where
+    /// an operator who has just changed a namespace's class most wants to ask.
+    Versions(RecordTarget),
     /// `INFO FOR AUDIT` — every recorded vault read; `BY 'ada'` narrows to one
     /// actor.
     ///
@@ -1975,7 +2065,31 @@ pub struct Select {
     ///
     /// `None` is the ordinary case: the read answers from the committed tail.
     pub version: Option<Version>,
+    /// How far behind the node answering this read is allowed to be.
+    ///
+    /// `None` is the ordinary case: a read has no tolerance because it is
+    /// answered here, and a node's own answer is never stale relative to itself.
+    pub staleness: Option<Staleness>,
     /// Where the statement sits in the source.
+    pub span: Span,
+}
+
+/// How far behind the node answering a read is allowed to be.
+///
+/// **A candidate filter, never a marker.** It does not ask to be told that an
+/// answer was stale; it says which nodes may answer at all. A marker nobody is
+/// obliged to read is not a guarantee, which is why a read no node can satisfy
+/// is refused rather than quietly promoted to the leader.
+///
+/// The bound is a literal duration and a parameter is not accepted in its place,
+/// the rule `TIMEOUT` already keeps: a tolerance a bound value could set is a
+/// tolerance a caller could widen, and this one is meant to be readable in the
+/// statement that asked for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Staleness {
+    /// The tolerance, as the statement wrote it.
+    pub within: Duration,
+    /// Where the clause sits, for the refusal to point at.
     pub span: Span,
 }
 

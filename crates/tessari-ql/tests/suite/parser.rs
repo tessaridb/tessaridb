@@ -11,7 +11,14 @@ use tessari_ql::{
     Approximation, BinaryOp, EdgeClause, Error, ExprKind, Identity, InfoSubject, Projection,
     RecordTarget, Script, Source, StatementKind, parse,
 };
-use tessari_types::{Datetime, FieldKind, Number, RecordId, Value};
+use tessari_types::{
+    ConflictPolicy, Datetime, FieldKind, Number, RecordId, Replication, ReplicationClass, Value,
+};
+
+/// A replication factor, which is never zero.
+fn factor(n: u32) -> Replication {
+    Replication::Factor(std::num::NonZeroU32::new(n).unwrap())
+}
 
 fn script(source: &str) -> Script {
     match parse(source) {
@@ -1307,4 +1314,227 @@ fn a_walk_keeps_at_least_one_candidate() {
 fn effort_stays_a_name_a_caller_may_use() {
     assert!(parse("SELECT effort FROM tasks;").is_ok());
     assert!(parse("DEFINE FIELD effort ON tasks TYPE int;").is_ok());
+}
+
+// ------------------------------------------------- §4 namespace replication
+
+/// The clause a namespace declares its copies with, and the one thing it must
+/// keep apart: a namespace that said nothing is not a namespace that said
+/// `NONE` (ADR-0060). Absence has to survive as a value, because the day a
+/// second node exists is the day the difference decides whether the namespace
+/// is refused or honoured — and by then the namespaces already exist.
+#[test]
+fn a_namespace_declares_how_many_copies_it_wants() {
+    let StatementKind::DefineNamespace { replication, .. } = one("DEFINE NAMESPACE prod;") else {
+        panic!("DEFINE NAMESPACE");
+    };
+    assert_eq!(replication, None, "a bare definition states nothing");
+
+    let StatementKind::DefineNamespace { replication, .. } =
+        one("DEFINE NAMESPACE prod REPLICATION NONE;")
+    else {
+        panic!("DEFINE NAMESPACE REPLICATION NONE");
+    };
+    assert_eq!(replication, Some(Replication::None));
+
+    let StatementKind::DefineNamespace { replication, .. } =
+        one("DEFINE NAMESPACE prod REPLICATION FACTOR 3;")
+    else {
+        panic!("DEFINE NAMESPACE REPLICATION FACTOR");
+    };
+    assert_eq!(replication, Some(factor(3)));
+}
+
+/// The clause a table declares its conflict rule with (G027 S3.2).
+///
+/// On the TABLE and not the namespace, where the writer count sits, because the
+/// two are different questions at different levels: a namespace says whether a
+/// second writer may exist, a table says what to do when two of them have
+/// written one record without seeing each other (Q-633).
+#[test]
+fn a_table_declares_what_it_does_with_a_write_it_cannot_order() {
+    let StatementKind::DefineTable { conflict, .. } = one("DEFINE TABLE ledger (amount int);")
+    else {
+        panic!("DEFINE TABLE");
+    };
+    assert_eq!(conflict, None, "a bare definition states nothing");
+
+    let StatementKind::DefineTable { conflict, .. } =
+        one("DEFINE TABLE counter (hits int) LAST WRITER WINS;")
+    else {
+        panic!("DEFINE TABLE … LAST WRITER WINS");
+    };
+    assert_eq!(conflict, Some(ConflictPolicy::LastWriterWins));
+
+    let StatementKind::DefineTable { conflict, .. } =
+        one("DEFINE TABLE ledger (amount int) REFUSE CONFLICTS;")
+    else {
+        panic!("DEFINE TABLE … REFUSE CONFLICTS");
+    };
+    assert_eq!(
+        conflict,
+        Some(ConflictPolicy::Refuse),
+        "a stated refusal is not the same fact as a silence, and the grammar \
+         has to let an operator say which one they mean"
+    );
+
+    // Order-free, like every other adjective on the statement, and it composes
+    // with them rather than displacing one.
+    let StatementKind::DefineTable {
+        conflict,
+        identity,
+        schemafull,
+        ..
+    } = one("DEFINE TABLE hits (n int) LAST WRITER WINS SCHEMALESS IDENTITY uuid;")
+    else {
+        panic!("DEFINE TABLE with three clauses");
+    };
+    assert_eq!(conflict, Some(ConflictPolicy::LastWriterWins));
+    assert_eq!(identity, tessari_types::IdentityKind::Uuid);
+    assert!(!schemafull);
+}
+
+/// The words the clause is built from reserve nothing.
+///
+/// `last`, `wins`, `refuse` and `conflicts` are ordinary English that a stored
+/// script may already use as a name, and a clause that reserved one would refuse
+/// every script that did — silently, at the next upgrade.
+#[test]
+fn the_conflict_clause_reserves_none_of_its_words() {
+    for statement in [
+        "DEFINE TABLE last (wins int);",
+        "DEFINE TABLE conflicts (refuse int);",
+        "DEFINE TABLE writer (last int, wins int, refuse int, conflicts int);",
+    ] {
+        parse(statement).unwrap_or_else(|error| panic!("{statement} was refused: {error:?}"));
+    }
+}
+
+/// The clause a namespace declares its **writers** with (G027 S2.1), which is a
+/// different question from how many copies it keeps — so it is a different
+/// clause and both may stand on one statement.
+#[test]
+fn a_namespace_declares_how_many_writers_it_admits() {
+    let StatementKind::DefineNamespace { class, .. } = one("DEFINE NAMESPACE prod;") else {
+        panic!("DEFINE NAMESPACE");
+    };
+    assert_eq!(class, None, "a bare definition states nothing");
+
+    let StatementKind::DefineNamespace { class, .. } = one("DEFINE NAMESPACE prod MULTI MASTER;")
+    else {
+        panic!("DEFINE NAMESPACE MULTI MASTER");
+    };
+    assert_eq!(class, Some(ReplicationClass::MultiMaster));
+
+    let StatementKind::DefineNamespace {
+        replication, class, ..
+    } = one("DEFINE NAMESPACE prod REPLICATION FACTOR 3 SINGLE LEADER;")
+    else {
+        panic!("DEFINE NAMESPACE REPLICATION … SINGLE LEADER");
+    };
+    assert_eq!(replication, Some(factor(3)));
+    assert_eq!(class, Some(ReplicationClass::SingleLeader));
+}
+
+/// Half a phrase is a mistake, not a namespace named `multi`. The clause is two
+/// contextual words, so the second is expected once the first is read — and
+/// saying so is what keeps `MULTI` usable as an ordinary name everywhere else.
+#[test]
+fn half_a_class_clause_is_refused_at_the_word_that_is_missing() {
+    assert!(parse("DEFINE NAMESPACE prod MULTI;").is_err());
+    assert!(parse("DEFINE NAMESPACE prod SINGLE;").is_err());
+}
+
+#[test]
+fn the_clause_follows_if_not_exists_rather_than_displacing_it() {
+    let StatementKind::DefineNamespace {
+        if_not_exists,
+        replication,
+        ..
+    } = one("DEFINE NAMESPACE IF NOT EXISTS prod REPLICATION FACTOR 2;")
+    else {
+        panic!("DEFINE NAMESPACE IF NOT EXISTS … REPLICATION");
+    };
+    assert!(if_not_exists);
+    assert_eq!(replication, Some(factor(2)));
+}
+
+#[test]
+fn replication_moves_in_both_directions() {
+    // D12: a namespace starts unreplicated and is switched on later, and the
+    // statement that switches it on must be able to switch it off again.
+    let StatementKind::AlterNamespace { name, replication } =
+        one("ALTER NAMESPACE prod REPLICATION FACTOR 3;")
+    else {
+        panic!("ALTER NAMESPACE REPLICATION FACTOR");
+    };
+    assert_eq!(name.text, "prod");
+    assert_eq!(replication, factor(3));
+
+    let StatementKind::AlterNamespace { replication, .. } =
+        one("ALTER NAMESPACE prod REPLICATION NONE;")
+    else {
+        panic!("ALTER NAMESPACE REPLICATION NONE");
+    };
+    assert_eq!(replication, Replication::None);
+}
+
+#[test]
+fn no_copies_at_all_is_refused_where_it_is_written() {
+    // A factor of zero decodes as a count and means the data is kept nowhere,
+    // so it is refused at the span the author can see rather than stored.
+    assert!(parse("DEFINE NAMESPACE prod REPLICATION FACTOR 0;").is_err());
+    assert!(parse("ALTER NAMESPACE prod REPLICATION FACTOR 0;").is_err());
+}
+
+#[test]
+fn an_alter_that_names_nothing_to_change_is_refused() {
+    // `ALTER NAMESPACE prod;` has no reading — the statement carries only what
+    // it came to change, so there is nothing for it to mean.
+    assert!(parse("ALTER NAMESPACE prod;").is_err());
+    assert!(parse("ALTER NAMESPACE prod REPLICATION;").is_err());
+}
+
+/// `replication` is a contextual word, not a reserved one — so every script
+/// written before the clause existed still parses, including the ones that use
+/// the word as a name. The 333 `DEFINE NAMESPACE` sites across five
+/// repositories are the source set this protects (BGV-FIDELITY-001).
+#[test]
+fn the_new_words_are_still_usable_as_names() {
+    assert!(matches!(
+        one("DEFINE TABLE replication (factor int);"),
+        StatementKind::DefineTable { .. }
+    ));
+    assert!(matches!(
+        one("DEFINE NAMESPACE factor;"),
+        StatementKind::DefineNamespace { .. }
+    ));
+}
+
+#[test]
+fn a_record_is_asked_which_of_its_versions_survive() {
+    // G027 S4.3. The sibling of `INFO FOR RECIPIENTS OF`, and parsed the same
+    // way: the subject word, `OF`, and a record target.
+    assert!(matches!(
+        one("INFO FOR VERSIONS OF person:1;"),
+        StatementKind::Info {
+            subject: InfoSubject::Versions(_),
+        }
+    ));
+}
+
+#[test]
+fn the_versions_subject_reserves_none_of_its_words() {
+    // `VERSIONS` is contextual, like every other subject word. A table called
+    // `versions`, a field called `versions`, and a record in one must all still
+    // parse — a subject word that took a name out of circulation would break
+    // schemas that predate the statement.
+    assert!(matches!(
+        one("DEFINE TABLE versions (of int);"),
+        StatementKind::DefineTable { .. }
+    ));
+    assert!(matches!(
+        one("SELECT versions FROM audit;"),
+        StatementKind::Select(_)
+    ));
 }

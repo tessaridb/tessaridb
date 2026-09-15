@@ -99,6 +99,7 @@ impl Fixture {
                     kind,
                     identity: identity_kind,
                     graph: None,
+                    conflict: None,
                 },
             )
             .unwrap();

@@ -271,6 +271,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::VaultIsStrict { .. } => "VaultIsStrict",
         Error::VaultEditComputesFromTheRecord { .. } => "VaultEditComputesFromTheRecord",
         Error::RecipientIsNotAName { .. } => "RecipientIsNotAName",
+        Error::ReplicationUnstated { .. } => "ReplicationUnstated",
         _ => "Unnamed",
     }
 }

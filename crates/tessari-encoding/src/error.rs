@@ -88,6 +88,26 @@ pub enum Error {
         offset: usize,
     },
 
+    /// A key carried a reach variant this build does not know.
+    ///
+    /// Refused rather than widened to the store: a record filed under a home
+    /// this binary cannot name is a record whose destination it cannot decide,
+    /// and answering `Store` would hand it to every subscriber.
+    ///
+    /// Incompatible rather than corruption, because the variant sits in a
+    /// fixed-width slot — an unknown value there is well-formed bytes from a
+    /// build that knows a reach this one does not, and the operator action is to
+    /// deploy that build rather than to repair data that is not damaged.
+    #[error("{kind} key holds an unknown reach variant 0x{found:02x} at offset {offset}")]
+    UnknownReach {
+        /// The kind being decoded.
+        kind: KeyKind,
+        /// The variant byte found.
+        found: u8,
+        /// Where it sat.
+        offset: usize,
+    },
+
     /// An adjacency key carried a direction byte this build does not know.
     #[error("adjacency key holds an unknown direction byte 0x{found:02x}")]
     UnknownDirection {
@@ -139,6 +159,19 @@ pub enum Error {
     TombstoneWithPayload {
         /// How many payload bytes followed the header.
         len: usize,
+    },
+
+    /// A causal stamp's entries were not in strictly ascending node order.
+    ///
+    /// Every routine that reads a stamp — the count lookup and the three-way
+    /// comparison alike — binary-searches the entry list, so an unordered or
+    /// duplicated list does not fail: it answers the wrong node's count and
+    /// reports a causal relation that never held. The decoder is the only place
+    /// the invariant can be broken, so it is the only place that checks it.
+    #[error("causal stamp entries are not in strictly ascending node order at index {at}")]
+    StampOutOfOrder {
+        /// The index of the first entry that did not follow its predecessor.
+        at: usize,
     },
 
     /// A payload carried a value type this build does not know.
@@ -253,6 +286,7 @@ impl Error {
             | Self::InvalidUtf8 { .. }
             | Self::ValueTruncated { .. }
             | Self::TombstoneWithPayload { .. }
+            | Self::StampOutOfOrder { .. }
             | Self::InvalidDecimal { .. }
             | Self::InvalidSubSecond { .. }
             | Self::InvalidNodeEndpoint
@@ -263,6 +297,7 @@ impl Error {
             | Self::UnknownValueTag { .. }
             | Self::UnknownIndexTag { .. }
             | Self::UnknownNodeIdentity { .. }
+            | Self::UnknownReach { .. }
             | Self::UnsupportedFormatVersion { .. } => ErrorCategory::Incompatible,
         }
     }

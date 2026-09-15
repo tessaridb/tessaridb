@@ -1,7 +1,12 @@
 //! One statement at a time.
 
+use core::num::NonZeroU32;
+
 use super::Parser;
-use tessari_types::{Assertion, FieldKind, Filter, IdentityKind, Number, Path, Step};
+use tessari_types::{
+    Assertion, ConflictPolicy, FieldKind, Filter, IdentityKind, Number, Path, Replication,
+    ReplicationClass, Step, parse_uuid,
+};
 
 use crate::ast::{
     Answer, Approximation, Assignment, ColumnDeclaration, ConsumerSource, CreateTarget, Direction,
@@ -346,6 +351,63 @@ impl Parser<'_> {
     }
 
     /// A contextual word this statement requires.
+    /// `REPLICATION NONE` or `REPLICATION FACTOR 3`, when one stands here.
+    ///
+    /// `REPLICATION` and `FACTOR` are read as **contextual words** rather than
+    /// added to the keyword table, which is not a shortcut: `DEFINE NAMESPACE`
+    /// appears 333 times across this engine and four sibling repositories, and
+    /// reserving a word retroactively refuses every script that used it as a
+    /// name. Nothing here is ambiguous — a bare word after a namespace's name
+    /// has no other reading — so the reservation would buy nothing and cost the
+    /// corpus.
+    ///
+    /// Answers `None` when no clause stands here, which is what a namespace
+    /// that said nothing is; see [`StatementKind::DefineNamespace`] for why
+    /// that is not [`Replication::None`].
+    fn replication_clause(&mut self) -> Result<Option<Replication>> {
+        if !self.eat_word("replication") {
+            return Ok(None);
+        }
+        if self.eat_keyword(Keyword::None) {
+            return Ok(Some(Replication::None));
+        }
+        self.expect_word("factor", "`NONE` or `FACTOR` and a count")?;
+        // `whole_number` already refuses zero and says so at the author's own
+        // span, which is the answer this clause needs: a factor of zero is not
+        // a policy, it says the data is kept nowhere.
+        let factor = NonZeroU32::new(self.whole_number("a replication factor of at least one")?)
+            .ok_or_else(|| self.error_here("a replication factor of at least one"))?;
+        Ok(Some(Replication::Factor(factor)))
+    }
+
+    /// `MULTI MASTER` or `SINGLE LEADER`, the clause that says how many writers
+    /// a namespace admits (G027 S2.1).
+    ///
+    /// Four contextual words rather than four keywords, for
+    /// [`Self::replication_clause`]'s reason and with more force: `MASTER`,
+    /// `LEADER`, `SINGLE` and `MULTI` are ordinary English nouns that a corpus
+    /// of 333 `DEFINE NAMESPACE` statements across this engine and four sibling
+    /// repositories may well already use as names, and reserving one
+    /// retroactively refuses every script that did. Two words rather than one
+    /// because the phrase is what an operator already calls the thing, so the
+    /// clause they type is the phrase `INFO FOR` will read back to them.
+    ///
+    /// Answers `None` when no clause stands here. That namespace said nothing,
+    /// which reads as single-leader everywhere and is deliberately not
+    /// [`ReplicationClass::SingleLeader`] — see
+    /// [`StatementKind::DefineNamespace`].
+    fn replication_class_clause(&mut self) -> Result<Option<ReplicationClass>> {
+        if self.eat_word("multi") {
+            self.expect_word("master", "`MASTER` after `MULTI`")?;
+            return Ok(Some(ReplicationClass::MultiMaster));
+        }
+        if self.eat_word("single") {
+            self.expect_word("leader", "`LEADER` after `SINGLE`")?;
+            return Ok(Some(ReplicationClass::SingleLeader));
+        }
+        Ok(None)
+    }
+
     fn expect_word(&mut self, word: &str, expected: &'static str) -> Result<()> {
         if self.eat_word(word) {
             return Ok(());
@@ -477,6 +539,10 @@ impl Parser<'_> {
                 self.expect_word("of", "`OF` and the record")?;
                 InfoSubject::Recipients(self.record_target()?)
             }
+            _ if self.eat_word("versions") => {
+                self.expect_word("of", "`OF` and the record")?;
+                InfoSubject::Versions(self.record_target()?)
+            }
             _ if self.eat_word("audit") => InfoSubject::Audit(self.audited_actor()?),
             _ => {
                 // Every subject the arms above accept, and in their order, so
@@ -487,7 +553,7 @@ impl Parser<'_> {
                 // list wrong is worse than one that lists none, because a caller
                 // reads it as the whole truth and stops looking.
                 return Err(self.error_here(
-                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `GRAPH`, `BUCKET`, `USER`, `USERS`, `ACCESS`, `NODE`, `KAFKA CONSUMER`, `KAFKA CONSUMERS`, `VECTOR`, `GEO`, `VAULT`, `RECIPIENTS OF` or `AUDIT`",
+                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `GRAPH`, `BUCKET`, `USER`, `USERS`, `ACCESS`, `NODE`, `KAFKA CONSUMER`, `KAFKA CONSUMERS`, `VECTOR`, `GEO`, `VAULT`, `RECIPIENTS OF`, `VERSIONS OF` or `AUDIT`",
                 ));
             }
         };
@@ -642,9 +708,18 @@ impl Parser<'_> {
             Some(Keyword::Namespace) => {
                 self.advance();
                 let if_not_exists = self.eat_if_not_exists()?;
+                let name = self.name()?;
+                // Read in clause order, and the two are read in separate
+                // statements rather than inside the struct literal because
+                // field initialisers are evaluated in source order and a later
+                // reordering of the fields would silently reorder the grammar.
+                let replication = self.replication_clause()?;
+                let class = self.replication_class_clause()?;
                 Ok(StatementKind::DefineNamespace {
-                    name: self.name()?,
+                    name,
                     if_not_exists,
+                    replication,
+                    class,
                 })
             }
             Some(Keyword::Database) => {
@@ -679,6 +754,7 @@ impl Parser<'_> {
                 let mut edge: Option<EdgeClause> = None;
                 let mut identity: Option<IdentityKind> = None;
                 let mut graph: Option<Name> = None;
+                let mut conflict: Option<ConflictPolicy> = None;
                 loop {
                     if strictness.is_none() && self.eat_keyword(Keyword::Schemafull) {
                         strictness = Some(true);
@@ -690,6 +766,21 @@ impl Parser<'_> {
                         identity = Some(self.identity_kind()?);
                     } else if graph.is_none() && self.eat_keyword(Keyword::In) {
                         graph = Some(self.name()?);
+                    // `LAST WRITER WINS` / `REFUSE CONFLICTS` — contextual
+                    // words, reserving nothing, for the reason
+                    // `replication_class_clause` gives about `MULTI MASTER`:
+                    // `last`, `wins`, `refuse` and `conflicts` are ordinary
+                    // English that a stored script may already use as a name,
+                    // and reserving one retroactively refuses every script that
+                    // did. The phrase is what an operator already calls the
+                    // thing, so what they type is what `INFO FOR` reads back.
+                    } else if conflict.is_none() && self.eat_word("last") {
+                        self.expect_word("writer", "`WRITER` after `LAST`")?;
+                        self.expect_word("wins", "`WINS` after `LAST WRITER`")?;
+                        conflict = Some(ConflictPolicy::LastWriterWins);
+                    } else if conflict.is_none() && self.eat_word("refuse") {
+                        self.expect_word("conflicts", "`CONFLICTS` after `REFUSE`")?;
+                        conflict = Some(ConflictPolicy::Refuse);
                     } else {
                         break;
                     }
@@ -721,6 +812,7 @@ impl Parser<'_> {
                     edge,
                     identity: identity.unwrap_or_default(),
                     graph,
+                    conflict,
                     if_not_exists,
                 })
             }
@@ -1177,7 +1269,7 @@ impl Parser<'_> {
         Ok(StatementKind::DefineNode { roles, endpoints })
     }
 
-    /// `DEFINE REPLICA second AT 'host:9001' ROLES serving, writable`
+    /// `DEFINE REPLICA second AT 'host:9001' NODE '<id>' ROLES serving, writable`
     ///
     /// The endpoint is text rather than a name because a host and port is not an
     /// identifier, and it is stored as written: whether it resolves is a
@@ -1194,6 +1286,26 @@ impl Parser<'_> {
     /// takes no writes. That is the safe absence: the operator who forgot the
     /// clause gets a refusal naming it, where the opposite default would send a
     /// write to a node nobody said could take one.
+    ///
+    /// # `NODE`, and what saying it turns the row into
+    ///
+    /// `NODE` binds the row to one node by the id that node gave itself. It is
+    /// optional, and without it the statement means what it has always meant.
+    /// With it, the row stops being a note about somewhere else and becomes the
+    /// **desired role** of a named machine: the node whose own id this is reads
+    /// the row's `ROLES` as what it is supposed to be, and reconciles what it
+    /// actually holds toward it the next time it opens the store.
+    ///
+    /// The value is written as text and is the spelling `INFO FOR NODE` prints
+    /// for `id` — thirty-two hex digits — because an operator binds a node by
+    /// copying that field, and a clause that would not take what the answer
+    /// gives is a clause with a conversion step nobody documented. The canonical
+    /// hyphenated form is taken too, since one reader already accepts both and a
+    /// second reader would disagree with the first eventually.
+    ///
+    /// A malformed id is refused **here**, where the span is, rather than stored
+    /// and puzzled over later: a row naming a node nobody will ever be is
+    /// indistinguishable, afterwards, from a row nobody bound.
     fn define_replica(&mut self) -> Result<StatementKind> {
         let if_not_exists = self.eat_if_not_exists()?;
         let name = self.name()?;
@@ -1201,6 +1313,19 @@ impl Parser<'_> {
             return Err(self.error_here("`AT` and where the peer is reached"));
         }
         let (endpoint, _) = self.text("the endpoint, as text")?;
+        let node = if self.eat_word("node") {
+            let (written, at) = self.text("the node's id, as text")?;
+            // The same refusal a `uuid` literal gets, from the same reader, so
+            // the two spellings of one value cannot come to disagree about which
+            // texts are ids.
+            let bytes = parse_uuid(&written).ok_or(Error::InvalidUuid {
+                text: written.clone(),
+                span: at,
+            })?;
+            Some(bytes)
+        } else {
+            None
+        };
         let roles = if self.eat_word("roles") {
             let mut named = vec![self.name()?];
             while self.eat_punct(Punct::Comma) {
@@ -1210,10 +1335,30 @@ impl Parser<'_> {
         } else {
             None
         };
+        // Read with the same reader `DEFINE USER … ON` uses, so the reach a
+        // subscription names and the reach a grant names cannot come to accept
+        // different spellings. `STORE`, `NAMESPACE x` and `DATABASE x.y` only —
+        // the bare `x.y` that `ON` also takes is not offered here, because after
+        // `REPLICATES` a bare pair would sit where a table name could and this
+        // clause has no history to keep.
+        let replicates = if self.eat_word("replicates") {
+            match self.reach_keyword()? {
+                Some(reach) => Some(reach),
+                None => {
+                    return Err(
+                        self.error_here("`STORE`, `NAMESPACE` or `DATABASE` after `REPLICATES`")
+                    );
+                }
+            }
+        } else {
+            None
+        };
         Ok(StatementKind::DefineReplica {
             name,
             endpoint,
             roles,
+            node,
+            replicates,
             if_not_exists,
         })
     }
@@ -1601,8 +1746,15 @@ impl Parser<'_> {
             };
             return Ok(StatementKind::AlterTable { table, change });
         }
+        if self.eat_keyword(Keyword::Namespace) {
+            let name = self.name()?;
+            let Some(replication) = self.replication_clause()? else {
+                return Err(self.error_here("`REPLICATION` and the policy to set"));
+            };
+            return Ok(StatementKind::AlterNamespace { name, replication });
+        }
         if !self.eat_keyword(Keyword::User) {
-            return Err(self.error_here("`USER` or `TABLE` and the thing to change"));
+            return Err(self.error_here("`NAMESPACE`, `USER` or `TABLE` and the thing to change"));
         }
         let name = self.name()?;
         self.expect_keyword(Keyword::Set, "`SET` and the one thing to change")?;
@@ -2726,6 +2878,13 @@ impl Parser<'_> {
         // do, and a reader who has taken in the question is then told which
         // state answered it.
         let version = self.version()?;
+        // After `VERSION`, because it is the clause that may disagree with it:
+        // a read naming one exact point in history has no room for a tolerance
+        // about how old that point is.
+        let staleness = self.staleness()?;
+        if let (Some(_), Some(bound)) = (version.as_ref(), staleness.as_ref()) {
+            return Err(Error::StalenessBesideAVersion { span: bound.span });
+        }
         super::shape::check_grouping(&projection, &group)?;
         super::shape::check_fold_positions(&from, &group, &order)?;
         super::shape::check_cursor(
@@ -2791,6 +2950,7 @@ impl Parser<'_> {
             using,
             timeout,
             version,
+            staleness,
             span: start.to(self.span_behind()),
         })
     }

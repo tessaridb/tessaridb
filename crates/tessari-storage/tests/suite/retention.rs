@@ -28,7 +28,14 @@ fn tree(store: &Store) -> (u32, u32, u32) {
     ids
 }
 
-/// Write one version of a record and return the sequence it committed at.
+/// Write one version of a record and return the **version** it landed at.
+///
+/// Not the log position `commit` returns. Every caller in this file uses the
+/// answer as a snapshot coordinate — it is compared against a retention or
+/// reclaim floor, or handed to `begin_at` — and those are versions. The two
+/// numbers agree while one leader decides every write, so a helper returning
+/// the position would keep passing and would stop meaning what its callers
+/// read it as (Q-614).
 fn write(store: &Store, at: &RecordAddress, name: &str) -> Sequence {
     let mut transaction = store.begin().unwrap();
     let mut object = std::collections::BTreeMap::new();
@@ -37,17 +44,18 @@ fn write(store: &Store, at: &RecordAddress, name: &str) -> Sequence {
         at.clone(),
         encode_payload(&Value::Object(object)).into_bytes(),
     );
-    transaction.commit().unwrap()
+    transaction.commit().unwrap();
+    store.committed_version().unwrap()
 }
 
 #[test]
-fn the_floor_is_the_committed_tail_when_nothing_is_being_read() {
+fn the_floor_is_the_committed_version_when_nothing_is_being_read() {
     let store = store();
     let _ = tree(&store);
     assert_eq!(store.live_snapshots(), 0);
     assert_eq!(
         store.retention_floor().unwrap(),
-        store.committed_tail().unwrap()
+        store.committed_version().unwrap()
     );
     assert_eq!(store.oldest_snapshot_age(), None);
 }
@@ -71,7 +79,7 @@ fn a_live_reader_holds_the_floor_where_it_began() {
     write(&store, &at, "grace");
     write(&store, &at, "hopper");
 
-    assert!(store.committed_tail().unwrap() > held);
+    assert!(store.committed_version().unwrap() > held);
     assert_eq!(
         store.retention_floor().unwrap(),
         held,
@@ -83,7 +91,7 @@ fn a_live_reader_holds_the_floor_where_it_began() {
     drop(reader);
     assert_eq!(
         store.retention_floor().unwrap(),
-        store.committed_tail().unwrap()
+        store.committed_version().unwrap()
     );
 }
 
@@ -94,7 +102,7 @@ fn a_transaction_dropped_without_commit_or_rollback_releases_its_snapshot() {
     // with an error, but as space that never comes back.
     let store = store();
     let _ = tree(&store);
-    let tail = store.committed_tail().unwrap();
+    let version = store.committed_version().unwrap();
 
     {
         let transaction = store.begin().unwrap();
@@ -108,7 +116,7 @@ fn a_transaction_dropped_without_commit_or_rollback_releases_its_snapshot() {
         0,
         "the snapshot outlived its reader"
     );
-    assert_eq!(store.retention_floor().unwrap(), tail);
+    assert_eq!(store.retention_floor().unwrap(), version);
 }
 
 #[test]
@@ -363,7 +371,10 @@ fn a_read_above_the_committed_tail_is_refused_rather_than_answered_with_the_pres
     let at = record(&store, ns, db, tb, 1);
     write(&store, &at, "ada");
 
-    let tail = store.committed_tail().unwrap();
+    // The VERSION, not a log position: `begin_at` names an MVCC moment, and the
+    // two stopped being one number when B1 separated them and one log per range
+    // made the difference observable (Q-614, Q-623).
+    let tail = store.committed_version().unwrap();
     let ahead = Sequence::new(tail.get() + 1);
 
     // Answering with the present would make this succeed now and return a

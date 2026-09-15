@@ -79,6 +79,8 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // a selection or a transaction verb.
         | StatementKind::Use { .. }
         | StatementKind::DefineNamespace { .. }
+        // A replication policy is a property of the tenancy, not of anything in it.
+        | StatementKind::AlterNamespace { .. }
         | StatementKind::DefineDatabase { .. }
         | StatementKind::DefineAnalyzer { .. }
         // Undeclaring one names no table either. That an analyzer is still
@@ -148,6 +150,15 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // reports who may open a secret.
         StatementKind::Info {
             subject: InfoSubject::Recipients(target),
+        } => vec![&target.table],
+
+        // A record's versions name the table it lives in, and this arm is not
+        // optional for the reason the one above is not: it would otherwise fall
+        // through to the empty list and pass the grant loop vacuously, and
+        // `INFO FOR VERSIONS OF` would tell any caller which nodes have written
+        // any record in the store — including that the record exists at all.
+        StatementKind::Info {
+            subject: InfoSubject::Versions(target),
         } => vec![&target.table],
 
         // A consumer names the table it will write into, and that is the whole

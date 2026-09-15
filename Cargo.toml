@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.1-beta"
+version = "0.2.0-beta"
 edition = "2024"
 rust-version = "1.85"
 license = "BUSL-1.1"
@@ -12,23 +12,23 @@ repository = "https://github.com/TessariDB/TessariDB"
 publish = false
 
 [workspace.dependencies]
-tessari-types = { path = "crates/tessari-types", version = "0.1.1-beta" }
-tessari-constants = { path = "crates/tessari-constants", version = "0.1.1-beta" }
-tessari-kv = { path = "crates/tessari-kv", version = "0.1.1-beta" }
-tessari-encoding = { path = "crates/tessari-encoding", version = "0.1.1-beta" }
-tessari-geo = { path = "crates/tessari-geo", version = "0.1.1-beta" }
-tessari-storage = { path = "crates/tessari-storage", version = "0.1.1-beta" }
-tessari-lsm = { path = "crates/tessari-lsm", version = "0.1.1-beta" }
-tessari-ql = { path = "crates/tessari-ql", version = "0.1.1-beta" }
-tessari-session = { path = "crates/tessari-session", version = "0.1.1-beta" }
-tessari-conformance = { path = "crates/tessari-conformance", version = "0.1.1-beta" }
-tessaridb = { path = "crates/tessaridb", version = "0.1.1-beta" }
-tessari-backup = { path = "crates/tessari-backup", version = "0.1.1-beta" }
-tessari-wire = { path = "crates/tessari-wire", version = "0.1.1-beta" }
-tessari-http = { path = "crates/tessari-http", version = "0.1.1-beta" }
-tessari-ingest = { path = "crates/tessari-ingest", version = "0.1.1-beta" }
-tessari-serve = { path = "crates/tessari-serve", version = "0.1.1-beta" }
-tessari-vault = { path = "crates/tessari-vault", version = "0.1.1-beta" }
+tessari-types = { path = "crates/tessari-types", version = "0.2.0-beta" }
+tessari-constants = { path = "crates/tessari-constants", version = "0.2.0-beta" }
+tessari-kv = { path = "crates/tessari-kv", version = "0.2.0-beta" }
+tessari-encoding = { path = "crates/tessari-encoding", version = "0.2.0-beta" }
+tessari-geo = { path = "crates/tessari-geo", version = "0.2.0-beta" }
+tessari-storage = { path = "crates/tessari-storage", version = "0.2.0-beta" }
+tessari-lsm = { path = "crates/tessari-lsm", version = "0.2.0-beta" }
+tessari-ql = { path = "crates/tessari-ql", version = "0.2.0-beta" }
+tessari-session = { path = "crates/tessari-session", version = "0.2.0-beta" }
+tessari-conformance = { path = "crates/tessari-conformance", version = "0.2.0-beta" }
+tessaridb = { path = "crates/tessaridb", version = "0.2.0-beta" }
+tessari-backup = { path = "crates/tessari-backup", version = "0.2.0-beta" }
+tessari-wire = { path = "crates/tessari-wire", version = "0.2.0-beta" }
+tessari-http = { path = "crates/tessari-http", version = "0.2.0-beta" }
+tessari-ingest = { path = "crates/tessari-ingest", version = "0.2.0-beta" }
+tessari-serve = { path = "crates/tessari-serve", version = "0.2.0-beta" }
+tessari-vault = { path = "crates/tessari-vault", version = "0.2.0-beta" }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
@@ -60,6 +60,29 @@ getrandom = "0.4"
 # compiler is entitled to delete a wipe that nothing afterwards observes, and a
 # hand-written `for b in buf { *b = 0 }` is exactly that wipe.
 zeroize = { version = "1.9", features = ["zeroize_derive"] }
+# TLS for the inter-node link, and nothing else in this workspace speaks it.
+# `rustls` with the `ring` provider rather than `aws-lc-rs`: the provider is the
+# whole build-system question, and `ring` asks only for the `cc` that
+# `rust:1.98-slim-bookworm` already carries, where `aws-lc-rs` wants cmake and
+# brings the OpenSSL licence with it — a licence `deny.toml` does not allow.
+# Measured before it was chosen: six crates net-new to this workspace and a 6.5 s
+# cold build. `native-tls` was refused for the opposite reason — a C build and a
+# platform certificate store in an image that is deliberately one binary on a
+# slim base.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# Already inside rustls's own tree, declared here because the peer link calls it
+# directly: it is what lets a credential be ASKED whether it is valid for a name
+# instead of being parsed for one. Naming it costs no crate and makes the
+# dependency visible where it is used.
+rustls-webpki = { version = "0.103", default-features = false, features = ["std", "ring"] }
+# The only way a chain reaches the process. `Credential.chain` is a chain, and
+# DER has no container for one — a DER-only reader would force one file per
+# certificate and a flag that takes a list. From the rustls project, already
+# this tree's TLS vendor.
+# Test-only, and deliberately never a dependency: the peer tests mint their own
+# certificate authority in memory, so no key material is ever written to this
+# repository and no fixture can go stale.
+rcgen = "0.13"
 # Facade only. The binary picks the implementation, so a library caller keeps
 # control of whether anything is emitted at all, and `log` pulls in nothing.
 log = { version = "0.4", features = ["std"] }
