@@ -14,6 +14,10 @@
         <h1>TessariDB</h1>
         <p id="where" class="faint">served by this node</p>
       </div>
+      <div class="finding">
+        <label>Find <input id="search" type="text" placeholder="an account, a table, person:1  —  / or ⌘K" /></label>
+        <span id="search-says" class="status" role="status"></span>
+      </div>
       <details class="identity">
         <summary><span id="signed-in">not signed in</span></summary>
         <div class="sheet">
@@ -36,14 +40,14 @@
     </header>
     <nav class="tabs">
       <div role="tablist" aria-label="Sections">
-        <button type="button" role="tab" id="tab-query" aria-controls="panel-query" aria-selected="true">Query</button>
-        <button type="button" role="tab" id="tab-users" aria-controls="panel-users" aria-selected="false" tabindex="-1">Users</button>
-        <button type="button" role="tab" id="tab-node" aria-controls="panel-node" aria-selected="false" tabindex="-1">Node</button>
+        <button type="button" role="tab" id="tab-run" aria-controls="panel-run" aria-selected="true">Run</button>
         <button type="button" role="tab" id="tab-cluster" aria-controls="panel-cluster" aria-selected="false" tabindex="-1">Cluster</button>
+        <button type="button" role="tab" id="tab-access" aria-controls="panel-access" aria-selected="false" tabindex="-1">Access</button>
+        <button type="button" role="tab" id="tab-this-node" aria-controls="panel-this-node" aria-selected="false" tabindex="-1">This node</button>
       </div>
     </nav>
     <main>
-      <section id="panel-query" role="tabpanel" aria-labelledby="tab-query" tabindex="0">
+      <section id="panel-run" role="tabpanel" aria-labelledby="tab-run" tabindex="0">
         <div class="split">
           <div class="pane">
             <div class="pane-head">
@@ -86,7 +90,25 @@
           <ol id="changes" class="changes" reversed></ol>
         </div>
       </section>
-      <section id="panel-users" role="tabpanel" aria-labelledby="tab-users" tabindex="0" hidden>
+      <section id="panel-cluster" role="tabpanel" aria-labelledby="tab-cluster" tabindex="0" hidden>
+        <div class="pane">
+          <div class="pane-head">
+            <h2>Membership</h2>
+            <span id="cluster-status" class="status" role="status"></span>
+          </div>
+          <div id="cluster-facts" class="answer small" aria-live="polite"></div>
+        </div>
+        <div class="pane">
+          <div class="pane-head">
+            <h2>What is here, and what is not</h2>
+          </div>
+          <p class="note">What the pane above shows is what this node itself knows: its own membership, the peers it has been told about, and the addresses it answers on. It is read from the node, not from anything standing beside it.</p>
+          <p class="note">Membership is a record and not a control plane: a node learns its peers through the same log it replicates data with, so there is nothing to stand up beside the database. A namespace declares how many copies the cluster keeps, and a peer's subscription decides which of them it receives. A leader holds a renewable lease granted by a majority and stops writing before that lease expires, measured on elapsed time rather than on the clock. A read may name the staleness it will accept, and a bound tighter than the cluster can know about itself is refused with the floor named. A write sent to the wrong node comes back as a redirect carrying the endpoint, the node and the epoch it was decided under. A divergence is refused at the first divergent record and counted, never silently ranked.</p>
+          <p class="note warn"><strong>There is no sharding.</strong> Every node that holds a namespace holds all of it; one dataset is not split across machines by key. A namespace larger than one machine is the case this engine does not serve.</p>
+          <p class="note"><strong>This pane is not yet a cluster surface.</strong> Nothing here manages anything: roles, failover, standby nodes, data placement and a live map of cluster state are being designed, and are deliberately absent rather than stubbed. Nor does it draw lag or leadership for other nodes — nothing pulls a replica forward on a timer, so a node that is not writing has no last collection its copy could be measured from, and a number invented here would be the dashboard drawn ahead of the engine that makes the rest of this console untrustworthy.</p>
+        </div>
+      </section>
+      <section id="panel-access" role="tabpanel" aria-labelledby="tab-access" tabindex="0" hidden>
         <div class="split">
           <div class="pane">
             <div class="pane-head">
@@ -97,6 +119,10 @@
               </div>
             </div>
             <p class="note">What you are shown is the tenancy you administer. An owner of a space sees that space; an <strong>admin</strong> — an owner with no space at all — sees the whole node. It refuses rather than narrowing, so a short list is a short tenancy and never a filtered one.</p>
+            <div class="row spread">
+              <label>Filter <input id="user-filter" type="text" placeholder="part of a name" /></label>
+              <span id="user-count" class="status" role="status"></span>
+            </div>
             <div id="user-list" class="answer small" aria-live="polite"></div>
             <div class="row">
               <label>Detail for <input id="lookup-name" type="text" placeholder="ada" /></label>
@@ -215,7 +241,7 @@
           </div>
         </div>
       </section>
-      <section id="panel-node" role="tabpanel" aria-labelledby="tab-node" tabindex="0" hidden>
+      <section id="panel-this-node" role="tabpanel" aria-labelledby="tab-this-node" tabindex="0" hidden>
         <div class="pane-head">
           <h2>This node</h2>
           <div class="row tight">
@@ -243,24 +269,6 @@
             <h2>Metrics</h2>
           </div>
           <div id="node-metrics" class="answer small" aria-live="polite"></div>
-        </div>
-      </section>
-      <section id="panel-cluster" role="tabpanel" aria-labelledby="tab-cluster" tabindex="0" hidden>
-        <div class="pane">
-          <div class="pane-head">
-            <h2>Membership</h2>
-            <span id="cluster-status" class="status" role="status"></span>
-          </div>
-          <div id="cluster-facts" class="answer small" aria-live="polite"></div>
-        </div>
-        <div class="pane">
-          <div class="pane-head">
-            <h2>What is here, and what is not</h2>
-          </div>
-          <p class="note">What the pane above shows is what this node itself knows: its own membership, the peers it has been told about, and the addresses it answers on. It is read from the node, not from anything standing beside it.</p>
-          <p class="note">Membership is a record and not a control plane: a node learns its peers through the same log it replicates data with, so there is nothing to stand up beside the database. A namespace declares how many copies the cluster keeps, and a peer's subscription decides which of them it receives. A leader holds a renewable lease granted by a majority and stops writing before that lease expires, measured on elapsed time rather than on the clock. A read may name the staleness it will accept, and a bound tighter than the cluster can know about itself is refused with the floor named. A write sent to the wrong node comes back as a redirect carrying the endpoint, the node and the epoch it was decided under. A divergence is refused at the first divergent record and counted, never silently ranked.</p>
-          <p class="note warn"><strong>There is no sharding.</strong> Every node that holds a namespace holds all of it; one dataset is not split across machines by key. A namespace larger than one machine is the case this engine does not serve.</p>
-          <p class="note"><strong>This pane is not yet a cluster surface.</strong> Nothing here manages anything: roles, failover, standby nodes, data placement and a live map of cluster state are being designed, and are deliberately absent rather than stubbed. Nor does it draw lag or leadership for other nodes — nothing pulls a replica forward on a timer, so a node that is not writing has no last collection its copy could be measured from, and a number invented here would be the dashboard drawn ahead of the engine that makes the rest of this console untrustworthy.</p>
         </div>
       </section>
     </main>

@@ -608,6 +608,31 @@ hr.between {
   margin: 1.25rem 0 0.25rem;
 }
 
+/* ──────────────────────────────────────────────── finding a thing ── */
+
+/* The search field sits in the bar between the mark and the identity, so it is
+   present on every destination rather than being one. It takes the space the bar
+   has going spare, which on a narrow window is none — and then it wraps under
+   the mark rather than squeezing the identity out of reach. */
+.finding {
+  display: flex;
+  align-items: end;
+  gap: var(--s-3);
+  flex: 1 1 22rem;
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.finding label {
+  flex: 1 1 auto;
+  max-width: 32rem;
+  min-width: 0;
+}
+
+.finding input {
+  width: 100%;
+}
+
 /* ──────────────────────────────────── what a button will do ── */
 
 /* The panes above the destructive buttons used to draw the statement they would

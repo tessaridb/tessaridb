@@ -77,7 +77,7 @@ export function record(entry: Entry): void {
 function reopen(what: string): void {
   setValue("script", what);
   hide("log-sheet", true);
-  show("query");
+  show("run");
   at("script").focus();
 }
 

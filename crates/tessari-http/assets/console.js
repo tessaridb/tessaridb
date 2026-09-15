@@ -86,15 +86,15 @@
     return at(named);
   }
   function show(name) {
-    const wanted = tabs().some((tab) => tab.id === "tab-" + name) ? name : "query";
+    const wanted2 = tabs().some((tab) => tab.id === "tab-" + name) ? name : "run";
     for (const tab of tabs()) {
-      const chosen = tab.id === "tab-" + wanted;
+      const chosen = tab.id === "tab-" + wanted2;
       tab.setAttribute("aria-selected", String(chosen));
       tab.tabIndex = chosen ? 0 : -1;
       pane(tab).hidden = !chosen;
     }
-    if (window.location.hash !== "#" + wanted) {
-      window.location.hash = wanted;
+    if (window.location.hash !== "#" + wanted2) {
+      window.location.hash = wanted2;
     }
   }
   function wire() {
@@ -151,10 +151,10 @@
   function reopen(what) {
     setValue("script", what);
     hide("log-sheet", true);
-    show("query");
+    show("run");
     at("script").focus();
   }
-  function copy(what, where2, said2) {
+  function copy(what, where2, said3) {
     const clipboard = navigator.clipboard;
     if (clipboard === void 0) {
       const range = document.createRange();
@@ -162,15 +162,15 @@
       const selection = window.getSelection();
       selection?.removeAllRanges();
       selection?.addRange(range);
-      said2.textContent = "selected — ⌘C or Ctrl-C";
+      said3.textContent = "selected — ⌘C or Ctrl-C";
       return;
     }
     void clipboard.writeText(what).then(
       () => {
-        said2.textContent = "copied";
+        said3.textContent = "copied";
       },
       () => {
-        said2.textContent = "the browser would not copy it";
+        said3.textContent = "the browser would not copy it";
       }
     );
   }
@@ -184,8 +184,8 @@
     head.append(screen, took);
     const what = made("pre", "logged-what");
     what.textContent = one2.what;
-    const said2 = made("p", one2.failed ? "note warn" : "note");
-    said2.textContent = one2.said;
+    const said3 = made("p", one2.failed ? "note warn" : "note");
+    said3.textContent = one2.said;
     const why = made("p", "note faint");
     why.textContent = one2.why === void 0 ? "" : "Why: " + one2.why;
     why.hidden = one2.why === void 0;
@@ -200,7 +200,7 @@
     opened.textContent = "Open in Run";
     opened.addEventListener("click", () => reopen(one2.what));
     actions.append(copied, opened, told2);
-    row.append(head, what, said2, why, actions);
+    row.append(head, what, said3, why, actions);
     return row;
   }
   function draw() {
@@ -602,7 +602,7 @@
   function wire4() {
     at("node-refresh").addEventListener("click", readNode);
     let read = false;
-    for (const tab of ["tab-node", "tab-cluster"]) {
+    for (const tab of ["tab-this-node", "tab-cluster"]) {
       at(tab).addEventListener("click", () => {
         if (!read) {
           read = true;
@@ -743,6 +743,109 @@
     });
   }
 
+  // src/search.ts
+  //! Arriving with an identifier instead of a destination.
+  //!
+  //! An operator almost never opens a console to browse. They open it holding a
+  //! name — an account, a table, a record somebody escalated — and every step
+  //! between the door and that thing is a step they did not come for. So the
+  //! field is in the bar rather than behind a destination: search is the entry
+  //! point, and an entry point you have to navigate to first is not one.
+  //!
+  //! # It asks the node rather than guessing
+  //!
+  //! A bare word could be an account, a namespace or a table, and the panel has no
+  //! way to know which — so it does not decide. It builds an ORDERED list of
+  //! candidate questions and puts them to the node one at a time, landing on the
+  //! first that is answered. The store is the authority on what exists, which is
+  //! the same reason the listing draws the role the node reported rather than one
+  //! the panel inferred.
+  //!
+  //! The order is fixed and stated, because "whichever answers first" is only
+  //! unambiguous if the sequence is: a record key, then a database, then an
+  //! account, then a namespace, then a table. The two punctuated forms come first
+  //! because punctuation makes them unambiguous, and `ada` resolving to the
+  //! account before the table of the same name is the right guess for a console
+  //! whose destructive screens are all about accounts.
+  function inRun(statement) {
+    setValue("script", statement);
+    show("run");
+    at("run").click();
+  }
+  function candidates(text) {
+    const record2 = text.includes(":");
+    const qualified = text.includes(".") && !record2;
+    const [namespace, database] = qualified ? text.split(".", 2) : ["", ""];
+    const out = [];
+    if (record2) {
+      const statement = "SELECT * FROM " + text + ";";
+      out.push({ kind: "record", statement, land: () => inRun(statement) });
+    }
+    if (qualified) {
+      const statement = "USE NAMESPACE " + namespace + "; USE DATABASE " + database + "; INFO FOR DATABASE;";
+      out.push({ kind: "database", statement, land: () => inRun(statement) });
+    }
+    if (!record2 && !qualified) {
+      out.push({
+        kind: "account",
+        statement: "INFO FOR USER " + text + ";",
+        // The account's own screen, which already draws a user as facts — landing
+        // in Run would answer the question and lose the four things you reached
+        // for the account in order to do.
+        land: () => {
+          show("access");
+          setValue("lookup-name", text);
+          at("lookup").click();
+        }
+      });
+      const namespaceStatement = "USE NAMESPACE " + text + "; INFO FOR NAMESPACE;";
+      out.push({
+        kind: "namespace",
+        statement: namespaceStatement,
+        land: () => inRun(namespaceStatement)
+      });
+      const tableStatement = "INFO FOR TABLE " + text + ";";
+      out.push({ kind: "table", statement: tableStatement, land: () => inRun(tableStatement) });
+    }
+    return out;
+  }
+  async function look() {
+    const text = trimmed("search");
+    if (text === "") {
+      return;
+    }
+    write("search-says", "looking…");
+    for (const candidate of candidates(text)) {
+      try {
+        await valueOf(candidate.statement, "Search · " + candidate.kind);
+      } catch {
+        continue;
+      }
+      write("search-says", "");
+      candidate.land();
+      return;
+    }
+    write("search-says", "nothing here answers to that name");
+  }
+  function wire7() {
+    at("search").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void look();
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      const focused = document.activeElement;
+      const typing = focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || focused instanceof HTMLSelectElement;
+      const shortcut = event.key === "k" && (event.metaKey || event.ctrlKey);
+      if (shortcut || event.key === "/" && !typing) {
+        event.preventDefault();
+        at("search").focus();
+        at("search").select();
+      }
+    });
+  }
+
   // src/roster.ts
   //! What the panel has been told about who exists.
   //!
@@ -766,6 +869,39 @@
   }
   function lookup(name) {
     return known.get(name) ?? null;
+  }
+
+  // src/user-says.ts
+  //! What a button will do, said in the reader's language.
+  //!
+  //! Three sentences and nothing else. They take what they describe as ARGUMENTS
+  //! rather than reading the form, which is what lets them be read — and one day
+  //! tested — without a form existing at all. `user-forms.ts` reads the controls
+  //! and calls these; the split is along that line and not an arbitrary one.
+  //!
+  //! The rule every sentence here obeys: **say what the statement changes and
+  //! stop.** A consequence the engine has not been asked about is the panel
+  //! inventing an answer, which is the same defect as drawing a metric it does not
+  //! have. Where a sentence does claim a consequence — that a session ends — the
+  //! claim is backed by a test in the suite and not by reasoning from the
+  //! mechanism.
+  function definitionSays(name, role2, space) {
+    return "Creates " + name + " as " + role2 + (space === "" ? " of the whole node — an administrator" : " in " + space) + ", with the password typed above.";
+  }
+  function alterationSays(name, what, role2) {
+    const today = lookup(name);
+    const standing = today === null ? " This panel has not been told what " + name + " reaches — press List to find out." : " Today " + name + " is " + today.role + " in " + today.reach + ", and that is unchanged.";
+    if (what === "password") {
+      return "Sets a new password for " + name + ". The one they have stops working and any session they are holding ends, so they sign in again with the new one." + standing;
+    }
+    return "Makes " + name + " " + role2 + ". Any session they are holding ends, so they sign in again." + standing;
+  }
+  function removalSays(name) {
+    const today = lookup(name);
+    if (today === null) {
+      return name + " loses access entirely, and their grants go with them. This panel has not been told what " + name + " reaches — press List above to find out before you do this.";
+    }
+    return name + " loses access entirely: " + today.role + " in " + today.reach + ", and the grants go with them. A new user of the same name inherits none of it.";
   }
 
   // src/user-forms.ts
@@ -835,13 +971,14 @@
     }
     return "a space is needed — or choose the whole node, which is not the same thing";
   }
-  function definitionSays() {
-    const space = reach();
-    return "Creates " + trimmed("new-name") + " as " + role() + (space === "" ? " of the whole node — an administrator" : " in " + space) + ", with the password typed above.";
-  }
   function preview() {
     write("role-says", MEANS[value("new-role")] ?? "");
-    write("define-preview", definition() === null ? missing() : definitionSays());
+    const space = reach();
+    const statement = definition();
+    write(
+      "define-preview",
+      statement === null || space === null ? missing() : definitionSays(trimmed("new-name"), role(), space)
+    );
   }
   function shapeTheForm() {
     hide("scope-field", value("new-reach") === "node");
@@ -872,21 +1009,19 @@
   function changeWhy() {
     return trimmed("change-why");
   }
-  function alterationSays() {
-    const name = trimmed("change-name");
-    const today = lookup(name);
-    const standing = today === null ? " This panel has not been told what " + name + " reaches — press List to find out." : " Today " + name + " is " + today.role + " in " + today.reach + ", and that is unchanged.";
-    if (value("change-what") === "password") {
-      return "Sets a new password for " + name + ". The one they have stops working and any session they are holding ends, so they sign in again with the new one." + standing;
-    }
-    return "Makes " + name + " " + changedRole() + ". Any session they are holding ends, so they sign in again." + standing;
-  }
   function shapeTheChange() {
     const changing = value("change-what");
     hide("change-password-field", changing !== "password");
     hide("change-role-field", changing !== "role");
     hide("change-role-other-field", changing !== "role" || value("change-role") !== "other");
-    write("change-preview", alteration() === null ? changeMissing() : alterationSays());
+    write(
+      "change-preview",
+      alteration() === null ? changeMissing() : alterationSays(
+        trimmed("change-name"),
+        value("change-what") === "password" ? "password" : "role",
+        changedRole()
+      )
+    );
   }
   function removal() {
     const name = trimmed("remove-name");
@@ -896,25 +1031,17 @@
   function removeWhy() {
     return trimmed("remove-why");
   }
-  function removalSays() {
-    const name = trimmed("remove-name");
-    const today = lookup(name);
-    if (today === null) {
-      return name + " loses access entirely, and their grants go with them. This panel has not been told what " + name + " reaches — press List above to find out before you do this.";
-    }
-    return name + " loses access entirely: " + today.role + " in " + today.reach + ", and the grants go with them. A new user of the same name inherits none of it.";
-  }
   function shapeTheRemoval() {
     const statement = removal();
     disable("remove", statement === null);
     const name = trimmed("remove-name");
     write(
       "remove-radius",
-      statement !== null ? removalSays() : name === "" ? "a name is needed" : "type the same name again to confirm"
+      statement !== null ? removalSays(name) : name === "" ? "a name is needed" : "type the same name again to confirm"
     );
     write("remove-preview", statement ?? "");
   }
-  function wire7() {
+  function wire8() {
     for (const field of [
       "new-name",
       "new-scope",
@@ -951,6 +1078,24 @@
   //! Everything here goes through a statement over `POST /script`. There is no
   //! request on this page that a `curl` could not make, which is what keeps a
   //! console feature from becoming a capability only the console has.
+  //!
+  //! # The node answers in full and this file renders a page
+  //!
+  //! `INFO FOR USERS` refuses rather than filters: it is answered only to a caller
+  //! who administers the tenancy, and then in full for that tenancy. So every row
+  //! in the answer is a row the reader may see, and holding them all here crosses
+  //! no boundary — which is what makes rendering a page, rather than paging the
+  //! statement, an honest arrangement rather than a shortcut.
+  //!
+  //! It is an arrangement with a MEASUREMENT behind it and a trigger for undoing
+  //! it. Measured on a skewed 5 000-account store: the listing costs about 4.9 µs
+  //! and 74 bytes per account, beside a fixed ~30 ms of password verification that
+  //! a signed-in panel pays once rather than per request. The node is not what
+  //! costs; five thousand table rows in a browser are. Past **10 000 accounts in
+  //! one tenancy** the paging belongs in the statement instead — that is engine
+  //! work, and it is recorded as Q-678 rather than left to be noticed.
+  var SHOWN = 200;
+  var everybody = [];
   function pick(name) {
     setValue("lookup-name", name);
     setValue("change-name", name);
@@ -959,7 +1104,23 @@
     shapeTheRemoval();
     at("lookup").click();
   }
-  function listing(everybody) {
+  var wanted = () => trimmed("user-filter").toLowerCase();
+  function matching() {
+    const needle = wanted();
+    if (needle === "") {
+      return everybody;
+    }
+    return everybody.filter((one2) => (one2.user ?? "").toLowerCase().includes(needle));
+  }
+  function tally(matched) {
+    const held3 = everybody.length;
+    const filtered = wanted() !== "";
+    if (matched.length <= SHOWN) {
+      return filtered ? `${matched.length} of ${held3}` : `${held3}`;
+    }
+    return `showing ${SHOWN} of ${matched.length}${filtered ? "" : ` — type a name to narrow`}`;
+  }
+  function listing(rows) {
     const table = made("table");
     const head = table.createTHead().insertRow();
     for (const column of ["user", "role", "reach"]) {
@@ -968,41 +1129,53 @@
       head.appendChild(cell2);
     }
     const body = table.createTBody();
-    forget();
-    for (const one2 of everybody) {
+    for (const one2 of rows) {
       const row = body.insertRow();
       const name = one2.user ?? "";
       row.insertCell().textContent = name;
-      const said2 = one2.role === "owner" && one2.namespace === void 0 ? "owner · admin" : one2.role ?? "";
-      row.insertCell().textContent = said2;
-      const reach2 = one2.namespace === void 0 ? "the whole node" : one2.namespace + (one2.database === void 0 ? "" : "." + one2.database);
-      row.insertCell().textContent = reach2;
-      remember(name, { role: said2, reach: reach2 });
+      row.insertCell().textContent = said2(one2);
+      row.insertCell().textContent = reach2(one2);
       row.addEventListener("click", () => pick(name));
     }
     return table;
   }
+  var said2 = (one2) => one2.role === "owner" && one2.namespace === void 0 ? "owner · admin" : one2.role ?? "";
+  var reach2 = (one2) => one2.namespace === void 0 ? "the whole node" : one2.namespace + (one2.database === void 0 ? "" : "." + one2.database);
   async function listUsers() {
     say("user-status", "asking…");
     try {
       const answer2 = held2(await valueOf("INFO FOR USERS;", "Users · list"));
-      const everybody = answer2 === null ? [] : answer2["users"];
-      clear("user-list");
-      if (!Array.isArray(everybody) || everybody.length === 0) {
-        at("user-list").appendChild(trailer("(no users — this store is open to anybody)"));
-        say("user-status", "");
-        return;
+      const listed = answer2 === null ? [] : answer2["users"];
+      everybody = Array.isArray(listed) ? listed : [];
+      forget();
+      for (const one2 of everybody) {
+        remember(one2.user ?? "", { role: said2(one2), reach: reach2(one2) });
       }
-      at("user-list").appendChild(listing(everybody));
+      redraw();
       say("user-status", "");
     } catch (failure) {
       clear("user-list");
       say("user-status", told(failure), true);
     }
   }
-  function wire8() {
+  function redraw() {
+    const matched = matching();
+    clear("user-list");
+    if (matched.length === 0) {
+      at("user-list").appendChild(
+        trailer(
+          everybody.length === 0 ? "(no users — this store is open to anybody)" : "(no account here matches that)"
+        )
+      );
+    } else {
+      at("user-list").appendChild(listing(matched.slice(0, SHOWN)));
+    }
+    write("user-count", tally(matched));
+  }
+  function wire9() {
     at("list").addEventListener("click", listUsers);
-    at("tab-users").addEventListener("click", () => {
+    at("user-filter").addEventListener("input", redraw);
+    at("tab-access").addEventListener("click", () => {
       if (at("user-list").textContent === "") {
         void listUsers();
       }
@@ -1120,29 +1293,29 @@
     return address;
   }
   function asked() {
-    const wanted = {
+    const wanted2 = {
       namespace: value("namespace"),
       database: value("database"),
       from: Number(value("from"))
     };
     const table = value("table");
     if (table !== "") {
-      wanted.table = table;
+      wanted2.table = table;
     }
     const carried = token();
     if (carried !== null) {
-      wanted.token = carried;
-      return wanted;
+      wanted2.token = carried;
+      return wanted2;
     }
     const user = value("user");
     const password = value("password");
     if (user !== "" || password !== "") {
-      wanted.user = user;
-      wanted.password = password;
+      wanted2.user = user;
+      wanted2.password = password;
     }
-    return wanted;
+    return wanted2;
   }
-  function wire9() {
+  function wire10() {
     at("follow").addEventListener("click", () => {
       stop();
       clear("changes");
@@ -1206,9 +1379,10 @@
   wire();
   wire3();
   wire6();
-  wire9();
   wire7();
+  wire10();
   wire8();
+  wire9();
   wire4();
   wire5();
 })();

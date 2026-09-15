@@ -60,7 +60,47 @@ pub(crate) fn get(address: &str, path: &str) -> (u16, Vec<String>, String) {
         .unwrap_or("0")
         .parse()
         .unwrap_or(0);
-    (status, lines.map(str::to_owned).collect(), body.to_owned())
+    let headers: Vec<String> = lines.map(str::to_owned).collect();
+    let chunked = headers.iter().any(|line| {
+        line.to_ascii_lowercase().starts_with("transfer-encoding:")
+            && line.to_ascii_lowercase().contains("chunked")
+    });
+    let body = if chunked {
+        dechunked(body)
+    } else {
+        body.to_owned()
+    };
+    (status, headers, body)
+}
+
+/// A chunked body, put back together.
+///
+/// Not a nicety. `tiny-http` switches to `Transfer-Encoding: chunked` once a
+/// response passes a size threshold, and the console's script crossed it — so
+/// the tests that scan the served bytes had been scanning **chunk-size markers
+/// mixed into the source**, and the first symptom was an id that read
+/// `change-status\n14cf\n`. It was correct by accident while the file was small
+/// and became wrong on a day that had nothing to do with the assertion.
+///
+/// Every scan of a served body in this file depends on this, which is why it
+/// lives beside `get` rather than in the one test that noticed.
+fn dechunked(body: &str) -> String {
+    let mut rest = body;
+    let mut out = String::with_capacity(body.len());
+    while let Some((header, tail)) = rest.split_once("\r\n") {
+        // A chunk header may carry extensions after a `;`; the size is the part
+        // before it, in hex.
+        let size = header.split(';').next().unwrap_or("").trim();
+        let Ok(size) = usize::from_str_radix(size, 16) else {
+            break;
+        };
+        if size == 0 || tail.len() < size {
+            break;
+        }
+        out.push_str(&tail[..size]);
+        rest = tail.get(size.saturating_add(2)..).unwrap_or("");
+    }
+    out
 }
 
 /// Post a script and answer with the status and the body.
@@ -849,5 +889,160 @@ fn no_screen_but_run_asks_the_operator_to_read_a_statement() {
             "the removal's statement is not inside the disclosure that should \
              hold it"
         );
+    }
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn the_four_destinations_are_named_for_the_jobs_and_there_are_four() {
+    // S3.2's own measurement. Renaming the destinations passed every test this
+    // suite had, because they all assert that a tab and a pane AGREE — which
+    // stays true whatever the tab is called. The labels are the criterion, so
+    // the labels are what this asserts, in order.
+    //
+    // The cap of four is asserted with them rather than separately: a fifth
+    // destination is a trade to be argued for, and a test that only checked the
+    // names would let one arrive silently beside them.
+    let (_node, address) = node();
+    let (status, _, page) = get(&address, "/");
+    assert_eq!(status, 200, "the console's page is not served");
+
+    let labels: Vec<String> = page
+        .split("<button")
+        .filter(|piece| piece.contains(r#"role="tab""#))
+        .filter_map(|piece| {
+            let opened = piece.find('>')?;
+            let rest = piece.get(opened.saturating_add(1)..)?;
+            rest.split('<').next().map(str::trim).map(str::to_owned)
+        })
+        .collect();
+
+    assert_eq!(
+        labels,
+        vec!["Run", "Cluster", "Access", "This node"],
+        "the destinations no longer name the jobs, or a fifth has arrived"
+    );
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn every_module_that_declares_a_wire_is_started_by_the_console() {
+    // Measured, not imagined: `search.ts` was imported by `console.ts` and never
+    // started. The bundler then dropped the whole module as unreachable, the
+    // page kept the field and the shortcut hint it draws, and NOTHING reported
+    // anything — not the typechecker, not the build, not a test. The console
+    // simply had a search box that did not search.
+    //
+    // A module that exports `wire` is declaring that it has start-up work. This
+    // asserts the declaration is honoured.
+    let sources = panel_sources();
+    assert!(
+        sources.len() >= 10,
+        "the panel's sources were not found, so this scan would pass by reading \
+         nothing: {} file(s)",
+        sources.len()
+    );
+    let entry = sources
+        .iter()
+        .find(|(name, _)| name == "console.ts")
+        .map(|(_, text)| text.as_str())
+        .expect("console.ts is not among the sources this test read");
+
+    // The BINDING and not the file stem. `user-forms.ts` is imported as
+    // `userForms`, so a scan keyed on the stem reports it unstarted while it is
+    // started — the same needle-for-a-subject substitution these tests exist to
+    // catch, and it went red here on the first run.
+    let started: Vec<&str> = entry
+        .lines()
+        .filter_map(|line| line.trim().strip_suffix(".wire();"))
+        .collect();
+    let unstarted: Vec<String> = sources
+        .iter()
+        .filter(|(name, text)| name != "console.ts" && text.contains("export function wire("))
+        .filter(|(name, _)| {
+            let stem = name.trim_end_matches(".ts");
+            let alias = entry
+                .lines()
+                .find(|line| line.contains(&format!("from \"./{stem}.js\"")))
+                .and_then(|line| line.split(" as ").nth(1))
+                .and_then(|rest| rest.split_whitespace().next());
+            match alias {
+                Some(alias) => !started.contains(&alias),
+                None => true,
+            }
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    assert!(
+        unstarted.is_empty(),
+        "these modules declare start-up work that nothing starts, so the bundler \
+         will drop them and the page will quietly lack the behaviour: {unstarted:?}"
+    );
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn the_listing_bounds_what_it_renders() {
+    // Measured in a browser on a 5 001-account store: 200 rows cost 3.1 ms and
+    // 5 001 cost 193 ms, unstyled, on a fast machine. The ceiling is the
+    // difference between a list and a stall, and nothing else in this suite
+    // would notice it being deleted.
+    //
+    // Structural, and recorded as such — it asserts the served script still
+    // bounds the slice it renders, not that a browser draws 200 rows. The
+    // behavioural half is the browser pass, which is where the numbers above
+    // came from.
+    let (_node, address) = node();
+    let (status, _, script) = get(&address, "/console.js");
+    assert_eq!(status, 200, "the console's script is not served");
+
+    let bound = script
+        .lines()
+        .find(|line| line.contains("var SHOWN"))
+        .and_then(|line| line.split('=').nth(1))
+        .and_then(|rest| rest.trim().trim_end_matches(';').parse::<usize>().ok())
+        .expect("the listing declares no render ceiling");
+    assert!(
+        (1..=1000).contains(&bound),
+        "the render ceiling is {bound}, which is not a ceiling"
+    );
+    assert!(
+        script.contains("slice(0, SHOWN)"),
+        "the ceiling is declared and not applied, which is the same as absent"
+    );
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn what_is_served_is_the_file_that_was_committed() {
+    // The assertion the whole file needed and did not have. Every test here
+    // scans the served bytes; none of them checked that the served bytes are
+    // the asset. They were not: the script passed `tiny-http`'s chunking
+    // threshold and the harness was handing the scans a body with chunk-size
+    // markers embedded in it.
+    //
+    // That failure is INTERMITTENT BY CONSTRUCTION, which is why it belongs
+    // here rather than in the one test that happened to catch it. Whether a
+    // marker corrupts anything depends on where in the file it lands, so the
+    // same defect turns a scan red on Tuesday and green on Wednesday after an
+    // unrelated edit moves the offset. Comparing the whole body to the file is
+    // the only form that does not depend on that luck.
+    let (_node, address) = node();
+    for (path, committed) in [
+        ("/console.js", include_str!("../../assets/console.js")),
+        ("/console.css", include_str!("../../assets/console.css")),
+        ("/", include_str!("../../assets/index.html")),
+    ] {
+        let (status, _, served) = get(&address, path);
+        assert_eq!(status, 200, "{path} is not served");
+        assert_eq!(
+            served.len(),
+            committed.len(),
+            "{path} came back {} bytes against {} on disk — the body is not the \
+             file, so every scan in this file is scanning something else",
+            served.len(),
+            committed.len()
+        );
+        assert_eq!(served, committed, "{path} is not what the repository holds");
     }
 }

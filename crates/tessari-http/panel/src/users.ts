@@ -3,9 +3,25 @@
 //! Everything here goes through a statement over `POST /script`. There is no
 //! request on this page that a `curl` could not make, which is what keeps a
 //! console feature from becoming a capability only the console has.
+//!
+//! # The node answers in full and this file renders a page
+//!
+//! `INFO FOR USERS` refuses rather than filters: it is answered only to a caller
+//! who administers the tenancy, and then in full for that tenancy. So every row
+//! in the answer is a row the reader may see, and holding them all here crosses
+//! no boundary — which is what makes rendering a page, rather than paging the
+//! statement, an honest arrangement rather than a shortcut.
+//!
+//! It is an arrangement with a MEASUREMENT behind it and a trigger for undoing
+//! it. Measured on a skewed 5 000-account store: the listing costs about 4.9 µs
+//! and 74 bytes per account, beside a fixed ~30 ms of password verification that
+//! a signed-in panel pays once rather than per request. The node is not what
+//! costs; five thousand table rows in a browser are. Past **10 000 accounts in
+//! one tenancy** the paging belongs in the statement instead — that is engine
+//! work, and it is recorded as Q-678 rather than left to be noticed.
 
 import { held, valueOf } from "./api.js";
-import { at, clear, made, say, setValue, trailer, trimmed } from "./dom.js";
+import { at, clear, made, say, setValue, trailer, trimmed, write } from "./dom.js";
 import { facts, put } from "./draw.js";
 import { forget, remember } from "./roster.js";
 import { told } from "./session.js";
@@ -29,6 +45,18 @@ interface Listed {
   readonly database?: string;
 }
 
+/**
+ * How many rows reach the page at once.
+ *
+ * A ceiling on the RENDER and not on the answer. It is deliberately not a pager:
+ * an operator who has to walk pages of accounts is missing a filter, not a
+ * control, and the field above the list is the cheaper answer to the same need.
+ */
+const SHOWN = 200;
+
+/** The whole answer, held unrendered so the filter does not re-ask the node. */
+let everybody: readonly Listed[] = [];
+
 /** Fill both name fields from a listing row, and reshape what depends on them. */
 function pick(name: string): void {
   setValue("lookup-name", name);
@@ -44,7 +72,44 @@ function pick(name: string): void {
   at("lookup").click();
 }
 
-function listing(everybody: readonly Listed[]): HTMLTableElement {
+/** What the reader typed into the filter, folded so case is not a trap. */
+const wanted = (): string => trimmed("user-filter").toLowerCase();
+
+/** The accounts the filter admits, in the order the node listed them. */
+function matching(): readonly Listed[] {
+  const needle = wanted();
+  if (needle === "") {
+    return everybody;
+  }
+  return everybody.filter((one) => (one.user ?? "").toLowerCase().includes(needle));
+}
+
+/**
+ * How many there are, how many are on screen, and — when those differ — what to
+ * do about it.
+ *
+ * The total is exact because it is free: the answer is already here, so there is
+ * no count query to decide whether to afford. What is not free is pretending the
+ * page is the list, which is how an operator concludes an account does not exist
+ * when it is simply row 4 000.
+ */
+function tally(matched: readonly Listed[]): string {
+  const held = everybody.length;
+  const filtered = wanted() !== "";
+  if (matched.length <= SHOWN) {
+    return filtered ? `${matched.length} of ${held}` : `${held}`;
+  }
+  return `showing ${SHOWN} of ${matched.length}${filtered ? "" : ` — type a name to narrow`}`;
+}
+
+/**
+ * One page of the listing.
+ *
+ * It renders what it is given and decides nothing about which rows those are —
+ * the bound belongs to the caller, so that the roster and the render can be fed
+ * from different sets without this function knowing there is a difference.
+ */
+function listing(rows: readonly Listed[]): HTMLTableElement {
   const table = made("table");
   const head = table.createTHead().insertRow();
   for (const column of ["user", "role", "reach"]) {
@@ -53,28 +118,12 @@ function listing(everybody: readonly Listed[]): HTMLTableElement {
     head.appendChild(cell);
   }
   const body = table.createTBody();
-  // The roster starts again with every listing: it stands for what the node just
-  // said, and a name kept from a listing before a removal would let a destructive
-  // form draw a reach that is no longer there.
-  forget();
-  for (const one of everybody) {
+  for (const one of rows) {
     const row = body.insertRow();
     const name = one.user ?? "";
     row.insertCell().textContent = name;
-    // An owner with no space is the node's administrator. The listing says so
-    // in the word people use, rather than leaving it to be inferred from an
-    // empty cell — which is what the panel did before, and nobody inferred it.
-    const said =
-      one.role === "owner" && one.namespace === undefined ? "owner · admin" : (one.role ?? "");
-    row.insertCell().textContent = said;
-    const reach =
-      one.namespace === undefined
-        ? "the whole node"
-        : one.namespace + (one.database === undefined ? "" : "." + one.database);
-    row.insertCell().textContent = reach;
-    // The same two strings the reader is looking at, so the radius a destructive
-    // form draws and the row it was picked from cannot disagree.
-    remember(name, { role: said, reach });
+    row.insertCell().textContent = said(one);
+    row.insertCell().textContent = reach(one);
     // A name in a listing is there to be clicked; typing it again is the kind
     // of small tax that makes an operator go back to `curl`.
     row.addEventListener("click", () => pick(name));
@@ -82,19 +131,38 @@ function listing(everybody: readonly Listed[]): HTMLTableElement {
   return table;
 }
 
+/**
+ * The role, in the word people use.
+ *
+ * An owner with no space is the node's administrator. The listing says so rather
+ * than leaving it to be inferred from an empty cell — which is what the panel did
+ * before, and nobody inferred it.
+ */
+const said = (one: Listed): string =>
+  one.role === "owner" && one.namespace === undefined ? "owner · admin" : (one.role ?? "");
+
+const reach = (one: Listed): string =>
+  one.namespace === undefined
+    ? "the whole node"
+    : one.namespace + (one.database === undefined ? "" : "." + one.database);
+
 /** Everybody the caller is allowed to be told about. */
 export async function listUsers(): Promise<void> {
   say("user-status", "asking…");
   try {
     const answer = held(await valueOf("INFO FOR USERS;", "Users · list"));
-    const everybody = answer === null ? [] : answer["users"];
-    clear("user-list");
-    if (!Array.isArray(everybody) || everybody.length === 0) {
-      at("user-list").appendChild(trailer("(no users — this store is open to anybody)"));
-      say("user-status", "");
-      return;
+    const listed = answer === null ? [] : answer["users"];
+    everybody = Array.isArray(listed) ? (listed as readonly Listed[]) : [];
+    // The roster is fed from the WHOLE answer and never from the page. It stands
+    // for what the node said, so a destructive form can draw the radius of an
+    // account that was filtered off the screen — and it starts again with every
+    // listing, because a name kept across a removal would draw a reach that is
+    // no longer there.
+    forget();
+    for (const one of everybody) {
+      remember(one.user ?? "", { role: said(one), reach: reach(one) });
     }
-    at("user-list").appendChild(listing(everybody as readonly Listed[]));
+    redraw();
     say("user-status", "");
   } catch (failure) {
     clear("user-list");
@@ -102,10 +170,33 @@ export async function listUsers(): Promise<void> {
   }
 }
 
+/** Redraw from the answer already held — the filter never re-asks the node. */
+function redraw(): void {
+  const matched = matching();
+  clear("user-list");
+  if (matched.length === 0) {
+    at("user-list").appendChild(
+      trailer(
+        everybody.length === 0
+          ? "(no users — this store is open to anybody)"
+          : "(no account here matches that)",
+      ),
+    );
+  } else {
+    at("user-list").appendChild(listing(matched.slice(0, SHOWN)));
+  }
+  write("user-count", tally(matched));
+}
+
 export function wire(): void {
   at("list").addEventListener("click", listUsers);
 
-  at("tab-users").addEventListener("click", () => {
+  // The filter redraws from the answer already held rather than asking again:
+  // the node has told us everything it is going to tell us, and a request per
+  // keystroke would be a cost this arrangement was chosen to avoid.
+  at("user-filter").addEventListener("input", redraw);
+
+  at("tab-access").addEventListener("click", () => {
     if (at("user-list").textContent === "") {
       void listUsers();
     }

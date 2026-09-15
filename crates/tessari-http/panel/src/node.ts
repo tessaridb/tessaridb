@@ -99,7 +99,7 @@ export function wire(): void {
   // Read once when the section is first opened, rather than on load: a console
   // left on the query tab should not be scraping a node nobody is looking at.
   let read = false;
-  for (const tab of ["tab-node", "tab-cluster"]) {
+  for (const tab of ["tab-this-node", "tab-cluster"]) {
     at(tab).addEventListener("click", () => {
       if (!read) {
         read = true;

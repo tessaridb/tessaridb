@@ -12,7 +12,7 @@
 //! who cannot read it is guessing.
 
 import { at, disable, hide, trimmed, value, write } from "./dom.js";
-import { lookup } from "./roster.js";
+import { alterationSays, definitionSays, removalSays } from "./user-says.js";
 
 /** Text into a TessariQL string literal, escaped the way the language escapes. */
 export function quoted(text: string): string {
@@ -99,30 +99,23 @@ export function missing(): string {
   return "a space is needed — or choose the whole node, which is not the same thing";
 }
 
-/**
- * What pressing the button will do, in words.
- *
- * It says what is created and where, and stops. What the new account will then
- * be able to reach is the role's business and is already said beside the role
- * control — repeating it here would be the pane explaining the same thing twice
- * and drifting on one of them.
- */
-export function definitionSays(): string {
-  const space = reach();
-  return (
-    "Creates " +
-    trimmed("new-name") +
-    " as " +
-    role() +
-    (space === "" ? " of the whole node — an administrator" : " in " + space) +
-    ", with the password typed above."
-  );
-}
 
 /** Keep the pane current: what the role means, and what the button will do. */
 function preview(): void {
   write("role-says", MEANS[value("new-role")] ?? "");
-  write("define-preview", definition() === null ? missing() : definitionSays());
+  // `reach()` is asked ONCE and its `null` is the same `null` that makes the
+  // statement incomplete — so the sentence is only ever built for a form that
+  // has a space. A `?? ""` here would have read as "the whole node", which is a
+  // wrong answer wearing a right one's clothes on the one field this form was
+  // split in two to protect.
+  const space = reach();
+  const statement = definition();
+  write(
+    "define-preview",
+    statement === null || space === null
+      ? missing()
+      : definitionSays(trimmed("new-name"), role(), space),
+  );
 }
 
 /** Show only the fields the chosen reach and role actually need. */
@@ -176,40 +169,6 @@ export function changeWhy(): string {
   return trimmed("change-why");
 }
 
-/**
- * What this change will do to the person it is about.
- *
- * Both branches say the session ends, and that is measured rather than assumed:
- * a token stands for the account record it was issued against, so a node that
- * finds the record has moved refuses it and drops it. Whether a *promotion* does
- * the same as a demotion is asserted by the probe in the suite, not by this
- * sentence — the pane says what is proven elsewhere and invents nothing.
- */
-export function alterationSays(): string {
-  const name = trimmed("change-name");
-  const today = lookup(name);
-  const standing =
-    today === null
-      ? " This panel has not been told what " + name + " reaches — press List to find out."
-      : " Today " + name + " is " + today.role + " in " + today.reach + ", and that is unchanged.";
-  if (value("change-what") === "password") {
-    return (
-      "Sets a new password for " +
-      name +
-      ". The one they have stops working and any session they are holding ends, " +
-      "so they sign in again with the new one." +
-      standing
-    );
-  }
-  return (
-    "Makes " +
-    name +
-    " " +
-    changedRole() +
-    ". Any session they are holding ends, so they sign in again." +
-    standing
-  );
-}
 
 /** Show the fields this change needs, and what running it will do. */
 export function shapeTheChange(): void {
@@ -217,7 +176,16 @@ export function shapeTheChange(): void {
   hide("change-password-field", changing !== "password");
   hide("change-role-field", changing !== "role");
   hide("change-role-other-field", changing !== "role" || value("change-role") !== "other");
-  write("change-preview", alteration() === null ? changeMissing() : alterationSays());
+  write(
+    "change-preview",
+    alteration() === null
+      ? changeMissing()
+      : alterationSays(
+          trimmed("change-name"),
+          value("change-what") === "password" ? "password" : "role",
+          changedRole(),
+        ),
+  );
 }
 
 /**
@@ -240,35 +208,6 @@ export function removeWhy(): string {
   return trimmed("remove-why");
 }
 
-/**
- * Who loses what, said before the statement rather than after it.
- *
- * Drawn from the listing the node already answered and from nowhere else. When
- * this panel has not been told, it says so: a reach guessed from a name would be
- * the console narrating an answer the node never gave, and the one place that is
- * least affordable is the pane that does not come back.
- */
-export function removalSays(): string {
-  const name = trimmed("remove-name");
-  const today = lookup(name);
-  if (today === null) {
-    return (
-      name +
-      " loses access entirely, and their grants go with them. This panel has not been" +
-      " told what " +
-      name +
-      " reaches — press List above to find out before you do this."
-    );
-  }
-  return (
-    name +
-    " loses access entirely: " +
-    today.role +
-    " in " +
-    today.reach +
-    ", and the grants go with them. A new user of the same name inherits none of it."
-  );
-}
 
 /** Keep the button, the radius and the statement honest about this form. */
 export function shapeTheRemoval(): void {
@@ -278,7 +217,7 @@ export function shapeTheRemoval(): void {
   write(
     "remove-radius",
     statement !== null
-      ? removalSays()
+      ? removalSays(name)
       : name === ""
         ? "a name is needed"
         : "type the same name again to confirm",

@@ -18,7 +18,7 @@ function pane(tab: HTMLElement): HTMLElement {
 }
 
 export function show(name: string): void {
-  const wanted = tabs().some((tab) => tab.id === "tab-" + name) ? name : "query";
+  const wanted = tabs().some((tab) => tab.id === "tab-" + name) ? name : "run";
   for (const tab of tabs()) {
     const chosen = tab.id === "tab-" + wanted;
     tab.setAttribute("aria-selected", String(chosen));
