@@ -29,6 +29,7 @@
 import { valueOf } from "./api.js";
 import { at, clear, made, say, trimmed } from "./dom.js";
 import { told } from "./session.js";
+import { hereAgain } from "./tabs.js";
 import { quoted } from "./user-forms.js";
 
 /** One row of the intended membership, as the form holds it. */
@@ -167,7 +168,16 @@ export function wire(): void {
     say("form-status", "running…");
     try {
       const answered = await valueOf(formation(rows), "Cluster · form");
-      say("form-status", answered !== null && answered.kind === "done" ? "declared" : "");
+      const done = answered !== null && answered.kind === "done";
+      say("form-status", done ? "declared" : "");
+      if (done) {
+        // The map is two inches above this button and was drawn before the
+        // membership that now exists. W319 fixed exactly this for the drawer
+        // and did not reach the form; W320 declared a peer here, read
+        // `declared`, and watched the map go on showing a single node — with
+        // the node itself, asked over HTTP, already holding the peer.
+        hereAgain();
+      }
     } catch (failure) {
       // The node's own words. A refusal here is usually the fence explaining
       // itself, and paraphrasing it would hide which refusal it was.

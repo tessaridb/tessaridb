@@ -7,8 +7,8 @@ import { held, scrape, valueOf } from "./api.js";
 import { at, clear, say } from "./dom.js";
 import { facts } from "./draw.js";
 import { draw as drawMap, type Seen } from "./map.js";
-import { afterChange } from "./drawer.js";
 import { told } from "./session.js";
+import { settled, state } from "./states.js";
 import { onArrival } from "./tabs.js";
 
 const HEALTH_ROUTE = "/health";
@@ -82,9 +82,30 @@ export async function readNode(): Promise<void> {
       endpoints: all["endpoints"],
       id: all["id"],
     });
-    say("cluster-status", "");
+    // A node with no peers drew one card and said nothing, so the map read the
+    // same whether this node is alone or the map simply had nothing to add.
+    // They are different situations with different next actions, and the four
+    // states exist precisely so a screen cannot leave the reader to guess.
+    if (!Array.isArray(peers) || peers.length === 0) {
+      state(
+        "cluster-status",
+        "empty",
+        "No peers — this node holds everything itself. Declare the membership " +
+          "below to add them, all at once.",
+      );
+    } else {
+      settled("cluster-status");
+    }
   } catch (failure) {
     clear("node-facts");
+    // The map goes with it. `node-facts` was already cleared here and the map
+    // was not, so a failed read left a cluster drawn on screen under a line
+    // saying the node could not be reached — the two halves of the pane
+    // disagreeing about whether anything is known. A map nobody can vouch for
+    // is worse than no map during the incident a map is for, so what stays is
+    // the sentence.
+    clear("cluster-map");
+    clear("cluster-facts");
     say("node-status", told(failure), true);
     say("cluster-status", told(failure), true);
     return;
@@ -118,10 +139,12 @@ export function wire(): void {
   // anything, and each one used to leave it empty with an empty status beside
   // it — a blank map that an operator has no way to tell from a cluster with
   // nothing in it.
+  // On EVERY arrival, not the first. A first arrival that was refused — because
+  // nobody had signed in yet — used to spend the registration, and the map then
+  // showed that refusal until the tab was closed.
+  //
+  // A declaration accepted by the node reaches this the same way: the screen
+  // that is on view reads again, so the drawer and the formation form both say
+  // `declared` beside a map that has been told.
   onArrival(["cluster", "this-node"], () => void readNode());
-
-  // A declaration that the node accepted has changed what the map draws, so the
-  // map is read again. Without this the drawer says `declared`, the node agrees,
-  // and the lamp beside it keeps showing the role that was just replaced.
-  afterChange(() => void readNode());
 }

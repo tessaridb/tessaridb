@@ -85,11 +85,17 @@
   }
   var arrivals = [];
   function onArrival(names, todo) {
+    arrivals.push({ names, todo });
     if (names.includes(here())) {
       todo();
-      return;
     }
-    arrivals.push({ names, todo });
+  }
+  function hereAgain() {
+    for (const arrival of arrivals) {
+      if (arrival.names.includes(here())) {
+        arrival.todo();
+      }
+    }
   }
   function pane(tab) {
     const named = tab.getAttribute("aria-controls");
@@ -109,9 +115,10 @@
     if (window.location.hash !== "#" + wanted2) {
       window.location.hash = wanted2;
     }
-    for (const arrival of arrivals.filter((one2) => one2.names.includes(wanted2))) {
-      arrivals.splice(arrivals.indexOf(arrival), 1);
-      arrival.todo();
+    for (const arrival of arrivals) {
+      if (arrival.names.includes(wanted2)) {
+        arrival.todo();
+      }
     }
   }
   function wire() {
@@ -295,6 +302,7 @@
     held = null;
     signedIn();
     say("identity-status", "this session ended — sign in again", true);
+    hereAgain();
   }
   function reason(text) {
     try {
@@ -346,6 +354,7 @@
         say("identity-status", "");
         signedIn();
         identity.open = false;
+        hereAgain();
       } catch (failure) {
         say("identity-status", "the node did not answer: " + told(failure), true);
       }
@@ -367,6 +376,7 @@
       say("identity-status", "");
       signedIn();
       identity.open = false;
+      hereAgain();
     });
     identity.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
@@ -394,6 +404,8 @@
   //! something this page sits on top of.
   var SCRIPT_ROUTE = "/script";
   var WATCH_ROUTE = "/watch";
+  var Unreachable = class extends Error {
+  };
   var outcome = (result) => {
     if (Array.isArray(result.records)) {
       return result.records.length === 1 ? "1 record" : `${result.records.length} records`;
@@ -423,17 +435,22 @@
     if (offered !== null) {
       headers["Authorization"] = offered;
     }
-    const reply = await fetch(SCRIPT_ROUTE, {
-      method: "POST",
-      headers,
-      body: source,
-      // Without this the browser handles the node's `401` challenge itself and
-      // opens its own credential dialog on top of the page — a second sign-in
-      // this console did not ask for, cannot read and cannot clear, and which
-      // leaves the page's own request hanging behind it. The credential is in the
-      // header above; nothing here wants the browser to manage one.
-      credentials: "omit"
-    });
+    let reply;
+    try {
+      reply = await fetch(SCRIPT_ROUTE, {
+        method: "POST",
+        headers,
+        body: source,
+        // Without this the browser handles the node's `401` challenge itself and
+        // opens its own credential dialog on top of the page — a second sign-in
+        // this console did not ask for, cannot read and cannot clear, and which
+        // leaves the page's own request hanging behind it. The credential is in
+        // the header above; nothing here wants the browser to manage one.
+        credentials: "omit"
+      });
+    } catch {
+      throw new Unreachable("the node did not answer — it may be stopped or unreachable");
+    }
     if (reply.status === 401 && token() !== null) {
       ended();
     }
@@ -480,6 +497,7 @@
   // src/watch.ts
   //! Following a table as it changes.
   var following = null;
+  var toldWhy = false;
   var isFollowing = () => following !== null;
   function stop(words) {
     if (following !== null) {
@@ -534,6 +552,7 @@
       clear("changes");
       const socket = new WebSocket(where());
       following = socket;
+      toldWhy = false;
       disable("follow", true);
       disable("stop", false);
       say("watch-status", "connecting…");
@@ -551,16 +570,18 @@
         }
         if (typeof what.refused === "string") {
           say("watch-status", what.refused, true);
+          toldWhy = true;
           return;
         }
         if (typeof what.error === "string") {
           say("watch-status", what.error, true);
+          toldWhy = true;
           return;
         }
         change(what);
       });
       socket.addEventListener("close", (event) => {
-        stop(event.code === 1001 ? "the node is stopping" : "stopped");
+        stop(toldWhy ? void 0 : event.code === 1001 ? "the node is stopping" : "stopped");
       });
       socket.addEventListener("error", () => {
         say("watch-status", "the socket failed", true);
@@ -861,10 +882,6 @@
   //! that always fails, which is a button that lies in the slower way: it looks
   //! right until the one moment somebody needs it.
   var open = null;
-  var changed = [];
-  function afterChange(todo) {
-    changed.push(todo);
-  }
   var BITS = ["serving", "writable", "coordinating"];
   function ticked() {
     return BITS.filter((bit) => at(`drawer-${bit}`).checked);
@@ -940,9 +957,7 @@
         const done = answered2 !== null && answered2.kind === "done";
         say("drawer-status", done ? "declared" : "");
         if (done) {
-          for (const todo of changed) {
-            todo();
-          }
+          hereAgain();
         }
       } catch (failure) {
         say("drawer-status", told(failure), true);
@@ -1300,7 +1315,11 @@
       say("form-status", "running…");
       try {
         const answered2 = await valueOf(formation(rows), "Cluster · form");
-        say("form-status", answered2 !== null && answered2.kind === "done" ? "declared" : "");
+        const done = answered2 !== null && answered2.kind === "done";
+        say("form-status", done ? "declared" : "");
+        if (done) {
+          hereAgain();
+        }
       } catch (failure) {
         say("form-status", told(failure), true);
       }
@@ -1589,6 +1608,47 @@
     }
   }
 
+  // src/states.ts
+  //! The four things a screen can be, said as four things.
+  //!
+  //! `say(id, words, failed?)` carries one string and one boolean, so the five
+  //! situations an operator actually meets render as two. The two that collapse
+  //! are the expensive ones: **nothing here** and **some of it** look identical,
+  //! and an operator who reads a bounded page as the whole list concludes an
+  //! account does not exist when it is simply not on screen.
+  //!
+  //! # Each state names a NEXT ACTION, and that is the half worth guarding
+  //!
+  //! "No users" is a state. "No users — this store is open to anybody, and the
+  //! first `DEFINE USER` closes it" is a state that tells the reader what to do
+  //! about it. A screen full of correct nouns and no verbs is a screen that makes
+  //! the operator go and ask somebody.
+  //!
+  //! # Why not simply widen `say`
+  //!
+  //! Because a wider `say` would let a screen render a partial state by passing
+  //! the wrong argument, and nothing would say so. Four named calls make the wrong
+  //! one a thing you have to type on purpose. `say` keeps its two-state job for
+  //! the many places that genuinely have two — this is not a rewrite of all
+  //! sixty-six of its call sites, and it must not become one.
+  function state(id, kind, words) {
+    const line = at(id);
+    line.textContent = words;
+    for (const other of ["waiting", "empty", "partial", "wrong"]) {
+      line.classList.toggle(`is-${other}`, other === kind);
+    }
+    line.classList.toggle("failed", kind === "wrong");
+    line.setAttribute("aria-live", kind === "wrong" ? "assertive" : "polite");
+  }
+  function settled(id) {
+    const line = at(id);
+    line.textContent = "";
+    for (const other of ["waiting", "empty", "partial", "wrong"]) {
+      line.classList.remove(`is-${other}`);
+    }
+    line.classList.remove("failed");
+  }
+
   // src/node.ts
   //! This machine, and what the cluster tab can say about it today.
   //!
@@ -1631,9 +1691,19 @@
         endpoints: all2["endpoints"],
         id: all2["id"]
       });
-      say("cluster-status", "");
+      if (!Array.isArray(peers) || peers.length === 0) {
+        state(
+          "cluster-status",
+          "empty",
+          "No peers — this node holds everything itself. Declare the membership below to add them, all at once."
+        );
+      } else {
+        settled("cluster-status");
+      }
     } catch (failure) {
       clear("node-facts");
+      clear("cluster-map");
+      clear("cluster-facts");
       say("node-status", told(failure), true);
       say("cluster-status", told(failure), true);
       return;
@@ -1653,7 +1723,6 @@
   function wire11() {
     at("node-refresh").addEventListener("click", readNode);
     onArrival(["cluster", "this-node"], () => void readNode());
-    afterChange(() => void readNode());
   }
 
   // src/password.ts
@@ -1992,47 +2061,6 @@
     });
   }
 
-  // src/states.ts
-  //! The four things a screen can be, said as four things.
-  //!
-  //! `say(id, words, failed?)` carries one string and one boolean, so the five
-  //! situations an operator actually meets render as two. The two that collapse
-  //! are the expensive ones: **nothing here** and **some of it** look identical,
-  //! and an operator who reads a bounded page as the whole list concludes an
-  //! account does not exist when it is simply not on screen.
-  //!
-  //! # Each state names a NEXT ACTION, and that is the half worth guarding
-  //!
-  //! "No users" is a state. "No users — this store is open to anybody, and the
-  //! first `DEFINE USER` closes it" is a state that tells the reader what to do
-  //! about it. A screen full of correct nouns and no verbs is a screen that makes
-  //! the operator go and ask somebody.
-  //!
-  //! # Why not simply widen `say`
-  //!
-  //! Because a wider `say` would let a screen render a partial state by passing
-  //! the wrong argument, and nothing would say so. Four named calls make the wrong
-  //! one a thing you have to type on purpose. `say` keeps its two-state job for
-  //! the many places that genuinely have two — this is not a rewrite of all
-  //! sixty-six of its call sites, and it must not become one.
-  function state(id, kind, words) {
-    const line = at(id);
-    line.textContent = words;
-    for (const other of ["waiting", "empty", "partial", "wrong"]) {
-      line.classList.toggle(`is-${other}`, other === kind);
-    }
-    line.classList.toggle("failed", kind === "wrong");
-    line.setAttribute("aria-live", kind === "wrong" ? "assertive" : "polite");
-  }
-  function settled(id) {
-    const line = at(id);
-    line.textContent = "";
-    for (const other of ["waiting", "empty", "partial", "wrong"]) {
-      line.classList.remove(`is-${other}`);
-    }
-    line.classList.remove("failed");
-  }
-
   // src/users.ts
   //! Who exists, and the buttons that change that.
   //!
@@ -2121,7 +2149,7 @@
       state(
         "user-status",
         "wrong",
-        `${told(failure)} — a listing is answered to whoever administers the tenancy.`
+        failure instanceof Unreachable ? `${told(failure)} — nothing about this listing is settled until it does.` : `${told(failure)} — a listing is answered to whoever administers the tenancy.`
       );
     }
   }
@@ -2151,11 +2179,7 @@
   function wire16() {
     at("list").addEventListener("click", listUsers);
     at("user-filter").addEventListener("input", redraw);
-    onArrival(["access"], () => {
-      if (at("user-list").textContent === "") {
-        void listUsers();
-      }
-    });
+    onArrival(["access"], () => void listUsers());
     at("lookup").addEventListener("click", async () => {
       const name = trimmed("lookup-name");
       if (name === "") {

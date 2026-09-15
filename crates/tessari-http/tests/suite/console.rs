@@ -1697,3 +1697,128 @@ fn no_screen_waits_for_a_click_on_a_tab_to_read_what_it_draws() {
          this guard now watches nothing"
     );
 }
+
+#[cfg(feature = "console")]
+#[test]
+fn nothing_a_screen_drew_outlives_the_reason_it_stopped_being_true() {
+    // W319 replaced a click listener with an arrival and made the arrival
+    // ONE-SHOT, and W320 measured what that bought: reach a destination before
+    // signing in, the read is refused, the registration is spent, and the screen
+    // holds that refusal for the life of the tab. Signing in did not recover it.
+    // Leaving and coming back did not recover it. Three screens were reachable
+    // that way and one of them by following a shared `#cluster` link.
+    //
+    // Two properties keep it fixed, and neither is visible from any one module:
+    // an arrival repeats, and everything that makes a drawn answer false says so.
+    let sources = panel_sources();
+    assert!(
+        sources.len() >= 20,
+        "the panel's sources were not found, so this scan would pass by reading \
+         nothing: {} file(s)",
+        sources.len()
+    );
+    let source = |wanted: &str| -> &str {
+        sources
+            .iter()
+            .find(|(name, _)| name == wanted)
+            .map(|(_, text)| text.as_str())
+            .unwrap_or_else(|| panic!("{wanted} is not among the panel's sources"))
+    };
+
+    // An arrival is a registration and not a coupon. Removing it from the
+    // registry as it fires is the exact line that caused the defect.
+    let tabs = source("tabs.ts");
+    assert!(
+        !tabs.contains("splice("),
+        "tabs.ts removes an arrival as it fires, so a destination reached once \
+         under a failing condition can never read again"
+    );
+    assert!(
+        tabs.contains("export function hereAgain("),
+        "tabs.ts offers no way to re-read the destination on screen, so news \
+         that arrives while the reader is already standing there cannot reach it"
+    );
+
+    // The three kinds of news that make a drawn answer false. Each is a module
+    // that changes something the screens read FROM, and each must say so; the
+    // identity is listed separately because it changes in three places and
+    // missing any one of them leaves one identity's data under another's name.
+    for (module, why) in [
+        ("session.ts", "the identity changed"),
+        ("drawer.ts", "a role declaration landed"),
+        ("formation.ts", "a membership declaration landed"),
+    ] {
+        assert!(
+            source(module).contains("hereAgain()"),
+            "{module} changes what the screens draw ({why}) and does not tell \
+             them, so the panel reports the change beside the state it replaced"
+        );
+    }
+    let announcements = source("session.ts").matches("hereAgain()").count();
+    assert!(
+        announcements >= 3,
+        "session.ts announces an identity change {announcements} time(s); it \
+         changes in three — signing in, signing out, and a session the node \
+         stopped honouring — and a missed one leaves the previous identity's \
+         answer on screen"
+    );
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn two_different_failures_never_render_as_one_message() {
+    // Both halves were measured against a running node in W320, and both told
+    // the operator something false rather than something incomplete.
+    //
+    // A stopped node reached the account list as the browser's own
+    // `Failed to fetch`, glued to this panel's explanation that a listing is
+    // answered to whoever administers the tenancy — so an outage read as a
+    // permissions problem and sent the reader to check grants while the node
+    // was down. And a follow the node REFUSED ended on `stopped`, the same word
+    // to the byte that the Stop button writes, because the socket closes right
+    // after the refusal and the close handler overwrote it.
+    let sources = panel_sources();
+    let source = |wanted: &str| -> &str {
+        sources
+            .iter()
+            .find(|(name, _)| name == wanted)
+            .map(|(_, text)| text.as_str())
+            .unwrap_or_else(|| panic!("{wanted} is not among the panel's sources"))
+    };
+
+    // A request that never arrived is its own kind, so a screen can tell the
+    // two apart without reading the browser's wording.
+    assert!(
+        source("api.ts").contains("export class Unreachable"),
+        "api.ts does not distinguish a request that never reached the node from \
+         one the node refused, so every screen has to guess from the wording"
+    );
+    // The BRANCH and not the import. Asserting the name alone passed with the
+    // branch deleted, because `Unreachable` still appeared at the top of the
+    // file — a scan for a token that lives in two places tests the quieter one.
+    // Measured: the falsification arm that removed the branch stayed green.
+    assert!(
+        source("users.ts").contains("failure instanceof Unreachable"),
+        "the account list explains every failure as a question of authority, \
+         including the ones where nothing answered at all"
+    );
+
+    // The node's own account of a refusal has to survive the close that follows
+    // it. A close handler that writes unconditionally erases it.
+    // The CLOSE HANDLER'S OWN CALL, for the same reason. `toldWhy` appears four
+    // times in this module, so a scan for the name passed with the one use that
+    // matters deleted — also measured, also by the arm that was supposed to
+    // catch it. What is asserted is the shape of the decision: the words the
+    // close writes are chosen, not fixed.
+    let watch = source("watch.ts");
+    assert!(
+        watch.contains("stop(toldWhy"),
+        "watch.ts closes a follow without asking whether the node already said \
+         why, so a refusal and an operator's own stop render identically"
+    );
+    assert!(
+        watch.contains("toldWhy = true"),
+        "nothing in watch.ts ever records that the node gave a reason, so the \
+         flag the close consults can only ever be false"
+    );
+}

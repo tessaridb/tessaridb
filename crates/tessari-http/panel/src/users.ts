@@ -20,7 +20,7 @@
 //! one tenancy** the paging belongs in the statement instead — that is engine
 //! work, and it is recorded as Q-678 rather than left to be noticed.
 
-import { held, valueOf } from "./api.js";
+import { held, Unreachable, valueOf } from "./api.js";
 import { at, clear, made, say, setValue, trailer, trimmed, write } from "./dom.js";
 import { facts, put } from "./draw.js";
 import { forget, remember } from "./roster.js";
@@ -177,10 +177,17 @@ export async function listUsers(): Promise<void> {
     // The node's own words, and then what to do with them — a refusal here is
     // usually the tenancy rule working, and an operator who is told only that
     // it refused goes looking for a bug instead of for an owner.
+    //
+    // Only when the node actually answered, though. A request that never
+    // arrived carried that same sentence in W320, so a stopped node read as a
+    // permissions problem and sent the operator to check grants during an
+    // outage. Two failures, two sentences.
     state(
       "user-status",
       "wrong",
-      `${told(failure)} — a listing is answered to whoever administers the tenancy.`,
+      failure instanceof Unreachable
+        ? `${told(failure)} — nothing about this listing is settled until it does.`
+        : `${told(failure)} — a listing is answered to whoever administers the tenancy.`,
     );
   }
 }
@@ -227,11 +234,14 @@ export function wire(): void {
   // On arrival rather than on a click of the tab: ⌘3, the tablist's arrow keys,
   // a shared link and a reload all reach this screen without one, and each used
   // to land on an empty list with nothing said about why.
-  onArrival(["access"], () => {
-    if (at("user-list").textContent === "") {
-      void listUsers();
-    }
-  });
+  //
+  // Unconditionally, and that is the point. The guard here read "only if the
+  // list is empty", which meant signing OUT left the previous identity's
+  // accounts on screen — the list was not empty, so nothing asked again. Who
+  // may be told who exists is the one question this screen answers, so it asks
+  // it every time it is looked at rather than caching the answer across an
+  // identity nobody holds any more.
+  onArrival(["access"], () => void listUsers());
 
   at("lookup").addEventListener("click", async () => {
     const name = trimmed("lookup-name");

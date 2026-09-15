@@ -6,6 +6,7 @@
 //! in the other.
 
 import { at, say, setValue, value, write } from "./dom.js";
+import { hereAgain } from "./tabs.js";
 
 /**
  * The token this page is holding, or `null`.
@@ -76,6 +77,13 @@ export function ended(): void {
   held = null;
   signedIn();
   say("identity-status", "this session ended — sign in again", true);
+  // The screen in front of the reader is still showing what the dead session
+  // was told. It reads again and is refused, which is the true answer; leaving
+  // it is the console presenting one identity's data under another's name.
+  //
+  // It cannot loop: `ask` only calls this while a token is held, and the line
+  // above dropped it.
+  hereAgain();
 }
 
 /** The `error` out of a refusal's body, or the body when it is not one. */
@@ -143,6 +151,12 @@ export function wire(): void {
       say("identity-status", "");
       signedIn();
       identity.open = false;
+      // The screen behind this sheet asked the node before there was anything
+      // to ask with, and was told so. Signing in is the answer to the message
+      // it is still displaying, so it reads again now rather than when the
+      // reader happens to navigate — W320 measured an operator signing in and
+      // being left looking at "this store requires a signed-in user".
+      hereAgain();
     } catch (failure) {
       say("identity-status", "the node did not answer: " + told(failure), true);
     }
@@ -173,6 +187,10 @@ export function wire(): void {
     say("identity-status", "");
     signedIn();
     identity.open = false;
+    // Signing out has to reach the screen as well as the node. What is drawn
+    // is the previous identity's answer, and leaving it there is the same
+    // disclosure as never having signed out at all.
+    hereAgain();
   });
 
   // A sheet that hangs over the page until something else is clicked is the

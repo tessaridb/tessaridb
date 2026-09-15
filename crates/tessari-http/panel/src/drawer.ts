@@ -43,6 +43,7 @@
 import { valueOf } from "./api.js";
 import { at, clear, hide, made, say } from "./dom.js";
 import { told } from "./session.js";
+import { hereAgain } from "./tabs.js";
 
 /** What the drawer is open on. `null` when it is closed. */
 export interface Subject {
@@ -54,26 +55,6 @@ export interface Subject {
 }
 
 let open: Subject | null = null;
-
-/** What to do once the node has accepted a declaration from this drawer. */
-const changed: (() => void)[] = [];
-
-/**
- * Be told when a declaration lands.
- *
- * The drawer must not read the map back itself — the map is what draws the
- * drawer, so importing it here would be a cycle. So the screen that owns the
- * reading registers for the news instead.
- *
- * It exists because W319 declared `coordinating` from this drawer against a
- * running node, the node accepted it, the drawer said `declared`, and the lamp
- * two inches away went on showing the role as not held. A console that reports
- * a change and then displays the state the change replaced is worse than one
- * that reports nothing.
- */
-export function afterChange(todo: () => void): void {
-  changed.push(todo);
-}
 
 const BITS = ["serving", "writable", "coordinating"] as const;
 
@@ -171,9 +152,17 @@ export function wire(): void {
       const done = answered !== null && answered.kind === "done";
       say("drawer-status", done ? "declared" : "");
       if (done) {
-        for (const todo of changed) {
-          todo();
-        }
+        // The drawer must not read the map back itself — the map is what draws
+        // the drawer, so importing it here would be a cycle. The destination on
+        // screen reads again instead, which is the same news without the
+        // dependency.
+        //
+        // W319 declared `coordinating` from here against a running node, the
+        // node accepted it, this line said `declared`, and the lamp two inches
+        // away went on showing the role as not held. A console that reports a
+        // change and then displays the state the change replaced is worse than
+        // one that reports nothing.
+        hereAgain();
       }
     } catch (failure) {
       say("drawer-status", told(failure), true);

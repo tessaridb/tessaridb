@@ -23,7 +23,7 @@ interface Arrival {
 const arrivals: Arrival[] = [];
 
 /**
- * Do this once, the first time any of `names` is reached — however it is reached.
+ * Do this every time any of `names` is reached — however it is reached.
  *
  * The two screens that read on arrival used to listen for a CLICK on their own
  * tab, and every other way in left them blank AND silent: the console's own
@@ -35,13 +35,40 @@ const arrivals: Arrival[] = [];
  * `show` is the one place a destination becomes visible, so it is the one place
  * that can say so. Registering AFTER the destination is already on screen fires
  * immediately, so this does not depend on the start-up order staying right.
+ *
+ * EVERY time, and not once. W319 introduced this as one-shot and W320 measured
+ * what that costs: arrive at a destination before signing in, its read is
+ * refused, the registration is spent, and the screen stays on that refusal for
+ * the life of the tab — signing in does not recover it, and neither does
+ * leaving and coming back. Three screens were reachable that way, one of them
+ * by following a shared `#cluster` link. A read that happens on arrival costs
+ * nothing while nobody is arriving, which was the whole reason it is not on
+ * load; it does not also have to be the only one.
  */
 export function onArrival(names: readonly string[], todo: () => void): void {
+  arrivals.push({ names, todo });
   if (names.includes(here())) {
     todo();
-    return;
   }
-  arrivals.push({ names, todo });
+}
+
+/**
+ * Everything registered for the destination ON SCREEN reads again.
+ *
+ * For the news that arrives while you are already standing there, which an
+ * arrival by definition cannot carry: the identity changed, or a declaration
+ * landed. Both make what is drawn an answer to a question nobody is asking any
+ * more — the account list of whoever was signed in a moment ago, or a cluster
+ * map drawn before the membership that is now declared.
+ *
+ * Only the destination on screen, because the others will read on arrival.
+ */
+export function hereAgain(): void {
+  for (const arrival of arrivals) {
+    if (arrival.names.includes(here())) {
+      arrival.todo();
+    }
+  }
 }
 
 /** The section this tab controls. Its absence is a build defect, not a state. */
@@ -64,9 +91,10 @@ export function show(name: string): void {
   if (window.location.hash !== "#" + wanted) {
     window.location.hash = wanted;
   }
-  for (const arrival of arrivals.filter((one) => one.names.includes(wanted))) {
-    arrivals.splice(arrivals.indexOf(arrival), 1);
-    arrival.todo();
+  for (const arrival of arrivals) {
+    if (arrival.names.includes(wanted)) {
+      arrival.todo();
+    }
   }
 }
 

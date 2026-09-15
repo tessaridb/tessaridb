@@ -8,6 +8,17 @@ import { token } from "./session.js";
 let following: WebSocket | null = null;
 
 /**
+ * Whether the node has already said why this follow is ending.
+ *
+ * A refusal arrives as a message and the socket closes immediately after it, so
+ * the close handler's own word overwrote the reason a moment after showing it.
+ * Following a namespace that does not exist ended on `stopped` — the same word,
+ * to the byte, that the Stop button writes. Measured in W320 as an A/B on one
+ * field: a refused follow and an operator's own stop were indistinguishable.
+ */
+let toldWhy = false;
+
+/**
  * Whether a follow is running right now.
  *
  * Asked on the way out, so a reload can say what was actually lost instead of
@@ -118,6 +129,7 @@ export function wire(): void {
 
     const socket = new WebSocket(where());
     following = socket;
+    toldWhy = false;
     disable("follow", true);
     disable("stop", false);
     say("watch-status", "connecting…");
@@ -140,10 +152,12 @@ export function wire(): void {
       // happened yet".
       if (typeof what.refused === "string") {
         say("watch-status", what.refused, true);
+        toldWhy = true;
         return;
       }
       if (typeof what.error === "string") {
         say("watch-status", what.error, true);
+        toldWhy = true;
         return;
       }
       change(what);
@@ -152,7 +166,11 @@ export function wire(): void {
     socket.addEventListener("close", (event) => {
       // 1001 is this node stopping. The position is held by the client, so
       // following again from the last sequence seen resumes exactly there.
-      stop(event.code === 1001 ? "the node is stopping" : "stopped");
+      //
+      // A reason already given is left standing: the node explains a refusal in
+      // words and then closes, and replacing those words with `stopped` throws
+      // away the only account of what happened. The buttons still return.
+      stop(toldWhy ? undefined : event.code === 1001 ? "the node is stopping" : "stopped");
     });
 
     socket.addEventListener("error", () => {

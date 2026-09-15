@@ -13,6 +13,18 @@ import { credential, ended, token } from "./session.js";
 const SCRIPT_ROUTE = "/script";
 export const WATCH_ROUTE = "/watch";
 
+/**
+ * The request never reached the node.
+ *
+ * Its own type because the two failures need different sentences and a screen
+ * cannot tell them apart from the message alone. `fetch` rejects with
+ * `TypeError: Failed to fetch` when the node is stopped, and a screen that
+ * prints that beside its own explanation of who may see a listing tells an
+ * operator their PERMISSIONS are in question during an outage — which sends
+ * them to check grants while the node is down. Measured in W320.
+ */
+export class Unreachable extends Error {}
+
 /** One record as the node hands it over. */
 export interface Row {
   readonly id: string;
@@ -98,17 +110,23 @@ export async function ask(
   if (offered !== null) {
     headers["Authorization"] = offered;
   }
-  const reply = await fetch(SCRIPT_ROUTE, {
-    method: "POST",
-    headers,
-    body: source,
-    // Without this the browser handles the node's `401` challenge itself and
-    // opens its own credential dialog on top of the page — a second sign-in
-    // this console did not ask for, cannot read and cannot clear, and which
-    // leaves the page's own request hanging behind it. The credential is in the
-    // header above; nothing here wants the browser to manage one.
-    credentials: "omit",
-  });
+  let reply: Response;
+  try {
+    reply = await fetch(SCRIPT_ROUTE, {
+      method: "POST",
+      headers,
+      body: source,
+      // Without this the browser handles the node's `401` challenge itself and
+      // opens its own credential dialog on top of the page — a second sign-in
+      // this console did not ask for, cannot read and cannot clear, and which
+      // leaves the page's own request hanging behind it. The credential is in
+      // the header above; nothing here wants the browser to manage one.
+      credentials: "omit",
+    });
+  } catch {
+    // Whatever the browser called it, what happened is that nothing answered.
+    throw new Unreachable("the node did not answer — it may be stopped or unreachable");
+  }
   if (reply.status === 401 && token() !== null) {
     ended();
   }
