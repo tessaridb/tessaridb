@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.1-beta"
+version = "0.2.0-beta"
 edition = "2024"
 rust-version = "1.85"
 license = "BUSL-1.1"
@@ -12,23 +12,23 @@ repository = "https://github.com/TessariDB/TessariDB"
 publish = false
 
 [workspace.dependencies]
-tessari-types = { path = "crates/tessari-types", version = "0.1.1-beta" }
-tessari-constants = { path = "crates/tessari-constants", version = "0.1.1-beta" }
-tessari-kv = { path = "crates/tessari-kv", version = "0.1.1-beta" }
-tessari-encoding = { path = "crates/tessari-encoding", version = "0.1.1-beta" }
-tessari-geo = { path = "crates/tessari-geo", version = "0.1.1-beta" }
-tessari-storage = { path = "crates/tessari-storage", version = "0.1.1-beta" }
-tessari-lsm = { path = "crates/tessari-lsm", version = "0.1.1-beta" }
-tessari-ql = { path = "crates/tessari-ql", version = "0.1.1-beta" }
-tessari-session = { path = "crates/tessari-session", version = "0.1.1-beta" }
-tessari-conformance = { path = "crates/tessari-conformance", version = "0.1.1-beta" }
-tessaridb = { path = "crates/tessaridb", version = "0.1.1-beta" }
-tessari-backup = { path = "crates/tessari-backup", version = "0.1.1-beta" }
-tessari-wire = { path = "crates/tessari-wire", version = "0.1.1-beta" }
-tessari-http = { path = "crates/tessari-http", version = "0.1.1-beta" }
-tessari-ingest = { path = "crates/tessari-ingest", version = "0.1.1-beta" }
-tessari-serve = { path = "crates/tessari-serve", version = "0.1.1-beta" }
-tessari-vault = { path = "crates/tessari-vault", version = "0.1.1-beta" }
+tessari-types = { path = "crates/tessari-types", version = "0.2.0-beta" }
+tessari-constants = { path = "crates/tessari-constants", version = "0.2.0-beta" }
+tessari-kv = { path = "crates/tessari-kv", version = "0.2.0-beta" }
+tessari-encoding = { path = "crates/tessari-encoding", version = "0.2.0-beta" }
+tessari-geo = { path = "crates/tessari-geo", version = "0.2.0-beta" }
+tessari-storage = { path = "crates/tessari-storage", version = "0.2.0-beta" }
+tessari-lsm = { path = "crates/tessari-lsm", version = "0.2.0-beta" }
+tessari-ql = { path = "crates/tessari-ql", version = "0.2.0-beta" }
+tessari-session = { path = "crates/tessari-session", version = "0.2.0-beta" }
+tessari-conformance = { path = "crates/tessari-conformance", version = "0.2.0-beta" }
+tessaridb = { path = "crates/tessaridb", version = "0.2.0-beta" }
+tessari-backup = { path = "crates/tessari-backup", version = "0.2.0-beta" }
+tessari-wire = { path = "crates/tessari-wire", version = "0.2.0-beta" }
+tessari-http = { path = "crates/tessari-http", version = "0.2.0-beta" }
+tessari-ingest = { path = "crates/tessari-ingest", version = "0.2.0-beta" }
+tessari-serve = { path = "crates/tessari-serve", version = "0.2.0-beta" }
+tessari-vault = { path = "crates/tessari-vault", version = "0.2.0-beta" }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
