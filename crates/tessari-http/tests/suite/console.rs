@@ -1822,3 +1822,52 @@ fn two_different_failures_never_render_as_one_message() {
          flag the close consults can only ever be false"
     );
 }
+
+#[cfg(feature = "console")]
+#[test]
+fn the_log_hears_the_statements_that_never_left_the_building() {
+    // S2.2 is that every statement the panel issues reaches the statement log,
+    // and W321 measured the one case where it did not: the tally stood at
+    // `Statements 2`, Run was pressed against a stopped node, and it stood at
+    // `Statements 2` afterwards. `ask` throws when the request never arrives and
+    // the line that records it is the line after the one that throws — so the
+    // statement an operator reconstructing an incident most wants to find is
+    // precisely the one the log drops.
+    //
+    // Pre-existing rather than new: the raw `fetch` rejection escaped the same
+    // way before W320 gave it a name.
+    let sources = panel_sources();
+    let api = sources
+        .iter()
+        .find(|(name, _)| name == "api.ts")
+        .map(|(_, text)| text.as_str())
+        .expect("api.ts is not among the panel's sources");
+
+    let entries = api.matches("record(").count();
+    assert!(
+        entries >= 2,
+        "api.ts writes a log entry {entries} time(s); it needs one for the reply \
+         it got and one for the request that never arrived, or the log's claim is \
+         false in the case it exists for"
+    );
+
+    // And the thrown sentence must not repeat what the screens already say. Three
+    // of them prefix "the node did not answer: " to whatever is thrown, and W320
+    // shipped the collision: the Run screen rendered "the node did not answer:
+    // the node did not answer — it may be stopped or unreachable".
+    let prefixing: Vec<&str> = sources
+        .iter()
+        .filter(|(_, text)| text.contains("\"the node did not answer: \""))
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert!(
+        !prefixing.is_empty(),
+        "no screen prefixes the unreachable sentence any more, so this check is \
+         guarding a collision that can no longer happen — delete it or re-aim it"
+    );
+    assert!(
+        !api.contains("Unreachable(\"the node did not answer"),
+        "the thrown text opens with the same words {prefixing:?} prefix to it, so \
+         the reader is told twice in one line"
+    );
+}

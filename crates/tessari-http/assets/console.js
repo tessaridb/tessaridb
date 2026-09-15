@@ -449,7 +449,15 @@
         credentials: "omit"
       });
     } catch {
-      throw new Unreachable("the node did not answer — it may be stopped or unreachable");
+      record({
+        what: source,
+        said: "the node did not answer",
+        failed: true,
+        ms: Math.round(performance.now() - started),
+        screen,
+        why
+      });
+      throw new Unreachable("it may be stopped, or unreachable from this browser");
     }
     if (reply.status === 401 && token() !== null) {
       ended();

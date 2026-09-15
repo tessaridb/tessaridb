@@ -125,7 +125,26 @@ export async function ask(
     });
   } catch {
     // Whatever the browser called it, what happened is that nothing answered.
-    throw new Unreachable("the node did not answer — it may be stopped or unreachable");
+    //
+    // Recorded BEFORE it is thrown, because a statement that never reached the
+    // node is still a statement this panel issued — and it is the one an
+    // operator reconstructing an incident most needs to find. The log's claim
+    // is that nothing this session sent is unaccounted for; measured in W321,
+    // the tally did not move across a statement Run was pressed on while the
+    // node was stopped, so the claim was false in exactly the case it is for.
+    record({
+      what: source,
+      said: "the node did not answer",
+      failed: true,
+      ms: Math.round(performance.now() - started),
+      screen,
+      why,
+    });
+    // No "the node did not answer" in the thrown text: three screens prefix exactly that to
+    // whatever is thrown, and W320 shipped the collision — the Run screen read
+    // "the node did not answer: the node did not answer — it may be stopped or
+    // unreachable". What this owes is the part those screens do not already say.
+    throw new Unreachable("it may be stopped, or unreachable from this browser");
   }
   if (reply.status === 401 && token() !== null) {
     ended();
