@@ -1,4 +1,4 @@
-//! Cluster — what this node knows about the membership it belongs to.
+//! Cluster — what this node knows about the cluster it belongs to.
 //!
 //! Extracted from `page.ts` for the reason `access.ts` was. It is the screen S4
 //! rebuilds into a map, so it is the one most worth having on its own already.
@@ -16,7 +16,7 @@ export const cluster = (): Node =>
       paneHead("What is here, and what is not"),
       note(
         "What the pane above shows is what this node itself knows: its own " +
-          "membership, the peers it has been told about, and the addresses it answers " +
+          "roles, the peers it has been told about, and the addresses it answers " +
           "on. It is read from the node, not from anything standing beside it.",
       ),
       note(

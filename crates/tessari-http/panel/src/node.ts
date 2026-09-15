@@ -64,8 +64,14 @@ export async function readNode(): Promise<void> {
       typeof cluster === "object" && cluster !== null
         ? (cluster as { peers?: unknown }).peers
         : undefined;
+    // `membership` is gone from the answer and is not drawn from anywhere else.
+    // It could only ever report `alone`, including on a node whose writes were
+    // being fenced for belonging to a cluster — so a reader took a constant for
+    // a claim, on the one screen where that claim mattered most. `roles` is what
+    // answers the question it looked like it was answering, and it comes from
+    // the authority the node actually holds.
     facts("cluster-facts", {
-      membership: all["membership"],
+      roles: all["roles"],
       peers: peers ?? [],
       endpoints: all["endpoints"],
       id: all["id"],

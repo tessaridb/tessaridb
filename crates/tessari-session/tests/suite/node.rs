@@ -81,7 +81,12 @@ fn a_node_answers_its_identity_through_the_ordinary_read_path() {
             Value::from("writable"),
         ]))
     );
-    assert_eq!(fields.get("membership"), Some(&Value::from("alone")));
+    // Absent, and asserted so: see `configuration.rs` for why a constant field
+    // that reads as a claim about cluster membership was worse than no field.
+    assert!(
+        !fields.contains_key("membership"),
+        "membership is answered again: {fields:?}"
+    );
     assert_eq!(fields.get("endpoints"), Some(&Value::Array(Vec::new())));
 }
 

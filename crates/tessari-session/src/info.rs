@@ -879,11 +879,19 @@ impl Session<'_> {
     /// last night's backup goes onto a fresh machine and two processes claim one
     /// identity.
     ///
-    /// `membership` is reported and is deliberately **not** settable. It reads
-    /// `alone` because that is a fact about this process; the moment a node
-    /// joins a cluster, the *name* of that cluster is topology and belongs on
-    /// the other side of the line. Deciding which side in one sentence, with no
-    /// second node to test against, is the mistake ADR-0018 §3 already made once.
+    /// `membership` is **not** answered, and its absence is the decision. The
+    /// type behind it carries exactly one variant, so the field could only ever
+    /// report `alone` — on a single node, and equally on a node whose writes
+    /// are being fenced for belonging to a cluster. A constant that reads as a
+    /// claim is worse than no field, and this one was read as a claim: it is
+    /// the first thing the console printed on its cluster tab, which is how it
+    /// came to say a node stood alone while the engine refused its writes for
+    /// not doing so. `roles` and `cluster.peers` answer the question people
+    /// were asking this one, and they answer it from the authority the node
+    /// actually holds. The persisted `Membership` stays where it is: it is
+    /// on-disk identity format and the natural home for a real cluster name,
+    /// which is a door for whoever designs cluster identity rather than for a
+    /// response shape.
     fn info_node(&self, transaction: &mut Transaction<'_>) -> Result<BTreeMap<String, Value>> {
         let identity = self.store.node_identity()?;
         let catalog = Catalog::new(transaction);
@@ -949,10 +957,6 @@ impl Session<'_> {
                         .map(Value::from)
                         .collect(),
                 ),
-            ),
-            (
-                "membership".to_owned(),
-                Value::from(identity.membership.name()),
             ),
             (
                 "version".to_owned(),

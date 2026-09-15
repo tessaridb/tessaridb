@@ -575,7 +575,7 @@
       facts("node-facts", mine);
       const peers = typeof cluster === "object" && cluster !== null ? cluster.peers : void 0;
       facts("cluster-facts", {
-        membership: all2["membership"],
+        roles: all2["roles"],
         peers: peers ?? [],
         endpoints: all2["endpoints"],
         id: all2["id"]

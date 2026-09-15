@@ -1046,3 +1046,25 @@ fn what_is_served_is_the_file_that_was_committed() {
         assert_eq!(served, committed, "{path} is not what the repository holds");
     }
 }
+
+#[cfg(feature = "console")]
+#[test]
+fn the_console_draws_no_field_the_engine_no_longer_answers() {
+    // S4.2's shipping bar, and the reason it is a bar. `membership` could only
+    // ever report `alone` — one variant in the type — so it said a node stood
+    // alone while the write path fenced that same node for belonging to a
+    // cluster. It was the first field this console printed on its cluster tab.
+    //
+    // The engine no longer answers it. This asserts the console does not draw
+    // it from anywhere else, including from a literal somebody re-adds while
+    // reading an older screenshot.
+    let (_node, address) = node();
+    for path in ["/", "/console.js"] {
+        let (status, _, served) = get(&address, path);
+        assert_eq!(status, 200, "{path} is not served");
+        assert!(
+            !served.contains("membership"),
+            "{path} still carries `membership`, which the engine does not answer"
+        );
+    }
+}

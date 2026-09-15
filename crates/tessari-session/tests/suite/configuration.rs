@@ -279,17 +279,18 @@ fn a_fresh_node_reports_both_halves_and_an_empty_topology() {
     // absence: a node standing alone has a topology and it has one member.
     let report = reported(&closed(&backend()));
 
-    for named in [
-        "id",
-        "roles",
-        "membership",
-        "version",
-        "endpoints",
-        "cluster",
-    ] {
+    for named in ["id", "roles", "version", "endpoints", "cluster"] {
         assert!(report.contains_key(named), "no {named}: {report:?}");
     }
-    assert_eq!(report.get("membership"), Some(&Value::from("alone")));
+    // Asserted ABSENT rather than simply unasserted. `membership` could only
+    // ever answer `alone` — one variant — so it reported a node as standing
+    // alone while the write path fenced it for being in a cluster, and a reader
+    // who found the field took it for a claim. Dropping the old assertion would
+    // have left nothing to notice it coming back.
+    assert!(
+        !report.contains_key("membership"),
+        "membership is answered again: {report:?}"
+    );
     assert_eq!(report.get("endpoints"), Some(&Value::Array(Vec::new())));
     assert!(peers(&report).is_empty(), "{report:?}");
 }
