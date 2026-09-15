@@ -1679,3 +1679,67 @@ fn a_table_that_declares_nothing_still_refuses_a_contested_write() {
         "a refusal discards nothing, so it counts nothing"
     );
 }
+
+#[test]
+fn two_writers_on_one_range_produce_no_epoch_the_campaign_did_not_grant() {
+    // G027 S3.3, the half the criterion's stated validation cannot reach.
+    //
+    // The structural ratchets in `enforcement.rs` watch the two ways an epoch
+    // can enter a record — allocated (`Epoch::new`) and assigned
+    // (`LogRecord::at`). Neither of them runs a write. This does: two nodes
+    // accept writes to one declared range, a third replays both, and every
+    // record that arrives is asked which leadership it names.
+    //
+    // The expected value is DERIVED from each store rather than written down as
+    // `Epoch::ZERO`. Asserting the constant would bind the test to a fixture
+    // that campaigns for nobody, and would start failing the day one elects
+    // somebody — for a reason that has nothing to do with this rule. The claim
+    // is that no writer produced a NEW epoch, so the comparison is against what
+    // the writer already held.
+    let (first, _, namespace, database) = declared(Some(ReplicationClass::MultiMaster));
+    let (second, ..) = declared(Some(ReplicationClass::MultiMaster));
+    let (third, ..) = declared(Some(ReplicationClass::MultiMaster));
+    let home = Reach::Database(namespace, database);
+
+    // `None` becomes `Epoch::ZERO`, the convention `tail_leadership` already
+    // uses: a node nobody elected and an empty log say the same thing.
+    let led_by_first = first.leading().unwrap_or(Epoch::ZERO);
+    let led_by_second = second.leading().unwrap_or(Epoch::ZERO);
+
+    put_in(&first, namespace, database, "shared", b"first-writes-it");
+    put_in(&second, namespace, database, "shared", b"second-writes-it");
+
+    assert_eq!(
+        first.leading().unwrap_or(Epoch::ZERO),
+        led_by_first,
+        "accepting a write is not a promotion"
+    );
+    assert_eq!(
+        second.leading().unwrap_or(Epoch::ZERO),
+        led_by_second,
+        "and the second writer did not promote itself either"
+    );
+
+    replay_range(&first, &third, home);
+    replay_range(&second, &third, home);
+
+    for (log, held) in [
+        (first.own_log(home).unwrap(), led_by_first),
+        (second.own_log(home).unwrap(), led_by_second),
+    ] {
+        let records = third.log_records(log, Sequence::ZERO, PLENTY).unwrap();
+        assert!(
+            !records.is_empty(),
+            "the replay carried nothing into {log:?}, so nothing below is a test"
+        );
+        for (at, record) in records {
+            assert_eq!(
+                record.epoch(),
+                held,
+                "the record at {at:?} in {log:?} names a leadership its writer \
+                 never held — a write invented an epoch, and with two masters \
+                 on one range that is one number on two histories"
+            );
+        }
+    }
+}

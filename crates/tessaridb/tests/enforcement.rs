@@ -935,3 +935,120 @@ fn the_campaign_is_the_only_place_an_epoch_is_created() {
         PRODUCER.1, PRODUCER.0,
     );
 }
+
+/// The one production site allowed to put an epoch ONTO a record, and the file
+/// it lives in.
+///
+/// `Store::log_records_within` rebuilds a record it has just read, and carries
+/// that record's own epoch forward. It decides nothing: the number was already
+/// on disk. Both halves of this pair are asserted for the reason
+/// [`PRODUCER`]'s are — a ratchet whose subject has been renamed away passes by
+/// finding nothing.
+const CARRIER: (&str, &str) = ("tessari-storage/src/store.rs", "log_records_within");
+
+#[test]
+fn a_write_claims_no_epoch_it_was_not_already_carrying() {
+    // G027 S3.3, the half the criterion's stated validation does not reach.
+    //
+    // `the_campaign_is_the_only_place_an_epoch_is_created` watches ALLOCATION —
+    // `Epoch::new(`. An epoch reaches a log record a second way, by ASSIGNMENT:
+    // `LogRecord::at(epoch, mutations)` takes one that already exists and puts
+    // it on a record. A write path that stamped its own record with the epoch
+    // this node happens to lead at would allocate nothing, pass that ratchet
+    // unchanged, and still be two writers on one range attaching one leadership
+    // number to two different histories.
+    //
+    // Under a single leader the line is harmless, which is why it would survive
+    // review. This goal is the case where it is not: the commit path builds its
+    // record with `LogRecord::new`, which is `at(Epoch::ZERO, ..)`, so a
+    // multi-master write claims NO epoch rather than inventing one. That is the
+    // property being made structural here rather than left incidental.
+    //
+    // Inline test modules are excluded by truncating at `#[cfg(test)]`, for the
+    // reason its sibling above gives: a fixture standing a record up at a named
+    // epoch is exactly what a test is for.
+    let mut claimed = Vec::new();
+    let mut found_carrier = false;
+    for entry in fs::read_dir(repo().join("crates")).expect("the crate directory") {
+        let root = entry.expect("a crate").path().join("src");
+        if !root.is_dir() {
+            continue;
+        }
+        for path in sources(&root) {
+            let text = fs::read_to_string(&path).unwrap();
+            let production = text.split("#[cfg(test)]").next().unwrap_or_default();
+            let shown = path.display().to_string();
+            let lines: Vec<&str> = production.lines().collect();
+            for (number, line) in lines.iter().enumerate() {
+                if line.trim_start().starts_with("//") || !line.contains("LogRecord::at(") {
+                    continue;
+                }
+                let enclosing = lines[..=number]
+                    .iter()
+                    .rev()
+                    .find_map(|above| {
+                        above
+                            .trim_start()
+                            .trim_start_matches("pub ")
+                            .trim_start_matches("const ")
+                            .strip_prefix("fn ")
+                            .map(|rest| rest.split('(').next().unwrap_or_default().to_owned())
+                    })
+                    .unwrap_or_default();
+                // The epoch argument is classified by SHAPE, the way the
+                // producer ratchet classifies by name: a call that reads the
+                // number off something (`..epoch()`) is carrying it, and
+                // anything else is choosing it. A first argument this cannot
+                // see — a call split across lines — is reported rather than
+                // skipped, because an unclassifiable site must fail the rule
+                // loudly instead of passing it silently.
+                //
+                // `Epoch::ZERO` is deliberately NOT permitted here, and the
+                // falsification arm is why: the natural line a write path
+                // reaches for is `at(self.store.leading().unwrap_or(
+                // Epoch::ZERO), ..)`, which chooses a leadership and mentions
+                // the constant while doing it. A rule that accepted the
+                // constant anywhere in the argument would have been defeated by
+                // the exact call it exists to catch. `LogRecord::new` is the
+                // way to write a record at no leadership, and it takes no epoch
+                // argument at all.
+                let argument = line
+                    .split("LogRecord::at(")
+                    .nth(1)
+                    .and_then(|rest| rest.split(',').next())
+                    .unwrap_or_default();
+                if argument.contains(".epoch()") {
+                    if shown.ends_with(CARRIER.0) && enclosing == CARRIER.1 {
+                        found_carrier = true;
+                    }
+                    continue;
+                }
+                claimed.push(format!(
+                    "{shown}:{} in `{enclosing}` — {}",
+                    number + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        claimed.is_empty(),
+        "a record is built at an epoch that was chosen rather than carried:\n  {}\n\n\
+         An epoch names a leadership, and the campaign is the only thing \
+         entitled to name one. A write path that puts an epoch of its own onto \
+         a record does not allocate anything, so the producer ratchet cannot \
+         see it — and with two masters on one range it is one number on two \
+         histories, which is the ambiguity the epoch exists to remove. Build \
+         the record with `LogRecord::new` (which is `Epoch::ZERO`, the honest \
+         value for a write that claims no leadership), or pass an epoch read \
+         off the record being carried forward.",
+        claimed.join("\n  "),
+    );
+    assert!(
+        found_carrier,
+        "`{}` no longer carries an epoch onto a record in {} — this test now \
+         passes by finding nothing, which is not the same as the rule holding",
+        CARRIER.1, CARRIER.0,
+    );
+}
