@@ -145,6 +145,20 @@ pub const RECORD_COUNTS: TableId = TableId::new(18);
 /// node still answer *who leads this range* from what it had already applied.
 pub const LEADERSHIPS: TableId = TableId::new(19);
 
+/// The failover policy this cluster runs under, and the pair that orders it.
+///
+/// One row, because the periods are the cluster's and not a range's: how long a
+/// leader's grant lasts and how often a node learns about its peers are the same
+/// questions everywhere in one cluster, and a per-range answer would let two
+/// halves of one election disagree about when it had timed out.
+///
+/// Here and not in a configuration file for the reason [`LEADERSHIPS`] is here:
+/// a file is an unreplicated claim about a cluster-wide fact, so two nodes
+/// holding different files is not a conflict anything detects. A row is a log
+/// record, so it reaches every follower by the path every other record takes and
+/// arrives ordered against the leadership that wrote it.
+pub const FAILOVER: TableId = TableId::new(20);
+
 /// The one record [`VAULT_ROOT`] holds.
 pub const VAULT_ROOT_ID: u32 = 1;
 

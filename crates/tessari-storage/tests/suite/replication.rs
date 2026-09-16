@@ -1743,3 +1743,97 @@ fn two_writers_on_one_range_produce_no_epoch_the_campaign_did_not_grant() {
         }
     }
 }
+
+/// What `store` says the cluster's failover policy is.
+fn policy_on(store: &Store) -> Option<tessari_storage::FailoverDefinition> {
+    let mut transaction = store.begin().unwrap();
+    Catalog::new(&mut transaction).failover().unwrap()
+}
+
+/// Write a policy under `epoch`, `version`, with `round` seconds of canvass.
+///
+/// The round time is the parameter because it is the one value two policies can
+/// differ in while both remain valid, so a test can tell which of two rows
+/// answered without reading the pair it is trying to prove.
+fn set_policy(store: &Store, epoch: u64, version: u64, round: u64) -> Sequence {
+    let policy = tessari_storage::Failover::stated(
+        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(round),
+        std::time::Duration::from_secs(round),
+        std::time::Duration::from_secs(30),
+    )
+    .unwrap();
+    let mut transaction = store.begin().unwrap();
+    Catalog::new(&mut transaction)
+        .set_failover(policy, Epoch::new(epoch), version)
+        .unwrap();
+    transaction.commit().unwrap()
+}
+
+#[test]
+fn the_failover_policy_reaches_a_replica_along_the_log_and_by_no_other_route() {
+    // The criterion this covers asks that the policy live in the database and
+    // reach another node. The point of the fixture is the *by no other route*
+    // half: the two stores are separate backends and never speak, so a policy
+    // arriving on the replica arrived as a log record — which is the whole
+    // argument for a row instead of a configuration file, since a file is an
+    // unreplicated claim about a cluster-wide fact and two nodes holding
+    // different ones is not a conflict anything detects.
+    let source_backend = backend();
+    let source = store_on(&source_backend);
+    set_policy(&source, 4, 1, 3);
+
+    let replica_backend = backend();
+    let replica = store_on(&replica_backend);
+    assert_eq!(
+        policy_on(&replica),
+        None,
+        "a store nobody has configured reports no policy rather than the \
+         default, or a cluster that was configured and one that never was give \
+         the same answer to what the operator chose"
+    );
+
+    crate::replay(&source, &replica);
+
+    let arrived = policy_on(&replica).expect("the log carried the policy");
+    assert_eq!(arrived.policy.round(), std::time::Duration::from_secs(3));
+    assert_eq!(arrived.epoch, Epoch::new(4));
+    assert_eq!(arrived.version, 1);
+}
+
+#[test]
+fn a_later_policy_replaces_the_row_and_the_replica_ends_on_the_later_one() {
+    // Ordering proven where it actually has to hold: across the replay, not in
+    // a comparison of two structs. `supersedes` is unit-tested; what this adds
+    // is that the log delivers the two writes in an order that agrees with it,
+    // so the pair on the replica is the pair the source ended on.
+    let source_backend = backend();
+    let source = store_on(&source_backend);
+    set_policy(&source, 4, 1, 3);
+    set_policy(&source, 4, 2, 5);
+
+    let replica_backend = backend();
+    let replica = store_on(&replica_backend);
+    crate::replay(&source, &replica);
+
+    let arrived = policy_on(&replica).expect("the log carried the policy");
+    assert_eq!(
+        arrived.version, 2,
+        "the second setting under one leadership is the one that stands — the \
+         case the version field exists for, since both writes carry the same \
+         epoch"
+    );
+    assert_eq!(arrived.policy.round(), std::time::Duration::from_secs(5));
+
+    let earlier = tessari_storage::FailoverDefinition {
+        policy: arrived.policy,
+        epoch: Epoch::new(4),
+        version: 1,
+    };
+    assert!(
+        !earlier.supersedes(&arrived),
+        "a row the log already replaced must not win if it arrives again — \
+         this is the partitioned writer reconnecting"
+    );
+}

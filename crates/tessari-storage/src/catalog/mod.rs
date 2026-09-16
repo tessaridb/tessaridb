@@ -29,6 +29,7 @@ mod consumer;
 // two per-table numbers are written and read one way rather than two.
 pub(crate) mod definition;
 mod edge_kind;
+mod failover;
 mod field;
 mod grant;
 mod graph;
@@ -57,6 +58,7 @@ pub use definition::{
     VectorDistance, ViewDeclaration,
 };
 pub use edge_kind::EdgeKindDefinition;
+pub use failover::FailoverDefinition;
 pub use field::{FieldDefinition, FieldShape};
 pub use grant::GrantDefinition;
 pub use graph::GraphDefinition;
