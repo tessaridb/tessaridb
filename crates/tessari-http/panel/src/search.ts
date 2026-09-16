@@ -97,7 +97,29 @@ function candidates(text: string): readonly Candidate[] {
         statement:
           `USE NAMESPACE ${namespaceOf}; USE DATABASE ${databaseOf}; ` +
           `SELECT * FROM ${table}:${key};`,
-        land: inDetail("record", text),
+        // A record is the one thing here with a history, so it is the one
+        // `land` that asks a second question. The ask lives here and not in
+        // the sheet because `detail.ts` reaches the node through nothing —
+        // `api.ts`, `password.ts` and `session.ts` are the only modules that
+        // may, and a test says so.
+        land: async (answered: Result | null) => {
+          let history: Result | null = null;
+          try {
+            history = await valueOf(
+              `USE NAMESPACE ${namespaceOf}; USE DATABASE ${databaseOf}; ` +
+                `INFO FOR HISTORY OF ${table}:${key};`,
+              "Record · history",
+            );
+          } catch {
+            // A refusal is an answer: this caller may not read the table's
+            // history, or the node is older than the statement. The sheet
+            // still opens on what was found, and says the history is the part
+            // it could not get — which is not the same claim as "there is
+            // none", and the two must not render alike.
+            history = null;
+          }
+          showDetail("record", text, answered, history);
+        },
       });
     }
   }

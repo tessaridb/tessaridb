@@ -216,12 +216,12 @@ const detailSheet = (): Node =>
       button("detail-close", "Close", "quiet"),
     ),
     el("div", { id: "detail-facts" }),
-    note("There is no history of it: the store records no events for these."),
+    el("div", { id: "detail-history" }),
     behindDisclosure(
-      "Why there is no timeline",
+      "Where a timeline comes from",
       note(
-        "What is here is what the node answers about this right now. A timeline " +
-          "drawn from anything else would be this panel inventing one.",
+        "A record\u2019s history is read from the log the store already writes, " +
+          "so it is what was committed rather than anything this panel assembled.",
       ),
     ),
   );

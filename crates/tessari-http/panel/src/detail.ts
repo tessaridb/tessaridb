@@ -9,25 +9,101 @@
 //! table and a record, because the difference between them is the question that
 //! was asked and not the shape of the answer.
 //!
-//! # No timeline, and the screen says why
+//! # A record has a timeline; the others still do not
 //!
-//! T5.2 asked for a timeline on each of these. Measured on a running node, there
-//! is no event source for any of them: `INFO FOR VERSIONS` answers ONE version
-//! after three writes — it reports whether a record is CONTESTED, never what
-//! happened to it — `INFO FOR NAMESPACE` answers a list of databases, and
-//! `INFO FOR AUDIT` is the vault's audit and holds recorded vault reads alone.
+//! T5.2 asked for a timeline on each of these, and W318 drew none because the
+//! measurement said there was no event source. That measurement was of three
+//! READ surfaces — `INFO FOR VERSIONS` (a conflict report: one version after
+//! three writes), `INFO FOR NAMESPACE` (a list of databases) and `INFO FOR
+//! AUDIT` (the vault's own trail) — and their silence was read as the store
+//! recording nothing. It records everything: every commit is a log record
+//! carrying what it changed (Q-739). What was missing was a way to ask, and
+//! `INFO FOR HISTORY OF` is now it.
 //!
-//! So nothing here is drawn as a history. A timeline assembled on the client
-//! would be the console inventing an event nobody recorded, which is the same
-//! failure as a replication-lag figure with no follower loop behind it — and
-//! that one this console already refuses by name.
+//! So a RECORD is drawn with its history. A namespace, a database and a table
+//! are not, and that is not an omission left for later: a catalog row is
+//! deliberately filtered out of the log projection, so there is genuinely
+//! nothing to draw for them, and the sheet says which case it is in rather than
+//! showing an empty list that reads like a quiet record.
+//!
+//! # Three states, three renderings
+//!
+//! A timeline nobody could fetch, a timeline that is empty, and a timeline cut
+//! short at the log's walk budget are three different facts. Rendering any two
+//! of them the same way is the failure this console has refused by name three
+//! times: an absence that looks like a measurement.
 
 import { at, clear, made } from "./dom.js";
 import { facts } from "./draw.js";
 import type { Result } from "./api.js";
 
+/** One entry of a record's history, as the node answers it. */
+interface Event {
+  readonly at?: unknown;
+  readonly change?: unknown;
+  readonly value?: unknown;
+}
+
+/**
+ * Draw the history the node answered, or say which kind of nothing this is.
+ *
+ * `history` is `null` when the question could not be asked or was refused —
+ * which is not the same as a record nothing has happened to, and the two say
+ * different things here.
+ */
+function timeline(kind: string, history: Result | null): void {
+  clear("detail-history");
+  const line = made("p", "note");
+  if (kind !== "record") {
+    line.textContent =
+      "Only a record has a history: a catalog row is kept out of the log\u2019s " +
+      "change projection, so there is nothing recorded to draw for this.";
+    at("detail-history").appendChild(line);
+    return;
+  }
+  const answer = history?.value as Record<string, unknown> | undefined;
+  const events = Array.isArray(answer?.events) ? (answer.events as Event[]) : null;
+  if (events === null) {
+    line.textContent =
+      "The history could not be read \u2014 the node refused it, or this build " +
+      "does not answer INFO FOR HISTORY. That is not the same as nothing having " +
+      "happened.";
+    at("detail-history").appendChild(line);
+    return;
+  }
+  if (events.length === 0) {
+    line.textContent = "Nothing is recorded against this record in the log read.";
+    at("detail-history").appendChild(line);
+    return;
+  }
+  const list = made("ol", "timeline");
+  for (const event of events) {
+    const entry = made("li");
+    const what = event.change === "removed" ? "removed" : "written";
+    const when = typeof event.at === "string" ? event.at : "?";
+    entry.textContent = `${what} at ${when}`;
+    list.appendChild(entry);
+  }
+  at("detail-history").appendChild(list);
+  // Truncation is REPORTED and never implied by a short list. A console showing
+  // five entries and letting a reader take them for all of them is exactly the
+  // dashboard-ahead-of-the-engine failure this panel refuses elsewhere.
+  if (answer?.complete === false) {
+    const cut = made("p", "note");
+    cut.textContent =
+      "Older entries may exist: the read stopped at its record budget before " +
+      "reaching the start of the log.";
+    at("detail-history").appendChild(cut);
+  }
+}
+
 /** Open the sheet on one thing. */
-export function show(kind: string, name: string, answered: Result | null): void {
+export function show(
+  kind: string,
+  name: string,
+  answered: Result | null,
+  history: Result | null = null,
+): void {
   at("detail-kind").textContent = kind;
   at("detail-name").textContent = name;
   clear("detail-facts");
@@ -60,6 +136,7 @@ export function show(kind: string, name: string, answered: Result | null): void 
     nothing.textContent = "The node answered, and the answer carries no fields.";
     at("detail-facts").appendChild(nothing);
   }
+  timeline(kind, history);
   at("detail-sheet").hidden = false;
   at("detail-close").focus();
 }

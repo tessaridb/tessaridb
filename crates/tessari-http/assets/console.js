@@ -791,19 +791,65 @@
   //! table and a record, because the difference between them is the question that
   //! was asked and not the shape of the answer.
   //!
-  //! # No timeline, and the screen says why
+  //! # A record has a timeline; the others still do not
   //!
-  //! T5.2 asked for a timeline on each of these. Measured on a running node, there
-  //! is no event source for any of them: `INFO FOR VERSIONS` answers ONE version
-  //! after three writes — it reports whether a record is CONTESTED, never what
-  //! happened to it — `INFO FOR NAMESPACE` answers a list of databases, and
-  //! `INFO FOR AUDIT` is the vault's audit and holds recorded vault reads alone.
+  //! T5.2 asked for a timeline on each of these, and W318 drew none because the
+  //! measurement said there was no event source. That measurement was of three
+  //! READ surfaces — `INFO FOR VERSIONS` (a conflict report: one version after
+  //! three writes), `INFO FOR NAMESPACE` (a list of databases) and `INFO FOR
+  //! AUDIT` (the vault's own trail) — and their silence was read as the store
+  //! recording nothing. It records everything: every commit is a log record
+  //! carrying what it changed (Q-739). What was missing was a way to ask, and
+  //! `INFO FOR HISTORY OF` is now it.
   //!
-  //! So nothing here is drawn as a history. A timeline assembled on the client
-  //! would be the console inventing an event nobody recorded, which is the same
-  //! failure as a replication-lag figure with no follower loop behind it — and
-  //! that one this console already refuses by name.
-  function show2(kind, name, answered2) {
+  //! So a RECORD is drawn with its history. A namespace, a database and a table
+  //! are not, and that is not an omission left for later: a catalog row is
+  //! deliberately filtered out of the log projection, so there is genuinely
+  //! nothing to draw for them, and the sheet says which case it is in rather than
+  //! showing an empty list that reads like a quiet record.
+  //!
+  //! # Three states, three renderings
+  //!
+  //! A timeline nobody could fetch, a timeline that is empty, and a timeline cut
+  //! short at the log's walk budget are three different facts. Rendering any two
+  //! of them the same way is the failure this console has refused by name three
+  //! times: an absence that looks like a measurement.
+  function timeline(kind, history) {
+    clear("detail-history");
+    const line = made("p", "note");
+    if (kind !== "record") {
+      line.textContent = "Only a record has a history: a catalog row is kept out of the log’s change projection, so there is nothing recorded to draw for this.";
+      at("detail-history").appendChild(line);
+      return;
+    }
+    const answer2 = history?.value;
+    const events = Array.isArray(answer2?.events) ? answer2.events : null;
+    if (events === null) {
+      line.textContent = "The history could not be read — the node refused it, or this build does not answer INFO FOR HISTORY. That is not the same as nothing having happened.";
+      at("detail-history").appendChild(line);
+      return;
+    }
+    if (events.length === 0) {
+      line.textContent = "Nothing is recorded against this record in the log read.";
+      at("detail-history").appendChild(line);
+      return;
+    }
+    const list = made("ol", "timeline");
+    for (const event of events) {
+      const entry2 = made("li");
+      const what = event.change === "removed" ? "removed" : "written";
+      const when = typeof event.at === "string" ? event.at : "?";
+      entry2.textContent = `${what} at ${when}`;
+      list.appendChild(entry2);
+    }
+    at("detail-history").appendChild(list);
+    if (answer2?.complete === false) {
+      const cut = made("p", "note");
+      cut.textContent = "Older entries may exist: the read stopped at its record budget before reaching the start of the log.";
+      at("detail-history").appendChild(cut);
+    }
+  }
+  function show2(kind, name, answered2, history = null) {
     at("detail-kind").textContent = kind;
     at("detail-name").textContent = name;
     clear("detail-facts");
@@ -831,6 +877,7 @@
       nothing.textContent = "The node answered, and the answer carries no fields.";
       at("detail-facts").appendChild(nothing);
     }
+    timeline(kind, history);
     at("detail-sheet").hidden = false;
     at("detail-close").focus();
   }
@@ -1937,7 +1984,23 @@
         out.push({
           kind: "record",
           statement: `USE NAMESPACE ${namespaceOf}; USE DATABASE ${databaseOf}; SELECT * FROM ${table}:${key};`,
-          land: inDetail("record", text)
+          // A record is the one thing here with a history, so it is the one
+          // `land` that asks a second question. The ask lives here and not in
+          // the sheet because `detail.ts` reaches the node through nothing —
+          // `api.ts`, `password.ts` and `session.ts` are the only modules that
+          // may, and a test says so.
+          land: async (answered2) => {
+            let history = null;
+            try {
+              history = await valueOf(
+                `USE NAMESPACE ${namespaceOf}; USE DATABASE ${databaseOf}; INFO FOR HISTORY OF ${table}:${key};`,
+                "Record · history"
+              );
+            } catch {
+              history = null;
+            }
+            show2("record", text, answered2, history);
+          }
         });
       }
     }

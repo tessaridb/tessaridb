@@ -551,13 +551,21 @@ const ACCEPTED_NEGATIONS: &[(&str, &str)] = &[
         "No lag figure, and no leadership for other nodes.",
         "True: there is no follower loop, so a non-writing node's copy has no last collection to measure a lag from; and `cluster.lease` is this node's own lease, never a peer's.",
     ),
+    // The two entries that stood here said the store recorded no events for any
+    // of these, and cited Q-685's measurement. The measurement was of three READ
+    // surfaces and the conclusion drawn from it was wrong (Q-739): every commit
+    // has always written a log record carrying what it changed. `INFO FOR
+    // HISTORY OF` made it askable in W372, the sentences became false, and this
+    // test is what insisted — which is the whole reason the record carries a
+    // deletion condition rather than a permanent blessing.
+    // The catalog sentence beside this one — "Only a record has a history…" — is
+    // deliberately NOT here. It says "nothing recorded", which carries no word
+    // from `NEGATIONS`, so it is not a capability denial by this test's own
+    // definition and a row for it would sit here going stale forever. Adding it
+    // was tried, and the stale half of this test is what refused it.
     (
-        "There is no history of it: the store records no events for these.",
-        "True, and measured (Q-685): `INFO FOR VERSIONS` answered ONE version after three writes — it reports whether a record is contested, never what happened to it — `INFO FOR NAMESPACE` answers a list of databases, and `INFO FOR AUDIT` is the vault's audit and holds recorded vault reads alone. Delete when the store records object events.",
-    ),
-    (
-        "Why there is no timeline",
-        "A disclosure summary rather than a claim, and it is on the record because the splitter reads it as a sentence. The claim it opens is the row above.",
+        "The history could not be read — the node refused it, or this build does not answer INFO FOR HISTORY.",
+        "Not a claim about the engine at all: it is what the sheet says when the second question failed, and it deliberately does NOT say the record has no history. A refusal and an empty history are different facts and render differently — that separation is the point of the sentence, and the reason it is worded as an inability rather than an absence.",
     ),
     (
         "Nothing pulls a replica forward on a timer, so a node that is not writing has no last collection its copy could be measured from; and this node knows which lease it holds, never which lease somebody else holds.",

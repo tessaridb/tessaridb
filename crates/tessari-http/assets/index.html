@@ -441,10 +441,10 @@
         <button id="detail-close" type="button" class="quiet">Close</button>
       </div>
       <div id="detail-facts"></div>
-      <p class="note">There is no history of it: the store records no events for these.</p>
+      <div id="detail-history"></div>
       <details class="tucked">
-        <summary>Why there is no timeline</summary>
-        <p class="note">What is here is what the node answers about this right now. A timeline drawn from anything else would be this panel inventing one.</p>
+        <summary>Where a timeline comes from</summary>
+        <p class="note">A record’s history is read from the log the store already writes, so it is what was committed rather than anything this panel assembled.</p>
       </details>
     </div>
     <script src="/console.js"></script>
