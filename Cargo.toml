@@ -8,7 +8,7 @@ edition = "2024"
 rust-version = "1.85"
 license = "BUSL-1.1"
 authors = ["boogvar"]
-repository = "https://github.com/TessariDB/TessariDB"
+repository = "https://github.com/TessariDB/tessaridb"
 publish = false
 
 [workspace.dependencies]
