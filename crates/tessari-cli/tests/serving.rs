@@ -1338,22 +1338,44 @@ fn campaigns(address: &str) -> Result<i64, String> {
     }
 }
 
-#[test]
-#[ignore = "forty seconds of real cadences — a leader has to be elected, a \
-            record replicated, a node killed and a successor elected, and none \
-            of those can be hurried. It is criterion S7.1's own validation and \
-            is run explicitly, following the S6.2 validation in \
-            tessari-wire/tests/pushing.rs: cargo test -p tessari-cli --test \
-            serving three_nodes -- --ignored"]
-fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
-    // G024 S7.1, the last criterion, against three operating-system processes.
-    //
-    // Everything the wire and storage crates prove about this is proved inside
-    // one process, against stores a test assembled. What only this can show is
-    // that the three decisions of this session compose: ADR-0063 lets a second
-    // node stand, ADR-0064 makes winning confer the right to write, ADR-0065
-    // lets a follower find whoever won. Each was found by the next one failing,
-    // and none of them has ever been exercised against a cluster of three.
+/// The node after `index`, wrapping round — the peer each node names as its seed.
+///
+/// Spelled without arithmetic on purpose. These three lines moved out of a
+/// `#[test]` body, where clippy exempts index arithmetic, into a plain function
+/// where it does not; and the exemption is the only thing that had been
+/// carrying them. Written this way it also survives `CLUSTER` gaining a fourth
+/// entry, which a hardcoded wrap would not.
+fn the_next_node(index: usize) -> usize {
+    index
+        .checked_add(1)
+        .filter(|next| *next < CLUSTER.len())
+        .unwrap_or(0)
+}
+
+/// A cluster of three, brought up the one way that works.
+///
+/// Factored out of the S7.1 test it was written inside, because three further
+/// criteria need exactly this arrangement: the `ANSWERED BY LEADER` redirect
+/// across processes, the superseded-epoch refusal, and a failover policy
+/// reaching a second node. A second copy would be a second place the
+/// declaration ORDER is decided, and that order is the part nobody rediscovers
+/// correctly — the comments inside say why each step is where it is, and they
+/// were each bought by a deadlock.
+struct Three {
+    /// Held so the stores outlive the processes reading them. Dropping this
+    /// removes the directory, so it is a field rather than a discarded local.
+    _directory: tempfile::TempDir,
+    /// One slot per node, in `CLUSTER` order. A slot is emptied to kill that
+    /// node, which is why it is an `Option` rather than a plain handle.
+    running: Vec<Option<Running>>,
+}
+
+/// Bring three nodes up, declared as one cluster, and wait for every door.
+///
+/// It does NOT wait for an election — that is [`the_node_a_majority_granted`],
+/// because a caller that only needs three live nodes should not pay ninety
+/// seconds for a leader it will not use.
+fn a_cluster_of_three() -> Three {
     let directory = tempfile::tempdir().unwrap();
     let minted = Minted::new();
 
@@ -1444,8 +1466,8 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
                 "--seed",
                 &format!(
                     "{}@{}",
-                    tessari_types::RecordId::Uuid(ids[(index + 1) % CLUSTER.len()]),
-                    CLUSTER[(index + 1) % CLUSTER.len()].1
+                    tessari_types::RecordId::Uuid(ids[the_next_node(index)]),
+                    CLUSTER[the_next_node(index)].1
                 ),
             ])
             .stdout(Stdio::null())
@@ -1458,7 +1480,19 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
         assert!(listening(client, Duration::from_secs(30)), "{client}");
         assert!(listening(peer, Duration::from_secs(30)), "{peer}");
     }
+    Three {
+        _directory: directory,
+        running,
+    }
+}
 
+/// The index of the node a majority granted the epoch to.
+///
+/// Asked by trying to use it rather than by reading anything: under ADR-0064 a
+/// node that takes part in deciding and holds no leadership refuses every write
+/// with `NoLeadershipYet`, so the node that accepts the script **is** the one
+/// that won, and asking costs nothing beyond the write a caller needed anyway.
+fn the_node_a_majority_granted() -> usize {
     // Wait for the first epoch to be granted, by trying to use it. A write
     // before any round concludes is refused on every node — that is ADR-0064
     // working, not a defect, and it is why this polls rather than writing once.
@@ -1489,15 +1523,35 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
         // measuring, and the symptom looked exactly like a cluster defect.
         std::thread::sleep(POLL);
     }
-    let leader = elected.unwrap_or_else(|| {
+    elected.unwrap_or_else(|| {
         panic!(
             "no node accepted a write in ninety seconds. A cluster of three \
              that elects nobody has no writer anywhere, which is what ADR-0064 \
              made possible and what an election is supposed to resolve. The \
              last refusal from each node: {refusals:?}"
         )
-    });
+    })
+}
 
+#[test]
+#[ignore = "forty seconds of real cadences — a leader has to be elected, a \
+            record replicated, a node killed and a successor elected, and none \
+            of those can be hurried. It is criterion S7.1's own validation and \
+            is run explicitly, following the S6.2 validation in \
+            tessari-wire/tests/pushing.rs: cargo test -p tessari-cli --test \
+            serving three_nodes -- --ignored"]
+fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
+    // G024 S7.1, the last criterion, against three operating-system processes.
+    //
+    // Everything the wire and storage crates prove about this is proved inside
+    // one process, against stores a test assembled. What only this can show is
+    // that the three decisions of this session compose: ADR-0063 lets a second
+    // node stand, ADR-0064 makes winning confer the right to write, ADR-0065
+    // lets a follower find whoever won. Each was found by the next one failing,
+    // and none of them has ever been exercised against a cluster of three.
+    let mut cluster = a_cluster_of_three();
+    let running = &mut cluster.running;
+    let leader = the_node_a_majority_granted();
     let follower = (0..CLUSTER.len()).find(|index| *index != leader).unwrap();
 
     // The record reaches a node that never wrote it. Until this holds there is
