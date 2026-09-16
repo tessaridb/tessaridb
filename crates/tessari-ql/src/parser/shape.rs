@@ -13,8 +13,8 @@ use tessari_types::Number;
 
 use super::Parser;
 use crate::ast::{
-    DeleteBound, Expr, ExprKind, FieldPath, Hop, Ordering, Projection, RecordTarget, Source,
-    Staleness, Timeout, Using, Version,
+    Admitted, AnsweredBy, DeleteBound, Expr, ExprKind, FieldPath, Hop, Ordering, Projection,
+    RecordTarget, Source, Staleness, Timeout, Using, Version,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Span, Token};
@@ -305,6 +305,49 @@ impl Parser<'_> {
             });
         }
         Ok(Some(Staleness { within, span: at }))
+    }
+
+    /// `ANSWERED BY LEADER`, when it is there.
+    ///
+    /// Two words at the head, the way `GROUP BY` and `ORDER BY` are, and both
+    /// are required before the clause opens: a lone `answered` is not this
+    /// clause, and saying so with a peek rather than with a rollback is what
+    /// keeps a name called `answered` readable everywhere else.
+    ///
+    /// # Why an unknown word is refused and never defaulted
+    ///
+    /// The two admitted spellings are a closed set, and the direction a guess
+    /// would fail in is the unsafe one: a caller who wrote `ANSWERED BY MASTER`
+    /// asked for the leader, and a parser that shrugged and admitted any copy
+    /// would answer the financial read from a follower with nothing anywhere in
+    /// an error state. So the refusal carries the word that was written and the
+    /// span it sits at, which is what lets a caller fix it without guessing.
+    pub(super) fn answered_by(&mut self) -> Result<Option<AnsweredBy>> {
+        if !matches!(self.peek(), Some(Token::Ident(word)) if word.eq_ignore_ascii_case("answered"))
+            || !matches!(self.peek_ahead(1), Some(Token::Ident(word)) if word.eq_ignore_ascii_case("by"))
+        {
+            return Ok(None);
+        }
+        let at = self.span_here();
+        self.advance();
+        self.advance();
+        let expected = "`ANY` or `LEADER` — which nodes may answer this read";
+        let Some(Token::Ident(written)) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let admits = if written.eq_ignore_ascii_case("any") {
+            Admitted::AnyCopy
+        } else if written.eq_ignore_ascii_case("leader") {
+            Admitted::Leader
+        } else {
+            return Err(Error::UnknownAnswerer {
+                written: written.to_string(),
+                span: self.span_here(),
+            });
+        };
+        let at = at.to(self.span_here());
+        self.advance();
+        Ok(Some(AnsweredBy { admits, span: at }))
     }
 
     /// `VERSION 42`, when it is there.

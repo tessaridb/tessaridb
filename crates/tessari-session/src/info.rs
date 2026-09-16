@@ -1644,6 +1644,9 @@ fn reading(table: &TableRef) -> StatementKind {
         // a grant. A tolerance for how stale an answering node may be has no
         // bearing on whether the read would be permitted.
         staleness: None,
+        // Nor an answerer, for the same reason: which node answers has no
+        // bearing on whether the read would be permitted.
+        answered_by: None,
         span: table.span,
     }))
 }

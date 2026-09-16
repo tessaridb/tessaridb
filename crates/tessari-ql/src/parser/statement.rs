@@ -2899,6 +2899,12 @@ impl Parser<'_> {
         if let (Some(_), Some(bound)) = (version.as_ref(), staleness.as_ref()) {
             return Err(Error::StalenessBesideAVersion { span: bound.span });
         }
+        // Last, and deliberately not beside `STALENESS` even though the two are
+        // the pair a reader will compare. They answer different questions —
+        // *how old may the copy be* against *which node may answer at all* — so
+        // there is no pairing rule between them to enforce here: naming both is
+        // legal and the read is answered only where both hold.
+        let answered_by = self.answered_by()?;
         super::shape::check_grouping(&projection, &group)?;
         super::shape::check_fold_positions(&from, &group, &order)?;
         super::shape::check_cursor(
@@ -2965,6 +2971,7 @@ impl Parser<'_> {
             timeout,
             version,
             staleness,
+            answered_by,
             span: start.to(self.span_behind()),
         })
     }

@@ -2082,6 +2082,12 @@ pub struct Select {
     /// `None` is the ordinary case: a read has no tolerance because it is
     /// answered here, and a node's own answer is never stale relative to itself.
     pub staleness: Option<Staleness>,
+    /// Which nodes this read admits as its answerer.
+    ///
+    /// `None` is the ordinary case and means what `ANSWERED BY ANY` means: any
+    /// copy may answer. See [`AnsweredBy`] for why this is a second axis rather
+    /// than a tighter [`Staleness`].
+    pub answered_by: Option<AnsweredBy>,
     /// Where the statement sits in the source.
     pub span: Span,
 }
@@ -2103,6 +2109,71 @@ pub struct Staleness {
     pub within: Duration,
     /// Where the clause sits, for the refusal to point at.
     pub span: Span,
+}
+
+/// Which nodes a read admits as its answerer.
+///
+/// # Why this is not a tighter staleness bound
+///
+/// A follower at zero lag is still not authoritative. Being level a moment ago
+/// says nothing about a write committing right now, so a bound of `0s` does not
+/// linearise — and `0s` is refused anyway, because it admits no node at all
+/// including the one being asked. Answering a read that had to come from the
+/// leader out of a freshness bound is a wrong answer that raises no error, which
+/// is why the two are separate controls and not one knob.
+///
+/// The two **compose** and neither widens the other: a read may name both, and
+/// it is answered only where both hold.
+///
+/// # Why the clause is not called `AUTHORITY`
+///
+/// Because that word is already spoken for, and by the part of the language a
+/// mistake would be most expensive in: [`ReachRef`] documents itself as *how far
+/// an authority goes*, `DEFINE USER … ON prod.orders` writes one, and the whole
+/// grant surface is built on the noun. A read clause wearing the same word would
+/// make `AUTHORITY LEADER` look like a permission to every reader who met the
+/// grant vocabulary first.
+///
+/// `ANSWERED BY` says the thing itself — who answers — and collides with
+/// nothing. *Strong* and *consistency* were rejected as terms of art: both
+/// promise a linearisability this engine does not claim, and the limit below is
+/// exactly why.
+///
+/// # Why `LEADER`
+///
+/// Leadership is already this product's own vocabulary rather than an
+/// implementation detail leaking out: it is a catalog row, `DEFINE REPLICA …
+/// ROLES writable` declares it, and `INFO FOR NODE` reports it. A new word would
+/// be a second name for something the reader already has one for.
+///
+/// # The limit that ships with it
+///
+/// Answered by the leader is not **repeatable**. Two such reads with writes in
+/// between legitimately differ, and neither is wrong. The clause says where the
+/// answer comes from; it does not hold the store still while the caller reads —
+/// that is what a transaction is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnsweredBy {
+    /// Which nodes the read admits.
+    pub admits: Admitted,
+    /// Where the clause sits, for a refusal to point at.
+    pub span: Span,
+}
+
+/// The two answers `ANSWERED BY` takes.
+///
+/// Two and not three (BGV-MINIMAL-001): a third waits for something that needs
+/// it. Named values rather than a `bool`, for the reason every tag in this
+/// workspace is named — a `bool` makes an unrecognised spelling silently become
+/// one of the two, and here the silent direction is the unsafe one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Admitted {
+    /// Any copy may answer. The default, and writable on purpose: a read that
+    /// deliberately does not need the leader should be able to say so.
+    #[default]
+    AnyCopy,
+    /// Only the node that decides writes for these records may answer.
+    Leader,
 }
 
 /// A point in the store's history a read answers from.

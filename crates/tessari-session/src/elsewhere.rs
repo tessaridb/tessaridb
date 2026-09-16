@@ -66,6 +66,19 @@ pub struct Peer {
 /// serves, and `Debug` because a [`crate::Session`] holding one is printed in
 /// test failures.
 pub trait Elsewhere: core::fmt::Debug + Send + Sync {
+    /// A peer that says it may write, if this node knows of one.
+    ///
+    /// The second question, and it takes no argument because there is nothing
+    /// to bound: a read that named the leader named a *node*, not a tolerance.
+    ///
+    /// **It is a required method and not a defaulted one.** A default answering
+    /// `None` would let an implementation forget it and go on compiling, and the
+    /// symptom would be a read that asked for the leader being refused on a
+    /// cluster that has one — a wrong answer with nothing in an error state,
+    /// which is the whole class this trait's one-method-per-question shape
+    /// exists to avoid.
+    fn writable(&self) -> Option<Peer>;
+
     /// A copy within `bound`, if this node knows of one.
     ///
     /// `None` means *not that I know of*, which a bounded read treats exactly as

@@ -537,6 +537,36 @@ impl Session<'_> {
         // it, and a note reported against the *next* answer is worse than no note
         // at all.
         let mut notes = Vec::new();
+        // Authority first, and staleness second, because the order is the one
+        // that cannot contradict itself. A node holding `Roles::WRITABLE`
+        // answers `current_as_of` as ZERO, so the leader satisfies every
+        // freshness bound trivially — deciding authority first therefore never
+        // overturns the freshness decision, while the other order can: a
+        // follower inside the bound would be chosen, and the read that said it
+        // had to come from the leader would be answered by one that does not.
+        if let Some(asked) = select.answered_by
+            && asked.admits == tessari_ql::Admitted::Leader
+            && !self
+                .store
+                .effective_roles()?
+                .has(tessari_encoding::Roles::WRITABLE)
+        {
+            return Err(
+                match self.elsewhere.as_ref().and_then(|known| known.writable()) {
+                    // C-07 again, and unchanged by the second axis: this node
+                    // names the one that should answer and does not fetch on
+                    // the client's behalf.
+                    Some(peer) => Error::ReadIsElsewhere {
+                        because: "`ANSWERED BY LEADER`".to_owned(),
+                        endpoint: peer.endpoint,
+                        node: peer.node,
+                        epoch: peer.epoch,
+                        span: asked.span,
+                    },
+                    None => Error::NoLeaderKnown { span: asked.span },
+                },
+            );
+        }
         // Before anything is read, and here rather than in the parser: the floor
         // is a fact about the cluster and the parser has no cluster. A subquery
         // carrying its own bound is checked by the same line, because it asks
@@ -590,7 +620,7 @@ impl Session<'_> {
                         // C-07: this node names the one that should answer and
                         // does not fetch on the client's behalf.
                         Some(peer) => Error::ReadIsElsewhere {
-                            written,
+                            because: format!("a staleness bound of {written}"),
                             endpoint: peer.endpoint,
                             node: peer.node,
                             epoch: peer.epoch,

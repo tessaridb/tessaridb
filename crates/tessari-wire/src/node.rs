@@ -605,6 +605,17 @@ mod tests {
     /// of the test is to speak the protocol as a client of an older build would,
     /// which no `Client` in this workspace will ever do again.
     fn a_node_that_must_redirect() -> String {
+        a_node_whose_peer_claims(Roles::SERVING)
+    }
+
+    /// The same node, with the peer claiming `roles` instead.
+    ///
+    /// One fixture and not two, because the two redirects differ only in what
+    /// sends them: the staleness axis needs a peer that merely serves, and the
+    /// authority axis needs one that says it writes. Everything after that —
+    /// the drained local node, the port, the thread — is the same setup, and a
+    /// copy of it would be a second place for the setup to drift.
+    fn a_node_whose_peer_claims(roles: Roles) -> String {
         let mut directory = Directory::new();
         directory.heard(
             "two.example:9080",
@@ -616,7 +627,7 @@ mod tests {
                     patch: 1,
                 },
                 epoch: Epoch::new(1),
-                roles: Roles::SERVING,
+                roles,
                 tail: Sequence::new(4096),
                 tail_leadership: Epoch::new(1),
                 current_as_of: Some(std::time::Duration::from_secs(1)),
@@ -667,14 +678,26 @@ mod tests {
 
     /// Ask for the bounded read, and answer with the tag that came back.
     fn tag_answering_a_bounded_read(minor: u8) -> u8 {
-        let address = a_node_that_must_redirect();
+        tag_answering(
+            a_node_that_must_redirect(),
+            minor,
+            "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM users STALENESS 60s;",
+        )
+    }
+
+    /// Run `script` against `address` as a build of `MAJOR.minor`, and answer
+    /// with the FRAME TAG that came back — the byte itself, off the socket,
+    /// rather than whatever a client would have decoded it into.
+    ///
+    /// That distinction is the whole point of these cases. A redirect that
+    /// arrived as a refusal would still reach a caller as an error carrying an
+    /// address, and every assertion made through a client would go on passing.
+    fn tag_answering(address: String, minor: u8, script: &str) -> u8 {
         let mut stream = TcpStream::connect(&address).expect("the node this test started");
         greet_as(&mut stream, minor);
 
         let body = Request {
-            script: "USE NAMESPACE prod; USE DATABASE orders; \
-                     SELECT * FROM users STALENESS 60s;"
-                .to_owned(),
+            script: script.to_owned(),
             credentials: None,
             parameters: Parameters::new(),
         }
@@ -698,6 +721,43 @@ mod tests {
             tag_answering_a_bounded_read(frame::REDIRECTS),
             frame::Kind::Elsewhere.tag(),
             "the node had somewhere to send this read and refused instead"
+        );
+    }
+
+    #[test]
+    fn a_read_that_named_the_leader_leaves_as_a_redirect_and_not_a_refusal() {
+        // The authority axis reaching the wire. It is the same frame the
+        // staleness axis already sends, deliberately: one concept, one tag, one
+        // arm in each transport — a second variant would be a second arm here
+        // and in HTTP, where forgetting one answers a redirect as a plain
+        // refusal with nothing anywhere in an error state.
+        assert_eq!(
+            tag_answering(
+                a_node_whose_peer_claims(Roles::SERVING.and(Roles::WRITABLE)),
+                frame::REDIRECTS,
+                "USE NAMESPACE prod; USE DATABASE orders; \
+                 SELECT * FROM users ANSWERED BY LEADER;",
+            ),
+            frame::Kind::Elsewhere.tag(),
+            "this node knew of a peer that claims to write and refused instead"
+        );
+    }
+
+    #[test]
+    fn a_read_that_named_the_leader_with_no_leader_to_name_is_refused() {
+        // The other half, and the one that must NOT be a redirect: every peer
+        // here merely serves. A node that sent tag 13 anyway would be naming a
+        // follower as the leader, which is the quiet wrong answer the whole
+        // clause exists to prevent.
+        assert_eq!(
+            tag_answering(
+                a_node_whose_peer_claims(Roles::SERVING),
+                frame::REDIRECTS,
+                "USE NAMESPACE prod; USE DATABASE orders; \
+                 SELECT * FROM users ANSWERED BY LEADER;",
+            ),
+            frame::Kind::Refusal.tag(),
+            "a read was sent to a peer that never claimed to write"
         );
     }
 

@@ -92,6 +92,14 @@ impl Elsewhere for OnePeer {
             epoch: THEIR_EPOCH,
         })
     }
+
+    /// These cases are about the freshness axis, and a peer that claimed to
+    /// lead would let an `ANSWERED BY LEADER` slip into one of them and be
+    /// answered by the other axis' machinery. `None` keeps each file asserting
+    /// the thing it is named after.
+    fn writable(&self) -> Option<Peer> {
+        None
+    }
 }
 
 /// One peer, `age` behind, at an address a redirect can name.

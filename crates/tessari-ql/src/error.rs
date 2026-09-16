@@ -328,6 +328,24 @@ pub enum Error {
         span: Span,
     },
 
+    /// An `ANSWERED BY` named a word this build does not know.
+    ///
+    /// The clause takes exactly `ANY` or `LEADER`, and an unrecognised word is
+    /// refused rather than read as either. The direction a guess would fail in
+    /// is the unsafe one: somebody who wrote `ANSWERED BY MASTER` meant the
+    /// leader, and admitting any copy instead would answer the read they were
+    /// careful about from a follower, with nothing anywhere in an error state.
+    #[error(
+        "`ANSWERED BY {written}` (at {span}) is not a node this read can name; \
+         write `ANSWERED BY ANY` or `ANSWERED BY LEADER`"
+    )]
+    UnknownAnswerer {
+        /// The word as it was written.
+        written: String,
+        /// Where it sits.
+        span: Span,
+    },
+
     /// A read named both an exact version and a tolerance for staleness.
     ///
     /// `VERSION` names one point in this store's history; `STALENESS` says how
@@ -789,6 +807,7 @@ impl Error {
             | Self::MalformedGeometry { span, .. }
             | Self::ComputedGeometry { span, .. }
             | Self::EmptyStaleness { span, .. }
+            | Self::UnknownAnswerer { span, .. }
             | Self::StalenessBesideAVersion { span }
             | Self::CursorBesideAnOffset { span }
             | Self::CursorBesideAReshaping { span, .. }

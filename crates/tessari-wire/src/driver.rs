@@ -198,6 +198,25 @@ impl tessari_session::Elsewhere for Published {
             Destination::Here | Destination::Nowhere => None,
         }
     }
+
+    /// The other routing question, answered from the same last round.
+    ///
+    /// No clock and no bound, because leadership does not age into being
+    /// slightly wrong the way a currency reading does — see
+    /// [`Directory::writable`]. The epoch is looked up out of the same reading
+    /// that chose the endpoint, exactly as it is above, and for the same reason:
+    /// it is what that peer claimed about itself, and it is what makes the
+    /// redirect checkable when the client arrives.
+    fn writable(&self) -> Option<tessari_session::Peer> {
+        let directory = self.current();
+        let (endpoint, node) = directory.writable()?;
+        let epoch = directory.at(&endpoint)?.said.epoch;
+        Some(tessari_session::Peer {
+            endpoint,
+            node,
+            epoch,
+        })
+    }
 }
 
 /// How far this node has collected in each log, and what a failure does to it.

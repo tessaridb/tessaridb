@@ -6160,6 +6160,73 @@ and `SELECT staleness FROM readings` still reads it. Which reading is meant is
 settled by whether a duration follows, the same way every other contextual word
 in this grammar is settled.
 
+## 7b‴‴. Saying which node may answer
+
+```
+SELECT * FROM accounts WHERE id = 1 ANSWERED BY LEADER;
+SELECT * FROM prices ANSWERED BY ANY;
+```
+
+`ANSWERED BY` is **optional** and says which nodes may answer this read. It takes
+exactly two words: `ANY`, which is what a read means when it says nothing, and
+`LEADER`, which admits only the node that decides writes for these records.
+
+Any other word is **refused**, and the refusal echoes what was written. The
+direction a guess would fail in is the unsafe one: somebody who wrote
+`ANSWERED BY MASTER` meant the leader, and a parser that shrugged and admitted
+any copy would answer the read they were careful about from a follower, with
+nothing anywhere in an error state.
+
+### It is not a tighter `STALENESS`, and the difference is the whole point
+
+A follower at zero lag is **level**, not authoritative. Being level a moment ago
+says nothing about a write committing right now, so no staleness bound expresses
+*this must come from where writes are decided* — and the tightest bound that
+might look like it, `STALENESS 0s`, is refused anyway, because it admits no node
+at all including the one being asked.
+
+So the two are separate controls answering different questions, and they
+**compose**. A read may name both, and it is answered only where both hold:
+
+```
+SELECT * FROM accounts WHERE id = 1 STALENESS 30s ANSWERED BY LEADER;
+```
+
+Which node may answer is settled first. A node that may write is level with
+itself, so the leader satisfies every bound — deciding it first therefore never
+overturns the freshness decision, while the other order can: a follower inside
+the bound would be chosen, and the read that said it had to come from the leader
+would be answered by one that does not.
+
+### A node that cannot satisfy it says where to go
+
+Like a staleness bound, this is a **candidate filter, never a marker**. A node
+that does not lead, and knows of a peer that claims to, answers with a redirect
+naming that peer — it does not fetch on your behalf, and it says so. The redirect
+carries the leadership that peer published, so a node that has since lost it can
+refuse the redirect on arrival rather than failing opaquely.
+
+A node that does not lead and knows of no peer that does **refuses**. The read
+said where it had to come from, and it is not served by coming from somewhere
+else and saying nothing. The remedy is to declare a writable member:
+
+```
+DEFINE REPLICA two AT 'two.example:9080' ROLES writable;
+```
+
+### Answered by the leader is not *repeatable*
+
+This is the limit, and it ships with the clause rather than being discovered
+later. Two reads answered by the leader, with writes in between, legitimately
+differ — and neither is wrong. The clause says where the answer comes from; it
+does not hold the store still while you read it. Reads that must agree with one
+another belong in a transaction, which **is** one point in the store's history.
+
+`answered` is **not** a reserved word — a field may still be called `answered`,
+and `SELECT answered FROM tickets` still reads it. The clause opens only when
+`BY` follows, the same way every other contextual word in this grammar is
+settled.
+
 ## 7b′. What the answer says without being asked
 
 `EXPLAIN` answers a question you have to know to ask. A **note** is the other
