@@ -113,7 +113,7 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
 
 LABEL org.opencontainers.image.title="TessariDB" \
       org.opencontainers.image.description="TessariDB — a database with the query language, the storage engine and the wire protocol in one binary." \
-      org.opencontainers.image.source="https://github.com/TessariDB/tessaridb" \
+      org.opencontainers.image.source="https://github.com/tessaridb/tessaridb" \
       org.opencontainers.image.documentation="https://docs.tessaridb.com" \
       org.opencontainers.image.url="https://tessaridb.com" \
       org.opencontainers.image.licenses="BUSL-1.1" \
