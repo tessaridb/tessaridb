@@ -44,15 +44,16 @@
 
 use std::collections::BTreeMap;
 
+use tessari_constants::HISTORY_EVENTS;
 use tessari_encoding::{NODE_ID_LEN, SpatialRefinement, VectorRecall};
 use tessari_ql::{
     Answer, Identity as RecordIdentity, InfoSubject, Name, Projection, RecordTarget, Select,
     Source, Span, StatementKind, TableRef,
 };
 use tessari_storage::{
-    BUILD_VERSION, Catalog, ConsumerDefinition, FieldDefinition, FollowerLag, GEO_FIELD,
-    GrantDefinition, IndexDefinition, MEASURED_RELATION, Progress, Reach, ReplicaDefinition,
-    TableDefinition, TableKind, Transaction, UserDefinition,
+    BUILD_VERSION, Catalog, ChangeKind, ConsumerDefinition, FieldDefinition, FollowerLag,
+    GEO_FIELD, GrantDefinition, IndexDefinition, MEASURED_RELATION, Progress, Reach,
+    ReplicaDefinition, Subject, TableDefinition, TableKind, Transaction, UserDefinition,
 };
 use tessari_types::{DatabaseId, NamespaceId, Number, RecordId, Sequence, TableId, Value};
 
@@ -61,6 +62,7 @@ use crate::error::{Error, Result};
 use crate::identity::Identity;
 use crate::outcome::Outcome;
 use crate::redact::Visible;
+use crate::redact::seen;
 use crate::session::Session;
 
 impl Session<'_> {
@@ -83,6 +85,7 @@ impl Session<'_> {
             InfoSubject::Bucket(name) => self.info_bucket(transaction, name, span)?,
             InfoSubject::Recipients(target) => self.info_recipients(transaction, target, span)?,
             InfoSubject::Versions(target) => self.info_versions(transaction, target, span)?,
+            InfoSubject::History(target) => self.info_history(transaction, target, span)?,
             InfoSubject::Audit(actor) => self.info_audit(actor.as_ref())?,
             InfoSubject::User(name) => self.info_user(transaction, name, span)?,
             InfoSubject::Users => self.info_users(transaction)?,
@@ -404,6 +407,82 @@ impl Session<'_> {
                 ),
             ),
             ("concurrent".to_owned(), Value::Bool(concurrent)),
+        ]))
+    }
+
+    /// `INFO FOR HISTORY OF orders:1` — what one record became, newest first.
+    ///
+    /// # It reads the log, and writes nothing
+    ///
+    /// The store has recorded every change since the log existed: a commit is a
+    /// record carrying the address of everything it touched and what that became
+    /// (`tessari_storage::feed`). So this is a projection, exactly as the change
+    /// feed is — no second event store, no write on the commit path, and nothing
+    /// that can disagree with what was committed.
+    ///
+    /// # The walk is bounded and says when it gave up
+    ///
+    /// Reading backwards makes a recently-written record cheap and a
+    /// long-untouched one expensive, and no caller can tell which they are
+    /// asking for. So the read is capped and the answer carries `complete`:
+    /// `false` means older events may exist below the cap. A screen that showed
+    /// the first five and implied they were all of them would be the failure
+    /// this store refuses everywhere else.
+    ///
+    /// # It is this node's log
+    ///
+    /// `own_log` names the log this node writes. Today that is every record,
+    /// because one writer allocates every position. When two writers allocate
+    /// from independent counters there is no defined order between their
+    /// sequences, so merging their logs into one timeline would present two
+    /// unrelated counts as one story — the defect `tessari_storage::log`
+    /// documents. A cross-writer history needs an order that does not exist yet,
+    /// and inventing one here would be a console-ahead-of-the-engine answer.
+    fn info_history(
+        &self,
+        transaction: &mut Transaction<'_>,
+        target: &RecordTarget,
+        span: Span,
+    ) -> Result<BTreeMap<String, Value>> {
+        let (_, address) = self.address(transaction, target)?;
+        let home = Reach::Database(address.namespace, address.database);
+        let log = self.store.own_log(home)?;
+        let subject = Subject::new(
+            address.namespace,
+            address.database,
+            address.table,
+            address.id.clone(),
+        );
+        // A history carries record VALUES, which `INFO FOR VERSIONS` beside it
+        // never does — so it owes the field grant that every other read of a
+        // value owes. `seen` is the store's one answer to "what may this session
+        // read of this record", and it is public precisely so a second caller
+        // cannot grow a second answer that disagrees with it.
+        let visible = self.visible_in(transaction, address.table)?;
+        let history = self.store.history_of(log, &subject, HISTORY_EVENTS)?;
+        let _ = span;
+        let events: Vec<Value> = history
+            .events
+            .iter()
+            .map(|change| {
+                let mut described =
+                    BTreeMap::from([("at".to_owned(), Value::from(change.sequence.to_string()))]);
+                match &change.kind {
+                    ChangeKind::Written(value) => {
+                        described.insert("change".to_owned(), Value::from("written"));
+                        described.insert("value".to_owned(), seen(value.clone(), &visible));
+                    }
+                    ChangeKind::Removed => {
+                        described.insert("change".to_owned(), Value::from("removed"));
+                    }
+                }
+                Value::Object(described)
+            })
+            .collect();
+        Ok(BTreeMap::from([
+            ("events".to_owned(), Value::Array(events)),
+            ("complete".to_owned(), Value::Bool(history.complete)),
+            ("walked".to_owned(), Value::from(history.walked.to_string())),
         ]))
     }
 

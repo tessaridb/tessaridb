@@ -1597,3 +1597,47 @@ fn a_peer_keeps_no_second_spelling_for_an_absent_roles_clause() {
         "absent on a peer, and the store reads it as none"
     );
 }
+
+#[test]
+fn a_records_history_is_asked_for_with_of_and_a_record() {
+    // The sibling of `INFO FOR VERSIONS OF`, parsed the same way: the subject
+    // word, `OF`, and a record target. Every statement in this suite is copied
+    // from `docs/tessariql.md`, so this one is the spec's own example.
+    assert!(matches!(
+        one("INFO FOR HISTORY OF person:1;"),
+        StatementKind::Info {
+            subject: InfoSubject::History(_),
+        }
+    ));
+}
+
+#[test]
+fn history_is_a_subject_word_and_not_a_reserved_one() {
+    // Contextual, like every other subject word. A table named `history` is the
+    // obvious one somebody already has, and a subject word that took the name
+    // out of circulation would refuse a schema written before the statement
+    // existed.
+    assert!(matches!(
+        one("SELECT * FROM history;"),
+        StatementKind::Select(_)
+    ));
+    assert!(matches!(
+        one("INFO FOR HISTORY OF history:1;"),
+        StatementKind::Info {
+            subject: InfoSubject::History(_),
+        }
+    ));
+}
+
+#[test]
+fn a_history_without_a_record_is_refused_and_says_what_is_missing() {
+    // `INFO FOR HISTORY;` is the plausible mistake — every other subject is
+    // either bare or takes a name, and this one takes neither. The refusal names
+    // `OF` rather than listing the subjects again, because the caller has chosen a
+    // subject and got the shape of it wrong.
+    let error = parse("INFO FOR HISTORY;").unwrap_err();
+    assert!(
+        error.to_string().contains("OF"),
+        "the refusal does not name what is missing: {error}"
+    );
+}

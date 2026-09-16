@@ -1786,3 +1786,155 @@ fn the_node_that_wrote_a_version_is_not_the_one_it_has_seen_most_of() {
          the node that wrote it"
     );
 }
+
+// --- INFO FOR HISTORY OF --------------------------------------------------
+
+/// One record's history, read through a session on `store`.
+fn history(store: &Store, record: &str) -> BTreeMap<String, Value> {
+    let mut session = Session::new(store);
+    let script = format!("USE NAMESPACE shared; USE DATABASE books; INFO FOR HISTORY OF {record};");
+    let Value::Object(fields) = report(&mut session, &script) else {
+        panic!("expected an object");
+    };
+    fields
+}
+
+/// The `change` and `body` of one history row.
+fn told(row: &Value) -> (String, Option<String>) {
+    let Value::Object(fields) = row else {
+        panic!("expected a history row, got {row:?}");
+    };
+    let Some(Value::String(change)) = fields.get("change") else {
+        panic!("a history row named no change: {fields:?}");
+    };
+    let body = match fields.get("value") {
+        Some(Value::Object(record)) => match record.get("body") {
+            Some(Value::String(body)) => Some(body.clone()),
+            _ => None,
+        },
+        _ => None,
+    };
+    (change.clone(), body)
+}
+
+#[test]
+fn a_records_history_answers_what_it_became_and_when() {
+    let (store, _, _) = multi_master();
+    write_note(&store, "9", "first");
+    rewrite_note(&store, "9", "second");
+    rewrite_note(&store, "9", "third");
+
+    let answer = history(&store, "note:9");
+    let Some(Value::Array(events)) = answer.get("events") else {
+        panic!("no events: {answer:?}");
+    };
+    let read: Vec<(String, Option<String>)> = events.iter().map(told).collect();
+    assert_eq!(
+        read,
+        vec![
+            ("written".to_owned(), Some("third".to_owned())),
+            ("written".to_owned(), Some("second".to_owned())),
+            ("written".to_owned(), Some("first".to_owned())),
+        ],
+        "{answer:?}"
+    );
+    assert_eq!(
+        answer.get("complete"),
+        Some(&Value::Bool(true)),
+        "{answer:?}"
+    );
+}
+
+#[test]
+fn a_history_is_not_a_versions_report() {
+    // The two were confused for each other until it was measured (Q-739), and
+    // the difference is visible in one store: three writes to one record are
+    // ONE surviving version and THREE history events. A test that asked only
+    // for a non-empty answer would pass against either.
+    let (store, _, _) = multi_master();
+    write_note(&store, "8", "first");
+    rewrite_note(&store, "8", "second");
+    rewrite_note(&store, "8", "third");
+
+    let versioned = versions(&store, "note:8");
+    let Some(Value::Array(rows)) = versioned.get("versions") else {
+        panic!("no versions: {versioned:?}");
+    };
+    assert_eq!(rows.len(), 1, "a single-leader store reports one version");
+
+    let answer = history(&store, "note:8");
+    let Some(Value::Array(events)) = answer.get("events") else {
+        panic!("no events: {answer:?}");
+    };
+    assert_eq!(events.len(), 3, "the history lost writes the log holds");
+}
+
+#[test]
+fn a_removal_is_the_newest_thing_in_the_history() {
+    let (store, _, _) = multi_master();
+    write_note(&store, "7", "here");
+    let mut session = Session::new(&store);
+    session
+        .run("USE NAMESPACE shared; USE DATABASE books; DELETE note:7;")
+        .unwrap();
+
+    let answer = history(&store, "note:7");
+    let Some(Value::Array(events)) = answer.get("events") else {
+        panic!("no events: {answer:?}");
+    };
+    assert_eq!(told(&events[0]).0, "removed", "{answer:?}");
+    assert_eq!(told(&events[1]).0, "written", "{answer:?}");
+}
+
+#[test]
+fn a_field_grant_hides_that_field_in_every_entry_of_a_history() {
+    // The hole this closes: `INFO FOR VERSIONS` carries nodes and sequences and
+    // no values at all, so it never owed a field grant. A history carries what
+    // the record BECAME at each write — so without redaction it would hand a
+    // caller the whole of every past value of a table they were granted one
+    // field of, one commit at a time, while ordinary reads of the same table
+    // hid it. Past values are not less secret than present ones.
+    let store = store();
+    governed(&store);
+    signed_in(&store, "root")
+        .run("GRANT read ON staff FIELDS name TO ada;")
+        .unwrap();
+    let mut root = signed_in(&store, "root");
+    root.run(
+        "USE NAMESPACE prod; USE DATABASE shop; CREATE staff:1 = { name: 'ada', salary: 10 };",
+    )
+    .unwrap();
+    root.run(
+        "USE NAMESPACE prod; USE DATABASE shop; UPDATE staff:1 = { name: 'ada', salary: 20 };",
+    )
+    .unwrap();
+
+    let mut ada = signed_in(&store, "ada");
+    let answer = report(
+        &mut ada,
+        "USE NAMESPACE prod; USE DATABASE shop; INFO FOR HISTORY OF staff:1;",
+    );
+    let Value::Object(fields) = answer else {
+        panic!("expected an object");
+    };
+    let Some(Value::Array(events)) = fields.get("events") else {
+        panic!("no events: {fields:?}");
+    };
+    assert_eq!(events.len(), 2, "{fields:?}");
+    for event in events {
+        let Value::Object(row) = event else {
+            panic!("expected a row");
+        };
+        let Some(Value::Object(value)) = row.get("value") else {
+            panic!("an entry carried no value: {row:?}");
+        };
+        assert!(
+            value.contains_key("name"),
+            "the granted field was redacted too: {value:?}"
+        );
+        assert!(
+            !value.contains_key("salary"),
+            "a history handed over a field this caller may not read: {value:?}"
+        );
+    }
+}

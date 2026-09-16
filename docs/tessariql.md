@@ -6267,6 +6267,7 @@ INFO FOR USER ada;
 INFO FOR ACCESS TO TABLE users;
 INFO FOR NODE;
 INFO FOR VERSIONS OF person:1;
+INFO FOR HISTORY OF person:1;
 ```
 
 Each answers with an object read **from the catalog**, not from a description
@@ -6281,6 +6282,54 @@ it reports one version and `concurrent: false`; it answers on a single-leader
 range too, because *is this contested?* is a question worth being able to ask
 anywhere. The node is the node that **wrote** the version, which is not always
 the node the version has seen the most writes from.
+
+`INFO FOR HISTORY OF` is the other one that does not read the catalog, and it is
+**not** the statement above under a friendlier name. `VERSIONS` answers *is this
+record contested* — on a settled record, one version and `concurrent: false`,
+however many times it has been written. `HISTORY` answers *what did it become,
+and when*: one entry per write, newest first.
+
+```
+INFO FOR HISTORY OF person:1;
+```
+
+```json
+{"events": [{"at": "41", "change": "written", "value": {"name": "Ada"}},
+            {"at": "17", "change": "removed"},
+            {"at": "9", "change": "written", "value": {"name": "Augusta"}}],
+ "complete": true, "walked": "12"}
+```
+
+`change` is `written` or `removed`, and a `written` entry carries the `value` the
+record became. It is deliberately not *created* / *updated* / *deleted*: the log
+carries what a record became and not what stood there before, so calling the
+first write a creation would mean consulting the current state to label the past.
+A wrong label is worse than a missing one — a reader can tell a first write from
+a later one by looking at what precedes it, and cannot recover from being told
+the wrong thing.
+
+**Nothing is written to answer this.** Every commit already records the address
+of what it changed and what that became; a history is a reading of that, so there
+is no event store to enable, nothing extra on the commit path, and no way for the
+answer to disagree with what was committed.
+
+**`complete` is the field to read before believing the oldest entry.** The answer
+is produced by walking the log backwards from the newest record, which is cheap
+for a record written recently and expensive for one last touched long ago — and
+nobody can tell which they are asking for in advance. So the walk is bounded, and
+`complete: false` means it stopped at that bound and older entries may exist
+below. `walked` reports how many log records were read to produce the answer,
+because a history of three events that cost two thousand records is worth seeing.
+
+`complete` is about the LOG, never about the answer's length: an answer cut short
+because fifty entries is all this statement returns still reports `complete:
+true`, since the walk did reach the beginning.
+
+**It reports this node's own log.** Today that is every write, because one writer
+allocates every position. Where two writers allocate from independent counters
+their sequences have no defined order between them, so a merged timeline would
+present two unrelated counts as one story; that is a question for the cluster
+rather than something this statement guesses at.
 
 ```json
 {"tables": ["orders", "users"]}

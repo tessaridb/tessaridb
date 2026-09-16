@@ -68,7 +68,7 @@ pub use expiry::Expired;
 // the field but cannot name its type has a public API it cannot use.
 pub use audit::{AuditDevice, AuditTrail, VaultRead, entries as audit_entries, reads_by};
 pub use error::{Error, Result};
-pub use feed::{Change, ChangeKind, Changes, Subscription, Watch};
+pub use feed::{Change, ChangeKind, Changes, History, Subject, Subscription, Watch};
 pub use followers::FollowerLag;
 pub use graph::vector_of;
 pub use lease::{GUARD as LEASE_GUARD, Lease, TTL as LEASE_TTL};

@@ -10,6 +10,7 @@ use std::ops::Bound;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use tessari_constants::HISTORY_SCAN_RECORDS;
 use tessari_encoding::{
     AppliedPositionKey, FormatVersion, FormatVersionKey, KeyKind, LogId, LogKey, LogRecord,
     NODE_ID_LEN, NodeIdentity, REACH_LEN, Roles, StoreKey, StoreValue, VersionPositionKey, Writer,
@@ -18,6 +19,7 @@ use tessari_kv::{Key, KeyRange, KvBackend, ScanDirection, ScanRequest, WriteBatc
 use tessari_types::{ConflictPolicy, Epoch, Sequence, TableId};
 
 use crate::catalog::Reach;
+use crate::feed::{History, Subject};
 
 /// The home read by the surfaces that still answer with **one** number for the
 /// whole node — health, follower lag, the tail mark.
@@ -1253,6 +1255,90 @@ impl Store {
             changes.extend(crate::feed::changes_in(sequence, &record)?);
         }
         Ok(Changes { changes, next })
+    }
+
+    /// One object's history, newest first, out of the log that already holds it.
+    ///
+    /// The store writes no event stream and needs none: every commit is a log
+    /// record carrying the address of everything it changed, so a history is a
+    /// projection of the log exactly as the change feed is. Building a second,
+    /// parallel event keyspace would double-write the same bytes on the commit
+    /// path and add a second unbounded region to a store that already has one.
+    ///
+    /// # The walk is bounded, not the answer
+    ///
+    /// This reads **backwards** from the newest record, which is what makes a
+    /// recently-written object cheap. It is also what makes a long-untouched one
+    /// expensive: the walk finds nothing the whole way down, and no caller can
+    /// tell which case it is in before asking. So the number of log records read
+    /// is capped by [`HISTORY_SCAN_RECORDS`] and a read that hits the cap says
+    /// so — a screen that shows five events and implies they are all of them is
+    /// worse than one that shows five and says there may be more.
+    ///
+    /// `complete` is true only when the walk reached the beginning of the log.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a stored record cannot be
+    /// decoded. A record that cannot be decoded is corruption rather than an
+    /// event to skip, for the reason [`crate::feed::changes_in`] gives.
+    pub fn history_of(&self, log: LogId, subject: &Subject, limit: usize) -> Result<History> {
+        let records = self.log_records_newest_first(log, HISTORY_SCAN_RECORDS)?;
+        let walked = records.len();
+        let mut events = Vec::new();
+        for (sequence, record) in records {
+            for change in crate::feed::changes_in(sequence, &record)? {
+                if subject.covers(&change) {
+                    events.push(change);
+                }
+            }
+            if events.len() >= limit {
+                break;
+            }
+        }
+        events.truncate(limit);
+        Ok(History {
+            events,
+            // Reaching the cap means there may be older records below. Walking
+            // fewer than the cap means the log ended first, so what was found is
+            // everything there is.
+            complete: walked < HISTORY_SCAN_RECORDS,
+            walked,
+        })
+    }
+
+    /// One home's newest log records, newest first.
+    ///
+    /// The reverse twin of [`Self::log_records`]. `limit` is not a convenience
+    /// here either — the whole point of reading from the tail is to do bounded
+    /// work, and an unbounded reverse scan would simply be the forward one with
+    /// its cost hidden.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a stored record cannot be
+    /// decoded.
+    pub fn log_records_newest_first(
+        &self,
+        log: LogId,
+        limit: usize,
+    ) -> Result<Vec<(Sequence, LogRecord)>> {
+        let prefix = LogKey::prefix_for(log);
+        let request = ScanRequest {
+            keyspace: LogKey::keyspace(),
+            range: KeyRange::prefix(&prefix),
+            direction: ScanDirection::Reverse,
+            limit: Some(limit),
+        };
+        self.backend
+            .scan(&request)?
+            .into_iter()
+            .map(|(key, value)| {
+                let sequence = LogKey::decode(key.as_slice())?.sequence;
+                let record = LogRecord::decode(value.as_slice())?;
+                Ok((sequence, record))
+            })
+            .collect()
     }
 
     /// Read one home's log records from `from` onward, oldest first.

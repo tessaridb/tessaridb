@@ -14,8 +14,8 @@ use std::sync::Arc;
 use tessari_encoding::encode_payload;
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_storage::{
-    Catalog, Change, ChangeKind, IndexShape, RecordAddress, Store, Subscription, TableShape,
-    Transaction, Watch,
+    Catalog, Change, ChangeKind, IndexShape, RecordAddress, Store, Subject, Subscription,
+    TableShape, Transaction, Watch,
 };
 use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId, Value};
 
@@ -590,4 +590,170 @@ fn a_position_carries_to_another_store_holding_the_same_log() {
     let resumed = subscription.poll(&replica, 1024).unwrap();
     assert_eq!(resumed.len(), 1);
     assert_eq!(named(&resumed[0]).as_deref(), Some("grace"));
+}
+
+// --- One object's history -------------------------------------------------
+//
+// A history is the same projection read backwards and filtered to one record.
+// The properties worth testing are therefore not "does it find events" — the
+// feed tests above already establish the projection — but the three ways a
+// history can lie: it can return somebody else's rows, it can return them in an
+// order that reads as the wrong story, and it can show a partial answer as a
+// whole one.
+
+impl Fixture {
+    /// The history of one record in this fixture's table.
+    fn history(&self, id: &str, limit: usize) -> tessari_storage::History {
+        self.store
+            .history_of(
+                self.store.own_log(crate::FIXTURE_HOME).unwrap(),
+                &Subject::new(
+                    self.namespace,
+                    self.database,
+                    self.table,
+                    RecordId::from(id),
+                ),
+                limit,
+            )
+            .unwrap()
+    }
+}
+
+#[test]
+fn a_records_history_is_its_own_writes_newest_first() {
+    let fixture = Fixture::new();
+    for name in ["ada", "grace", "edith"] {
+        let mut transaction = fixture.begin();
+        transaction.put(fixture.at("u1"), record(name));
+        transaction.commit().unwrap();
+    }
+
+    let history = fixture.history("u1", 10);
+    let names: Vec<Option<String>> = history.events.iter().map(named).collect();
+    // Newest first. A timeline drawn from this renders top-down, so the order
+    // is not presentation: reversed, it tells the opposite story about what the
+    // record most recently became.
+    assert_eq!(
+        names,
+        vec![
+            Some("edith".to_owned()),
+            Some("grace".to_owned()),
+            Some("ada".to_owned())
+        ],
+        "{history:?}"
+    );
+    assert!(
+        history
+            .events
+            .windows(2)
+            .all(|pair| pair[0].sequence > pair[1].sequence),
+        "sequences are not strictly descending: {history:?}"
+    );
+    assert!(
+        history.complete,
+        "a three-record log was reported truncated"
+    );
+}
+
+#[test]
+fn a_history_holds_no_other_records_writes() {
+    let fixture = Fixture::new();
+    let mut transaction = fixture.begin();
+    transaction.put(fixture.at("u1"), record("ada"));
+    transaction.put(fixture.at("u2"), record("grace"));
+    transaction.commit().unwrap();
+
+    // The two were written in ONE commit, so they share a sequence. A filter
+    // that keyed on the commit rather than the address would return both, and
+    // the answer would look entirely plausible.
+    let history = fixture.history("u1", 10);
+    assert_eq!(history.events.len(), 1, "{history:?}");
+    assert_eq!(history.events[0].id, RecordId::from("u1"));
+    assert_eq!(named(&history.events[0]).as_deref(), Some("ada"));
+}
+
+#[test]
+fn a_removal_is_in_the_history_and_a_record_that_never_existed_has_none() {
+    let fixture = Fixture::new();
+    let mut transaction = fixture.begin();
+    transaction.put(fixture.at("u1"), record("ada"));
+    transaction.commit().unwrap();
+    let mut transaction = fixture.begin();
+    transaction.delete(fixture.at("u1"));
+    transaction.commit().unwrap();
+
+    let history = fixture.history("u1", 10);
+    assert_eq!(history.events.len(), 2, "{history:?}");
+    assert_eq!(history.events[0].kind, ChangeKind::Removed);
+
+    // Empty and complete, which is a different claim from empty and truncated:
+    // one says nothing ever happened, the other says nothing was found in what
+    // was read.
+    let absent = fixture.history("nobody", 10);
+    assert!(absent.events.is_empty(), "{absent:?}");
+    assert!(absent.complete);
+}
+
+#[test]
+fn a_history_cut_short_by_its_limit_still_says_it_is_complete() {
+    let fixture = Fixture::new();
+    for name in ["ada", "grace", "edith"] {
+        let mut transaction = fixture.begin();
+        transaction.put(fixture.at("u1"), record(name));
+        transaction.commit().unwrap();
+    }
+
+    // `limit` and `complete` answer different questions, and conflating them is
+    // the bug this guards. The caller asked for two; the walk still reached the
+    // beginning of the log, so the LOG is not truncated even though the ANSWER
+    // is. A console showing "there may be more" here would be crying wolf on
+    // every screen that paginates.
+    let history = fixture.history("u1", 2);
+    assert_eq!(history.events.len(), 2, "{history:?}");
+    assert_eq!(named(&history.events[0]).as_deref(), Some("edith"));
+    assert!(history.complete, "the limit was mistaken for truncation");
+}
+
+#[test]
+fn the_walk_is_bounded_and_reports_what_it_read() {
+    let fixture = Fixture::new();
+    // The middle commit touches a DIFFERENT record, so the walk reads a log
+    // record that yields nothing for `u1`. That gap is the whole point of
+    // reporting the cost: a history of two events that cost three records read
+    // is cheap, and the same two events after two thousand records read is a
+    // screen nobody should be drawing. (The fixture's own catalog commit is not
+    // in this count — a catalog row homes in the system tenancy and never enters
+    // this log, which the first cut of this test assumed wrongly.)
+    for (id, name) in [("u1", "ada"), ("u2", "grace"), ("u1", "edith")] {
+        let mut transaction = fixture.begin();
+        transaction.put(fixture.at(id), record(name));
+        transaction.commit().unwrap();
+    }
+
+    let history = fixture.history("u1", 10);
+    assert_eq!(history.events.len(), 2, "{history:?}");
+    assert_eq!(history.walked, 3, "{history:?}");
+    assert!(
+        history.walked > history.events.len(),
+        "the walk claims to have read no more records than it returned events: {history:?}"
+    );
+
+    // The reverse reader underneath is what bounds it, and its bound is exact.
+    let newest = fixture
+        .store
+        .log_records_newest_first(fixture.store.own_log(crate::FIXTURE_HOME).unwrap(), 1)
+        .unwrap();
+    assert_eq!(newest.len(), 1, "the reverse read ignored its limit");
+    let all = fixture
+        .store
+        .log_records_newest_first(fixture.store.own_log(crate::FIXTURE_HOME).unwrap(), 1024)
+        .unwrap();
+    assert_eq!(
+        newest[0].0, all[0].0,
+        "the bounded read did not start at the newest record"
+    );
+    assert!(
+        all.windows(2).all(|pair| pair[0].0 > pair[1].0),
+        "the reverse read is not newest-first"
+    );
 }

@@ -84,6 +84,38 @@ pub const COMMIT_BACKOFF_CEILING: u64 = 8_000;
 /// real backlog.
 pub const SKIP_BATCH_RECORDS: usize = 256;
 
+/// How many log records one history read may walk before it gives up.
+///
+/// A history is a **reverse** read: it starts at the newest record and walks
+/// back until it has enough events for the object it was asked about. For a
+/// record written recently that is a handful of records. For one last touched
+/// a million commits ago it is the whole log, finding nothing the entire way —
+/// and the caller cannot tell the two cases apart before asking.
+///
+/// So the walk is bounded rather than the answer. An unbounded read here would
+/// be O(log) work behind a screen that looks like a point lookup, which is the
+/// shape that is fast in every test and ruinous on the one store that has been
+/// running for a year. Exhausting this budget is not an error: it is reported,
+/// and the history says it is incomplete.
+///
+/// Two thousand is a starting value — an order above `SKIP_BATCH_RECORDS`
+/// because a history reads to *find* rather than to discard, and a screen that
+/// shows nothing is worse than one that took longer. Provisional until measured
+/// against a real log.
+pub const HISTORY_SCAN_RECORDS: usize = 2_048;
+
+/// How many events one `INFO FOR HISTORY OF` answers with.
+///
+/// A timeline is read, not processed: the question behind it is *what recently
+/// happened to this*, and an answer nobody scrolls to the bottom of costs the
+/// reader nothing and the store everything. Fifty is a screenful and then some.
+///
+/// Separate from [`HISTORY_SCAN_RECORDS`] because they bound different things —
+/// this bounds the ANSWER, that bounds the WALK — and a reader who confuses them
+/// reads a short answer as a truncated log. Provisional until the panel's
+/// timeline has been used against a real store.
+pub const HISTORY_EVENTS: usize = 50;
+
 /// How many index entries a bounded ordered read fetches at a time.
 ///
 /// Unit: index entries.

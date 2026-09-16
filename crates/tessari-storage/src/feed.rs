@@ -141,6 +141,78 @@ impl Watch {
     }
 }
 
+/// One object, as a history read addresses it.
+///
+/// [`Watch`] filters a subscription to a table; this filters a history to a
+/// single record. They are separate types rather than one with optional fields
+/// because they answer different questions — a subscriber asks *what is
+/// happening*, a history asks *what happened to this* — and a shared filter
+/// would invite a history with no id, which is a whole-table scan wearing a
+/// point-lookup's name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Subject {
+    /// The namespace the record belongs to.
+    pub namespace: NamespaceId,
+    /// The database within it.
+    pub database: DatabaseId,
+    /// The table within that.
+    pub table: TableId,
+    /// The record's identity.
+    pub id: RecordId,
+}
+
+impl Subject {
+    /// Address one record.
+    #[must_use]
+    pub const fn new(
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+        id: RecordId,
+    ) -> Self {
+        Self {
+            namespace,
+            database,
+            table,
+            id,
+        }
+    }
+
+    /// Whether this change happened to this object.
+    ///
+    /// All four fields, every time. A table id is unique within its database and
+    /// not across the store, so a filter that skipped the namespace and database
+    /// would return another tenancy's history for the same table number — with
+    /// no error, and plausible rows.
+    #[must_use]
+    pub fn covers(&self, change: &Change) -> bool {
+        self.namespace == change.namespace
+            && self.database == change.database
+            && self.table == change.table
+            && self.id == change.id
+    }
+}
+
+/// What happened to one object, newest first, and whether that is all of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct History {
+    /// The events found, newest first.
+    pub events: Vec<Change>,
+    /// Whether the walk reached the beginning of the log.
+    ///
+    /// `false` means the read gave up at its record budget and older events may
+    /// exist below. It is carried rather than inferred from `events.len()`,
+    /// because a short answer has two causes — a quiet object and an exhausted
+    /// budget — and they mean opposite things to whoever is reading the screen.
+    pub complete: bool,
+    /// How many log records the walk read to produce this.
+    ///
+    /// Reported because it is the cost, and a cost nobody can see is one nobody
+    /// tunes. It is also what tells an operator that a cheap-looking history
+    /// read walked two thousand records to find three events.
+    pub walked: usize,
+}
+
 /// A durable cursor over the feed, and what it has and has not seen.
 ///
 /// # Why a cursor rather than a queue
