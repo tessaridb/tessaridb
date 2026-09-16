@@ -12,6 +12,34 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.2.1-beta — 2026-09-16
+
+**A node can be drained, and a record can be asked what happened to it.**
+
+- **`DEFINE NODE ROLES NONE`** clears the roles of the node the statement runs
+  on. The node keeps its data, its identity and its place in the membership, and
+  stops answering clients — which is how a machine is taken out of service
+  without being stopped. The empty role set was already a state the store could
+  hold; what was missing was a way to ask for it. `NONE` is a whole answer and
+  not a member of the role list, and `DEFINE REPLICA … ROLES NONE` stays refused,
+  because a peer is declared rather than amended and an absent `ROLES` already
+  clears there.
+- **`INFO FOR HISTORY OF person:1`** answers what a record became and when, one
+  entry per write, newest first. Nothing is written to produce it: every commit
+  already records the address of what it changed, so this is a reading of the
+  log rather than a second event store. The walk is bounded and the answer says
+  when it stopped short of the log's beginning, so a short list is never mistaken
+  for a whole one. It is not `INFO FOR VERSIONS OF`, which reports whether a
+  record is contested and answers one version however many times it was written.
+- **The console** gains the drain on a node's drawer — which names what a drain
+  costs before it offers the button, and says when a membership row would
+  override it — and draws a record's history on its detail sheet. A namespace, a
+  database and a table have none, and the sheet says why rather than showing an
+  empty list.
+
+The log still grows without bound and nothing prunes it; that is unchanged by
+this release, which only reads it.
+
 ## 0.2.0-beta — 2026-09-15
 
 **The cluster.** A node joins a running cluster, leadership is elected and
