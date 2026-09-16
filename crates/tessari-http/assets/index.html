@@ -14,38 +14,20 @@
         <h1>TessariDB</h1>
         <p id="where" class="faint">served by this node</p>
       </div>
-
+      <div class="finding">
+        <label>Find <input id="search" type="text" placeholder="an account, a table, app.main.orders:1  —  / or ⌘K" /></label>
+        <span id="search-says" class="status" role="status"></span>
+      </div>
       <details class="identity">
-        <summary>
-          <span id="signed-in">not signed in</span>
-        </summary>
+        <summary><span id="signed-in">not signed in</span></summary>
         <div class="sheet">
-          <p class="note">
-            Leave both empty against a store that has no users yet. The first
-            <code>DEFINE USER</code> closes it, and everything after that needs a
-            name.
-          </p>
+          <p class="note">Leave both empty against a store that has no users yet. The first <code>DEFINE USER</code> closes it, and everything after that needs a name.</p>
           <div class="row">
-            <label>
-              User
-              <input id="user" type="text" autocomplete="username" />
-            </label>
-            <label>
-              Password
-              <input id="password" type="password" autocomplete="current-password" />
-            </label>
+            <label>User <input id="user" type="text" autocomplete="username" /></label>
+            <label>Password <input id="password" type="password" autocomplete="current-password" /></label>
           </div>
-          <p class="note">
-            The password is checked once. What this page keeps afterwards is a
-            token, held for as long as the tab is open and no longer — so the
-            password is cleared from the field above, and closing the tab ends
-            the session.
-          </p>
-          <p class="note warn">
-            Credentials travel in the clear, exactly as they do for every other
-            route here: this store has no TLS and belongs on a network you
-            protect.
-          </p>
+          <p class="note">The password is checked once. What this page keeps afterwards is a token, held for as long as the tab is open and no longer — so the password is cleared from the field above, and closing the tab ends the session.</p>
+          <p class="note warn">Credentials travel in the clear, exactly as they do for every other route here: this store has no TLS and belongs on a network you protect.</p>
           <div class="row spread">
             <div class="row tight">
               <button id="sign-in" type="button" class="primary">Sign in</button>
@@ -56,97 +38,45 @@
         </div>
       </details>
     </header>
-
     <nav class="tabs">
       <div role="tablist" aria-label="Sections">
-        <button
-          type="button"
-          role="tab"
-          id="tab-query"
-          aria-controls="panel-query"
-          aria-selected="true"
-        >
-          Query
-        </button>
-        <button
-          type="button"
-          role="tab"
-          id="tab-users"
-          aria-controls="panel-users"
-          aria-selected="false"
-          tabindex="-1"
-        >
-          Users
-        </button>
-        <button
-          type="button"
-          role="tab"
-          id="tab-node"
-          aria-controls="panel-node"
-          aria-selected="false"
-          tabindex="-1"
-        >
-          Node
-        </button>
-        <button
-          type="button"
-          role="tab"
-          id="tab-cluster"
-          aria-controls="panel-cluster"
-          aria-selected="false"
-          tabindex="-1"
-        >
-          Cluster
-        </button>
+        <button type="button" role="tab" id="tab-run" aria-controls="panel-run" aria-selected="true">Run</button>
+        <button type="button" role="tab" id="tab-cluster" aria-controls="panel-cluster" aria-selected="false" tabindex="-1">Cluster</button>
+        <button type="button" role="tab" id="tab-access" aria-controls="panel-access" aria-selected="false" tabindex="-1">Access</button>
+        <button type="button" role="tab" id="tab-this-node" aria-controls="panel-this-node" aria-selected="false" tabindex="-1">This node</button>
       </div>
     </nav>
-
     <main>
-      <section
-        id="panel-query"
-        role="tabpanel"
-        aria-labelledby="tab-query"
-        tabindex="0"
-      >
+      <section id="panel-run" role="tabpanel" aria-labelledby="tab-run" tabindex="0">
         <div class="split">
           <div class="pane">
             <div class="pane-head">
               <h2>Script</h2>
               <span class="faint">⌘↵ or Ctrl↵ to run</span>
             </div>
-            <textarea id="script" rows="8" spellcheck="false" aria-label="Script">
-USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;</textarea
-            >
+            <textarea id="script" rows="8" spellcheck="false" aria-label="Script">USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;</textarea>
             <div class="row spread">
               <button id="run" type="button" class="primary">Run</button>
               <span id="script-status" class="status" role="status"></span>
             </div>
           </div>
-
           <div class="pane">
             <div class="pane-head">
               <h2>Answer</h2>
               <div class="row tight">
-                <button type="button" class="quiet chosen" data-shape="auto">
-                  Auto
-                </button>
+                <button type="button" class="quiet chosen" data-shape="auto">Auto</button>
                 <button type="button" class="quiet" data-shape="json">JSON</button>
               </div>
             </div>
             <div id="answer" class="answer" aria-live="polite"></div>
           </div>
         </div>
-
         <div class="pane">
           <div class="pane-head">
             <h2>Follow a table</h2>
             <span id="watch-status" class="status" role="status"></span>
           </div>
-          <p class="note">
-            <code>from</code> is a position in the log rather than a moment in
-            time, so <code>0</code> replays everything the log still holds. Leave
-            the table empty to follow every table you may read.
-          </p>
+          <p class="note"><code>from</code> is a position in the log rather than a moment in time, so <code>0</code> replays everything the log still holds. Leave the table empty to follow every table you may read.</p>
           <div class="row">
             <label>Namespace <input id="namespace" type="text" value="prod" /></label>
             <label>Database <input id="database" type="text" value="library" /></label>
@@ -160,14 +90,109 @@ USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;</textarea
           <ol id="changes" class="changes" reversed></ol>
         </div>
       </section>
-
-      <section
-        id="panel-users"
-        role="tabpanel"
-        aria-labelledby="tab-users"
-        tabindex="0"
-        hidden
-      >
+      <section id="panel-cluster" role="tabpanel" aria-labelledby="tab-cluster" tabindex="0" hidden>
+        <div class="pane">
+          <div class="pane-head">
+            <h2>The cluster, as this node sees it</h2>
+            <span id="cluster-status" class="status" role="status"></span>
+          </div>
+          <div id="cluster-map" class="map"></div>
+          <div id="drawer" class="sheet drawer" hidden>
+            <div class="row spread">
+              <h3 id="drawer-title">a node</h3>
+              <button id="drawer-close" type="button" class="quiet">Close</button>
+            </div>
+            <div id="drawer-missing"></div>
+            <div class="row">
+              <label class="tick">serving <input id="drawer-serving" type="checkbox" /></label>
+              <label class="tick">writable <input id="drawer-writable" type="checkbox" /></label>
+              <label class="tick">coordinating <input id="drawer-coordinating" type="checkbox" /></label>
+            </div>
+            <p id="drawer-says" class="note says"></p>
+            <div class="row">
+              <button id="drawer-apply" type="button" class="primary">Declare it</button>
+              <span id="drawer-status" class="status" role="status"></span>
+            </div>
+            <p class="note">Handing leadership over is the other thing you would come here for, and it has no statement behind it yet — so this drawer does not offer a control that would compose nothing.</p>
+          </div>
+          <details class="tucked">
+            <summary>The answer this was drawn from</summary>
+            <div id="cluster-facts" class="answer small" aria-live="polite"></div>
+          </details>
+        </div>
+        <div class="pane">
+          <div class="pane-head">
+            <h2>Declare the membership</h2>
+            <span id="form-status" class="status" role="status"></span>
+          </div>
+          <p class="note">Every peer at once, in one transaction. Declaring them one at a time strands you: the first declaration makes this node clustered, which costs it the authority to accept the second. All of them, or none.</p>
+          <div class="row">
+            <label>Name <input id="peer-0-name" type="text" placeholder="warsaw" /></label>
+            <label>Address <input id="peer-0-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
+            <label>Node id <input id="peer-0-node" type="text" placeholder="9f2c4e1a-…" /></label>
+            <label class="tick">serving <input id="peer-0-serving" type="checkbox" /></label>
+            <label class="tick">writable <input id="peer-0-writable" type="checkbox" /></label>
+            <label class="tick">coordinating <input id="peer-0-coordinating" type="checkbox" /></label>
+          </div>
+          <div class="row">
+            <label>Name <input id="peer-1-name" type="text" placeholder="warsaw" /></label>
+            <label>Address <input id="peer-1-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
+            <label>Node id <input id="peer-1-node" type="text" placeholder="9f2c4e1a-…" /></label>
+            <label class="tick">serving <input id="peer-1-serving" type="checkbox" /></label>
+            <label class="tick">writable <input id="peer-1-writable" type="checkbox" /></label>
+            <label class="tick">coordinating <input id="peer-1-coordinating" type="checkbox" /></label>
+          </div>
+          <div class="row">
+            <label>Name <input id="peer-2-name" type="text" placeholder="warsaw" /></label>
+            <label>Address <input id="peer-2-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
+            <label>Node id <input id="peer-2-node" type="text" placeholder="9f2c4e1a-…" /></label>
+            <label class="tick">serving <input id="peer-2-serving" type="checkbox" /></label>
+            <label class="tick">writable <input id="peer-2-writable" type="checkbox" /></label>
+            <label class="tick">coordinating <input id="peer-2-coordinating" type="checkbox" /></label>
+          </div>
+          <div class="row">
+            <label>Name <input id="peer-3-name" type="text" placeholder="warsaw" /></label>
+            <label>Address <input id="peer-3-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
+            <label>Node id <input id="peer-3-node" type="text" placeholder="9f2c4e1a-…" /></label>
+            <label class="tick">serving <input id="peer-3-serving" type="checkbox" /></label>
+            <label class="tick">writable <input id="peer-3-writable" type="checkbox" /></label>
+            <label class="tick">coordinating <input id="peer-3-coordinating" type="checkbox" /></label>
+          </div>
+          <div class="row">
+            <label>Name <input id="peer-4-name" type="text" placeholder="warsaw" /></label>
+            <label>Address <input id="peer-4-endpoint" type="text" placeholder="10.0.0.2:9000" /></label>
+            <label>Node id <input id="peer-4-node" type="text" placeholder="9f2c4e1a-…" /></label>
+            <label class="tick">serving <input id="peer-4-serving" type="checkbox" /></label>
+            <label class="tick">writable <input id="peer-4-writable" type="checkbox" /></label>
+            <label class="tick">coordinating <input id="peer-4-coordinating" type="checkbox" /></label>
+          </div>
+          <p id="form-says" class="note says"></p>
+          <details class="tucked">
+            <summary>The transaction this will send</summary>
+            <div id="form-statement" class="answer small"></div>
+          </details>
+          <div class="row">
+            <button id="form-cluster" type="button" class="primary">Declare it</button>
+          </div>
+        </div>
+        <div class="pane">
+          <div class="pane-head">
+            <h2>What is here, and what is not</h2>
+          </div>
+          <p class="note">What the pane above shows is what this node itself knows: its own roles, the peers it has been told about, and the addresses it answers on. It is read from the node, not from anything standing beside it.</p>
+          <details class="tucked">
+            <summary>How membership works</summary>
+            <p class="note">Membership is a record and not a control plane: a node learns its peers through the same log it replicates data with, so there is nothing to stand up beside the database. A namespace declares how many copies the cluster keeps, and a peer's subscription decides which of them it receives. A leader holds a renewable lease granted by a majority and stops writing before that lease expires, measured on elapsed time rather than on the clock. A read may name the staleness it will accept, and a bound tighter than the cluster can know about itself is refused with the floor named. A write sent to the wrong node comes back as a redirect carrying the endpoint, the node and the epoch it was decided under. A divergence is refused at the first divergent record and counted, never silently ranked.</p>
+          </details>
+          <p class="note warn"><strong>There is no sharding.</strong> Every node that holds a namespace holds all of it; one dataset is not split across machines by key. A namespace larger than one machine is the case this engine does not serve.</p>
+          <p class="note"><strong>No lag figure, and no leadership for other nodes.</strong></p>
+          <details class="tucked">
+            <summary>Why neither is drawn</summary>
+            <p class="note">Nothing pulls a replica forward on a timer, so a node that is not writing has no last collection its copy could be measured from; and this node knows which lease it holds, never which lease somebody else holds. A number invented for either would be the dashboard drawn ahead of the engine, which is what makes the rest of a console untrustworthy.</p>
+          </details>
+        </div>
+      </section>
+      <section id="panel-access" role="tabpanel" aria-labelledby="tab-access" tabindex="0" hidden>
         <div class="split">
           <div class="pane">
             <div class="pane-head">
@@ -177,47 +202,40 @@ USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;</textarea
                 <button id="list" type="button" class="quiet">Refresh</button>
               </div>
             </div>
-            <p class="note">
-              What you are shown is the tenancy you administer. An owner of a
-              space sees that space; an <strong>admin</strong> — an owner with no
-              space at all — sees the whole node. It refuses rather than
-              narrowing, so a short list is a short tenancy and never a filtered
-              one.
-            </p>
+            <p class="note">What you are shown is the tenancy you administer.</p>
+            <details class="tucked">
+              <summary>What that means for a short list</summary>
+              <p class="note">An owner of a space sees that space; an <strong>admin</strong> — an owner with no space at all — sees the whole node. It refuses rather than narrowing, so a short list is a short tenancy and never a filtered one.</p>
+            </details>
+            <div class="row spread">
+              <label>Filter <input id="user-filter" type="text" placeholder="part of a name" /></label>
+              <span id="user-count" class="status" role="status"></span>
+            </div>
             <div id="user-list" class="answer small" aria-live="polite"></div>
             <div class="row">
-              <label>
-                Detail for <input id="lookup-name" type="text" placeholder="ada" />
-              </label>
+              <label>Detail for <input id="lookup-name" type="text" placeholder="ada" /></label>
               <button id="lookup" type="button">Show</button>
             </div>
             <div id="user-answer" class="answer small" aria-live="polite"></div>
           </div>
-
           <div class="pane">
             <div class="pane-head">
               <h2>Define one</h2>
               <span id="define-status" class="status" role="status"></span>
             </div>
-            <p class="note">
-              A password reaches the node and goes no further: what is stored is
-              a hash, so no plaintext reaches the log or any replica.
-            </p>
+            <p class="note">A password reaches the node and goes no further: what is stored is a hash, so no plaintext reaches the log or any replica.</p>
             <div class="row">
               <label>Name <input id="new-name" type="text" placeholder="ada" /></label>
               <label>
-                Reach
+                Reach 
                 <select id="new-reach">
                   <option value="space">one space</option>
                   <option value="node">the whole node — an admin</option>
                 </select>
               </label>
-              <label id="scope-field">
-                Space
-                <input id="new-scope" type="text" placeholder="prod.library" />
-              </label>
+              <label id="scope-field">Space <input id="new-scope" type="text" placeholder="prod.library" /></label>
               <label>
-                Role
+                Role 
                 <select id="new-role">
                   <option value="viewer">viewer</option>
                   <option value="editor" selected>editor</option>
@@ -225,57 +243,39 @@ USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;</textarea
                   <option value="other">something else…</option>
                 </select>
               </label>
-              <label id="role-other-field" hidden>
-                Which
-                <input id="new-role-other" type="text" placeholder="a role this build knows" />
-              </label>
-              <label>
-                Password
-                <input id="new-password" type="password" autocomplete="new-password" />
-              </label>
+              <label id="role-other-field" hidden>Which <input id="new-role-other" type="text" placeholder="a role this build knows" /></label>
+              <label>Password <input id="new-password" type="password" autocomplete="new-password" /></label>
             </div>
             <p id="role-says" class="note"></p>
-            <pre id="define-preview" class="answer small"></pre>
+            <p id="define-preview" class="note says"></p>
             <div class="row">
               <button id="define" type="button" class="primary">Run it</button>
             </div>
           </div>
         </div>
-
         <div class="split">
           <div class="pane">
             <div class="pane-head">
               <h2>Change one</h2>
               <span id="change-status" class="status" role="status"></span>
             </div>
-            <p class="note">
-              One field per change, and the other is left exactly as it was: a
-              password rotation does not touch a role, and a role correction does
-              not invalidate a password. A space cannot be changed here at all —
-              widening somebody's reach is the one change an owner of a part
-              could use to reach the whole, so it is not offered.
-            </p>
+            <p class="note">One field per change. A space cannot be changed here at all.</p>
+            <details class="tucked">
+              <summary>Why a space is not offered</summary>
+              <p class="note">A password rotation does not touch a role, and a role correction does not invalidate a password. Widening somebody's reach is the one change an owner of a part could use to reach the whole, so it is not offered here at all.</p>
+            </details>
             <div class="row">
+              <label>Who <input id="change-name" type="text" placeholder="ada" /></label>
               <label>
-                Who <input id="change-name" type="text" placeholder="ada" />
-              </label>
-              <label>
-                What
+                What 
                 <select id="change-what">
                   <option value="password">password</option>
                   <option value="role">role</option>
                 </select>
               </label>
-              <label id="change-password-field">
-                New password
-                <input
-                  id="change-password"
-                  type="password"
-                  autocomplete="new-password"
-                />
-              </label>
+              <label id="change-password-field">New password <input id="change-password" type="password" autocomplete="new-password" /></label>
               <label id="change-role-field" hidden>
-                New role
+                New role 
                 <select id="change-role">
                   <option value="viewer">viewer</option>
                   <option value="editor">editor</option>
@@ -283,105 +283,104 @@ USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;</textarea
                   <option value="other">something else…</option>
                 </select>
               </label>
-              <label id="change-role-other-field" hidden>
-                Which
-                <input
-                  id="change-role-other"
-                  type="text"
-                  placeholder="a role this build knows"
-                />
-              </label>
+              <label id="change-role-other-field" hidden>Which <input id="change-role-other" type="text" placeholder="a role this build knows" /></label>
             </div>
-            <pre id="change-preview" class="answer small"></pre>
+            <div class="row">
+              <label class="wide">Why <input id="change-why" type="text" placeholder="rotating a credential that leaked" /></label>
+            </div>
+            <p id="change-preview" class="note says"></p>
             <div class="row">
               <button id="change" type="button" class="primary">Run it</button>
             </div>
           </div>
-
           <div class="pane">
             <div class="pane-head">
               <h2>Remove one</h2>
               <span id="remove-status" class="status" role="status"></span>
             </div>
-            <p class="note warn">
-              <strong>This does not come back.</strong> The user's grants go with
-              them, and a new user of the same name is a different user with none
-              of them. If it is the last owner of the whole node, nothing can let
-              anybody back in — a closed store has no door from outside, and the
-              way back is a restore from backup.
-            </p>
-            <p class="note">
-              You may only remove somebody in the tenancy you administer. The node
-              refuses the rest, and what it says is shown here as it said it.
-            </p>
+            <p class="note warn"><strong>This does not come back.</strong> The user's grants go with them, and a new user of the same name is a different user with none of them. If it is the last owner of the whole node, nothing can let anybody back in — a closed store has no door from outside, and the way back is a restore from backup.</p>
+            <p class="note">You may only remove somebody in the tenancy you administer. The node refuses the rest, and what it says is shown here as it said it.</p>
             <div class="row">
-              <label>
-                Who <input id="remove-name" type="text" placeholder="ada" />
-              </label>
-              <label>
-                Type the name again
-                <input id="remove-confirm" type="text" placeholder="ada" />
-              </label>
+              <label>Who <input id="remove-name" type="text" placeholder="ada" /></label>
+              <label>Type the name again <input id="remove-confirm" type="text" placeholder="ada" /></label>
             </div>
-            <pre id="remove-preview" class="answer small"></pre>
+            <div class="row">
+              <label class="wide">Why <input id="remove-why" type="text" placeholder="left the team on Friday" /></label>
+            </div>
+            <p id="remove-radius" class="note says"></p>
+            <details class="tucked">
+              <summary>The statement this will send</summary>
+              <pre id="remove-preview" class="answer small"></pre>
+            </details>
             <div class="row">
               <button id="remove" type="button" disabled>Remove</button>
             </div>
             <hr class="between" />
-
             <div class="pane-head">
               <h2>Your own password</h2>
               <span id="mine-status" class="status" role="status"></span>
             </div>
-            <p class="note">
-              The pane above is for somebody else's credential and needs an
-              owner. This one is yours, and any role may use it — a viewer whose
-              password may have leaked should not have to ask an owner to choose
-              them a new one.
-            </p>
+            <p class="note">Yours, and any role may use it.</p>
+            <details class="tucked">
+              <summary>Why this one is not the pane above</summary>
+              <p class="note">That pane is for somebody else's credential and needs an owner. A viewer whose password may have leaked should not have to ask an owner to choose them a new one.</p>
+            </details>
             <div class="row">
-              <label>
-                Current
-                <input
-                  id="mine-current"
-                  type="password"
-                  autocomplete="current-password"
-                />
-              </label>
-              <label>
-                New
-                <input id="mine-new" type="password" autocomplete="new-password" />
-              </label>
-              <label>
-                New again
-                <input
-                  id="mine-again"
-                  type="password"
-                  autocomplete="new-password"
-                />
-              </label>
+              <label>Current <input id="mine-current" type="password" autocomplete="current-password" /></label>
+              <label>New <input id="mine-new" type="password" autocomplete="new-password" /></label>
+              <label>New again <input id="mine-again" type="password" autocomplete="new-password" /></label>
             </div>
             <div class="row">
               <button id="mine" type="button" disabled>Change it</button>
             </div>
-            <p class="note">
-              The current one is asked for because being signed in is not proof
-              of a password — otherwise a token copied off this connection would
-              be a way to take the account rather than borrow it. Changing it
-              ends every session you hold, this one included, so you will be
-              asked to sign in again.
-            </p>
+            <p class="note">Changing it ends every session you hold, this one included.</p>
+            <details class="tucked">
+              <summary>Why the current one is asked for</summary>
+              <p class="note">Being signed in is not proof of a password — otherwise a token copied off this connection would be a way to take the account rather than borrow it.</p>
+            </details>
+          </div>
+        </div>
+        <div class="pane">
+          <div class="pane-head">
+            <h2>Give or take away</h2>
+            <span id="grant-status" class="status" role="status"></span>
+          </div>
+          <p class="note"><strong>A grant is not only an addition.</strong> The line under the form says which of the two this one is.</p>
+          <details class="tucked">
+            <summary>Why a grant can narrow</summary>
+            <p class="note">A user with no table grants is governed by their role; a user with one reaches exactly what they were granted. So the first grant narrows, and taking the last one away widens them back to the role — which the node refuses.</p>
+          </details>
+          <div class="row">
+            <label>Who <input id="grant-who" type="text" placeholder="ada" /></label>
+            <label>
+              Direction 
+              <select id="grant-direction">
+                <option value="give" selected>give</option>
+                <option value="take">take away</option>
+              </select>
+            </label>
+            <label>
+              On 
+              <select id="grant-reach">
+                <option value="table" selected>a table</option>
+                <option value="namespace">a namespace</option>
+                <option value="database">a database</option>
+                <option value="store">the whole store</option>
+              </select>
+            </label>
+            <label id="grant-name-field">Named <input id="grant-name" type="text" placeholder="app.main.orders" /></label>
+            <label>What <input id="grant-what" type="text" placeholder="read, write" /></label>
+          </div>
+          <div class="row">
+            <label class="wide">Why <input id="grant-why" type="text" placeholder="joining the billing rota" /></label>
+          </div>
+          <p id="grant-says" class="note says"></p>
+          <div class="row">
+            <button id="grant-apply" type="button" class="primary">Run it</button>
           </div>
         </div>
       </section>
-
-      <section
-        id="panel-node"
-        role="tabpanel"
-        aria-labelledby="tab-node"
-        tabindex="0"
-        hidden
-      >
+      <section id="panel-this-node" role="tabpanel" aria-labelledby="tab-this-node" tabindex="0" hidden>
         <div class="pane-head">
           <h2>This node</h2>
           <div class="row tight">
@@ -389,69 +388,65 @@ USE NAMESPACE prod; USE DATABASE library; SELECT * FROM users;</textarea
             <button id="node-refresh" type="button" class="quiet">Refresh</button>
           </div>
         </div>
-
         <div class="split">
           <div class="pane">
-            <div class="pane-head"><h2>Identity and settings</h2></div>
+            <div class="pane-head">
+              <h2>Identity and settings</h2>
+            </div>
             <div id="node-facts" class="answer small" aria-live="polite"></div>
           </div>
           <div class="pane">
-            <div class="pane-head"><h2>Health and readiness</h2></div>
+            <div class="pane-head">
+              <h2>Health and readiness</h2>
+            </div>
             <div id="node-health" class="answer small" aria-live="polite"></div>
-            <p class="note">
-              They are two answers, not one. A node says <em>not ready</em> and
-              goes on serving for five seconds while it drains, so whatever
-              routes traffic to it can stop doing so while it can still answer.
-            </p>
+            <p class="note">They are two answers, not one. A node says <em>not ready</em> and goes on serving for five seconds while it drains, so whatever routes traffic to it can stop doing so while it can still answer.</p>
           </div>
         </div>
-
         <div class="pane">
-          <div class="pane-head"><h2>Metrics</h2></div>
+          <div class="pane-head">
+            <h2>Metrics</h2>
+          </div>
           <div id="node-metrics" class="answer small" aria-live="polite"></div>
         </div>
       </section>
-
-      <section
-        id="panel-cluster"
-        role="tabpanel"
-        aria-labelledby="tab-cluster"
-        tabindex="0"
-        hidden
-      >
-        <div class="pane">
-          <div class="pane-head">
-            <h2>Membership</h2>
-            <span id="cluster-status" class="status" role="status"></span>
-          </div>
-          <div id="cluster-facts" class="answer small" aria-live="polite"></div>
-        </div>
-
-        <div class="pane">
-          <div class="pane-head"><h2>What is not here yet</h2></div>
-          <p class="note">
-            What this section shows is what the node itself knows: its own
-            membership, the peers it has been told about, and the addresses it
-            answers on. That is real, and it is all that is real today.
-          </p>
-          <p class="note warn">
-            <strong>Replication and failover are still being built.</strong>
-            There is no leader, no follower, no automatic promotion and no
-            quorum. A second node is a second store; nothing copies between them
-            yet. The backup and the log replay are the durability story for now,
-            and they are the ones to plan around.
-          </p>
-          <p class="note">
-            This page will grow ranges, leadership and lag when there is
-            something true to put in it. A dashboard drawn ahead of the engine
-            would be the one thing that makes the rest of this console
-            untrustworthy.
-          </p>
-        </div>
-      </section>
     </main>
-
+    <footer class="tray">
+      <button id="log-open" type="button" class="quiet" aria-controls="log-sheet" aria-expanded="false">Statements <span id="log-count" class="count">0</span></button>
+      <span class="faint">everything this panel sent for you</span>
+      <button id="keys-open" type="button" class="quiet" aria-controls="keys-sheet">Keys ?</button>
+    </footer>
+    <div id="log-sheet" class="sheet log" hidden role="region" aria-label="Statements">
+      <div class="pane-head">
+        <h2>Statements this session</h2>
+        <button id="log-close" type="button" class="quiet">Close</button>
+      </div>
+      <p class="note">The panel's own record, newest first — not the store's, and it lasts as long as this tab.</p>
+      <details class="tucked">
+        <summary>How this differs from the store's audit</summary>
+        <p class="note"><code>INFO FOR AUDIT</code> answers a different question, for a different reader, and keeps its answer. This holds no credential and makes no claim to survive the tab.</p>
+      </details>
+      <div id="log-list"></div>
+    </div>
+    <div id="keys-sheet" class="sheet keys-sheet" hidden>
+      <div class="row spread">
+        <h2>Keys</h2>
+        <button id="keys-close" type="button" class="quiet">Close</button>
+      </div>
+      <div id="keys-list"></div>
+    </div>
+    <div id="detail-sheet" class="sheet detail-sheet" hidden>
+      <div class="row spread">
+        <h2><span id="detail-kind" class="faint">thing</span> <span id="detail-name"></span></h2>
+        <button id="detail-close" type="button" class="quiet">Close</button>
+      </div>
+      <div id="detail-facts"></div>
+      <div id="detail-history"></div>
+      <details class="tucked">
+        <summary>Where a timeline comes from</summary>
+        <p class="note">A record’s history is read from the log the store already writes, so it is what was committed rather than anything this panel assembled.</p>
+      </details>
+    </div>
     <script src="/console.js"></script>
-    <script src="/sections.js"></script>
   </body>
 </html>

@@ -161,6 +161,15 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
             subject: InfoSubject::Versions(target),
         } => vec![&target.table],
 
+        // A history names its table for exactly the reason the arm above does,
+        // and it carries MORE than that arm does: versions answer which nodes
+        // wrote a record, while a history answers what the record contained at
+        // every write. Falling through here would hand a caller the values of a
+        // table they were never granted, one commit at a time.
+        StatementKind::Info {
+            subject: InfoSubject::History(target),
+        } => vec![&target.table],
+
         // A consumer names the table it will write into, and that is the whole
         // reason it appears here at all: without it the grant loop would pass
         // over `DEFINE KAFKA CONSUMER` vacuously, and a caller could point a

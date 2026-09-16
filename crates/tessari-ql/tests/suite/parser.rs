@@ -1538,3 +1538,106 @@ fn the_versions_subject_reserves_none_of_its_words() {
         StatementKind::Select(_)
     ));
 }
+
+#[test]
+fn a_node_is_drained_by_naming_no_roles() {
+    // `docs/tessariql.md` § Draining this node. `Roles::NONE` is a state the
+    // store has always been able to hold and no statement could ask for: the
+    // clause is how an operator takes a node out of service without stopping
+    // it. An empty list is the parse, because `named_roles` folds from
+    // `Roles::NONE` and therefore already means exactly this.
+    let StatementKind::DefineNode { roles, endpoints } = one("DEFINE NODE ROLES NONE;") else {
+        panic!("DEFINE NODE ROLES NONE did not parse as DEFINE NODE");
+    };
+    assert_eq!(roles, Some(Vec::new()), "NONE clears rather than names");
+    assert_eq!(endpoints, None, "a clause left out is still left alone");
+}
+
+#[test]
+fn leaving_the_roles_clause_out_still_leaves_the_roles_alone() {
+    // The half that must NOT move. `DEFINE NODE ENDPOINTS …` changing an
+    // address without disturbing the roles is why absence cannot also mean
+    // clear, and it is the reason `NONE` had to be spelled at all — so the two
+    // readings are asserted together rather than in separate tests that could
+    // be deleted apart.
+    let StatementKind::DefineNode { roles, endpoints } =
+        one("DEFINE NODE ENDPOINTS 'db-1.internal:9000';")
+    else {
+        panic!("DEFINE NODE ENDPOINTS did not parse as DEFINE NODE");
+    };
+    assert_eq!(roles, None, "an absent clause leaves the field alone");
+    assert_eq!(endpoints, Some(vec!["db-1.internal:9000".to_owned()]));
+}
+
+#[test]
+fn none_is_a_whole_answer_and_not_a_member_of_the_role_list() {
+    // A statement naming both would have to decide which one won, and every
+    // reading of it is somebody's reasonable expectation. Refused in both
+    // orders, because accepting one of them is the failure this guards.
+    assert!(parse("DEFINE NODE ROLES NONE, serving;").is_err());
+    assert!(parse("DEFINE NODE ROLES serving, NONE;").is_err());
+}
+
+#[test]
+fn a_peer_keeps_no_second_spelling_for_an_absent_roles_clause() {
+    // `DEFINE REPLICA` declares rather than amends, so an absent `ROLES`
+    // already means no roles and already drains. Adding `NONE` there would be
+    // the second spelling for absent that the specification refuses, and the
+    // refusal is asserted rather than intended — the two statements differ
+    // because declaring and amending differ, which is exactly the kind of
+    // reason that erodes unless something fails when it does.
+    assert!(parse("DEFINE REPLICA second AT 'db-2.internal:9000' ROLES NONE;").is_err());
+    let StatementKind::DefineReplica { roles, .. } =
+        one("DEFINE REPLICA second AT 'db-2.internal:9000';")
+    else {
+        panic!("DEFINE REPLICA did not parse as DEFINE REPLICA");
+    };
+    assert_eq!(
+        roles, None,
+        "absent on a peer, and the store reads it as none"
+    );
+}
+
+#[test]
+fn a_records_history_is_asked_for_with_of_and_a_record() {
+    // The sibling of `INFO FOR VERSIONS OF`, parsed the same way: the subject
+    // word, `OF`, and a record target. Every statement in this suite is copied
+    // from `docs/tessariql.md`, so this one is the spec's own example.
+    assert!(matches!(
+        one("INFO FOR HISTORY OF person:1;"),
+        StatementKind::Info {
+            subject: InfoSubject::History(_),
+        }
+    ));
+}
+
+#[test]
+fn history_is_a_subject_word_and_not_a_reserved_one() {
+    // Contextual, like every other subject word. A table named `history` is the
+    // obvious one somebody already has, and a subject word that took the name
+    // out of circulation would refuse a schema written before the statement
+    // existed.
+    assert!(matches!(
+        one("SELECT * FROM history;"),
+        StatementKind::Select(_)
+    ));
+    assert!(matches!(
+        one("INFO FOR HISTORY OF history:1;"),
+        StatementKind::Info {
+            subject: InfoSubject::History(_),
+        }
+    ));
+}
+
+#[test]
+fn a_history_without_a_record_is_refused_and_says_what_is_missing() {
+    // `INFO FOR HISTORY;` is the plausible mistake — every other subject is
+    // either bare or takes a name, and this one takes neither. The refusal names
+    // `OF` rather than listing the subjects again, because the caller has chosen a
+    // subject and got the shape of it wrong.
+    let error = parse("INFO FOR HISTORY;").unwrap_err();
+    assert!(
+        error.to_string().contains("OF"),
+        "the refusal does not name what is missing: {error}"
+    );
+}

@@ -602,7 +602,27 @@ const TABLES: &[Table] = &[
         // `log_records_within`, already classified above, that would owe the
         // check. Naming your own log is not a permission; being served somebody
         // else's is.
-        expected: 38,
+        // 39 and 40 since the timeline: `Store::history_of` answers what one
+        // record became, and `Store::log_records_newest_first` is the reverse
+        // read underneath it. Classified **not enforced here, and gated one
+        // layer up by a gate that DOES exist** — which is the difference from
+        // `apply_from_stream` above, and worth stating rather than filing both
+        // the same way.
+        //
+        // They take no identity, exactly like `log_records` and `changes_since`
+        // beside them, and that is correct at this layer: this is the substrate.
+        // The gate is `reach.rs`, where `InfoSubject::History(target)` yields
+        // the target's table into the grant loop, and `info.rs`, where the
+        // values are passed through `redact::seen` before they leave — a history
+        // carries record VALUES where `INFO FOR VERSIONS` carries only nodes and
+        // sequences, so it owes the field grant that every other read of a value
+        // owes.
+        //
+        // Both are on `RAW_FEED` below. That is the half that matters here: the
+        // classification says the session gates them, and `RAW_FEED` is what
+        // fails the day a serving surface reaches past the session to call them
+        // directly.
+        expected: 40,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -674,7 +694,12 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // 91 since the log gained its writer: `Store::homes` became `Store::logs`,
     // and `logs_of`, `writer` and `own_log` joined it — a net three, each
     // classified in the block above (G027 S2.2, Q-641).
-    assert_eq!(total, 91, "the counted tables no longer sum to 91");
+    //
+    // 93 since the timeline: `Store::history_of` and
+    // `Store::log_records_newest_first`, both classified in the block above and
+    // both added to `RAW_FEED`, so a serving surface reaching past the session
+    // to call either one fails the test beside this (W372, Q-739).
+    assert_eq!(total, 93, "the counted tables no longer sum to 93");
 }
 
 /// Every `.rs` file under a directory.
@@ -710,6 +735,11 @@ fn sources(directory: &Path) -> Vec<PathBuf> {
 const RAW_FEED: &[&str] = &[
     ".poll(",
     ".changes_since(",
+    // A history is the change feed filtered to one record, so a surface that
+    // called it directly would stream that record's every value past every
+    // grant — the same hole as the calls beside it, through a newer door.
+    ".history_of(",
+    ".log_records_newest_first(",
     ".subscribe(",
     ".committed_tail(",
     // Added the day the peer door began serving records. It is the scoped log

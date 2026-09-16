@@ -6267,6 +6267,7 @@ INFO FOR USER ada;
 INFO FOR ACCESS TO TABLE users;
 INFO FOR NODE;
 INFO FOR VERSIONS OF person:1;
+INFO FOR HISTORY OF person:1;
 ```
 
 Each answers with an object read **from the catalog**, not from a description
@@ -6281,6 +6282,54 @@ it reports one version and `concurrent: false`; it answers on a single-leader
 range too, because *is this contested?* is a question worth being able to ask
 anywhere. The node is the node that **wrote** the version, which is not always
 the node the version has seen the most writes from.
+
+`INFO FOR HISTORY OF` is the other one that does not read the catalog, and it is
+**not** the statement above under a friendlier name. `VERSIONS` answers *is this
+record contested* — on a settled record, one version and `concurrent: false`,
+however many times it has been written. `HISTORY` answers *what did it become,
+and when*: one entry per write, newest first.
+
+```
+INFO FOR HISTORY OF person:1;
+```
+
+```json
+{"events": [{"at": "41", "change": "written", "value": {"name": "Ada"}},
+            {"at": "17", "change": "removed"},
+            {"at": "9", "change": "written", "value": {"name": "Augusta"}}],
+ "complete": true, "walked": "12"}
+```
+
+`change` is `written` or `removed`, and a `written` entry carries the `value` the
+record became. It is deliberately not *created* / *updated* / *deleted*: the log
+carries what a record became and not what stood there before, so calling the
+first write a creation would mean consulting the current state to label the past.
+A wrong label is worse than a missing one — a reader can tell a first write from
+a later one by looking at what precedes it, and cannot recover from being told
+the wrong thing.
+
+**Nothing is written to answer this.** Every commit already records the address
+of what it changed and what that became; a history is a reading of that, so there
+is no event store to enable, nothing extra on the commit path, and no way for the
+answer to disagree with what was committed.
+
+**`complete` is the field to read before believing the oldest entry.** The answer
+is produced by walking the log backwards from the newest record, which is cheap
+for a record written recently and expensive for one last touched long ago — and
+nobody can tell which they are asking for in advance. So the walk is bounded, and
+`complete: false` means it stopped at that bound and older entries may exist
+below. `walked` reports how many log records were read to produce the answer,
+because a history of three events that cost two thousand records is worth seeing.
+
+`complete` is about the LOG, never about the answer's length: an answer cut short
+because fifty entries is all this statement returns still reports `complete:
+true`, since the walk did reach the beginning.
+
+**It reports this node's own log.** Today that is every write, because one writer
+allocates every position. Where two writers allocate from independent counters
+their sequences have no defined order between them, so a merged timeline would
+present two unrelated counts as one story; that is a question for the cluster
+rather than something this statement guesses at.
 
 ```json
 {"tables": ["orders", "users"]}
@@ -6586,6 +6635,44 @@ for a peer — no roles means takes no writes — and no roles at all is how a n
 is drained without being stopped. One value, one meaning, and a sharp edge worth
 knowing about rather than a second spelling for absent.
 
+### Draining this node
+
+`DEFINE NODE ROLES NONE` clears the roles of the machine the statement runs on.
+The node keeps its data, its identity and its place in the membership; it stops
+answering clients and stops accepting writes. That is what draining is, and it
+is how a node is taken out of service without being stopped:
+
+```
+DEFINE NODE ROLES NONE;
+```
+
+**`NONE` is a whole answer and not a member of the list.** `ROLES NONE, serving`
+is refused rather than read as one of the two, because a statement that named
+both would have to decide which one won, and every reading of it is somebody's
+reasonable expectation.
+
+**It is needed because omission means the opposite here.** A clause left out of
+`DEFINE NODE` leaves its field alone — that is what lets `DEFINE NODE ENDPOINTS
+…` change an address without disturbing the roles — so absence cannot also mean
+*clear them*, and without `NONE` the empty role set is a state the store can hold
+and no statement can ask for. A peer is declared rather than amended, so an
+absent `ROLES` already clears there and `DEFINE REPLICA … ROLES NONE` stays
+refused; the two are different because declaring and amending are different, not
+because the words drifted.
+
+**Draining the last node that serves is allowed.** Nothing refuses it, because
+the reason to drain a node is usually that it is about to be stopped, and a
+grammar that refused the last one would refuse exactly the case it was written
+for. What a drain costs is a question for whoever is watching the cluster, and
+`INFO FOR NODE` reports every peer's roles so that it can be answered before the
+statement is sent rather than after.
+
+**It is local and immediate, like every other `DEFINE NODE` clause**, and on a
+node bound by a membership row it is an override the next open discards — the
+desired role is the shared truth and a local word that outlived it is a
+disagreement nobody can see. To drain a bound node so that it stays drained,
+write the membership row instead.
+
 ### What that peer may collect, and the refusal that comes with saying nothing
 
 A peer that has proved who it is at the door may still take nothing. What it may
@@ -6778,7 +6865,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.2.0", "build": "0.2.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.2.1", "build": "0.2.1-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],

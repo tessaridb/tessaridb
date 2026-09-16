@@ -3681,10 +3681,6 @@ fn node_row(store: &Store) -> Result<(RecordId, Value)> {
                 .collect(),
         ),
     );
-    fields.insert(
-        "membership".to_owned(),
-        Value::from(identity.membership.name()),
-    );
     // The one field here that moves. A caller asking what a node is running is
     // asking the same question an upgrade asks, and this is where both look.
     fields.insert(

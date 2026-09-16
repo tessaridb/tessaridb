@@ -1577,6 +1577,18 @@ pub enum StatementKind {
 /// give a partial answer or a confusing refusal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InfoSubject {
+    /// `INFO FOR HISTORY OF orders:1` — what happened to one record, newest
+    /// first.
+    ///
+    /// Distinct from [`Self::Versions`], which is a **conflict report**: it
+    /// answers whether a record is contested right now, and on a single-leader
+    /// range that is one version and nothing else. This answers what the record
+    /// became, and when — a different question that the two were confused for
+    /// until it was measured (Q-739).
+    ///
+    /// It reads the log rather than a second event store. The store has written
+    /// one all along; what it lacked was a way to ask.
+    History(RecordTarget),
     /// `INFO FOR STORE` — the namespaces.
     Store,
     /// `INFO FOR NAMESPACE` — the databases in the selected namespace.

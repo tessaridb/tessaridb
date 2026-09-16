@@ -44,3 +44,9 @@ data/
 benchmarks/
 assets/
 CHANGELOG.md
+
+# The console's SOURCE. The image needs the console's emitted assets — which
+# live under crates/tessari-http/assets/ and are embedded by include_str! — and
+# never the TypeScript they were built from, nor the 32 MB of build-time
+# toolchain beside it. ADR-0076 D3: the image builds with no Node at all.
+crates/tessari-http/panel/

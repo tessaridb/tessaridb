@@ -253,6 +253,31 @@ fn a_demotion_kills_the_token_that_was_issued_before_it() {
 }
 
 #[test]
+fn a_promotion_kills_the_token_that_was_issued_before_it() {
+    // The demotion above is the case anyone thinks of, and it is not the case
+    // the console makes a claim about: the Change pane tells the operator that
+    // any session the account holds ends, for a role change in either
+    // direction. A token stands for the account record it was issued against,
+    // so a record that has moved refuses it — but "follows from the mechanism"
+    // is not evidence, and the pane's sentence is only as true as this.
+    let (_node, address) = peopled();
+    let token = opened(&address, "ada");
+    let bearer = format!("Bearer {token}");
+
+    let (status, body) = send(
+        &address,
+        "POST",
+        "/script",
+        "ALTER USER ada SET ROLE owner;",
+        Some(&basic("root", PASSWORD)),
+    );
+    assert_eq!(status, 200, "{body}");
+
+    let (status, body) = send(&address, "POST", "/script", ADAS_OWN, Some(&bearer));
+    assert_eq!(status, 401, "{body}");
+}
+
+#[test]
 fn removing_a_user_kills_their_token() {
     let (_node, address) = peopled();
     let token = opened(&address, "ada");

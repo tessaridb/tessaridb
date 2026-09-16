@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- The mark: a square holding a square, in the violet the product is drawn
+       in everywhere else. Served rather than fetched, for the same reason the
+       rest of this console is: a node with no route out still has an interface,
+       and a tab you can find among twenty others is part of that. -->
+  <rect width="32" height="32" rx="7" fill="#17161c"/>
+  <rect x="7" y="7" width="18" height="18" rx="4" fill="none" stroke="#7f77dd" stroke-width="3"/>
+  <rect x="12.5" y="12.5" width="7" height="7" rx="1.5" fill="#7f77dd"/>
+</svg>

@@ -6,7 +6,7 @@
 //!
 //! The assets are **committed**, so `cargo build` needs nothing but cargo, and
 //! they are listed **by hand** below rather than swept up by a macro that walks
-//! a directory: at three files a table is smaller than the dependency, and a
+//! a directory: at four files a table is smaller than the dependency, and a
 //! path that reaches one named thing is the same rule the rest of this surface
 //! follows.
 //!
@@ -23,8 +23,13 @@ type Asset = (&'static str, &'static str, &'static str);
 
 /// Everything the console is made of.
 ///
-/// `include_str!` rather than `include_bytes!` because all five are text, and
+/// `include_str!` rather than `include_bytes!` because all four are text, and
 /// text is what a reader of this file can check against the served answer.
+///
+/// One script, not two. `sections.js` used to sit beside `console.js` and read
+/// its top-level names out of the global scope; the page is now emitted from a
+/// bundler, so the two are one module graph with real imports and there is no
+/// global coupling left to break.
 const ASSETS: &[Asset] = &[
     (
         "/",
@@ -40,11 +45,6 @@ const ASSETS: &[Asset] = &[
         "/console.js",
         "text/javascript; charset=utf-8",
         include_str!("../assets/console.js"),
-    ),
-    (
-        "/sections.js",
-        "text/javascript; charset=utf-8",
-        include_str!("../assets/sections.js"),
     ),
     // Named by the page, so a browser asks for this instead of `/favicon.ico`
     // and the 404 that would otherwise sit in every operator's console.
@@ -156,17 +156,25 @@ mod tests {
         // a panel whose tab was never added is a section nobody can reach. The
         // second is the quieter one — the markup is all there, and it is simply
         // invisible.
+        //
+        // Scanned PER ROLE and not per attribute. `aria-controls` used to be a
+        // reliable stand-in for "this is a tab", and it stopped being one the
+        // moment a disclosure button acquired one — which is correct ARIA and
+        // not something this test gets to forbid. A needle that was a proxy for
+        // the subject silently becomes a needle for something else.
         let page = page();
-        let named = |attribute: &str| -> Vec<String> {
-            page.match_indices(attribute)
-                .filter_map(|(at, _)| {
-                    let rest = page.get(at.saturating_add(attribute.len())..)?;
+        let named = |role: &str, attribute: &str| -> Vec<String> {
+            page.lines()
+                .filter(|line| line.contains(role))
+                .filter_map(|line| {
+                    let at = line.find(attribute)?;
+                    let rest = line.get(at.saturating_add(attribute.len())..)?;
                     rest.split('"').next().map(str::to_owned)
                 })
                 .collect()
         };
-        let controls = named(r#"aria-controls=""#);
-        let labelled = named(r#"aria-labelledby=""#);
+        let controls = named(r#"role="tab""#, r#"aria-controls=""#);
+        let labelled = named(r#"role="tabpanel""#, r#"aria-labelledby=""#);
         assert!(!controls.is_empty(), "the page has no tabs at all");
         assert_eq!(
             controls.len(),
