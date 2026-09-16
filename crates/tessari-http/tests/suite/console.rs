@@ -490,6 +490,16 @@ const CAPABILITIES: &[&str] = &[
     "history",
     "timeline",
     "audit",
+    // Widened again in W371, by the argument the paragraph above makes rather
+    // than by a new one. W318 widened the vocabulary and left the corpus alone;
+    // the reach shrank on the other axis, and the sentence that caught it said
+    // neither `cluster` nor `history` but *role* and *statement* — it scored
+    // zero here and would have gone on scoring zero however wide the corpus
+    // grew. Measured before it was changed: `statement` adds one sentence and
+    // `role` adds five, and all six are true statements about what the engine
+    // does and does not do, which is precisely what this list is for.
+    "role",
+    "statement",
 ];
 
 /// Words that turn a sentence about a capability into a claim it is absent.
@@ -553,9 +563,45 @@ const ACCEPTED_NEGATIONS: &[(&str, &str)] = &[
         "Nothing pulls a replica forward on a timer, so a node that is not writing has no last collection its copy could be measured from; and this node knows which lease it holds, never which lease somebody else holds.",
         "True: the same two absences as the heading above it, stated as the reason rather than as the claim. Recorded separately because the splitter ends a sentence at the strong tag, so a heading and its explanation are two entries.",
     ),
+    // The entry that stood here claimed BOTH halves of Q-683 — a drain with no
+    // statement and a hand-over with none — and W370 made the first half false.
+    // This test is what said so, and only after W371 widened it: the sentence
+    // had moved into the script, where nothing was reading. The half that is
+    // still true is recorded below on its own, and the drain is gone from the
+    // page because the control exists, never because it was blessed here.
     (
-        "Draining this node and handing leadership over are the other two things you would come here for, and neither has a statement behind it yet — so this drawer does not offer a control that would compose nothing.",
-        "True, and measured (Q-682, Q-683): `ROLES NONE` and `ROLES ;` are parse errors, there is no `DRAIN`, omitting `ROLES` means leave them alone, and the grammar carries no HANDOVER / STEP DOWN / YIELD. Delete when either verb exists.",
+        "Handing leadership over is the other thing you would come here for, and it has no statement behind it yet — so this drawer does not offer a control that would compose nothing.",
+        "True, and measured (Q-683): the grammar carries no HANDOVER, STEP DOWN or YIELD, so there is no statement a control could compose. Delete when one of those verbs exists. The drain half of this sentence was deleted in W371, when `DEFINE NODE ROLES NONE` gave it one.",
+    ),
+    // The six below arrived together in W371, when the corpus grew to every
+    // delivered asset and the vocabulary grew by `role` and `statement`. None
+    // of them is new prose: every one has been on the operator's screen for
+    // waves, saying something true about what the engine does not do, outside
+    // any scan. That is what a reach that shrinks looks like from the inside —
+    // not a failing test, but a passing one with less and less under it.
+    (
+        "A password rotation does not touch a role, and a role correction does not invalidate a password.",
+        "True: `ALTER USER … PASSWORD` and `ALTER USER … ROLES` are separate statements writing separate fields, so neither disturbs the other.",
+    ),
+    (
+        "A user with no table grants is governed by their role; a user with one reaches exactly what they were granted.",
+        "True: a table grant is not additive to the role — the first grant narrows the user to what it names, which is why the grant screen says so before it composes anything.",
+    ),
+    (
+        "A peer's row cannot be amended from here: there is no ALTER REPLICA, a second DEFINE REPLICA is refused for the name already in use, and DROP REPLICA is refused while this node holds no leadership.",
+        "True, and measured against a running clustered node (drawer.ts module doc): `ALTER` takes only NAMESPACE, USER or TABLE; the second DEFINE answers `the name rp:<n> is already in use`; the DROP answers `this node is in a cluster and holds no leadership`.",
+    ),
+    (
+        "a role this build may not know.",
+        "True: a typed role is sent as written rather than checked against a list held in the console, so the node's own refusal is what the operator sees. The alternative is a console that refuses a role the engine has and this build has not heard of.",
+    ),
+    (
+        "If they hold no table grant yet this NARROWS them: a user with grants reaches exactly what they were granted, and nothing else their role would have allowed.",
+        "True: the same rule as the row above, stated where the operator is about to act on it rather than where it is explained.",
+    ),
+    (
+        "Declared with no roles — drained.",
+        "True: an empty role set is the drained state and the engine's own source calls it that. It is a reading of what the node declares, not a claim that the state cannot be reached — W370 gave it the statement `DEFINE NODE ROLES NONE`.",
     ),
 ];
 
@@ -678,6 +724,175 @@ fn sentences(html: &str) -> Vec<String> {
         .collect()
 }
 
+/// Every asset the console delivers, as this process answers for it.
+///
+/// `(path, content type, body)`, walked out of the page's own references for
+/// the reason the URL test gives: a list written here is a second opinion that
+/// agrees with the page right up until somebody edits one of them. Documents
+/// are followed — the page and any stylesheet — and the script's URLs are not,
+/// because those are API routes the browser calls rather than assets it fetches.
+///
+/// The content type comes back with the bytes because it is what decides how
+/// prose is read out of them. Keying that off a filename extension would be
+/// this test guessing at the bytes; the header is the process's own claim about
+/// what it just served.
+#[cfg(feature = "console")]
+fn delivered(address: &str) -> Vec<(String, String, String)> {
+    let mut queue: Vec<String> = vec!["/".to_owned()];
+    let mut seen: Vec<String> = Vec::new();
+    let mut out: Vec<(String, String, String)> = Vec::new();
+
+    while let Some(path) = queue.pop() {
+        // A `data:` URI is the bytes themselves rather than a place to fetch
+        // them from, and an absolute URL is somebody else's asset — neither is
+        // something this process delivers. The URL test is what refuses the
+        // second one; here it is simply not ours to read.
+        if path.starts_with("data:") || path.contains("://") || seen.contains(&path) {
+            continue;
+        }
+        seen.push(path.clone());
+        let (status, headers, body) = get(address, &path);
+        assert_eq!(
+            status, 200,
+            "the console references {path:?} and this node answers {status}, so \
+             the browser asks for it and gets nothing"
+        );
+        let kind = header(&headers, "Content-Type")
+            .unwrap_or_default()
+            .to_owned();
+        if kind.starts_with("text/html") || kind.starts_with("text/css") {
+            queue.extend(quoted_urls(&body));
+        }
+        out.push((path, kind, body));
+    }
+
+    assert!(
+        out.len() >= 2,
+        "only {} asset(s) were walked, so this corpus is one file again and the \
+         scan would pass against almost anything",
+        out.len()
+    );
+    out
+}
+
+/// Split what one literal held into sentences, keeping those long enough to be
+/// prose.
+///
+/// Three words is the floor. Below it a literal is a label, a class name or an
+/// identifier, and a capability word inside one is a coincidence rather than a
+/// claim about the engine.
+#[cfg(feature = "console")]
+fn keep_sentences(phrase: &mut String, out: &mut Vec<String>) {
+    let text: String = phrase.split_whitespace().collect::<Vec<_>>().join(" ");
+    phrase.clear();
+
+    let mut current = String::new();
+    let flush = |current: &mut String, out: &mut Vec<String>| {
+        let sentence = current.trim().to_owned();
+        current.clear();
+        if sentence.split_whitespace().count() >= 3 {
+            out.push(sentence);
+        }
+    };
+    for character in text.chars() {
+        current.push(character);
+        if matches!(character, '.' | '!' | '?') {
+            flush(&mut current, out);
+        }
+    }
+    flush(&mut current, out);
+}
+
+/// The prose inside a script's string literals, one sentence per entry.
+///
+/// A bundle's operator-facing words are all inside literals. Its comments ride
+/// along in the delivered bytes but are never shown, so reading them would make
+/// this test's own failure message — *"the console says a capability is
+/// absent"* — false about every sentence it reported.
+///
+/// A template's `${…}` ends a phrase, because an interpolation is a value and
+/// not a word anybody reads; leaving it in would also make the recorded
+/// sentence change whenever the surrounding code did, which is the one thing a
+/// record of sentences cannot afford.
+///
+/// Over-collection is the safe direction here: a phrase that is not really
+/// prose surfaces as an unrecorded sentence and somebody looks at it. Missing
+/// one is the silent direction, and is the defect this exists to close.
+#[cfg(feature = "console")]
+fn literals(source: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut phrase = String::new();
+    let mut characters = source.chars().peekable();
+
+    while let Some(character) = characters.next() {
+        match character {
+            '/' if characters.peek() == Some(&'/') => {
+                for skipped in characters.by_ref() {
+                    if skipped == '\n' {
+                        break;
+                    }
+                }
+            }
+            '/' if characters.peek() == Some(&'*') => {
+                let mut star = false;
+                for skipped in characters.by_ref() {
+                    if star && skipped == '/' {
+                        break;
+                    }
+                    star = skipped == '*';
+                }
+            }
+            '"' | '\'' | '`' => {
+                let quote = character;
+                while let Some(inner) = characters.next() {
+                    match inner {
+                        // What an escape stood for is not readable prose, and a
+                        // space keeps it from gluing the words on either side of
+                        // it into one that is in no dictionary.
+                        '\\' => {
+                            phrase.push(' ');
+                            characters.next();
+                        }
+                        held if held == quote => break,
+                        '\n' if quote != '`' => break,
+                        '$' if quote == '`' && characters.peek() == Some(&'{') => {
+                            characters.next();
+                            keep_sentences(&mut phrase, &mut out);
+                            let mut depth = 1_usize;
+                            for skipped in characters.by_ref() {
+                                match skipped {
+                                    '{' => depth = depth.saturating_add(1),
+                                    '}' => {
+                                        depth = depth.saturating_sub(1);
+                                        if depth == 0 {
+                                            break;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        held => phrase.push(held),
+                    }
+                }
+                keep_sentences(&mut phrase, &mut out);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The sentences an operator can read in one delivered asset.
+#[cfg(feature = "console")]
+fn prose(kind: &str, body: &str) -> Vec<String> {
+    if kind.starts_with("text/html") {
+        sentences(body)
+    } else {
+        literals(body)
+    }
+}
+
 /// Whether `sentence` says something about a capability being absent.
 #[cfg(feature = "console")]
 fn denies_a_capability(sentence: &str) -> bool {
@@ -690,37 +905,42 @@ fn denies_a_capability(sentence: &str) -> bool {
 #[test]
 fn every_sentence_that_denies_a_capability_is_on_the_record() {
     let (_node, address) = node();
-    let (_, _, page) = get(&address, "/");
 
-    let shown: Vec<String> = sentences(&page)
+    // Every asset, not the page. Until W371 this read `GET /` alone, so the
+    // script's sentences — the bulk of what an operator is actually shown — were
+    // outside the scan entirely, and the guard went on passing while its reach
+    // shrank. The sentence that proved it was in the script.
+    let shown: Vec<(String, String)> = delivered(&address)
         .into_iter()
-        .filter(|s| denies_a_capability(s))
+        .flat_map(|(path, kind, body)| {
+            prose(&kind, &body)
+                .into_iter()
+                .filter(|sentence| denies_a_capability(sentence))
+                .map(move |sentence| (path.clone(), sentence))
+        })
         .collect();
 
-    let unrecorded: Vec<&String> = shown
+    let unrecorded: Vec<String> = shown
         .iter()
-        .filter(|sentence| {
+        .filter(|(_, sentence)| {
             !ACCEPTED_NEGATIONS
                 .iter()
                 .any(|(known, _)| *known == sentence.as_str())
         })
+        .map(|(path, sentence)| format!("{path}: {sentence}"))
         .collect();
 
     assert!(
         unrecorded.is_empty(),
         "the console says a capability is absent, and nobody wrote down why it is \
          true. Add it to ACCEPTED_NEGATIONS with the reason, or fix the sentence:\n  {}",
-        unrecorded
-            .iter()
-            .map(|s| s.as_str())
-            .collect::<Vec<_>>()
-            .join("\n  ")
+        unrecorded.join("\n  ")
     );
 
     let stale: Vec<&str> = ACCEPTED_NEGATIONS
         .iter()
         .map(|(sentence, _)| *sentence)
-        .filter(|sentence| !shown.iter().any(|shown| shown == sentence))
+        .filter(|sentence| !shown.iter().any(|(_, shown)| shown == sentence))
         .collect();
 
     assert!(
@@ -1912,5 +2132,119 @@ fn both_of_the_stylesheet_s_mandatory_clamps_are_present() {
         floors >= 3,
         "the clamp sets a touch floor {floors} time(s); buttons, tabs and fields \
          are each pressed with a finger below this width"
+    );
+}
+
+/// The drawer's module, as the repository holds it.
+#[cfg(feature = "console")]
+fn drawer_source() -> String {
+    panel_sources()
+        .into_iter()
+        .find(|(name, _)| name == "drawer.ts")
+        .map(|(_, body)| body)
+        .expect("the drawer's module")
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn unticking_every_role_composes_a_drain_this_node_accepts() {
+    let source = drawer_source();
+    assert!(
+        source.contains("DEFINE NODE ROLES NONE;"),
+        "the drawer composes no drain, so unticking every role sends nothing — \
+         which is what it did before the statement existed"
+    );
+
+    // The statement is not taken on the drawer's word. W307 shipped a console
+    // that claimed something about the engine the engine did not do, and the
+    // cheap guard against a repeat is to send the exact words the console would
+    // send to a node that is actually running. A source-only assertion here
+    // would pass just as well against a typo.
+    let (_node, address) = node();
+    let (status, body) = script(&address, "DEFINE NODE ROLES NONE;");
+    assert_eq!(
+        status, 200,
+        "the node refused the drain the drawer composes: {body}"
+    );
+    assert!(
+        !body.contains("error"),
+        "the node answered the drawer's own drain with an error: {body}"
+    );
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn the_drain_says_what_it_costs_before_it_says_what_it_sends() {
+    // S2.1 on the destructive action of this screen. A drain takes the node out
+    // of service, and a control that shows only the statement leaves the
+    // operator to work out what the statement does — which is the thing they
+    // came here least able to do.
+    // Read out of `preview` rather than out of the file, because the property is
+    // about which of the two functions says what: `change` composes the
+    // statement, `preview` says the consequence, and a phrase found anywhere in
+    // the module would prove neither.
+    let source = drawer_source();
+    let radius = source
+        .split_once("function preview(")
+        .map(|(_, rest)| rest)
+        .expect("the preview function")
+        .split_once("export function show(")
+        .map(|(body, _)| body)
+        .expect("the function after it");
+    assert!(
+        !radius.contains("DEFINE NODE"),
+        "the drain's preview renders a statement, so what the operator reads \
+         before the button is the words that will run rather than what they do"
+    );
+    assert!(
+        radius.contains("stops answering clients"),
+        "the drain composes a statement without naming what it costs first"
+    );
+    assert!(
+        radius.contains("keeps its data"),
+        "the drain's radius does not say what survives it, so an operator \
+         reading it cannot tell a drain from a removal"
+    );
+
+    // The one way the statement does not stick. On a node a membership row
+    // declares a role for, a local drain is an override the next open discards
+    // — so an operator who drains it and walks away has done nothing that
+    // survives, and nothing anywhere would tell them.
+    assert!(
+        radius.contains("the next open discards"),
+        "the drain does not warn that a membership declaration outlives it"
+    );
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn a_peer_offers_no_drain_because_no_statement_drains_a_peer() {
+    // The refusal path, which is the one worth testing: a drain that works on
+    // this node and silently composes nothing on a peer would look identical
+    // until somebody needed it. `DEFINE NODE` reaches the local keyspace, so a
+    // peer is drained by rewriting the membership row that declares it.
+    let source = drawer_source();
+    let (guard, _) = source
+        .split_once("DEFINE NODE ROLES NONE;")
+        .expect("the drain statement");
+    let composed = guard
+        .rsplit_once("export function change")
+        .map(|(_, rest)| rest)
+        .expect("the composing function");
+    assert!(
+        composed.contains("!subject.self"),
+        "the drawer composes a statement for a subject it never checked is this \
+         node, so a peer's drawer would send this node's drain"
+    );
+
+    let (_node, address) = node();
+    let (_, _, page) = get(&address, "/");
+    assert!(
+        page.contains("drawer-apply"),
+        "the drawer has no apply button, so this test read the wrong page"
+    );
+    assert!(
+        drawer_source().contains(r#"hide("drawer-apply", !subject.self)"#),
+        "the apply button is offered on a peer, where nothing it could send exists"
     );
 }

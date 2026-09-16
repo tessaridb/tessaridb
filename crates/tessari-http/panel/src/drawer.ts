@@ -5,19 +5,35 @@
 //! it *relative to the others*, and a navigation that replaces the view takes
 //! away the reason they opened it.
 //!
-//! # It carries one action, and says why it is one
+//! # It carries two actions, and still says why it is not three
 //!
-//! The band asks for three — a role change, a drain, and a hand-over. Only the
-//! first has a statement behind it, and that was searched rather than assumed:
+//! The band asks for three — a role change, a drain, and a hand-over. Two have
+//! a statement behind them, and each was searched rather than assumed:
 //!
-//! - **drain** — `Roles::NONE` is a real state and the engine's source calls it
-//!   the operator's own drain, but `ROLES NONE` and `ROLES ;` are parse errors,
-//!   there is no `DRAIN`, and omitting `ROLES` means *leave them alone*.
-//! - **hand-over** — no `HANDOVER`, `STEP DOWN` or `YIELD` in the grammar.
+//! - **drain** — `DEFINE NODE ROLES NONE` clears the roles of the node the
+//!   statement runs on. It did not exist when this drawer was built: `ROLES
+//!   NONE` was a parse error, there was no `DRAIN`, and omitting `ROLES` means
+//!   *leave them alone*, so the empty role set was a state the store could hold
+//!   and no statement could ask for. It exists now.
+//! - **hand-over** — still no `HANDOVER`, `STEP DOWN` or `YIELD` in the
+//!   grammar, so the drawer names it and offers no control for it.
 //!
-//! So the drawer names them and offers no control for them. A button that
-//! composes no statement is a button that lies, and on this screen it would lie
-//! about the one thing an operator opens the screen to do.
+//! A button that composes no statement is a button that lies, and on this screen
+//! it would lie about the one thing an operator opens the screen to do. The
+//! drain stopped being one the day the statement landed; the hand-over has not.
+//!
+//! # The drain says what it costs, and what may undo it
+//!
+//! Draining is the destructive action S2.1 names on this screen: the node keeps
+//! its data and its place in the membership and stops answering clients, so the
+//! radius line names that before the statement rather than after it.
+//!
+//! It also names the one way the statement does not stick. `DEFINE NODE` is
+//! local and immediate, and on a node a membership row declares a role for, a
+//! local drain is an override the next open discards — the desired role is the
+//! shared truth. An operator who drains a bound node and walks away has done
+//! nothing that survives, which is the slow kind of lie, so the drawer says so
+//! while the decision is still being made.
 //!
 //! # A peer cannot be changed from here at all, and that was measured
 //!
@@ -52,6 +68,11 @@ export interface Subject {
   readonly endpoint: string | null;
   readonly node: string | null;
   readonly roles: readonly string[];
+  /**
+   * The roles a membership row declares for this node, or `null` when none
+   * does. Read by the drain, which a declaration outlives.
+   */
+  readonly declared: readonly string[] | null;
 }
 
 let open: Subject | null = null;
@@ -71,12 +92,18 @@ function ticked(): string[] {
  * because it never recorded the address and id the declaration needs.
  */
 export function change(subject: Subject | null, roles: readonly string[]): string | null {
-  if (subject === null || roles.length === 0) {
+  // This node only. `DEFINE NODE` reaches the local `META` keyspace and works
+  // on a clustered node; there is no statement at all that amends a peer's row,
+  // and that is true of the drain as well — a peer is drained by rewriting the
+  // membership row that declares it, not from here.
+  if (subject === null || !subject.self) {
     return null;
   }
-  // This node only. `DEFINE NODE` reaches the local `META` keyspace and works
-  // on a clustered node; there is no statement at all that amends a peer's row.
-  return subject.self ? `DEFINE NODE ROLES ${roles.join(", ")};` : null;
+  // `NONE` is a whole answer and not a member of the list, so an empty tick set
+  // composes it rather than composing `ROLES ;`, which the grammar refuses.
+  return roles.length === 0
+    ? `DEFINE NODE ROLES NONE;`
+    : `DEFINE NODE ROLES ${roles.join(", ")};`;
 }
 
 /** What pressing the button will do, in words. */
@@ -95,7 +122,19 @@ function preview(): void {
   }
   const roles = ticked();
   if (roles.length === 0) {
-    say("drawer-says", "at least one role — there is no statement that clears them all", true);
+    const kept =
+      `Drains this node: it keeps its data, its identity and its place in the ` +
+      `membership, and stops answering clients and accepting writes until a role ` +
+      `is declared here again.`;
+    const declared = open.declared;
+    say(
+      "drawer-says",
+      declared === null
+        ? kept
+        : `${kept} The membership declares ${declared.join(", ")} for this node, so ` +
+            `this is a local override the next open discards — to drain it for good, ` +
+            `write the membership row instead.`,
+    );
     return;
   }
   say("drawer-says", `Sets this node's roles to ${roles.join(", ")}.`);

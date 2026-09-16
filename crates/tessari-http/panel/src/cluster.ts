@@ -41,9 +41,13 @@ export const cluster = (): Node =>
         says("drawer-says"),
         row("default", button("drawer-apply", "Declare it", "primary"), status("drawer-status")),
         note(
-          "Draining this node and handing leadership over are the other two things " +
-            "you would come here for, and neither has a statement behind it yet — so " +
-            "this drawer does not offer a control that would compose nothing.",
+          // The drain used to be named here as a thing with no control. It has
+          // one now, so the note keeps only the half still true and says nothing
+          // about draining — the radius line does that, where the operator is
+          // standing when it matters, and a 40-word note has no room for both.
+          "Handing leadership over is the other thing you would come here for, and " +
+            "it has no statement behind it yet — so this drawer does not offer a " +
+            "control that would compose nothing.",
         ),
       ),
       behindDisclosure("The answer this was drawn from", answer("cluster-facts", "small")),

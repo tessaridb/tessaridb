@@ -212,7 +212,7 @@ export function draw(into: HTMLElement, seen: Seen): void {
       wanted === null ? null : fact("declared for it", wanted.join(", ")),
     ],
     "self",
-    { name: "This node", self: true, endpoint: null, node: null, roles: mine },
+    { name: "This node", self: true, endpoint: null, node: null, roles: mine, declared: wanted },
   );
   into.appendChild(self);
 
@@ -234,6 +234,9 @@ export function draw(into: HTMLElement, seen: Seen): void {
           endpoint: peer.endpoint ?? null,
           node: peer.node ?? null,
           roles: peer.roles ?? [],
+          // A peer's declaration is not this node's to read, and the drawer
+          // offers it no drain to qualify.
+          declared: null,
         },
       ),
     );
