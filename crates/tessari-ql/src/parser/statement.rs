@@ -1239,16 +1239,26 @@ impl Parser<'_> {
     ///
     /// What a clause names **replaces** what was there, and a clause left out
     /// leaves its field alone. So `DEFINE NODE ENDPOINTS …` is not a silent way
-    /// to drop the roles, and there is no spelling for removing one role —
-    /// which would need a spelling for removing the last one, a question worth
-    /// answering when there is a second node to answer it against.
+    /// to drop the roles.
+    ///
+    /// `ROLES NONE` clears them, and needs a spelling of its own precisely
+    /// because absence is taken here. `NONE` is a whole answer rather than a
+    /// member of the list, and `DEFINE REPLICA` deliberately does not take it —
+    /// a peer is declared rather than amended, so an absent clause already
+    /// clears there. The reasoning is in the specification, § *Draining this
+    /// node*, and is not restated here: two copies of one argument drift, and
+    /// the document is the one a reader of the language actually opens.
     fn define_node(&mut self) -> Result<StatementKind> {
         let roles = if self.eat_word("roles") {
-            let mut named = vec![self.name()?];
-            while self.eat_punct(Punct::Comma) {
-                named.push(self.name()?);
+            if self.eat_keyword(Keyword::None) {
+                Some(Vec::new())
+            } else {
+                let mut named = vec![self.name()?];
+                while self.eat_punct(Punct::Comma) {
+                    named.push(self.name()?);
+                }
+                Some(named)
             }
-            Some(named)
         } else {
             None
         };

@@ -6586,6 +6586,44 @@ for a peer — no roles means takes no writes — and no roles at all is how a n
 is drained without being stopped. One value, one meaning, and a sharp edge worth
 knowing about rather than a second spelling for absent.
 
+### Draining this node
+
+`DEFINE NODE ROLES NONE` clears the roles of the machine the statement runs on.
+The node keeps its data, its identity and its place in the membership; it stops
+answering clients and stops accepting writes. That is what draining is, and it
+is how a node is taken out of service without being stopped:
+
+```
+DEFINE NODE ROLES NONE;
+```
+
+**`NONE` is a whole answer and not a member of the list.** `ROLES NONE, serving`
+is refused rather than read as one of the two, because a statement that named
+both would have to decide which one won, and every reading of it is somebody's
+reasonable expectation.
+
+**It is needed because omission means the opposite here.** A clause left out of
+`DEFINE NODE` leaves its field alone — that is what lets `DEFINE NODE ENDPOINTS
+…` change an address without disturbing the roles — so absence cannot also mean
+*clear them*, and without `NONE` the empty role set is a state the store can hold
+and no statement can ask for. A peer is declared rather than amended, so an
+absent `ROLES` already clears there and `DEFINE REPLICA … ROLES NONE` stays
+refused; the two are different because declaring and amending are different, not
+because the words drifted.
+
+**Draining the last node that serves is allowed.** Nothing refuses it, because
+the reason to drain a node is usually that it is about to be stopped, and a
+grammar that refused the last one would refuse exactly the case it was written
+for. What a drain costs is a question for whoever is watching the cluster, and
+`INFO FOR NODE` reports every peer's roles so that it can be answered before the
+statement is sent rather than after.
+
+**It is local and immediate, like every other `DEFINE NODE` clause**, and on a
+node bound by a membership row it is an override the next open discards — the
+desired role is the shared truth and a local word that outlived it is a
+disagreement nobody can see. To drain a bound node so that it stays drained,
+write the membership row instead.
+
 ### What that peer may collect, and the refusal that comes with saying nothing
 
 A peer that has proved who it is at the door may still take nothing. What it may
