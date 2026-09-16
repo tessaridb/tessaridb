@@ -29,6 +29,7 @@ mod collections;
 mod covering;
 mod error;
 mod expiry;
+mod failover;
 mod feed;
 mod followers;
 mod graph;
@@ -68,6 +69,7 @@ pub use expiry::Expired;
 // the field but cannot name its type has a public API it cannot use.
 pub use audit::{AuditDevice, AuditTrail, VaultRead, entries as audit_entries, reads_by};
 pub use error::{Error, Result};
+pub use failover::Failover;
 pub use feed::{Change, ChangeKind, Changes, History, Subject, Subscription, Watch};
 pub use followers::FollowerLag;
 pub use graph::vector_of;
