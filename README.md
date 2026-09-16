@@ -10,19 +10,19 @@ A real-time multi-model database, written in Rust, built for AI agents and the
 products around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.2.1--beta-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.2.2--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
 [![conformance](https://img.shields.io/badge/conformance-1359%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
-[protocol](https://github.com/TessariDB/TessariDB-protocol) ·
-[Rust SDK](https://github.com/TessariDB/TessariDB-sdk-rust)
+[protocol](https://github.com/tessaridb/tessaridb-protocol) ·
+[Rust SDK](https://github.com/tessaridb/tessaridb-sdk-rust)
 
 </div>
 
 > [!NOTE]
-> **TessariDB is a beta — `0.2.1-beta`.** It is released, tested and published as
+> **TessariDB is a beta — `0.2.2-beta`.** It is released, tested and published as
 > a container image, and the licence makes production use free, including inside
 > a commercial company.
 > What a beta does not promise yet is permanence of shape: before 1.0 the query
@@ -136,7 +136,7 @@ possible rather than aspirational.
 | **Multi-tenant** | namespaces and databases, users, roles, `GRANT` and `REVOKE` per database |
 | **Four ways in** | embedded library · `tessaridb` CLI · HTTP + WebSocket · a framed binary wire protocol |
 | **Operable** | health and readiness endpoints, Prometheus metrics, graceful drain, log-as-backup with replay-as-restore |
-| **Specified** | the wire and value protocol is [published](https://github.com/TessariDB/TessariDB-protocol) with a shared conformance corpus, so a client in any language is written from the spec and not from our source |
+| **Specified** | the wire and value protocol is [published](https://github.com/tessaridb/tessaridb-protocol) with a shared conformance corpus, so a client in any language is written from the spec and not from our source |
 
 ### Two writers on one range
 
@@ -160,7 +160,7 @@ surviving version and the node that wrote it.
 
 ## Status
 
-**Stage: active development · `0.2.1-beta` · not published to crates.io.** What
+**Stage: active development · `0.2.2-beta` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 
@@ -450,12 +450,12 @@ ports and must not run beside a second copy of themselves.
 
 ## Clients
 
-The [protocol](https://github.com/TessariDB/TessariDB-protocol) is a repository
+The [protocol](https://github.com/tessaridb/tessaridb-protocol) is a repository
 of its own: the wire and HTTP specification plus a conformance corpus that every
 client is tested against. It is Apache-2.0, and a client written from it depends
 on nothing in this repository.
 
-- **Rust** — [TessariDB-sdk-rust](https://github.com/TessariDB/TessariDB-sdk-rust)
+- **Rust** — [tessaridb-sdk-rust](https://github.com/tessaridb/tessaridb-sdk-rust)
 - Other languages: write one from the spec. That is what it is for.
 
 ## Provenance

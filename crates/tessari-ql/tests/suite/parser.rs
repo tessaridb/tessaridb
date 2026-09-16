@@ -1498,7 +1498,7 @@ fn an_alter_that_names_nothing_to_change_is_refused() {
 /// `replication` is a contextual word, not a reserved one — so every script
 /// written before the clause existed still parses, including the ones that use
 /// the word as a name. The 333 `DEFINE NAMESPACE` sites across five
-/// repositories are the source set this protects (BGV-FIDELITY-001).
+/// repositories are the source set this protects.
 #[test]
 fn the_new_words_are_still_usable_as_names() {
     assert!(matches!(

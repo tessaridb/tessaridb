@@ -3,7 +3,7 @@
 //! The behaviour under test is invisible from outside the engine: a sweep and a
 //! scan answer the same records, and the only difference is what the cache holds
 //! afterwards. Timing it would be a wall-clock assertion on a shared machine,
-//! which `bgv-rocksdb` ref 12 says to avoid in favour of counters — they are
+//! which is exactly the measurement to avoid in favour of counters — they are
 //! stable across noisy hosts and they name the mechanism rather than its shadow.
 //!
 //! The engine already keeps the counter: `enable_statistics()` is set in

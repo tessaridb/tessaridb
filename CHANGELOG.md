@@ -12,6 +12,21 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.2.2-beta — 2026-09-16
+
+**The source is public, and every link points at its canonical name.**
+
+- **The engine repository is public.** TessariDB is published at
+  `github.com/tessaridb/tessaridb` under BUSL-1.1, alongside the protocol
+  specification and the Rust SDK, which were already public.
+- **Repository and organisation names are lowercase.** GitHub resolves owner and
+  repository names case-insensitively, so nothing about this changes behaviour —
+  the written form now matches the canonical one, which matters because
+  `Cargo.toml`'s `repository` field is carried into package metadata and a Go
+  module path encodes each uppercase letter as `!<lower>`.
+- Two documentation comments that referred to internal tooling by name were
+  rewritten to state the reasoning directly. No behaviour changed.
+
 ## 0.2.1-beta — 2026-09-16
 
 **A node can be drained, and a record can be asked what happened to it.**
