@@ -1837,3 +1837,87 @@ fn a_later_policy_replaces_the_row_and_the_replica_ends_on_the_later_one() {
          this is the partitioned writer reconnecting"
     );
 }
+
+/// Every user on the source, by name, as the replica holds them.
+fn users_on(store: &Store) -> Vec<String> {
+    let mut transaction = store.begin().unwrap();
+    let mut found: Vec<String> = Catalog::new(&mut transaction)
+        .users()
+        .unwrap()
+        .into_iter()
+        .map(|user| user.name)
+        .collect();
+    transaction.rollback();
+    found.sort();
+    found
+}
+
+/// Declare `name` as an owner of the whole store, and commit.
+fn make_user(store: &Store, name: &str) {
+    let mut transaction = store.begin().unwrap();
+    Catalog::new(&mut transaction)
+        .create_user(
+            name,
+            None,
+            None,
+            &tessari_storage::Held::every_kind_at(Reach::Store),
+            "a secret nobody reads back",
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+}
+
+#[test]
+fn a_user_and_its_removal_both_reach_a_replica_along_the_log() {
+    // G029 S3's opening measurement, and it contradicts the concept that opened
+    // the goal. That document recorded `catalog/user.rs` as having "no
+    // replication at all"; `create_user` writes through the same
+    // `Catalog::write` as `set_replica`, and `ReplicaDefinition::replicates`
+    // says in its own words that a subscription "hands over the users,
+    // credential hashes and grants inside its reach". A module that never
+    // mentions replication is not a module that does not replicate — the log
+    // does it, and the module only decides what it writes there.
+    //
+    // Two stores on separate backends that never speak, so anything the replica
+    // holds arrived as a log record and by no other route.
+    let source_backend = backend();
+    let source = store_on(&source_backend);
+    make_user(&source, "auditor");
+    make_user(&source, "operator");
+
+    let replica_backend = backend();
+    let replica = store_on(&replica_backend);
+    assert_eq!(
+        users_on(&replica),
+        Vec::<String>::new(),
+        "a store nobody has written to already holds a user"
+    );
+
+    crate::replay(&source, &replica);
+    assert_eq!(
+        users_on(&replica),
+        vec!["auditor".to_owned(), "operator".to_owned()],
+        "the identity class did not travel with the log"
+    );
+
+    // The removal half, which is the one a subscription can quietly not carry:
+    // a delete leaves nothing behind to compare, so a replica that applies
+    // writes and drops deletes looks correct on every test that only adds.
+    let mut transaction = source.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let doomed = catalog
+        .users()
+        .unwrap()
+        .into_iter()
+        .find(|user| user.name == "auditor")
+        .expect("the user this test just declared");
+    catalog.drop_user(&doomed).unwrap();
+    transaction.commit().unwrap();
+
+    crate::replay(&source, &replica);
+    assert_eq!(
+        users_on(&replica),
+        vec!["operator".to_owned()],
+        "a user dropped on the source is still present on the replica"
+    );
+}
