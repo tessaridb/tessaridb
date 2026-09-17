@@ -22,7 +22,7 @@ use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use tessari_wire::{Answer, Client};
+use tessari_wire::{Answer, Client, Served};
 
 /// The binary this crate builds, which is the one an operator installs.
 const TESSARIDB: &str = env!("CARGO_BIN_EXE_tessaridb");
@@ -1262,6 +1262,16 @@ fn a_node_dials_the_peer_its_catalog_declares() {
     );
 }
 
+/// A three-node cluster's addresses — a client surface and a peer door each.
+///
+/// A named type rather than the array spelled out at four signatures, and a
+/// parameter rather than a constant read inside the bring-up, because two
+/// `#[ignore]`d cluster tests in this file are run by one
+/// `cargo test … -- --ignored` and the harness runs them on separate threads.
+/// Sharing a band would make each one fail intermittently on the other's
+/// listener, which reads exactly like the cluster defect neither test is about.
+type Band = [(&'static str, &'static str); 3];
+
 /// The three-node cluster's addresses — a client surface and a peer door each.
 ///
 /// A band of its own rather than the next free pair, because this test holds six
@@ -1343,12 +1353,12 @@ fn campaigns(address: &str) -> Result<i64, String> {
 /// Spelled without arithmetic on purpose. These three lines moved out of a
 /// `#[test]` body, where clippy exempts index arithmetic, into a plain function
 /// where it does not; and the exemption is the only thing that had been
-/// carrying them. Written this way it also survives `CLUSTER` gaining a fourth
+/// carrying them. Written this way it also survives a band gaining a fourth
 /// entry, which a hardcoded wrap would not.
-fn the_next_node(index: usize) -> usize {
+fn the_next_node(band: &Band, index: usize) -> usize {
     index
         .checked_add(1)
-        .filter(|next| *next < CLUSTER.len())
+        .filter(|next| *next < band.len())
         .unwrap_or(0)
 }
 
@@ -1365,10 +1375,10 @@ struct Three {
     /// Held so the stores outlive the processes reading them. Dropping this
     /// removes the directory, so it is a field rather than a discarded local.
     _directory: tempfile::TempDir,
-    /// One slot per node, in `CLUSTER` order. A slot is emptied to kill that
+    /// One slot per node, in band order. A slot is emptied to kill that
     /// node, which is why it is an `Option` rather than a plain handle.
     running: Vec<Option<Running>>,
-    /// Where each node writes its own stderr, in `CLUSTER` order.
+    /// Where each node writes its own stderr, in band order.
     ///
     /// Kept because the directory holding them is removed the moment this
     /// struct drops, so a reader who goes looking after a failure finds
@@ -1400,7 +1410,7 @@ struct Three {
 /// test's footprint and none of the cluster's. The count of what was dropped is
 /// printed beside the window, so the filter can be challenged from the output
 /// it produces rather than only from this comment.
-fn what_the_nodes_said(logs: &[std::path::PathBuf]) -> String {
+fn what_the_nodes_said(band: &Band, logs: &[std::path::PathBuf]) -> String {
     /// With this test's own polling removed a ninety-second three-node run
     /// leaves each node about a hundred and twenty lines, so this is a ceiling
     /// against a node that is genuinely looping rather than a window that
@@ -1421,7 +1431,7 @@ fn what_the_nodes_said(logs: &[std::path::PathBuf]) -> String {
         out.push_str(&format!(
             "\n--- node {index} ({}), last {} of {} line(s); {} of this test's \
              own connection lines dropped ---\n",
-            CLUSTER[index].0,
+            band[index].0,
             lines.len().saturating_sub(from),
             lines.len(),
             all.saturating_sub(lines.len())
@@ -1439,7 +1449,7 @@ fn what_the_nodes_said(logs: &[std::path::PathBuf]) -> String {
 /// It does NOT wait for an election — that is [`the_node_a_majority_granted`],
 /// because a caller that only needs three live nodes should not pay ninety
 /// seconds for a leader it will not use.
-fn a_cluster_of_three() -> Three {
+fn a_cluster_of_three(band: &Band) -> Three {
     let directory = tempfile::tempdir().unwrap();
     let minted = Minted::new();
 
@@ -1449,7 +1459,7 @@ fn a_cluster_of_three() -> Three {
     let mut stores = Vec::new();
     let mut ids = Vec::new();
     let mut papers = Vec::new();
-    for index in 0..CLUSTER.len() {
+    for index in 0..band.len() {
         let home = directory.path().join(format!("n{index}"));
         std::fs::create_dir_all(&home).unwrap();
         let store = home.join("store");
@@ -1515,12 +1525,12 @@ fn a_cluster_of_three() -> Three {
         // the second declaration is refused `NoLeadershipYet` by the first.
         // A cluster is declared atomically or not at all.
         let mut script = String::from("BEGIN;");
-        for other in 0..CLUSTER.len() {
+        for other in 0..band.len() {
             let named = tessari_types::RecordId::Uuid(ids[other]).to_string();
             script.push_str(&format!(
                 " DEFINE REPLICA n{other} AT '{}' NODE '{named}' \
                   ROLES serving, writable, coordinating REPLICATES STORE;",
-                CLUSTER[other].1
+                band[other].1
             ));
         }
         script.push_str(" DEFINE NODE ROLES serving, writable, coordinating; COMMIT;");
@@ -1532,7 +1542,7 @@ fn a_cluster_of_three() -> Three {
 
     let mut running: Vec<Option<Running>> = Vec::new();
     let mut logs: Vec<std::path::PathBuf> = Vec::new();
-    for index in 0..CLUSTER.len() {
+    for index in 0..band.len() {
         let (leaf, key, authority) = &papers[index];
         // Standard error is where this binary reports, so it is kept rather
         // than discarded. Its own file per node: three streams into one
@@ -1543,11 +1553,11 @@ fn a_cluster_of_three() -> Three {
         logs.push(log);
         let child = Command::new(TESSARIDB)
             .arg(&stores[index])
-            .args(["--serve", CLUSTER[index].0])
+            .args(["--serve", band[index].0])
             .args(["--cluster-credential", leaf])
             .args(["--cluster-key", key])
             .args(["--cluster-authority", authority])
-            .args(["--cluster-address", CLUSTER[index].1])
+            .args(["--cluster-address", band[index].1])
             // A seed names the node as well as the address (ADR-0067): the
             // handshake derives the peer's TLS name from its id, so a bare
             // address is not a dial this transport can express. These three
@@ -1557,8 +1567,8 @@ fn a_cluster_of_three() -> Three {
                 "--seed",
                 &format!(
                     "{}@{}",
-                    tessari_types::RecordId::Uuid(ids[the_next_node(index)]),
-                    CLUSTER[the_next_node(index)].1
+                    tessari_types::RecordId::Uuid(ids[the_next_node(band, index)]),
+                    band[the_next_node(band, index)].1
                 ),
             ])
             .stdout(Stdio::null())
@@ -1567,7 +1577,7 @@ fn a_cluster_of_three() -> Three {
             .unwrap();
         running.push(Some(Running(child)));
     }
-    for (client, peer) in CLUSTER {
+    for (client, peer) in band {
         assert!(listening(client, Duration::from_secs(30)), "{client}");
         assert!(listening(peer, Duration::from_secs(30)), "{peer}");
     }
@@ -1584,7 +1594,7 @@ fn a_cluster_of_three() -> Three {
 /// node that takes part in deciding and holds no leadership refuses every write
 /// with `NoLeadershipYet`, so the node that accepts the script **is** the one
 /// that won, and asking costs nothing beyond the write a caller needed anyway.
-fn the_node_a_majority_granted() -> usize {
+fn the_node_a_majority_granted(band: &Band) -> usize {
     // Wait for the first epoch to be granted, by trying to use it. A write
     // before any round concludes is refused on every node — that is ADR-0064
     // working, not a defect, and it is why this polls rather than writing once.
@@ -1592,7 +1602,7 @@ fn the_node_a_majority_granted() -> usize {
     let mut elected = None;
     let mut refusals = [String::new(), String::new(), String::new()];
     while began.elapsed() < Duration::from_secs(90) && elected.is_none() {
-        for (index, (surface, _)) in CLUSTER.iter().enumerate() {
+        for (index, (surface, _)) in band.iter().enumerate() {
             if let Ok(mut client) = Client::connect(surface) {
                 match client.run(SCHEMA, None) {
                     Ok(_) => {
@@ -1641,12 +1651,12 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
     // node stand, ADR-0064 makes winning confer the right to write, ADR-0065
     // lets a follower find whoever won. Each was found by the next one failing,
     // and none of them has ever been exercised against a cluster of three.
-    let mut cluster = a_cluster_of_three();
+    let mut cluster = a_cluster_of_three(&CLUSTER);
     // Cloned before `running` is borrowed, because a panic below wants the
     // whole struct while that borrow is still live.
     let logs = cluster.logs.clone();
     let running = &mut cluster.running;
-    let leader = the_node_a_majority_granted();
+    let leader = the_node_a_majority_granted(&CLUSTER);
     // The record reaches a node that never wrote it. Until this holds there is
     // no replication to lose, so a failover asserted before it would be a
     // failover of nothing.
@@ -1681,7 +1691,7 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
             (0..CLUSTER.len())
                 .map(|index| counted(CLUSTER[index].0))
                 .collect::<Vec<_>>(),
-            what_the_nodes_said(&logs)
+            what_the_nodes_said(&CLUSTER, &logs)
         )
     });
 
@@ -1844,6 +1854,263 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
         seen.len() > refused,
         "every one of the {} reads across the window was refused",
         seen.len()
+    );
+}
+
+/// The second cluster's addresses — 47874-47879, and a band of its own.
+///
+/// Both cluster tests in this file are `#[ignore]`d, and one
+/// `cargo test … -- --ignored` runs them on two threads at once. Sharing
+/// 47881-47886 would make each fail intermittently on the other's listener,
+/// which reads exactly like the cluster defect neither test is about.
+const AXES: Band = [
+    ("127.0.0.1:47874", "127.0.0.1:47875"),
+    ("127.0.0.1:47876", "127.0.0.1:47877"),
+    ("127.0.0.1:47878", "127.0.0.1:47879"),
+];
+
+/// One password for every account this test declares.
+///
+/// One value and not three, because what these accounts are FOR is being looked
+/// up on a node that never declared them — three secrets would be three chances
+/// to mistype one into an assertion that then proves nothing by succeeding.
+const SECRET: &str = "a long enough password";
+
+/// Ask `address` as `who`, and give back the answers or the refusal as text.
+///
+/// Text rather than the error type, for [`counted`]'s reason: what a caller
+/// here does with a refusal is put it in a panic message, and every one of
+/// these questions is asked in a loop that must not stop on the first no.
+fn asked(address: &str, script: &str, who: Option<(&str, &str)>) -> Result<Vec<Answer>, String> {
+    let mut client = Client::connect(address).map_err(|why| why.to_string())?;
+    client.run(script, who).map_err(|why| why.to_string())
+}
+
+/// Poll `question` until it is true, or give up after `within`.
+///
+/// Paced by `POLL` for the reason the election poll above is: a spin opens a
+/// TCP connection per pass and exhausts this machine's ephemeral ports, after
+/// which the NODES' peer dials start failing and the harness has broken the
+/// thing it is measuring.
+fn until(within: Duration, mut question: impl FnMut() -> bool) -> bool {
+    let began = Instant::now();
+    while began.elapsed() < within {
+        if question() {
+            return true;
+        }
+        std::thread::sleep(POLL);
+    }
+    false
+}
+
+/// Whether `script`, asked of `address` as `who`, answers with `token` in it.
+///
+/// A rendered answer searched for a token, and that is weaker than reading the
+/// field — so the tokens below are ones this test CHOSE (`carol`, `item`) and
+/// asserted absent before the act that should introduce them. A search that is
+/// controlled on both sides cannot pass by finding the word somewhere else.
+fn says(address: &str, who: Option<(&str, &str)>, script: &str, token: &str) -> bool {
+    asked(address, script, who).is_ok_and(|answers| format!("{answers:?}").contains(token))
+}
+
+/// G029 S1.2, S3.1 and S3.3 against three operating-system processes.
+///
+/// Each of those three criteria is PARTIAL for one reason and it is the same
+/// reason: the machinery is proven inside a single process, and the criterion's
+/// own stated validation is a LIVE multi-node run. The harness that makes one
+/// possible went green in W382; this is what it was made green for.
+///
+/// # The order is decided by one measured fact
+///
+/// **A store with no users is open, and declaring the first user closes it**
+/// (`tessari-session/src/identity.rs`). Every other helper in this file connects
+/// anonymously, so the moment this test declares a user it changes the access
+/// posture of every node that applies the record. Everything anonymous
+/// therefore happens BEFORE that statement, and everything after it carries
+/// credentials.
+///
+/// That same fact is then used as an instrument rather than worked around: the
+/// signal that the user record REACHED the follower is that the follower stops
+/// answering an anonymous read. It is read without attempting a single sign-in,
+/// which matters — the sign-in path throttles a name that keeps missing,
+/// doubling from 250 ms towards thirty seconds, so polling for an account by
+/// trying to use it makes the wait grow faster than replication closes it.
+///
+/// # Why a sign-in is still made, once
+///
+/// Because a name arriving and a CREDENTIAL arriving are different claims. The
+/// single authenticated call proves the stored hash is the one the leader
+/// wrote and that it verifies against a password this test never sent to this
+/// node.
+#[test]
+#[ignore = "two minutes of real cadences against three spawned processes: an \
+            election, then five replication waits at the collection cadence. \
+            It is the live validation G029 S1.2, S3.1 and S3.3 each name, and \
+            is run explicitly: cargo test -p tessari-cli --test serving \
+            identity_and_a_leader_only_read -- --ignored"]
+fn identity_and_a_leader_only_read_cross_three_processes() {
+    let cluster = a_cluster_of_three(&AXES);
+    // Cloned before anything can panic holding a borrow of the struct.
+    let logs = cluster.logs.clone();
+    let leader = the_node_a_majority_granted(&AXES);
+    let follower = the_next_node(&AXES, leader);
+    let surface = AXES[follower].0;
+    let deciding = AXES[leader].0;
+    // Long enough to cover several collection cadences, short enough that a
+    // cluster which is not replicating at all fails this test rather than the
+    // harness timeout, where the reason would be lost.
+    let patience = Duration::from_secs(90);
+
+    assert!(
+        until(patience, || counted(surface) == Ok(1)),
+        "the record never reached the follower, so nothing below would be \
+         measuring a cluster.{}",
+        what_the_nodes_said(&AXES, &logs)
+    );
+
+    // G029 S1.2 — the redirect, read off the wire.
+    //
+    // `run_routed` and deliberately not `run`: `run` folds a redirect into
+    // `Error::Redirected`, and a test that matched on that would be inferring
+    // the frame from an error type. The criterion says the frame kind reaches
+    // the wire, so what is asserted is the variant the frame parser produced.
+    let mut client = Client::connect(surface).expect("a follower answers its door");
+    let served = client
+        .run_routed(
+            "USE NAMESPACE prod; USE DATABASE orders; \
+             SELECT * FROM item ANSWERED BY LEADER;",
+            None,
+            &tessari_ql::Parameters::new(),
+        )
+        .expect("a follower says where a leader-only read belongs");
+    let Served::Elsewhere(elsewhere) = served else {
+        panic!(
+            "a follower answered a read only the leader may answer: {served:?}.{}",
+            what_the_nodes_said(&AXES, &logs)
+        );
+    };
+    assert_eq!(
+        elsewhere.endpoint, AXES[leader].1,
+        "the redirect names an address that is not the leader's declared one"
+    );
+    assert!(
+        elsewhere.epoch.get() > 0,
+        "the redirect carries no leadership: {elsewhere:?}"
+    );
+    drop(client);
+
+    // G029 S3.1 — a user declared on the leader, arriving on a node that never
+    // saw the statement. This is the last anonymous act.
+    asked(
+        deciding,
+        &format!("DEFINE USER ada ROLE owner PASSWORD '{SECRET}';"),
+        None,
+    )
+    .expect("a leader declares the first user");
+
+    assert!(
+        until(patience, || matches!(
+            counted(surface),
+            Err(ref why) if why.contains("signed-in user")
+        )),
+        "the follower still answers an anonymous read, so the user record never \
+         arrived — and the follower is not merely slow, it is open.{}",
+        what_the_nodes_said(&AXES, &logs)
+    );
+
+    let owner = Some(("ada", SECRET));
+    asked(surface, "INFO FOR USERS;", owner)
+        .expect("a follower knows the leader's owner, and her password verifies there");
+
+    // G029 S3.3 — a grant is a second record in a second table, so it is
+    // asserted separately from the user it is about rather than inferred from
+    // it. Both tokens are checked absent first: a rendered answer searched for
+    // a word proves nothing unless the word was demonstrably not already there.
+    assert!(
+        !says(surface, owner, "INFO FOR USERS;", "carol"),
+        "the follower already knows a user this test has not declared"
+    );
+    asked(
+        deciding,
+        &format!(
+            "USE NAMESPACE prod; USE DATABASE orders; \
+             DEFINE USER carol ON prod.orders ROLE viewer PASSWORD '{SECRET}';"
+        ),
+        owner,
+    )
+    .expect("a leader declares a second user");
+    assert!(
+        until(patience, || says(
+            surface,
+            owner,
+            "INFO FOR USERS;",
+            "carol"
+        )),
+        "a user declared on the leader never reached the follower.{}",
+        what_the_nodes_said(&AXES, &logs)
+    );
+
+    let carols = "USE NAMESPACE prod; USE DATABASE orders; INFO FOR USER carol;";
+    assert!(
+        !says(surface, owner, carols, "item"),
+        "the follower already carries a grant this test has not made"
+    );
+    // TWO grants, and the second is not decoration. A user's grants, if they
+    // have any, are the whole story, so taking the LAST one away would widen
+    // them back to everything their role allows — and the engine refuses that
+    // rather than doing it quietly. Measured on this test's first run: *"that
+    // is carol's last grant, and taking it away would widen them to every table
+    // their role allows"*. A second grant makes the revocation below a
+    // narrowing, which is the act this criterion is about.
+    asked(
+        deciding,
+        "USE NAMESPACE prod; USE DATABASE orders; DEFINE COLLECTION note; \
+         GRANT read ON item TO carol; GRANT read ON note TO carol;",
+        owner,
+    )
+    .expect("a leader grants two tables to a user");
+    assert!(
+        until(patience, || says(surface, owner, carols, "item")),
+        "a grant made on the leader never reached the follower.{}",
+        what_the_nodes_said(&AXES, &logs)
+    );
+
+    // The removing direction, for both records, and it is the half an add-only
+    // assertion cannot see: a replica that applies writes and loses deletes
+    // keeps an authority the operator has taken away, and every assertion above
+    // would still pass on one.
+    asked(
+        deciding,
+        "USE NAMESPACE prod; USE DATABASE orders; REVOKE read ON item FROM carol;",
+        owner,
+    )
+    .expect("a leader revokes");
+    assert!(
+        until(patience, || !says(surface, owner, carols, "item")),
+        "a revocation made on the leader never reached the follower, which \
+         still reports the grant.{}",
+        what_the_nodes_said(&AXES, &logs)
+    );
+    // The other grant is still there, so what arrived was a revocation of ONE
+    // table and not the user going missing — which is the only other way the
+    // assertion above could have turned true.
+    assert!(
+        says(surface, owner, carols, "note"),
+        "the revocation took more than it was asked for, or carol is gone \
+         entirely.{}",
+        what_the_nodes_said(&AXES, &logs)
+    );
+
+    asked(deciding, "DROP USER carol;", owner).expect("a leader drops a user");
+    assert!(
+        until(patience, || !says(
+            surface,
+            owner,
+            "INFO FOR USERS;",
+            "carol"
+        )),
+        "a user dropped on the leader is still present on the follower.{}",
+        what_the_nodes_said(&AXES, &logs)
     );
 }
 
