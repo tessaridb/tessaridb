@@ -6591,6 +6591,54 @@ there is nothing to stand for until the peers are declared.
 After that, configuration is the leader's to write and the cluster's to receive,
 which is where a replicated membership belongs.
 
+### Bounding the log
+
+Every commit is a log record, and nothing removes one unless you say so:
+
+```
+DEFINE NODE RETAIN 100000 RECORDS;
+INFO FOR NODE;              -- retain: 100000
+DEFINE NODE RETAIN NONE;    -- back to keeping the whole log
+```
+
+**The default is to keep everything**, which is what every store held before this
+clause existed. `retain` reads `null` until a number is set, and `null` is
+*unbounded* rather than *very large* — the two are different answers and an
+operator has to be able to tell them apart.
+
+**It is local**, like `ROLES` and for the same reason: a disk budget describes
+this machine. It does not replicate, a restored backup does not inherit it, and
+each node of a cluster is set on its own.
+
+**What a prune costs, said plainly.** The log is not a logfile — the state of
+this store is a function of it, four things replay it, and pruning is not
+reversible:
+
+| what reads the log | what a prune below its position does |
+|---|---|
+| a follower catching up | its next collect is **refused**, naming the horizon; it needs a fresh copy of the state rather than a retry |
+| a backup taken as a replay | begins at the horizon instead of at the beginning |
+| a subscriber holding a position | the same refusal, for the same reason |
+| `INFO FOR HISTORY OF` | answers what survives, and stops reporting itself `complete` |
+
+**The count is the whole bound, deliberately.** A reader inside the window is
+safe because it is inside it; a reader further behind than the window is not
+protected, and is told so. The alternative — holding the log down to whatever
+the slowest reader still needs — is how a single stuck subscriber fills a disk
+while nothing anywhere is in an error state, which is the best-documented
+failure in this whole area.
+
+**The last record always survives**, whatever number is set. A follower that is
+perfectly level is served by reading the record *before* the position it asks
+for, so a log with nothing left in it could not answer a healthy follower.
+`RETAIN 0 RECORDS` is refused rather than clamped, because a statement that runs
+as something other than what it says is worse than one that will not run.
+
+**Space comes back on the engine's schedule, not at the statement.** A prune
+removes the records and the bytes return when the store next compacts that
+region. Nothing is lost by the delay, and a store watched immediately after a
+prune has not yet shrunk.
+
 ### Adding a node to a cluster that already exists
 
 Everything above configures a cluster by writing to every node before any of them

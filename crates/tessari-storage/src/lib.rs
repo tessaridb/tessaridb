@@ -37,6 +37,7 @@ mod index;
 mod lease;
 mod log;
 mod node;
+mod pruning;
 mod reclaim;
 mod running;
 mod schema;
@@ -74,6 +75,7 @@ pub use feed::{Change, ChangeKind, Changes, History, Subject, Subscription, Watc
 pub use followers::FollowerLag;
 pub use graph::vector_of;
 pub use lease::{GUARD as LEASE_GUARD, Lease, TTL as LEASE_TTL};
+pub use pruning::{Pruned, Trimmed};
 pub use reclaim::Reclaimed;
 pub use running::{Progress, Running};
 pub use schema::{Violation, violations};

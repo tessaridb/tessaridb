@@ -1621,7 +1621,10 @@ fn a_node_is_drained_by_naming_no_roles() {
     // clause is how an operator takes a node out of service without stopping
     // it. An empty list is the parse, because `named_roles` folds from
     // `Roles::NONE` and therefore already means exactly this.
-    let StatementKind::DefineNode { roles, endpoints } = one("DEFINE NODE ROLES NONE;") else {
+    let StatementKind::DefineNode {
+        roles, endpoints, ..
+    } = one("DEFINE NODE ROLES NONE;")
+    else {
         panic!("DEFINE NODE ROLES NONE did not parse as DEFINE NODE");
     };
     assert_eq!(roles, Some(Vec::new()), "NONE clears rather than names");
@@ -1635,8 +1638,9 @@ fn leaving_the_roles_clause_out_still_leaves_the_roles_alone() {
     // clear, and it is the reason `NONE` had to be spelled at all — so the two
     // readings are asserted together rather than in separate tests that could
     // be deleted apart.
-    let StatementKind::DefineNode { roles, endpoints } =
-        one("DEFINE NODE ENDPOINTS 'db-1.internal:9000';")
+    let StatementKind::DefineNode {
+        roles, endpoints, ..
+    } = one("DEFINE NODE ENDPOINTS 'db-1.internal:9000';")
     else {
         panic!("DEFINE NODE ENDPOINTS did not parse as DEFINE NODE");
     };

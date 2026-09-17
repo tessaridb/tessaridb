@@ -669,7 +669,7 @@ impl Store {
         if desired == identity.roles {
             return Ok(None);
         }
-        self.configure_node(Some(desired), None)?;
+        self.configure_node(Some(desired), None, None)?;
         Ok(Some(desired))
     }
 
@@ -752,7 +752,16 @@ impl Store {
         &self,
         roles: Option<Roles>,
         endpoints: Option<Vec<String>>,
+        retain: Option<Option<Sequence>>,
     ) -> Result<NodeIdentity> {
+        // Two keys rather than one record, because retention is not part of who
+        // this node is: the identity carries a revision byte and refuses a
+        // revision it does not know, so folding a disk budget into it would make
+        // every store written by a newer build unreadable by an older one for a
+        // number neither of them needs to agree on.
+        if let Some(keep) = retain {
+            self.set_log_retention(keep)?;
+        }
         crate::node::configure(&self.backend, roles, endpoints)
     }
 
@@ -1300,9 +1309,12 @@ impl Store {
         Ok(History {
             events,
             // Reaching the cap means there may be older records below. Walking
-            // fewer than the cap means the log ended first, so what was found is
-            // everything there is.
-            complete: walked < HISTORY_SCAN_RECORDS,
+            // fewer than the cap USED to mean the log ended first, and stopped
+            // meaning it the moment a log could be pruned: a walk that runs out
+            // early on a pruned log has reached the horizon rather than the
+            // beginning, and reporting that as complete would present a
+            // truncated history as the whole of one. Both conditions, therefore.
+            complete: walked < HISTORY_SCAN_RECORDS && self.log_start(log)?.get() <= 1,
             walked,
         })
     }
@@ -1363,6 +1375,19 @@ impl Store {
         from: Sequence,
         limit: usize,
     ) -> Result<Vec<(Sequence, LogRecord)>> {
+        // Refused rather than answered short, and this is the one place it can
+        // be: every reader of the log arrives here, and *short* already means
+        // something else on this path — it is how a follower is told it is
+        // level. A pruned span answered as a short read would tell a follower it
+        // had caught up while the records it is missing no longer exist, and
+        // nothing anywhere would be in an error state (`Error::BelowLogStart`).
+        let start = self.log_start(log)?;
+        if start > from {
+            return Err(Error::BelowLogStart {
+                asked: from.get(),
+                start: start.get(),
+            });
+        }
         let prefix = LogKey::prefix_for(log);
         let bounds = KeyRange::prefix(&prefix);
         let request = ScanRequest {

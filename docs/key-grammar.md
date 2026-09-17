@@ -98,6 +98,8 @@ because renumbering after data exists is a full rebuild.
 | `0x3a` | `GraphCatalog` | `meta` | reserved, unused — see §9 |
 | `0x3b` | `EdgeKindCatalog` | `meta` | reserved, unused — see §9 |
 | `0x3c` | `VersionPosition` | `meta` | implemented |
+| `0x3d` | `LogStart` | `meta` | implemented |
+| `0x3e` | `LogRetention` | `meta` | implemented |
 
 ### 3c. The spatial entry
 

@@ -447,6 +447,29 @@ fn serve(
     // counted rather than killing the process where it stands.
     shutdown::listen();
 
+    // Housekeeping, and deliberately NOT one of the peer cadences.
+    //
+    // Trimming the log was written into the awareness round first, on the
+    // argument that the round already runs and already opens the store. A live
+    // run refuted it in one reading: the whole peer block is behind
+    // `peers.map(…)`, so a node started without cluster credentials runs none of
+    // those cadences at all — and a single node is exactly the deployment whose
+    // log grows with nothing to collect it. The cadence that bounds a disk
+    // cannot be one only a cluster has.
+    let housekeeping = tessari_serve::Stopping::new();
+    surfaces.push(shutdown::Surface {
+        name: "housekeeping",
+        stopping: std::sync::Arc::clone(&housekeeping),
+        // Nothing to interrupt: the loop is asleep for a quarter of a second at
+        // a time and reads the flag between naps, so it leaves on its own.
+        wake: Box::new(|| {}),
+    });
+    let keeping = {
+        let db = std::sync::Arc::clone(&db);
+        let stopping = std::sync::Arc::clone(&housekeeping);
+        std::thread::spawn(move || keep_house(&db, &stopping))
+    };
+
     // Its own thread rather than an arm of the scope below, so that the peer
     // door runs whichever of the two client surfaces was asked for — including
     // neither combination the match has to spell out. It holds a handle on the
@@ -585,6 +608,8 @@ fn serve(
         drop(collecting.join());
         drop(standing.join());
     }
+    // Before the store, for the reason the peer threads are: it holds a handle.
+    drop(keeping.join());
     // Before the store, not after. Stage 1 told the consumers to stop and did
     // not wait; this is the wait. Joining after `drop(db)` would flush the store
     // and release its lock while threads were still writing through it.
@@ -595,6 +620,53 @@ fn serve(
     drop(db);
     eprintln!("tessaridb — stopped");
     Ok(Ended::Fine)
+}
+
+/// Keep this node's own disk in order, whether or not it has peers.
+///
+/// One job today: trim the log to the retained record count. It answers `None`
+/// when no retention is set, which is every store until an operator sets one —
+/// and that is why the silence is deliberate rather than an omission. *Nobody
+/// asked for this* and *there was nothing to do* are different facts, and a
+/// cadence that logged the second would bury the first under one line every ten
+/// seconds forever.
+///
+/// When it does remove something it says so at `info`. Removing history is not a
+/// thing to do quietly, and the line is the only place an operator sees that the
+/// number they set is actually being enforced.
+///
+/// # Why it naps rather than sleeping the period
+///
+/// `tessari_wire::every` sleeps the whole period and reads the flag once per
+/// round, which the peer cadences can afford because a clustered node is already
+/// paying that on the way out. A standalone node was not paying it at all, and
+/// adding ten seconds to every `docker stop` in exchange for a cleanup nobody is
+/// waiting on would be a bad trade made invisibly.
+fn keep_house(db: &Db, stopping: &tessari_serve::Stopping) {
+    /// How long the thread sleeps between reading the flag.
+    const NAP: std::time::Duration = std::time::Duration::from_millis(250);
+
+    let period = std::time::Duration::from_secs(tessari_constants::AWARENESS_SECONDS);
+    // Due immediately, so a node started with a retention already set enforces
+    // it at once rather than a cadence later. A store opened after an outage may
+    // have a great deal to remove, and making it wait is the one moment the
+    // delay is least affordable.
+    let mut due = std::time::Instant::now();
+    while !stopping.asked() {
+        if std::time::Instant::now() >= due {
+            match db.store().trim_logs() {
+                Ok(Some(trimmed)) if trimmed.records > 0 => log::info!(
+                    "pruned {} log record(s) across {} log(s) to the retained count",
+                    trimmed.records,
+                    trimmed.logs
+                ),
+                Ok(_) => {}
+                Err(why) => log::warn!("this node cannot trim its log: {why}"),
+            }
+            due = std::time::Instant::now().checked_add(period).unwrap_or(due);
+        }
+        std::thread::sleep(NAP);
+    }
 }
 
 /// Take peers, one at a time, until the process is asked to stop.

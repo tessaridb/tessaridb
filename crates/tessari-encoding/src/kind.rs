@@ -84,6 +84,20 @@ pub enum KeyKind {
     /// agree on; a record version is a fact about *this* store's own visible
     /// history that no other node reads (Q-614).
     VersionPosition,
+    /// The oldest sequence one log still holds, after pruning.
+    ///
+    /// Deliberately not called a floor, although [`Self::ReclaimFloor`] is the
+    /// same shape one keyspace over: a floor is what MAY be removed and this is
+    /// what HAS been. Conflating the two would make *the policy allows pruning
+    /// to here* and *the records below here are gone* one number, and only the
+    /// second may be used to refuse a read.
+    LogStart,
+    /// How many log records this node keeps.
+    ///
+    /// Local, like [`Self::NodeIdentity`] and for the same reason: it is a fact
+    /// about this machine's disk, and a node that restored a backup must not
+    /// inherit the original's answer.
+    LogRetention,
 }
 
 impl KeyKind {
@@ -117,6 +131,8 @@ impl KeyKind {
         Self::NodeIdentity,
         Self::ReclaimFloor,
         Self::VersionPosition,
+        Self::LogStart,
+        Self::LogRetention,
     ];
 
     /// The leading byte that identifies this kind on disk.
@@ -153,6 +169,8 @@ impl KeyKind {
             Self::GraphCatalog => 0x3a,
             Self::EdgeKindCatalog => 0x3b,
             Self::VersionPosition => 0x3c,
+            Self::LogStart => 0x3d,
+            Self::LogRetention => 0x3e,
         }
     }
 
@@ -184,7 +202,9 @@ impl KeyKind {
             | Self::BackfillWatermark
             | Self::NodeIdentity
             | Self::ReclaimFloor
-            | Self::VersionPosition => Keyspace::META,
+            | Self::VersionPosition
+            | Self::LogStart
+            | Self::LogRetention => Keyspace::META,
         }
     }
 
@@ -220,6 +240,8 @@ impl KeyKind {
             Self::NodeIdentity => "node-identity",
             Self::ReclaimFloor => "reclaim-floor",
             Self::VersionPosition => "version-position",
+            Self::LogStart => "log-start",
+            Self::LogRetention => "log-retention",
         }
     }
 
@@ -304,6 +326,8 @@ mod tests {
             (KeyKind::GraphCatalog, 0x3a),
             (KeyKind::EdgeKindCatalog, 0x3b),
             (KeyKind::VersionPosition, 0x3c),
+            (KeyKind::LogStart, 0x3d),
+            (KeyKind::LogRetention, 0x3e),
         ];
         assert_eq!(expected.len(), KeyKind::ALL.len(), "a kind is untested");
         for (kind, tag) in expected {

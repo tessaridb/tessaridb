@@ -179,9 +179,11 @@ impl Session<'_> {
                 *if_not_exists,
                 span,
             ),
-            StatementKind::DefineNode { roles, endpoints } => {
-                self.define_node(roles.as_deref(), endpoints.as_deref())
-            }
+            StatementKind::DefineNode {
+                roles,
+                endpoints,
+                retain,
+            } => self.define_node(roles.as_deref(), endpoints.as_deref(), *retain),
             StatementKind::DefineFailover {
                 awareness,
                 collection,
@@ -2888,10 +2890,18 @@ impl Session<'_> {
     /// An unknown role is refused here rather than in the grammar, for the
     /// reason a vector distance is: which roles exist is the store's question,
     /// and this is where the store knows what it knows.
-    fn define_node(&self, roles: Option<&[Name]>, endpoints: Option<&[String]>) -> Result<Outcome> {
+    fn define_node(
+        &self,
+        roles: Option<&[Name]>,
+        endpoints: Option<&[String]>,
+        retain: Option<Option<u64>>,
+    ) -> Result<Outcome> {
         let named = roles.map(named_roles).transpose()?;
-        self.store
-            .configure_node(named, endpoints.map(<[String]>::to_vec))?;
+        self.store.configure_node(
+            named,
+            endpoints.map(<[String]>::to_vec),
+            retain.map(|keep| keep.map(tessari_types::Sequence::new)),
+        )?;
         Ok(Outcome::Done)
     }
 

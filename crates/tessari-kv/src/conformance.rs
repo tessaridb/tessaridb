@@ -365,6 +365,65 @@ fn last_write_in_a_batch_wins(backend: &dyn KvBackend) -> CheckResult {
     }
 }
 
+/// One key a range delete is checked against: where it lives, and what it should
+/// hold afterwards — `None` meaning it should be gone.
+type Survivor = (Keyspace, &'static [u8], Option<&'static [u8]>);
+
+/// Rule 7 — a range delete removes exactly the range.
+///
+/// The neighbours are the check. A backend that translates the range into its
+/// engine's own half-open span and gets a bound one byte wrong deletes a key
+/// nobody named and returns `Ok(())`, and nothing downstream can tell that from
+/// a key that was never written. So `a` sits immediately below the range and `d`
+/// immediately above it, and both are read back afterwards.
+///
+/// The second delete is the idempotence half: a prune that is retried after a
+/// crash re-issues the same range, and a backend that treats an already-empty
+/// range as an error would turn recovery into a failure.
+fn delete_range_removes_exactly_the_range(backend: &dyn KvBackend) -> CheckResult {
+    const NAME: &str = "delete-range-removes-exactly-the-range";
+    let batch = WriteBatch::new()
+        .put(Keyspace::LOG, key(b"a"), value(b"below"))
+        .put(Keyspace::LOG, key(b"b"), value(b"inside"))
+        .put(Keyspace::LOG, key(b"c"), value(b"inside"))
+        .put(Keyspace::LOG, key(b"d"), value(b"above"))
+        .put(Keyspace::DATA, key(b"b"), value(b"another keyspace"));
+    if let Err(error) = backend.apply(batch) {
+        return CheckResult::fail(NAME, format!("setup failed: {error}"));
+    }
+    let range = KeyRange::between(key(b"b"), key(b"d"));
+    if let Err(error) = backend.delete_range(Keyspace::LOG, &range) {
+        return CheckResult::fail(NAME, format!("delete_range failed: {error}"));
+    }
+    if let Err(error) = backend.delete_range(Keyspace::LOG, &range) {
+        return CheckResult::fail(NAME, format!("a repeated delete_range failed: {error}"));
+    }
+    let expected: &[Survivor] = &[
+        (Keyspace::LOG, b"a", Some(b"below")),
+        (Keyspace::LOG, b"b", None),
+        (Keyspace::LOG, b"c", None),
+        (Keyspace::LOG, b"d", Some(b"above")),
+        (Keyspace::DATA, b"b", Some(b"another keyspace")),
+    ];
+    for (keyspace, bytes, wanted) in expected {
+        let found = match backend.get(*keyspace, &key(bytes)) {
+            Ok(found) => found,
+            Err(error) => return CheckResult::fail(NAME, format!("read back failed: {error}")),
+        };
+        let wanted = wanted.map(value);
+        if found != wanted {
+            return CheckResult::fail(
+                NAME,
+                format!(
+                    "{keyspace:?} {} read back {found:?}, wanted {wanted:?}",
+                    String::from_utf8_lossy(bytes)
+                ),
+            );
+        }
+    }
+    CheckResult::pass(NAME)
+}
+
 /// An empty or inverted range returns nothing rather than failing.
 fn empty_range_returns_nothing(backend: &dyn KvBackend) -> CheckResult {
     const NAME: &str = "empty-range-returns-nothing";
@@ -494,6 +553,10 @@ const CHECKS: &[Check] = &[
     ("delete-removes-the-key", delete_removes_the_key),
     ("last-write-in-a-batch-wins", last_write_in_a_batch_wins),
     ("empty-range-returns-nothing", empty_range_returns_nothing),
+    (
+        "delete-range-removes-exactly-the-range",
+        delete_range_removes_exactly_the_range,
+    ),
     (
         "batched-first-agrees-with-scan",
         batched_first_agrees_with_scan,

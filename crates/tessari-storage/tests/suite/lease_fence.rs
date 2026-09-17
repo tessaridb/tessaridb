@@ -526,6 +526,7 @@ fn deciding() -> Store {
         .configure_node(
             Some(Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING)),
             None,
+            None,
         )
         .unwrap();
     store

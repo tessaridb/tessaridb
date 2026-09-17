@@ -662,6 +662,34 @@ pub enum Error {
         floor: u64,
     },
 
+    /// A log read was asked for a position that has been pruned away.
+    ///
+    /// The sibling of [`Self::VersionReclaimed`], one keyspace over, and refused
+    /// for the same reason with one difference that matters more here: a
+    /// historical read below the reclaim floor returns a *wrong* answer, while a
+    /// log read below the start returns a **short** one — and a short answer is
+    /// how this protocol says *you are level*. A follower told it is level while
+    /// it is missing the records that were pruned would stop asking, and nothing
+    /// anywhere would be in an error state.
+    ///
+    /// So it is refused rather than answered, and the refusal carries the repair
+    /// as well as the number: there is no position to retry from, and the only
+    /// way back is a fresh copy of the state. That is Raft's `InstallSnapshot`,
+    /// etcd's *take a new snapshot and watch from `revision + 1`*, and
+    /// PostgreSQL's *re-create the standby* — every system that prunes a log
+    /// answers this case with state rather than with more history.
+    #[error(
+        "sequence {asked} is below the start of this log, which begins at \
+         {start}; the records that answered there have been pruned, so this \
+         reader cannot catch up and needs a fresh copy of the state"
+    )]
+    BelowLogStart {
+        /// The sequence the read asked for.
+        asked: u64,
+        /// The oldest sequence this log still holds.
+        start: u64,
+    },
+
     /// A read was asked for a point the store has not reached.
     ///
     /// Serving the present instead would let the same query return one answer
@@ -747,6 +775,10 @@ impl Error {
             // read cannot succeed, and a floor only ever rises, so a caller that
             // treated this as transient would retry forever.
             | Self::VersionReclaimed { .. }
+            // The same argument as `VersionReclaimed`, and the start only ever
+            // rises too: a caller that read this as transient would retry a
+            // position that can never come back.
+            | Self::BelowLogStart { .. }
             | Self::VersionInTheFuture { .. } => ErrorCategory::Validation,
             Self::CatalogMalformed { .. } => ErrorCategory::Corruption,
             // A dependency this process needs is not reachable, which is what

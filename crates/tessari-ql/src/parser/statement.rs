@@ -1366,10 +1366,15 @@ impl Parser<'_> {
         } else {
             None
         };
-        if roles.is_none() && endpoints.is_none() {
-            return Err(self.error_here("`ROLES` or `ENDPOINTS` and what to set"));
+        let retain = self.retained_records()?;
+        if roles.is_none() && endpoints.is_none() && retain.is_none() {
+            return Err(self.error_here("`ROLES`, `ENDPOINTS` or `RETAIN` and what to set"));
         }
-        Ok(StatementKind::DefineNode { roles, endpoints })
+        Ok(StatementKind::DefineNode {
+            roles,
+            endpoints,
+            retain,
+        })
     }
 
     /// `DEFINE REPLICA second AT 'host:9001' NODE '<id>' ROLES serving, writable`
@@ -1604,6 +1609,54 @@ impl Parser<'_> {
         }
         self.advance();
         Ok(held)
+    }
+
+    /// `RETAIN 100000 RECORDS` or `RETAIN NONE` after `DEFINE NODE`, when it is
+    /// there.
+    ///
+    /// The outer `Option` is *was the clause written*, and the inner one is
+    /// *what it said*, which is the shape every amending clause on this
+    /// statement has: absent means leave the setting alone, and `NONE` means put
+    /// it back to unbounded.
+    ///
+    /// # Why `RECORDS` is required and why there is no other unit
+    ///
+    /// A bare number would leave the reader to guess between records, bytes and
+    /// a duration, and the three have different failure modes — only one of them
+    /// is a count this store can enforce exactly, because a log position IS a
+    /// record count. Bytes and ages are both derived quantities here and would
+    /// have to be approximated; a clause that says `RECORDS` cannot be silently
+    /// re-read as either.
+    ///
+    /// # Why zero is refused rather than clamped
+    ///
+    /// `RETAIN 0 RECORDS` reads as *keep nothing*, and keeping nothing is the
+    /// one setting that must not be expressible: a level follower is served by
+    /// reading the record BEFORE the position it asks for, so a log with no
+    /// records left cannot answer a follower that is perfectly healthy. The
+    /// store clamps anyway — the last record always survives — but a statement
+    /// that runs as something other than what it says is the class of bug this
+    /// grammar spends refusals to avoid.
+    fn retained_records(&mut self) -> Result<Option<Option<u64>>> {
+        if !self.eat_word("retain") {
+            return Ok(None);
+        }
+        if self.eat_keyword(Keyword::None) {
+            return Ok(Some(None));
+        }
+        let expected = "`RETAIN n RECORDS`, or `RETAIN NONE` to keep the whole log";
+        let Some(Token::Number(Number::Integer(held))) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let held = u64::try_from(*held).unwrap_or(0);
+        if held == 0 {
+            return Err(self.error_here(expected));
+        }
+        self.advance();
+        if !self.eat_word("records") {
+            return Err(self.error_here(expected));
+        }
+        Ok(Some(Some(held)))
     }
 
     /// `MAX 5242880` after a bucket's name, when it is there.

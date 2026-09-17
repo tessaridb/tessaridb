@@ -517,6 +517,13 @@ pub enum StatementKind {
         roles: Option<Vec<Name>>,
         /// Where peers reach it, or nothing to leave the endpoints alone.
         endpoints: Option<Vec<String>>,
+        /// How many log records to keep, or nothing to leave retention alone.
+        ///
+        /// `RETAIN NONE` is the way back to unbounded, and it is spelled rather
+        /// than implied by a zero: `RETAIN 0 RECORDS` would read as *keep
+        /// nothing*, which is the one thing this must never be mistaken for —
+        /// the log's last record is what lets a level follower be served at all.
+        retain: Option<Option<u64>>,
     },
     /// `DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s CAMPAIGN 1s LEASE 30s`
     ///

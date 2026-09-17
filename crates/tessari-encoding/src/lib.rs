@@ -51,8 +51,8 @@ pub use index_keys::{
     VectorRecallKey,
 };
 pub use keys::{
-    AppliedPositionKey, FormatVersionKey, LogKey, NodeIdentityKey, REACH_LEN, ReclaimFloorKey,
-    RecordKey, StoreKey, TABLE_PREFIX_LEN, VersionPositionKey,
+    AppliedPositionKey, FormatVersionKey, LogKey, LogRetentionKey, LogStartKey, NodeIdentityKey,
+    REACH_LEN, ReclaimFloorKey, RecordKey, StoreKey, TABLE_PREFIX_LEN, VersionPositionKey,
 };
 pub use kind::KeyKind;
 pub use log_id::{LogId, Writer};

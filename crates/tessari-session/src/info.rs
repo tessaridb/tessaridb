@@ -1065,6 +1065,21 @@ impl Session<'_> {
                 ),
             ),
             (
+                // Beside `endpoints` rather than under `cluster`, because it is
+                // on the local side of ADR-0018's line: a disk budget describes
+                // this machine and does not travel. `null` is *unbounded*, which
+                // is what every store holds until an operator sets a number —
+                // and reporting it as a number would make *nobody asked for
+                // retention* indistinguishable from a very large window.
+                "retain".to_owned(),
+                self.store.log_retention()?.map_or(Value::Null, |keep| {
+                    // Saturating rather than an `as` cast: the report is a
+                    // number a person reads, and a width that wrapped would
+                    // print a negative retention rather than fail.
+                    Value::from(i64::try_from(keep.get()).unwrap_or(i64::MAX))
+                }),
+            ),
+            (
                 "cluster".to_owned(),
                 Value::Object(BTreeMap::from([
                     ("peers".to_owned(), peers),

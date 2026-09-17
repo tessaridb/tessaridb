@@ -474,6 +474,91 @@ impl StoreKey for AppliedPositionKey {
 /// Once two leaders allocate log positions from independent counters, one
 /// number cannot be both. A transaction opened at a store-wide "5" would read
 /// one range as of its fifth record and another as of its fifth — two unrelated
+/// The oldest sequence one log still holds.
+///
+/// Absent means nothing has ever been pruned from that log, which is every log
+/// until a retention policy runs — so absence is *the log is whole*, not *the log
+/// is empty*.
+///
+/// # Why it is not derived from the first surviving key
+///
+/// A scan for the lowest key of one log would answer the same number while the
+/// log has records in it, and would answer nothing at all once it has none —
+/// which is exactly the state a fully-pruned log is in, and exactly when a reader
+/// most needs to be told that its position is below the horizon rather than that
+/// the log does not exist. A recorded start says *this log begins here* whether
+/// or not anything is left in it.
+///
+/// It is also the only durable evidence that pruning happened. A start lost on
+/// restart makes every refusal below it wrong in the dangerous direction: the
+/// store would go back to answering reads for records it no longer holds, which
+/// is a gap reported as a divergence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogStartKey {
+    /// The log this start belongs to.
+    pub log: LogId,
+}
+
+impl LogStartKey {
+    /// Address one log's start.
+    #[must_use]
+    pub const fn new(log: LogId) -> Self {
+        Self { log }
+    }
+}
+
+impl StoreKey for LogStartKey {
+    type Value = Sequence;
+
+    const KIND: KeyKind = KeyKind::LogStart;
+
+    fn encode(&self) -> Key {
+        let mut writer =
+            KeyWriter::with_capacity(1usize.saturating_add(REACH_LEN).saturating_add(NODE_ID_LEN));
+        writer.put_u8(Self::KIND.tag());
+        put_log(&mut writer, self.log);
+        Key::from(writer.finish())
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        let log = take_log(&mut reader)?;
+        reader.finish()?;
+        Ok(Self { log })
+    }
+}
+
+/// How many log records this node keeps, when it keeps a bounded number.
+///
+/// Absent means **unbounded**, which is what every store held before retention
+/// existed and what every store holds until an operator says otherwise. Absence
+/// is therefore the setting that changes nothing, which is the only safe default
+/// for an irreversible operation.
+///
+/// A singleton, like [`NodeIdentityKey`]: the number is about this node's disk.
+/// A retention that travelled in the log would be inherited by whoever restored a
+/// backup, and a follower would silently adopt its leader's disk budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogRetentionKey;
+
+impl StoreKey for LogRetentionKey {
+    type Value = Sequence;
+
+    const KIND: KeyKind = KeyKind::LogRetention;
+
+    fn encode(&self) -> Key {
+        Key::from(vec![Self::KIND.tag()])
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        reader.finish()?;
+        Ok(Self)
+    }
+}
+
 /// moments presented as one, with no error and plausible data (Q-614).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct VersionPositionKey;

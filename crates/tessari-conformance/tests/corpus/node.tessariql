@@ -24,6 +24,26 @@ DEFINE NODE ROLES serving, writable;
 DEFINE NODE;
 --- expect: error UnexpectedToken
 
+--- case: how many log records this node keeps is part of configuring it
+DEFINE NODE RETAIN 100000 RECORDS;
+--- expect: ok
+
+--- case: it sits beside the other clauses, and amends like they do
+DEFINE NODE ENDPOINTS 'here:9000' RETAIN 50000 RECORDS;
+--- expect: ok
+
+--- case: keeping nothing is refused rather than clamped
+DEFINE NODE RETAIN 0 RECORDS;
+--- expect: error UnexpectedToken
+
+--- case: the unit is required, because a bare number would be guessed at
+DEFINE NODE RETAIN 100000;
+--- expect: error UnexpectedToken
+
+--- case: the way back to an unbounded log is spelled, not implied by a zero
+DEFINE NODE RETAIN NONE;
+--- expect: ok
+
 --- case: a role the store does not know is refused rather than stored
 DEFINE NODE ROLES leader;
 --- expect: error Unknown
