@@ -1921,3 +1921,74 @@ fn a_user_and_its_removal_both_reach_a_replica_along_the_log() {
         "a user dropped on the source is still present on the replica"
     );
 }
+
+/// Every table `user` may reach on `store`, with the verbs, as a sorted list.
+fn grants_on(store: &Store, user: u32) -> Vec<(u32, usize)> {
+    let mut transaction = store.begin().unwrap();
+    let mut found: Vec<(u32, usize)> = Catalog::new(&mut transaction)
+        .grants_for(user)
+        .unwrap()
+        .into_iter()
+        .map(|grant| (grant.table.get(), grant.verbs.len()))
+        .collect();
+    transaction.rollback();
+    found.sort_unstable();
+    found
+}
+
+#[test]
+fn a_grant_and_its_revocation_travel_with_the_user_they_are_about() {
+    // G029 S3.3, and the question it answers is U-16: do grants travel with
+    // their user, or are they out of scope with the reason on the record? They
+    // travel — so the criterion takes its live-run branch and the ADR branch is
+    // closed.
+    //
+    // Asserted separately from the user's own authorities rather than assumed
+    // from them. A user's authorities are a FIELD of `UserDefinition` and ride
+    // inside that one record; a grant is its own record in its own table
+    // (`system::GRANTS`), so "the user arrived" is not evidence that the grant
+    // did. Two records, two ways to be lost.
+    let source_backend = backend();
+    let source = store_on(&source_backend);
+    make_user(&source, "reader");
+
+    let mut transaction = source.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let user = catalog
+        .users()
+        .unwrap()
+        .into_iter()
+        .find(|found| found.name == "reader")
+        .expect("the user this test just declared");
+    catalog
+        .grant(user.id, TableId::new(7), tessari_storage::Verb::ALL, &[])
+        .unwrap();
+    transaction.commit().unwrap();
+
+    let replica_backend = backend();
+    let replica = store_on(&replica_backend);
+    assert!(
+        grants_on(&replica, user.id).is_empty(),
+        "a store nobody has written to already holds a grant"
+    );
+
+    crate::replay(&source, &replica);
+    assert_eq!(
+        grants_on(&replica, user.id),
+        vec![(7, 2)],
+        "the grant did not travel with the user it is about"
+    );
+
+    // The revocation, for the reason the user test gives about a drop: a
+    // replica that applies writes and loses deletes keeps an authority the
+    // operator has taken away, and no add-only assertion can see it.
+    let mut transaction = source.begin().unwrap();
+    Catalog::new(&mut transaction).revoke(user.id, TableId::new(7));
+    transaction.commit().unwrap();
+
+    crate::replay(&source, &replica);
+    assert!(
+        grants_on(&replica, user.id).is_empty(),
+        "a grant revoked on the source is still held on the replica"
+    );
+}
