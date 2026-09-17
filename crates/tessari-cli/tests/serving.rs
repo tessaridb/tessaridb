@@ -1552,25 +1552,42 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
     let mut cluster = a_cluster_of_three();
     let running = &mut cluster.running;
     let leader = the_node_a_majority_granted();
-    let follower = (0..CLUSTER.len()).find(|index| *index != leader).unwrap();
-
     // The record reaches a node that never wrote it. Until this holds there is
     // no replication to lose, so a failover asserted before it would be a
     // failover of nothing.
+    //
+    // WHICH follower is not something this test may choose. The schema declares
+    // `REPLICATION FACTOR 2`, so the copy lands on the leader and **one** other
+    // node — and which one is decided by an election this test deliberately
+    // does not pin, since ADR-0063 lets any of the three win. Asking a
+    // particular follower was therefore a coin flip: it passed when the copy
+    // happened to go to the first node that was not the leader, and reported
+    // *the follower never received the leader's record* when it went to the
+    // other, which reads like a replication failure and is not one.
+    //
+    // So the question asked here is the one the factor actually promises — that
+    // the record reached SOME node that did not write it — and the node that
+    // has it becomes the one the reader below uses, instead of a second
+    // independent guess at the same thing.
     let began = Instant::now();
-    let mut replicated = false;
-    while began.elapsed() < Duration::from_secs(90) {
-        if counted(CLUSTER[follower].0) == Ok(1) {
-            replicated = true;
-            break;
+    let mut holder = None;
+    while began.elapsed() < Duration::from_secs(90) && holder.is_none() {
+        holder = (0..CLUSTER.len())
+            .filter(|index| *index != leader)
+            .find(|index| counted(CLUSTER[*index].0) == Ok(1));
+        if holder.is_none() {
+            std::thread::sleep(POLL);
         }
-        std::thread::sleep(POLL);
     }
-    assert!(
-        replicated,
-        "the follower never received the leader's record, so nothing below \
-         would be measuring a cluster"
-    );
+    let follower = holder.unwrap_or_else(|| {
+        panic!(
+            "no node but the leader received the record in ninety seconds, so \
+             nothing below would be measuring a cluster. Counts: {:?}",
+            (0..CLUSTER.len())
+                .map(|index| counted(CLUSTER[index].0))
+                .collect::<Vec<_>>()
+        )
+    });
 
     // The criterion's SECOND half, and it has to be here rather than in its own
     // scenario: a fast failover and a quiet cluster are satisfiable by opposite
