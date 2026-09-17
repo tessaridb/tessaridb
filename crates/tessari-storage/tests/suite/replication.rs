@@ -2159,3 +2159,112 @@ fn a_peer_name_is_free_again_once_the_row_it_identifies_is_dropped() {
         "a name released with its row must be declarable again"
     );
 }
+
+/// **What a join actually destroys — G029 S3.2's opening measurement (W391).**
+///
+/// The criterion asks that a join be *a data-destruction event for the joining
+/// node*, refused by default, with the refusal naming what would be destroyed.
+/// Three readings of "what" have now been tested and the first two were wrong:
+///
+/// - **log erasure.** Not this. Since `105509d` a log is `(home, writer)`, so a
+///   joining node's own records sit BESIDE the leader's — W382 measured a
+///   follower keeping its own store log at tail 1 while collecting the leader's
+///   to 19.
+/// - **the membership catalog.** Was this, and is not any more: ADR-0077 made a
+///   membership row identified by the peer it names (W390).
+/// - **the tenancy ADDRESS SPACE.** This, and it does not have the same remedy.
+///
+/// # Why the W390 fix does not generalise, which is the finding
+///
+/// A namespace, database, table, index, field, graph, edge kind, analyzer,
+/// consumer and user are each keyed by `self.allocate(Level::…)`, a number the
+/// writing node hands out. For a membership row that number could simply be
+/// replaced by the peer's name. **Here it cannot**, and not for want of trying:
+/// a record lives at `(namespace, database, table, id)`, an index entry names a
+/// table id, a field names a table id, a grant names a table id. Those ids are
+/// not a handle onto the data — they ARE the data's address.
+///
+/// So two stores that each declared their first namespace both hold namespace 1,
+/// and the two are different namespaces with the same address. Applying the
+/// leader's log does not corrupt a record and does not delete one. It replaces
+/// the DEFINITION at the address the joining node's records are filed under, so
+/// every one of those records is now read through somebody else's name, schema,
+/// replication class and grants — with the row count unchanged, no error, and
+/// nothing in the log to say it happened.
+///
+/// That is what the refusal has to name, and it is why the refusal cannot be a
+/// confirmation prompt bolted onto a rename.
+#[test]
+fn a_joining_node_keeps_its_records_and_loses_the_tenancy_they_were_filed_under() {
+    // The leader, with a tenancy of its own.
+    let leader = backend();
+    let leader = store_on(&leader);
+    let mut transaction = leader.begin().unwrap();
+    let theirs = Catalog::new(&mut transaction)
+        .create_namespace("payments")
+        .unwrap();
+    transaction.commit().unwrap();
+
+    // The joiner, with a tenancy of its own and a database inside it.
+    let joiner = backend();
+    let joiner = store_on(&joiner);
+    let mut transaction = joiner.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let mine = catalog.create_namespace("research").unwrap();
+    catalog.create_database(mine.id, "notebooks").unwrap();
+    transaction.commit().unwrap();
+
+    // Neither store knew the other existed, so both allocated the same address.
+    // This is the whole mechanism, asserted rather than assumed.
+    assert_eq!(
+        mine.id, theirs.id,
+        "this test is about two tenancies at one address, and they are not"
+    );
+
+    crate::replay(&leader, &joiner);
+
+    // The joiner's database is exactly where it was — nothing was deleted.
+    let mut transaction = joiner.begin().unwrap();
+    let catalog = Catalog::new(&mut transaction);
+    let still_here: Vec<String> = catalog
+        .databases_in(mine.id)
+        .unwrap()
+        .into_iter()
+        .map(|database| database.name)
+        .collect();
+    // And the name above it is the leader's.
+    let now_called = catalog.namespace(mine.id).unwrap().map(|held| held.name);
+    transaction.rollback();
+
+    assert_eq!(
+        still_here,
+        vec!["notebooks".to_owned()],
+        "the joiner's own database was expected to survive, and did not"
+    );
+    assert_eq!(
+        now_called,
+        Some("payments".to_owned()),
+        "the address the joiner's data is filed under still names the joiner's \
+         namespace — if this is now `research`, the address space is no longer \
+         shared and this test should assert THAT instead"
+    );
+    assert!(
+        !catalog_names(&joiner).contains(&"research".to_owned()),
+        "`research` survived somewhere; the destruction is smaller than this \
+         test claims and the claim should be narrowed to what actually happens"
+    );
+}
+
+/// Every namespace `store` can name.
+fn catalog_names(store: &Store) -> Vec<String> {
+    let mut transaction = store.begin().unwrap();
+    let mut found: Vec<String> = Catalog::new(&mut transaction)
+        .namespaces()
+        .unwrap()
+        .into_iter()
+        .map(|namespace| namespace.name)
+        .collect();
+    transaction.rollback();
+    found.sort();
+    found
+}
