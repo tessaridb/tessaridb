@@ -1411,7 +1411,7 @@ struct Three {
 /// test's footprint and none of the cluster's. The count of what was dropped is
 /// printed beside the window, so the filter can be challenged from the output
 /// it produces rather than only from this comment.
-fn what_the_nodes_said(band: &Band, logs: &[std::path::PathBuf]) -> String {
+fn what_the_nodes_said(band: &[(&str, &str)], logs: &[std::path::PathBuf]) -> String {
     /// With this test's own polling removed a ninety-second three-node run
     /// leaves each node about a hundred and twenty lines, so this is a ceiling
     /// against a node that is genuinely looping rather than a window that
@@ -2504,4 +2504,270 @@ fn a_failover_policy_set_on_the_leader_reaches_a_node_that_never_saw_it() {
         "the later policy never replaced the earlier one on the follower.{}",
         what_the_nodes_said(&PERIODS, &logs)
     );
+}
+
+/// S3.2's band — 47887-47890, clean: 47881-47886 belong to the three-node
+/// failover cluster and 47891-47894 to the join above.
+const REFUSING: [(&str, &str); 2] = [
+    ("127.0.0.1:47887", "127.0.0.1:47888"),
+    ("127.0.0.1:47889", "127.0.0.1:47890"),
+];
+
+/// What the joiner wrote before anybody pointed it at a cluster.
+///
+/// `REPLICATION NONE` so nothing about this namespace asks to be replicated:
+/// what is being measured is the address it occupies, not a subscription.
+const ITS_OWN: &str = "DEFINE NAMESPACE research REPLICATION NONE; USE NAMESPACE research; \
+                       DEFINE DATABASE notebooks; USE DATABASE notebooks; \
+                       DEFINE COLLECTION note; CREATE note:1 = { n: 1 };";
+
+/// Every namespace a store on disk can name, opened offline.
+fn namespaces_on(store: &std::path::Path) -> Vec<String> {
+    let db = tessaridb::Db::open(store).expect("the store opens");
+    let mut transaction = db.store().begin().expect("a read");
+    let names = tessari_storage::Catalog::new(&mut transaction)
+        .namespaces()
+        .expect("the catalog answers")
+        .into_iter()
+        .map(|namespace| namespace.name)
+        .collect();
+    transaction.rollback();
+    names
+}
+
+/// S3.2 — a join is refused while the joining node holds a tenancy of its own,
+/// and the refusal says so in words an operator can act on.
+///
+/// # What is being defended, and why it needed a refusal rather than a repair
+///
+/// W391 measured it in one process: two stores that each declared a first
+/// namespace both hold namespace 1, so applying the cluster's log replaces the
+/// definition at the address the joiner's records are filed under. Nothing is
+/// deleted, no row count moves and nothing reaches the log — every record is
+/// simply read afterwards through somebody else's name, schema, replication
+/// class and grants. ADR-0077's remedy does not generalise to it: a membership
+/// row could be keyed by the name it carries because nothing pointed at its
+/// number, while a namespace id IS the address a record lives at.
+///
+/// # Why the second half kills the node instead of asking it nicely
+///
+/// The joiner runs `ROLES serving`, so a write arriving at its client door is
+/// forwarded to a writable peer — and it has declared none, which is the whole
+/// point of a node that has not joined yet. So the operator's remedy is taken
+/// with the store offline, which is also what every system this was ranked
+/// against requires: Elasticsearch's `detach-cluster` and Kafka's
+/// `meta.properties` are both stop-the-node operations.
+///
+/// The restart is load-bearing beyond convenience: it proves the refusal is a
+/// function of what the store HOLDS rather than a decision remembered from the
+/// first attempt.
+#[test]
+#[ignore = "two spawned processes and two collection cadences; run it with \
+            cargo test -p tessari-cli --test serving a_join_that -- --ignored"]
+fn a_join_that_would_reinterpret_a_tenancy_is_refused_until_the_operator_removes_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let minted = Minted::new();
+
+    let mut stores = Vec::new();
+    let mut ids = Vec::new();
+    let mut papers = Vec::new();
+    for (index, _) in REFUSING.iter().enumerate() {
+        let home = directory.path().join(format!("r{index}"));
+        std::fs::create_dir_all(&home).unwrap();
+        let store = home.join("store");
+        let db = tessaridb::Db::open(&store).unwrap();
+        let id = db.store().node_identity().unwrap().id;
+        drop(db);
+        papers.push(credentials(&minted, id, &home));
+        ids.push(id);
+        stores.push(store);
+    }
+
+    {
+        let db = tessaridb::Db::open(&stores[0]).unwrap();
+        let joiner = tessari_types::RecordId::Uuid(ids[1]).to_string();
+        db.session()
+            .run(&format!(
+                "DEFINE REPLICA joiner AT '{}' NODE '{joiner}' ROLES serving \
+                 REPLICATES STORE; {WRITTEN}",
+                REFUSING[1].1
+            ))
+            .expect("a leader that knows who is joining it");
+        drop(db);
+    }
+    {
+        let db = tessaridb::Db::open(&stores[1]).unwrap();
+        db.session()
+            .run(&format!("DEFINE NODE ROLES serving; {ITS_OWN}"))
+            .expect("a node with a tenancy of its own");
+        drop(db);
+    }
+    // Both stores really do file their first namespace at the same address —
+    // asserted rather than assumed, because a build that numbered them
+    // differently would make every assertion below pass for the wrong reason.
+    assert_eq!(
+        namespaces_on(&stores[0]),
+        vec!["prod".to_owned()],
+        "the cluster's tenancy"
+    );
+    assert_eq!(
+        namespaces_on(&stores[1]),
+        vec!["research".to_owned()],
+        "and the joiner's own"
+    );
+
+    // Each node's seed names the OTHER one: a seed carries a node id as well as
+    // an address (ADR-0067), because the handshake derives the peer's TLS name
+    // from its id. The leader's is inert — its catalog already names a peer.
+    let seeds: Vec<String> = (0..REFUSING.len())
+        .map(|index| {
+            let other = usize::from(index == 0);
+            format!(
+                "{}@{}",
+                tessari_types::RecordId::Uuid(ids[other]),
+                REFUSING[other].1
+            )
+        })
+        .collect();
+
+    let mut logs = Vec::new();
+    let mut running = Vec::new();
+    for index in 0..REFUSING.len() {
+        let (log, child) = spawn_refusing(directory.path(), &stores, &papers, &seeds, index);
+        logs.push(log);
+        running.push(child);
+    }
+    for (client, peer) in REFUSING {
+        assert!(listening(client, Duration::from_secs(30)), "{client}");
+        assert!(listening(peer, Duration::from_secs(30)), "{peer}");
+    }
+
+    // The refusal, in the joiner's own log, in the words an operator reads.
+    // Both tokens: the NAME of what would be reinterpreted, without which the
+    // message names no object, and the statement that lifts it, without which
+    // it names no remedy.
+    let patience = Duration::from_secs(90);
+    assert!(
+        until(patience, || {
+            let said = std::fs::read_to_string(&logs[1]).unwrap_or_default();
+            said.contains("research") && said.contains("DROP NAMESPACE")
+        }),
+        "the joiner collected, or refused without saying what would be \
+         reinterpreted.{}",
+        what_the_nodes_said(&REFUSING, &logs)
+    );
+
+    // Refused means nothing arrived. The node is stopped first because a
+    // running process holds its store.
+    drop(running.pop().expect("the joiner is running"));
+    assert_eq!(
+        namespaces_on(&stores[1]),
+        vec!["research".to_owned()],
+        "the refusal must leave the joiner exactly as it was — the cluster's \
+         namespace arriving here is the destruction this criterion is about.{}",
+        what_the_nodes_said(&REFUSING, &logs)
+    );
+    {
+        let db = tessaridb::Db::open(&stores[1]).unwrap();
+        let answers = db
+            .session()
+            .run("USE NAMESPACE research; USE DATABASE notebooks; SELECT * FROM note;")
+            .expect("the joiner's own tenancy still reads");
+        assert!(
+            matches!(
+                answers.last(),
+                Some(tessari_session::Outcome::Records { records, .. }) if records.len() == 1
+            ),
+            "and its own record is still under it: {answers:?}"
+        );
+        drop(db);
+    }
+
+    // The destruction, stated by being performed. The language walks the
+    // operator down their own tree — a namespace will not drop while a database
+    // is under it, and a database will not drop while a table is — so every
+    // object destroyed is one they named.
+    {
+        let db = tessaridb::Db::open(&stores[1]).unwrap();
+        // The role comes first, and finding that out is what this half of the
+        // test is for: the joiner is configured `ROLES serving`, `Effect::admits`
+        // refuses a write on a node without `Roles::WRITABLE`, and every
+        // statement below is a write — so the remedy the refusal names is itself
+        // refused on the one node that needs it. `DEFINE NODE` is classified as
+        // a READ (a local `META` write, ADR-0018), which is the only reason this
+        // is a detour rather than a dead end. The refusal says so in its own
+        // words; this asserts the sequence it names actually runs.
+        db.session()
+            .run("DEFINE NODE ROLES writable;")
+            .expect("a serving node can always restore its own write authority");
+        db.session()
+            .run("USE NAMESPACE research; USE DATABASE notebooks; DROP TABLE note;")
+            .expect("the operator drops their table");
+        db.session()
+            .run("USE NAMESPACE research; DROP DATABASE notebooks;")
+            .expect("then the database");
+        db.session()
+            .run("DROP NAMESPACE research;")
+            .expect("then the namespace the cluster's would have replaced");
+        db.session().run("DEFINE NODE ROLES serving;").expect(
+            "and the role goes back, because a node that collects while \
+                     it also writes is the divergence this design refuses",
+        );
+        drop(db);
+    }
+    assert!(
+        namespaces_on(&stores[1]).is_empty(),
+        "the joiner holds no tenancy of its own"
+    );
+
+    let (log, child) = spawn_refusing(directory.path(), &stores, &papers, &seeds, 1);
+    logs[1] = log;
+    running.push(child);
+    assert!(listening(REFUSING[1].0, Duration::from_secs(30)));
+
+    let began = Instant::now();
+    let mut held = None;
+    let mut refusals = Vec::new();
+    while began.elapsed() < patience && held.is_none() {
+        match counted(REFUSING[1].0) {
+            Ok(1) => held = Some(began.elapsed()),
+            Ok(other) => refusals.push(format!("{other} record(s)")),
+            Err(why) => refusals.push(why),
+        }
+        std::thread::sleep(POLL);
+    }
+    held.unwrap_or_else(|| {
+        panic!(
+            "a node with no tenancy of its own must collect; the last thing it \
+             said was {:?}.{}",
+            refusals.last(),
+            what_the_nodes_said(&REFUSING, &logs)
+        )
+    });
+}
+
+/// One node of [`REFUSING`], with its standard error kept in a file of its own.
+fn spawn_refusing(
+    directory: &std::path::Path,
+    stores: &[std::path::PathBuf],
+    papers: &[(String, String, String)],
+    seeds: &[String],
+    index: usize,
+) -> (std::path::PathBuf, Running) {
+    let (leaf, key, authority) = &papers[index];
+    let log = directory.join(format!("r{index}")).join("node.log");
+    let writing = std::fs::File::create(&log).unwrap();
+    let child = Command::new(TESSARIDB)
+        .arg(&stores[index])
+        .args(["--serve", REFUSING[index].0])
+        .args(["--cluster-credential", leaf])
+        .args(["--cluster-key", key])
+        .args(["--cluster-authority", authority])
+        .args(["--cluster-address", REFUSING[index].1])
+        .args(["--seed", &seeds[index]])
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(writing))
+        .spawn()
+        .unwrap();
+    (log, Running(child))
 }

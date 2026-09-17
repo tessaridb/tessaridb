@@ -116,6 +116,66 @@ pub enum Error {
     )]
     Unsubscribed,
 
+    /// The first collect of a node that already holds a tenancy of its own.
+    ///
+    /// A join is a **data-destruction event for the joining node** and this is
+    /// the refusal it is refused by (ADR-0078). What it destroys is not the
+    /// joiner's log — since a log is `(home, writer)` the joiner's records sit
+    /// beside the cluster's — and no longer its membership rows either, which
+    /// ADR-0077 keyed by the name they carry. It is the **tenancy address
+    /// space**: a record lives at `(namespace, database, table, id)`, both
+    /// stores allocate namespace ids from their own counter starting at 1, and
+    /// applying the cluster's definition at the address this node's records are
+    /// filed under leaves every one of them read through somebody else's name,
+    /// schema, replication class and grants. Row count unchanged, no error,
+    /// nothing in the log — which is why it has to be refused rather than
+    /// reported.
+    ///
+    /// # Why the remedy is a statement that already exists
+    ///
+    /// The override could have been a clause on `DEFINE REPLICA`, a statement of
+    /// its own, or a flag on the node, and all three were refused (Q-760): the
+    /// first hangs on the wrong object, since a peer is not the thing at risk,
+    /// and the other two outlive the join they authorise — a standing permission
+    /// to reinterpret whatever this node holds the next time it is restarted.
+    /// `DROP NAMESPACE` needs none of them. It already refuses while a database
+    /// is still beneath it, so the operator is walked down their own tree and
+    /// names every object on the way, and a store with no namespace of its own
+    /// has no address left to reinterpret.
+    ///
+    /// # The remedy needs an authority the joining node has given up
+    ///
+    /// A node configured to join declares `ROLES serving`, and `Effect::admits`
+    /// refuses a write on a node that does not hold `Roles::WRITABLE` — so the
+    /// statement this refusal names is itself refused, on the one node that
+    /// needs it. It is not a dead end: `DEFINE NODE` is classified as a READ
+    /// because it is a local `META` write and not a log record (ADR-0018), so a
+    /// serving node can always restore its own write authority. The message says
+    /// so rather than leaving an operator to discover it, because a refusal
+    /// whose named remedy is refused is worse than no remedy named at all.
+    ///
+    /// An operator who wants to KEEP the data has no in-place path and must
+    /// re-insert it through the cluster's own tenancy. That is the accepted cost
+    /// and it is what a merge would be anyway: relocating every record, index
+    /// entry, field and grant that names the old ids.
+    #[error(
+        "this node holds namespaces of its own — {held} — and a cluster \
+         allocates namespace ids from its own counter, so collecting would file \
+         this node's records under the cluster's namespace, with its name, \
+         schema, replication class and grants. Nothing is deleted and nothing is \
+         recovered by undoing the collect. Either start this node on an empty \
+         store, or remove them with `DROP NAMESPACE <name>`, which refuses while \
+         a database is still under one and so names everything on the way down — \
+         a node declared `ROLES serving` holds no write authority, so `DEFINE \
+         NODE ROLES writable` comes first and the role goes back afterwards"
+    )]
+    WouldReinterpret {
+        /// The namespaces this node declared, rendered for whoever reads the
+        /// refusal — the names rather than the ids, because an operator holds
+        /// the names and the ids are exactly what is about to be contested.
+        held: String,
+    },
+
     /// A frame kind this build does not have.
     ///
     /// The connection closes rather than the frame being skipped: a protocol

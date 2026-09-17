@@ -616,6 +616,20 @@ impl Collector<'_> {
     /// collect, and not a second authority over the record.
     pub fn collect(&self, into: &Store, home: Reach, from: Sequence) -> Result<Sequence> {
         let held = Sequence::new(from.get().saturating_sub(1));
+        // Before the dial, not after it: a node that must not apply this log has
+        // no business opening a connection for it, and refusing after the answer
+        // would leave the leader holding a lag row for a follower that will never
+        // apply a record (ADR-0078).
+        //
+        // Scoped to the store's own log, because that is where namespace
+        // definitions arrive and `logs_to_collect` asks for it FIRST — so a
+        // joining node cannot reach a namespace's log without passing here. An
+        // unscoped check would refuse every later namespace-home collect of a
+        // node that had just legitimately taken the cluster's namespaces, which
+        // is the opposite of what this defends.
+        if matches!(home, Reach::Store) && held == Sequence::ZERO {
+            refuse_to_reinterpret(into)?;
+        }
         let (_, answered) = call(
             self.peer.1,
             self.mine.duplicate(),
@@ -717,6 +731,56 @@ pub fn logs_to_collect(store: &Store) -> Result<Vec<Reach>> {
     Ok(logs)
 }
 
+/// Refuse the first store-level collect of a node that holds a tenancy of its
+/// own, naming what would be reinterpreted.
+///
+/// # What makes it the FIRST collect
+///
+/// The position asked for. The caller seeds the cursor from the first position
+/// it does not hold in the peer's log, so `from == 1` means this node has applied
+/// nothing of that log — which is the only durable evidence of *joining* the
+/// engine holds. A node joins by configuration plus a `DEFINE REPLICA` and then
+/// simply starts collecting (W384), so there is no other instant to hang this on;
+/// reading the configuration instead would refuse a node that joined correctly
+/// last week, because the configuration is present on every restart.
+///
+/// The cursor is **told** to this function rather than read here, which is the
+/// rule this module already lives under: deciding when to collect belongs with
+/// the node's lifecycle, and `collection.rs` may not reach the raw feed at all —
+/// `tessari-cli` computes the seed with the one `committed_tail` call the
+/// enforcement suite classifies. So the refusal reads the parameter, and it
+/// fires exactly once per peer log.
+///
+/// # Why a namespace is the whole test
+///
+/// A namespace is the ROOT of the record address space: a record lives at
+/// `(namespace, database, table, id)`, and every database, table, index, field
+/// and grant hangs beneath one. A node holding no namespace of its own holds no
+/// record of its own, so the other levels whose allocated id is an ADDRESS are
+/// covered transitively rather than each needing its own test.
+///
+/// The batch's content is deliberately not decoded. The hazard is the overlap of
+/// two counters, not this particular answer: a leader that happens to have sent
+/// nothing yet will allocate namespace 1 later, and a check that waited for the
+/// colliding record to arrive would pass the collect that precedes it.
+fn refuse_to_reinterpret(into: &Store) -> Result<()> {
+    let mut transaction = into.begin().map_err(refused)?;
+    let held = Catalog::new(&mut transaction)
+        .namespaces()
+        .map_err(refused)?;
+    transaction.rollback();
+    if held.is_empty() {
+        return Ok(());
+    }
+    Err(Error::WouldReinterpret {
+        held: held
+            .iter()
+            .map(|namespace| format!("`{}`", namespace.name))
+            .collect::<Vec<_>>()
+            .join(", "),
+    })
+}
+
 /// The store's own words, carried through rather than reworded.
 fn refused(why: tessari_storage::Error) -> Error {
     Error::Refused {
@@ -727,8 +791,8 @@ fn refused(why: tessari_storage::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::{
-        COLLECTION_BUDGET_BYTES, Collect, Collected, Collector, LogId, NODE_ID_LEN, Reach, Result,
-        Serving, StoreValue, logs_to_collect,
+        COLLECTION_BUDGET_BYTES, Catalog, Collect, Collected, Collector, LogId, NODE_ID_LEN, Reach,
+        Result, Serving, StoreValue, logs_to_collect,
     };
     use tessari_types::{DatabaseId, NamespaceId};
 
@@ -937,6 +1001,92 @@ mod tests {
              that read it as arrival would report a copy as current while it is \
              three records behind, and *current* is what a staleness bound reads"
         );
+    }
+
+    /// S3.2 — the refusal, and the only thing that lifts it.
+    ///
+    /// The unit half of ADR-0078. A live run asserts the same two words reach an
+    /// operator through a real node's log; this asserts the decision itself, in
+    /// one process and without a cadence, so the message can be changed with a
+    /// test that fails in milliseconds rather than in ninety seconds.
+    ///
+    /// The second half is the criterion's *destructive path exercised
+    /// separately*, and it is deliberately the SAME test: a refusal nothing can
+    /// lift is an outage, and a lift asserted apart from the refusal would pass
+    /// on a build where the two conditions had drifted apart.
+    #[test]
+    fn a_node_holding_a_tenancy_of_its_own_is_refused_until_it_removes_it() {
+        let authority = Authority::new();
+        let leader = granting(" REPLICATES STORE");
+        // One, and that is an assertion in itself: the refusal spends NO
+        // connection, because it is taken before the dial. A door serving two
+        // would hang on an accept that never happens.
+        let (address, door) = declaring_for(&authority, &leader, 1);
+
+        let follower = Db::in_memory().expect("an in-memory store");
+        follower
+            .session()
+            .run("DEFINE NAMESPACE research;")
+            .expect("a node that holds something of its own");
+        let mine = authority.issue(THERE, Purpose::Peer);
+        let der = authority.der();
+        let said = hello(THERE);
+        let collector = collector(&mine, &der, &said, address, 64);
+
+        let refused = collector
+            .collect(follower.store(), Reach::Store, Sequence::new(1))
+            .expect_err("a node that holds a tenancy of its own may not collect");
+        let words = refused.to_string();
+        assert!(
+            words.contains("research"),
+            "the refusal names what would be reinterpreted, or an operator \
+             cannot act on it: {words}"
+        );
+        assert!(
+            words.contains("DROP NAMESPACE"),
+            "and names the statement that lifts it: {words}"
+        );
+
+        // Refused means nothing arrived, not that the failure was reported after
+        // the fact — which is the whole difference between this and a warning.
+        // Read from the catalog rather than through `USE NAMESPACE`, which sets
+        // the session's context without asking whether the namespace is there.
+        assert_eq!(
+            declared(&follower),
+            vec!["research".to_owned()],
+            "the cluster's namespaces must not have been applied"
+        );
+
+        // The destruction, stated by being performed. Nothing authorises it on
+        // the joiner's behalf and nothing outlives it.
+        follower
+            .session()
+            .run("DROP NAMESPACE research;")
+            .expect("the operator removes their own tenancy");
+        collector
+            .collect(follower.store(), Reach::Store, Sequence::new(1))
+            .expect("a node with no tenancy of its own has nothing to reinterpret");
+        door.join().expect("the door's thread");
+
+        assert_eq!(
+            declared(&follower),
+            vec!["prod".to_owned(), "other".to_owned()],
+            "and then the cluster's namespaces arrive, under the ids the \
+             cluster gave them"
+        );
+    }
+
+    /// Every namespace a store can name, in catalog order.
+    fn declared(db: &Db) -> Vec<String> {
+        let mut transaction = db.store().begin().expect("a read");
+        let names = Catalog::new(&mut transaction)
+            .namespaces()
+            .expect("the catalog answers")
+            .into_iter()
+            .map(|namespace| namespace.name)
+            .collect();
+        transaction.rollback();
+        names
     }
 
     /// A leader whose catalog actually grants, built by running statements.
