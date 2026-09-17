@@ -52,11 +52,27 @@ pub struct Health {
     /// store that has stopped keeping its own promises is not less unwell for
     /// having stopped only once.
     pub background_errors: u64,
-    /// The log position every committed write is at or below.
+    /// The log position every write THIS NODE committed is at or below.
     ///
     /// Carried because "the process is up" and "the store is readable" are
     /// different claims and only the second one is useful.
+    ///
+    /// **This node's own log, and once a home admits more than one writer that
+    /// is not the same as the store's history.** It used to be documented as
+    /// the position every committed write is at or below, which stopped being
+    /// true when a log took its writer's name: a follower's records sit in its
+    /// leader's log, and a store migrated from before writers were named holds
+    /// every record it ever had in a log attributed to nobody. Both are
+    /// unreadable from this number alone, which is what [`Health::elsewhere`]
+    /// is for.
     pub committed: Sequence,
+    /// The furthest any OTHER log of the same home reaches, when there is one.
+    ///
+    /// `None` says this node's log is the only one here, which is the ordinary
+    /// state of a store standing alone — and it is the reason this is an option
+    /// rather than a zero, because a store nobody has written and a store whose
+    /// history belongs to somebody else must not answer the same thing (Q-764).
+    pub elsewhere: Option<Sequence>,
     /// Log divergences this process has refused.
     ///
     /// Not persisted, for the reason `crate::running`'s header gives about
@@ -892,9 +908,11 @@ impl Store {
     ///
     /// Returns the backend's failure when the counts cannot be read.
     pub fn health(&self) -> Result<Health> {
+        let own = self.own_log(UNPARTITIONED_REPORT_HOME)?;
         Ok(Health {
             background_errors: self.backend.background_errors()?,
-            committed: self.committed_tail(self.own_log(UNPARTITIONED_REPORT_HOME)?)?,
+            committed: self.committed_tail(own)?,
+            elsewhere: self.furthest_other_log(UNPARTITIONED_REPORT_HOME, own)?,
             log_divergences: self.divergences.load(Ordering::Relaxed),
             discarded_writes: self.discarded.load(Ordering::Relaxed),
             campaigns: self.campaigns.load(Ordering::Relaxed),
@@ -1151,6 +1169,36 @@ impl Store {
             Some(value) => Ok(Sequence::decode(value.as_slice())?),
             None => Ok(Sequence::ZERO),
         }
+    }
+
+    /// The furthest any log of `home` reaches other than `own`.
+    ///
+    /// `None` when `own` is the only log there, which is what a store standing
+    /// alone looks like and is therefore the answer that must NOT be a zero:
+    /// the two states this separates are *nothing has been written here* and
+    /// *everything here was written by somebody else*, and they were one
+    /// sentence until Q-764 measured what that sentence invites.
+    ///
+    /// A maximum rather than a sum, and not offered as a position anybody
+    /// resumes from: counters in different logs are unrelated, so this says
+    /// *there is history here and it reaches at least this far* and nothing
+    /// more. The scan costs one prefix walk of the position keyspace, which is
+    /// bounded by the number of writers in the home and not by the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's failure when the logs or their tails cannot be
+    /// read.
+    fn furthest_other_log(&self, home: Reach, own: LogId) -> Result<Option<Sequence>> {
+        let mut furthest: Option<Sequence> = None;
+        for log in self.logs_of(home)? {
+            if log == own {
+                continue;
+            }
+            let tail = self.committed_tail(log)?;
+            furthest = Some(furthest.map_or(tail, |held| held.max(tail)));
+        }
+        Ok(furthest)
     }
 
     /// The newest version this store has written a record at.
@@ -2304,6 +2352,74 @@ mod tests {
                 .len(),
             3
         );
+    }
+
+    #[test]
+    fn a_store_whose_history_predates_writers_does_not_report_itself_empty() {
+        // Q-764, measured before it was written: a store written by
+        // `0.0.6-beta` and opened by `0.3.0-beta` answered `--health` with
+        // "well — committed to sequence 0" while `--backup` read every record
+        // out of the same store. A store nobody has ever written answers that
+        // same sentence, so the two states an operator most needs to tell apart
+        // — nothing here, and everything here under a name this node does not
+        // own — were one sentence, at the one moment an upgrade makes somebody
+        // read it.
+        //
+        // The cause is not a lost record. `give_an_older_log_its_writer`
+        // attributes what it rewrites to NOBODY, deliberately and correctly,
+        // and this reports the node's OWN log, which is empty until this node
+        // writes. Both halves are right and the sentence built from one of them
+        // was not.
+        let shared = backend();
+        Store::open(Arc::clone(&shared)).unwrap();
+        let home = Reach::Store;
+        let mut batch = WriteBatch::new().put(
+            FormatVersionKey::keyspace(),
+            FormatVersionKey.encode(),
+            FormatVersion::HOMED_LOG.encode(),
+        );
+        for sequence in 1_u64..=3 {
+            let mut key = vec![KeyKind::LogEntry.tag()];
+            key.extend_from_slice(&unqualified_home(home));
+            key.extend_from_slice(&sequence.to_be_bytes());
+            batch = batch.put(
+                LogKey::keyspace(),
+                Key::from(key),
+                LogRecord::new(Vec::new()).encode(),
+            );
+        }
+        let mut position = vec![KeyKind::AppliedPosition.tag()];
+        position.extend_from_slice(&unqualified_home(home));
+        batch = batch.put(
+            AppliedPositionKey::keyspace(),
+            Key::from(position),
+            Sequence::new(3).encode(),
+        );
+        shared.apply(batch).unwrap();
+
+        let held = Store::open(shared).unwrap().health().unwrap();
+        assert_eq!(
+            held.committed,
+            Sequence::ZERO,
+            "this node has written nothing, and that stays the honest answer \
+             about its own log"
+        );
+        assert_eq!(
+            held.elsewhere,
+            Some(Sequence::new(3)),
+            "but the store is not empty, and this is the number an operator \
+             needs before concluding it is"
+        );
+    }
+
+    #[test]
+    fn a_store_nobody_has_written_holds_nothing_elsewhere() {
+        // The control the test above needs to mean anything: an empty store
+        // must not acquire a second number, or `elsewhere` would report history
+        // in every store there is and stop distinguishing anything.
+        let held = Store::open(backend()).unwrap().health().unwrap();
+        assert_eq!(held.committed, Sequence::ZERO);
+        assert_eq!(held.elsewhere, None);
     }
 
     /// A home as the nine bytes a key carried it in before writers were named.

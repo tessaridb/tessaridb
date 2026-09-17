@@ -1520,7 +1520,22 @@ fn health(db: &Db) -> Result<Ended, String> {
     let held = db.store().health().map_err(|failure| failure.to_string())?;
     match held.complaint() {
         None => {
-            println!("well — committed to sequence {}", held.committed);
+            // "this node" rather than the bare number, and the second clause
+            // when there is one. A store whose history was written before logs
+            // named their writer holds every record it ever had in a log
+            // attributed to nobody, so this node's own position is zero — the
+            // same sentence a store nobody has ever written answers, read at
+            // the one moment an upgrade makes somebody run this by hand (Q-764).
+            match held.elsewhere {
+                None => println!(
+                    "well — this node has committed to sequence {}",
+                    held.committed
+                ),
+                Some(elsewhere) => println!(
+                    "well — this node has committed to sequence {}, and another log in this store reaches sequence {elsewhere}",
+                    held.committed
+                ),
+            }
             Ok(Ended::Fine)
         }
         Some(said) => {

@@ -99,7 +99,7 @@ not a number, and a declared background retention is separately refused in the
 specification. S4.2 therefore stays **PARTIAL** with this gap closed and that one
 open; see Q-479.
 
-**A sentence in the profile that this makes precise.** `CLAUDE.md` records that
+**A sentence in the project's own notes that this makes precise.** They record that
 *"`DELETE` still reads the table whole, deliberately"*. That is true of the
 conditional form and is exactly what the right-hand column above shows. It is not
 true of the span form, which is the point of having one.

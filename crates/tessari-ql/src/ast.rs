@@ -2200,7 +2200,7 @@ pub struct AnsweredBy {
 
 /// The two answers `ANSWERED BY` takes.
 ///
-/// Two and not three (BGV-MINIMAL-001): a third waits for something that needs
+/// Two and not three: a third waits for something that needs
 /// it. Named values rather than a `bool`, for the reason every tag in this
 /// workspace is named — a `bool` makes an unrecognised spelling silently become
 /// one of the two, and here the silent direction is the unsafe one.
