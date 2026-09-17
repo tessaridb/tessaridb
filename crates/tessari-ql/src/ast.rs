@@ -518,6 +518,37 @@ pub enum StatementKind {
         /// Where peers reach it, or nothing to leave the endpoints alone.
         endpoints: Option<Vec<String>>,
     },
+    /// `DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s CAMPAIGN 1s LEASE 30s`
+    ///
+    /// The periods a cluster waits before it replaces a leader. Nameless, like
+    /// [`Self::DefineNode`], because there is exactly one policy per cluster: a
+    /// second row would be a second answer to a question that admits one, and
+    /// nothing downstream would know which to read.
+    ///
+    /// **Every clause is required, and that is the difference from
+    /// [`Self::DefineNode`].** That statement amends a row, so a clause left out
+    /// means *leave that field alone*. This one replaces a SET whose members are
+    /// checked against one another, so a partial statement could only either mix
+    /// new values with old under a single version, or perform a
+    /// read-modify-write the operator cannot see.
+    ///
+    /// The ordering pair is deliberately absent here. The leadership a policy was
+    /// written under and which setting under it this was are supplied where the
+    /// statement is executed, because an operator who could type either could
+    /// write a policy that outranks a successor's — the exact ordering the epoch
+    /// exists to prevent.
+    DefineFailover {
+        /// How often this node refreshes what it knows about its peers.
+        awareness: Duration,
+        /// How long a follower waits between collecting from its upstream.
+        collection: Duration,
+        /// How long one election round may take.
+        round: Duration,
+        /// How often a node that may write checks whether to stand.
+        campaign: Duration,
+        /// How long a granted leadership is held before it must be renewed.
+        lease: Duration,
+    },
     /// `DEFINE REPLICA second AT 'host:9001'`
     ///
     /// The opposite half: a peer is a fact every node must learn, so it is a

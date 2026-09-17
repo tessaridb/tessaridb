@@ -6798,6 +6798,81 @@ has, because every node is up, every greeting lands, and one copy simply never
 changes.
 
 
+### How long the cluster waits before it replaces a leader
+
+The periods that decide when a leader counts as gone are a **cluster-wide fact**,
+so they are a statement and a replicated row rather than a file or a flag:
+
+```
+DEFINE FAILOVER
+    AWARENESS 10s
+    COLLECTION 10s
+    ROUND 1s
+    CAMPAIGN 1s
+    LEASE 30s;
+```
+
+A configuration file cannot carry an agreement of this kind. It is an
+unreplicated claim about something every node has to agree on, so two nodes
+holding different files is not a conflict anything detects: each is internally
+consistent, each is confident, and the disagreement shows up only in the outcome
+— two nodes that disagree about when a lease has expired are two nodes that can
+both believe they may write, which is the split-brain the lease exists to
+prevent, arriving through the mechanism meant to prevent it. A flag is the same
+claim with a shorter life.
+
+**Every clause is required.** The five values are checked against one another
+rather than one at a time, so a statement naming three of them could only either
+mix new values with old ones under a single version, or perform a
+read-modify-write the operator cannot see. `DEFINE NODE` lets a clause be left
+out because it amends a row and absence there means *leave that field alone*;
+this statement replaces a set, and a half-written policy is refused for the same
+reason `DEFINE NODE` refuses one that names neither of its clauses.
+
+What each period is for, and which direction it hurts in — the direction is the
+part worth knowing, because both ends of every one of these is a real failure:
+
+| clause | what it sets | too large | too small |
+|---|---|---|---|
+| `AWARENESS` | how often a node refreshes what it knows about its peers | a failure is noticed later than it happened | peers are asked more often than anything changes |
+| `COLLECTION` | how long a follower waits between collecting | a replica falls further behind between rounds | the log is asked for nothing, repeatedly |
+| `ROUND` | how long one election round is allowed to take | a round that would have failed holds the cluster up | a round is abandoned while its answers are still arriving |
+| `CAMPAIGN` | how often a node that may write checks whether to stand | the leader steps over the moment it should have stood and loses a leadership it could have kept, **while nothing reports a failure, because no round was ever attempted** | rounds are opened that had nothing to decide |
+| `LEASE` | how long a granted leadership is held before it must be renewed | a dead leader's fence closes later, so the cluster waits longer for a replacement | there is no instant at which a holder is both writable and not yet campaigning |
+
+Four relations are enforced, and a statement that breaks one is **refused with
+the direction named** rather than accepted:
+
+- every period is at least one second;
+- `CAMPAIGN` is at most twice `ROUND`;
+- `LEASE` is greater than the write fence plus twice `ROUND`;
+- `COLLECTION` is less than twice `AWARENESS`.
+
+The lease guard is deliberately **not** settable. It is the margin between the
+moment this node stops writing and the moment the cluster may hand the leadership
+to somebody else, and a fence an operator can set to zero is a fence somebody
+sets to zero on the day a lease refuses a write they wanted — which removes it
+rather than tuning it. The staleness floor is not settable either, for the
+opposite reason: it is derived from `AWARENESS`, and a stored copy is a second
+answer that gets left behind the first time awareness moves.
+
+**Who may write it, and what orders two of them.** The statement is a log record
+like any other, so it is written by the node holding the leadership and reaches
+every other node through the log. It carries the leadership it was written under
+and which setting under that leadership it was, and a policy installs only if
+that pair is higher than the one already held. Neither number is a clock: a clock
+is the one ordering two working nodes can disagree about. The leadership settles
+a partitioned former leader reconnecting with a policy of its own; the second
+number settles one leader setting the policy twice, which the leadership alone
+cannot tell apart.
+
+`INFO FOR NODE` reports the policy under `cluster.failover`, with the pair that
+orders it. It is `null` when nobody has set one, which is a different statement
+from the defaults — a cluster nobody has configured runs the built-in periods,
+and reporting those as a set policy would make it impossible to see whether a
+policy ever arrived.
+
+
 ### Which peers vote, and what a node that votes for nobody does
 
 A peer declared with the `coordinating` role is a **voting member**: a node that

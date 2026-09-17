@@ -332,6 +332,7 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // would be a node configured by whatever a caller happened to supply,
         // which is the file-beside-the-store problem in a different shape.
         | StatementKind::DefineNode { .. }
+        | StatementKind::DefineFailover { .. }
         | StatementKind::DefineReplica { .. }
         // A broker address, a group name and a mapping are written where they
         // stand, for the reason above: a consumer whose destination arrived as a

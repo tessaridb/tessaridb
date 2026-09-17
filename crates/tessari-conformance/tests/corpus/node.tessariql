@@ -131,3 +131,28 @@ ALTER NAMESPACE unsaid;
 --- case: altering a namespace nobody declared is refused rather than creating one
 ALTER NAMESPACE ghost REPLICATION FACTOR 2;
 --- expect: error Unknown
+
+# The periods a cluster waits before it replaces a leader. A statement and a
+# replicated row rather than a file, because two nodes holding different files
+# is not a conflict anything detects: each is internally consistent, and the
+# disagreement shows up only as two nodes that both believe they may write.
+
+--- case: a failover policy is five periods in one statement
+DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s CAMPAIGN 1s LEASE 30s;
+--- expect: ok
+
+--- case: a later policy replaces the one before it
+DEFINE FAILOVER AWARENESS 12s COLLECTION 11s ROUND 2s CAMPAIGN 3s LEASE 40s;
+--- expect: ok
+
+--- case: every clause is required, because the five are checked as a set
+DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s LEASE 30s;
+--- expect: error UnexpectedToken
+
+--- case: a period of no length is not a slow setting, it is not a length
+DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 0s CAMPAIGN 1s LEASE 30s;
+--- expect: error EmptyPeriod
+
+--- case: a campaign outpacing its round is refused rather than accepted
+DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s CAMPAIGN 9s LEASE 30s;
+--- expect: error FailoverRefused

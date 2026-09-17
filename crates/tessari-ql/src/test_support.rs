@@ -225,6 +225,10 @@ fn erase_statement(statement: &mut Statement) {
         }
         StatementKind::AlterNamespace { name, .. } => erase_name(name),
         StatementKind::DefineNode { roles, .. } => erase_names(roles.as_deref_mut()),
+        // Nothing to erase: a failover policy is five durations and carries no
+        // name at all. The arm exists so that adding a name to the statement
+        // later cannot pass this helper silently.
+        StatementKind::DefineFailover { .. } => {}
         StatementKind::DefineReplica {
             name,
             roles,

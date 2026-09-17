@@ -1009,6 +1009,15 @@ impl Session<'_> {
         let leading = self.store.leading().map_or(Value::Null, |epoch| {
             Value::from(i64::try_from(epoch.get()).unwrap_or(i64::MAX))
         });
+        // `null` when nobody has set a policy, and that is a different statement
+        // from *the defaults*. A cluster nobody has configured runs the built-in
+        // periods; reporting those here as a policy would make it impossible to
+        // see whether one ever arrived — which is exactly the observation a
+        // two-node check of replication is trying to make.
+        let failover = match Catalog::new(transaction).failover()? {
+            None => Value::Null,
+            Some(held) => described_failover(&held),
+        };
         let followers = self
             .store
             .follower_lag()?
@@ -1103,6 +1112,12 @@ impl Session<'_> {
                         "campaigns".to_owned(),
                         Value::from(i64::try_from(campaigns).unwrap_or(i64::MAX)),
                     ),
+                    // The periods this cluster waits before it replaces a
+                    // leader, with the pair that orders two of them. Beside the
+                    // lease and the epoch because it is what those two are
+                    // measured against: a lease counting down says how long,
+                    // and this says how long it was ever meant to be.
+                    ("failover".to_owned(), failover),
                 ])),
             ),
         ]))
@@ -1430,6 +1445,38 @@ fn namespace_named(namespace: NamespaceId, catalog: &Catalog<'_, '_>) -> Result<
 /// read against the leader's own timeline of its tail, so it is an upper bound
 /// overstating by at most one sampling interval, and it is `null` when the copy
 /// predates everything this leader has sampled — beyond every bound, not zero.
+/// A failover policy as a report shows it: the five periods and the pair.
+///
+/// The periods are durations rather than numbers, because the store has a
+/// duration type and an integer here would put the unit in a doc comment
+/// somewhere else. The pair is beside them rather than inside them: `epoch` and
+/// `version` are not periods, they are which policy this is, and a reader
+/// comparing two nodes compares the pair first.
+fn described_failover(held: &tessari_storage::FailoverDefinition) -> Value {
+    let period = |span: std::time::Duration| {
+        tessari_types::Duration::new(
+            i64::try_from(span.as_secs()).unwrap_or(i64::MAX),
+            span.subsec_nanos(),
+        )
+        .map_or(Value::Null, Value::Duration)
+    };
+    Value::Object(BTreeMap::from([
+        ("awareness".to_owned(), period(held.policy.awareness())),
+        ("collection".to_owned(), period(held.policy.collection())),
+        ("round".to_owned(), period(held.policy.round())),
+        ("campaign".to_owned(), period(held.policy.campaign())),
+        ("lease".to_owned(), period(held.policy.lease())),
+        (
+            "epoch".to_owned(),
+            Value::from(i64::try_from(held.epoch.get()).unwrap_or(i64::MAX)),
+        ),
+        (
+            "version".to_owned(),
+            Value::from(i64::try_from(held.version).unwrap_or(i64::MAX)),
+        ),
+    ]))
+}
+
 fn described_follower(lag: FollowerLag) -> Value {
     Value::Object(BTreeMap::from([
         ("node".to_owned(), Value::Uuid(lag.node)),

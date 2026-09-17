@@ -4,8 +4,8 @@ use core::num::NonZeroU32;
 
 use super::Parser;
 use tessari_types::{
-    Assertion, ConflictPolicy, FieldKind, Filter, IdentityKind, Number, Path, Replication,
-    ReplicationClass, Step, parse_uuid,
+    Assertion, ConflictPolicy, Duration, FieldKind, Filter, IdentityKind, Number, Path,
+    Replication, ReplicationClass, Step, parse_uuid,
 };
 
 use crate::ast::{
@@ -898,6 +898,9 @@ impl Parser<'_> {
             // arms consume their word, so neither may `advance` again.
             _ if self.eat_word("node") => self.define_node(),
             _ if self.eat_word("replica") => self.define_replica(),
+            // And a third contextual subject, on the same reasoning: `failover`
+            // is a perfectly good name for a table somebody's data already uses.
+            _ if self.eat_word("failover") => self.define_failover(),
             // `KAFKA` qualifies the word rather than replacing it, and it is
             // contextual like every other subject here — special after `DEFINE`
             // and an ordinary identifier everywhere else, so a table called
@@ -1252,6 +1255,92 @@ impl Parser<'_> {
     /// clears there. The reasoning is in the specification, § *Draining this
     /// node*, and is not restated here: two copies of one argument drift, and
     /// the document is the one a reader of the language actually opens.
+    /// `DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s CAMPAIGN 1s LEASE 30s`
+    ///
+    /// **In this order, and all five.** A fixed order rather than clauses in any
+    /// arrangement, because these five are read together as a set — four
+    /// relations hold between them — and a reader comparing two policies in a
+    /// log or a report compares them line by line. Free order would make two
+    /// spellings of one policy that a human eye cannot diff.
+    ///
+    /// Each one is required, which is the difference from [`Self::define_node`]:
+    /// that statement amends a row and an absent clause leaves its field alone,
+    /// while this one replaces a checked set. A statement naming three periods
+    /// could only mix new values with old ones under a single version, or
+    /// perform a read-modify-write nobody can see in what they typed.
+    ///
+    /// The relations themselves are NOT checked here. They are checked where the
+    /// policy is built, by `Failover::stated`, which is the only way to make one
+    /// that is not the default — so the refusal names the direction the value is
+    /// wrong in, and there is exactly one place that knows those directions. A
+    /// copy of them in the parser would be a second answer that drifts.
+    fn define_failover(&mut self) -> Result<StatementKind> {
+        let awareness = self.period("awareness")?;
+        let collection = self.period("collection")?;
+        let round = self.period("round")?;
+        let campaign = self.period("campaign")?;
+        let lease = self.period("lease")?;
+        Ok(StatementKind::DefineFailover {
+            awareness,
+            collection,
+            round,
+            campaign,
+            lease,
+        })
+    }
+
+    /// One named period of a failover policy, refused with its own word.
+    ///
+    /// The clause word is in the error rather than a generic *a duration*,
+    /// because five clauses in a fixed order means the operator's mistake is
+    /// almost always *which one did I leave out* — and an error that cannot say
+    /// leaves them counting durations.
+    ///
+    /// A period of no length is refused here rather than at `Failover::stated`
+    /// for the reason the queue timeout gives about its own zero: it is a
+    /// mistake in the statement, and the statement is where the span is.
+    fn period(&mut self, clause: &'static str) -> Result<Duration> {
+        // Four of the five clause words are contextual identifiers, on the
+        // reasoning `NODE` and `REPLICA` are read that way. `COLLECTION` is the
+        // exception because the language already reserved it for
+        // `DEFINE COLLECTION`, so it arrives as a keyword and has to be eaten as
+        // one.
+        //
+        // The clause keeps the name anyway. Calling it something else here to
+        // dodge one token kind would give the same field two spellings — one in
+        // the statement, one in the row and the report — which is the drift this
+        // codebase has already paid for twice. The collision is only syntactic:
+        // nothing but a period clause can stand at this position.
+        let taken = if clause == "collection" {
+            self.eat_keyword(Keyword::Collection)
+        } else {
+            self.eat_word(clause)
+        };
+        if !taken {
+            return Err(self.error_here(match clause {
+                "awareness" => "`AWARENESS` and how often this node refreshes what it knows",
+                "collection" => "`COLLECTION` and how long a follower waits between collecting",
+                "round" => "`ROUND` and how long one election round may take",
+                "campaign" => "`CAMPAIGN` and how often a node checks whether to stand",
+                _ => "`LEASE` and how long a granted leadership is held",
+            }));
+        }
+        let Some(Token::Duration(written)) = self.peek() else {
+            return Err(self.error_here("a duration, like `10s` or `1m`"));
+        };
+        let period = *written;
+        let at = self.span_here();
+        self.advance();
+        if period.seconds() < 0 || (period.seconds() == 0 && period.nanos() == 0) {
+            return Err(Error::EmptyPeriod {
+                clause,
+                written: period.to_literal(),
+                span: at,
+            });
+        }
+        Ok(period)
+    }
+
     fn define_node(&mut self) -> Result<StatementKind> {
         let roles = if self.eat_word("roles") {
             if self.eat_keyword(Keyword::None) {

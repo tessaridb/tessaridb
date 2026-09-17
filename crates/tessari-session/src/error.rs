@@ -58,6 +58,24 @@ pub enum Error {
         span: tessari_ql::Span,
     },
 
+    /// A `DEFINE FAILOVER` names periods that do not hold together.
+    ///
+    /// The store owns the relations and the direction each one fails in, so the
+    /// reason is carried through verbatim rather than restated: a second copy of
+    /// *too large means the leader steps over the moment it should have stood*
+    /// would be a second answer that drifts from the one place that enforces it.
+    ///
+    /// The span is added because the store cannot have it. A refusal that named
+    /// the relation but not the statement would send an operator looking through
+    /// a script for which of five durations it meant.
+    #[error("{reason} (at {span})")]
+    FailoverRefused {
+        /// The store's own words for which relation broke and in which direction.
+        reason: String,
+        /// Where the statement is.
+        span: tessari_ql::Span,
+    },
+
     /// A `USING` naming a word that is not an access path.
     ///
     /// Almost always a typo, and refused before the read rather than after it:

@@ -108,6 +108,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // for, and which machines hold its data, are not anybody's tables. Both
         // are `Needs::Administer`, decided before this list is consulted.
         | StatementKind::DefineNode { .. }
+        | StatementKind::DefineFailover { .. }
         | StatementKind::DefineReplica { .. }
         | StatementKind::DropReplica { .. }
         // Forgetting a consumer names no table. Declaring one does, and it is

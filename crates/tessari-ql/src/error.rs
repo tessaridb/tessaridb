@@ -312,6 +312,26 @@ pub enum Error {
         span: Span,
     },
 
+    /// A failover period is not a length of time.
+    ///
+    /// `ROUND 0s` and `LEASE -30s` are not slow or aggressive settings, they are
+    /// values the cluster cannot wait for. Caught where the statement is read
+    /// rather than where the policy is built, because the clause word and the
+    /// span are here and a policy assembled from five durations no longer knows
+    /// which one the operator typed.
+    #[error(
+        "the {clause} period is {written} (at {span}), which is not a length of \
+         time; every failover period is a positive duration"
+    )]
+    EmptyPeriod {
+        /// Which of the five clauses it was.
+        clause: &'static str,
+        /// The period as it was written.
+        written: String,
+        /// Where the clause is.
+        span: Span,
+    },
+
     /// A `STALENESS` names a tolerance no node could satisfy.
     ///
     /// `STALENESS 0s` and `STALENESS -5s` admit no node at all, including the
@@ -813,6 +833,7 @@ impl Error {
             | Self::CursorBesideAReshaping { span, .. }
             | Self::AnchorFromAnotherTable { span, .. }
             | Self::EmptyTimeout { span, .. }
+            | Self::EmptyPeriod { span, .. }
             | Self::EmptyRetention { span, .. }
             | Self::DepthNeedsOneHopToATable { span }
             | Self::DepthBelowOne { span }
