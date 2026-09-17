@@ -1992,3 +1992,94 @@ fn a_grant_and_its_revocation_travel_with_the_user_they_are_about() {
         "a grant revoked on the source is still held on the replica"
     );
 }
+
+/// Every membership row on `store`, as `(id, name)`, in id order.
+fn replicas_on(store: &Store) -> Vec<(u32, String)> {
+    let mut transaction = store.begin().unwrap();
+    let mut found: Vec<(u32, String)> = Catalog::new(&mut transaction)
+        .replicas()
+        .unwrap()
+        .into_iter()
+        .map(|peer| (peer.id, peer.name))
+        .collect();
+    transaction.rollback();
+    found.sort();
+    found
+}
+
+/// Declare one peer on `store`, the way `DEFINE REPLICA` does.
+fn declare_peer(store: &Store, name: &str, node: [u8; tessari_encoding::NODE_ID_LEN]) {
+    let mut transaction = store.begin().unwrap();
+    Catalog::new(&mut transaction)
+        .create_replica(
+            name,
+            "127.0.0.1:1",
+            tessari_encoding::Roles::SERVING
+                .and(tessari_encoding::Roles::WRITABLE)
+                .and(tessari_encoding::Roles::COORDINATING),
+            Some(node),
+            Some(Reach::Store),
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+}
+
+/// **Q-754 reproduced in process, at no seconds instead of ninety.**
+///
+/// A membership row is written under `self.allocate(Level::Replica)` — a number
+/// the WRITING node allocates — while `catalog/replica.rs` says in its own
+/// header that the table is cluster-wide, *"every node must learn that a peer
+/// exists, which is what replicating it is for"*. Those two facts do not
+/// compose: two nodes that declare different peers allocate the SAME number to
+/// DIFFERENT peers, and the first replication overwrites one with the other.
+///
+/// W382 met this across three operating-system processes and it cost a wave to
+/// see: a follower collected once, lost the row naming its upstream, gained one
+/// naming itself, and from the next awareness round on reported *"1 of 2
+/// declared peer(s) answered"* while `INFO` showed a healthy two-peer cluster
+/// throughout. There was no error, no conflict and no log line — the row count
+/// was unchanged and every field was well formed. The three-node fixture now
+/// declares the same rows in the same order on every node, which makes the
+/// collision vacuous; that is a property of the FIXTURE and not of the engine,
+/// and any operator who declares a cluster node by node reproduces this.
+///
+/// # This test asserts what happens TODAY, deliberately
+///
+/// It is a characterisation test, not an approval. If it turns red, Q-754 has
+/// been fixed and the assertion below is the thing to rewrite — to the peer set
+/// being the UNION of what the two nodes declared, which is what a cluster-wide
+/// table is supposed to mean.
+#[test]
+fn two_nodes_declaring_different_peers_overwrite_one_anothers_membership() {
+    let mine = backend();
+    let mine = store_on(&mine);
+    declare_peer(&mine, "alpha", [1_u8; tessari_encoding::NODE_ID_LEN]);
+
+    let theirs = backend();
+    let theirs = store_on(&theirs);
+    declare_peer(&theirs, "beta", [2_u8; tessari_encoding::NODE_ID_LEN]);
+
+    // Both allocated the same number, independently, because neither had any
+    // way to know the other existed. This is the whole mechanism.
+    assert_eq!(
+        replicas_on(&mine),
+        vec![(1, "alpha".to_owned())],
+        "the first peer a store declares is not id 1"
+    );
+    assert_eq!(
+        replicas_on(&theirs),
+        vec![(1, "beta".to_owned())],
+        "the first peer a store declares is not id 1"
+    );
+
+    crate::replay(&mine, &theirs);
+
+    // Today's answer. `beta` is gone from a store that declared it, and nothing
+    // anywhere is in an error state.
+    assert_eq!(
+        replicas_on(&theirs),
+        vec![(1, "alpha".to_owned())],
+        "Q-754 may have been fixed — if this store now holds BOTH peers, that \
+         is the correct behaviour and this test should assert it instead"
+    );
+}
