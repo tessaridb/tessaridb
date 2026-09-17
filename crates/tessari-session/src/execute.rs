@@ -3185,18 +3185,13 @@ impl Session<'_> {
         name: &Name,
         span: Span,
     ) -> Result<Outcome> {
-        let found = Catalog::new(transaction)
-            .replicas()?
-            .into_iter()
-            .find(|held| held.name == name.text);
-        let Some(replica) = found else {
+        if !Catalog::new(transaction).drop_replica(&name.text)? {
             return Err(Error::Unknown {
                 entity: "replica",
                 name: name.text.clone(),
                 span,
             });
-        };
-        Catalog::new(transaction).drop_replica(replica.id)?;
+        }
         Ok(Outcome::Done)
     }
 

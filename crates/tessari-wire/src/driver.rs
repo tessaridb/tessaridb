@@ -927,7 +927,6 @@ mod tests {
     /// A declared peer row, as an operator would have written it.
     fn peer(roles: Roles, node: Option<[u8; NODE_ID_LEN]>) -> ReplicaDefinition {
         ReplicaDefinition {
-            id: 1,
             name: "leader".to_owned(),
             endpoint: "10.0.0.2:9000".to_owned(),
             roles,

@@ -1236,21 +1236,22 @@ fn greet_peers(
 /// greeting that arrived and a row that did not need binding are both the normal
 /// course of a running cluster.
 fn bind_the_greeter(db: &Db, node: [u8; tessari_storage::NODE_ID_LEN]) {
-    let bind = || -> Result<Option<u32>, String> {
+    let bind = || -> Result<Option<String>, String> {
         let mut transaction = db.store().begin().map_err(|why| why.to_string())?;
         let mut catalog = tessari_storage::Catalog::new(&mut transaction);
         let declared = catalog.replicas().map_err(|why| why.to_string())?;
-        let Some(id) = tessari_storage::the_row_a_greeting_binds(&declared, &node) else {
+        let Some(name) = tessari_storage::the_row_a_greeting_binds(&declared, &node) else {
             return Ok(None);
         };
+        let name = name.to_owned();
         catalog
-            .bind_replica_node(id, node)
+            .bind_replica_node(&name, node)
             .map_err(|why| why.to_string())?;
         transaction.commit().map_err(|why| why.to_string())?;
-        Ok(Some(id))
+        Ok(Some(name))
     };
     match bind() {
-        Ok(Some(id)) => log::info!("peer {} now names replica {id}", hex(&node)),
+        Ok(Some(name)) => log::info!("peer {} now names replica {name}", hex(&node)),
         Ok(None) => {}
         Err(why) => log::info!("peer {} was not bound to a declared row: {why}", hex(&node)),
     }

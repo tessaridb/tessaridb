@@ -1993,14 +1993,14 @@ fn a_grant_and_its_revocation_travel_with_the_user_they_are_about() {
     );
 }
 
-/// Every membership row on `store`, as `(id, name)`, in id order.
-fn replicas_on(store: &Store) -> Vec<(u32, String)> {
+/// Every membership row on `store`, by the name that identifies it.
+fn replicas_on(store: &Store) -> Vec<String> {
     let mut transaction = store.begin().unwrap();
-    let mut found: Vec<(u32, String)> = Catalog::new(&mut transaction)
+    let mut found: Vec<String> = Catalog::new(&mut transaction)
         .replicas()
         .unwrap()
         .into_iter()
-        .map(|peer| (peer.id, peer.name))
+        .map(|peer| peer.name)
         .collect();
     transaction.rollback();
     found.sort();
@@ -2043,14 +2043,16 @@ fn declare_peer(store: &Store, name: &str, node: [u8; tessari_encoding::NODE_ID_
 /// collision vacuous; that is a property of the FIXTURE and not of the engine,
 /// and any operator who declares a cluster node by node reproduces this.
 ///
-/// # This test asserts what happens TODAY, deliberately
+/// # Fixed in W390, and this test is the one its own message asked for
 ///
-/// It is a characterisation test, not an approval. If it turns red, Q-754 has
-/// been fixed and the assertion below is the thing to rewrite — to the peer set
-/// being the UNION of what the two nodes declared, which is what a cluster-wide
-/// table is supposed to mean.
+/// It was written as a characterisation test whose message said: *"if this store
+/// now holds BOTH peers, that is the correct behaviour and this test should
+/// assert it instead."* ADR-0077 made the row's identity the peer it names, so
+/// the union is what a cluster-wide table now produces, and that is what is
+/// asserted below. The history above is kept because the assertion is only
+/// legible beside the answer it replaced.
 #[test]
-fn two_nodes_declaring_different_peers_overwrite_one_anothers_membership() {
+fn two_nodes_declaring_different_peers_end_up_holding_both() {
     let mine = backend();
     let mine = store_on(&mine);
     declare_peer(&mine, "alpha", [1_u8; tessari_encoding::NODE_ID_LEN]);
@@ -2059,27 +2061,101 @@ fn two_nodes_declaring_different_peers_overwrite_one_anothers_membership() {
     let theirs = store_on(&theirs);
     declare_peer(&theirs, "beta", [2_u8; tessari_encoding::NODE_ID_LEN]);
 
-    // Both allocated the same number, independently, because neither had any
-    // way to know the other existed. This is the whole mechanism.
-    assert_eq!(
-        replicas_on(&mine),
-        vec![(1, "alpha".to_owned())],
-        "the first peer a store declares is not id 1"
-    );
-    assert_eq!(
-        replicas_on(&theirs),
-        vec![(1, "beta".to_owned())],
-        "the first peer a store declares is not id 1"
-    );
+    // Each store knows only what it declared, which is the state the collision
+    // used to be born from: neither had any way to know the other existed.
+    assert_eq!(replicas_on(&mine), vec!["alpha".to_owned()]);
+    assert_eq!(replicas_on(&theirs), vec!["beta".to_owned()]);
 
     crate::replay(&mine, &theirs);
 
-    // Today's answer. `beta` is gone from a store that declared it, and nothing
-    // anywhere is in an error state.
+    // Every row is written under the name it was declared with, so two peers
+    // declared independently are two keys and neither can land on the other.
     assert_eq!(
         replicas_on(&theirs),
-        vec![(1, "alpha".to_owned())],
-        "Q-754 may have been fixed — if this store now holds BOTH peers, that \
-         is the correct behaviour and this test should assert it instead"
+        vec!["alpha".to_owned(), "beta".to_owned()],
+        "a replicated membership must be the UNION of what the nodes declared"
+    );
+}
+
+/// **ADR-0077's third open question, measured and then removed.**
+///
+/// The ADR left one thing it had not checked: *whether the NAMES reservation
+/// (`qualify(Level::Replica, …)`) has the same defect one layer down. It very
+/// likely does — it is keyed by name and claims an id.*
+///
+/// It did, and the consequence outlived the row. A membership row used to be
+/// reserved as `NAMES[replica:<name>] -> id`, a SECOND keyspace over one entity
+/// keyed on the OTHER of its two candidate identities. **Measured before the fix
+/// (W390 S1):** after the overwrite the two keyspaces disagreed permanently —
+/// `theirs` held no row for `beta` and refused to declare one, because the name
+/// was still reserved against an id the surviving row had taken. Neither
+/// keyspace was in an error state and neither was wrong on its own terms.
+///
+/// Making the name the record's identity does not repair that disagreement, it
+/// removes the thing that could disagree: there is one key now, and the
+/// reservation IS the row.
+///
+/// # The lifecycle, because one key is a claim about all of it
+///
+/// A single assertion after the replay cannot tell a unified key from a
+/// reservation that happens to agree. Dropping the peer and declaring it again
+/// can: under the old shape the drop released the name of the SURVIVING row and
+/// left the overwritten one's reservation held by nothing, so the second
+/// declaration was refused forever.
+///
+/// Asserted through the public API throughout. What an operator meets is a
+/// `DEFINE REPLICA` refused for a name nothing holds, and asserting the internal
+/// table would pass just as well against a fix that left them stuck.
+#[test]
+fn a_peer_name_is_free_again_once_the_row_it_identifies_is_dropped() {
+    let mine = backend();
+    let mine = store_on(&mine);
+    declare_peer(&mine, "alpha", [1_u8; tessari_encoding::NODE_ID_LEN]);
+
+    let theirs = backend();
+    let theirs = store_on(&theirs);
+    declare_peer(&theirs, "beta", [2_u8; tessari_encoding::NODE_ID_LEN]);
+
+    crate::replay(&mine, &theirs);
+    // A store that names a peer is clustered, and a clustered node holding no
+    // lease may not commit (ADR-0064) — so the FIRST declaration lands and every
+    // write after it is refused `NoLeadershipYet`. That is the engine being
+    // right, and it is this test that needs a lease: the lifecycle below is
+    // three more writes. A leadership row is not the same thing and does not
+    // help; `Store::awaiting` reads the in-memory lease.
+    theirs.hold_lease(tessari_storage::LEASE_TTL);
+    assert_eq!(
+        replicas_on(&theirs),
+        vec!["alpha".to_owned(), "beta".to_owned()],
+        "this test is about a peer that survived the replay, and it did not"
+    );
+
+    // While the row is there the name is taken, which is the ordinary refusal.
+    let mut transaction = theirs.begin().unwrap();
+    let refused = Catalog::new(&mut transaction).create_replica(
+        "beta",
+        "127.0.0.1:2",
+        tessari_encoding::Roles::SERVING,
+        Some([2_u8; tessari_encoding::NODE_ID_LEN]),
+        Some(Reach::Store),
+    );
+    transaction.rollback();
+    assert!(
+        matches!(refused, Err(Error::NameTaken { .. })),
+        "a declared peer's name must be taken while its row is there; got {refused:?}"
+    );
+
+    // And once the row goes, so does the name — the half the second keyspace
+    // used to get wrong.
+    let mut transaction = theirs.begin().unwrap();
+    assert!(Catalog::new(&mut transaction).drop_replica("beta").unwrap());
+    transaction.commit().unwrap();
+    assert_eq!(replicas_on(&theirs), vec!["alpha".to_owned()]);
+
+    declare_peer(&theirs, "beta", [2_u8; tessari_encoding::NODE_ID_LEN]);
+    assert_eq!(
+        replicas_on(&theirs),
+        vec!["alpha".to_owned(), "beta".to_owned()],
+        "a name released with its row must be declarable again"
     );
 }

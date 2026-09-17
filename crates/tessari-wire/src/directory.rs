@@ -366,7 +366,6 @@ mod tests {
     /// A declared peer row: a name, where it answers, and who is there.
     fn declared(id: u32, endpoint: &str, node: Option<[u8; NODE_ID_LEN]>) -> ReplicaDefinition {
         ReplicaDefinition {
-            id,
             name: format!("peer{id}"),
             endpoint: endpoint.to_owned(),
             roles: Roles::SERVING,
