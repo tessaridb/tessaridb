@@ -888,16 +888,21 @@ fn collect_from_upstream(
                 }
             };
             for home in logs {
-                // This node's own copy of that log. The collector asks the peer
-                // for the PEER's log and files what arrives under the peer's
-                // name, so a cursor is per (home, peer) exactly as the log is.
-                let log = match store.own_log(home) {
-                    Ok(log) => log,
-                    Err(why) => {
-                        log::warn!("this node cannot name its own log for {home:?}: {why}");
-                        continue;
-                    }
-                };
+                // The PEER's log as this node holds it, and emphatically not
+                // this node's own. A log is a home AND a writer, so the two are
+                // different counters over the same range — and the one the
+                // collector asks a position in is the peer's, because that is
+                // where the answer is filed.
+                //
+                // Seeding from `own_log` instead is how W382 found a cluster
+                // that elected a leader and replicated nothing: a follower
+                // commits its own membership before it joins, so its own log
+                // stands at 1, it asked the leader for position 2 of a log it
+                // held nothing of, and every pass was refused *the next record
+                // must be 1, but 2 was offered* — one counter subtracted from
+                // another, which is the failure `Store::committed_tail` warns
+                // about in its own words.
+                let log = tessari_storage::LogId::new(home, tessari_storage::Writer::new(node));
                 // The seed for a log with no cursor yet: the first position
                 // this node does not hold THERE. Read here rather than inside
                 // the collector, which may not reach the feed.
@@ -909,14 +914,24 @@ fn collect_from_upstream(
                     }
                 };
                 let before = collecting.reached(home);
-                let reached = collecting.once(home, seed, |at| collector.collect(store, home, at));
-                if before == Some(reached) {
-                    log::debug!(
+                match collecting.once(home, seed, |at| collector.collect(store, home, at)) {
+                    // A refusal, said out loud. It reaches here rather than
+                    // being absorbed by the cursor because *the peer turned me
+                    // away* and *the peer had nothing for me* leave the cursor
+                    // in the same place, and an operator reading only the
+                    // cursor cannot tell a cluster that has stopped
+                    // replicating from one that is level.
+                    Err(why) => log::warn!(
+                        "collecting {home:?} from {endpoint} was refused: {why}. \
+                         This node's copy of that log is not advancing."
+                    ),
+                    Ok(reached) if before == Some(reached) => log::debug!(
                         "nothing collected for {home:?} from {endpoint}; still at {}",
                         reached.get()
-                    );
-                } else {
-                    log::info!("collected {home:?} to {} from {endpoint}", reached.get());
+                    ),
+                    Ok(reached) => {
+                        log::info!("collected {home:?} to {} from {endpoint}", reached.get());
+                    }
                 }
             }
         },
@@ -1001,7 +1016,7 @@ fn stand_for_leadership(
                     return;
                 }
             };
-            let Some(voting) = tessari_wire::voters(me.roles, &declared) else {
+            let Some(voting) = tessari_wire::voters(me.roles, &declared, &me.id) else {
                 return;
             };
             // ADR-0066. A node that can still hear a leader does not stand

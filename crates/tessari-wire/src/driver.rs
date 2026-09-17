@@ -273,20 +273,48 @@ impl Collecting {
     /// later pass ever asks for the gap, and nothing is in an error state to say
     /// so. Leaving it costs a repeated request when the peer comes back, which
     /// is the failure worth having.
+    ///
+    /// # Why the refusal is handed back rather than absorbed
+    ///
+    /// Until W382 this answered a `Sequence` either way, and the error was
+    /// dropped at the one point in the program where it was in scope. The
+    /// caller was then left with a cursor that had not moved — which is also
+    /// what a healthy pass with nothing to fetch produces — so *the peer
+    /// refused me* and *the peer had nothing for me* reached an operator as the
+    /// same line, and a cluster replicating nothing looked exactly like a
+    /// cluster that was already level.
+    ///
+    /// That is not a reporting nicety. It cost three processes, ninety seconds
+    /// and a refuted hypothesis to learn that a follower was being turned away,
+    /// because the sentence naming the reason existed only inside this function
+    /// and was discarded here.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever `pass` returned. The cursor is already recorded when it
+    /// does, so a caller that only wants to go on collecting may discard it —
+    /// but it has to discard it deliberately.
     pub fn once<E>(
         &mut self,
         home: Reach,
         seed: Sequence,
         pass: impl FnOnce(Sequence) -> Result<Sequence, E>,
-    ) -> Sequence {
+    ) -> Result<Sequence, E> {
         let at = self.at.get(&home).copied().unwrap_or(seed);
-        let reached = if let Ok(reached) = pass(at) {
-            reached
-        } else {
-            at
-        };
-        self.at.insert(home, reached);
-        reached
+        match pass(at) {
+            Ok(reached) => {
+                self.at.insert(home, reached);
+                Ok(reached)
+            }
+            Err(why) => {
+                // The seed, when this log had no cursor at all: a failed first
+                // pass still fixes where the next one starts, or the caller's
+                // freshly-read tail would be handed to a retry as a new
+                // beginning it has not earned.
+                self.at.insert(home, at);
+                Err(why)
+            }
+        }
     }
 }
 
@@ -566,10 +594,32 @@ pub fn stands(mine: Roles) -> bool {
 /// The same wall [`upstream`] runs into. A ballot travels on a connection whose
 /// certificate must be valid for a name derived from the peer's id, so a row
 /// naming where but not who cannot be asked for anything at all.
+///
+/// # This node is not one of its own voters
+///
+/// `me` is skipped, exactly as [`Directory::greet_round`] skips it and for a
+/// reason that is not symmetry. A node's catalog acquires a row describing
+/// **itself** as soon as replication works at all: `DEFINE REPLICA` is a
+/// catalog write and therefore a log record, so a follower applying a leader's
+/// store log receives the leader's view of the membership — which names every
+/// node including the one reading it.
+///
+/// Without this filter the consequence is not a wasted dial. The membership a
+/// round is judged against is `voters.len() + 1` (see [`crate::Standing`]), so
+/// a self row makes a cluster of three count itself as four and demand three
+/// grants; and the third can never arrive, because the only node that would
+/// cast it is the candidate, whose own door refuses the connection with
+/// [`crate::Error::ClaimsOurOwnIdentity`]. Every round then fails, every
+/// failure raises the epoch, and the cluster campaigns for ever without
+/// anything being in an error state — which is precisely what W382 measured
+/// against three processes: the store log replicated once, and the election
+/// storm that started in the same second stopped anything else from following
+/// it.
 #[must_use]
 pub fn voters(
     mine: Roles,
     declared: &[ReplicaDefinition],
+    me: &[u8; NODE_ID_LEN],
 ) -> Option<Vec<([u8; NODE_ID_LEN], String)>> {
     if !stands(mine) {
         return None;
@@ -578,6 +628,7 @@ pub fn voters(
         .iter()
         .filter(|peer| peer.roles.has(Roles::COORDINATING))
         .filter_map(|peer| Some((peer.node?, peer.endpoint.clone())))
+        .filter(|(node, _)| node != me)
         .collect();
     (!voting.is_empty()).then_some(voting)
 }
@@ -984,6 +1035,32 @@ mod tests {
         assert_eq!(upstream(Roles::SERVING, &declared, &Directory::new()), None);
     }
 
+    /// The row a node acquires about ITSELF the moment replication works.
+    ///
+    /// W382, against three processes. `DEFINE REPLICA` is a catalog write and
+    /// therefore a log record, so a follower that applies a leader's store log
+    /// receives the leader's membership — which names the follower. Counting it
+    /// makes a cluster of three demand three grants and leaves the third
+    /// uncastable, because the only node that would cast it is the candidate,
+    /// whose own door refuses the connection. Every round then fails and the
+    /// epoch climbs for ever with nothing in an error state.
+    #[test]
+    fn a_row_naming_this_node_is_not_one_of_its_own_voters() {
+        let mine = Roles::SERVING.and(Roles::COORDINATING);
+        let itself = peer(mine, Some(NODE));
+        let other = named("two", "10.0.0.3:9000", ANOTHER);
+        assert_eq!(
+            voters(mine, std::slice::from_ref(&itself), &NODE),
+            None,
+            "a node stood a round against nobody but itself"
+        );
+        assert_eq!(
+            voters(mine, &[itself, other], &NODE),
+            Some(vec![(ANOTHER, "10.0.0.3:9000".to_owned())]),
+            "the membership a round is judged against counted this node twice"
+        );
+    }
+
     #[test]
     fn a_node_the_operator_did_not_make_coordinating_stands_for_nothing() {
         // ADR-0063. The deciding set is the set a leader is drawn from, and
@@ -994,11 +1071,15 @@ mod tests {
         // would be taking the decision the catalog exists to hold.
         let coordinating = peer(Roles::SERVING.and(Roles::COORDINATING), Some(NODE));
         assert_eq!(
-            voters(Roles::SERVING, std::slice::from_ref(&coordinating)),
+            voters(
+                Roles::SERVING,
+                std::slice::from_ref(&coordinating),
+                &ANOTHER
+            ),
             None
         );
         assert_eq!(
-            voters(Roles::NONE, std::slice::from_ref(&coordinating)),
+            voters(Roles::NONE, std::slice::from_ref(&coordinating), &ANOTHER),
             None
         );
         // Writable is no longer what lets a node stand, and this is the pair
@@ -1006,11 +1087,15 @@ mod tests {
         // nothing; the same node declared `COORDINATING` and never writable
         // stands.
         assert_eq!(
-            voters(Roles::ALONE, std::slice::from_ref(&coordinating)),
+            voters(Roles::ALONE, std::slice::from_ref(&coordinating), &ANOTHER),
             None
         );
         assert_eq!(
-            voters(Roles::SERVING.and(Roles::COORDINATING), &[coordinating]),
+            voters(
+                Roles::SERVING.and(Roles::COORDINATING),
+                &[coordinating],
+                &ANOTHER
+            ),
             Some(vec![(NODE, "10.0.0.2:9000".to_owned())])
         );
     }
@@ -1035,10 +1120,13 @@ mod tests {
         // `COORDINATING` on purpose: with `ALONE` this test would pass on the
         // eligibility rule above and stop testing the membership rule it names.
         let mine = Roles::SERVING.and(Roles::COORDINATING);
-        assert_eq!(voters(mine, &[]), None);
+        assert_eq!(voters(mine, &[], &ANOTHER), None);
         // A declared peer that does not coordinate is not a voter either — it
         // replicates, which is a different grant entirely.
-        assert_eq!(voters(mine, &[peer(Roles::SERVING, Some(NODE))]), None);
+        assert_eq!(
+            voters(mine, &[peer(Roles::SERVING, Some(NODE))], &ANOTHER),
+            None
+        );
     }
 
     #[test]
@@ -1052,9 +1140,12 @@ mod tests {
         let named = peer(Roles::SERVING.and(Roles::COORDINATING), Some(NODE));
         let nameless = peer(Roles::SERVING.and(Roles::COORDINATING), None);
         let mine = Roles::SERVING.and(Roles::COORDINATING);
-        assert_eq!(voters(mine, std::slice::from_ref(&nameless)), None);
         assert_eq!(
-            voters(mine, &[nameless, named]),
+            voters(mine, std::slice::from_ref(&nameless), &ANOTHER),
+            None
+        );
+        assert_eq!(
+            voters(mine, &[nameless, named], &ANOTHER),
             Some(vec![(NODE, "10.0.0.2:9000".to_owned())])
         );
     }
@@ -1063,8 +1154,12 @@ mod tests {
     fn a_failed_collection_retries_from_the_same_position() {
         let mut collecting = Collecting::new();
         let seed = Sequence::new(5);
-        let reached = collecting.once(STORE, seed, |_| Err::<Sequence, ()>(()));
-        assert_eq!(reached, Sequence::new(5), "a failed pass moved the cursor");
+        let refused = collecting.once(STORE, seed, |_| Err::<Sequence, ()>(()));
+        assert_eq!(
+            refused,
+            Err(()),
+            "a failed pass answered as though it landed"
+        );
         assert_eq!(collecting.reached(STORE), Some(Sequence::new(5)));
 
         let asked = RefCell::new(Vec::new());
@@ -1079,7 +1174,7 @@ mod tests {
             vec![Sequence::new(5)],
             "the retry asked from somewhere other than where it failed"
         );
-        assert_eq!(reached, Sequence::new(15));
+        assert_eq!(reached, Ok(Sequence::new(15)));
     }
 
     #[test]
@@ -1089,7 +1184,7 @@ mod tests {
             collecting.once(STORE, Sequence::new(1), |_| Ok::<Sequence, ()>(
                 Sequence::new(9)
             )),
-            Sequence::new(9)
+            Ok(Sequence::new(9))
         );
         assert_eq!(collecting.reached(STORE), Some(Sequence::new(9)));
     }
@@ -1101,18 +1196,24 @@ mod tests {
         let mut collecting = Collecting::new();
         assert_eq!(collecting.reached(prod), None, "nothing collected anywhere");
 
-        collecting.once(STORE, Sequence::new(1), |_| {
-            Ok::<Sequence, ()>(Sequence::new(40))
-        });
+        assert_eq!(
+            collecting.once(STORE, Sequence::new(1), |_| Ok::<Sequence, ()>(
+                Sequence::new(40)
+            )),
+            Ok(Sequence::new(40))
+        );
         // The seed is what a namespace log with no cursor starts from, and the
         // store's log reaching 40 must not spend it: a single cursor would have
         // asked this log for position 40 and been answered a gap or a re-send
         // depending only on which log ran ahead.
         let asked = RefCell::new(Vec::new());
-        collecting.once(prod, Sequence::new(1), |at| {
-            asked.borrow_mut().push(at);
-            Ok::<Sequence, ()>(Sequence::new(3))
-        });
+        assert_eq!(
+            collecting.once(prod, Sequence::new(1), |at| {
+                asked.borrow_mut().push(at);
+                Ok::<Sequence, ()>(Sequence::new(3))
+            }),
+            Ok(Sequence::new(3))
+        );
         assert_eq!(*asked.borrow(), vec![Sequence::new(1)]);
         assert_eq!(collecting.reached(STORE), Some(Sequence::new(40)));
         assert_eq!(collecting.reached(prod), Some(Sequence::new(3)));
