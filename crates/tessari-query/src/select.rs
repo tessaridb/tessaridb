@@ -270,6 +270,11 @@ impl Select<Sourced> {
             // that carried one by default would be choosing where every read it
             // assembles is allowed to land.
             staleness: None,
+            // And no answerer. Same argument one axis over: which node may
+            // answer is a routing decision an author takes about one read, and
+            // a builder that named the leader by default would send every read
+            // it assembles to the one node a cluster exists to take load off.
+            answered_by: None,
             span: BUILT,
         };
         Ok(Query {

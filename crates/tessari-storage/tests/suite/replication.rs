@@ -1743,3 +1743,528 @@ fn two_writers_on_one_range_produce_no_epoch_the_campaign_did_not_grant() {
         }
     }
 }
+
+/// What `store` says the cluster's failover policy is.
+fn policy_on(store: &Store) -> Option<tessari_storage::FailoverDefinition> {
+    let mut transaction = store.begin().unwrap();
+    Catalog::new(&mut transaction).failover().unwrap()
+}
+
+/// Write a policy under `epoch`, `version`, with `round` seconds of canvass.
+///
+/// The round time is the parameter because it is the one value two policies can
+/// differ in while both remain valid, so a test can tell which of two rows
+/// answered without reading the pair it is trying to prove.
+fn set_policy(store: &Store, epoch: u64, version: u64, round: u64) -> Sequence {
+    let policy = tessari_storage::Failover::stated(
+        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(round),
+        std::time::Duration::from_secs(round),
+        std::time::Duration::from_secs(30),
+    )
+    .unwrap();
+    let mut transaction = store.begin().unwrap();
+    Catalog::new(&mut transaction)
+        .set_failover(policy, Epoch::new(epoch), version)
+        .unwrap();
+    transaction.commit().unwrap()
+}
+
+#[test]
+fn the_failover_policy_reaches_a_replica_along_the_log_and_by_no_other_route() {
+    // The criterion this covers asks that the policy live in the database and
+    // reach another node. The point of the fixture is the *by no other route*
+    // half: the two stores are separate backends and never speak, so a policy
+    // arriving on the replica arrived as a log record — which is the whole
+    // argument for a row instead of a configuration file, since a file is an
+    // unreplicated claim about a cluster-wide fact and two nodes holding
+    // different ones is not a conflict anything detects.
+    let source_backend = backend();
+    let source = store_on(&source_backend);
+    set_policy(&source, 4, 1, 3);
+
+    let replica_backend = backend();
+    let replica = store_on(&replica_backend);
+    assert_eq!(
+        policy_on(&replica),
+        None,
+        "a store nobody has configured reports no policy rather than the \
+         default, or a cluster that was configured and one that never was give \
+         the same answer to what the operator chose"
+    );
+
+    crate::replay(&source, &replica);
+
+    let arrived = policy_on(&replica).expect("the log carried the policy");
+    assert_eq!(arrived.policy.round(), std::time::Duration::from_secs(3));
+    assert_eq!(arrived.epoch, Epoch::new(4));
+    assert_eq!(arrived.version, 1);
+}
+
+#[test]
+fn a_later_policy_replaces_the_row_and_the_replica_ends_on_the_later_one() {
+    // Ordering proven where it actually has to hold: across the replay, not in
+    // a comparison of two structs. `supersedes` is unit-tested; what this adds
+    // is that the log delivers the two writes in an order that agrees with it,
+    // so the pair on the replica is the pair the source ended on.
+    let source_backend = backend();
+    let source = store_on(&source_backend);
+    set_policy(&source, 4, 1, 3);
+    set_policy(&source, 4, 2, 5);
+
+    let replica_backend = backend();
+    let replica = store_on(&replica_backend);
+    crate::replay(&source, &replica);
+
+    let arrived = policy_on(&replica).expect("the log carried the policy");
+    assert_eq!(
+        arrived.version, 2,
+        "the second setting under one leadership is the one that stands — the \
+         case the version field exists for, since both writes carry the same \
+         epoch"
+    );
+    assert_eq!(arrived.policy.round(), std::time::Duration::from_secs(5));
+
+    let earlier = tessari_storage::FailoverDefinition {
+        policy: arrived.policy,
+        epoch: Epoch::new(4),
+        version: 1,
+    };
+    assert!(
+        !earlier.supersedes(&arrived),
+        "a row the log already replaced must not win if it arrives again — \
+         this is the partitioned writer reconnecting"
+    );
+}
+
+/// Every user on the source, by name, as the replica holds them.
+fn users_on(store: &Store) -> Vec<String> {
+    let mut transaction = store.begin().unwrap();
+    let mut found: Vec<String> = Catalog::new(&mut transaction)
+        .users()
+        .unwrap()
+        .into_iter()
+        .map(|user| user.name)
+        .collect();
+    transaction.rollback();
+    found.sort();
+    found
+}
+
+/// Declare `name` as an owner of the whole store, and commit.
+fn make_user(store: &Store, name: &str) {
+    let mut transaction = store.begin().unwrap();
+    Catalog::new(&mut transaction)
+        .create_user(
+            name,
+            None,
+            None,
+            &tessari_storage::Held::every_kind_at(Reach::Store),
+            "a secret nobody reads back",
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+}
+
+#[test]
+fn a_user_and_its_removal_both_reach_a_replica_along_the_log() {
+    // G029 S3's opening measurement, and it contradicts the concept that opened
+    // the goal. That document recorded `catalog/user.rs` as having "no
+    // replication at all"; `create_user` writes through the same
+    // `Catalog::write` as `set_replica`, and `ReplicaDefinition::replicates`
+    // says in its own words that a subscription "hands over the users,
+    // credential hashes and grants inside its reach". A module that never
+    // mentions replication is not a module that does not replicate — the log
+    // does it, and the module only decides what it writes there.
+    //
+    // Two stores on separate backends that never speak, so anything the replica
+    // holds arrived as a log record and by no other route.
+    let source_backend = backend();
+    let source = store_on(&source_backend);
+    make_user(&source, "auditor");
+    make_user(&source, "operator");
+
+    let replica_backend = backend();
+    let replica = store_on(&replica_backend);
+    assert_eq!(
+        users_on(&replica),
+        Vec::<String>::new(),
+        "a store nobody has written to already holds a user"
+    );
+
+    crate::replay(&source, &replica);
+    assert_eq!(
+        users_on(&replica),
+        vec!["auditor".to_owned(), "operator".to_owned()],
+        "the identity class did not travel with the log"
+    );
+
+    // The removal half, which is the one a subscription can quietly not carry:
+    // a delete leaves nothing behind to compare, so a replica that applies
+    // writes and drops deletes looks correct on every test that only adds.
+    let mut transaction = source.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let doomed = catalog
+        .users()
+        .unwrap()
+        .into_iter()
+        .find(|user| user.name == "auditor")
+        .expect("the user this test just declared");
+    catalog.drop_user(&doomed).unwrap();
+    transaction.commit().unwrap();
+
+    crate::replay(&source, &replica);
+    assert_eq!(
+        users_on(&replica),
+        vec!["operator".to_owned()],
+        "a user dropped on the source is still present on the replica"
+    );
+}
+
+/// Every table `user` may reach on `store`, with the verbs, as a sorted list.
+fn grants_on(store: &Store, user: u32) -> Vec<(u32, usize)> {
+    let mut transaction = store.begin().unwrap();
+    let mut found: Vec<(u32, usize)> = Catalog::new(&mut transaction)
+        .grants_for(user)
+        .unwrap()
+        .into_iter()
+        .map(|grant| (grant.table.get(), grant.verbs.len()))
+        .collect();
+    transaction.rollback();
+    found.sort_unstable();
+    found
+}
+
+#[test]
+fn a_grant_and_its_revocation_travel_with_the_user_they_are_about() {
+    // G029 S3.3, and the question it answers is U-16: do grants travel with
+    // their user, or are they out of scope with the reason on the record? They
+    // travel — so the criterion takes its live-run branch and the ADR branch is
+    // closed.
+    //
+    // Asserted separately from the user's own authorities rather than assumed
+    // from them. A user's authorities are a FIELD of `UserDefinition` and ride
+    // inside that one record; a grant is its own record in its own table
+    // (`system::GRANTS`), so "the user arrived" is not evidence that the grant
+    // did. Two records, two ways to be lost.
+    let source_backend = backend();
+    let source = store_on(&source_backend);
+    make_user(&source, "reader");
+
+    let mut transaction = source.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let user = catalog
+        .users()
+        .unwrap()
+        .into_iter()
+        .find(|found| found.name == "reader")
+        .expect("the user this test just declared");
+    catalog
+        .grant(user.id, TableId::new(7), tessari_storage::Verb::ALL, &[])
+        .unwrap();
+    transaction.commit().unwrap();
+
+    let replica_backend = backend();
+    let replica = store_on(&replica_backend);
+    assert!(
+        grants_on(&replica, user.id).is_empty(),
+        "a store nobody has written to already holds a grant"
+    );
+
+    crate::replay(&source, &replica);
+    assert_eq!(
+        grants_on(&replica, user.id),
+        vec![(7, 2)],
+        "the grant did not travel with the user it is about"
+    );
+
+    // The revocation, for the reason the user test gives about a drop: a
+    // replica that applies writes and loses deletes keeps an authority the
+    // operator has taken away, and no add-only assertion can see it.
+    let mut transaction = source.begin().unwrap();
+    Catalog::new(&mut transaction).revoke(user.id, TableId::new(7));
+    transaction.commit().unwrap();
+
+    crate::replay(&source, &replica);
+    assert!(
+        grants_on(&replica, user.id).is_empty(),
+        "a grant revoked on the source is still held on the replica"
+    );
+}
+
+/// Every membership row on `store`, by the name that identifies it.
+fn replicas_on(store: &Store) -> Vec<String> {
+    let mut transaction = store.begin().unwrap();
+    let mut found: Vec<String> = Catalog::new(&mut transaction)
+        .replicas()
+        .unwrap()
+        .into_iter()
+        .map(|peer| peer.name)
+        .collect();
+    transaction.rollback();
+    found.sort();
+    found
+}
+
+/// Declare one peer on `store`, the way `DEFINE REPLICA` does.
+fn declare_peer(store: &Store, name: &str, node: [u8; tessari_encoding::NODE_ID_LEN]) {
+    let mut transaction = store.begin().unwrap();
+    Catalog::new(&mut transaction)
+        .create_replica(
+            name,
+            "127.0.0.1:1",
+            tessari_encoding::Roles::SERVING
+                .and(tessari_encoding::Roles::WRITABLE)
+                .and(tessari_encoding::Roles::COORDINATING),
+            Some(node),
+            Some(Reach::Store),
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+}
+
+/// **Q-754 reproduced in process, at no seconds instead of ninety.**
+///
+/// A membership row is written under `self.allocate(Level::Replica)` — a number
+/// the WRITING node allocates — while `catalog/replica.rs` says in its own
+/// header that the table is cluster-wide, *"every node must learn that a peer
+/// exists, which is what replicating it is for"*. Those two facts do not
+/// compose: two nodes that declare different peers allocate the SAME number to
+/// DIFFERENT peers, and the first replication overwrites one with the other.
+///
+/// W382 met this across three operating-system processes and it cost a wave to
+/// see: a follower collected once, lost the row naming its upstream, gained one
+/// naming itself, and from the next awareness round on reported *"1 of 2
+/// declared peer(s) answered"* while `INFO` showed a healthy two-peer cluster
+/// throughout. There was no error, no conflict and no log line — the row count
+/// was unchanged and every field was well formed. The three-node fixture now
+/// declares the same rows in the same order on every node, which makes the
+/// collision vacuous; that is a property of the FIXTURE and not of the engine,
+/// and any operator who declares a cluster node by node reproduces this.
+///
+/// # Fixed in W390, and this test is the one its own message asked for
+///
+/// It was written as a characterisation test whose message said: *"if this store
+/// now holds BOTH peers, that is the correct behaviour and this test should
+/// assert it instead."* ADR-0077 made the row's identity the peer it names, so
+/// the union is what a cluster-wide table now produces, and that is what is
+/// asserted below. The history above is kept because the assertion is only
+/// legible beside the answer it replaced.
+#[test]
+fn two_nodes_declaring_different_peers_end_up_holding_both() {
+    let mine = backend();
+    let mine = store_on(&mine);
+    declare_peer(&mine, "alpha", [1_u8; tessari_encoding::NODE_ID_LEN]);
+
+    let theirs = backend();
+    let theirs = store_on(&theirs);
+    declare_peer(&theirs, "beta", [2_u8; tessari_encoding::NODE_ID_LEN]);
+
+    // Each store knows only what it declared, which is the state the collision
+    // used to be born from: neither had any way to know the other existed.
+    assert_eq!(replicas_on(&mine), vec!["alpha".to_owned()]);
+    assert_eq!(replicas_on(&theirs), vec!["beta".to_owned()]);
+
+    crate::replay(&mine, &theirs);
+
+    // Every row is written under the name it was declared with, so two peers
+    // declared independently are two keys and neither can land on the other.
+    assert_eq!(
+        replicas_on(&theirs),
+        vec!["alpha".to_owned(), "beta".to_owned()],
+        "a replicated membership must be the UNION of what the nodes declared"
+    );
+}
+
+/// **ADR-0077's third open question, measured and then removed.**
+///
+/// The ADR left one thing it had not checked: *whether the NAMES reservation
+/// (`qualify(Level::Replica, …)`) has the same defect one layer down. It very
+/// likely does — it is keyed by name and claims an id.*
+///
+/// It did, and the consequence outlived the row. A membership row used to be
+/// reserved as `NAMES[replica:<name>] -> id`, a SECOND keyspace over one entity
+/// keyed on the OTHER of its two candidate identities. **Measured before the fix
+/// (W390 S1):** after the overwrite the two keyspaces disagreed permanently —
+/// `theirs` held no row for `beta` and refused to declare one, because the name
+/// was still reserved against an id the surviving row had taken. Neither
+/// keyspace was in an error state and neither was wrong on its own terms.
+///
+/// Making the name the record's identity does not repair that disagreement, it
+/// removes the thing that could disagree: there is one key now, and the
+/// reservation IS the row.
+///
+/// # The lifecycle, because one key is a claim about all of it
+///
+/// A single assertion after the replay cannot tell a unified key from a
+/// reservation that happens to agree. Dropping the peer and declaring it again
+/// can: under the old shape the drop released the name of the SURVIVING row and
+/// left the overwritten one's reservation held by nothing, so the second
+/// declaration was refused forever.
+///
+/// Asserted through the public API throughout. What an operator meets is a
+/// `DEFINE REPLICA` refused for a name nothing holds, and asserting the internal
+/// table would pass just as well against a fix that left them stuck.
+#[test]
+fn a_peer_name_is_free_again_once_the_row_it_identifies_is_dropped() {
+    let mine = backend();
+    let mine = store_on(&mine);
+    declare_peer(&mine, "alpha", [1_u8; tessari_encoding::NODE_ID_LEN]);
+
+    let theirs = backend();
+    let theirs = store_on(&theirs);
+    declare_peer(&theirs, "beta", [2_u8; tessari_encoding::NODE_ID_LEN]);
+
+    crate::replay(&mine, &theirs);
+    // A store that names a peer is clustered, and a clustered node holding no
+    // lease may not commit (ADR-0064) — so the FIRST declaration lands and every
+    // write after it is refused `NoLeadershipYet`. That is the engine being
+    // right, and it is this test that needs a lease: the lifecycle below is
+    // three more writes. A leadership row is not the same thing and does not
+    // help; `Store::awaiting` reads the in-memory lease.
+    theirs.hold_lease(tessari_storage::LEASE_TTL);
+    assert_eq!(
+        replicas_on(&theirs),
+        vec!["alpha".to_owned(), "beta".to_owned()],
+        "this test is about a peer that survived the replay, and it did not"
+    );
+
+    // While the row is there the name is taken, which is the ordinary refusal.
+    let mut transaction = theirs.begin().unwrap();
+    let refused = Catalog::new(&mut transaction).create_replica(
+        "beta",
+        "127.0.0.1:2",
+        tessari_encoding::Roles::SERVING,
+        Some([2_u8; tessari_encoding::NODE_ID_LEN]),
+        Some(Reach::Store),
+    );
+    transaction.rollback();
+    assert!(
+        matches!(refused, Err(Error::NameTaken { .. })),
+        "a declared peer's name must be taken while its row is there; got {refused:?}"
+    );
+
+    // And once the row goes, so does the name — the half the second keyspace
+    // used to get wrong.
+    let mut transaction = theirs.begin().unwrap();
+    assert!(Catalog::new(&mut transaction).drop_replica("beta").unwrap());
+    transaction.commit().unwrap();
+    assert_eq!(replicas_on(&theirs), vec!["alpha".to_owned()]);
+
+    declare_peer(&theirs, "beta", [2_u8; tessari_encoding::NODE_ID_LEN]);
+    assert_eq!(
+        replicas_on(&theirs),
+        vec!["alpha".to_owned(), "beta".to_owned()],
+        "a name released with its row must be declarable again"
+    );
+}
+
+/// **What a join actually destroys — G029 S3.2's opening measurement (W391).**
+///
+/// The criterion asks that a join be *a data-destruction event for the joining
+/// node*, refused by default, with the refusal naming what would be destroyed.
+/// Three readings of "what" have now been tested and the first two were wrong:
+///
+/// - **log erasure.** Not this. Since `105509d` a log is `(home, writer)`, so a
+///   joining node's own records sit BESIDE the leader's — W382 measured a
+///   follower keeping its own store log at tail 1 while collecting the leader's
+///   to 19.
+/// - **the membership catalog.** Was this, and is not any more: ADR-0077 made a
+///   membership row identified by the peer it names (W390).
+/// - **the tenancy ADDRESS SPACE.** This, and it does not have the same remedy.
+///
+/// # Why the W390 fix does not generalise, which is the finding
+///
+/// A namespace, database, table, index, field, graph, edge kind, analyzer,
+/// consumer and user are each keyed by `self.allocate(Level::…)`, a number the
+/// writing node hands out. For a membership row that number could simply be
+/// replaced by the peer's name. **Here it cannot**, and not for want of trying:
+/// a record lives at `(namespace, database, table, id)`, an index entry names a
+/// table id, a field names a table id, a grant names a table id. Those ids are
+/// not a handle onto the data — they ARE the data's address.
+///
+/// So two stores that each declared their first namespace both hold namespace 1,
+/// and the two are different namespaces with the same address. Applying the
+/// leader's log does not corrupt a record and does not delete one. It replaces
+/// the DEFINITION at the address the joining node's records are filed under, so
+/// every one of those records is now read through somebody else's name, schema,
+/// replication class and grants — with the row count unchanged, no error, and
+/// nothing in the log to say it happened.
+///
+/// That is what the refusal has to name, and it is why the refusal cannot be a
+/// confirmation prompt bolted onto a rename.
+#[test]
+fn a_joining_node_keeps_its_records_and_loses_the_tenancy_they_were_filed_under() {
+    // The leader, with a tenancy of its own.
+    let leader = backend();
+    let leader = store_on(&leader);
+    let mut transaction = leader.begin().unwrap();
+    let theirs = Catalog::new(&mut transaction)
+        .create_namespace("payments")
+        .unwrap();
+    transaction.commit().unwrap();
+
+    // The joiner, with a tenancy of its own and a database inside it.
+    let joiner = backend();
+    let joiner = store_on(&joiner);
+    let mut transaction = joiner.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let mine = catalog.create_namespace("research").unwrap();
+    catalog.create_database(mine.id, "notebooks").unwrap();
+    transaction.commit().unwrap();
+
+    // Neither store knew the other existed, so both allocated the same address.
+    // This is the whole mechanism, asserted rather than assumed.
+    assert_eq!(
+        mine.id, theirs.id,
+        "this test is about two tenancies at one address, and they are not"
+    );
+
+    crate::replay(&leader, &joiner);
+
+    // The joiner's database is exactly where it was — nothing was deleted.
+    let mut transaction = joiner.begin().unwrap();
+    let catalog = Catalog::new(&mut transaction);
+    let still_here: Vec<String> = catalog
+        .databases_in(mine.id)
+        .unwrap()
+        .into_iter()
+        .map(|database| database.name)
+        .collect();
+    // And the name above it is the leader's.
+    let now_called = catalog.namespace(mine.id).unwrap().map(|held| held.name);
+    transaction.rollback();
+
+    assert_eq!(
+        still_here,
+        vec!["notebooks".to_owned()],
+        "the joiner's own database was expected to survive, and did not"
+    );
+    assert_eq!(
+        now_called,
+        Some("payments".to_owned()),
+        "the address the joiner's data is filed under still names the joiner's \
+         namespace — if this is now `research`, the address space is no longer \
+         shared and this test should assert THAT instead"
+    );
+    assert!(
+        !catalog_names(&joiner).contains(&"research".to_owned()),
+        "`research` survived somewhere; the destruction is smaller than this \
+         test claims and the claim should be narrowed to what actually happens"
+    );
+}
+
+/// Every namespace `store` can name.
+fn catalog_names(store: &Store) -> Vec<String> {
+    let mut transaction = store.begin().unwrap();
+    let mut found: Vec<String> = Catalog::new(&mut transaction)
+        .namespaces()
+        .unwrap()
+        .into_iter()
+        .map(|namespace| namespace.name)
+        .collect();
+    transaction.rollback();
+    found.sort();
+    found
+}

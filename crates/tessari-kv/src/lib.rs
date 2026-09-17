@@ -28,7 +28,7 @@ mod key;
 mod keyspace;
 mod memory;
 
-pub use backend::{KvBackend, ScanDirection, ScanRequest};
+pub use backend::{KvBackend, ScanDirection, ScanRequest, delete_range_by_scanning};
 pub use batch::{Precondition, WriteBatch, WriteOp};
 pub use error::{Error, ErrorCategory, Result};
 pub use key::{Key, KeyRange, Value};

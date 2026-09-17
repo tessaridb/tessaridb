@@ -37,7 +37,7 @@ use std::sync::Mutex;
 use rocksdb::{ColumnFamily, DB, IteratorMode, Options, ReadOptions, WriteBatch as EngineBatch};
 use tessari_kv::{
     Error, Key, KeyRange, Keyspace, KvBackend, Result, ScanDirection, ScanRequest, Value,
-    WriteBatch, WriteOp,
+    WriteBatch, WriteOp, delete_range_by_scanning,
 };
 
 use crate::error::{BACKEND_NAME, from_engine, from_open, missing_region};
@@ -420,6 +420,69 @@ impl KvBackend for LsmBackend {
             }
         }
 
+        self.database
+            .write_opt(engine_batch, &self.durability.write_options())
+            .map_err(|error| from_engine(&error))
+    }
+
+    /// One range tombstone, rather than one tombstone per key.
+    ///
+    /// The difference is not a constant factor. A point delete on this engine is
+    /// a write, and every one of those writes has to be carried down the levels
+    /// and compacted away before the space it describes comes back. Pruning a
+    /// log of a hundred thousand records by scanning and deleting would write a
+    /// hundred thousand tombstones to reclaim records that are one contiguous
+    /// span of the region. The engine has a primitive for exactly this shape and
+    /// it writes ONE tombstone, applied by reads, iterators and compaction
+    /// across the whole range.
+    ///
+    /// Two things this does not do, and both are the layer above's:
+    ///
+    /// - **It does not return space.** A tombstone lives until a compaction can
+    ///   prove nothing older remains beneath it, so the bytes come back on the
+    ///   engine's schedule. Each keyspace is its own region with a thirty-day
+    ///   SST rewrite TTL, so *eventually* is bounded — but a caller that wants
+    ///   the space now asks for it, and a caller that wants to know whether it
+    ///   came back measures rather than assumes.
+    /// - **It does not decide what to delete.** The trait's header is explicit
+    ///   that retention policy belongs above this layer.
+    ///
+    /// # The one range shape the engine cannot be given
+    ///
+    /// Its range delete is half-open over two byte strings, so an unbounded END
+    /// has nothing to pass — there is no greatest key. An unbounded START does:
+    /// the empty key sorts below everything. So that one case falls back to
+    /// [`delete_range_by_scanning`], which is the same contract spelled slowly,
+    /// rather than to a guessed sentinel that would be wrong for any key above
+    /// it.
+    fn delete_range(&self, keyspace: Keyspace, range: &KeyRange) -> Result<()> {
+        use std::ops::Bound;
+
+        let from = match range.start() {
+            Bound::Included(key) => key.as_slice().to_vec(),
+            Bound::Excluded(key) => successor(key),
+            Bound::Unbounded => Vec::new(),
+        };
+        let to = match range.end() {
+            Bound::Excluded(key) => key.as_slice().to_vec(),
+            Bound::Included(key) => successor(key),
+            Bound::Unbounded => return delete_range_by_scanning(self, keyspace, range),
+        };
+        // An empty or inverted range deletes nothing, which is the answer
+        // `empty_range_returns_nothing` gives a read of the same span. Stated
+        // here rather than left to the engine, because what it does with an
+        // inverted range is not part of any contract this store holds.
+        if from >= to {
+            return Ok(());
+        }
+        let region = self.region(keyspace)?;
+        let _writer = self.write_lock.lock().map_err(|_| Error::Backend {
+            backend: BACKEND_NAME,
+            reason: "the write lock was poisoned by a panic in another thread".to_owned(),
+            source: None,
+        })?;
+        let mut engine_batch = EngineBatch::default();
+        engine_batch.delete_range_cf(region, &from, &to);
         self.database
             .write_opt(engine_batch, &self.durability.write_options())
             .map_err(|error| from_engine(&error))

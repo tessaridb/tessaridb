@@ -101,6 +101,7 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::AlterUser { .. } => Err(unrenderable("ALTER USER", span)),
         StatementKind::AlterNamespace { .. } => Err(unrenderable("ALTER NAMESPACE", span)),
         StatementKind::DefineNode { .. } => Err(unrenderable("DEFINE NODE", span)),
+        StatementKind::DefineFailover { .. } => Err(unrenderable("DEFINE FAILOVER", span)),
         StatementKind::DefineReplica { .. } => Err(unrenderable("DEFINE REPLICA", span)),
         StatementKind::DefineConsumer { .. } => Err(unrenderable("DEFINE KAFKA CONSUMER", span)),
         StatementKind::DropConsumer { .. } => Err(unrenderable("DROP KAFKA CONSUMER", span)),

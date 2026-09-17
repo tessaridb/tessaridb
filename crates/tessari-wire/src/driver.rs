@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 
 use tessari_encoding::{NODE_ID_LEN, Roles};
 use tessari_serve::Stopping;
-use tessari_storage::{Lease, ReplicaDefinition};
+use tessari_storage::{FailoverStamp, Lease, ReplicaDefinition};
 use tessari_types::{Epoch, Reach, Sequence};
 
 use crate::campaign::Stood;
@@ -198,6 +198,25 @@ impl tessari_session::Elsewhere for Published {
             Destination::Here | Destination::Nowhere => None,
         }
     }
+
+    /// The other routing question, answered from the same last round.
+    ///
+    /// No clock and no bound, because leadership does not age into being
+    /// slightly wrong the way a currency reading does — see
+    /// [`Directory::writable`]. The epoch is looked up out of the same reading
+    /// that chose the endpoint, exactly as it is above, and for the same reason:
+    /// it is what that peer claimed about itself, and it is what makes the
+    /// redirect checkable when the client arrives.
+    fn writable(&self) -> Option<tessari_session::Peer> {
+        let directory = self.current();
+        let (endpoint, node) = directory.writable()?;
+        let epoch = directory.at(&endpoint)?.said.epoch;
+        Some(tessari_session::Peer {
+            endpoint,
+            node,
+            epoch,
+        })
+    }
 }
 
 /// How far this node has collected in each log, and what a failure does to it.
@@ -254,20 +273,48 @@ impl Collecting {
     /// later pass ever asks for the gap, and nothing is in an error state to say
     /// so. Leaving it costs a repeated request when the peer comes back, which
     /// is the failure worth having.
+    ///
+    /// # Why the refusal is handed back rather than absorbed
+    ///
+    /// Until W382 this answered a `Sequence` either way, and the error was
+    /// dropped at the one point in the program where it was in scope. The
+    /// caller was then left with a cursor that had not moved — which is also
+    /// what a healthy pass with nothing to fetch produces — so *the peer
+    /// refused me* and *the peer had nothing for me* reached an operator as the
+    /// same line, and a cluster replicating nothing looked exactly like a
+    /// cluster that was already level.
+    ///
+    /// That is not a reporting nicety. It cost three processes, ninety seconds
+    /// and a refuted hypothesis to learn that a follower was being turned away,
+    /// because the sentence naming the reason existed only inside this function
+    /// and was discarded here.
+    ///
+    /// # Errors
+    ///
+    /// Returns whatever `pass` returned. The cursor is already recorded when it
+    /// does, so a caller that only wants to go on collecting may discard it —
+    /// but it has to discard it deliberately.
     pub fn once<E>(
         &mut self,
         home: Reach,
         seed: Sequence,
         pass: impl FnOnce(Sequence) -> Result<Sequence, E>,
-    ) -> Sequence {
+    ) -> Result<Sequence, E> {
         let at = self.at.get(&home).copied().unwrap_or(seed);
-        let reached = if let Ok(reached) = pass(at) {
-            reached
-        } else {
-            at
-        };
-        self.at.insert(home, reached);
-        reached
+        match pass(at) {
+            Ok(reached) => {
+                self.at.insert(home, reached);
+                Ok(reached)
+            }
+            Err(why) => {
+                // The seed, when this log had no cursor at all: a failed first
+                // pass still fixes where the next one starts, or the caller's
+                // freshly-read tail would be handed to a retry as a new
+                // beginning it has not earned.
+                self.at.insert(home, at);
+                Err(why)
+            }
+        }
     }
 }
 
@@ -477,6 +524,68 @@ pub fn heard_a_leader(
             })
 }
 
+/// The newest failover policy a live peer advertises, when it supersedes this
+/// node's own.
+///
+/// # Why a node behind on the policy does not stand
+///
+/// The periods in the policy decide how long this cluster waits before it treats
+/// a leader as gone. Two nodes that disagree about them are two nodes that can
+/// both believe they may write — the split-brain the lease exists to prevent,
+/// arriving through the mechanism meant to prevent it. That is the failover
+/// row's own argument for existing, and it is the argument for this gate.
+///
+/// A candidate standing under periods the rest of the cluster has already
+/// replaced is that disagreement, in the one moment where it decides an outcome.
+/// So this is the sibling of [`heard_a_leader`]: same shape, same call site,
+/// same class of reason — a node that can hear evidence it should not stand,
+/// does not stand.
+///
+/// # Why it cannot deadlock a cluster
+///
+/// The refusal is bounded by **audibility**, not by state. It lasts only while a
+/// declared peer is still advertising a superseding stamp inside `within`; a
+/// peer that has gone away advertises nothing, and this answers `None`, and the
+/// node stands. So the failure this gate could have introduced — a cluster
+/// permanently unable to elect because the only node holding the newer policy
+/// died — is the one case in which the gate is already open.
+///
+/// # `None` is behind, not ahead
+///
+/// A greeter's `None` means *no policy row, running the default* or *a build
+/// from before the field*, and neither can supersede anything, so neither
+/// silences this node. This node's own `None` is the other side of the same
+/// coin and **is** superseded by any stamp: a node that has never been told is
+/// behind one that has, and the alternative would make the first policy a
+/// cluster ever sets the one policy nothing could act on.
+///
+/// # Declared peers only
+///
+/// The same set [`heard_a_leader`] and [`upstream`] read, for the same reason: a
+/// greeting from an address this node's catalog does not declare is not a member
+/// speaking, and a stranger that could silence a candidate is a denial of
+/// service with a one-line implementation.
+///
+/// The newest is returned rather than a bare `true` so that a caller can say
+/// **which** policy it is behind — a gate that refuses without naming what it
+/// refused on is one an operator can only investigate with a packet capture.
+#[must_use]
+pub fn heard_a_newer_policy(
+    declared: &[ReplicaDefinition],
+    heard: &Directory,
+    mine: Option<FailoverStamp>,
+    now: Instant,
+    within: Duration,
+) -> Option<FailoverStamp> {
+    declared
+        .iter()
+        .filter_map(|peer| heard.at(&peer.endpoint))
+        .filter(|seen| now.saturating_duration_since(seen.at) <= within)
+        .filter_map(|seen| seen.said.policy)
+        .filter(|stamp| stamp.supersedes_held(mine.as_ref()))
+        .max_by_key(|stamp| (stamp.epoch, stamp.version))
+}
+
 /// Whether this node is eligible to stand at all, from its own identity alone.
 ///
 /// The half of [`voters`]'s question that needs no catalog. A node the operator
@@ -547,10 +656,32 @@ pub fn stands(mine: Roles) -> bool {
 /// The same wall [`upstream`] runs into. A ballot travels on a connection whose
 /// certificate must be valid for a name derived from the peer's id, so a row
 /// naming where but not who cannot be asked for anything at all.
+///
+/// # This node is not one of its own voters
+///
+/// `me` is skipped, exactly as [`Directory::greet_round`] skips it and for a
+/// reason that is not symmetry. A node's catalog acquires a row describing
+/// **itself** as soon as replication works at all: `DEFINE REPLICA` is a
+/// catalog write and therefore a log record, so a follower applying a leader's
+/// store log receives the leader's view of the membership — which names every
+/// node including the one reading it.
+///
+/// Without this filter the consequence is not a wasted dial. The membership a
+/// round is judged against is `voters.len() + 1` (see [`crate::Standing`]), so
+/// a self row makes a cluster of three count itself as four and demand three
+/// grants; and the third can never arrive, because the only node that would
+/// cast it is the candidate, whose own door refuses the connection with
+/// [`crate::Error::ClaimsOurOwnIdentity`]. Every round then fails, every
+/// failure raises the epoch, and the cluster campaigns for ever without
+/// anything being in an error state — which is precisely what W382 measured
+/// against three processes: the store log replicated once, and the election
+/// storm that started in the same second stopped anything else from following
+/// it.
 #[must_use]
 pub fn voters(
     mine: Roles,
     declared: &[ReplicaDefinition],
+    me: &[u8; NODE_ID_LEN],
 ) -> Option<Vec<([u8; NODE_ID_LEN], String)>> {
     if !stands(mine) {
         return None;
@@ -559,6 +690,7 @@ pub fn voters(
         .iter()
         .filter(|peer| peer.roles.has(Roles::COORDINATING))
         .filter_map(|peer| Some((peer.node?, peer.endpoint.clone())))
+        .filter(|(node, _)| node != me)
         .collect();
     (!voting.is_empty()).then_some(voting)
 }
@@ -720,8 +852,9 @@ mod tests {
     use tessari_types::{Epoch, NamespaceId, Reach, Sequence};
 
     use super::{
-        Collecting, Published, Renewing, ReplicaDefinition, Seed, Stood, bootstrap_from, due_in,
-        every, heard_a_leader, names_a_peer, stands, upstream, voters,
+        Collecting, FailoverStamp, Published, Renewing, ReplicaDefinition, Seed, Stood,
+        bootstrap_from, due_in, every, heard_a_leader, heard_a_newer_policy, names_a_peer, stands,
+        upstream, voters,
     };
     use crate::directory::Directory;
     use crate::grant::Leadership;
@@ -746,6 +879,7 @@ mod tests {
             tail: Sequence::new(4096),
             tail_leadership: Epoch::new(7),
             current_as_of: Some(Duration::from_secs(1)),
+            policy: None,
         }
     }
 
@@ -793,7 +927,6 @@ mod tests {
     /// A declared peer row, as an operator would have written it.
     fn peer(roles: Roles, node: Option<[u8; NODE_ID_LEN]>) -> ReplicaDefinition {
         ReplicaDefinition {
-            id: 1,
             name: "leader".to_owned(),
             endpoint: "10.0.0.2:9000".to_owned(),
             roles,
@@ -965,6 +1098,32 @@ mod tests {
         assert_eq!(upstream(Roles::SERVING, &declared, &Directory::new()), None);
     }
 
+    /// The row a node acquires about ITSELF the moment replication works.
+    ///
+    /// W382, against three processes. `DEFINE REPLICA` is a catalog write and
+    /// therefore a log record, so a follower that applies a leader's store log
+    /// receives the leader's membership — which names the follower. Counting it
+    /// makes a cluster of three demand three grants and leaves the third
+    /// uncastable, because the only node that would cast it is the candidate,
+    /// whose own door refuses the connection. Every round then fails and the
+    /// epoch climbs for ever with nothing in an error state.
+    #[test]
+    fn a_row_naming_this_node_is_not_one_of_its_own_voters() {
+        let mine = Roles::SERVING.and(Roles::COORDINATING);
+        let itself = peer(mine, Some(NODE));
+        let other = named("two", "10.0.0.3:9000", ANOTHER);
+        assert_eq!(
+            voters(mine, std::slice::from_ref(&itself), &NODE),
+            None,
+            "a node stood a round against nobody but itself"
+        );
+        assert_eq!(
+            voters(mine, &[itself, other], &NODE),
+            Some(vec![(ANOTHER, "10.0.0.3:9000".to_owned())]),
+            "the membership a round is judged against counted this node twice"
+        );
+    }
+
     #[test]
     fn a_node_the_operator_did_not_make_coordinating_stands_for_nothing() {
         // ADR-0063. The deciding set is the set a leader is drawn from, and
@@ -975,11 +1134,15 @@ mod tests {
         // would be taking the decision the catalog exists to hold.
         let coordinating = peer(Roles::SERVING.and(Roles::COORDINATING), Some(NODE));
         assert_eq!(
-            voters(Roles::SERVING, std::slice::from_ref(&coordinating)),
+            voters(
+                Roles::SERVING,
+                std::slice::from_ref(&coordinating),
+                &ANOTHER
+            ),
             None
         );
         assert_eq!(
-            voters(Roles::NONE, std::slice::from_ref(&coordinating)),
+            voters(Roles::NONE, std::slice::from_ref(&coordinating), &ANOTHER),
             None
         );
         // Writable is no longer what lets a node stand, and this is the pair
@@ -987,11 +1150,15 @@ mod tests {
         // nothing; the same node declared `COORDINATING` and never writable
         // stands.
         assert_eq!(
-            voters(Roles::ALONE, std::slice::from_ref(&coordinating)),
+            voters(Roles::ALONE, std::slice::from_ref(&coordinating), &ANOTHER),
             None
         );
         assert_eq!(
-            voters(Roles::SERVING.and(Roles::COORDINATING), &[coordinating]),
+            voters(
+                Roles::SERVING.and(Roles::COORDINATING),
+                &[coordinating],
+                &ANOTHER
+            ),
             Some(vec![(NODE, "10.0.0.2:9000".to_owned())])
         );
     }
@@ -1016,10 +1183,13 @@ mod tests {
         // `COORDINATING` on purpose: with `ALONE` this test would pass on the
         // eligibility rule above and stop testing the membership rule it names.
         let mine = Roles::SERVING.and(Roles::COORDINATING);
-        assert_eq!(voters(mine, &[]), None);
+        assert_eq!(voters(mine, &[], &ANOTHER), None);
         // A declared peer that does not coordinate is not a voter either — it
         // replicates, which is a different grant entirely.
-        assert_eq!(voters(mine, &[peer(Roles::SERVING, Some(NODE))]), None);
+        assert_eq!(
+            voters(mine, &[peer(Roles::SERVING, Some(NODE))], &ANOTHER),
+            None
+        );
     }
 
     #[test]
@@ -1033,9 +1203,12 @@ mod tests {
         let named = peer(Roles::SERVING.and(Roles::COORDINATING), Some(NODE));
         let nameless = peer(Roles::SERVING.and(Roles::COORDINATING), None);
         let mine = Roles::SERVING.and(Roles::COORDINATING);
-        assert_eq!(voters(mine, std::slice::from_ref(&nameless)), None);
         assert_eq!(
-            voters(mine, &[nameless, named]),
+            voters(mine, std::slice::from_ref(&nameless), &ANOTHER),
+            None
+        );
+        assert_eq!(
+            voters(mine, &[nameless, named], &ANOTHER),
             Some(vec![(NODE, "10.0.0.2:9000".to_owned())])
         );
     }
@@ -1044,8 +1217,12 @@ mod tests {
     fn a_failed_collection_retries_from_the_same_position() {
         let mut collecting = Collecting::new();
         let seed = Sequence::new(5);
-        let reached = collecting.once(STORE, seed, |_| Err::<Sequence, ()>(()));
-        assert_eq!(reached, Sequence::new(5), "a failed pass moved the cursor");
+        let refused = collecting.once(STORE, seed, |_| Err::<Sequence, ()>(()));
+        assert_eq!(
+            refused,
+            Err(()),
+            "a failed pass answered as though it landed"
+        );
         assert_eq!(collecting.reached(STORE), Some(Sequence::new(5)));
 
         let asked = RefCell::new(Vec::new());
@@ -1060,7 +1237,7 @@ mod tests {
             vec![Sequence::new(5)],
             "the retry asked from somewhere other than where it failed"
         );
-        assert_eq!(reached, Sequence::new(15));
+        assert_eq!(reached, Ok(Sequence::new(15)));
     }
 
     #[test]
@@ -1070,7 +1247,7 @@ mod tests {
             collecting.once(STORE, Sequence::new(1), |_| Ok::<Sequence, ()>(
                 Sequence::new(9)
             )),
-            Sequence::new(9)
+            Ok(Sequence::new(9))
         );
         assert_eq!(collecting.reached(STORE), Some(Sequence::new(9)));
     }
@@ -1082,18 +1259,24 @@ mod tests {
         let mut collecting = Collecting::new();
         assert_eq!(collecting.reached(prod), None, "nothing collected anywhere");
 
-        collecting.once(STORE, Sequence::new(1), |_| {
-            Ok::<Sequence, ()>(Sequence::new(40))
-        });
+        assert_eq!(
+            collecting.once(STORE, Sequence::new(1), |_| Ok::<Sequence, ()>(
+                Sequence::new(40)
+            )),
+            Ok(Sequence::new(40))
+        );
         // The seed is what a namespace log with no cursor starts from, and the
         // store's log reaching 40 must not spend it: a single cursor would have
         // asked this log for position 40 and been answered a gap or a re-send
         // depending only on which log ran ahead.
         let asked = RefCell::new(Vec::new());
-        collecting.once(prod, Sequence::new(1), |at| {
-            asked.borrow_mut().push(at);
-            Ok::<Sequence, ()>(Sequence::new(3))
-        });
+        assert_eq!(
+            collecting.once(prod, Sequence::new(1), |at| {
+                asked.borrow_mut().push(at);
+                Ok::<Sequence, ()>(Sequence::new(3))
+            }),
+            Ok(Sequence::new(3))
+        );
         assert_eq!(*asked.borrow(), vec![Sequence::new(1)]);
         assert_eq!(collecting.reached(STORE), Some(Sequence::new(40)));
         assert_eq!(collecting.reached(prod), Some(Sequence::new(3)));
@@ -1332,6 +1515,173 @@ mod tests {
             ),
             "a grant older than the lease it granted cannot testify that the \
              holder still has it, and a node that hears nothing has to stand"
+        );
+    }
+
+    /// A greeting from a node running the policy set at `(epoch, version)`.
+    fn running(epoch: u64, version: u64) -> Hello {
+        Hello {
+            policy: Some(FailoverStamp {
+                epoch: Epoch::new(epoch),
+                version,
+            }),
+            ..said()
+        }
+    }
+
+    fn stamp(epoch: u64, version: u64) -> FailoverStamp {
+        FailoverStamp {
+            epoch: Epoch::new(epoch),
+            version,
+        }
+    }
+
+    #[test]
+    fn a_peer_running_a_newer_failover_policy_holds_this_node_back() {
+        let declared = [named("peer", "10.0.0.1:9000", [9; NODE_ID_LEN])];
+        let heard = greeted(&[("10.0.0.1:9000", running(4, 0))]);
+        assert_eq!(
+            heard_a_newer_policy(
+                &declared,
+                &heard,
+                Some(stamp(3, 9)),
+                Instant::now(),
+                tessari_storage::LEASE_TTL
+            ),
+            Some(stamp(4, 0)),
+            "a candidate timing itself by a policy the cluster has replaced was              not held back, which is the disagreement the policy row exists to              remove arriving at the moment it decides an outcome"
+        );
+    }
+
+    #[test]
+    fn an_equal_or_older_policy_holds_nobody_back() {
+        let declared = [named("peer", "10.0.0.1:9000", [9; NODE_ID_LEN])];
+        let now = Instant::now();
+        for (peer, mine, why) in [
+            (
+                running(3, 9),
+                stamp(3, 9),
+                "an equal pair is the ordinary state of an agreeing cluster and                  must never stop an election",
+            ),
+            (
+                running(3, 8),
+                stamp(3, 9),
+                "a lower version is a peer that is behind, which is the ordinary                  state of a follower and not a reason to refuse",
+            ),
+            (
+                running(2, 99),
+                stamp(3, 0),
+                "a superseded leadership does not win on version — this is the                  partitioned ex-leader reconnecting, and letting it silence a                  candidate would hand it the outcome it lost",
+            ),
+        ] {
+            assert_eq!(
+                heard_a_newer_policy(
+                    &declared,
+                    &greeted(&[("10.0.0.1:9000", peer)]),
+                    Some(mine),
+                    now,
+                    tessari_storage::LEASE_TTL
+                ),
+                None,
+                "{why}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_node_that_holds_no_policy_at_all_is_behind_one_that_does() {
+        let declared = [named("peer", "10.0.0.1:9000", [9; NODE_ID_LEN])];
+        let heard = greeted(&[("10.0.0.1:9000", running(1, 0))]);
+        // The first policy a cluster ever sets is the case this covers. Treating
+        // *no policy* as unbeatable would make that first one the single policy
+        // nothing could ever act on.
+        assert_eq!(
+            heard_a_newer_policy(
+                &declared,
+                &heard,
+                None,
+                Instant::now(),
+                tessari_storage::LEASE_TTL
+            ),
+            Some(stamp(1, 0))
+        );
+        // And the other direction: a peer that says nothing supersedes nothing,
+        // so a build from before the field cannot silence the cluster it joins.
+        assert_eq!(
+            heard_a_newer_policy(
+                &declared,
+                &greeted(&[("10.0.0.1:9000", said())]),
+                None,
+                Instant::now(),
+                tessari_storage::LEASE_TTL
+            ),
+            None,
+            "a greeting carrying no policy silenced a candidate, which would              make a rolling upgrade an outage"
+        );
+    }
+
+    #[test]
+    fn a_greeting_older_than_the_lease_cannot_hold_a_candidate_back() {
+        // This is what makes the gate incapable of deadlocking a cluster: the
+        // refusal is bounded by audibility, so the node holding the newer policy
+        // going away opens the gate rather than closing it forever.
+        let declared = [named("peer", "10.0.0.1:9000", [9; NODE_ID_LEN])];
+        let mut heard = Directory::new();
+        let long_ago = Instant::now();
+        heard.heard("10.0.0.1:9000", running(4, 0), long_ago);
+        let now = long_ago + tessari_storage::LEASE_TTL + Duration::from_secs(1);
+        assert_eq!(
+            heard_a_newer_policy(&declared, &heard, None, now, tessari_storage::LEASE_TTL),
+            None,
+            "a peer nobody has heard from in longer than a lease was still              silencing this node, so a cluster that lost the one node holding              the newer policy could never elect again"
+        );
+    }
+
+    #[test]
+    fn a_policy_advertised_by_an_undeclared_address_is_not_a_member_speaking() {
+        // The same rule `heard_a_leader` and `upstream` hold: a greeting from an
+        // address this node's catalog does not declare is a stranger, and a
+        // stranger that can silence a candidate is a denial of service with a
+        // one-line implementation.
+        let declared = [named("peer", "10.0.0.1:9000", [9; NODE_ID_LEN])];
+        let heard = greeted(&[("10.0.0.9:9000", running(4, 0))]);
+        assert_eq!(
+            heard_a_newer_policy(
+                &declared,
+                &heard,
+                None,
+                Instant::now(),
+                tessari_storage::LEASE_TTL
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn the_newest_policy_heard_is_the_one_reported() {
+        // Reported rather than merely detected, so an operator reading the log
+        // line knows WHICH policy this node is behind. With several peers at
+        // several stamps, the answer has to be the newest or the report names a
+        // policy that is itself superseded.
+        let declared = [
+            named("one", "10.0.0.1:9000", [9; NODE_ID_LEN]),
+            named("two", "10.0.0.2:9000", [8; NODE_ID_LEN]),
+            named("three", "10.0.0.3:9000", [7; NODE_ID_LEN]),
+        ];
+        let heard = greeted(&[
+            ("10.0.0.1:9000", running(4, 1)),
+            ("10.0.0.2:9000", running(5, 0)),
+            ("10.0.0.3:9000", running(4, 9)),
+        ]);
+        assert_eq!(
+            heard_a_newer_policy(
+                &declared,
+                &heard,
+                Some(stamp(3, 0)),
+                Instant::now(),
+                tessari_storage::LEASE_TTL
+            ),
+            Some(stamp(5, 0))
         );
     }
 

@@ -529,6 +529,7 @@ pub(crate) mod tests {
             Sequence::new(9),
             LEVEL.leadership,
             Some(core::time::Duration::ZERO),
+            None,
         )
     }
 
@@ -625,6 +626,7 @@ pub(crate) mod tests {
                         Sequence::new(read.load(std::sync::atomic::Ordering::SeqCst)),
                         LEVEL.leadership,
                         Some(core::time::Duration::ZERO),
+                        None,
                     ))
                 },
                 &HERE,
@@ -844,6 +846,7 @@ pub(crate) mod tests {
             Sequence::new(LEVEL.tail.get().saturating_sub(3)),
             LEVEL.leadership,
             Some(core::time::Duration::ZERO),
+            None,
         )
     }
 

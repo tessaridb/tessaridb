@@ -13,6 +13,7 @@ mod alone;
 mod alter_user;
 mod analyzer_named_by_a_field;
 mod analyzer_redefinition;
+mod answered_by;
 mod ascending_order;
 mod assertions;
 mod assertions_over_dropped_declarations;

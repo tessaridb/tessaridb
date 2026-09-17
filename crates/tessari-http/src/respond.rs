@@ -875,7 +875,7 @@ mod tests {
     /// The redirect this node would answer with, as the session raises it.
     fn sent_elsewhere() -> Error {
         Error::ReadIsElsewhere {
-            written: "60s".to_owned(),
+            because: "a staleness bound of 60s".to_owned(),
             endpoint: "two.example:9080".to_owned(),
             node: [3; tessari_encoding::NODE_ID_LEN],
             epoch: tessari_types::Epoch::new(7),

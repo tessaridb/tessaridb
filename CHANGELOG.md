@@ -12,6 +12,68 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.3.0-beta — 2026-09-17
+
+**The log stops growing, a read can say where its answer must come from, and how
+long a cluster waits is something an operator writes down.**
+
+- **`DEFINE NODE RETAIN 100000 RECORDS`** bounds the log, and `RETAIN NONE` puts
+  it back. **The default is off**, so a store that says nothing keeps the whole
+  log exactly as before — this release changes nothing for anyone who does not
+  ask for it. `INFO FOR NODE` reports the window as `retain`, where `null` means
+  *unbounded* rather than *very large*. The setting is local, like `ROLES`: a
+  disk budget describes one machine, so it does not replicate and a restored
+  backup does not inherit it.
+
+  The count is the whole bound, deliberately. A reader inside the window is safe
+  because it is inside it; one further behind is **refused by name**, told where
+  the log now begins, and needs a fresh copy of the state. Holding the log down
+  to whatever the slowest reader still needs is how one stuck subscriber fills a
+  disk with nothing anywhere in an error state. The last record always survives
+  whatever number is set, and `RETAIN 0 RECORDS` is refused rather than clamped.
+  Space returns when the store next compacts, not at the statement.
+
+- **`SELECT … ANSWERED BY LEADER`** admits only the node that decides writes for
+  those records; `ANSWERED BY ANY` is what a read means when it says nothing. It
+  is not a tighter `STALENESS` and the two compose — a follower at zero lag is
+  *level*, not authoritative, so no freshness bound can express *this must come
+  from where writes are decided*. Which node may answer is settled first, because
+  the leader satisfies every bound and deciding it first therefore cannot
+  overturn the freshness decision. A node that does not lead redirects to one
+  that does, or refuses when it knows of none.
+
+- **`DEFINE FAILOVER AWARENESS … COLLECTION … ROUND … CAMPAIGN … LEASE …`** sets
+  how long the cluster waits before replacing a leader. It is a replicated row
+  rather than a file or a flag, because two nodes holding different files is not
+  a conflict anything detects: each is internally consistent, and the
+  disagreement surfaces as two nodes that both believe they may write. All five
+  clauses are required — the periods are checked against one another, so a
+  partial statement could only mix new values with old ones. Four relations are
+  enforced and each refusal names the direction to move. A policy carries the
+  leadership it was written under and installs only if that pair outranks the one
+  already held; neither number is a clock.
+
+- **A three-node cluster replicates.** Three faults sat between an election and a
+  replica, each invisible until the one above it was removed: a refused collect
+  absorbed and never logged, a cursor seeded from this node's own log rather than
+  the peer's, and a node counting the replicated membership row that names
+  *itself* among its voters.
+
+- **A membership row is identified by the peer it names.** Two nodes declaring
+  different peers used to overwrite one another's row — same allocated id, no
+  error, row count unchanged.
+
+- **A node holding data of its own is refused a join.** A cluster allocates
+  namespace ids from its own counter, so collecting would replace the definition
+  at the address that node's records are filed under, and every one of them would
+  then be read through another tenancy's name, schema, replication class and
+  grants. Nothing would be deleted, which is what made it worth refusing. There
+  is no *join anyway* switch: remove the namespaces with `DROP NAMESPACE`, which
+  walks you down your own tree, or join on an empty store.
+
+- `INFO FOR HISTORY OF` no longer calls itself `complete` when the log begins
+  above its beginning.
+
 ## 0.2.2-beta — 2026-09-16
 
 **The source is public, and every link points at its canonical name.**
@@ -358,7 +420,7 @@ rather than the view's records.
 holder at a time under a hold that lapses — `DEFINE QUEUE jobs TIMEOUT 30s
 ATTEMPTS 5`, then `CLAIM FROM jobs`, `DELETE jobs:7` when the work is done and
 `RELEASE jobs:7` to hand it back early. That makes ten engines over one substrate
-rather than nine. **1359 conformance cases** define the language and run in the
+rather than nine. **1369 conformance cases** define the language and run in the
 build, up from 1237.
 
 The design is the part worth reading, because a queue is normally where a store

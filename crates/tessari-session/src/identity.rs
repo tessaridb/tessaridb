@@ -445,6 +445,7 @@ impl Needs {
             // the data they own, and neither what this machine is for nor which
             // other machines hold the data is that.
             StatementKind::DefineNode { .. }
+            | StatementKind::DefineFailover { .. }
             | StatementKind::DefineReplica { .. }
             | StatementKind::DropReplica { .. } => Self::OPERATE_STORE,
             // Declaring a consumer is administering, not writing — the same

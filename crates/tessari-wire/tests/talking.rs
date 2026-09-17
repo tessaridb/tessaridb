@@ -373,6 +373,7 @@ fn a_bounded_read_this_node_cannot_answer_is_redirected_over_the_wire() {
             tail: tessari_types::Sequence::new(4096),
             tail_leadership: tessari_types::Epoch::new(1),
             current_as_of: Some(std::time::Duration::from_secs(1)),
+            policy: None,
         },
         std::time::Instant::now(),
     );

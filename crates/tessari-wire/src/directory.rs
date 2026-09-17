@@ -193,6 +193,53 @@ impl Directory {
         }
     }
 
+    /// A peer that says it may write, and which one.
+    ///
+    /// The other axis. [`Self::read_within`] answers *how old may the copy be*;
+    /// this answers *who decides writes*, and the two are not the same question
+    /// wearing different units — a follower at zero lag is level, not
+    /// authoritative, because being level a moment ago says nothing about a
+    /// write committing right now.
+    ///
+    /// # No age, no bound, and no `Here`
+    ///
+    /// Nothing here ages, because leadership is not a measurement that decays
+    /// into being slightly wrong: a peer either claimed `WRITABLE` when it last
+    /// spoke or it did not. A stale claim is handled where it lands — the
+    /// redirect carries the epoch that peer published, so a node that has since
+    /// lost the leadership refuses the client and names the newer one, which is
+    /// a check the arriving node can make and this one cannot.
+    ///
+    /// There is no *here* answer either. A node reads its own roles out of its
+    /// own store, so it never needs a directory to tell it whether it leads, and
+    /// the caller asks this only once that has already come back no.
+    ///
+    /// # Why the highest epoch wins
+    ///
+    /// Two peers claiming `WRITABLE` at once is not a malformed directory — it
+    /// is precisely what a leadership handover looks like from the outside while
+    /// one greeting is newer than the other. The higher epoch is the later
+    /// claim, so it is the one to send a client to; a tie goes to the
+    /// lexicographically first endpoint, because the map is ordered and the same
+    /// question has to resolve the same way twice.
+    ///
+    /// Both halves travel for [`Self::read_within`]'s reason: a client sent to
+    /// an address alone cannot notice that it met a different node than the one
+    /// it was promised.
+    #[must_use]
+    pub fn writable(&self) -> Option<(String, [u8; NODE_ID_LEN])> {
+        self.seen
+            .iter()
+            .filter(|(_, heard)| heard.said.roles.has(Roles::WRITABLE))
+            .max_by(|(left, one), (right, other)| {
+                one.said
+                    .epoch
+                    .cmp(&other.said.epoch)
+                    .then_with(|| right.cmp(left))
+            })
+            .map(|(endpoint, heard)| (endpoint.clone(), heard.said.node))
+    }
+
     /// Greet every declared peer this node can dial, and record what each said.
     ///
     /// Answers how many peers were reached. Not a `Result`: a round in which
@@ -319,7 +366,6 @@ mod tests {
     /// A declared peer row: a name, where it answers, and who is there.
     fn declared(id: u32, endpoint: &str, node: Option<[u8; NODE_ID_LEN]>) -> ReplicaDefinition {
         ReplicaDefinition {
-            id,
             name: format!("peer{id}"),
             endpoint: endpoint.to_owned(),
             roles: Roles::SERVING,
@@ -360,6 +406,7 @@ mod tests {
             tail: Sequence::new(4096),
             tail_leadership: Epoch::new(1),
             current_as_of: age,
+            policy: None,
         }
     }
 
@@ -403,6 +450,84 @@ mod tests {
             directory.age_of("nobody.example:9080", heard_at),
             None,
             "an address nobody has greeted from reported an age"
+        );
+    }
+
+    /// A greeting from a node that claims the writable role at `epoch`.
+    fn leads(node: [u8; NODE_ID_LEN], epoch: u64) -> Hello {
+        let mut hello = said(node, Some(Duration::from_secs(1)), true);
+        hello.roles = Roles::SERVING.and(Roles::WRITABLE);
+        hello.epoch = Epoch::new(epoch);
+        hello
+    }
+
+    #[test]
+    fn a_directory_of_followers_knows_of_no_leader() {
+        // The answer that matters most, because the alternative is a read that
+        // asked for the leader being sent to a node that never claimed to be
+        // one. `None` here becomes a refusal upstream, which is the honest end.
+        let heard_at = Instant::now();
+        let mut directory = Directory::new();
+        directory.heard(
+            "two.example:9080",
+            said(ANOTHER, Some(Duration::ZERO), true),
+            heard_at,
+        );
+
+        assert_eq!(
+            directory.writable(),
+            None,
+            "a peer at zero lag was read as a leader; level is not authoritative"
+        );
+    }
+
+    #[test]
+    fn the_peer_that_claims_the_writable_role_is_the_one_named() {
+        let heard_at = Instant::now();
+        let mut directory = Directory::new();
+        directory.heard(
+            "two.example:9080",
+            said(ANOTHER, Some(Duration::ZERO), true),
+            heard_at,
+        );
+        directory.heard("three.example:9080", leads(THIRD, 9), heard_at);
+
+        assert_eq!(
+            directory.writable(),
+            Some(("three.example:9080".to_owned(), THIRD)),
+            "both halves travel, or the redirect cannot be checked on arrival"
+        );
+    }
+
+    #[test]
+    fn two_peers_claiming_the_leadership_resolve_to_the_later_epoch() {
+        // Not a malformed directory: this is what a handover looks like from
+        // outside while one greeting is newer than the other. The higher epoch
+        // is the later claim.
+        let heard_at = Instant::now();
+        let mut directory = Directory::new();
+        directory.heard("two.example:9080", leads(ANOTHER, 7), heard_at);
+        directory.heard("three.example:9080", leads(THIRD, 9), heard_at);
+
+        assert_eq!(
+            directory.writable(),
+            Some(("three.example:9080".to_owned(), THIRD)),
+        );
+    }
+
+    #[test]
+    fn an_equal_epoch_resolves_the_same_way_twice() {
+        // The map is ordered, so a tie has to break deterministically or the
+        // same question answers differently on two runs.
+        let heard_at = Instant::now();
+        let mut directory = Directory::new();
+        directory.heard("three.example:9080", leads(THIRD, 9), heard_at);
+        directory.heard("two.example:9080", leads(ANOTHER, 9), heard_at);
+
+        assert_eq!(
+            directory.writable(),
+            Some(("three.example:9080".to_owned(), THIRD)),
+            "a tie went to the lexicographically later endpoint"
         );
     }
 

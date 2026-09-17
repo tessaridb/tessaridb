@@ -58,6 +58,24 @@ pub enum Error {
         span: tessari_ql::Span,
     },
 
+    /// A `DEFINE FAILOVER` names periods that do not hold together.
+    ///
+    /// The store owns the relations and the direction each one fails in, so the
+    /// reason is carried through verbatim rather than restated: a second copy of
+    /// *too large means the leader steps over the moment it should have stood*
+    /// would be a second answer that drifts from the one place that enforces it.
+    ///
+    /// The span is added because the store cannot have it. A refusal that named
+    /// the relation but not the statement would send an operator looking through
+    /// a script for which of five durations it meant.
+    #[error("{reason} (at {span})")]
+    FailoverRefused {
+        /// The store's own words for which relation broke and in which direction.
+        reason: String,
+        /// Where the statement is.
+        span: tessari_ql::Span,
+    },
+
     /// A `USING` naming a word that is not an access path.
     ///
     /// Almost always a typo, and refused before the read rather than after it:
@@ -823,14 +841,23 @@ pub enum Error {
     /// read open against a peer, which is the failure mode that made *no node
     /// proxies* worth deciding.
     #[error(
-        "a staleness bound of {written} (at {span}) is not satisfied by this \
-         node's copy, and the copy at {endpoint} is: read it there. This node \
-         redirects rather than fetching on your behalf. The node to expect is {}",
+        "{because} (at {span}) is not satisfied by this node, and {endpoint} \
+         satisfies it: read it there. This node redirects rather than fetching \
+         on your behalf. The node to expect is {}",
         tessari_types::RecordId::Uuid(*node)
     )]
     ReadIsElsewhere {
-        /// The bound as the statement wrote it.
-        written: String,
+        /// What the read asked for that this node could not give it, in the
+        /// statement's own words.
+        ///
+        /// It carries the REASON rather than a bound, because there are now two
+        /// of them — a staleness bound this node's copy is outside, and an
+        /// `ANSWERED BY LEADER` on a node that does not lead. One variant and
+        /// not two deliberately: the wire turns this into frame kind 13 and
+        /// HTTP into a 307, and a second variant would be a second arm in each
+        /// of those, where forgetting one answers a redirect as a plain refusal
+        /// and nothing anywhere is in an error state.
+        because: String,
         /// The address to dial — the same string the declaration carried.
         endpoint: String,
         /// Who was last heard there, so the redirect is checkable on arrival.
@@ -842,6 +869,28 @@ pub enum Error {
         /// bounded read is one whose own copy failed the bound, and it may hold
         /// no leadership at all.
         epoch: tessari_types::Epoch,
+        /// Where the clause is.
+        span: Span,
+    },
+
+    /// A read asked to be answered by the leader, and this node knows of none.
+    ///
+    /// Its own roles say it does not lead, and no peer it has greeted claims to
+    /// either. Refused rather than answered here, for the reason
+    /// [`Self::NoCopyWithinStaleness`] is refused rather than promoted: a read
+    /// that said where it had to come from is not served by coming from
+    /// somewhere else and saying nothing.
+    ///
+    /// **The remedy is different from a staleness refusal's**, which is why it
+    /// is a different class. A bound that nothing satisfies is widened or waited
+    /// out; this one is a cluster with no writable member, and it is answered by
+    /// declaring one — `DEFINE REPLICA … ROLES writable`.
+    #[error(
+        "`ANSWERED BY LEADER` (at {span}) cannot be satisfied: this node does \
+         not lead, and no peer it has greeted says it does. Declare one with \
+         `DEFINE REPLICA … ROLES writable`"
+    )]
+    NoLeaderKnown {
         /// Where the clause is.
         span: Span,
     },

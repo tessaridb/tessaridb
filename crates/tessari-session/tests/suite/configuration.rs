@@ -969,3 +969,109 @@ fn a_subscription_naming_a_namespace_that_is_not_there_is_refused() {
         .to_string();
     assert!(refused.contains("ghost"), "{refused}");
 }
+
+/// The `cluster.failover` group a report carries, or `None` when it is null.
+fn policy(
+    report: &std::collections::BTreeMap<String, Value>,
+) -> Option<std::collections::BTreeMap<String, Value>> {
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster group: {report:?}");
+    };
+    match cluster.get("failover") {
+        Some(Value::Object(found)) => Some(found.clone()),
+        Some(Value::Null) => None,
+        other => panic!("not a failover group: {other:?}"),
+    }
+}
+
+#[test]
+fn a_cluster_nobody_configured_reports_no_policy_rather_than_the_defaults() {
+    // `null` and *the built-in periods* are different statements, and the
+    // difference is the whole point of reporting this at all: a node running
+    // the defaults has never been told anything, and a check watching for a
+    // policy to arrive cannot tell arrival from always-been-there if the
+    // defaults are rendered as a policy.
+    let store = closed(&backend());
+    assert_eq!(
+        policy(&reported(&store)),
+        None,
+        "a store nobody configured reported a policy it was never given"
+    );
+}
+
+#[test]
+fn a_policy_is_set_by_a_statement_and_reads_back_with_the_pair_that_orders_it() {
+    let store = closed(&backend());
+    owner(&store)
+        .run(
+            "DEFINE FAILOVER AWARENESS 12s COLLECTION 11s ROUND 2s CAMPAIGN 3s \
+             LEASE 40s;",
+        )
+        .unwrap();
+    let held = policy(&reported(&store)).expect("a policy that was just set");
+    let seconds = |key: &str| match held.get(key) {
+        Some(Value::Duration(span)) => span.seconds(),
+        other => panic!("{key} is not a duration: {other:?}"),
+    };
+    assert_eq!(seconds("awareness"), 12);
+    assert_eq!(seconds("collection"), 11);
+    assert_eq!(seconds("round"), 2);
+    assert_eq!(seconds("campaign"), 3);
+    assert_eq!(seconds("lease"), 40);
+    // The pair is supplied by the executor and could not be typed. A node
+    // standing alone holds no leadership, so the epoch is zero — and the
+    // version of a first policy is zero because the number counts settings
+    // under a leadership and this is the first.
+    assert_eq!(held.get("epoch"), Some(&Value::from(0_i64)));
+    assert_eq!(held.get("version"), Some(&Value::from(0_i64)));
+}
+
+#[test]
+fn a_second_policy_under_one_leadership_carries_the_next_version() {
+    // The case the epoch alone cannot tell apart, and the reason the version
+    // field exists at all: one leader setting the policy twice writes the same
+    // epoch both times, so without this the second would be indistinguishable
+    // from the first and no node would have a reason to prefer either.
+    let store = closed(&backend());
+    for lease in ["40s", "50s"] {
+        owner(&store)
+            .run(&format!(
+                "DEFINE FAILOVER AWARENESS 12s COLLECTION 11s ROUND 2s \
+                 CAMPAIGN 3s LEASE {lease};"
+            ))
+            .unwrap();
+    }
+    let held = policy(&reported(&store)).expect("a policy that was just set");
+    assert_eq!(held.get("version"), Some(&Value::from(1_i64)));
+    let Some(Value::Duration(lease)) = held.get("lease") else {
+        panic!("no lease period: {held:?}");
+    };
+    assert_eq!(
+        lease.seconds(),
+        50,
+        "the later policy did not replace the earlier one"
+    );
+}
+
+#[test]
+fn a_policy_whose_periods_do_not_hold_together_is_refused_with_the_direction_named() {
+    // The relations live on `Failover::stated` and their refusals name which
+    // direction the value is wrong in. This asserts that the statement carries
+    // that refusal through rather than flattening it — an operator told only
+    // "refused" has to go and read the source to find out which of five
+    // durations to move, and which way.
+    let store = closed(&backend());
+    // CAMPAIGN above twice ROUND: the leader steps over the moment it should
+    // have stood, and nothing reports a failure because no round was attempted.
+    let refused = owner(&store)
+        .run(
+            "DEFINE FAILOVER AWARENESS 12s COLLECTION 11s ROUND 1s CAMPAIGN 9s \
+             LEASE 40s;",
+        )
+        .expect_err("a policy breaking a relation was accepted");
+    let said = refused.to_string();
+    assert!(
+        said.contains("campaign") || said.contains("round"),
+        "refused without naming the relation: {said}"
+    );
+}

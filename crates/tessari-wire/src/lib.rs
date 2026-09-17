@@ -96,8 +96,8 @@ pub use crate::credential::{fingerprint, names, presented};
 pub use crate::directory::{Destination, Directory, Heard};
 #[cfg(feature = "server")]
 pub use crate::driver::{
-    Collecting, Published, Renewing, bootstrap_from, due_in, every, heard_a_leader, names_a_peer,
-    stands, upstream, voters,
+    Collecting, Published, Renewing, bootstrap_from, due_in, every, heard_a_leader,
+    heard_a_newer_policy, names_a_peer, stands, upstream, voters,
 };
 pub use crate::error::{Error, Result};
 #[cfg(feature = "server")]

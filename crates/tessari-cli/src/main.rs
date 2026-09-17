@@ -447,6 +447,29 @@ fn serve(
     // counted rather than killing the process where it stands.
     shutdown::listen();
 
+    // Housekeeping, and deliberately NOT one of the peer cadences.
+    //
+    // Trimming the log was written into the awareness round first, on the
+    // argument that the round already runs and already opens the store. A live
+    // run refuted it in one reading: the whole peer block is behind
+    // `peers.map(…)`, so a node started without cluster credentials runs none of
+    // those cadences at all — and a single node is exactly the deployment whose
+    // log grows with nothing to collect it. The cadence that bounds a disk
+    // cannot be one only a cluster has.
+    let housekeeping = tessari_serve::Stopping::new();
+    surfaces.push(shutdown::Surface {
+        name: "housekeeping",
+        stopping: std::sync::Arc::clone(&housekeeping),
+        // Nothing to interrupt: the loop is asleep for a quarter of a second at
+        // a time and reads the flag between naps, so it leaves on its own.
+        wake: Box::new(|| {}),
+    });
+    let keeping = {
+        let db = std::sync::Arc::clone(&db);
+        let stopping = std::sync::Arc::clone(&housekeeping);
+        std::thread::spawn(move || keep_house(&db, &stopping))
+    };
+
     // Its own thread rather than an arm of the scope below, so that the peer
     // door runs whichever of the two client surfaces was asked for — including
     // neither combination the match has to spell out. It holds a handle on the
@@ -585,6 +608,8 @@ fn serve(
         drop(collecting.join());
         drop(standing.join());
     }
+    // Before the store, for the reason the peer threads are: it holds a handle.
+    drop(keeping.join());
     // Before the store, not after. Stage 1 told the consumers to stop and did
     // not wait; this is the wait. Joining after `drop(db)` would flush the store
     // and release its lock while threads were still writing through it.
@@ -595,6 +620,53 @@ fn serve(
     drop(db);
     eprintln!("tessaridb — stopped");
     Ok(Ended::Fine)
+}
+
+/// Keep this node's own disk in order, whether or not it has peers.
+///
+/// One job today: trim the log to the retained record count. It answers `None`
+/// when no retention is set, which is every store until an operator sets one —
+/// and that is why the silence is deliberate rather than an omission. *Nobody
+/// asked for this* and *there was nothing to do* are different facts, and a
+/// cadence that logged the second would bury the first under one line every ten
+/// seconds forever.
+///
+/// When it does remove something it says so at `info`. Removing history is not a
+/// thing to do quietly, and the line is the only place an operator sees that the
+/// number they set is actually being enforced.
+///
+/// # Why it naps rather than sleeping the period
+///
+/// `tessari_wire::every` sleeps the whole period and reads the flag once per
+/// round, which the peer cadences can afford because a clustered node is already
+/// paying that on the way out. A standalone node was not paying it at all, and
+/// adding ten seconds to every `docker stop` in exchange for a cleanup nobody is
+/// waiting on would be a bad trade made invisibly.
+fn keep_house(db: &Db, stopping: &tessari_serve::Stopping) {
+    /// How long the thread sleeps between reading the flag.
+    const NAP: std::time::Duration = std::time::Duration::from_millis(250);
+
+    let period = std::time::Duration::from_secs(tessari_constants::AWARENESS_SECONDS);
+    // Due immediately, so a node started with a retention already set enforces
+    // it at once rather than a cadence later. A store opened after an outage may
+    // have a great deal to remove, and making it wait is the one moment the
+    // delay is least affordable.
+    let mut due = std::time::Instant::now();
+    while !stopping.asked() {
+        if std::time::Instant::now() >= due {
+            match db.store().trim_logs() {
+                Ok(Some(trimmed)) if trimmed.records > 0 => log::info!(
+                    "pruned {} log record(s) across {} log(s) to the retained count",
+                    trimmed.records,
+                    trimmed.logs
+                ),
+                Ok(_) => {}
+                Err(why) => log::warn!("this node cannot trim its log: {why}"),
+            }
+            due = std::time::Instant::now().checked_add(period).unwrap_or(due);
+        }
+        std::thread::sleep(NAP);
+    }
 }
 
 /// Take peers, one at a time, until the process is asked to stop.
@@ -888,16 +960,21 @@ fn collect_from_upstream(
                 }
             };
             for home in logs {
-                // This node's own copy of that log. The collector asks the peer
-                // for the PEER's log and files what arrives under the peer's
-                // name, so a cursor is per (home, peer) exactly as the log is.
-                let log = match store.own_log(home) {
-                    Ok(log) => log,
-                    Err(why) => {
-                        log::warn!("this node cannot name its own log for {home:?}: {why}");
-                        continue;
-                    }
-                };
+                // The PEER's log as this node holds it, and emphatically not
+                // this node's own. A log is a home AND a writer, so the two are
+                // different counters over the same range — and the one the
+                // collector asks a position in is the peer's, because that is
+                // where the answer is filed.
+                //
+                // Seeding from `own_log` instead is how W382 found a cluster
+                // that elected a leader and replicated nothing: a follower
+                // commits its own membership before it joins, so its own log
+                // stands at 1, it asked the leader for position 2 of a log it
+                // held nothing of, and every pass was refused *the next record
+                // must be 1, but 2 was offered* — one counter subtracted from
+                // another, which is the failure `Store::committed_tail` warns
+                // about in its own words.
+                let log = tessari_storage::LogId::new(home, tessari_storage::Writer::new(node));
                 // The seed for a log with no cursor yet: the first position
                 // this node does not hold THERE. Read here rather than inside
                 // the collector, which may not reach the feed.
@@ -909,14 +986,24 @@ fn collect_from_upstream(
                     }
                 };
                 let before = collecting.reached(home);
-                let reached = collecting.once(home, seed, |at| collector.collect(store, home, at));
-                if before == Some(reached) {
-                    log::debug!(
+                match collecting.once(home, seed, |at| collector.collect(store, home, at)) {
+                    // A refusal, said out loud. It reaches here rather than
+                    // being absorbed by the cursor because *the peer turned me
+                    // away* and *the peer had nothing for me* leave the cursor
+                    // in the same place, and an operator reading only the
+                    // cursor cannot tell a cluster that has stopped
+                    // replicating from one that is level.
+                    Err(why) => log::warn!(
+                        "collecting {home:?} from {endpoint} was refused: {why}. \
+                         This node's copy of that log is not advancing."
+                    ),
+                    Ok(reached) if before == Some(reached) => log::debug!(
                         "nothing collected for {home:?} from {endpoint}; still at {}",
                         reached.get()
-                    );
-                } else {
-                    log::info!("collected {home:?} to {} from {endpoint}", reached.get());
+                    ),
+                    Ok(reached) => {
+                        log::info!("collected {home:?} to {} from {endpoint}", reached.get());
+                    }
                 }
             }
         },
@@ -992,16 +1079,22 @@ fn stand_for_leadership(
             if !tessari_wire::stands(me.roles) {
                 return;
             }
-            let declared = match store.begin().and_then(|mut transaction| {
-                tessari_storage::Catalog::new(&mut transaction).replicas()
+            // Both in one transaction: the membership and the policy stamp are
+            // read on every tick of this cadence, and a node the operator made
+            // writable should pay for one begin here rather than two.
+            let (declared, policy) = match store.begin().and_then(|mut transaction| {
+                let catalog = tessari_storage::Catalog::new(&mut transaction);
+                let declared = catalog.replicas()?;
+                let policy = catalog.failover()?;
+                Ok((declared, policy))
             }) {
-                Ok(declared) => declared,
+                Ok(read) => read,
                 Err(why) => {
                     log::warn!("this node cannot say who its peers are: {why}");
                     return;
                 }
             };
-            let Some(voting) = tessari_wire::voters(me.roles, &declared) else {
+            let Some(voting) = tessari_wire::voters(me.roles, &declared, &me.id) else {
                 return;
             };
             // ADR-0066. A node that can still hear a leader does not stand
@@ -1024,6 +1117,36 @@ fn stand_for_leadership(
                 now,
                 tessari_storage::LEASE_TTL,
             ) {
+                return;
+            }
+            // And the second thing a node can hear that means it should not
+            // stand: a peer running a failover policy that supersedes this
+            // node's own. The periods decide when a leader counts as gone, so a
+            // candidate timing itself by a policy the cluster has already
+            // replaced is the disagreement the policy row exists to remove,
+            // arriving at the one moment where it decides an outcome.
+            //
+            // The bound is the lease term, as above and for the same reason: a
+            // greeting older than the leader's own lease cannot testify to
+            // anything current. And the refusal lasts only while such a peer is
+            // audible — a cluster cannot deadlock behind a node that has gone
+            // away, because a node that has gone away advertises nothing.
+            //
+            // It is inert until somebody sets a policy: with no row anywhere,
+            // every stamp is `None` and nothing supersedes anything.
+            if let Some(newer) = tessari_wire::heard_a_newer_policy(
+                &declared,
+                &published.current(),
+                policy.map(|definition| definition.stamp()),
+                now,
+                tessari_storage::LEASE_TTL,
+            ) {
+                log::info!(
+                    "not standing: a peer runs the failover policy set at epoch {} version {}, \
+                     which supersedes this node's own",
+                    newer.epoch.get(),
+                    newer.version
+                );
                 return;
             }
             // A member whose endpoint will not parse is dropped from the set it
@@ -1185,21 +1308,22 @@ fn greet_peers(
 /// greeting that arrived and a row that did not need binding are both the normal
 /// course of a running cluster.
 fn bind_the_greeter(db: &Db, node: [u8; tessari_storage::NODE_ID_LEN]) {
-    let bind = || -> Result<Option<u32>, String> {
+    let bind = || -> Result<Option<String>, String> {
         let mut transaction = db.store().begin().map_err(|why| why.to_string())?;
         let mut catalog = tessari_storage::Catalog::new(&mut transaction);
         let declared = catalog.replicas().map_err(|why| why.to_string())?;
-        let Some(id) = tessari_storage::the_row_a_greeting_binds(&declared, &node) else {
+        let Some(name) = tessari_storage::the_row_a_greeting_binds(&declared, &node) else {
             return Ok(None);
         };
+        let name = name.to_owned();
         catalog
-            .bind_replica_node(id, node)
+            .bind_replica_node(&name, node)
             .map_err(|why| why.to_string())?;
         transaction.commit().map_err(|why| why.to_string())?;
-        Ok(Some(id))
+        Ok(Some(name))
     };
     match bind() {
-        Ok(Some(id)) => log::info!("peer {} now names replica {id}", hex(&node)),
+        Ok(Some(name)) => log::info!("peer {} now names replica {name}", hex(&node)),
         Ok(None) => {}
         Err(why) => log::info!("peer {} was not bound to a declared row: {why}", hex(&node)),
     }
@@ -1242,12 +1366,27 @@ fn greeting(db: &Db) -> Result<tessari_wire::Hello, String> {
     // ranks candidates on this pair, and ranking on `leading` instead would put
     // a follower carrying the newest records below an ex-leader carrying fewer.
     let tail_leadership = store.tail_leadership(own).map_err(|why| why.to_string())?;
+    // Which failover policy this node is running under, read from its own
+    // catalog rather than assembled from the constants it currently times by.
+    // The two are not the same claim: the constants are what this build compiled
+    // with, and the stamp is what the cluster last agreed on — and a node
+    // advertising the first while holding the second would be telling its peers
+    // it is level when it is behind, which is the one thing this field exists to
+    // make visible.
+    //
+    // `None` is the ordinary state today, because nothing sets the row yet.
+    let policy = store
+        .begin()
+        .and_then(|mut transaction| tessari_storage::Catalog::new(&mut transaction).failover())
+        .map_err(|why| why.to_string())?
+        .map(|definition| definition.stamp());
     Ok(tessari_wire::Hello::about(
         &identity,
         leading,
         tail,
         tail_leadership,
         current_as_of,
+        policy,
     ))
 }
 

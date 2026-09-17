@@ -29,6 +29,7 @@ mod collections;
 mod covering;
 mod error;
 mod expiry;
+mod failover;
 mod feed;
 mod followers;
 mod graph;
@@ -36,6 +37,7 @@ mod index;
 mod lease;
 mod log;
 mod node;
+mod pruning;
 mod reclaim;
 mod running;
 mod schema;
@@ -50,13 +52,13 @@ mod vault;
 pub use catalog::{
     AnalyzerDefinition, Authority, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, Catalog,
     ConsumerDefinition, DatabaseDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeKindDefinition,
-    EdgeOrder, FieldDefinition, FieldShape, GEO_FIELD, GrantDefinition, GraphDefinition, Held,
-    IndexDefinition, IndexShape, Kind, LeadershipDefinition, Mapped, NamespaceDefinition,
-    OnFailure, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration,
-    RECORD_LEVEL, Reach, ReplicaDefinition, Role, SYSTEM_DATABASE, SYSTEM_NAMESPACE,
-    SeriesDeclaration, StoredKind, TableDefinition, TableKind, TableShape, UserDefinition,
-    VECTOR_FIELD, VaultDeclaration, VectorDeclaration, VectorDistance, Verb, ViewDeclaration,
-    another_node_may_write, names_a_peer, the_row_a_greeting_binds,
+    EdgeOrder, FailoverDefinition, FailoverStamp, FieldDefinition, FieldShape, GEO_FIELD,
+    GrantDefinition, GraphDefinition, Held, IndexDefinition, IndexShape, Kind,
+    LeadershipDefinition, Mapped, NamespaceDefinition, OnFailure, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY,
+    QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, Reach, ReplicaDefinition, Role,
+    SYSTEM_DATABASE, SYSTEM_NAMESPACE, SeriesDeclaration, StoredKind, TableDefinition, TableKind,
+    TableShape, UserDefinition, VECTOR_FIELD, VaultDeclaration, VectorDeclaration, VectorDistance,
+    Verb, ViewDeclaration, another_node_may_write, names_a_peer, the_row_a_greeting_binds,
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.
@@ -68,10 +70,12 @@ pub use expiry::Expired;
 // the field but cannot name its type has a public API it cannot use.
 pub use audit::{AuditDevice, AuditTrail, VaultRead, entries as audit_entries, reads_by};
 pub use error::{Error, Result};
+pub use failover::Failover;
 pub use feed::{Change, ChangeKind, Changes, History, Subject, Subscription, Watch};
 pub use followers::FollowerLag;
 pub use graph::vector_of;
 pub use lease::{GUARD as LEASE_GUARD, Lease, TTL as LEASE_TTL};
+pub use pruning::{Pruned, Trimmed};
 pub use reclaim::Reclaimed;
 pub use running::{Progress, Running};
 pub use schema::{Violation, violations};

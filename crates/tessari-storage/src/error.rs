@@ -165,6 +165,93 @@ pub enum Error {
         for_the_last: std::time::Duration,
     },
 
+    /// A stated failover policy named a period under a second.
+    ///
+    /// The four refusals below exist because the relations between these
+    /// periods hold today only because the compiler holds them — three of the
+    /// values default to expressions over the others. Handed to an operator,
+    /// each relation breaks **silently**, which is why breaking one is an error
+    /// rather than a warning.
+    #[error(
+        "a failover policy's `{field}` is {stated:?}, and every period in one \
+         must be at least a second: a cadence that never waits is a spin, and a \
+         lease of zero is spent at the instant it is taken"
+    )]
+    FailoverPeriodTooShort {
+        /// Which period was named.
+        field: &'static str,
+        /// What it was set to.
+        stated: std::time::Duration,
+    },
+
+    /// A stated campaign cadence is slower than the window it has to act inside.
+    ///
+    /// The **too large** direction, and the one that reports nothing: a leader
+    /// steps over the moment it was supposed to stand, loses a lease it could
+    /// have renewed, and no round was ever attempted so nothing failed.
+    #[error(
+        "a failover policy's `campaign` is {campaign:?} against a `round` of \
+         {round:?}, and it may not exceed {ceiling:?} — twice the round time. \
+         The window between the moment a leader should stand and the moment its \
+         fence shuts is exactly two round times, so a slower cadence steps over \
+         it: the leader loses a leadership it could have kept, and nothing \
+         reports a failure because no round was ever attempted"
+    )]
+    FailoverCampaignOutpaced {
+        /// The cadence that was stated.
+        campaign: std::time::Duration,
+        /// The round time it is judged against.
+        round: std::time::Duration,
+        /// The largest cadence that round time admits.
+        ceiling: std::time::Duration,
+    },
+
+    /// A stated lease leaves no instant at which a holder may write and is not
+    /// already campaigning.
+    ///
+    /// The **too small** direction. A holder's usable window is the lease less
+    /// the fence guard, and standing opens two round times before that window
+    /// ends; at or below the floor the two meet and the window is empty.
+    #[error(
+        "a failover policy's `lease` is {lease:?}, and it must exceed {floor:?} \
+         — the {guard:?} fence guard plus two {round:?} round times. A holder's \
+         usable window is the lease less the guard, and standing opens two round \
+         times before that window ends, so at or below this there is no instant \
+         at which a holder is both writable and not yet campaigning"
+    )]
+    FailoverLeaseTooShort {
+        /// The lease that was stated.
+        lease: std::time::Duration,
+        /// The fence guard, which is not settable.
+        guard: std::time::Duration,
+        /// The round time the margin is built from.
+        round: std::time::Duration,
+        /// The shortest lease those two admit.
+        floor: std::time::Duration,
+    },
+
+    /// A stated collection period is at or above the staleness floor the same
+    /// policy publishes.
+    ///
+    /// The **too large** direction, and it fails while everything is working: a
+    /// follower that collects no more often than the tightest bound the API
+    /// admits is advertising a promise it cannot keep on a healthy network.
+    #[error(
+        "a failover policy's `collection` is {collection:?}, and it must be \
+         under {floor:?} — twice the {awareness:?} awareness period, which is \
+         the tightest staleness bound this node admits. A collection period at \
+         or above that floor advertises a bound the node cannot meet even when \
+         everything is working"
+    )]
+    FailoverCollectionAboveFloor {
+        /// The collection period that was stated.
+        collection: std::time::Duration,
+        /// The awareness interval the floor is derived from.
+        awareness: std::time::Duration,
+        /// The floor those derive.
+        floor: std::time::Duration,
+    },
+
     /// This node is in a cluster and has not been given a leadership yet.
     ///
     /// A different state from [`Self::LeaseSpent`] and deliberately a different
@@ -575,6 +662,34 @@ pub enum Error {
         floor: u64,
     },
 
+    /// A log read was asked for a position that has been pruned away.
+    ///
+    /// The sibling of [`Self::VersionReclaimed`], one keyspace over, and refused
+    /// for the same reason with one difference that matters more here: a
+    /// historical read below the reclaim floor returns a *wrong* answer, while a
+    /// log read below the start returns a **short** one — and a short answer is
+    /// how this protocol says *you are level*. A follower told it is level while
+    /// it is missing the records that were pruned would stop asking, and nothing
+    /// anywhere would be in an error state.
+    ///
+    /// So it is refused rather than answered, and the refusal carries the repair
+    /// as well as the number: there is no position to retry from, and the only
+    /// way back is a fresh copy of the state. That is Raft's `InstallSnapshot`,
+    /// etcd's *take a new snapshot and watch from `revision + 1`*, and
+    /// PostgreSQL's *re-create the standby* — every system that prunes a log
+    /// answers this case with state rather than with more history.
+    #[error(
+        "sequence {asked} is below the start of this log, which begins at \
+         {start}; the records that answered there have been pruned, so this \
+         reader cannot catch up and needs a fresh copy of the state"
+    )]
+    BelowLogStart {
+        /// The sequence the read asked for.
+        asked: u64,
+        /// The oldest sequence this log still holds.
+        start: u64,
+    },
+
     /// A read was asked for a point the store has not reached.
     ///
     /// Serving the present instead would let the same query return one answer
@@ -660,6 +775,10 @@ impl Error {
             // read cannot succeed, and a floor only ever rises, so a caller that
             // treated this as transient would retry forever.
             | Self::VersionReclaimed { .. }
+            // The same argument as `VersionReclaimed`, and the start only ever
+            // rises too: a caller that read this as transient would retry a
+            // position that can never come back.
+            | Self::BelowLogStart { .. }
             | Self::VersionInTheFuture { .. } => ErrorCategory::Validation,
             Self::CatalogMalformed { .. } => ErrorCategory::Corruption,
             // A dependency this process needs is not reachable, which is what
@@ -692,7 +811,14 @@ impl Error {
             // not the store being broken: a reserved name it may not write, a
             // shape a vault does not hold, or a record that predates the vault
             // it now sits in.
-            Self::VaultReservedField { .. }
+            // An operator's stated policy failing a range or a relation check
+            // is the statement being wrong, not the store being broken — the
+            // same reading as a reserved name below.
+            Self::FailoverPeriodTooShort { .. }
+            | Self::FailoverCampaignOutpaced { .. }
+            | Self::FailoverLeaseTooShort { .. }
+            | Self::FailoverCollectionAboveFloor { .. }
+            | Self::VaultReservedField { .. }
             | Self::VaultNotAnObject { .. }
             | Self::VaultReservedRecipient { .. }
             | Self::VaultRecipientExists { .. }

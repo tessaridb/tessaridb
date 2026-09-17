@@ -199,6 +199,15 @@ impl Effect {
             // every node. `DROP NODE` has no arm here because it has no
             // statement — the parser refuses it and says why.
             StatementKind::DefineReplica { .. } | StatementKind::DropReplica { .. } => Self::Write,
+            // `DEFINE FAILOVER` is a write for the same reason and it matters
+            // more here than anywhere else: the periods decide when a leader
+            // counts as gone, so a policy that reached one node and not the
+            // rest is the disagreement it exists to remove. Classifying it
+            // `Read` beside `DEFINE NODE` would have been the easy mistake —
+            // both are nameless and both look like configuring a machine —
+            // but one writes to `META` about this box and the other writes a
+            // catalog record the whole cluster must hold.
+            StatementKind::DefineFailover { .. } => Self::Write,
             // A consumer's **declaration** is a catalog record and replicates,
             // exactly as a replica's does; whether it is running on this machine
             // is local and is not part of the record. So both forms are writes,

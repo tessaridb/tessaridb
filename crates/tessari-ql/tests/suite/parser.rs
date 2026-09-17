@@ -1540,13 +1540,91 @@ fn the_versions_subject_reserves_none_of_its_words() {
 }
 
 #[test]
+fn a_failover_policy_is_five_periods_in_one_statement() {
+    // `docs/tessariql.md` § How long the cluster waits before it replaces a
+    // leader, copied from the specification as every statement in this file is.
+    let StatementKind::DefineFailover {
+        awareness,
+        collection,
+        round,
+        campaign,
+        lease,
+    } = one(
+        "DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s CAMPAIGN 1s \
+         LEASE 30s;",
+    )
+    else {
+        panic!("DEFINE FAILOVER did not parse as DEFINE FAILOVER");
+    };
+    assert_eq!(awareness.seconds(), 10);
+    assert_eq!(collection.seconds(), 10);
+    assert_eq!(round.seconds(), 1);
+    assert_eq!(campaign.seconds(), 1);
+    assert_eq!(lease.seconds(), 30);
+}
+
+#[test]
+fn a_failover_policy_missing_a_clause_is_refused_and_says_which_one() {
+    // Every clause required is the difference from `DEFINE NODE`, which amends
+    // a row and lets a clause be left out. This one replaces a SET whose members
+    // are checked against one another, so a statement naming four periods could
+    // only mix new values with old ones under a single version.
+    //
+    // The refusal names the CLAUSE the operator left out, because five clauses
+    // in a fixed order means their mistake is almost always which one is
+    // missing, and an error that cannot say leaves them counting durations.
+    let refused = parse("DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s LEASE 30s;")
+        .expect_err("a policy missing CAMPAIGN parsed");
+    let said = refused.to_string();
+    assert!(
+        said.contains("CAMPAIGN"),
+        "the refusal did not name the missing clause: {said}"
+    );
+}
+
+#[test]
+fn a_failover_period_of_no_length_is_refused_where_the_span_is() {
+    // Caught at the statement rather than at `Failover::stated`, for the reason
+    // `TIMEOUT`'s own zero is: it is a mistake in what was typed, and a policy
+    // assembled from five durations no longer knows which one the operator
+    // wrote. Both readings, because zero and negative are different mistakes
+    // that a single `<= 0` would let one test cover and one deletion uncover.
+    for statement in [
+        "DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 0s CAMPAIGN 1s LEASE 30s;",
+        "DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s CAMPAIGN 1s LEASE -30s;",
+    ] {
+        let refused = parse(statement).expect_err("a period of no length parsed");
+        let said = refused.to_string();
+        assert!(
+            said.contains("not a length of time"),
+            "refused, but not as a period: {said}"
+        );
+    }
+}
+
+#[test]
+fn failover_is_a_contextual_word_and_still_names_a_table() {
+    // `NODE` and `REPLICA` are read the same way and the parser says why:
+    // reserving a word takes a perfectly good table name away from data that
+    // already exists. Nothing but a subject can stand after `DEFINE`, so the
+    // word is special there and ordinary everywhere else.
+    assert!(matches!(
+        one("SELECT * FROM failover;"),
+        StatementKind::Select(_)
+    ));
+}
+
+#[test]
 fn a_node_is_drained_by_naming_no_roles() {
     // `docs/tessariql.md` § Draining this node. `Roles::NONE` is a state the
     // store has always been able to hold and no statement could ask for: the
     // clause is how an operator takes a node out of service without stopping
     // it. An empty list is the parse, because `named_roles` folds from
     // `Roles::NONE` and therefore already means exactly this.
-    let StatementKind::DefineNode { roles, endpoints } = one("DEFINE NODE ROLES NONE;") else {
+    let StatementKind::DefineNode {
+        roles, endpoints, ..
+    } = one("DEFINE NODE ROLES NONE;")
+    else {
         panic!("DEFINE NODE ROLES NONE did not parse as DEFINE NODE");
     };
     assert_eq!(roles, Some(Vec::new()), "NONE clears rather than names");
@@ -1560,8 +1638,9 @@ fn leaving_the_roles_clause_out_still_leaves_the_roles_alone() {
     // clear, and it is the reason `NONE` had to be spelled at all — so the two
     // readings are asserted together rather than in separate tests that could
     // be deleted apart.
-    let StatementKind::DefineNode { roles, endpoints } =
-        one("DEFINE NODE ENDPOINTS 'db-1.internal:9000';")
+    let StatementKind::DefineNode {
+        roles, endpoints, ..
+    } = one("DEFINE NODE ENDPOINTS 'db-1.internal:9000';")
     else {
         panic!("DEFINE NODE ENDPOINTS did not parse as DEFINE NODE");
     };

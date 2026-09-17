@@ -272,6 +272,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::VaultEditComputesFromTheRecord { .. } => "VaultEditComputesFromTheRecord",
         Error::RecipientIsNotAName { .. } => "RecipientIsNotAName",
         Error::ReplicationUnstated { .. } => "ReplicationUnstated",
+        Error::FailoverRefused { .. } => "FailoverRefused",
         _ => "Unnamed",
     }
 }
@@ -327,6 +328,7 @@ fn script_kind(error: &tessari_ql::Error) -> &'static str {
         tessari_ql::Error::VectorWidthBelowOne { .. } => "VectorWidthBelowOne",
         tessari_ql::Error::VectorWidthAboveTheCeiling { .. } => "VectorWidthAboveTheCeiling",
         tessari_ql::Error::EffortBelowOne { .. } => "EffortBelowOne",
+        tessari_ql::Error::EmptyPeriod { .. } => "EmptyPeriod",
         _ => "Unnamed",
     }
 }

@@ -15,6 +15,13 @@ use crate::keyspace::Keyspace;
 /// nobody observes.
 const COUNT_BATCH_ENTRIES: usize = 1024;
 
+/// How many keys [`delete_range_by_scanning`] removes per batch.
+///
+/// The same stride and the same reasoning as [`COUNT_BATCH_ENTRIES`]: a bulk
+/// delete over a range nobody bounded must not build one batch the size of the
+/// range, because the batch is held in memory before it is applied.
+const DELETE_BATCH_ENTRIES: usize = 1024;
+
 /// Which way a scan walks the key space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScanDirection {
@@ -97,6 +104,12 @@ impl ScanRequest {
 ///    returns a plausible pair belonging to a neighbouring range, which decodes,
 ///    reads sensibly and is wrong — so this is stated as a contract rather than
 ///    left to the override's judgement.
+///
+/// 7. **A range delete removes exactly the range.** [`Self::delete_range`]
+///    removes every key a forward [`Self::scan`] of that range would have
+///    returned and **no** key it would not have. The neighbours immediately
+///    outside both bounds survive it. An override that widens the range by a
+///    byte deletes data nobody asked about and reports success.
 ///
 /// # What this trait deliberately does not provide
 ///
@@ -282,5 +295,90 @@ pub trait KvBackend: Send + Sync + std::fmt::Debug {
     /// materialising the value should override it.
     fn contains(&self, keyspace: Keyspace, key: &Key) -> Result<bool> {
         Ok(self.get(keyspace, key)?.is_some())
+    }
+
+    /// Delete every key in a range.
+    ///
+    /// The mechanism this trait's header promises when it says *"the mechanism
+    /// to delete is here; deciding what to delete and when is the engine's"* —
+    /// and it exists because the layer above now has something to delete: a log
+    /// pruned below a retention floor is one contiguous span of `Keyspace::LOG`.
+    ///
+    /// # Why it is a method rather than an operation in the batch
+    ///
+    /// A batch is atomic, and a range delete inside one would make the prune
+    /// atomic with the bookkeeping that records it. That sounds like the safer
+    /// shape and is the more dangerous one: the two acts are ordered
+    /// deliberately, the marker first and the bytes afterwards, so that a crash
+    /// between them leaves reclaimable garbage rather than a hole under a marker
+    /// that still claims it. Fused into one batch there would be no ordering to
+    /// get right, and no way to express the one that is safe.
+    ///
+    /// # Why the default is correct rather than fast
+    ///
+    /// [`delete_range_by_scanning`] is the same work spelled the way any backend
+    /// can do it, in bounded strides. It is right for a backend with no range
+    /// primitive and wrong to leave as the only implementation on a
+    /// log-structured engine, where N point tombstones cost N compactions of
+    /// something that could have been one range tombstone. So the default is the
+    /// contract and an engine-aware override is an optimisation — the same
+    /// division [`Self::sweep`] and [`Self::first_of_each`] already use.
+    ///
+    /// Deleting a range that is empty is not an error, for the reason deleting
+    /// an absent key is not.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's own failure.
+    fn delete_range(&self, keyspace: Keyspace, range: &KeyRange) -> Result<()> {
+        delete_range_by_scanning(self, keyspace, range)
+    }
+}
+
+/// Remove a range one bounded stride at a time, using nothing but the trait.
+///
+/// The default body of [`KvBackend::delete_range`], lifted out so that an
+/// override can fall back to it for a range shape its engine cannot express.
+/// A trait's default body is not callable from the method that replaces it, and
+/// the alternative — each backend carrying its own copy of the loop — is how two
+/// implementations of one contract drift apart.
+///
+/// [`KvBackend::sweep`] rather than [`KvBackend::scan`], because every block this
+/// touches is read once and then deleted: keeping it would evict the working set
+/// the store is actually serving in order to cache data that is about to stop
+/// existing.
+///
+/// # Errors
+///
+/// Returns the backend's own failure.
+pub fn delete_range_by_scanning<B: KvBackend + ?Sized>(
+    backend: &B,
+    keyspace: Keyspace,
+    range: &KeyRange,
+) -> Result<()> {
+    loop {
+        let doomed = backend.sweep(&ScanRequest {
+            keyspace,
+            range: range.clone(),
+            direction: ScanDirection::Forward,
+            limit: Some(DELETE_BATCH_ENTRIES),
+        })?;
+        // A stride short of the limit is the end of the range, so the scan that
+        // would prove it empty is not made. The range is re-read from its own
+        // start each time rather than resumed after the last key, because the
+        // keys this pass deleted are gone — resuming would be carrying a cursor
+        // over a range that shrinks from the front.
+        let reached = doomed.len();
+        if reached == 0 {
+            return Ok(());
+        }
+        let mut batch = WriteBatch::new();
+        for (key, _) in doomed {
+            batch = batch.delete(keyspace, key);
+        }
+        backend.apply(batch)?;
+        if reached < DELETE_BATCH_ENTRIES {
+            return Ok(());
+        }
     }
 }

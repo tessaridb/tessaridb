@@ -179,9 +179,22 @@ impl Session<'_> {
                 *if_not_exists,
                 span,
             ),
-            StatementKind::DefineNode { roles, endpoints } => {
-                self.define_node(roles.as_deref(), endpoints.as_deref())
-            }
+            StatementKind::DefineNode {
+                roles,
+                endpoints,
+                retain,
+            } => self.define_node(roles.as_deref(), endpoints.as_deref(), *retain),
+            StatementKind::DefineFailover {
+                awareness,
+                collection,
+                round,
+                campaign,
+                lease,
+            } => self.define_failover(
+                transaction,
+                [*awareness, *collection, *round, *campaign, *lease],
+                span,
+            ),
             StatementKind::DefineReplica {
                 name,
                 endpoint,
@@ -2877,10 +2890,18 @@ impl Session<'_> {
     /// An unknown role is refused here rather than in the grammar, for the
     /// reason a vector distance is: which roles exist is the store's question,
     /// and this is where the store knows what it knows.
-    fn define_node(&self, roles: Option<&[Name]>, endpoints: Option<&[String]>) -> Result<Outcome> {
+    fn define_node(
+        &self,
+        roles: Option<&[Name]>,
+        endpoints: Option<&[String]>,
+        retain: Option<Option<u64>>,
+    ) -> Result<Outcome> {
         let named = roles.map(named_roles).transpose()?;
-        self.store
-            .configure_node(named, endpoints.map(<[String]>::to_vec))?;
+        self.store.configure_node(
+            named,
+            endpoints.map(<[String]>::to_vec),
+            retain.map(|keep| keep.map(tessari_types::Sequence::new)),
+        )?;
         Ok(Outcome::Done)
     }
 
@@ -2889,6 +2910,67 @@ impl Session<'_> {
     /// This one **does** run in the transaction, because a peer is a catalog
     /// record: it commits with whatever else the script did and reaches every
     /// node through the ordinary apply path (ADR-0009).
+    /// `DEFINE FAILOVER …` — the periods this cluster waits, as a log record.
+    ///
+    /// # The ordering pair is supplied here and never typed
+    ///
+    /// `epoch` is the leadership this node currently holds and `version` is one
+    /// past whatever the stored row last carried. Neither is a clause, because
+    /// an operator able to type either could write a policy that outranks a
+    /// successor's — which is the exact case the epoch exists to settle, arriving
+    /// through the statement meant to configure it.
+    ///
+    /// # Why the version is read inside this transaction
+    ///
+    /// The read and the write are one transaction, so two leaders setting a
+    /// policy concurrently cannot both compute the same next version from the
+    /// same stored row. They could still both be at the same epoch only if they
+    /// were both leading it, which the lease already prevents.
+    ///
+    /// # The relations are checked by the policy, not here
+    ///
+    /// `Failover::stated` is the only way to build a policy that is not the
+    /// default, and it is what knows which direction each relation fails in. A
+    /// second check here would be a second answer that drifts.
+    fn define_failover(
+        &self,
+        transaction: &mut Transaction<'_>,
+        periods: [tessari_types::Duration; 5],
+        span: Span,
+    ) -> Result<Outcome> {
+        let mut held = [std::time::Duration::ZERO; 5];
+        for (slot, stated) in held.iter_mut().zip(periods) {
+            // The parser refuses a period that is zero or negative, so the
+            // seconds are known non-negative here and the conversion cannot be
+            // lossy — the same reasoning the query budget states about its own
+            // ceiling.
+            let seconds = u64::try_from(stated.seconds()).unwrap_or(0);
+            *slot = std::time::Duration::new(seconds, stated.nanos());
+        }
+        let [awareness, collection, round, campaign, lease] = held;
+        let policy =
+            tessari_storage::Failover::stated(awareness, collection, round, campaign, lease)
+                .map_err(|why| Error::FailoverRefused {
+                    reason: why.to_string(),
+                    span,
+                })?;
+        let mut catalog = Catalog::new(transaction);
+        // `None` means nobody has ever set one, and the first policy is version
+        // zero rather than one: the number counts settings under a leadership,
+        // and this is the first.
+        let version = catalog
+            .failover()?
+            .map_or(0, |held| held.version.saturating_add(1));
+        // A node holding no leadership writes under `Epoch::ZERO`, which is what
+        // a store standing alone genuinely holds. It is not refused here: the
+        // leadership gate already refuses a clustered node with no lease before
+        // any write reaches this point, and refusing again would make a
+        // single-node deployment unable to configure itself.
+        let epoch = self.store.leading().unwrap_or(tessari_types::Epoch::ZERO);
+        catalog.set_failover(policy, epoch, version)?;
+        Ok(Outcome::Done)
+    }
+
     fn define_replica(
         &self,
         transaction: &mut Transaction<'_>,
@@ -3113,18 +3195,13 @@ impl Session<'_> {
         name: &Name,
         span: Span,
     ) -> Result<Outcome> {
-        let found = Catalog::new(transaction)
-            .replicas()?
-            .into_iter()
-            .find(|held| held.name == name.text);
-        let Some(replica) = found else {
+        if !Catalog::new(transaction).drop_replica(&name.text)? {
             return Err(Error::Unknown {
                 entity: "replica",
                 name: name.text.clone(),
                 span,
             });
-        };
-        Catalog::new(transaction).drop_replica(replica.id)?;
+        }
         Ok(Outcome::Done)
     }
 

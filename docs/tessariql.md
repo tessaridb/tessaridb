@@ -6160,6 +6160,73 @@ and `SELECT staleness FROM readings` still reads it. Which reading is meant is
 settled by whether a duration follows, the same way every other contextual word
 in this grammar is settled.
 
+## 7b‴‴. Saying which node may answer
+
+```
+SELECT * FROM accounts WHERE id = 1 ANSWERED BY LEADER;
+SELECT * FROM prices ANSWERED BY ANY;
+```
+
+`ANSWERED BY` is **optional** and says which nodes may answer this read. It takes
+exactly two words: `ANY`, which is what a read means when it says nothing, and
+`LEADER`, which admits only the node that decides writes for these records.
+
+Any other word is **refused**, and the refusal echoes what was written. The
+direction a guess would fail in is the unsafe one: somebody who wrote
+`ANSWERED BY MASTER` meant the leader, and a parser that shrugged and admitted
+any copy would answer the read they were careful about from a follower, with
+nothing anywhere in an error state.
+
+### It is not a tighter `STALENESS`, and the difference is the whole point
+
+A follower at zero lag is **level**, not authoritative. Being level a moment ago
+says nothing about a write committing right now, so no staleness bound expresses
+*this must come from where writes are decided* — and the tightest bound that
+might look like it, `STALENESS 0s`, is refused anyway, because it admits no node
+at all including the one being asked.
+
+So the two are separate controls answering different questions, and they
+**compose**. A read may name both, and it is answered only where both hold:
+
+```
+SELECT * FROM accounts WHERE id = 1 STALENESS 30s ANSWERED BY LEADER;
+```
+
+Which node may answer is settled first. A node that may write is level with
+itself, so the leader satisfies every bound — deciding it first therefore never
+overturns the freshness decision, while the other order can: a follower inside
+the bound would be chosen, and the read that said it had to come from the leader
+would be answered by one that does not.
+
+### A node that cannot satisfy it says where to go
+
+Like a staleness bound, this is a **candidate filter, never a marker**. A node
+that does not lead, and knows of a peer that claims to, answers with a redirect
+naming that peer — it does not fetch on your behalf, and it says so. The redirect
+carries the leadership that peer published, so a node that has since lost it can
+refuse the redirect on arrival rather than failing opaquely.
+
+A node that does not lead and knows of no peer that does **refuses**. The read
+said where it had to come from, and it is not served by coming from somewhere
+else and saying nothing. The remedy is to declare a writable member:
+
+```
+DEFINE REPLICA two AT 'two.example:9080' ROLES writable;
+```
+
+### Answered by the leader is not *repeatable*
+
+This is the limit, and it ships with the clause rather than being discovered
+later. Two reads answered by the leader, with writes in between, legitimately
+differ — and neither is wrong. The clause says where the answer comes from; it
+does not hold the store still while you read it. Reads that must agree with one
+another belong in a transaction, which **is** one point in the store's history.
+
+`answered` is **not** a reserved word — a field may still be called `answered`,
+and `SELECT answered FROM tickets` still reads it. The clause opens only when
+`BY` follows, the same way every other contextual word in this grammar is
+settled.
+
 ## 7b′. What the answer says without being asked
 
 `EXPLAIN` answers a question you have to know to ask. A **note** is the other
@@ -6524,6 +6591,54 @@ there is nothing to stand for until the peers are declared.
 After that, configuration is the leader's to write and the cluster's to receive,
 which is where a replicated membership belongs.
 
+### Bounding the log
+
+Every commit is a log record, and nothing removes one unless you say so:
+
+```
+DEFINE NODE RETAIN 100000 RECORDS;
+INFO FOR NODE;              -- retain: 100000
+DEFINE NODE RETAIN NONE;    -- back to keeping the whole log
+```
+
+**The default is to keep everything**, which is what every store held before this
+clause existed. `retain` reads `null` until a number is set, and `null` is
+*unbounded* rather than *very large* — the two are different answers and an
+operator has to be able to tell them apart.
+
+**It is local**, like `ROLES` and for the same reason: a disk budget describes
+this machine. It does not replicate, a restored backup does not inherit it, and
+each node of a cluster is set on its own.
+
+**What a prune costs, said plainly.** The log is not a logfile — the state of
+this store is a function of it, four things replay it, and pruning is not
+reversible:
+
+| what reads the log | what a prune below its position does |
+|---|---|
+| a follower catching up | its next collect is **refused**, naming the horizon; it needs a fresh copy of the state rather than a retry |
+| a backup taken as a replay | begins at the horizon instead of at the beginning |
+| a subscriber holding a position | the same refusal, for the same reason |
+| `INFO FOR HISTORY OF` | answers what survives, and stops reporting itself `complete` |
+
+**The count is the whole bound, deliberately.** A reader inside the window is
+safe because it is inside it; a reader further behind than the window is not
+protected, and is told so. The alternative — holding the log down to whatever
+the slowest reader still needs — is how a single stuck subscriber fills a disk
+while nothing anywhere is in an error state, which is the best-documented
+failure in this whole area.
+
+**The last record always survives**, whatever number is set. A follower that is
+perfectly level is served by reading the record *before* the position it asks
+for, so a log with nothing left in it could not answer a healthy follower.
+`RETAIN 0 RECORDS` is refused rather than clamped, because a statement that runs
+as something other than what it says is worse than one that will not run.
+
+**Space comes back on the engine's schedule, not at the statement.** A prune
+removes the records and the bytes return when the store next compacts that
+region. Nothing is lost by the delay, and a store watched immediately after a
+prune has not yet shrunk.
+
 ### Adding a node to a cluster that already exists
 
 Everything above configures a cluster by writing to every node before any of them
@@ -6731,6 +6846,81 @@ has, because every node is up, every greeting lands, and one copy simply never
 changes.
 
 
+### How long the cluster waits before it replaces a leader
+
+The periods that decide when a leader counts as gone are a **cluster-wide fact**,
+so they are a statement and a replicated row rather than a file or a flag:
+
+```
+DEFINE FAILOVER
+    AWARENESS 10s
+    COLLECTION 10s
+    ROUND 1s
+    CAMPAIGN 1s
+    LEASE 30s;
+```
+
+A configuration file cannot carry an agreement of this kind. It is an
+unreplicated claim about something every node has to agree on, so two nodes
+holding different files is not a conflict anything detects: each is internally
+consistent, each is confident, and the disagreement shows up only in the outcome
+— two nodes that disagree about when a lease has expired are two nodes that can
+both believe they may write, which is the split-brain the lease exists to
+prevent, arriving through the mechanism meant to prevent it. A flag is the same
+claim with a shorter life.
+
+**Every clause is required.** The five values are checked against one another
+rather than one at a time, so a statement naming three of them could only either
+mix new values with old ones under a single version, or perform a
+read-modify-write the operator cannot see. `DEFINE NODE` lets a clause be left
+out because it amends a row and absence there means *leave that field alone*;
+this statement replaces a set, and a half-written policy is refused for the same
+reason `DEFINE NODE` refuses one that names neither of its clauses.
+
+What each period is for, and which direction it hurts in — the direction is the
+part worth knowing, because both ends of every one of these is a real failure:
+
+| clause | what it sets | too large | too small |
+|---|---|---|---|
+| `AWARENESS` | how often a node refreshes what it knows about its peers | a failure is noticed later than it happened | peers are asked more often than anything changes |
+| `COLLECTION` | how long a follower waits between collecting | a replica falls further behind between rounds | the log is asked for nothing, repeatedly |
+| `ROUND` | how long one election round is allowed to take | a round that would have failed holds the cluster up | a round is abandoned while its answers are still arriving |
+| `CAMPAIGN` | how often a node that may write checks whether to stand | the leader steps over the moment it should have stood and loses a leadership it could have kept, **while nothing reports a failure, because no round was ever attempted** | rounds are opened that had nothing to decide |
+| `LEASE` | how long a granted leadership is held before it must be renewed | a dead leader's fence closes later, so the cluster waits longer for a replacement | there is no instant at which a holder is both writable and not yet campaigning |
+
+Four relations are enforced, and a statement that breaks one is **refused with
+the direction named** rather than accepted:
+
+- every period is at least one second;
+- `CAMPAIGN` is at most twice `ROUND`;
+- `LEASE` is greater than the write fence plus twice `ROUND`;
+- `COLLECTION` is less than twice `AWARENESS`.
+
+The lease guard is deliberately **not** settable. It is the margin between the
+moment this node stops writing and the moment the cluster may hand the leadership
+to somebody else, and a fence an operator can set to zero is a fence somebody
+sets to zero on the day a lease refuses a write they wanted — which removes it
+rather than tuning it. The staleness floor is not settable either, for the
+opposite reason: it is derived from `AWARENESS`, and a stored copy is a second
+answer that gets left behind the first time awareness moves.
+
+**Who may write it, and what orders two of them.** The statement is a log record
+like any other, so it is written by the node holding the leadership and reaches
+every other node through the log. It carries the leadership it was written under
+and which setting under that leadership it was, and a policy installs only if
+that pair is higher than the one already held. Neither number is a clock: a clock
+is the one ordering two working nodes can disagree about. The leadership settles
+a partitioned former leader reconnecting with a policy of its own; the second
+number settles one leader setting the policy twice, which the leadership alone
+cannot tell apart.
+
+`INFO FOR NODE` reports the policy under `cluster.failover`, with the pair that
+orders it. It is `null` when nobody has set one, which is a different statement
+from the defaults — a cluster nobody has configured runs the built-in periods,
+and reporting those as a set policy would make it impossible to see whether a
+policy ever arrived.
+
+
 ### Which peers vote, and what a node that votes for nobody does
 
 A peer declared with the `coordinating` role is a **voting member**: a node that
@@ -6865,7 +7055,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.2.2", "build": "0.2.2-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.3.0", "build": "0.3.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],

@@ -4,8 +4,8 @@ use core::num::NonZeroU32;
 
 use super::Parser;
 use tessari_types::{
-    Assertion, ConflictPolicy, FieldKind, Filter, IdentityKind, Number, Path, Replication,
-    ReplicationClass, Step, parse_uuid,
+    Assertion, ConflictPolicy, Duration, FieldKind, Filter, IdentityKind, Number, Path,
+    Replication, ReplicationClass, Step, parse_uuid,
 };
 
 use crate::ast::{
@@ -898,6 +898,9 @@ impl Parser<'_> {
             // arms consume their word, so neither may `advance` again.
             _ if self.eat_word("node") => self.define_node(),
             _ if self.eat_word("replica") => self.define_replica(),
+            // And a third contextual subject, on the same reasoning: `failover`
+            // is a perfectly good name for a table somebody's data already uses.
+            _ if self.eat_word("failover") => self.define_failover(),
             // `KAFKA` qualifies the word rather than replacing it, and it is
             // contextual like every other subject here — special after `DEFINE`
             // and an ordinary identifier everywhere else, so a table called
@@ -1252,6 +1255,92 @@ impl Parser<'_> {
     /// clears there. The reasoning is in the specification, § *Draining this
     /// node*, and is not restated here: two copies of one argument drift, and
     /// the document is the one a reader of the language actually opens.
+    /// `DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s CAMPAIGN 1s LEASE 30s`
+    ///
+    /// **In this order, and all five.** A fixed order rather than clauses in any
+    /// arrangement, because these five are read together as a set — four
+    /// relations hold between them — and a reader comparing two policies in a
+    /// log or a report compares them line by line. Free order would make two
+    /// spellings of one policy that a human eye cannot diff.
+    ///
+    /// Each one is required, which is the difference from [`Self::define_node`]:
+    /// that statement amends a row and an absent clause leaves its field alone,
+    /// while this one replaces a checked set. A statement naming three periods
+    /// could only mix new values with old ones under a single version, or
+    /// perform a read-modify-write nobody can see in what they typed.
+    ///
+    /// The relations themselves are NOT checked here. They are checked where the
+    /// policy is built, by `Failover::stated`, which is the only way to make one
+    /// that is not the default — so the refusal names the direction the value is
+    /// wrong in, and there is exactly one place that knows those directions. A
+    /// copy of them in the parser would be a second answer that drifts.
+    fn define_failover(&mut self) -> Result<StatementKind> {
+        let awareness = self.period("awareness")?;
+        let collection = self.period("collection")?;
+        let round = self.period("round")?;
+        let campaign = self.period("campaign")?;
+        let lease = self.period("lease")?;
+        Ok(StatementKind::DefineFailover {
+            awareness,
+            collection,
+            round,
+            campaign,
+            lease,
+        })
+    }
+
+    /// One named period of a failover policy, refused with its own word.
+    ///
+    /// The clause word is in the error rather than a generic *a duration*,
+    /// because five clauses in a fixed order means the operator's mistake is
+    /// almost always *which one did I leave out* — and an error that cannot say
+    /// leaves them counting durations.
+    ///
+    /// A period of no length is refused here rather than at `Failover::stated`
+    /// for the reason the queue timeout gives about its own zero: it is a
+    /// mistake in the statement, and the statement is where the span is.
+    fn period(&mut self, clause: &'static str) -> Result<Duration> {
+        // Four of the five clause words are contextual identifiers, on the
+        // reasoning `NODE` and `REPLICA` are read that way. `COLLECTION` is the
+        // exception because the language already reserved it for
+        // `DEFINE COLLECTION`, so it arrives as a keyword and has to be eaten as
+        // one.
+        //
+        // The clause keeps the name anyway. Calling it something else here to
+        // dodge one token kind would give the same field two spellings — one in
+        // the statement, one in the row and the report — which is the drift this
+        // codebase has already paid for twice. The collision is only syntactic:
+        // nothing but a period clause can stand at this position.
+        let taken = if clause == "collection" {
+            self.eat_keyword(Keyword::Collection)
+        } else {
+            self.eat_word(clause)
+        };
+        if !taken {
+            return Err(self.error_here(match clause {
+                "awareness" => "`AWARENESS` and how often this node refreshes what it knows",
+                "collection" => "`COLLECTION` and how long a follower waits between collecting",
+                "round" => "`ROUND` and how long one election round may take",
+                "campaign" => "`CAMPAIGN` and how often a node checks whether to stand",
+                _ => "`LEASE` and how long a granted leadership is held",
+            }));
+        }
+        let Some(Token::Duration(written)) = self.peek() else {
+            return Err(self.error_here("a duration, like `10s` or `1m`"));
+        };
+        let period = *written;
+        let at = self.span_here();
+        self.advance();
+        if period.seconds() < 0 || (period.seconds() == 0 && period.nanos() == 0) {
+            return Err(Error::EmptyPeriod {
+                clause,
+                written: period.to_literal(),
+                span: at,
+            });
+        }
+        Ok(period)
+    }
+
     fn define_node(&mut self) -> Result<StatementKind> {
         let roles = if self.eat_word("roles") {
             if self.eat_keyword(Keyword::None) {
@@ -1277,10 +1366,15 @@ impl Parser<'_> {
         } else {
             None
         };
-        if roles.is_none() && endpoints.is_none() {
-            return Err(self.error_here("`ROLES` or `ENDPOINTS` and what to set"));
+        let retain = self.retained_records()?;
+        if roles.is_none() && endpoints.is_none() && retain.is_none() {
+            return Err(self.error_here("`ROLES`, `ENDPOINTS` or `RETAIN` and what to set"));
         }
-        Ok(StatementKind::DefineNode { roles, endpoints })
+        Ok(StatementKind::DefineNode {
+            roles,
+            endpoints,
+            retain,
+        })
     }
 
     /// `DEFINE REPLICA second AT 'host:9001' NODE '<id>' ROLES serving, writable`
@@ -1515,6 +1609,54 @@ impl Parser<'_> {
         }
         self.advance();
         Ok(held)
+    }
+
+    /// `RETAIN 100000 RECORDS` or `RETAIN NONE` after `DEFINE NODE`, when it is
+    /// there.
+    ///
+    /// The outer `Option` is *was the clause written*, and the inner one is
+    /// *what it said*, which is the shape every amending clause on this
+    /// statement has: absent means leave the setting alone, and `NONE` means put
+    /// it back to unbounded.
+    ///
+    /// # Why `RECORDS` is required and why there is no other unit
+    ///
+    /// A bare number would leave the reader to guess between records, bytes and
+    /// a duration, and the three have different failure modes — only one of them
+    /// is a count this store can enforce exactly, because a log position IS a
+    /// record count. Bytes and ages are both derived quantities here and would
+    /// have to be approximated; a clause that says `RECORDS` cannot be silently
+    /// re-read as either.
+    ///
+    /// # Why zero is refused rather than clamped
+    ///
+    /// `RETAIN 0 RECORDS` reads as *keep nothing*, and keeping nothing is the
+    /// one setting that must not be expressible: a level follower is served by
+    /// reading the record BEFORE the position it asks for, so a log with no
+    /// records left cannot answer a follower that is perfectly healthy. The
+    /// store clamps anyway — the last record always survives — but a statement
+    /// that runs as something other than what it says is the class of bug this
+    /// grammar spends refusals to avoid.
+    fn retained_records(&mut self) -> Result<Option<Option<u64>>> {
+        if !self.eat_word("retain") {
+            return Ok(None);
+        }
+        if self.eat_keyword(Keyword::None) {
+            return Ok(Some(None));
+        }
+        let expected = "`RETAIN n RECORDS`, or `RETAIN NONE` to keep the whole log";
+        let Some(Token::Number(Number::Integer(held))) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let held = u64::try_from(*held).unwrap_or(0);
+        if held == 0 {
+            return Err(self.error_here(expected));
+        }
+        self.advance();
+        if !self.eat_word("records") {
+            return Err(self.error_here(expected));
+        }
+        Ok(Some(Some(held)))
     }
 
     /// `MAX 5242880` after a bucket's name, when it is there.
@@ -2899,6 +3041,12 @@ impl Parser<'_> {
         if let (Some(_), Some(bound)) = (version.as_ref(), staleness.as_ref()) {
             return Err(Error::StalenessBesideAVersion { span: bound.span });
         }
+        // Last, and deliberately not beside `STALENESS` even though the two are
+        // the pair a reader will compare. They answer different questions —
+        // *how old may the copy be* against *which node may answer at all* — so
+        // there is no pairing rule between them to enforce here: naming both is
+        // legal and the read is answered only where both hold.
+        let answered_by = self.answered_by()?;
         super::shape::check_grouping(&projection, &group)?;
         super::shape::check_fold_positions(&from, &group, &order)?;
         super::shape::check_cursor(
@@ -2965,6 +3113,7 @@ impl Parser<'_> {
             timeout,
             version,
             staleness,
+            answered_by,
             span: start.to(self.span_behind()),
         })
     }

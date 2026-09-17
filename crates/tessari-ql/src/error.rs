@@ -312,6 +312,26 @@ pub enum Error {
         span: Span,
     },
 
+    /// A failover period is not a length of time.
+    ///
+    /// `ROUND 0s` and `LEASE -30s` are not slow or aggressive settings, they are
+    /// values the cluster cannot wait for. Caught where the statement is read
+    /// rather than where the policy is built, because the clause word and the
+    /// span are here and a policy assembled from five durations no longer knows
+    /// which one the operator typed.
+    #[error(
+        "the {clause} period is {written} (at {span}), which is not a length of \
+         time; every failover period is a positive duration"
+    )]
+    EmptyPeriod {
+        /// Which of the five clauses it was.
+        clause: &'static str,
+        /// The period as it was written.
+        written: String,
+        /// Where the clause is.
+        span: Span,
+    },
+
     /// A `STALENESS` names a tolerance no node could satisfy.
     ///
     /// `STALENESS 0s` and `STALENESS -5s` admit no node at all, including the
@@ -325,6 +345,24 @@ pub enum Error {
         /// The tolerance as it was written.
         written: String,
         /// Where the clause is.
+        span: Span,
+    },
+
+    /// An `ANSWERED BY` named a word this build does not know.
+    ///
+    /// The clause takes exactly `ANY` or `LEADER`, and an unrecognised word is
+    /// refused rather than read as either. The direction a guess would fail in
+    /// is the unsafe one: somebody who wrote `ANSWERED BY MASTER` meant the
+    /// leader, and admitting any copy instead would answer the read they were
+    /// careful about from a follower, with nothing anywhere in an error state.
+    #[error(
+        "`ANSWERED BY {written}` (at {span}) is not a node this read can name; \
+         write `ANSWERED BY ANY` or `ANSWERED BY LEADER`"
+    )]
+    UnknownAnswerer {
+        /// The word as it was written.
+        written: String,
+        /// Where it sits.
         span: Span,
     },
 
@@ -789,11 +827,13 @@ impl Error {
             | Self::MalformedGeometry { span, .. }
             | Self::ComputedGeometry { span, .. }
             | Self::EmptyStaleness { span, .. }
+            | Self::UnknownAnswerer { span, .. }
             | Self::StalenessBesideAVersion { span }
             | Self::CursorBesideAnOffset { span }
             | Self::CursorBesideAReshaping { span, .. }
             | Self::AnchorFromAnotherTable { span, .. }
             | Self::EmptyTimeout { span, .. }
+            | Self::EmptyPeriod { span, .. }
             | Self::EmptyRetention { span, .. }
             | Self::DepthNeedsOneHopToATable { span }
             | Self::DepthBelowOne { span }

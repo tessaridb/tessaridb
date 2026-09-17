@@ -22,7 +22,7 @@ use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use tessari_wire::{Answer, Client};
+use tessari_wire::{Answer, Client, Served};
 
 /// The binary this crate builds, which is the one an operator installs.
 const TESSARIDB: &str = env!("CARGO_BIN_EXE_tessaridb");
@@ -667,6 +667,7 @@ fn a_node_told_about_a_cluster_opens_its_peer_door_and_still_serves_clients() {
             tail: tessari_types::Sequence::new(0),
             tail_leadership: tessari_types::Epoch::ZERO,
             current_as_of: None,
+            policy: None,
         },
         tessari_wire::Ask::Nothing,
     )
@@ -1262,6 +1263,16 @@ fn a_node_dials_the_peer_its_catalog_declares() {
     );
 }
 
+/// A three-node cluster's addresses — a client surface and a peer door each.
+///
+/// A named type rather than the array spelled out at four signatures, and a
+/// parameter rather than a constant read inside the bring-up, because two
+/// `#[ignore]`d cluster tests in this file are run by one
+/// `cargo test … -- --ignored` and the harness runs them on separate threads.
+/// Sharing a band would make each one fail intermittently on the other's
+/// listener, which reads exactly like the cluster defect neither test is about.
+type Band = [(&'static str, &'static str); 3];
+
 /// The three-node cluster's addresses — a client surface and a peer door each.
 ///
 /// A band of its own rather than the next free pair, because this test holds six
@@ -1338,22 +1349,108 @@ fn campaigns(address: &str) -> Result<i64, String> {
     }
 }
 
-#[test]
-#[ignore = "forty seconds of real cadences — a leader has to be elected, a \
-            record replicated, a node killed and a successor elected, and none \
-            of those can be hurried. It is criterion S7.1's own validation and \
-            is run explicitly, following the S6.2 validation in \
-            tessari-wire/tests/pushing.rs: cargo test -p tessari-cli --test \
-            serving three_nodes -- --ignored"]
-fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
-    // G024 S7.1, the last criterion, against three operating-system processes.
-    //
-    // Everything the wire and storage crates prove about this is proved inside
-    // one process, against stores a test assembled. What only this can show is
-    // that the three decisions of this session compose: ADR-0063 lets a second
-    // node stand, ADR-0064 makes winning confer the right to write, ADR-0065
-    // lets a follower find whoever won. Each was found by the next one failing,
-    // and none of them has ever been exercised against a cluster of three.
+/// The node after `index`, wrapping round — the peer each node names as its seed.
+///
+/// Spelled without arithmetic on purpose. These three lines moved out of a
+/// `#[test]` body, where clippy exempts index arithmetic, into a plain function
+/// where it does not; and the exemption is the only thing that had been
+/// carrying them. Written this way it also survives a band gaining a fourth
+/// entry, which a hardcoded wrap would not.
+fn the_next_node(band: &Band, index: usize) -> usize {
+    index
+        .checked_add(1)
+        .filter(|next| *next < band.len())
+        .unwrap_or(0)
+}
+
+/// A cluster of three, brought up the one way that works.
+///
+/// Factored out of the S7.1 test it was written inside, because three further
+/// criteria need exactly this arrangement: the `ANSWERED BY LEADER` redirect
+/// across processes, the superseded-epoch refusal, and a failover policy
+/// reaching a second node. A second copy would be a second place the
+/// declaration ORDER is decided, and that order is the part nobody rediscovers
+/// correctly — the comments inside say why each step is where it is, and they
+/// were each bought by a deadlock.
+struct Three {
+    /// Held so the stores outlive the processes reading them. Dropping this
+    /// removes the directory, so it is a field rather than a discarded local.
+    _directory: tempfile::TempDir,
+    /// One slot per node, in band order. A slot is emptied to kill that
+    /// node, which is why it is an `Option` rather than a plain handle.
+    running: Vec<Option<Running>>,
+    /// Where each node writes its own stderr, in band order.
+    ///
+    /// Kept because the directory holding them is removed the moment this
+    /// struct drops, so a reader who goes looking after a failure finds
+    /// nothing at all. A panic message is the only place these lines can still
+    /// be read — the same reason `the_node_a_majority_granted` carries its
+    /// refusals into its own.
+    logs: Vec<std::path::PathBuf>,
+}
+
+/// The tail of each node's own log, for a panic that would otherwise send its
+/// reader to three processes that no longer exist.
+///
+/// Every failure the collection and awareness cadences can have is reported
+/// through `log::warn!`, which this binary writes to standard error and nowhere
+/// else — a peer that did not answer, a subscription nobody granted, a log that
+/// no longer reaches back far enough. A harness that discards that stream can
+/// say a cluster replicated nothing and can never say why.
+///
+/// `TESSARIDB_LOG` is inherited from whoever ran the test, so `debug` is a
+/// command-line decision rather than a property of the fixture.
+///
+/// # What is dropped, and why it is safe to drop
+///
+/// Every `connection N accepted` / `connection N closed` pair, and nothing
+/// else. Those lines are THIS TEST'S OWN polling: `counted` opens a client
+/// connection every hundred milliseconds for ninety seconds, so a follower's
+/// log reaches nineteen hundred lines of which eighteen hundred and ninety are
+/// the harness watching itself. A window that keeps them shows the reader the
+/// test's footprint and none of the cluster's. The count of what was dropped is
+/// printed beside the window, so the filter can be challenged from the output
+/// it produces rather than only from this comment.
+fn what_the_nodes_said(band: &[(&str, &str)], logs: &[std::path::PathBuf]) -> String {
+    /// With this test's own polling removed a ninety-second three-node run
+    /// leaves each node about a hundred and twenty lines, so this is a ceiling
+    /// against a node that is genuinely looping rather than a window that
+    /// trims a healthy run. A cluster that replicates nothing says so in the
+    /// FIRST cadence, and a tail short enough to lose that first cadence is a
+    /// diagnostic that reports only the symptom.
+    const TAIL: usize = 200;
+    let mut out = String::new();
+    for (index, path) in logs.iter().enumerate() {
+        let read = std::fs::read_to_string(path)
+            .unwrap_or_else(|why| format!("this node's log could not be read: {why}"));
+        let all = read.lines().count();
+        let lines: Vec<&str> = read
+            .lines()
+            .filter(|line| !line.contains("tessari_wire::node connection "))
+            .collect();
+        let from = lines.len().saturating_sub(TAIL);
+        out.push_str(&format!(
+            "\n--- node {index} ({}), last {} of {} line(s); {} of this test's \
+             own connection lines dropped ---\n",
+            band[index].0,
+            lines.len().saturating_sub(from),
+            lines.len(),
+            all.saturating_sub(lines.len())
+        ));
+        for line in &lines[from..] {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Bring three nodes up, declared as one cluster, and wait for every door.
+///
+/// It does NOT wait for an election — that is [`the_node_a_majority_granted`],
+/// because a caller that only needs three live nodes should not pay ninety
+/// seconds for a leader it will not use.
+fn a_cluster_of_three(band: &Band) -> Three {
     let directory = tempfile::tempdir().unwrap();
     let minted = Minted::new();
 
@@ -1363,7 +1460,7 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
     let mut stores = Vec::new();
     let mut ids = Vec::new();
     let mut papers = Vec::new();
-    for index in 0..CLUSTER.len() {
+    for index in 0..band.len() {
         let home = directory.path().join(format!("n{index}"));
         std::fs::create_dir_all(&home).unwrap();
         let store = home.join("store");
@@ -1375,20 +1472,42 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
         stores.push(store);
     }
 
-    // Each node declares the other two and never itself. The membership is
-    // `peers.len() + 1` (`campaign.rs`), so a self-row would make it four,
-    // needing three grants, and the cluster would stop electing on the first
-    // loss —
-    // which is the exact case this test exists to exercise.
+    // Each node declares the WHOLE membership, itself included, in one order.
+    //
+    // It declared only the other two until W382, on the reasoning that a self
+    // row would make the membership `peers.len() + 1` = four and demand three
+    // grants. That reasoning was right about the arithmetic and wrong about
+    // where to fix it: a membership row is an ordinary catalog record, so it
+    // REPLICATES (`catalog/replica.rs`), and a follower that applies a leader's
+    // store log receives a row naming itself no matter what it declared. The
+    // arithmetic is now corrected where it is decided, in `voters`, which skips
+    // this node exactly as `greet_round` and `upstream` already did.
+    //
+    // What declaring the full set buys is the ID. A replica row is written
+    // under a locally allocated number, so three nodes that each declare a
+    // DIFFERENT pair allocate the same numbers to different peers — and the
+    // first replication then overwrites each follower's row for the leader with
+    // the leader's row for somebody else. Measured in W382: a follower
+    // collected once, lost the row naming its upstream, and never collected
+    // again, while every node reported two healthy peers. Declaring the same
+    // three rows in the same order makes the replication idempotent instead.
+    //
+    // `writable` on every row and not just on this node's own: the row is what
+    // `Store::reconcile_roles` reads back at open as what this node is SUPPOSED
+    // to be, so a row that omits it drains the node the next time it opens —
+    // and ADR-0063/ADR-0064 make every-coordinator-also-writable the
+    // configuration a cluster needs in order to fail over at all.
     //
     // `REPLICATES STORE` rather than the namespace the criterion names, and the
     // reason is a property of the engine rather than a convenience: a namespace
     // subscription resolves to a namespace **id** when the row is written, so
     // the name has to exist on the granting node first. ADR-0063 means any of
     // the three may win, so no node can be pinned as the granter before the
-    // election. The namespace is narrowed onto one follower below, once it
-    // exists and has an id every node agrees on.
-    for (index, store) in stores.iter().enumerate() {
+    // election. There is no narrowing step anywhere below, and the sentence
+    // that used to promise one here was describing work nobody wrote: the
+    // subscription this fixture actually grants is the whole store, on every
+    // node, and the criterion's replication is observed over that.
+    for store in &stores {
         let db = tessaridb::Db::open(store).unwrap();
         // The peers FIRST and the role LAST, and the order is load-bearing.
         // `DEFINE NODE ROLES` takes effect immediately and locally, so a node
@@ -1407,15 +1526,12 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
         // the second declaration is refused `NoLeadershipYet` by the first.
         // A cluster is declared atomically or not at all.
         let mut script = String::from("BEGIN;");
-        for other in 0..CLUSTER.len() {
-            if other == index {
-                continue;
-            }
+        for other in 0..band.len() {
             let named = tessari_types::RecordId::Uuid(ids[other]).to_string();
             script.push_str(&format!(
                 " DEFINE REPLICA n{other} AT '{}' NODE '{named}' \
-                  ROLES serving, coordinating REPLICATES STORE;",
-                CLUSTER[other].1
+                  ROLES serving, writable, coordinating REPLICATES STORE;",
+                band[other].1
             ));
         }
         script.push_str(" DEFINE NODE ROLES serving, writable, coordinating; COMMIT;");
@@ -1426,15 +1542,23 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
     }
 
     let mut running: Vec<Option<Running>> = Vec::new();
-    for index in 0..CLUSTER.len() {
+    let mut logs: Vec<std::path::PathBuf> = Vec::new();
+    for index in 0..band.len() {
         let (leaf, key, authority) = &papers[index];
+        // Standard error is where this binary reports, so it is kept rather
+        // than discarded. Its own file per node: three streams into one
+        // descriptor interleave, and a log line carries a timestamp and a
+        // target but never says which node wrote it.
+        let log = directory.path().join(format!("n{index}")).join("node.log");
+        let writing = std::fs::File::create(&log).unwrap();
+        logs.push(log);
         let child = Command::new(TESSARIDB)
             .arg(&stores[index])
-            .args(["--serve", CLUSTER[index].0])
+            .args(["--serve", band[index].0])
             .args(["--cluster-credential", leaf])
             .args(["--cluster-key", key])
             .args(["--cluster-authority", authority])
-            .args(["--cluster-address", CLUSTER[index].1])
+            .args(["--cluster-address", band[index].1])
             // A seed names the node as well as the address (ADR-0067): the
             // handshake derives the peer's TLS name from its id, so a bare
             // address is not a dial this transport can express. These three
@@ -1444,21 +1568,34 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
                 "--seed",
                 &format!(
                     "{}@{}",
-                    tessari_types::RecordId::Uuid(ids[(index + 1) % CLUSTER.len()]),
-                    CLUSTER[(index + 1) % CLUSTER.len()].1
+                    tessari_types::RecordId::Uuid(ids[the_next_node(band, index)]),
+                    band[the_next_node(band, index)].1
                 ),
             ])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::from(writing))
             .spawn()
             .unwrap();
         running.push(Some(Running(child)));
     }
-    for (client, peer) in CLUSTER {
+    for (client, peer) in band {
         assert!(listening(client, Duration::from_secs(30)), "{client}");
         assert!(listening(peer, Duration::from_secs(30)), "{peer}");
     }
+    Three {
+        _directory: directory,
+        running,
+        logs,
+    }
+}
 
+/// The index of the node a majority granted the epoch to.
+///
+/// Asked by trying to use it rather than by reading anything: under ADR-0064 a
+/// node that takes part in deciding and holds no leadership refuses every write
+/// with `NoLeadershipYet`, so the node that accepts the script **is** the one
+/// that won, and asking costs nothing beyond the write a caller needed anyway.
+fn the_node_a_majority_granted(band: &Band) -> usize {
     // Wait for the first epoch to be granted, by trying to use it. A write
     // before any round concludes is refused on every node — that is ADR-0064
     // working, not a defect, and it is why this polls rather than writing once.
@@ -1466,7 +1603,7 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
     let mut elected = None;
     let mut refusals = [String::new(), String::new(), String::new()];
     while began.elapsed() < Duration::from_secs(90) && elected.is_none() {
-        for (index, (surface, _)) in CLUSTER.iter().enumerate() {
+        for (index, (surface, _)) in band.iter().enumerate() {
             if let Ok(mut client) = Client::connect(surface) {
                 match client.run(SCHEMA, None) {
                     Ok(_) => {
@@ -1489,34 +1626,75 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
         // measuring, and the symptom looked exactly like a cluster defect.
         std::thread::sleep(POLL);
     }
-    let leader = elected.unwrap_or_else(|| {
+    elected.unwrap_or_else(|| {
         panic!(
             "no node accepted a write in ninety seconds. A cluster of three \
              that elects nobody has no writer anywhere, which is what ADR-0064 \
              made possible and what an election is supposed to resolve. The \
              last refusal from each node: {refusals:?}"
         )
-    });
+    })
+}
 
-    let follower = (0..CLUSTER.len()).find(|index| *index != leader).unwrap();
-
+#[test]
+#[ignore = "forty seconds of real cadences — a leader has to be elected, a \
+            record replicated, a node killed and a successor elected, and none \
+            of those can be hurried. It is criterion S7.1's own validation and \
+            is run explicitly, following the S6.2 validation in \
+            tessari-wire/tests/pushing.rs: cargo test -p tessari-cli --test \
+            serving three_nodes -- --ignored"]
+fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
+    // G024 S7.1, the last criterion, against three operating-system processes.
+    //
+    // Everything the wire and storage crates prove about this is proved inside
+    // one process, against stores a test assembled. What only this can show is
+    // that the three decisions of this session compose: ADR-0063 lets a second
+    // node stand, ADR-0064 makes winning confer the right to write, ADR-0065
+    // lets a follower find whoever won. Each was found by the next one failing,
+    // and none of them has ever been exercised against a cluster of three.
+    let mut cluster = a_cluster_of_three(&CLUSTER);
+    // Cloned before `running` is borrowed, because a panic below wants the
+    // whole struct while that borrow is still live.
+    let logs = cluster.logs.clone();
+    let running = &mut cluster.running;
+    let leader = the_node_a_majority_granted(&CLUSTER);
     // The record reaches a node that never wrote it. Until this holds there is
     // no replication to lose, so a failover asserted before it would be a
     // failover of nothing.
+    //
+    // WHICH follower is not something this test may choose. The schema declares
+    // `REPLICATION FACTOR 2`, so the copy lands on the leader and **one** other
+    // node — and which one is decided by an election this test deliberately
+    // does not pin, since ADR-0063 lets any of the three win. Asking a
+    // particular follower was therefore a coin flip: it passed when the copy
+    // happened to go to the first node that was not the leader, and reported
+    // *the follower never received the leader's record* when it went to the
+    // other, which reads like a replication failure and is not one.
+    //
+    // So the question asked here is the one the factor actually promises — that
+    // the record reached SOME node that did not write it — and the node that
+    // has it becomes the one the reader below uses, instead of a second
+    // independent guess at the same thing.
     let began = Instant::now();
-    let mut replicated = false;
-    while began.elapsed() < Duration::from_secs(90) {
-        if counted(CLUSTER[follower].0) == Ok(1) {
-            replicated = true;
-            break;
+    let mut holder = None;
+    while began.elapsed() < Duration::from_secs(90) && holder.is_none() {
+        holder = (0..CLUSTER.len())
+            .filter(|index| *index != leader)
+            .find(|index| counted(CLUSTER[*index].0) == Ok(1));
+        if holder.is_none() {
+            std::thread::sleep(POLL);
         }
-        std::thread::sleep(POLL);
     }
-    assert!(
-        replicated,
-        "the follower never received the leader's record, so nothing below \
-         would be measuring a cluster"
-    );
+    let follower = holder.unwrap_or_else(|| {
+        panic!(
+            "no node but the leader received the record in ninety seconds, so \
+             nothing below would be measuring a cluster. Counts: {:?}{}",
+            (0..CLUSTER.len())
+                .map(|index| counted(CLUSTER[index].0))
+                .collect::<Vec<_>>(),
+            what_the_nodes_said(&CLUSTER, &logs)
+        )
+    });
 
     // The criterion's SECOND half, and it has to be here rather than in its own
     // scenario: a fast failover and a quiet cluster are satisfiable by opposite
@@ -1677,6 +1855,277 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
         seen.len() > refused,
         "every one of the {} reads across the window was refused",
         seen.len()
+    );
+}
+
+/// The second cluster's addresses — 47874-47879, and a band of its own.
+///
+/// Both cluster tests in this file are `#[ignore]`d, and one
+/// `cargo test … -- --ignored` runs them on two threads at once. Sharing
+/// 47881-47886 would make each fail intermittently on the other's listener,
+/// which reads exactly like the cluster defect neither test is about.
+const AXES: Band = [
+    ("127.0.0.1:47874", "127.0.0.1:47875"),
+    ("127.0.0.1:47876", "127.0.0.1:47877"),
+    ("127.0.0.1:47878", "127.0.0.1:47879"),
+];
+
+/// The policy cluster's addresses — 47863-47868, and a band of its own.
+///
+/// A third band for the same reason the second one exists: one
+/// `cargo test … -- --ignored` runs every `#[ignore]`d test in this file on
+/// separate threads, so two clusters sharing a band fail intermittently on each
+/// other's listener — which reads exactly like the cluster defect neither test
+/// is about. Derived from the ports this crate already spells, not guessed:
+/// 47861-47862 are taken and 47863-47870 are not.
+const PERIODS: Band = [
+    ("127.0.0.1:47863", "127.0.0.1:47864"),
+    ("127.0.0.1:47865", "127.0.0.1:47866"),
+    ("127.0.0.1:47867", "127.0.0.1:47868"),
+];
+
+/// One password for every account this test declares.
+///
+/// One value and not three, because what these accounts are FOR is being looked
+/// up on a node that never declared them — three secrets would be three chances
+/// to mistype one into an assertion that then proves nothing by succeeding.
+const SECRET: &str = "a long enough password";
+
+/// Ask `address` as `who`, and give back the answers or the refusal as text.
+///
+/// Text rather than the error type, for [`counted`]'s reason: what a caller
+/// here does with a refusal is put it in a panic message, and every one of
+/// these questions is asked in a loop that must not stop on the first no.
+fn asked(address: &str, script: &str, who: Option<(&str, &str)>) -> Result<Vec<Answer>, String> {
+    let mut client = Client::connect(address).map_err(|why| why.to_string())?;
+    client.run(script, who).map_err(|why| why.to_string())
+}
+
+/// Poll `question` until it is true, or give up after `within`.
+///
+/// Paced by `POLL` for the reason the election poll above is: a spin opens a
+/// TCP connection per pass and exhausts this machine's ephemeral ports, after
+/// which the NODES' peer dials start failing and the harness has broken the
+/// thing it is measuring.
+fn until(within: Duration, mut question: impl FnMut() -> bool) -> bool {
+    let began = Instant::now();
+    while began.elapsed() < within {
+        if question() {
+            return true;
+        }
+        std::thread::sleep(POLL);
+    }
+    false
+}
+
+/// Whether `script`, asked of `address` as `who`, answers with `token` in it.
+///
+/// A rendered answer searched for a token, and that is weaker than reading the
+/// field — so the tokens below are ones this test CHOSE (`carol`, `item`) and
+/// asserted absent before the act that should introduce them. A search that is
+/// controlled on both sides cannot pass by finding the word somewhere else.
+fn says(address: &str, who: Option<(&str, &str)>, script: &str, token: &str) -> bool {
+    asked(address, script, who).is_ok_and(|answers| format!("{answers:?}").contains(token))
+}
+
+/// G029 S1.2, S3.1 and S3.3 against three operating-system processes.
+///
+/// Each of those three criteria is PARTIAL for one reason and it is the same
+/// reason: the machinery is proven inside a single process, and the criterion's
+/// own stated validation is a LIVE multi-node run. The harness that makes one
+/// possible went green in W382; this is what it was made green for.
+///
+/// # The order is decided by one measured fact
+///
+/// **A store with no users is open, and declaring the first user closes it**
+/// (`tessari-session/src/identity.rs`). Every other helper in this file connects
+/// anonymously, so the moment this test declares a user it changes the access
+/// posture of every node that applies the record. Everything anonymous
+/// therefore happens BEFORE that statement, and everything after it carries
+/// credentials.
+///
+/// That same fact is then used as an instrument rather than worked around: the
+/// signal that the user record REACHED the follower is that the follower stops
+/// answering an anonymous read. It is read without attempting a single sign-in,
+/// which matters — the sign-in path throttles a name that keeps missing,
+/// doubling from 250 ms towards thirty seconds, so polling for an account by
+/// trying to use it makes the wait grow faster than replication closes it.
+///
+/// # Why a sign-in is still made, once
+///
+/// Because a name arriving and a CREDENTIAL arriving are different claims. The
+/// single authenticated call proves the stored hash is the one the leader
+/// wrote and that it verifies against a password this test never sent to this
+/// node.
+#[test]
+#[ignore = "two minutes of real cadences against three spawned processes: an \
+            election, then five replication waits at the collection cadence. \
+            It is the live validation G029 S1.2, S3.1 and S3.3 each name, and \
+            is run explicitly: cargo test -p tessari-cli --test serving \
+            identity_and_a_leader_only_read -- --ignored"]
+fn identity_and_a_leader_only_read_cross_three_processes() {
+    let cluster = a_cluster_of_three(&AXES);
+    // Cloned before anything can panic holding a borrow of the struct.
+    let logs = cluster.logs.clone();
+    let leader = the_node_a_majority_granted(&AXES);
+    let follower = the_next_node(&AXES, leader);
+    let surface = AXES[follower].0;
+    let deciding = AXES[leader].0;
+    // Long enough to cover several collection cadences, short enough that a
+    // cluster which is not replicating at all fails this test rather than the
+    // harness timeout, where the reason would be lost.
+    let patience = Duration::from_secs(90);
+
+    assert!(
+        until(patience, || counted(surface) == Ok(1)),
+        "the record never reached the follower, so nothing below would be \
+         measuring a cluster.{}",
+        what_the_nodes_said(&AXES, &logs)
+    );
+
+    // G029 S1.2 — the redirect, read off the wire.
+    //
+    // `run_routed` and deliberately not `run`: `run` folds a redirect into
+    // `Error::Redirected`, and a test that matched on that would be inferring
+    // the frame from an error type. The criterion says the frame kind reaches
+    // the wire, so what is asserted is the variant the frame parser produced.
+    let mut client = Client::connect(surface).expect("a follower answers its door");
+    let served = client
+        .run_routed(
+            "USE NAMESPACE prod; USE DATABASE orders; \
+             SELECT * FROM item ANSWERED BY LEADER;",
+            None,
+            &tessari_ql::Parameters::new(),
+        )
+        .expect("a follower says where a leader-only read belongs");
+    let Served::Elsewhere(elsewhere) = served else {
+        panic!(
+            "a follower answered a read only the leader may answer: {served:?}.{}",
+            what_the_nodes_said(&AXES, &logs)
+        );
+    };
+    assert_eq!(
+        elsewhere.endpoint, AXES[leader].1,
+        "the redirect names an address that is not the leader's declared one"
+    );
+    assert!(
+        elsewhere.epoch.get() > 0,
+        "the redirect carries no leadership: {elsewhere:?}"
+    );
+    drop(client);
+
+    // G029 S3.1 — a user declared on the leader, arriving on a node that never
+    // saw the statement. This is the last anonymous act.
+    asked(
+        deciding,
+        &format!("DEFINE USER ada ROLE owner PASSWORD '{SECRET}';"),
+        None,
+    )
+    .expect("a leader declares the first user");
+
+    assert!(
+        until(patience, || matches!(
+            counted(surface),
+            Err(ref why) if why.contains("signed-in user")
+        )),
+        "the follower still answers an anonymous read, so the user record never \
+         arrived — and the follower is not merely slow, it is open.{}",
+        what_the_nodes_said(&AXES, &logs)
+    );
+
+    let owner = Some(("ada", SECRET));
+    asked(surface, "INFO FOR USERS;", owner)
+        .expect("a follower knows the leader's owner, and her password verifies there");
+
+    // G029 S3.3 — a grant is a second record in a second table, so it is
+    // asserted separately from the user it is about rather than inferred from
+    // it. Both tokens are checked absent first: a rendered answer searched for
+    // a word proves nothing unless the word was demonstrably not already there.
+    assert!(
+        !says(surface, owner, "INFO FOR USERS;", "carol"),
+        "the follower already knows a user this test has not declared"
+    );
+    asked(
+        deciding,
+        &format!(
+            "USE NAMESPACE prod; USE DATABASE orders; \
+             DEFINE USER carol ON prod.orders ROLE viewer PASSWORD '{SECRET}';"
+        ),
+        owner,
+    )
+    .expect("a leader declares a second user");
+    assert!(
+        until(patience, || says(
+            surface,
+            owner,
+            "INFO FOR USERS;",
+            "carol"
+        )),
+        "a user declared on the leader never reached the follower.{}",
+        what_the_nodes_said(&AXES, &logs)
+    );
+
+    let carols = "USE NAMESPACE prod; USE DATABASE orders; INFO FOR USER carol;";
+    assert!(
+        !says(surface, owner, carols, "item"),
+        "the follower already carries a grant this test has not made"
+    );
+    // TWO grants, and the second is not decoration. A user's grants, if they
+    // have any, are the whole story, so taking the LAST one away would widen
+    // them back to everything their role allows — and the engine refuses that
+    // rather than doing it quietly. Measured on this test's first run: *"that
+    // is carol's last grant, and taking it away would widen them to every table
+    // their role allows"*. A second grant makes the revocation below a
+    // narrowing, which is the act this criterion is about.
+    asked(
+        deciding,
+        "USE NAMESPACE prod; USE DATABASE orders; DEFINE COLLECTION note; \
+         GRANT read ON item TO carol; GRANT read ON note TO carol;",
+        owner,
+    )
+    .expect("a leader grants two tables to a user");
+    assert!(
+        until(patience, || says(surface, owner, carols, "item")),
+        "a grant made on the leader never reached the follower.{}",
+        what_the_nodes_said(&AXES, &logs)
+    );
+
+    // The removing direction, for both records, and it is the half an add-only
+    // assertion cannot see: a replica that applies writes and loses deletes
+    // keeps an authority the operator has taken away, and every assertion above
+    // would still pass on one.
+    asked(
+        deciding,
+        "USE NAMESPACE prod; USE DATABASE orders; REVOKE read ON item FROM carol;",
+        owner,
+    )
+    .expect("a leader revokes");
+    assert!(
+        until(patience, || !says(surface, owner, carols, "item")),
+        "a revocation made on the leader never reached the follower, which \
+         still reports the grant.{}",
+        what_the_nodes_said(&AXES, &logs)
+    );
+    // The other grant is still there, so what arrived was a revocation of ONE
+    // table and not the user going missing — which is the only other way the
+    // assertion above could have turned true.
+    assert!(
+        says(surface, owner, carols, "note"),
+        "the revocation took more than it was asked for, or carol is gone \
+         entirely.{}",
+        what_the_nodes_said(&AXES, &logs)
+    );
+
+    asked(deciding, "DROP USER carol;", owner).expect("a leader drops a user");
+    assert!(
+        until(patience, || !says(
+            surface,
+            owner,
+            "INFO FOR USERS;",
+            "carol"
+        )),
+        "a user dropped on the leader is still present on the follower.{}",
+        what_the_nodes_said(&AXES, &logs)
     );
 }
 
@@ -1912,4 +2361,413 @@ fn a_node_joins_a_cluster_it_was_only_given_an_address_for() {
         "the joiner reached the leader's records in {held:?} and still does not \
          hold the membership row that was written before them"
     );
+}
+
+/// The lease period `address` reports, in whole seconds, or `None` for no policy.
+///
+/// Reads the field out of `cluster.failover` rather than searching the rendered
+/// answer for a token. `Duration` derives `Debug`, so a rendered lease reads
+/// `Duration { seconds: 41, nanos: 0 }` and a search for `41s` finds nothing —
+/// which is a test that can only ever fail, and fails looking exactly like a
+/// cluster that did not replicate.
+fn lease_reported(address: &str) -> Result<Option<i64>, String> {
+    let mut client = Client::connect(address).map_err(|why| why.to_string())?;
+    let answers = client
+        .run("INFO FOR NODE;", None)
+        .map_err(|why| why.to_string())?;
+    // `Answer::Value` and not `Answer::Records`: `INFO FOR NODE` answers one
+    // object rather than a list of records, and the first version of this
+    // helper matched the wrong variant — which made a correct report read as
+    // *not a report* and failed the control assertion on a cluster that was
+    // behaving perfectly.
+    let Some(Answer::Value {
+        value: tessari_types::Value::Object(report),
+        ..
+    }) = answers.last()
+    else {
+        return Err(format!("not a report: {answers:?}"));
+    };
+    let Some(tessari_types::Value::Object(cluster)) = report.get("cluster") else {
+        return Err(format!("no cluster group: {report:?}"));
+    };
+    match cluster.get("failover") {
+        Some(tessari_types::Value::Null) | None => Ok(None),
+        Some(tessari_types::Value::Object(policy)) => match policy.get("lease") {
+            Some(tessari_types::Value::Duration(span)) => Ok(Some(span.seconds())),
+            other => Err(format!("no lease period: {other:?}")),
+        },
+        other => Err(format!("not a failover group: {other:?}")),
+    }
+}
+
+/// G029 S2.2 against three operating-system processes.
+///
+/// The criterion's own method is *a live run in which one node's policy reaches
+/// the other*, and until this wave nothing could originate a policy at all:
+/// `Catalog::set_failover` had only test callers and the language had no
+/// statement. `DEFINE FAILOVER` is that statement, and this is the run it was
+/// written for.
+///
+/// # What makes this an observation rather than a restatement
+///
+/// The policy is written on the LEADER and read back on a node that never saw
+/// the statement, through `INFO FOR NODE` — a different surface from the one
+/// that wrote it, in a different process, against a store on a different disk.
+/// Nothing in the assertion path touches the catalog directly, so a policy that
+/// arrives is a policy that travelled along the log and by no other route.
+///
+/// # `null` before, and it is the control
+///
+/// `cluster.failover` is asserted ABSENT on the follower before the leader is
+/// asked to set anything. That is what makes the later reading evidence: a
+/// report that rendered the built-in defaults as a policy would satisfy the
+/// second assertion while proving nothing, and the first assertion is what
+/// forbids it.
+///
+/// # The second setting is the half a single write cannot show
+///
+/// One policy arriving proves a row replicated. It does not prove the ORDERING
+/// works, because a follower with no policy accepts the first thing it is given
+/// whatever the pair says. So the leader sets a second policy under the same
+/// leadership, and the follower has to end on the later one — which is exactly
+/// the case the version field exists for and the epoch alone cannot tell apart.
+#[test]
+#[ignore = "an election and two replication waits against three spawned \
+            processes. It is the live validation G029 S2.2 names, and is run \
+            explicitly: cargo test -p tessari-cli --test serving \
+            a_failover_policy_set_on_the_leader -- --ignored"]
+fn a_failover_policy_set_on_the_leader_reaches_a_node_that_never_saw_it() {
+    let cluster = a_cluster_of_three(&PERIODS);
+    let logs = cluster.logs.clone();
+    let leader = the_node_a_majority_granted(&PERIODS);
+    let follower = the_next_node(&PERIODS, leader);
+    let surface = PERIODS[follower].0;
+    let deciding = PERIODS[leader].0;
+    let patience = Duration::from_secs(90);
+
+    assert!(
+        until(patience, || counted(surface) == Ok(1)),
+        "the record never reached the follower, so nothing below would be \
+         measuring a cluster.{}",
+        what_the_nodes_said(&PERIODS, &logs)
+    );
+
+    // The control. A cluster nobody configured reports no policy, and this is
+    // asserted before the leader is asked for one so that the reading after it
+    // cannot be the defaults wearing a policy's clothes.
+    assert_eq!(
+        lease_reported(surface),
+        Ok(None),
+        "the follower reported a failover policy before one was ever set.{}",
+        what_the_nodes_said(&PERIODS, &logs)
+    );
+
+    asked(
+        deciding,
+        "DEFINE FAILOVER AWARENESS 12s COLLECTION 11s ROUND 2s CAMPAIGN 3s \
+         LEASE 41s;",
+        None,
+    )
+    .expect("a leader sets the policy its cluster runs under");
+
+    // 41 seconds and not a round number: the lease is the one period this test
+    // chooses freely, and a value nothing else in the cluster uses cannot be
+    // matched by a report that happened to render a default.
+    assert!(
+        until(patience, || lease_reported(surface) == Ok(Some(41))),
+        "the policy never reached a node that did not write it.{}",
+        what_the_nodes_said(&PERIODS, &logs)
+    );
+
+    // The ordering half. A second policy under the same leadership carries the
+    // next version, and the follower must end on the later one — a replica that
+    // applied writes in arrival order rather than by the pair would be
+    // indistinguishable from a correct one until exactly this case.
+    asked(
+        deciding,
+        "DEFINE FAILOVER AWARENESS 12s COLLECTION 11s ROUND 2s CAMPAIGN 3s \
+         LEASE 43s;",
+        None,
+    )
+    .expect("a leader may set the policy again under one leadership");
+
+    // Reading the field rather than searching a rendering is what makes this
+    // assertion do both halves at once: the later policy is present AND the
+    // earlier one is gone, because there is exactly one lease to read. A token
+    // search would have needed a second assertion for the absence, and the
+    // first version of this test was written that way and could not have
+    // worked at all — `Duration` derives `Debug`, so a rendered answer spells a
+    // lease `Duration { seconds: 41, nanos: 0 }` and the token `41s` appears
+    // nowhere in it. The instrument, not the cluster.
+    assert!(
+        until(patience, || lease_reported(surface) == Ok(Some(43))),
+        "the later policy never replaced the earlier one on the follower.{}",
+        what_the_nodes_said(&PERIODS, &logs)
+    );
+}
+
+/// S3.2's band — 47887-47890, clean: 47881-47886 belong to the three-node
+/// failover cluster and 47891-47894 to the join above.
+const REFUSING: [(&str, &str); 2] = [
+    ("127.0.0.1:47887", "127.0.0.1:47888"),
+    ("127.0.0.1:47889", "127.0.0.1:47890"),
+];
+
+/// What the joiner wrote before anybody pointed it at a cluster.
+///
+/// `REPLICATION NONE` so nothing about this namespace asks to be replicated:
+/// what is being measured is the address it occupies, not a subscription.
+const ITS_OWN: &str = "DEFINE NAMESPACE research REPLICATION NONE; USE NAMESPACE research; \
+                       DEFINE DATABASE notebooks; USE DATABASE notebooks; \
+                       DEFINE COLLECTION note; CREATE note:1 = { n: 1 };";
+
+/// Every namespace a store on disk can name, opened offline.
+fn namespaces_on(store: &std::path::Path) -> Vec<String> {
+    let db = tessaridb::Db::open(store).expect("the store opens");
+    let mut transaction = db.store().begin().expect("a read");
+    let names = tessari_storage::Catalog::new(&mut transaction)
+        .namespaces()
+        .expect("the catalog answers")
+        .into_iter()
+        .map(|namespace| namespace.name)
+        .collect();
+    transaction.rollback();
+    names
+}
+
+/// S3.2 — a join is refused while the joining node holds a tenancy of its own,
+/// and the refusal says so in words an operator can act on.
+///
+/// # What is being defended, and why it needed a refusal rather than a repair
+///
+/// W391 measured it in one process: two stores that each declared a first
+/// namespace both hold namespace 1, so applying the cluster's log replaces the
+/// definition at the address the joiner's records are filed under. Nothing is
+/// deleted, no row count moves and nothing reaches the log — every record is
+/// simply read afterwards through somebody else's name, schema, replication
+/// class and grants. ADR-0077's remedy does not generalise to it: a membership
+/// row could be keyed by the name it carries because nothing pointed at its
+/// number, while a namespace id IS the address a record lives at.
+///
+/// # Why the second half kills the node instead of asking it nicely
+///
+/// The joiner runs `ROLES serving`, so a write arriving at its client door is
+/// forwarded to a writable peer — and it has declared none, which is the whole
+/// point of a node that has not joined yet. So the operator's remedy is taken
+/// with the store offline, which is also what every system this was ranked
+/// against requires: Elasticsearch's `detach-cluster` and Kafka's
+/// `meta.properties` are both stop-the-node operations.
+///
+/// The restart is load-bearing beyond convenience: it proves the refusal is a
+/// function of what the store HOLDS rather than a decision remembered from the
+/// first attempt.
+#[test]
+#[ignore = "two spawned processes and two collection cadences; run it with \
+            cargo test -p tessari-cli --test serving a_join_that -- --ignored"]
+fn a_join_that_would_reinterpret_a_tenancy_is_refused_until_the_operator_removes_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let minted = Minted::new();
+
+    let mut stores = Vec::new();
+    let mut ids = Vec::new();
+    let mut papers = Vec::new();
+    for (index, _) in REFUSING.iter().enumerate() {
+        let home = directory.path().join(format!("r{index}"));
+        std::fs::create_dir_all(&home).unwrap();
+        let store = home.join("store");
+        let db = tessaridb::Db::open(&store).unwrap();
+        let id = db.store().node_identity().unwrap().id;
+        drop(db);
+        papers.push(credentials(&minted, id, &home));
+        ids.push(id);
+        stores.push(store);
+    }
+
+    {
+        let db = tessaridb::Db::open(&stores[0]).unwrap();
+        let joiner = tessari_types::RecordId::Uuid(ids[1]).to_string();
+        db.session()
+            .run(&format!(
+                "DEFINE REPLICA joiner AT '{}' NODE '{joiner}' ROLES serving \
+                 REPLICATES STORE; {WRITTEN}",
+                REFUSING[1].1
+            ))
+            .expect("a leader that knows who is joining it");
+        drop(db);
+    }
+    {
+        let db = tessaridb::Db::open(&stores[1]).unwrap();
+        db.session()
+            .run(&format!("DEFINE NODE ROLES serving; {ITS_OWN}"))
+            .expect("a node with a tenancy of its own");
+        drop(db);
+    }
+    // Both stores really do file their first namespace at the same address —
+    // asserted rather than assumed, because a build that numbered them
+    // differently would make every assertion below pass for the wrong reason.
+    assert_eq!(
+        namespaces_on(&stores[0]),
+        vec!["prod".to_owned()],
+        "the cluster's tenancy"
+    );
+    assert_eq!(
+        namespaces_on(&stores[1]),
+        vec!["research".to_owned()],
+        "and the joiner's own"
+    );
+
+    // Each node's seed names the OTHER one: a seed carries a node id as well as
+    // an address (ADR-0067), because the handshake derives the peer's TLS name
+    // from its id. The leader's is inert — its catalog already names a peer.
+    let seeds: Vec<String> = (0..REFUSING.len())
+        .map(|index| {
+            let other = usize::from(index == 0);
+            format!(
+                "{}@{}",
+                tessari_types::RecordId::Uuid(ids[other]),
+                REFUSING[other].1
+            )
+        })
+        .collect();
+
+    let mut logs = Vec::new();
+    let mut running = Vec::new();
+    for index in 0..REFUSING.len() {
+        let (log, child) = spawn_refusing(directory.path(), &stores, &papers, &seeds, index);
+        logs.push(log);
+        running.push(child);
+    }
+    for (client, peer) in REFUSING {
+        assert!(listening(client, Duration::from_secs(30)), "{client}");
+        assert!(listening(peer, Duration::from_secs(30)), "{peer}");
+    }
+
+    // The refusal, in the joiner's own log, in the words an operator reads.
+    // Both tokens: the NAME of what would be reinterpreted, without which the
+    // message names no object, and the statement that lifts it, without which
+    // it names no remedy.
+    let patience = Duration::from_secs(90);
+    assert!(
+        until(patience, || {
+            let said = std::fs::read_to_string(&logs[1]).unwrap_or_default();
+            said.contains("research") && said.contains("DROP NAMESPACE")
+        }),
+        "the joiner collected, or refused without saying what would be \
+         reinterpreted.{}",
+        what_the_nodes_said(&REFUSING, &logs)
+    );
+
+    // Refused means nothing arrived. The node is stopped first because a
+    // running process holds its store.
+    drop(running.pop().expect("the joiner is running"));
+    assert_eq!(
+        namespaces_on(&stores[1]),
+        vec!["research".to_owned()],
+        "the refusal must leave the joiner exactly as it was — the cluster's \
+         namespace arriving here is the destruction this criterion is about.{}",
+        what_the_nodes_said(&REFUSING, &logs)
+    );
+    {
+        let db = tessaridb::Db::open(&stores[1]).unwrap();
+        let answers = db
+            .session()
+            .run("USE NAMESPACE research; USE DATABASE notebooks; SELECT * FROM note;")
+            .expect("the joiner's own tenancy still reads");
+        assert!(
+            matches!(
+                answers.last(),
+                Some(tessari_session::Outcome::Records { records, .. }) if records.len() == 1
+            ),
+            "and its own record is still under it: {answers:?}"
+        );
+        drop(db);
+    }
+
+    // The destruction, stated by being performed. The language walks the
+    // operator down their own tree — a namespace will not drop while a database
+    // is under it, and a database will not drop while a table is — so every
+    // object destroyed is one they named.
+    {
+        let db = tessaridb::Db::open(&stores[1]).unwrap();
+        // The role comes first, and finding that out is what this half of the
+        // test is for: the joiner is configured `ROLES serving`, `Effect::admits`
+        // refuses a write on a node without `Roles::WRITABLE`, and every
+        // statement below is a write — so the remedy the refusal names is itself
+        // refused on the one node that needs it. `DEFINE NODE` is classified as
+        // a READ (a local `META` write, ADR-0018), which is the only reason this
+        // is a detour rather than a dead end. The refusal says so in its own
+        // words; this asserts the sequence it names actually runs.
+        db.session()
+            .run("DEFINE NODE ROLES writable;")
+            .expect("a serving node can always restore its own write authority");
+        db.session()
+            .run("USE NAMESPACE research; USE DATABASE notebooks; DROP TABLE note;")
+            .expect("the operator drops their table");
+        db.session()
+            .run("USE NAMESPACE research; DROP DATABASE notebooks;")
+            .expect("then the database");
+        db.session()
+            .run("DROP NAMESPACE research;")
+            .expect("then the namespace the cluster's would have replaced");
+        db.session().run("DEFINE NODE ROLES serving;").expect(
+            "and the role goes back, because a node that collects while \
+                     it also writes is the divergence this design refuses",
+        );
+        drop(db);
+    }
+    assert!(
+        namespaces_on(&stores[1]).is_empty(),
+        "the joiner holds no tenancy of its own"
+    );
+
+    let (log, child) = spawn_refusing(directory.path(), &stores, &papers, &seeds, 1);
+    logs[1] = log;
+    running.push(child);
+    assert!(listening(REFUSING[1].0, Duration::from_secs(30)));
+
+    let began = Instant::now();
+    let mut held = None;
+    let mut refusals = Vec::new();
+    while began.elapsed() < patience && held.is_none() {
+        match counted(REFUSING[1].0) {
+            Ok(1) => held = Some(began.elapsed()),
+            Ok(other) => refusals.push(format!("{other} record(s)")),
+            Err(why) => refusals.push(why),
+        }
+        std::thread::sleep(POLL);
+    }
+    held.unwrap_or_else(|| {
+        panic!(
+            "a node with no tenancy of its own must collect; the last thing it \
+             said was {:?}.{}",
+            refusals.last(),
+            what_the_nodes_said(&REFUSING, &logs)
+        )
+    });
+}
+
+/// One node of [`REFUSING`], with its standard error kept in a file of its own.
+fn spawn_refusing(
+    directory: &std::path::Path,
+    stores: &[std::path::PathBuf],
+    papers: &[(String, String, String)],
+    seeds: &[String],
+    index: usize,
+) -> (std::path::PathBuf, Running) {
+    let (leaf, key, authority) = &papers[index];
+    let log = directory.join(format!("r{index}")).join("node.log");
+    let writing = std::fs::File::create(&log).unwrap();
+    let child = Command::new(TESSARIDB)
+        .arg(&stores[index])
+        .args(["--serve", REFUSING[index].0])
+        .args(["--cluster-credential", leaf])
+        .args(["--cluster-key", key])
+        .args(["--cluster-authority", authority])
+        .args(["--cluster-address", REFUSING[index].1])
+        .args(["--seed", &seeds[index]])
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(writing))
+        .spawn()
+        .unwrap();
+    (log, Running(child))
 }

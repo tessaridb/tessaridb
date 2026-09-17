@@ -32,15 +32,14 @@
 
 use std::collections::BTreeMap;
 
-use tessari_encoding::{NODE_ID_LEN, Roles, decode_payload};
+use tessari_encoding::{NODE_ID_LEN, Roles, decode_payload, encode_payload};
 use tessari_types::{Number, RecordId, Value};
 
 use super::authority::{Reach, ReachCodec};
-use super::definition::{field_id, field_name, number, object};
-use super::{Catalog, Level, id_key, qualify, system};
+use super::definition::{field_name, number, object};
+use super::{Catalog, Level, qualify, system};
 use crate::error::{Error, Result};
 
-const FIELD_ID: &str = "id";
 const FIELD_NAME: &str = "name";
 const FIELD_ENDPOINT: &str = "endpoint";
 const FIELD_ROLES: &str = "roles";
@@ -52,9 +51,8 @@ const ENTITY: &str = "replica";
 /// A peer, and where it answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplicaDefinition {
-    /// Its id.
-    pub id: u32,
-    /// The name it is known by, unique across the store.
+    /// The name it is known by, unique across the store, and **the identity of
+    /// the stored record** (ADR-0077).
     ///
     /// Not the node's generated identifier: that one is sixteen unpredictable
     /// bytes a node gives *itself*, and nothing else can know it before the two
@@ -141,7 +139,6 @@ impl ReplicaDefinition {
     #[must_use]
     pub fn to_value(&self) -> Value {
         let mut fields = BTreeMap::from([
-            (FIELD_ID.to_owned(), number(self.id)),
             (FIELD_NAME.to_owned(), Value::from(self.name.as_str())),
             (
                 FIELD_ENDPOINT.to_owned(),
@@ -179,7 +176,6 @@ impl ReplicaDefinition {
             });
         };
         Ok(Self {
-            id: field_id(fields, FIELD_ID, ENTITY)?,
             name: field_name(fields, ENTITY)?,
             endpoint: endpoint.clone(),
             roles: roles_in(fields)?,
@@ -266,20 +262,48 @@ impl Catalog<'_, '_> {
         node: Option<[u8; NODE_ID_LEN]>,
         replicates: Option<Reach>,
     ) -> Result<ReplicaDefinition> {
-        let qualified = qualify(Level::Replica, &[], name);
-        self.reserve_name(&qualified)?;
-        let id = self.allocate(Level::Replica)?;
+        if self.replica_row(name)?.is_some() {
+            return Err(Error::NameTaken {
+                qualified: qualify(Level::Replica, &[], name),
+            });
+        }
         let definition = ReplicaDefinition {
-            id,
             name: name.to_owned(),
             endpoint: endpoint.to_owned(),
             roles,
             node,
             replicates,
         };
-        self.write(system::REPLICAS, id, &definition.to_value());
-        self.claim_name(&qualified, id);
+        self.write_replica(&definition);
         Ok(definition)
+    }
+
+    /// The stored row a name is written under, read by that key.
+    ///
+    /// A point read rather than a scan, which is what makes the name an identity
+    /// rather than a field somebody searches on: the row either exists at its own
+    /// key or it does not, and the answer costs one lookup.
+    fn replica_row(&self, name: &str) -> Result<Option<ReplicaDefinition>> {
+        let Some(bytes) = self
+            .transaction
+            .get(&system::address(system::REPLICAS, RecordId::from(name)))?
+        else {
+            return Ok(None);
+        };
+        ReplicaDefinition::from_value(&decode_payload(&bytes)?).map(Some)
+    }
+
+    /// Write a row at the key its own name gives it.
+    ///
+    /// Not [`Catalog::write`], which keys by an allocated number. **That number
+    /// is what ADR-0077 removed**: it was handed out by the WRITING node while
+    /// the table is cluster-wide, so two nodes declaring different peers gave one
+    /// number to both and the first replication overwrote one with the other.
+    fn write_replica(&mut self, definition: &ReplicaDefinition) {
+        self.transaction.put(
+            system::address(system::REPLICAS, RecordId::from(definition.name.as_str())),
+            encode_payload(&definition.to_value()).into_bytes(),
+        );
     }
 
     /// Bind a declared row to the node whose greeting proved it.
@@ -301,12 +325,12 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when the stored definitions cannot be read.
-    pub fn bind_replica_node(&mut self, id: u32, node: [u8; NODE_ID_LEN]) -> Result<bool> {
-        let Some(mut definition) = self.replicas()?.into_iter().find(|found| found.id == id) else {
+    pub fn bind_replica_node(&mut self, name: &str, node: [u8; NODE_ID_LEN]) -> Result<bool> {
+        let Some(mut definition) = self.replica_row(name)? else {
             return Ok(false);
         };
         definition.node = Some(node);
-        self.write(system::REPLICAS, id, &definition.to_value());
+        self.write_replica(&definition);
         Ok(true)
     }
 
@@ -323,15 +347,12 @@ impl Catalog<'_, '_> {
     /// # Errors
     ///
     /// Returns an error when the stored definition cannot be read.
-    pub fn drop_replica(&mut self, id: u32) -> Result<bool> {
-        let Some(definition) = self.replicas()?.into_iter().find(|found| found.id == id) else {
+    pub fn drop_replica(&mut self, name: &str) -> Result<bool> {
+        if self.replica_row(name)?.is_none() {
             return Ok(false);
-        };
-        let qualified = qualify(Level::Replica, &[], &definition.name);
+        }
         self.transaction
-            .delete(system::address(system::REPLICAS, RecordId::Int(id_key(id))));
-        self.transaction
-            .delete(system::address(system::NAMES, RecordId::from(qualified)));
+            .delete(system::address(system::REPLICAS, RecordId::from(name)));
         Ok(true)
     }
 
@@ -524,10 +545,10 @@ pub fn another_node_may_write(declared: &[ReplicaDefinition], me: &[u8; NODE_ID_
 /// membership changes until it has, for exactly this reason. The comparison and
 /// its source are recorded in ADR-0072.
 #[must_use]
-pub fn the_row_a_greeting_binds(
-    declared: &[ReplicaDefinition],
+pub fn the_row_a_greeting_binds<'a>(
+    declared: &'a [ReplicaDefinition],
     node: &[u8; NODE_ID_LEN],
-) -> Option<u32> {
+) -> Option<&'a str> {
     if declared.iter().any(|row| row.node == Some(*node)) {
         return None;
     }
@@ -536,7 +557,7 @@ pub fn the_row_a_greeting_binds(
     if unbound.next().is_some() {
         return None;
     }
-    Some(candidate.id)
+    Some(candidate.name.as_str())
 }
 
 #[cfg(test)]
@@ -548,20 +569,19 @@ mod tests {
     const SOMEBODY_ELSE: [u8; NODE_ID_LEN] = [7; NODE_ID_LEN];
 
     /// A row an operator declared with `NODE`.
-    fn bound(id: u32, name: &str, node: [u8; NODE_ID_LEN]) -> ReplicaDefinition {
+    fn bound(name: &str, node: [u8; NODE_ID_LEN]) -> ReplicaDefinition {
         ReplicaDefinition {
             node: Some(node),
-            ..unbound(id, name)
+            ..unbound(name)
         }
     }
 
     /// A row an operator declared without `NODE`.
     ///
-    /// The ids differ per row throughout, so that a rule taking the wrong
+    /// The names differ per row throughout, so that a rule taking the wrong
     /// candidate is detectable rather than accidentally right.
-    fn unbound(id: u32, name: &str) -> ReplicaDefinition {
+    fn unbound(name: &str) -> ReplicaDefinition {
         ReplicaDefinition {
-            id,
             name: name.to_owned(),
             endpoint: "10.0.0.2:9000".to_owned(),
             roles: Roles::SERVING,
@@ -572,8 +592,11 @@ mod tests {
 
     #[test]
     fn the_one_row_nobody_bound_is_the_row_a_greeting_binds() {
-        let declared = [bound(1, "leader", SOMEBODY_ELSE), unbound(4, "joiner")];
-        assert_eq!(the_row_a_greeting_binds(&declared, &GREETER), Some(4));
+        let declared = [bound("leader", SOMEBODY_ELSE), unbound("joiner")];
+        assert_eq!(
+            the_row_a_greeting_binds(&declared, &GREETER),
+            Some("joiner")
+        );
     }
 
     #[test]
@@ -583,7 +606,7 @@ mod tests {
 
     #[test]
     fn a_catalog_whose_every_row_is_bound_binds_nothing() {
-        let declared = [bound(1, "leader", SOMEBODY_ELSE)];
+        let declared = [bound("leader", SOMEBODY_ELSE)];
         assert_eq!(the_row_a_greeting_binds(&declared, &GREETER), None);
     }
 
@@ -595,7 +618,7 @@ mod tests {
     /// it there would be nothing to bind either way.
     #[test]
     fn a_greeting_from_a_node_a_row_already_names_binds_nothing() {
-        let declared = [bound(1, "leader", GREETER), unbound(4, "joiner")];
+        let declared = [bound("leader", GREETER), unbound("joiner")];
         assert_eq!(the_row_a_greeting_binds(&declared, &GREETER), None);
     }
 
@@ -608,7 +631,7 @@ mod tests {
     /// address.
     #[test]
     fn two_rows_nobody_bound_bind_nothing_because_neither_can_be_chosen() {
-        let declared = [unbound(4, "joiner"), unbound(5, "another")];
+        let declared = [unbound("joiner"), unbound("another")];
         assert_eq!(the_row_a_greeting_binds(&declared, &GREETER), None);
     }
 }

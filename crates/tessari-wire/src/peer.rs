@@ -39,6 +39,7 @@
 use core::time::Duration;
 
 use tessari_encoding::{NODE_ID_LEN, NodeIdentity, NodeVersion, Roles};
+use tessari_storage::FailoverStamp;
 use tessari_types::{Epoch, RecordId, Sequence};
 
 use crate::error::{Error, Result};
@@ -203,6 +204,22 @@ pub struct Hello {
     /// report a copy older is the direction a staleness bound already errs in,
     /// so the loss of precision can refuse a read and can never admit one.
     pub current_as_of: Option<Duration>,
+    /// Which failover policy the greeter is running under, without the policy.
+    ///
+    /// The pair and never the five periods. The policy itself is a row in the
+    /// system tenancy, so it is already a log record and already reaches every
+    /// node through the apply path every other record takes; putting the periods
+    /// here too would be a second spelling of one configuration, on a second
+    /// route, and this engine has already paid for that twice. What the log
+    /// cannot give is the ordering *before* the apply — a node has no way to
+    /// know it is behind until the record it is behind on arrives — and that is
+    /// exactly what this field is for.
+    ///
+    /// `None` is a real answer with two causes that need no distinguishing: the
+    /// greeter holds no policy row and runs `Failover::DEFAULT`, or the greeter
+    /// is an older build whose greeting ends before this field. Both mean *this
+    /// node said nothing about a policy*, and any stamp supersedes both.
+    pub policy: Option<FailoverStamp>,
 }
 
 impl Hello {
@@ -219,6 +236,7 @@ impl Hello {
         tail: Sequence,
         tail_leadership: Epoch,
         current_as_of: Option<Duration>,
+        policy: Option<FailoverStamp>,
     ) -> Self {
         Self {
             node: identity.id,
@@ -228,6 +246,7 @@ impl Hello {
             tail,
             tail_leadership,
             current_as_of,
+            policy,
         }
     }
 
@@ -248,7 +267,7 @@ impl Hello {
     /// The body of a [`PeerFrame::Hello`] frame.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let mut body = Vec::with_capacity(53);
+        let mut body = Vec::with_capacity(70);
         body.extend_from_slice(&self.node);
         frame::put_u32(&mut body, self.build.major);
         frame::put_u32(&mut body, self.build.minor);
@@ -267,6 +286,22 @@ impl Hello {
             }
             None => {
                 body.push(0);
+                frame::put_u64(&mut body, 0);
+            }
+        }
+        // Appended after everything that came before it, and that position is
+        // the compatibility rule rather than a habit: a peer built before this
+        // field existed ends its body here, and a reader that takes the earlier
+        // offsets first has already read every field such a peer can offer.
+        match self.policy {
+            Some(stamp) => {
+                body.push(1);
+                frame::put_u64(&mut body, stamp.epoch.get());
+                frame::put_u64(&mut body, stamp.version);
+            }
+            None => {
+                body.push(0);
+                frame::put_u64(&mut body, 0);
                 frame::put_u64(&mut body, 0);
             }
         }
@@ -295,7 +330,11 @@ impl Hello {
         let (tail, at) = frame::take_u64(body, at.checked_add(1).ok_or(Error::Malformed)?)?;
         let (tail_leadership, at) = frame::take_u64(body, at)?;
         let present = *body.get(at).ok_or(Error::Malformed)?;
-        let (seconds, _) = frame::take_u64(body, at.checked_add(1).ok_or(Error::Malformed)?)?;
+        let (seconds, at) = frame::take_u64(body, at.checked_add(1).ok_or(Error::Malformed)?)?;
+        let policy = take_policy(body, at)?.map(|(epoch, version)| FailoverStamp {
+            epoch: Epoch::new(epoch),
+            version,
+        });
 
         Ok(Self {
             node,
@@ -309,8 +348,32 @@ impl Hello {
             tail: Sequence::new(tail),
             tail_leadership: Epoch::new(tail_leadership),
             current_as_of: (present != 0).then(|| Duration::from_secs(seconds)),
+            policy,
         })
     }
+}
+
+/// The two numbers of the policy stamp, when the greeting reaches that far.
+///
+/// A body that **ends** at `at` is a peer built before the field existed, and
+/// that is a node with nothing to say about a policy rather than a truncated
+/// greeting — so it answers `Ok(None)` and never [`Error::Malformed`]. A body
+/// that starts the field and then stops mid-way is a different thing entirely: a
+/// real truncation, refused, because a greeting that half-arrived is not one a
+/// reader may guess the rest of.
+///
+/// The numbers and not the [`FailoverStamp`], so that the epoch is rebuilt in
+/// [`Hello::decode`] with every other decoded field. An epoch is the cluster's
+/// count of leaderships and only the campaign may create one; the enforcement
+/// test that holds that rule reads the name of the enclosing function, which is
+/// what keeps the rule a name rather than a list of line numbers.
+fn take_policy(body: &[u8], at: usize) -> Result<Option<(u64, u64)>> {
+    let Some(present) = body.get(at) else {
+        return Ok(None);
+    };
+    let (epoch, at) = frame::take_u64(body, at.checked_add(1).ok_or(Error::Malformed)?)?;
+    let (version, _) = frame::take_u64(body, at)?;
+    Ok((*present != 0).then_some((epoch, version)))
 }
 
 /// An age in whole seconds, rounded up.
@@ -380,7 +443,7 @@ pub fn admit(presented: Option<&Presented>, said: &Hello, me: &[u8; NODE_ID_LEN]
 
 #[cfg(test)]
 mod tests {
-    use super::{Hello, PeerFrame, Presented, Purpose, admit};
+    use super::{FailoverStamp, Hello, PeerFrame, Presented, Purpose, admit};
     use crate::error::Error;
     use crate::frame;
     use core::time::Duration;
@@ -406,6 +469,7 @@ mod tests {
             tail: Sequence::new(4096),
             tail_leadership: Epoch::new(7),
             current_as_of: Some(Duration::from_secs(3)),
+            policy: None,
         }
     }
 
@@ -478,14 +542,102 @@ mod tests {
         );
     }
 
+    /// The policy stamp's width on the wire: a presence byte and two `u64`s.
+    const POLICY_BYTES: usize = 17;
+
+    /// Where a greeting written before the policy stamp existed ends.
+    ///
+    /// Derived from the encoding rather than written as a number, so that a
+    /// later field appended after this one moves the boundary instead of
+    /// silently making this test assert the wrong offset. It is the boundary the
+    /// compatibility rule is about: a body that ENDS here is a peer built before
+    /// the field, and a body that stops anywhere else is a truncation.
+    fn before_the_policy(whole: &[u8]) -> usize {
+        whole.len().saturating_sub(POLICY_BYTES)
+    }
+
     #[test]
     fn a_greeting_that_stops_early_is_malformed_rather_than_a_panic() {
         let whole = greeting(ONE).encode();
         for stop in 0..whole.len() {
+            // The one prefix that is not a truncation: a greeting from a build
+            // that predates the policy stamp ends exactly here, and it has its
+            // own test below.
+            if stop == before_the_policy(&whole) {
+                continue;
+            }
             let cut = whole.get(..stop).expect("a prefix of a vector");
             assert!(
                 matches!(Hello::decode(cut), Err(Error::Malformed)),
                 "{stop} bytes of a greeting decoded as something other than malformed"
+            );
+        }
+    }
+
+    #[test]
+    fn a_greeting_carries_which_failover_policy_its_node_runs_under() {
+        // Two readings, because they are two different claims: a node that has
+        // been told which policy the cluster runs under, and a node that has
+        // not. The second is the ordinary state of a cluster nobody has
+        // configured and must survive the wire as `None` rather than as a pair
+        // of zeroes, which would be a policy set under the first leadership.
+        let mut said = greeting(ONE);
+
+        said.policy = Some(FailoverStamp {
+            epoch: Epoch::new(4),
+            version: 2,
+        });
+        let heard = Hello::decode(&said.encode()).expect("a greeting this build wrote");
+        assert_eq!(
+            heard.policy,
+            Some(FailoverStamp {
+                epoch: Epoch::new(4),
+                version: 2
+            })
+        );
+
+        said.policy = None;
+        let heard = Hello::decode(&said.encode()).expect("a greeting this build wrote");
+        assert_eq!(
+            heard.policy, None,
+            "a node running no declared policy came back claiming one"
+        );
+    }
+
+    #[test]
+    fn a_greeting_from_a_build_without_the_policy_field_is_a_node_with_nothing_to_say() {
+        // The compatibility rule, asserted rather than asserted-in-a-comment: a
+        // peer built before the field ends its body where the field would have
+        // started. That is a node saying nothing about a policy, and it must
+        // never read as a broken greeting -- a rolling upgrade in which half the
+        // cluster refuses the other half's greetings is an outage produced by
+        // adding a field nobody needed yet.
+        let whole = greeting(ONE).encode();
+        let older = whole
+            .get(..before_the_policy(&whole))
+            .expect("a greeting without its last field");
+        let heard = Hello::decode(older).expect("an older peer's greeting is not malformed");
+        assert_eq!(heard.policy, None);
+        // And the rest of it survived: a tolerant tail must not become a
+        // tolerant reader, or a genuinely short body would decode as a greeting
+        // full of defaults.
+        assert_eq!(heard.node, ONE);
+        assert_eq!(heard.tail, Sequence::new(4096));
+        assert_eq!(heard.current_as_of, Some(Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn a_policy_field_that_half_arrived_is_refused() {
+        // The other side of the tolerance, and the reason it is a boundary
+        // rather than a range: a body that STARTS the field and then stops is a
+        // truncation, not an older build, and guessing the rest of it would be
+        // inventing a cluster-wide ordering out of missing bytes.
+        let whole = greeting(ONE).encode();
+        for stop in before_the_policy(&whole).saturating_add(1)..whole.len() {
+            let cut = whole.get(..stop).expect("a prefix of a vector");
+            assert!(
+                matches!(Hello::decode(cut), Err(Error::Malformed)),
+                "{stop} bytes -- a half-written policy stamp decoded as a greeting"
             );
         }
     }
@@ -608,6 +760,7 @@ mod tests {
             Sequence::new(90),
             Epoch::new(2),
             Some(Duration::from_secs(11)),
+            None,
         );
         assert_eq!(said.node, identity.id);
         assert_eq!(said.roles, identity.roles);

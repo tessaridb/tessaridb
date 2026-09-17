@@ -83,6 +83,7 @@ forms! {
     AlterUser => "ALTER USER",
     AlterNamespace => "ALTER NAMESPACE",
     DefineNode => "DEFINE NODE",
+    DefineFailover => "DEFINE FAILOVER",
     DefineReplica => "DEFINE REPLICA",
     DefineConsumer => "DEFINE KAFKA CONSUMER",
     DropConsumer => "DROP KAFKA CONSUMER",
@@ -251,6 +252,8 @@ mod tests {
              DEFINE USER u ROLE owner PASSWORD 'x';\
              DEFINE NODE ROLES serving;\
              DEFINE REPLICA second AT 'host:9001';\
+             DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s \
+             CAMPAIGN 1s LEASE 30s;\
              DEFINE KAFKA CONSUMER c FROM 'b:9092' TOPIC 't' GROUP 'g' FORMAT json \
              INTO t IDENTITY k MAP a AS b ON FAILURE stop;\
              DROP KAFKA CONSUMER c;\
