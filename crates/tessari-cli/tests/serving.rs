@@ -1870,6 +1870,20 @@ const AXES: Band = [
     ("127.0.0.1:47878", "127.0.0.1:47879"),
 ];
 
+/// The policy cluster's addresses — 47863-47868, and a band of its own.
+///
+/// A third band for the same reason the second one exists: one
+/// `cargo test … -- --ignored` runs every `#[ignore]`d test in this file on
+/// separate threads, so two clusters sharing a band fail intermittently on each
+/// other's listener — which reads exactly like the cluster defect neither test
+/// is about. Derived from the ports this crate already spells, not guessed:
+/// 47861-47862 are taken and 47863-47870 are not.
+const PERIODS: Band = [
+    ("127.0.0.1:47863", "127.0.0.1:47864"),
+    ("127.0.0.1:47865", "127.0.0.1:47866"),
+    ("127.0.0.1:47867", "127.0.0.1:47868"),
+];
+
 /// One password for every account this test declares.
 ///
 /// One value and not three, because what these accounts are FOR is being looked
@@ -2346,5 +2360,148 @@ fn a_node_joins_a_cluster_it_was_only_given_an_address_for() {
         peers.iter().any(|peer| peer.name == "joiner"),
         "the joiner reached the leader's records in {held:?} and still does not \
          hold the membership row that was written before them"
+    );
+}
+
+/// The lease period `address` reports, in whole seconds, or `None` for no policy.
+///
+/// Reads the field out of `cluster.failover` rather than searching the rendered
+/// answer for a token. `Duration` derives `Debug`, so a rendered lease reads
+/// `Duration { seconds: 41, nanos: 0 }` and a search for `41s` finds nothing —
+/// which is a test that can only ever fail, and fails looking exactly like a
+/// cluster that did not replicate.
+fn lease_reported(address: &str) -> Result<Option<i64>, String> {
+    let mut client = Client::connect(address).map_err(|why| why.to_string())?;
+    let answers = client
+        .run("INFO FOR NODE;", None)
+        .map_err(|why| why.to_string())?;
+    // `Answer::Value` and not `Answer::Records`: `INFO FOR NODE` answers one
+    // object rather than a list of records, and the first version of this
+    // helper matched the wrong variant — which made a correct report read as
+    // *not a report* and failed the control assertion on a cluster that was
+    // behaving perfectly.
+    let Some(Answer::Value {
+        value: tessari_types::Value::Object(report),
+        ..
+    }) = answers.last()
+    else {
+        return Err(format!("not a report: {answers:?}"));
+    };
+    let Some(tessari_types::Value::Object(cluster)) = report.get("cluster") else {
+        return Err(format!("no cluster group: {report:?}"));
+    };
+    match cluster.get("failover") {
+        Some(tessari_types::Value::Null) | None => Ok(None),
+        Some(tessari_types::Value::Object(policy)) => match policy.get("lease") {
+            Some(tessari_types::Value::Duration(span)) => Ok(Some(span.seconds())),
+            other => Err(format!("no lease period: {other:?}")),
+        },
+        other => Err(format!("not a failover group: {other:?}")),
+    }
+}
+
+/// G029 S2.2 against three operating-system processes.
+///
+/// The criterion's own method is *a live run in which one node's policy reaches
+/// the other*, and until this wave nothing could originate a policy at all:
+/// `Catalog::set_failover` had only test callers and the language had no
+/// statement. `DEFINE FAILOVER` is that statement, and this is the run it was
+/// written for.
+///
+/// # What makes this an observation rather than a restatement
+///
+/// The policy is written on the LEADER and read back on a node that never saw
+/// the statement, through `INFO FOR NODE` — a different surface from the one
+/// that wrote it, in a different process, against a store on a different disk.
+/// Nothing in the assertion path touches the catalog directly, so a policy that
+/// arrives is a policy that travelled along the log and by no other route.
+///
+/// # `null` before, and it is the control
+///
+/// `cluster.failover` is asserted ABSENT on the follower before the leader is
+/// asked to set anything. That is what makes the later reading evidence: a
+/// report that rendered the built-in defaults as a policy would satisfy the
+/// second assertion while proving nothing, and the first assertion is what
+/// forbids it.
+///
+/// # The second setting is the half a single write cannot show
+///
+/// One policy arriving proves a row replicated. It does not prove the ORDERING
+/// works, because a follower with no policy accepts the first thing it is given
+/// whatever the pair says. So the leader sets a second policy under the same
+/// leadership, and the follower has to end on the later one — which is exactly
+/// the case the version field exists for and the epoch alone cannot tell apart.
+#[test]
+#[ignore = "an election and two replication waits against three spawned \
+            processes. It is the live validation G029 S2.2 names, and is run \
+            explicitly: cargo test -p tessari-cli --test serving \
+            a_failover_policy_set_on_the_leader -- --ignored"]
+fn a_failover_policy_set_on_the_leader_reaches_a_node_that_never_saw_it() {
+    let cluster = a_cluster_of_three(&PERIODS);
+    let logs = cluster.logs.clone();
+    let leader = the_node_a_majority_granted(&PERIODS);
+    let follower = the_next_node(&PERIODS, leader);
+    let surface = PERIODS[follower].0;
+    let deciding = PERIODS[leader].0;
+    let patience = Duration::from_secs(90);
+
+    assert!(
+        until(patience, || counted(surface) == Ok(1)),
+        "the record never reached the follower, so nothing below would be \
+         measuring a cluster.{}",
+        what_the_nodes_said(&PERIODS, &logs)
+    );
+
+    // The control. A cluster nobody configured reports no policy, and this is
+    // asserted before the leader is asked for one so that the reading after it
+    // cannot be the defaults wearing a policy's clothes.
+    assert_eq!(
+        lease_reported(surface),
+        Ok(None),
+        "the follower reported a failover policy before one was ever set.{}",
+        what_the_nodes_said(&PERIODS, &logs)
+    );
+
+    asked(
+        deciding,
+        "DEFINE FAILOVER AWARENESS 12s COLLECTION 11s ROUND 2s CAMPAIGN 3s \
+         LEASE 41s;",
+        None,
+    )
+    .expect("a leader sets the policy its cluster runs under");
+
+    // 41 seconds and not a round number: the lease is the one period this test
+    // chooses freely, and a value nothing else in the cluster uses cannot be
+    // matched by a report that happened to render a default.
+    assert!(
+        until(patience, || lease_reported(surface) == Ok(Some(41))),
+        "the policy never reached a node that did not write it.{}",
+        what_the_nodes_said(&PERIODS, &logs)
+    );
+
+    // The ordering half. A second policy under the same leadership carries the
+    // next version, and the follower must end on the later one — a replica that
+    // applied writes in arrival order rather than by the pair would be
+    // indistinguishable from a correct one until exactly this case.
+    asked(
+        deciding,
+        "DEFINE FAILOVER AWARENESS 12s COLLECTION 11s ROUND 2s CAMPAIGN 3s \
+         LEASE 43s;",
+        None,
+    )
+    .expect("a leader may set the policy again under one leadership");
+
+    // Reading the field rather than searching a rendering is what makes this
+    // assertion do both halves at once: the later policy is present AND the
+    // earlier one is gone, because there is exactly one lease to read. A token
+    // search would have needed a second assertion for the absence, and the
+    // first version of this test was written that way and could not have
+    // worked at all — `Duration` derives `Debug`, so a rendered answer spells a
+    // lease `Duration { seconds: 41, nanos: 0 }` and the token `41s` appears
+    // nowhere in it. The instrument, not the cluster.
+    assert!(
+        until(patience, || lease_reported(surface) == Ok(Some(43))),
+        "the later policy never replaced the earlier one on the follower.{}",
+        what_the_nodes_said(&PERIODS, &logs)
     );
 }
