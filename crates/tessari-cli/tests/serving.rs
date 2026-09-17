@@ -1368,6 +1368,70 @@ struct Three {
     /// One slot per node, in `CLUSTER` order. A slot is emptied to kill that
     /// node, which is why it is an `Option` rather than a plain handle.
     running: Vec<Option<Running>>,
+    /// Where each node writes its own stderr, in `CLUSTER` order.
+    ///
+    /// Kept because the directory holding them is removed the moment this
+    /// struct drops, so a reader who goes looking after a failure finds
+    /// nothing at all. A panic message is the only place these lines can still
+    /// be read — the same reason `the_node_a_majority_granted` carries its
+    /// refusals into its own.
+    logs: Vec<std::path::PathBuf>,
+}
+
+/// The tail of each node's own log, for a panic that would otherwise send its
+/// reader to three processes that no longer exist.
+///
+/// Every failure the collection and awareness cadences can have is reported
+/// through `log::warn!`, which this binary writes to standard error and nowhere
+/// else — a peer that did not answer, a subscription nobody granted, a log that
+/// no longer reaches back far enough. A harness that discards that stream can
+/// say a cluster replicated nothing and can never say why.
+///
+/// `TESSARIDB_LOG` is inherited from whoever ran the test, so `debug` is a
+/// command-line decision rather than a property of the fixture.
+///
+/// # What is dropped, and why it is safe to drop
+///
+/// Every `connection N accepted` / `connection N closed` pair, and nothing
+/// else. Those lines are THIS TEST'S OWN polling: `counted` opens a client
+/// connection every hundred milliseconds for ninety seconds, so a follower's
+/// log reaches nineteen hundred lines of which eighteen hundred and ninety are
+/// the harness watching itself. A window that keeps them shows the reader the
+/// test's footprint and none of the cluster's. The count of what was dropped is
+/// printed beside the window, so the filter can be challenged from the output
+/// it produces rather than only from this comment.
+fn what_the_nodes_said(logs: &[std::path::PathBuf]) -> String {
+    /// With this test's own polling removed a ninety-second three-node run
+    /// leaves each node about a hundred and twenty lines, so this is a ceiling
+    /// against a node that is genuinely looping rather than a window that
+    /// trims a healthy run. A cluster that replicates nothing says so in the
+    /// FIRST cadence, and a tail short enough to lose that first cadence is a
+    /// diagnostic that reports only the symptom.
+    const TAIL: usize = 200;
+    let mut out = String::new();
+    for (index, path) in logs.iter().enumerate() {
+        let read = std::fs::read_to_string(path)
+            .unwrap_or_else(|why| format!("this node's log could not be read: {why}"));
+        let all = read.lines().count();
+        let lines: Vec<&str> = read
+            .lines()
+            .filter(|line| !line.contains("tessari_wire::node connection "))
+            .collect();
+        let from = lines.len().saturating_sub(TAIL);
+        out.push_str(&format!(
+            "\n--- node {index} ({}), last {} of {} line(s); {} of this test's \
+             own connection lines dropped ---\n",
+            CLUSTER[index].0,
+            lines.len().saturating_sub(from),
+            lines.len(),
+            all.saturating_sub(lines.len())
+        ));
+        for line in &lines[from..] {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Bring three nodes up, declared as one cluster, and wait for every door.
@@ -1397,20 +1461,42 @@ fn a_cluster_of_three() -> Three {
         stores.push(store);
     }
 
-    // Each node declares the other two and never itself. The membership is
-    // `peers.len() + 1` (`campaign.rs`), so a self-row would make it four,
-    // needing three grants, and the cluster would stop electing on the first
-    // loss —
-    // which is the exact case this test exists to exercise.
+    // Each node declares the WHOLE membership, itself included, in one order.
+    //
+    // It declared only the other two until W382, on the reasoning that a self
+    // row would make the membership `peers.len() + 1` = four and demand three
+    // grants. That reasoning was right about the arithmetic and wrong about
+    // where to fix it: a membership row is an ordinary catalog record, so it
+    // REPLICATES (`catalog/replica.rs`), and a follower that applies a leader's
+    // store log receives a row naming itself no matter what it declared. The
+    // arithmetic is now corrected where it is decided, in `voters`, which skips
+    // this node exactly as `greet_round` and `upstream` already did.
+    //
+    // What declaring the full set buys is the ID. A replica row is written
+    // under a locally allocated number, so three nodes that each declare a
+    // DIFFERENT pair allocate the same numbers to different peers — and the
+    // first replication then overwrites each follower's row for the leader with
+    // the leader's row for somebody else. Measured in W382: a follower
+    // collected once, lost the row naming its upstream, and never collected
+    // again, while every node reported two healthy peers. Declaring the same
+    // three rows in the same order makes the replication idempotent instead.
+    //
+    // `writable` on every row and not just on this node's own: the row is what
+    // `Store::reconcile_roles` reads back at open as what this node is SUPPOSED
+    // to be, so a row that omits it drains the node the next time it opens —
+    // and ADR-0063/ADR-0064 make every-coordinator-also-writable the
+    // configuration a cluster needs in order to fail over at all.
     //
     // `REPLICATES STORE` rather than the namespace the criterion names, and the
     // reason is a property of the engine rather than a convenience: a namespace
     // subscription resolves to a namespace **id** when the row is written, so
     // the name has to exist on the granting node first. ADR-0063 means any of
     // the three may win, so no node can be pinned as the granter before the
-    // election. The namespace is narrowed onto one follower below, once it
-    // exists and has an id every node agrees on.
-    for (index, store) in stores.iter().enumerate() {
+    // election. There is no narrowing step anywhere below, and the sentence
+    // that used to promise one here was describing work nobody wrote: the
+    // subscription this fixture actually grants is the whole store, on every
+    // node, and the criterion's replication is observed over that.
+    for store in &stores {
         let db = tessaridb::Db::open(store).unwrap();
         // The peers FIRST and the role LAST, and the order is load-bearing.
         // `DEFINE NODE ROLES` takes effect immediately and locally, so a node
@@ -1430,13 +1516,10 @@ fn a_cluster_of_three() -> Three {
         // A cluster is declared atomically or not at all.
         let mut script = String::from("BEGIN;");
         for other in 0..CLUSTER.len() {
-            if other == index {
-                continue;
-            }
             let named = tessari_types::RecordId::Uuid(ids[other]).to_string();
             script.push_str(&format!(
                 " DEFINE REPLICA n{other} AT '{}' NODE '{named}' \
-                  ROLES serving, coordinating REPLICATES STORE;",
+                  ROLES serving, writable, coordinating REPLICATES STORE;",
                 CLUSTER[other].1
             ));
         }
@@ -1448,8 +1531,16 @@ fn a_cluster_of_three() -> Three {
     }
 
     let mut running: Vec<Option<Running>> = Vec::new();
+    let mut logs: Vec<std::path::PathBuf> = Vec::new();
     for index in 0..CLUSTER.len() {
         let (leaf, key, authority) = &papers[index];
+        // Standard error is where this binary reports, so it is kept rather
+        // than discarded. Its own file per node: three streams into one
+        // descriptor interleave, and a log line carries a timestamp and a
+        // target but never says which node wrote it.
+        let log = directory.path().join(format!("n{index}")).join("node.log");
+        let writing = std::fs::File::create(&log).unwrap();
+        logs.push(log);
         let child = Command::new(TESSARIDB)
             .arg(&stores[index])
             .args(["--serve", CLUSTER[index].0])
@@ -1471,7 +1562,7 @@ fn a_cluster_of_three() -> Three {
                 ),
             ])
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::from(writing))
             .spawn()
             .unwrap();
         running.push(Some(Running(child)));
@@ -1483,6 +1574,7 @@ fn a_cluster_of_three() -> Three {
     Three {
         _directory: directory,
         running,
+        logs,
     }
 }
 
@@ -1550,6 +1642,9 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
     // lets a follower find whoever won. Each was found by the next one failing,
     // and none of them has ever been exercised against a cluster of three.
     let mut cluster = a_cluster_of_three();
+    // Cloned before `running` is borrowed, because a panic below wants the
+    // whole struct while that borrow is still live.
+    let logs = cluster.logs.clone();
     let running = &mut cluster.running;
     let leader = the_node_a_majority_granted();
     // The record reaches a node that never wrote it. Until this holds there is
@@ -1582,10 +1677,11 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
     let follower = holder.unwrap_or_else(|| {
         panic!(
             "no node but the leader received the record in ninety seconds, so \
-             nothing below would be measuring a cluster. Counts: {:?}",
+             nothing below would be measuring a cluster. Counts: {:?}{}",
             (0..CLUSTER.len())
                 .map(|index| counted(CLUSTER[index].0))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            what_the_nodes_said(&logs)
         )
     });
 
