@@ -10,7 +10,7 @@ A real-time multi-model database, written in Rust, built for AI agents and the
 products around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.2.2--beta-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.3.0--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
 [![conformance](https://img.shields.io/badge/conformance-1369%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
@@ -22,7 +22,7 @@ products around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is a beta — `0.2.2-beta`.** It is released, tested and published as
+> **TessariDB is a beta — `0.3.0-beta`.** It is released, tested and published as
 > a container image, and the licence makes production use free, including inside
 > a commercial company.
 > What a beta does not promise yet is permanence of shape: before 1.0 the query
@@ -160,7 +160,7 @@ surviving version and the node that wrote it.
 
 ## Status
 
-**Stage: active development · `0.2.2-beta` · not published to crates.io.** What
+**Stage: active development · `0.3.0-beta` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 
@@ -174,7 +174,12 @@ follows is what runs today, not a roadmap.
   **refuses writes before the cluster may replace it**; a namespace declares how
   many copies are kept and how many nodes may write it; a read may name how stale
   an answer it will accept, and that bound decides which nodes may answer rather
-  than labelling the answer it gets; a write for a range another node leads is
+  than labelling the answer it gets; a read may instead require the **leader** to
+  answer it, which no staleness bound can express because a follower at zero lag
+  is level rather than authoritative; **how long the cluster waits before
+  replacing a leader is a replicated policy** an operator writes once with
+  `DEFINE FAILOVER` rather than a file each node holds its own copy of; a write
+  for a range another node leads is
   refused with the address, the node and the epoch to expect there; and a
   namespace declared `MULTI MASTER` admits writes on more than one node, where a
   write concurrent with the stored version is **refused and named** unless the
@@ -192,7 +197,10 @@ follows is what runs today, not a roadmap.
   presenting part of it as the whole. One correctness fix belongs here too: index
   maintenance selected definitions **by table id alone**, and ids are handed out
   store-wide — so a catalog write could select an unrelated user table's indexes
-  and write into that user's keyspace. It is selected by the whole tenancy now.
+  and write into that user's keyspace. It is selected by the whole tenancy now. The
+  log can now be **bounded** — `DEFINE NODE RETAIN <n> RECORDS` keeps the newest
+  *n* per log on this machine and prunes the rest, **default off**, with a reader
+  below the horizon refused by name rather than served a short answer.
 - 🚧 **Partial:** geospatial can store a shape, answer eight predicates over
   whole shapes, measure geodesic distance and area, and be written as a literal
   in a script. `DEFINE INDEX … SPATIAL` writes and maintains a **spatial index**
