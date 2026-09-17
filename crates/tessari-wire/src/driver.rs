@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 
 use tessari_encoding::{NODE_ID_LEN, Roles};
 use tessari_serve::Stopping;
-use tessari_storage::{Lease, ReplicaDefinition};
+use tessari_storage::{FailoverStamp, Lease, ReplicaDefinition};
 use tessari_types::{Epoch, Reach, Sequence};
 
 use crate::campaign::Stood;
@@ -524,6 +524,68 @@ pub fn heard_a_leader(
             })
 }
 
+/// The newest failover policy a live peer advertises, when it supersedes this
+/// node's own.
+///
+/// # Why a node behind on the policy does not stand
+///
+/// The periods in the policy decide how long this cluster waits before it treats
+/// a leader as gone. Two nodes that disagree about them are two nodes that can
+/// both believe they may write — the split-brain the lease exists to prevent,
+/// arriving through the mechanism meant to prevent it. That is the failover
+/// row's own argument for existing, and it is the argument for this gate.
+///
+/// A candidate standing under periods the rest of the cluster has already
+/// replaced is that disagreement, in the one moment where it decides an outcome.
+/// So this is the sibling of [`heard_a_leader`]: same shape, same call site,
+/// same class of reason — a node that can hear evidence it should not stand,
+/// does not stand.
+///
+/// # Why it cannot deadlock a cluster
+///
+/// The refusal is bounded by **audibility**, not by state. It lasts only while a
+/// declared peer is still advertising a superseding stamp inside `within`; a
+/// peer that has gone away advertises nothing, and this answers `None`, and the
+/// node stands. So the failure this gate could have introduced — a cluster
+/// permanently unable to elect because the only node holding the newer policy
+/// died — is the one case in which the gate is already open.
+///
+/// # `None` is behind, not ahead
+///
+/// A greeter's `None` means *no policy row, running the default* or *a build
+/// from before the field*, and neither can supersede anything, so neither
+/// silences this node. This node's own `None` is the other side of the same
+/// coin and **is** superseded by any stamp: a node that has never been told is
+/// behind one that has, and the alternative would make the first policy a
+/// cluster ever sets the one policy nothing could act on.
+///
+/// # Declared peers only
+///
+/// The same set [`heard_a_leader`] and [`upstream`] read, for the same reason: a
+/// greeting from an address this node's catalog does not declare is not a member
+/// speaking, and a stranger that could silence a candidate is a denial of
+/// service with a one-line implementation.
+///
+/// The newest is returned rather than a bare `true` so that a caller can say
+/// **which** policy it is behind — a gate that refuses without naming what it
+/// refused on is one an operator can only investigate with a packet capture.
+#[must_use]
+pub fn heard_a_newer_policy(
+    declared: &[ReplicaDefinition],
+    heard: &Directory,
+    mine: Option<FailoverStamp>,
+    now: Instant,
+    within: Duration,
+) -> Option<FailoverStamp> {
+    declared
+        .iter()
+        .filter_map(|peer| heard.at(&peer.endpoint))
+        .filter(|seen| now.saturating_duration_since(seen.at) <= within)
+        .filter_map(|seen| seen.said.policy)
+        .filter(|stamp| stamp.supersedes_held(mine.as_ref()))
+        .max_by_key(|stamp| (stamp.epoch, stamp.version))
+}
+
 /// Whether this node is eligible to stand at all, from its own identity alone.
 ///
 /// The half of [`voters`]'s question that needs no catalog. A node the operator
@@ -790,8 +852,9 @@ mod tests {
     use tessari_types::{Epoch, NamespaceId, Reach, Sequence};
 
     use super::{
-        Collecting, Published, Renewing, ReplicaDefinition, Seed, Stood, bootstrap_from, due_in,
-        every, heard_a_leader, names_a_peer, stands, upstream, voters,
+        Collecting, FailoverStamp, Published, Renewing, ReplicaDefinition, Seed, Stood,
+        bootstrap_from, due_in, every, heard_a_leader, heard_a_newer_policy, names_a_peer, stands,
+        upstream, voters,
     };
     use crate::directory::Directory;
     use crate::grant::Leadership;
@@ -816,6 +879,7 @@ mod tests {
             tail: Sequence::new(4096),
             tail_leadership: Epoch::new(7),
             current_as_of: Some(Duration::from_secs(1)),
+            policy: None,
         }
     }
 
@@ -1452,6 +1516,173 @@ mod tests {
             ),
             "a grant older than the lease it granted cannot testify that the \
              holder still has it, and a node that hears nothing has to stand"
+        );
+    }
+
+    /// A greeting from a node running the policy set at `(epoch, version)`.
+    fn running(epoch: u64, version: u64) -> Hello {
+        Hello {
+            policy: Some(FailoverStamp {
+                epoch: Epoch::new(epoch),
+                version,
+            }),
+            ..said()
+        }
+    }
+
+    fn stamp(epoch: u64, version: u64) -> FailoverStamp {
+        FailoverStamp {
+            epoch: Epoch::new(epoch),
+            version,
+        }
+    }
+
+    #[test]
+    fn a_peer_running_a_newer_failover_policy_holds_this_node_back() {
+        let declared = [named("peer", "10.0.0.1:9000", [9; NODE_ID_LEN])];
+        let heard = greeted(&[("10.0.0.1:9000", running(4, 0))]);
+        assert_eq!(
+            heard_a_newer_policy(
+                &declared,
+                &heard,
+                Some(stamp(3, 9)),
+                Instant::now(),
+                tessari_storage::LEASE_TTL
+            ),
+            Some(stamp(4, 0)),
+            "a candidate timing itself by a policy the cluster has replaced was              not held back, which is the disagreement the policy row exists to              remove arriving at the moment it decides an outcome"
+        );
+    }
+
+    #[test]
+    fn an_equal_or_older_policy_holds_nobody_back() {
+        let declared = [named("peer", "10.0.0.1:9000", [9; NODE_ID_LEN])];
+        let now = Instant::now();
+        for (peer, mine, why) in [
+            (
+                running(3, 9),
+                stamp(3, 9),
+                "an equal pair is the ordinary state of an agreeing cluster and                  must never stop an election",
+            ),
+            (
+                running(3, 8),
+                stamp(3, 9),
+                "a lower version is a peer that is behind, which is the ordinary                  state of a follower and not a reason to refuse",
+            ),
+            (
+                running(2, 99),
+                stamp(3, 0),
+                "a superseded leadership does not win on version — this is the                  partitioned ex-leader reconnecting, and letting it silence a                  candidate would hand it the outcome it lost",
+            ),
+        ] {
+            assert_eq!(
+                heard_a_newer_policy(
+                    &declared,
+                    &greeted(&[("10.0.0.1:9000", peer)]),
+                    Some(mine),
+                    now,
+                    tessari_storage::LEASE_TTL
+                ),
+                None,
+                "{why}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_node_that_holds_no_policy_at_all_is_behind_one_that_does() {
+        let declared = [named("peer", "10.0.0.1:9000", [9; NODE_ID_LEN])];
+        let heard = greeted(&[("10.0.0.1:9000", running(1, 0))]);
+        // The first policy a cluster ever sets is the case this covers. Treating
+        // *no policy* as unbeatable would make that first one the single policy
+        // nothing could ever act on.
+        assert_eq!(
+            heard_a_newer_policy(
+                &declared,
+                &heard,
+                None,
+                Instant::now(),
+                tessari_storage::LEASE_TTL
+            ),
+            Some(stamp(1, 0))
+        );
+        // And the other direction: a peer that says nothing supersedes nothing,
+        // so a build from before the field cannot silence the cluster it joins.
+        assert_eq!(
+            heard_a_newer_policy(
+                &declared,
+                &greeted(&[("10.0.0.1:9000", said())]),
+                None,
+                Instant::now(),
+                tessari_storage::LEASE_TTL
+            ),
+            None,
+            "a greeting carrying no policy silenced a candidate, which would              make a rolling upgrade an outage"
+        );
+    }
+
+    #[test]
+    fn a_greeting_older_than_the_lease_cannot_hold_a_candidate_back() {
+        // This is what makes the gate incapable of deadlocking a cluster: the
+        // refusal is bounded by audibility, so the node holding the newer policy
+        // going away opens the gate rather than closing it forever.
+        let declared = [named("peer", "10.0.0.1:9000", [9; NODE_ID_LEN])];
+        let mut heard = Directory::new();
+        let long_ago = Instant::now();
+        heard.heard("10.0.0.1:9000", running(4, 0), long_ago);
+        let now = long_ago + tessari_storage::LEASE_TTL + Duration::from_secs(1);
+        assert_eq!(
+            heard_a_newer_policy(&declared, &heard, None, now, tessari_storage::LEASE_TTL),
+            None,
+            "a peer nobody has heard from in longer than a lease was still              silencing this node, so a cluster that lost the one node holding              the newer policy could never elect again"
+        );
+    }
+
+    #[test]
+    fn a_policy_advertised_by_an_undeclared_address_is_not_a_member_speaking() {
+        // The same rule `heard_a_leader` and `upstream` hold: a greeting from an
+        // address this node's catalog does not declare is a stranger, and a
+        // stranger that can silence a candidate is a denial of service with a
+        // one-line implementation.
+        let declared = [named("peer", "10.0.0.1:9000", [9; NODE_ID_LEN])];
+        let heard = greeted(&[("10.0.0.9:9000", running(4, 0))]);
+        assert_eq!(
+            heard_a_newer_policy(
+                &declared,
+                &heard,
+                None,
+                Instant::now(),
+                tessari_storage::LEASE_TTL
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn the_newest_policy_heard_is_the_one_reported() {
+        // Reported rather than merely detected, so an operator reading the log
+        // line knows WHICH policy this node is behind. With several peers at
+        // several stamps, the answer has to be the newest or the report names a
+        // policy that is itself superseded.
+        let declared = [
+            named("one", "10.0.0.1:9000", [9; NODE_ID_LEN]),
+            named("two", "10.0.0.2:9000", [8; NODE_ID_LEN]),
+            named("three", "10.0.0.3:9000", [7; NODE_ID_LEN]),
+        ];
+        let heard = greeted(&[
+            ("10.0.0.1:9000", running(4, 1)),
+            ("10.0.0.2:9000", running(5, 0)),
+            ("10.0.0.3:9000", running(4, 9)),
+        ]);
+        assert_eq!(
+            heard_a_newer_policy(
+                &declared,
+                &heard,
+                Some(stamp(3, 0)),
+                Instant::now(),
+                tessari_storage::LEASE_TTL
+            ),
+            Some(stamp(5, 0))
         );
     }
 

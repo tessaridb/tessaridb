@@ -1007,10 +1007,16 @@ fn stand_for_leadership(
             if !tessari_wire::stands(me.roles) {
                 return;
             }
-            let declared = match store.begin().and_then(|mut transaction| {
-                tessari_storage::Catalog::new(&mut transaction).replicas()
+            // Both in one transaction: the membership and the policy stamp are
+            // read on every tick of this cadence, and a node the operator made
+            // writable should pay for one begin here rather than two.
+            let (declared, policy) = match store.begin().and_then(|mut transaction| {
+                let catalog = tessari_storage::Catalog::new(&mut transaction);
+                let declared = catalog.replicas()?;
+                let policy = catalog.failover()?;
+                Ok((declared, policy))
             }) {
-                Ok(declared) => declared,
+                Ok(read) => read,
                 Err(why) => {
                     log::warn!("this node cannot say who its peers are: {why}");
                     return;
@@ -1039,6 +1045,36 @@ fn stand_for_leadership(
                 now,
                 tessari_storage::LEASE_TTL,
             ) {
+                return;
+            }
+            // And the second thing a node can hear that means it should not
+            // stand: a peer running a failover policy that supersedes this
+            // node's own. The periods decide when a leader counts as gone, so a
+            // candidate timing itself by a policy the cluster has already
+            // replaced is the disagreement the policy row exists to remove,
+            // arriving at the one moment where it decides an outcome.
+            //
+            // The bound is the lease term, as above and for the same reason: a
+            // greeting older than the leader's own lease cannot testify to
+            // anything current. And the refusal lasts only while such a peer is
+            // audible — a cluster cannot deadlock behind a node that has gone
+            // away, because a node that has gone away advertises nothing.
+            //
+            // It is inert until somebody sets a policy: with no row anywhere,
+            // every stamp is `None` and nothing supersedes anything.
+            if let Some(newer) = tessari_wire::heard_a_newer_policy(
+                &declared,
+                &published.current(),
+                policy.map(|definition| definition.stamp()),
+                now,
+                tessari_storage::LEASE_TTL,
+            ) {
+                log::info!(
+                    "not standing: a peer runs the failover policy set at epoch {} version {}, \
+                     which supersedes this node's own",
+                    newer.epoch.get(),
+                    newer.version
+                );
                 return;
             }
             // A member whose endpoint will not parse is dropped from the set it
@@ -1257,12 +1293,27 @@ fn greeting(db: &Db) -> Result<tessari_wire::Hello, String> {
     // ranks candidates on this pair, and ranking on `leading` instead would put
     // a follower carrying the newest records below an ex-leader carrying fewer.
     let tail_leadership = store.tail_leadership(own).map_err(|why| why.to_string())?;
+    // Which failover policy this node is running under, read from its own
+    // catalog rather than assembled from the constants it currently times by.
+    // The two are not the same claim: the constants are what this build compiled
+    // with, and the stamp is what the cluster last agreed on — and a node
+    // advertising the first while holding the second would be telling its peers
+    // it is level when it is behind, which is the one thing this field exists to
+    // make visible.
+    //
+    // `None` is the ordinary state today, because nothing sets the row yet.
+    let policy = store
+        .begin()
+        .and_then(|mut transaction| tessari_storage::Catalog::new(&mut transaction).failover())
+        .map_err(|why| why.to_string())?
+        .map(|definition| definition.stamp());
     Ok(tessari_wire::Hello::about(
         &identity,
         leading,
         tail,
         tail_leadership,
         current_as_of,
+        policy,
     ))
 }
 

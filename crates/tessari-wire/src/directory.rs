@@ -407,6 +407,7 @@ mod tests {
             tail: Sequence::new(4096),
             tail_leadership: Epoch::new(1),
             current_as_of: age,
+            policy: None,
         }
     }
 

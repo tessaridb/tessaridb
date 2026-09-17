@@ -58,7 +58,7 @@ pub use definition::{
     VectorDistance, ViewDeclaration,
 };
 pub use edge_kind::EdgeKindDefinition;
-pub use failover::FailoverDefinition;
+pub use failover::{FailoverDefinition, FailoverStamp};
 pub use field::{FieldDefinition, FieldShape};
 pub use grant::GrantDefinition;
 pub use graph::GraphDefinition;

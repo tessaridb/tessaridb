@@ -71,6 +71,52 @@ const ENTITY: &str = "failover";
 /// admits one, and nothing downstream would know which to read.
 const ROW: &str = "policy";
 
+/// Which policy this is, without the policy.
+///
+/// The pair alone, so it can travel where the periods must not. A peer greeting
+/// carries this and never [`FailoverDefinition`]: the periods reach a node
+/// through the log, because the row is a log record, and a second copy of them
+/// on the wire would be a second spelling of the same configuration — which is
+/// what this codebase has already paid for twice. The greeting's job is the
+/// ORDERING, so the ordering is what it carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FailoverStamp {
+    /// The leadership the policy was written under.
+    pub epoch: Epoch,
+    /// Which setting under that leadership this was.
+    pub version: u64,
+}
+
+impl FailoverStamp {
+    /// Whether this stamp supersedes `held`.
+    ///
+    /// The **one** spelling of the ordering, and it lives here rather than on
+    /// the definition because the pair is the smaller thing: a caller holding
+    /// only a stamp — a greeting reader — can ask, and
+    /// [`FailoverDefinition::supersedes`] delegates so that a caller holding the
+    /// whole row asks the same question through the same comparison. Two would
+    /// agree for as long as nobody changed a policy twice inside one leadership,
+    /// and would then disagree in the case the version field exists for, which
+    /// is the shape of a bug nothing reports.
+    #[must_use]
+    pub fn supersedes(&self, held: &Self) -> bool {
+        (self.epoch, self.version) > (held.epoch, held.version)
+    }
+
+    /// Whether this stamp supersedes what a node holds, when a node may hold
+    /// nothing at all.
+    ///
+    /// `None` is a node running [`Failover::DEFAULT`] because nobody has ever
+    /// set a policy, and **any** stamp supersedes it. That is the ordering and
+    /// not a convenience: a node that has never been told is behind a node that
+    /// has, and the alternative — treating *no policy* as unbeatable — would
+    /// make the first policy a cluster ever sets the one nothing can act on.
+    #[must_use]
+    pub fn supersedes_held(&self, held: Option<&Self>) -> bool {
+        held.is_none_or(|held| self.supersedes(held))
+    }
+}
+
 /// A failover policy as the log records it: the periods, the leadership that set
 /// them, and which setting under that leadership this was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,15 +142,22 @@ impl FailoverDefinition {
         RecordId::from(ROW)
     }
 
+    /// Which policy this is, without the periods.
+    #[must_use]
+    pub fn stamp(&self) -> FailoverStamp {
+        FailoverStamp {
+            epoch: self.epoch,
+            version: self.version,
+        }
+    }
+
     /// Whether this policy supersedes `held`.
     ///
-    /// The **one** spelling of the ordering. Two would agree for as long as
-    /// nobody changed a policy twice inside one leadership, and would then
-    /// disagree in the case the version field exists for — which is the shape
-    /// of a bug nothing reports.
+    /// Asked of the stamps, so the comparison has one home. See
+    /// [`FailoverStamp::supersedes`] for why one is the number that matters.
     #[must_use]
     pub fn supersedes(&self, held: &Self) -> bool {
-        (self.epoch, self.version) > (held.epoch, held.version)
+        self.stamp().supersedes(&held.stamp())
     }
 
     /// The value written to the catalog.
