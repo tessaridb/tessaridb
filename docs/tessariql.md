@@ -6953,6 +6953,50 @@ its own — and a follower whose subscription covers the whole database refuse
 nothing new.
 
 
+### Placing a range's leader: `LEADS`
+
+A member row can name the **one range its node stands to lead**, besides the
+store every standing node already stands for:
+
+```
+DEFINE REPLICA b AT 'db-2.internal:9000'
+    NODE '9f2c4e1a70bb43d5a1c6e2f480937d55'
+    ROLES serving, writable, coordinating
+    REPLICATES STORE
+    LEADS SHARD prod.shop.orders 2;
+```
+
+The range is a `NAMESPACE`, a `DATABASE` or a `SHARD`, spelled as `REPLICATES`
+spells it; `LEADS STORE` is refused, and so is a shard the table does not have.
+Several rows naming one range make several **candidates** for it — the way to
+give a range a second node to fail over to.
+
+**A placed range is its own election.** Its candidates stand for it on a line
+of their own — its own epochs and its own lease, separate from the store's —
+so the node leading a shard and the node leading the store can be different
+nodes, and writes to two shards led by two nodes are taken by both at once.
+Every node collects a placed range from whichever node leads it.
+
+**The placement takes the range away from the store's leader at once.** From
+the moment the row commits, the store's leader stops writing that range: a
+write into it is refused **`NoLeadershipYet`** while no candidate has been
+elected, and refused naming the range's leader afterwards — the same refusal a
+write into another node's range always gets. The store's leader is deliberately
+not a fallback for a placed range whose leader is gone, because writing it would
+make two writers of one range. A lapsed lease on a range refuses writes to that
+range alone (**`LeaseSpent`**), and a lapsed lease on the store no longer refuses
+a write whose every range has a live leader of its own.
+
+A transaction that writes ranges led by two different nodes is refused as
+**`SpansLeaderships`**, naming both; write each leader's ranges separately.
+
+`INFO FOR NODE` reports each peer's placement as `leads`, in the clause's own
+spelling, or `null`. **A row carrying `LEADS` cannot be dropped**
+(**`PlacementCannotBeDropped`**): the node committing the drop would hand the
+range back to the store's leader at once, while the range's own leader goes on
+writing under its lease until it hears of the drop.
+
+
 ### How long the cluster waits before it replaces a leader
 
 The periods that decide when a leader counts as gone are a **cluster-wide fact**,
@@ -7400,7 +7444,7 @@ be, because it is confined to the run its fixed values name.
 | **splitting a table that already exists**, and merging shards — `ALTER TABLE … SPLIT AT` | a table is split when it is declared, and its map does not move. A later split retires a shard and creates two, so every node routing by the old map has to be told — a versioned map and a refusal carrying the new one, which is its own piece of work. §4 |
 | **hash** sharding | shards are spans of identities, which is what keeps a span read one walk. Spreading writes by hash forfeits that order and is a second method the map can carry later, not a change to the first. §4 |
 | a read that **gathers** a split table from several nodes | a node answers from what it holds or refuses by name; asking the nodes that hold the rest, and combining a `mean` or a variance correctly across them, is a query engine of its own. §7d |
-| **a leader per shard in production** | a shard is a range a leadership can name, and the write gate honours one — but a running cluster still elects one leader for the whole store. Electing per range needs a ballot that names its range. §4, §7d |
+| **choosing among a range's candidates, and moving a placement** | `LEADS` elects a leader per placed range, but whichever candidate wins keeps it — there is no preference, no rebalancing and no hand-over — and a row naming one range cannot name a second or be dropped. Dropping safely needs every lease on the range to have lapsed first. §7d |
 | a change feed and a record's history **over a split table** | refused with `SpansShardLogs`: its writes are in several logs and nothing orders them against each other yet. §4 |
 | a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |
 | a bucket narrowed by **content type** — `HOLDS image/png` | the store has no content type for a file. A file's record holds its size, its chunk count and when it was written, and nothing anywhere reads the bytes to decide what they are — so the clause could only enforce the caller's own claim about the caller's own bytes, which is the assertion §6a refuses `CREATE`, `UPDATE` and `SET` in order to avoid, wearing a constraint's clothes. The honest version detects the type by reading the leading bytes against a table of signatures, which is real work with a real failure mode of its own: plain text, CSV and SVG have no signature, and a `HOLDS text/plain` that cannot be checked is worse than no clause at all. The ceiling shipped without it because `MAX` compares against a number the store computes itself. §6a |

@@ -222,9 +222,10 @@ follows is what runs today, not a roadmap.
   <!-- absent: measured-covering-budget -->
 - ⛔ **Not there:** sharding that spans machines at run time. A table can be
   split by the identities of its records (`SPLIT AT`), and each shard is logged,
-  replicated and — where a leadership names it — led on its own; but a running
-  cluster still elects one leader for the whole store, a table's shards are
-  fixed when it is declared, and a node holding only some shards refuses a read
+  replicated and — where a member row places it (`LEADS`) — elected and led on
+  its own node, so writes to two shards can be taken by two nodes; but a
+  table's shards are fixed when it is declared, and a node holding only some
+  shards refuses a read
   that needs the rest instead of gathering it — there is no scatter-gather read.
   There is no cross-range transaction either: one writing ranges that two nodes
   lead is refused, naming both.
