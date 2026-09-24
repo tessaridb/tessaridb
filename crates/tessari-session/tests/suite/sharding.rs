@@ -191,3 +191,41 @@ fn a_kind_that_is_not_records_cannot_be_split() {
         "{refused:?}"
     );
 }
+
+#[test]
+fn the_definition_a_report_carries_re_creates_the_same_shards() {
+    // `INFO FOR TABLE` also hands back a script that re-creates the table. A
+    // script that dropped `SPLIT AT` would restore an unsplit table and nothing
+    // anywhere would report the loss, so the round trip is asserted on the map
+    // the re-created table ends up with, not on the text.
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run("DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p';")
+        .unwrap();
+    let described = report(&mut session, "INFO FOR TABLE orders;");
+    let Value::Object(fields) = &described else {
+        panic!("expected an object");
+    };
+    let Some(Value::String(script)) = fields.get("definition") else {
+        panic!("a split table is definable: {described:?}");
+    };
+    let restored = store_with(&script.replace("orders", "restored"));
+    let mut reader = Session::new(&restored);
+    reader
+        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    assert_eq!(
+        shards_of(&report(&mut reader, "INFO FOR TABLE restored;")),
+        shards_of(&described),
+        "the script restored a different map: {script}"
+    );
+}
+
+/// A fresh store holding the tenancy and whatever `script` declares in it.
+fn store_with(script: &str) -> Store {
+    let fresh = store();
+    let mut session = tenancy(&fresh);
+    session.run(script).unwrap();
+    fresh
+}

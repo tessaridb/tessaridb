@@ -241,15 +241,15 @@ impl ShardMap {
 ///
 /// # Errors
 ///
-/// [`Error::SplitOnAKindThatIsNotRecords`] for any kind but a table or a
-/// collection, [`Error::SplitNeedsGeneratedUuid`] for a counter identity, and
+/// [`Error::SplitOnAKindThatIsNotRecords`] for any kind but a table, [`Error::SplitNeedsGeneratedUuid`] for a counter identity, and
 /// [`Error::SplitPointsOutOfOrder`] for points that do not ascend strictly.
 pub(crate) fn declared_for(table: &str, shape: &TableShape) -> Result<Option<ShardMap>> {
     if shape.split.is_empty() {
         return Ok(None);
     }
     let kind = match &shape.kind {
-        TableKind::Table | TableKind::Collection => None,
+        TableKind::Table => None,
+        TableKind::Collection => Some("a collection"),
         TableKind::Bucket(_) => Some("a bucket"),
         TableKind::Edge(_) => Some("an edge table"),
         TableKind::Vector(_) => Some("a vector store"),

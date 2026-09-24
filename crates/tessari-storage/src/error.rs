@@ -640,8 +640,8 @@ pub enum Error {
     /// `SPLIT AT` on a table kind whose rows are not records a caller writes by
     /// identity — an edge, a bucket, a vault, a queue, a view, a series.
     #[error(
-        "table `{table}` is {kind}, and only a table or a collection can be split \
-         by the identities of its records"
+        "table `{table}` is {kind}, and only a table declared with `DEFINE TABLE` \
+         can be split by the identities of its records"
     )]
     SplitOnAKindThatIsNotRecords {
         /// The table being declared.
