@@ -625,6 +625,84 @@ pub fn stands(mine: Roles) -> bool {
     mine.has(Roles::COORDINATING)
 }
 
+/// ADR-0066's rule on one placed range's line (ADR-0082): whether this node can
+/// still hear a leader of `range`, and so must not stand for it.
+///
+/// The same two sources [`heard_a_leader`] reads, each narrowed to the line: a
+/// ballot this node granted somebody else on THAT line, and a peer whose
+/// greeting says it holds a live lease on it. A leader of a placed range is a
+/// node placed on it, so its greeting's line is that range — the one fact the
+/// greeting carries about any line.
+#[must_use]
+pub fn heard_a_leader_on(
+    range: Reach,
+    me: [u8; NODE_ID_LEN],
+    declared: &[ReplicaDefinition],
+    heard: &Directory,
+    granted: Option<Instant>,
+    now: Instant,
+    within: Duration,
+) -> bool {
+    let by_grant = granted.is_some_and(|at| now.saturating_duration_since(at) <= within);
+    by_grant
+        || declared
+            .iter()
+            .filter_map(|peer| heard.at(&peer.endpoint))
+            .any(|seen| {
+                seen.said.node != me
+                    && seen
+                        .said
+                        .line
+                        .is_some_and(|line| line.range == range && line.leading > Epoch::ZERO)
+                    && now.saturating_duration_since(seen.at) <= within
+            })
+}
+
+/// Who to collect a placed range's logs from: the peer whose greeting says it
+/// holds a live lease on that range's line (ADR-0082).
+///
+/// [`upstream`] answers for the store line, and it answers `None` on a node that
+/// may write — the store leader is the origin of the store line and follows
+/// nobody. A placed range has an origin of its own, so every node but its leader
+/// collects it from its leader, the store leader included; without this a
+/// range leader's writes, its leadership row among them, reach nobody.
+///
+/// The greeting and not the leadership row, for [`upstream`]'s reason: the row
+/// arrives through the very collection this chooses the source of.
+#[must_use]
+pub fn leader_of_range(
+    range: Reach,
+    declared: &[ReplicaDefinition],
+    heard: &Directory,
+) -> Option<([u8; NODE_ID_LEN], String)> {
+    declared
+        .iter()
+        .filter_map(|peer| Some((peer.node?, peer, heard.at(&peer.endpoint)?)))
+        .filter(|(node, _, seen)| {
+            seen.said.node == *node
+                && seen
+                    .said
+                    .line
+                    .is_some_and(|line| line.range == range && line.leading > Epoch::ZERO)
+        })
+        .max_by_key(|(_, _, seen)| seen.said.line.map(|line| line.leading))
+        .map(|(node, peer, _)| (node, peer.endpoint.clone()))
+}
+
+/// The range this node is placed to lead, if a member row bound to it says one
+/// (ADR-0082).
+///
+/// The first row bound to `me`, in the catalog's name order — the rule
+/// `Catalog::desired_roles` applies to the same rows, so the row that decides a
+/// node's roles and the row that decides its line are one row.
+#[must_use]
+pub fn stands_for(declared: &[ReplicaDefinition], me: &[u8; NODE_ID_LEN]) -> Option<Reach> {
+    declared
+        .iter()
+        .find(|peer| peer.node.as_ref() == Some(me))
+        .and_then(|peer| peer.leads)
+}
+
 /// The voting members this node puts a ballot to, if it stands at all.
 ///
 /// # Who stands
@@ -853,8 +931,8 @@ mod tests {
 
     use super::{
         Collecting, FailoverStamp, Published, Renewing, ReplicaDefinition, Seed, Stood,
-        bootstrap_from, due_in, every, heard_a_leader, heard_a_newer_policy, names_a_peer, stands,
-        upstream, voters,
+        bootstrap_from, due_in, every, heard_a_leader, heard_a_leader_on, heard_a_newer_policy,
+        leader_of_range, names_a_peer, stands, stands_for, upstream, voters,
     };
     use crate::directory::Directory;
     use crate::grant::Leadership;
@@ -1925,5 +2003,113 @@ mod tests {
             Epoch::new(7),
             "the routing answer lost the leadership the named node published"
         );
+    }
+
+    // ---- G032 S4: a placed range's leader, heard and followed ---------------
+
+    fn shard(n: u32) -> Reach {
+        Reach::Shard(
+            NamespaceId::new(1),
+            tessari_types::DatabaseId::new(1),
+            tessari_types::TableId::new(1),
+            tessari_types::ShardId::new(n),
+        )
+    }
+
+    /// A greeting from `node` standing for `range`, leading it at `leading`.
+    fn on_a_line(node: [u8; NODE_ID_LEN], range: Reach, leading: u64) -> Hello {
+        Hello {
+            node,
+            line: Some(crate::peer::Line {
+                range,
+                leading: Epoch::new(leading),
+                tail: Sequence::new(3),
+                tail_leadership: Epoch::new(1),
+            }),
+            ..following()
+        }
+    }
+
+    #[test]
+    fn a_placed_ranges_leader_is_the_peer_whose_greeting_holds_its_line_live() {
+        let declared = [
+            named("a", "10.0.0.1:9000", NODE),
+            named("b", "10.0.0.2:9000", ANOTHER),
+        ];
+        let heard = greeted(&[
+            ("10.0.0.1:9000", on_a_line(NODE, shard(2), 3)),
+            ("10.0.0.2:9000", on_a_line(ANOTHER, shard(2), 0)),
+        ]);
+        assert_eq!(
+            leader_of_range(shard(2), &declared, &heard),
+            Some((NODE, "10.0.0.1:9000".to_owned()))
+        );
+        assert_eq!(leader_of_range(shard(3), &declared, &heard), None);
+        // A lapsed line alone leads nothing — asked without a live greeting
+        // beside it, which the choice of the highest epoch would absorb.
+        let lapsed = greeted(&[("10.0.0.2:9000", on_a_line(ANOTHER, shard(2), 0))]);
+        assert_eq!(leader_of_range(shard(2), &declared, &lapsed), None);
+        // A greeting under somebody else's row names nobody.
+        let crossed = greeted(&[("10.0.0.2:9000", on_a_line(NODE, shard(2), 3))]);
+        assert_eq!(leader_of_range(shard(2), &declared, &crossed), None);
+    }
+
+    #[test]
+    fn a_node_hears_a_ranges_leader_only_on_that_ranges_line() {
+        let declared = [
+            named("a", "10.0.0.1:9000", NODE),
+            named("me", "10.0.0.2:9000", ANOTHER),
+        ];
+        let now = Instant::now();
+        let within = tessari_storage::LEASE_TTL;
+        let heard = greeted(&[("10.0.0.1:9000", on_a_line(NODE, shard(2), 3))]);
+        assert!(heard_a_leader_on(
+            shard(2),
+            ANOTHER,
+            &declared,
+            &heard,
+            None,
+            now,
+            within
+        ));
+        assert!(!heard_a_leader_on(
+            shard(3),
+            ANOTHER,
+            &declared,
+            &heard,
+            None,
+            now,
+            within
+        ));
+        // Its own greeting is not a leader it can hear.
+        let mine = greeted(&[("10.0.0.2:9000", on_a_line(ANOTHER, shard(2), 3))]);
+        assert!(!heard_a_leader_on(
+            shard(2),
+            ANOTHER,
+            &declared,
+            &mine,
+            None,
+            now,
+            within
+        ));
+        // And a grant to somebody else on the line is heard without a greeting.
+        assert!(heard_a_leader_on(
+            shard(3),
+            ANOTHER,
+            &declared,
+            &Directory::new(),
+            Some(now),
+            now,
+            within
+        ));
+    }
+
+    #[test]
+    fn a_node_stands_for_the_range_its_own_row_places() {
+        let mut placed = named("a", "10.0.0.1:9000", NODE);
+        placed.leads = Some(shard(2));
+        let declared = [placed, named("b", "10.0.0.2:9000", ANOTHER)];
+        assert_eq!(stands_for(&declared, &NODE), Some(shard(2)));
+        assert_eq!(stands_for(&declared, &ANOTHER), None);
     }
 }

@@ -1374,6 +1374,8 @@ fn the_next_node(band: &Band, index: usize) -> usize {
 /// correctly — the comments inside say why each step is where it is, and they
 /// were each bought by a deadlock.
 struct Three {
+    /// Each node's own id, in band order.
+    ids: Vec<[u8; 16]>,
     /// Held so the stores outlive the processes reading them. Dropping this
     /// removes the directory, so it is a field rather than a discarded local.
     _directory: tempfile::TempDir,
@@ -1452,6 +1454,14 @@ fn what_the_nodes_said(band: &[(&str, &str)], logs: &[std::path::PathBuf]) -> St
 /// because a caller that only needs three live nodes should not pay ninety
 /// seconds for a leader it will not use.
 fn a_cluster_of_three(band: &Band) -> Three {
+    a_cluster_declared(band, "", ["", "", ""])
+}
+
+/// [`a_cluster_of_three`], with `preamble` written into each node's declaring
+/// transaction before the membership and `leads[i]` appended to node `i`'s own
+/// row — a placement (ADR-0082) is a clause on the member row, so it is declared
+/// where the row is.
+fn a_cluster_declared(band: &Band, preamble: &str, leads: [&str; 3]) -> Three {
     let directory = tempfile::tempdir().unwrap();
     let minted = Minted::new();
 
@@ -1526,13 +1536,13 @@ fn a_cluster_of_three(band: &Band) -> Three {
         // the condition ADR-0069 put the write gate on. Statement by statement,
         // the second declaration is refused `NoLeadershipYet` by the first.
         // A cluster is declared atomically or not at all.
-        let mut script = String::from("BEGIN;");
+        let mut script = format!("BEGIN; {preamble}");
         for other in 0..band.len() {
             let named = tessari_types::RecordId::Uuid(ids[other]).to_string();
             script.push_str(&format!(
                 " DEFINE REPLICA n{other} AT '{}' NODE '{named}' \
-                  ROLES serving, writable, coordinating REPLICATES STORE;",
-                band[other].1
+                  ROLES serving, writable, coordinating REPLICATES STORE{};",
+                band[other].1, leads[other]
             ));
         }
         script.push_str(" DEFINE NODE ROLES serving, writable, coordinating; COMMIT;");
@@ -1587,6 +1597,7 @@ fn a_cluster_of_three(band: &Band) -> Three {
         _directory: directory,
         running,
         logs,
+        ids,
     }
 }
 
@@ -2771,4 +2782,190 @@ fn spawn_refusing(
         .spawn()
         .unwrap();
     (log, Running(child))
+}
+
+// ---- G032 S4: a leader per placed range, across three processes ----------
+
+/// The shard-per-node cluster's addresses — a band of its own, below the
+/// hand-run floor and clear of every other band in this file.
+const SHARDED: Band = [
+    ("127.0.0.1:47833", "127.0.0.1:47834"),
+    ("127.0.0.1:47835", "127.0.0.1:47836"),
+    ("127.0.0.1:47837", "127.0.0.1:47838"),
+];
+
+/// The failover scenario's addresses, apart from [`SHARDED`] so the two can run
+/// in one invocation.
+const SHARD_FAILOVER: Band = [
+    ("127.0.0.1:47843", "127.0.0.1:47844"),
+    ("127.0.0.1:47845", "127.0.0.1:47846"),
+    ("127.0.0.1:47847", "127.0.0.1:47848"),
+];
+
+/// A split table declared on every node before the membership, so each node's
+/// `LEADS SHARD` resolves in the transaction that declares it.
+const PLACED: &str = "DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
+                      DEFINE DATABASE shop; USE DATABASE shop; \
+                      DEFINE TABLE orders (n int) IDENTITY uuid SPLIT AT 'g', 'p';";
+
+/// A write into `orders` at `key`, which names its shard by its first letter.
+fn into_orders(key: &str) -> String {
+    format!("USE NAMESPACE prod; USE DATABASE shop; CREATE orders:'{key}' = {{ n: 1 }};")
+}
+
+/// Keep writing `key`-prefixed records through `surface` until one is taken, and
+/// answer how long that took — or the last refusal, after `patience`.
+fn until_taken(surface: &str, prefix: &str, patience: Duration) -> Result<Duration, String> {
+    let began = Instant::now();
+    let mut last = String::from("never connected");
+    let mut attempt = 0_u32;
+    while began.elapsed() < patience {
+        attempt = attempt.saturating_add(1);
+        if let Ok(mut client) = Client::connect(surface) {
+            match client.run(&into_orders(&format!("{prefix}{attempt}")), None) {
+                Ok(_) => return Ok(began.elapsed()),
+                Err(why) => last = why.to_string(),
+            }
+        }
+        std::thread::sleep(POLL);
+    }
+    Err(last)
+}
+
+/// Keep writing into another node's shard through `surface` until it is
+/// refused naming `leader` and `at` — or the last answer, after `patience`.
+///
+/// A write is redirected by REFUSAL (ADR-0070): the node refuses rather than
+/// forwarding, and the refusal names the endpoint and the node to expect. The
+/// `Elsewhere` frame is the read router's, so asserting it here would be
+/// asserting a mechanism this path never used.
+fn until_sent_to(
+    surface: &str,
+    key: &str,
+    leader: [u8; 16],
+    at: &str,
+    patience: Duration,
+) -> Result<(), String> {
+    let expected: String = leader.iter().map(|byte| format!("{byte:02x}")).collect();
+    let began = Instant::now();
+    let mut last = String::from("never connected");
+    while began.elapsed() < patience {
+        if let Ok(mut client) = Client::connect(surface) {
+            match client.run(&into_orders(key), None) {
+                Err(why)
+                    if why.to_string().contains(&format!("write it at {at}"))
+                        && why.to_string().contains(&expected) =>
+                {
+                    return Ok(());
+                }
+                other => last = format!("{other:?}"),
+            }
+        }
+        std::thread::sleep(POLL);
+    }
+    Err(last)
+}
+
+#[test]
+#[ignore = "real cadences across three processes — three shard lines have to \
+            be elected and their rows replicated. It is G032 S4.1's own \
+            validation and is run explicitly: cargo test -p tessari-cli --test \
+            serving each_node_leads_its_own_shard -- --ignored"]
+fn each_node_leads_its_own_shard_and_sends_the_others_to_their_leaders() {
+    let cluster = a_cluster_declared(
+        &SHARDED,
+        PLACED,
+        [
+            " LEADS SHARD prod.shop.orders 1",
+            " LEADS SHARD prod.shop.orders 2",
+            " LEADS SHARD prod.shop.orders 3",
+        ],
+    );
+    // Shard 1 begins below 'g', shard 2 at 'g', shard 3 at 'p'.
+    let first = ["a", "h", "x"];
+    for (index, prefix) in first.iter().enumerate() {
+        if let Err(last) = until_taken(SHARDED[index].0, prefix, Duration::from_secs(120)) {
+            panic!(
+                "node {index} never took a write into the shard it is placed on; last: \
+                 {last}{}",
+                what_the_nodes_said(&SHARDED, &cluster.logs)
+            );
+        }
+    }
+    // And each sends a write into another node's shard to that node.
+    for (index, (surface, _)) in SHARDED.iter().enumerate() {
+        for other in (0..SHARDED.len()).filter(|other| *other != index) {
+            let key = format!("{}r{index}{other}", first[other]);
+            if let Err(last) = until_sent_to(
+                surface,
+                &key,
+                cluster.ids[other],
+                SHARDED[other].1,
+                Duration::from_secs(90),
+            ) {
+                panic!(
+                    "node {index} never sent a write into shard {} to node {other}; last: \
+                     {last}{}",
+                    other + 1,
+                    what_the_nodes_said(&SHARDED, &cluster.logs)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "real cadences across three processes — a shard leader is killed and \
+            its second candidate elected. It is G032 S4.2's own validation and is \
+            run explicitly: cargo test -p tessari-cli --test serving \
+            a_shard_placed_on_two_nodes -- --ignored"]
+fn a_shard_placed_on_two_nodes_survives_losing_its_leader() {
+    let mut cluster = a_cluster_declared(
+        &SHARD_FAILOVER,
+        PLACED,
+        [
+            " LEADS SHARD prod.shop.orders 1",
+            " LEADS SHARD prod.shop.orders 2",
+            " LEADS SHARD prod.shop.orders 2",
+        ],
+    );
+    let logs = cluster.logs.clone();
+    if let Err(last) = until_taken(SHARD_FAILOVER[0].0, "a", Duration::from_secs(120)) {
+        panic!(
+            "node 0 never took shard 1; last: {last}{}",
+            what_the_nodes_said(&SHARD_FAILOVER, &logs)
+        );
+    }
+    // Which of the two candidates wins shard 2 is the election's, not the test's.
+    let began = Instant::now();
+    let mut leader = None;
+    while began.elapsed() < Duration::from_secs(120) && leader.is_none() {
+        leader = [1, 2].into_iter().find(|index| {
+            until_taken(SHARD_FAILOVER[*index].0, "h", Duration::from_millis(1)).is_ok()
+        });
+        std::thread::sleep(POLL);
+    }
+    let Some(leader) = leader else {
+        panic!(
+            "neither candidate took shard 2{}",
+            what_the_nodes_said(&SHARD_FAILOVER, &logs)
+        );
+    };
+    let survivor = if leader == 1 { 2 } else { 1 };
+    cluster.running[leader] = None;
+    match until_taken(SHARD_FAILOVER[survivor].0, "i", Duration::from_secs(120)) {
+        Ok(took) => eprintln!("shard 2 moved to node {survivor} in {took:?}"),
+        Err(last) => panic!(
+            "shard 2 lost its leader and its other candidate never took it; last: \
+             {last}{}",
+            what_the_nodes_said(&SHARD_FAILOVER, &logs)
+        ),
+    }
+    // Shard 1 kept its leader throughout.
+    if let Err(last) = until_taken(SHARD_FAILOVER[0].0, "b", Duration::from_secs(60)) {
+        panic!(
+            "shard 1's leader stopped taking writes when shard 2's died; last: {last}{}",
+            what_the_nodes_said(&SHARD_FAILOVER, &logs)
+        );
+    }
 }

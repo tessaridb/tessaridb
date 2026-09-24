@@ -808,6 +808,17 @@ const RAW_FEED: &[&str] = &[
 /// raw feed behind a network-facing type instead of in the process that owns
 /// the store.
 ///
+/// **Two, a second site of the same line.** The placed-range pass (G032,
+/// ADR-0082) collects each placed range from that range's leader and reads its
+/// own tail of that log in the identical line, on the identical ground: the
+/// value leaves only as the `from` of an outgoing ask. Named here because an
+/// exact-line match would otherwise admit the second site without anybody
+/// having looked at it.
+///
+/// **Five.** The greeting's placed line (ADR-0082) says how far this node's own
+/// log of the range it stands for reaches — One's field, for one range: a
+/// `Sequence`, sent only after the peer handshake.
+///
 /// **Three and four.** `Serving::fill` is the peer door's scoped log reader —
 /// the loop behind `Serving::collected` that fills one answer under a byte
 /// budget, reading a page at a time so that a follower's uncapped record count
@@ -837,6 +848,10 @@ const CLASSIFIED: &[(&str, &str)] = &[
     (
         "tessari-cli/src/main.rs",
         "let seed = match store.committed_tail(log) {",
+    ),
+    (
+        "tessari-cli/src/main.rs",
+        "tail: store.committed_tail(log).map_err(|why| why.to_string())?,",
     ),
     (
         "tessari-wire/src/collection.rs",

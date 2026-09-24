@@ -47,12 +47,16 @@ impl Lines {
         }
     }
 
-    /// The epoch this node won `range`'s line at, if it ever did.
+    /// The epoch this node holds `range`'s line at, while its lease is live.
+    ///
+    /// A lapsed line answers `None`, unlike the store line's epoch, which
+    /// outlives its lease: a node knows its own line has lapsed, and a greeting
+    /// advertising a leadership it can no longer write under would keep every
+    /// other candidate for the range from standing (ADR-0066 per line).
     pub(crate) fn epoch_of(&self, range: Reach) -> Option<Epoch> {
-        self.held
-            .lock()
-            .ok()
-            .and_then(|held| held.get(&range).map(|(epoch, _)| *epoch))
+        let held = self.held.lock().ok()?;
+        let (epoch, lease) = held.get(&range)?;
+        (!lease.fenced(Instant::now())).then_some(*epoch)
     }
 
     /// Whether this node may write on `range`'s line now.
@@ -109,6 +113,11 @@ mod tests {
         assert!(matches!(lines.standing(shard(2)), Standing::Spent(_)));
         assert_eq!(lines.standing(shard(3)), Standing::NotHeld);
         assert_eq!(lines.epoch_of(shard(1)), Some(Epoch::new(3)));
+        assert_eq!(
+            lines.epoch_of(shard(2)),
+            None,
+            "a lapsed line leads nothing"
+        );
         assert_eq!(lines.epoch_of(shard(3)), None);
     }
 }

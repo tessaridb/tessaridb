@@ -1139,6 +1139,9 @@ impl Store {
 
     /// The epoch this node holds on `range`'s own line, if a round granted it
     /// one — [`Self::leading`] for the store line.
+    ///
+    /// A placed range's line answers only while its lease is live; the store
+    /// line's epoch keeps its old meaning and outlives the lease.
     #[must_use]
     pub fn leading_of(&self, range: Reach) -> Option<Epoch> {
         if range == Reach::Store {
