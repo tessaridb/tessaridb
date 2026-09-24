@@ -880,6 +880,7 @@ mod tests {
             tail_leadership: Epoch::new(7),
             current_as_of: Some(Duration::from_secs(1)),
             policy: None,
+            line: None,
         }
     }
 

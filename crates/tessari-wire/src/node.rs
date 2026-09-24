@@ -632,6 +632,7 @@ mod tests {
                 tail_leadership: Epoch::new(1),
                 current_as_of: Some(std::time::Duration::from_secs(1)),
                 policy: None,
+                line: None,
             },
             Instant::now(),
         );

@@ -112,7 +112,7 @@ pub use crate::message::{Answer, Correction, Exact, Names, Remark, Request, Sugg
 #[cfg(feature = "server")]
 pub use crate::node::Node;
 #[cfg(feature = "server")]
-pub use crate::peer::{Hello, PeerFrame, Presented, Purpose, admit};
+pub use crate::peer::{Hello, Line, PeerFrame, Presented, Purpose, admit};
 pub use crate::push::{Became, Follow, Happened};
 
 pub use crate::redirect::{Elsewhere, Settlement};

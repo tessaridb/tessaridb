@@ -327,6 +327,7 @@ mod tests {
         let elsewhere = Ballot {
             epoch: Epoch::new(40),
             candidate: [200_u8; NODE_ID_LEN],
+            range: tessari_types::Reach::Store,
         };
         assert_eq!(
             spent.asked(&elsewhere, now, LEVEL, LEVEL),
@@ -392,6 +393,7 @@ mod tests {
             Ask::Ballot(&Ballot {
                 epoch: Epoch::new(2),
                 candidate: THERE,
+                range: tessari_types::Reach::Store,
             }),
         )
         .expect("the door is still up, having been asked nothing");
@@ -497,6 +499,7 @@ mod tests {
             Ask::Ballot(&Ballot {
                 epoch: Epoch::new(7),
                 candidate: THERE,
+                range: tessari_types::Reach::Store,
             }),
         )
         .expect("the third door is still up, having been asked nothing");
@@ -633,6 +636,7 @@ mod tests {
             &Ballot {
                 epoch: Epoch::new(11),
                 candidate: rival,
+                range: tessari_types::Reach::Store,
             },
             Instant::now(),
             LEVEL,

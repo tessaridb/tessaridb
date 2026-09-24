@@ -408,6 +408,7 @@ mod tests {
             tail_leadership: Epoch::new(1),
             current_as_of: age,
             policy: None,
+            line: None,
         }
     }
 
