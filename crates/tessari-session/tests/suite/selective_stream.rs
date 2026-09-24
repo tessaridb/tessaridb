@@ -497,7 +497,7 @@ fn a_namespace_owner_on_a_selective_follower_cannot_read_another_tenancys_creden
     );
 }
 
-/// A narrower subscription is given the definitions above it (Q-771, G031 S3.2).
+/// A narrower subscription is given the definitions above it (Q-788, G031 S3.2).
 ///
 /// Measured before it was repaired: this follower's own reader was refused
 /// `USE NAMESPACE prod` with `OutsideTenancy`, because the namespace's definition
@@ -645,7 +645,7 @@ fn a_shard_follower_refuses_a_read_that_needs_what_it_does_not_hold() {
         },
         Err(error) => panic!("{read}: {error:?}"),
     };
-    // A reference out of a held record into the shard it lacks (Q-775).
+    // A reference out of a held record into the shard it lacks (Q-792).
     assert_eq!(
         refused(&mut reader, "SELECT * FROM ledger:'h' FETCH peer;"),
         ("ledger".to_owned(), vec![1])

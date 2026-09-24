@@ -233,11 +233,15 @@ fn erase_statement(statement: &mut Statement) {
             name,
             roles,
             replicates,
+            leads,
             ..
         } => {
             erase_name(name);
             erase_names(roles.as_deref_mut());
             if let Some(reach) = replicates {
+                erase_reach(reach);
+            }
+            if let Some(reach) = leads {
                 erase_reach(reach);
             }
         }

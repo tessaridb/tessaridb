@@ -2029,6 +2029,7 @@ fn declare_peer(store: &Store, name: &str, node: [u8; tessari_encoding::NODE_ID_
                 .and(tessari_encoding::Roles::COORDINATING),
             Some(node),
             Some(Reach::Store),
+            None,
         )
         .unwrap();
     transaction.commit().unwrap();
@@ -2148,6 +2149,7 @@ fn a_peer_name_is_free_again_once_the_row_it_identifies_is_dropped() {
         tessari_encoding::Roles::SERVING,
         Some([2_u8; tessari_encoding::NODE_ID_LEN]),
         Some(Reach::Store),
+        None,
     );
     transaction.rollback();
     assert!(

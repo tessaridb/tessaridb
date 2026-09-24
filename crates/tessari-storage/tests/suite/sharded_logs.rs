@@ -14,7 +14,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tessari_encoding::{NODE_ID_LEN, Roles};
 use tessari_kv::{KvBackend, MemoryBackend};
@@ -134,6 +134,7 @@ impl Split {
                     Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING),
                     Some(node),
                     None,
+                    None,
                 )
                 .unwrap();
         }
@@ -146,6 +147,57 @@ impl Split {
         transaction.commit().unwrap();
         self.store
             .hold(Epoch::new(4), Lease::taken_at(Instant::now(), LEASE_TTL));
+    }
+}
+
+impl Split {
+    /// Make this store one of a cluster with `placed` ranges each placed on the
+    /// node beside it and `rows` recorded as leaderships, in one transaction —
+    /// and hold nothing: each test installs exactly the lines it is about.
+    fn placed(
+        &self,
+        placed: &[(Reach, [u8; NODE_ID_LEN])],
+        rows: &[(Reach, [u8; NODE_ID_LEN], u64)],
+    ) {
+        let me = self.store.node_identity().unwrap().id;
+        let own = |node: [u8; NODE_ID_LEN]| if node == ME { me } else { node };
+        let mut transaction = self.store.begin().unwrap();
+        let mut catalog = Catalog::new(&mut transaction);
+        let writer = Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING);
+        for (name, node, endpoint) in [
+            ("them", THEM, "10.0.0.2:9081"),
+            ("third", THIRD, "10.0.0.3:9081"),
+        ] {
+            catalog
+                .create_replica(name, endpoint, writer, Some(node), None, None)
+                .unwrap();
+        }
+        for (index, (range, node)) in placed.iter().enumerate() {
+            catalog
+                .create_replica(
+                    &format!("placed{index}"),
+                    "10.0.0.9:9081",
+                    writer,
+                    Some(own(*node)),
+                    None,
+                    Some(*range),
+                )
+                .unwrap();
+        }
+        for (range, node, epoch) in rows {
+            catalog
+                .record_leadership(*range, own(*node), Epoch::new(*epoch))
+                .unwrap();
+        }
+        transaction.commit().unwrap();
+    }
+
+    fn live() -> Lease {
+        Lease::taken_at(Instant::now(), LEASE_TTL)
+    }
+
+    fn spent() -> Lease {
+        Lease::taken(Duration::ZERO)
     }
 }
 
@@ -287,7 +339,7 @@ fn two_other_leaders_are_both_named_and_neither_is_a_redirect() {
 
 #[test]
 fn two_namespaces_led_by_two_nodes_are_refused_the_same_way() {
-    // Q-772 at the grain it was found at: the redirect this replaced sent the
+    // Q-789 at the grain it was found at: the redirect this replaced sent the
     // client to a node that would have refused the same transaction back.
     let split = Split::new();
     let mut transaction = split.store.begin().unwrap();
@@ -321,6 +373,105 @@ fn ranges_all_led_by_one_other_node_are_still_a_redirect() {
     let refused = split
         .write(&[split.order("h"), split.order("x")])
         .unwrap_err();
+    assert!(
+        matches!(refused, Error::WriteIsElsewhere { node, .. } if node == THEM),
+        "{refused:?}"
+    );
+}
+
+// ---- G032 S2.1: a placed range is carved out of the store line ------------
+
+#[test]
+fn a_placed_shard_is_carved_out_of_the_store_line() {
+    let split = Split::new();
+    split.placed(&[(split.shard(2), THEM)], &[]);
+    split.store.hold(Epoch::new(4), Split::live());
+    // The store line still writes everything the placement did not carve out.
+    split.write(&[split.order("a")]).unwrap();
+    split.write(&[split.note("n")]).unwrap();
+    // And not the placed shard, although its lease is live: nobody leads it yet.
+    let refused = split.write(&[split.order("h")]).unwrap_err();
+    assert!(matches!(refused, Error::NoLeadershipYet), "{refused:?}");
+}
+
+#[test]
+fn a_placed_shard_with_a_leader_redirects_the_store_leader_to_it() {
+    let split = Split::new();
+    split.placed(&[(split.shard(2), THEM)], &[(split.shard(2), THEM, 1)]);
+    split.store.hold(Epoch::new(4), Split::live());
+    let refused = split.write(&[split.order("h")]).unwrap_err();
+    assert!(
+        matches!(refused, Error::WriteIsElsewhere { node, .. } if node == THEM),
+        "{refused:?}"
+    );
+}
+
+// ---- G032 S2.2: a line admits its own range and only that -----------------
+
+#[test]
+fn a_node_holding_only_a_shards_line_writes_that_shard_and_nothing_else() {
+    let split = Split::new();
+    split.placed(&[(split.shard(2), ME)], &[]);
+    split
+        .store
+        .hold_range(split.shard(2), Epoch::new(1), Split::live());
+    split.write(&[split.order("h")]).unwrap();
+    for elsewhere in [split.order("a"), split.note("n")] {
+        let refused = split.write(&[elsewhere]).unwrap_err();
+        assert!(matches!(refused, Error::NoLeadershipYet), "{refused:?}");
+    }
+}
+
+#[test]
+fn a_spent_line_refuses_its_own_range_and_only_that() {
+    let split = Split::new();
+    split.placed(&[(split.shard(2), ME)], &[]);
+    split.store.hold(Epoch::new(4), Split::live());
+    split
+        .store
+        .hold_range(split.shard(2), Epoch::new(1), Split::spent());
+    let refused = split.write(&[split.order("h")]).unwrap_err();
+    assert!(matches!(refused, Error::LeaseSpent { .. }), "{refused:?}");
+    split.write(&[split.order("a")]).unwrap();
+}
+
+#[test]
+fn a_spent_store_lease_does_not_refuse_a_write_its_own_line_covers() {
+    let split = Split::new();
+    split.placed(&[(split.shard(2), ME)], &[]);
+    split.store.hold(Epoch::new(4), Split::spent());
+    split
+        .store
+        .hold_range(split.shard(2), Epoch::new(1), Split::live());
+    split.write(&[split.order("h")]).unwrap();
+    let refused = split.write(&[split.order("a")]).unwrap_err();
+    assert!(matches!(refused, Error::LeaseSpent { .. }), "{refused:?}");
+}
+
+// ---- G032 S2.3: supersession is per line --------------------------------
+
+#[test]
+fn a_rows_epoch_is_superseded_by_this_nodes_epoch_on_its_own_line() {
+    let split = Split::new();
+    split.placed(&[(split.shard(2), ME)], &[(split.shard(2), THEM, 3)]);
+    split.store.hold(Epoch::new(1), Split::live());
+    split
+        .store
+        .hold_range(split.shard(2), Epoch::new(5), Split::live());
+    split.write(&[split.order("h")]).unwrap();
+}
+
+#[test]
+fn a_store_epoch_never_supersedes_a_placed_ranges_row() {
+    // Two lines are two counters: a store epoch of 9 says nothing about who
+    // won shard 2's line at 3, and this node's own line there is only at 2.
+    let split = Split::new();
+    split.placed(&[(split.shard(2), ME)], &[(split.shard(2), THEM, 3)]);
+    split.store.hold(Epoch::new(9), Split::live());
+    split
+        .store
+        .hold_range(split.shard(2), Epoch::new(2), Split::live());
+    let refused = split.write(&[split.order("h")]).unwrap_err();
     assert!(
         matches!(refused, Error::WriteIsElsewhere { node, .. } if node == THEM),
         "{refused:?}"

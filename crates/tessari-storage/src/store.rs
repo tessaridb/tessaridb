@@ -227,6 +227,11 @@ pub struct Store {
     /// from epoch zero, exactly as `None` from the lease is a different
     /// statement from a spent one.
     leading: Arc<std::sync::Mutex<Option<Epoch>>>,
+    /// The placed ranges this node leads on lines of their own (ADR-0082).
+    ///
+    /// Beside the store line's lease and epoch rather than replacing them, so a
+    /// store with no placement never touches it and behaves as it always did.
+    lines: Arc<crate::lines::Lines>,
     /// When this leader's own log reached each position.
     ///
     /// Shared with every handle for the reason the registries above it are, and
@@ -280,6 +285,7 @@ impl Store {
             collections: Arc::new(crate::collections::Collections::default()),
             lease: Arc::new(crate::lease::Held::default()),
             leading: Arc::new(std::sync::Mutex::new(None)),
+            lines: Arc::new(crate::lines::Lines::default()),
             tailmarks: Arc::new(crate::tailmarks::TailMarks::default()),
         };
         // Last, because it reads the catalog: the format is settled and the
@@ -428,7 +434,7 @@ impl Store {
     ///
     /// Returns the substrate's failure, and a decoding failure when a stored
     /// membership row cannot be read.
-    fn in_a_cluster(&self, me: &[u8; NODE_ID_LEN]) -> Result<bool> {
+    pub(crate) fn in_a_cluster(&self, me: &[u8; NODE_ID_LEN]) -> Result<bool> {
         let mut transaction = self.begin()?;
         let declared = crate::catalog::Catalog::new(&mut transaction).replicas()?;
         Ok(crate::catalog::another_node_may_write(&declared, me))
@@ -500,12 +506,15 @@ impl Store {
     /// epoch at all. So nothing a caller asserts about itself in the frame being
     /// judged can reach this comparison.
     ///
-    /// # One epoch, for as long as a round is store-wide
+    /// # One epoch per line, compared on the row's own line
     ///
-    /// A grant in this build covers the whole store, so a node holds exactly one
-    /// epoch and comparing it against a per-range row is the comparison the
-    /// design intends. When a round can grant one range at a time, this becomes
-    /// a per-range comparison with it.
+    /// A placed range is a line of its own (ADR-0082), so a row's epoch is
+    /// compared with this node's epoch on the line the row's range is governed
+    /// by — the store line's for every unplaced range, which is every range of
+    /// a store with no placement and therefore the comparison this always made.
+    ///
+    /// Answers the placed ranges it read, so the caller judges each written
+    /// range's line against the same placement the rows were judged against.
     ///
     /// # Errors
     ///
@@ -516,14 +525,22 @@ impl Store {
         &self,
         ranges: &BTreeSet<Reach>,
         me: &[u8; NODE_ID_LEN],
-    ) -> Result<()> {
+    ) -> Result<BTreeSet<Reach>> {
         let mut transaction = self.begin()?;
-        let held = crate::catalog::Catalog::new(&mut transaction).leaderships()?;
+        let catalog = crate::catalog::Catalog::new(&mut transaction);
+        let held = catalog.leaderships()?;
+        // The placement, read in the same transaction as the rows it carves:
+        // the line a row belongs to and the line a write is judged on are one
+        // question asked of one catalog (ADR-0082).
+        let placed: BTreeSet<Reach> = catalog
+            .replicas()?
+            .into_iter()
+            .filter_map(|peer| peer.leads)
+            .collect();
         drop(transaction);
-        let mine = self.leading();
         // Every other node leading a range this writes, and whether this node
         // leads one too. One other leader and none of our own is a redirect;
-        // anything more is a transaction no node may commit (G031 S2.4, Q-772).
+        // anything more is a transaction no node may commit (G031 S2.4, Q-789).
         // The first range led elsewhere is not enough to answer: redirecting
         // there sends the client to a node that refuses the rest back.
         let mut elsewhere: Vec<crate::catalog::LeadershipDefinition> = Vec::new();
@@ -532,6 +549,10 @@ impl Store {
             let Some(leader) = crate::catalog::covering(&held, *range) else {
                 continue;
             };
+            // Per line (ADR-0082): a row's epoch is on the line its range is
+            // governed by, and only this node's epoch on that same line orders
+            // against it. Two lines' epochs are two unrelated counters.
+            let mine = self.leading_of(crate::catalog::governing(&placed, leader.range));
             if leader.node == *me || mine.is_some_and(|mine| mine > leader.epoch) {
                 leads_one_here = true;
                 continue;
@@ -566,7 +587,7 @@ impl Store {
             return Err(Error::SpansLeaderships { nodes });
         }
         let Some(elsewhere) = elsewhere.pop() else {
-            return Ok(());
+            return Ok(placed);
         };
         let mut transaction = self.begin()?;
         let declared = crate::catalog::Catalog::new(&mut transaction).replicas()?;
@@ -1101,6 +1122,40 @@ impl Store {
             // it is the one a node that never campaigned gives anyway.
             Err(_) => None,
         }
+    }
+
+    /// Hold a lease a majority granted on `range`'s own line (ADR-0082).
+    ///
+    /// The store line is [`Self::hold`]; this is every other line, and the two
+    /// are one call so a caller campaigning for several ranges does not choose
+    /// the seam by hand.
+    pub fn hold_range(&self, range: Reach, epoch: Epoch, lease: crate::lease::Lease) {
+        if range == Reach::Store {
+            self.hold(epoch, lease);
+        } else {
+            self.lines.hold(range, epoch, lease);
+        }
+    }
+
+    /// The epoch this node holds on `range`'s own line, if a round granted it
+    /// one — [`Self::leading`] for the store line.
+    #[must_use]
+    pub fn leading_of(&self, range: Reach) -> Option<Epoch> {
+        if range == Reach::Store {
+            self.leading()
+        } else {
+            self.lines.epoch_of(range)
+        }
+    }
+
+    /// Where this node stands on a placed range's line.
+    pub(crate) fn line_standing(&self, range: Reach) -> crate::lines::Standing {
+        self.lines.standing(range)
+    }
+
+    /// Whether this node holds any placed range's line.
+    pub(crate) fn holds_lines(&self) -> bool {
+        self.lines.any()
     }
 
     /// How long this node's lease fence has been closed, if it is.

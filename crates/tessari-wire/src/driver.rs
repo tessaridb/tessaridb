@@ -936,6 +936,7 @@ mod tests {
             // the row, and a value here that mattered would mean the follower
             // was deciding its own subscription.
             replicates: None,
+            leads: None,
         }
     }
 

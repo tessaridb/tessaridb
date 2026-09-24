@@ -1419,6 +1419,15 @@ fn described_replica(replica: &ReplicaDefinition, catalog: &Catalog<'_, '_>) -> 
                 Some(reach) => Value::from(spelled_reach(reach, catalog)?.as_str()),
             },
         ),
+        // The placement (ADR-0082), in the spelling `LEADS` takes, so the answer
+        // to *which node stands for which range* is on the row that decides it.
+        (
+            "leads".to_owned(),
+            match replica.leads {
+                None => Value::Null,
+                Some(reach) => Value::from(spelled_reach(reach, catalog)?.as_str()),
+            },
+        ),
     ])))
 }
 

@@ -240,6 +240,43 @@ impl Transaction<'_> {
         Ok(true)
     }
 
+    /// Refuse a placed range this node may not write on its own line, and
+    /// answer the ranges left to the store line (ADR-0082).
+    ///
+    /// A live line admits; a spent one is `LeaseSpent` for that range alone; no
+    /// line at all is `NoLeadershipYet` in a cluster — unless the range admits
+    /// two writers, by the same predicate the store line's question consults.
+    /// The store leader is deliberately NOT a fallback for a placed range with
+    /// no live leader: the placement carved it out, and writing it anyway is
+    /// the two-writer window the carving exists to close.
+    fn admitted_on_their_lines(
+        &self,
+        ranges: &BTreeSet<Reach>,
+        placed: &BTreeSet<Reach>,
+        me: &[u8; tessari_encoding::NODE_ID_LEN],
+    ) -> Result<BTreeSet<Reach>> {
+        let mut on_the_store = BTreeSet::new();
+        for range in ranges {
+            let line = crate::catalog::governing(placed, *range);
+            if line == Reach::Store {
+                on_the_store.insert(*range);
+                continue;
+            }
+            match self.store.line_standing(line) {
+                crate::lines::Standing::Live => {}
+                crate::lines::Standing::Spent(for_the_last) => {
+                    return Err(Error::LeaseSpent { for_the_last });
+                }
+                crate::lines::Standing::NotHeld => {
+                    if self.store.in_a_cluster(me)? && !self.store.admits_two_writers(*range)? {
+                        return Err(Error::NoLeadershipYet);
+                    }
+                }
+            }
+        }
+        Ok(on_the_store)
+    }
+
     fn ranges_written(&self, placement: &Placement) -> Result<BTreeSet<Reach>> {
         self.writes
             .iter()
@@ -333,8 +370,15 @@ impl Transaction<'_> {
         // it — this function's own header is the argument, and a fence a
         // `VERIFY` cannot see is a refusal an operator meets for the first time
         // in production.
-        if let Some(for_the_last) = self.store.lease_spent() {
-            return Err(Error::LeaseSpent { for_the_last });
+        //
+        // Only while this node holds no placed range's line (ADR-0082): once it
+        // does, a spent store lease refuses the ranges the store line governs
+        // and not the ones a live line of their own does, so the question waits
+        // below until the ranges are known.
+        if !self.store.holds_lines() {
+            if let Some(for_the_last) = self.store.lease_spent() {
+                return Err(Error::LeaseSpent { for_the_last });
+            }
         }
         // And before the store-wide question, because the store-wide question
         // returns early on a live lease and would therefore never reach a leader
@@ -349,7 +393,12 @@ impl Transaction<'_> {
         // was.
         let placement = self.placement()?;
         let ranges = self.ranges_written(&placement)?;
-        self.store.refuse_if_led_elsewhere(&ranges, &identity.id)?;
+        let placed = self.store.refuse_if_led_elsewhere(&ranges, &identity.id)?;
+        // ADR-0082: each written range is judged on the line that governs it. A
+        // placed range is admitted only under a live lease on its own line, and
+        // what is left is the store line's, judged exactly as it always was. A
+        // store with no placement puts every range on the store line.
+        let on_the_store = self.admitted_on_their_lines(&ranges, &placed, &identity.id)?;
         // And the other half of *the effective role is the lease* (ADR-0064):
         // a node that takes part in deciding writes under a leadership and at
         // no other time. Asked here rather than only at the statement layer for
@@ -362,8 +411,15 @@ impl Transaction<'_> {
         // `awaiting` returns on an in-memory lease read, so a node that holds a
         // leadership never reaches the catalog lookup, and the exemption is paid
         // for only by a commit that was otherwise about to be refused.
-        if self.store.awaiting(&identity.id)? && !self.every_range_admits_two_writers(&ranges)? {
-            return Err(Error::NoLeadershipYet);
+        if !on_the_store.is_empty() {
+            if let Some(for_the_last) = self.store.lease_spent() {
+                return Err(Error::LeaseSpent { for_the_last });
+            }
+            if self.store.awaiting(&identity.id)?
+                && !self.every_range_admits_two_writers(&on_the_store)?
+            {
+                return Err(Error::NoLeadershipYet);
+            }
         }
         let record = self.log_record(identity.id, &placement)?;
         // The log this commit belongs to, derived from the record before the

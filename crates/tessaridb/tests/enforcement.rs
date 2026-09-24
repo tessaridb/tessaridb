@@ -622,7 +622,21 @@ const TABLES: &[Table] = &[
         // classification says the session gates them, and `RAW_FEED` is what
         // fails the day a serving surface reaches past the session to call them
         // directly.
-        expected: 40,
+        //
+        // 41 and 42 since a placed range became an election line of its own
+        // (G032, ADR-0082): `Store::hold_range` and `Store::leading_of`.
+        // Classified **not a data path**, on the ground `hold` and `leading`
+        // beside them already stand on: the first installs a lease a majority
+        // granted into this process's memory and writes no record; the second
+        // answers the epoch this node holds on one line, which the node publishes
+        // in every greeting it sends. Neither reads or writes a record, a catalog
+        // entry or a grant, and the only caller of the first is the campaign.
+        //
+        // Their re-classification trigger: a caller that can install a lease the
+        // campaign did not win. A lease is admission to write, so the day
+        // anything reachable from a session can call `hold_range`, the write
+        // gate's per-line fence is only as strong as that caller.
+        expected: 42,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -699,7 +713,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // `Store::log_records_newest_first`, both classified in the block above and
     // both added to `RAW_FEED`, so a serving surface reaching past the session
     // to call either one fails the test beside this (W372, Q-739).
-    assert_eq!(total, 93, "the counted tables no longer sum to 93");
+    assert_eq!(total, 95, "the counted tables no longer sum to 95");
 }
 
 /// Every `.rs` file under a directory.

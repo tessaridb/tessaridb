@@ -35,6 +35,7 @@ mod followers;
 mod graph;
 mod index;
 mod lease;
+mod lines;
 mod log;
 mod node;
 mod pruning;

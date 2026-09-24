@@ -595,6 +595,13 @@ pub enum StatementKind {
         /// read grant over the addresses it names, and two spellings of one
         /// thing are two things that can come to disagree.
         replicates: Option<ReachRef>,
+        /// The range that peer stands to lead, when the declaration placed one
+        /// (`LEADS`).
+        ///
+        /// Never the store — every node that stands at all stands for the store
+        /// already — so the parser takes `NAMESPACE`, `DATABASE` and `SHARD`
+        /// only. `None` is the row as it has always been.
+        leads: Option<ReachRef>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },

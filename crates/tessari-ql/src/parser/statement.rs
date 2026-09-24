@@ -1473,12 +1473,33 @@ impl Parser<'_> {
         } else {
             None
         };
+        // ADR-0082. The same reader as `REPLICATES`, less `STORE`: the store is
+        // what every standing node already stands for, so a placement naming it
+        // would carve the whole store out of itself.
+        let leads = if self.eat_word("leads") {
+            if self.eat_word("shard") {
+                Some(self.shard_reach()?)
+            } else {
+                match self.reach_keyword()? {
+                    Some(ReachRef::Store) | None => {
+                        return Err(self.error_here(
+                            "`NAMESPACE`, `DATABASE` or `SHARD` after `LEADS` \
+                             (every standing node already stands for the store)",
+                        ));
+                    }
+                    Some(reach) => Some(reach),
+                }
+            }
+        } else {
+            None
+        };
         Ok(StatementKind::DefineReplica {
             name,
             endpoint,
             roles,
             node,
             replicates,
+            leads,
             if_not_exists,
         })
     }

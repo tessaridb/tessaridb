@@ -256,6 +256,11 @@ fn a_split_tables_record_history_is_refused_rather_than_answered_from_one_log() 
 
 /// What `INFO FOR NODE` says a peer is subscribed to, by peer name.
 fn subscribed(session: &mut Session<'_>) -> Vec<(String, Option<String>)> {
+    peer_field(session, "replicates")
+}
+
+/// Every peer's name beside one text field of its `INFO FOR NODE` row.
+fn peer_field(session: &mut Session<'_>, field: &str) -> Vec<(String, Option<String>)> {
     let Value::Object(report) = report(session, "INFO FOR NODE;") else {
         panic!("not a report");
     };
@@ -275,7 +280,7 @@ fn subscribed(session: &mut Session<'_>) -> Vec<(String, Option<String>)> {
                 Some(Value::String(text)) => Some(text.clone()),
                 _ => None,
             };
-            (text("name").unwrap_or_default(), text("replicates"))
+            (text("name").unwrap_or_default(), text(field))
         })
         .collect()
 }
@@ -346,5 +351,76 @@ fn a_graphs_node_table_cannot_be_split() {
             }
         ),
         "{refused:?}"
+    );
+}
+
+// ---- G032 S1.1: placement -------------------------------------------------
+
+#[test]
+fn a_peer_placed_to_lead_a_range_reports_it_in_the_clauses_spelling() {
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run(
+            "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p'; \
+             DEFINE REPLICA b AT 'b:9001' NODE '9f2c4e1a70bb43d5a1c6e2f480937d55' \
+                 LEADS SHARD prod.shop.orders 2; \
+             DEFINE REPLICA c AT 'c:9001' NODE '1f2c4e1a70bb43d5a1c6e2f480937d55' \
+                 REPLICATES STORE LEADS DATABASE prod.shop; \
+             DEFINE REPLICA d AT 'd:9001';",
+        )
+        .unwrap();
+    assert_eq!(
+        peer_field(&mut session, "leads"),
+        vec![
+            ("b".to_owned(), Some("SHARD prod.shop.orders 2".to_owned())),
+            ("c".to_owned(), Some("DATABASE prod.shop".to_owned())),
+            ("d".to_owned(), None),
+        ]
+    );
+}
+
+#[test]
+fn a_placement_on_a_shard_the_table_lacks_is_refused() {
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run("DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g';")
+        .unwrap();
+    match session.run("DEFINE REPLICA b AT 'b:9001' LEADS SHARD prod.shop.orders 3;") {
+        Err(Error::Unknown { entity, name, .. }) => {
+            assert_eq!((entity, name.as_str()), ("shard", "prod.shop.orders 3"));
+        }
+        other => panic!("expected an unknown shard, got {other:?}"),
+    }
+    assert!(
+        peer_field(&mut session, "leads").is_empty(),
+        "nothing was declared"
+    );
+}
+
+#[test]
+fn a_row_that_places_a_leader_cannot_be_dropped_and_one_that_does_not_can() {
+    // Dropping it would hand the range back to the store line on this node at
+    // once, while the range's own leader keeps writing under its lease until
+    // the drop reaches it (ADR-0082).
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run(
+            "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g'; \
+             DEFINE REPLICA b AT 'b:9001' LEADS SHARD prod.shop.orders 1; \
+             DEFINE REPLICA d AT 'd:9001';",
+        )
+        .unwrap();
+    let refused = refusal(&mut session, "DROP REPLICA b;");
+    assert!(
+        matches!(refused, tessari_storage::Error::PlacementCannotBeDropped { ref name } if name == "b"),
+        "{refused:?}"
+    );
+    session.run("DROP REPLICA d;").unwrap();
+    assert_eq!(
+        peer_field(&mut session, "leads"),
+        vec![("b".to_owned(), Some("SHARD prod.shop.orders 1".to_owned()))]
     );
 }

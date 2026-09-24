@@ -68,7 +68,7 @@ pub(crate) enum Carried {
     Within(Reach),
     /// It DEFINES something at this reach — a namespace, a database, a table, a
     /// name, a leadership — and travels to a subscription inside it as well as
-    /// to one containing it (Q-771, G031 S3.2).
+    /// to one containing it (Q-788, G031 S3.2).
     ///
     /// Definitions travel down the containment order and data does not travel
     /// sideways. A subscriber to one database needs the namespace's definition
@@ -579,7 +579,7 @@ mod tests {
 
     /// A definition travels to a subscription inside its level as well as one
     /// containing it; data travels only to one containing it; and neither
-    /// travels sideways (Q-771, G031 S3.2).
+    /// travels sideways (Q-788, G031 S3.2).
     #[test]
     fn a_definition_travels_down_and_data_does_not_travel_sideways() {
         let namespace = Reach::Namespace(PROD);

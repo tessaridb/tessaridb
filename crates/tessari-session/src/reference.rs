@@ -136,7 +136,7 @@ impl Session<'_> {
         let mut visible: BTreeMap<TableId, crate::redact::Visible> = BTreeMap::new();
         // A reference into a table this node holds only part of, landing in a
         // part it lacks, would resolve to nothing and read as a record that is
-        // not there (G031 S3.3, Q-775).
+        // not there (G031 S3.3, Q-792).
         for (table, id) in wanted {
             self.refuse_reading_a_part(transaction, *table, crate::evaluate::Part::Record(id))?;
         }

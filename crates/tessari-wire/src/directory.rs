@@ -374,6 +374,7 @@ mod tests {
             // different question from what those peers may collect, so these
             // rows deliberately grant nothing.
             replicates: None,
+            leads: None,
         }
     }
 

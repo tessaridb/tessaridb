@@ -323,7 +323,7 @@ pub enum Error {
     },
 
     /// A transaction writes ranges that different nodes lead, so no node may
-    /// commit it (G031 S2.4, ADR-0080, Q-772).
+    /// commit it (G031 S2.4, ADR-0080, Q-789).
     ///
     /// Not a redirect: every node named here would refuse the same transaction
     /// back, because each leads only part of what it writes. A transaction is
@@ -345,6 +345,20 @@ pub enum Error {
         /// Every node leading a range this transaction writes, this one
         /// included when it leads one of them.
         nodes: Vec<[u8; tessari_encoding::NODE_ID_LEN]>,
+    },
+
+    /// A peer row that places a leader (`LEADS`) was asked to be dropped.
+    ///
+    /// Refused rather than taken: the node committing the drop would hand the
+    /// range back to the store line at once while the range's own leader goes
+    /// on writing under its lease until the drop reaches it (ADR-0082).
+    #[error(
+        "peer `{name}` leads a range (`LEADS`), and dropping a placement needs every lease on \
+         that range to have lapsed first, which this build cannot establish"
+    )]
+    PlacementCannotBeDropped {
+        /// The peer's name.
+        name: String,
     },
 
     /// A write met a record whose stored versions disagree with each other.
@@ -839,6 +853,7 @@ impl Error {
             | Self::RecordsRefused { .. }
             | Self::IdSpaceExhausted { .. }
             | Self::SpansLeaderships { .. }
+            | Self::PlacementCannotBeDropped { .. }
             | Self::SplitNeedsGeneratedUuid { .. }
             | Self::SplitPointsOutOfOrder { .. }
             | Self::SplitOnAKindThatIsNotRecords { .. }

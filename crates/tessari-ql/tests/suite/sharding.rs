@@ -115,3 +115,37 @@ fn a_subscription_names_one_shard_fully_qualified() {
         assert!(parse(refused).is_err(), "{refused}");
     }
 }
+
+#[test]
+fn a_placement_names_a_namespace_a_database_or_a_shard_and_never_the_store() {
+    let parsed = parse(
+        "DEFINE REPLICA b AT 'b:9001' REPLICATES STORE LEADS SHARD prod.shop.orders 2; \
+         DEFINE REPLICA c AT 'c:9001' LEADS NAMESPACE prod; \
+         DEFINE REPLICA d AT 'd:9001' LEADS DATABASE prod.shop;",
+    )
+    .unwrap();
+    let leads: Vec<_> = parsed
+        .statements
+        .iter()
+        .map(|statement| match &statement.kind {
+            StatementKind::DefineReplica { leads, .. } => leads.clone(),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert!(
+        matches!(&leads[0], Some(tessari_ql::ReachRef::Shard { table, shard: 2, .. }) if table.text == "orders"),
+        "{leads:?}"
+    );
+    assert!(
+        matches!(&leads[1], Some(tessari_ql::ReachRef::Namespace(name)) if name.text == "prod")
+    );
+    assert!(matches!(&leads[2], Some(tessari_ql::ReachRef::Database(_))));
+    for refused in [
+        "DEFINE REPLICA p AT 'b:9001' LEADS STORE;",
+        "DEFINE REPLICA p AT 'b:9001' LEADS;",
+    ] {
+        let error = parse(refused).unwrap_err().to_string();
+        assert!(error.contains("after `LEADS`"), "{refused}: {error}");
+    }
+    assert!(parse("DEFINE REPLICA p AT 'b:9001' LEADS SHARD prod.shop.orders 0;").is_err());
+}

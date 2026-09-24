@@ -513,6 +513,7 @@ fn joined() -> Store {
             Roles::SERVING.and(Roles::WRITABLE),
             Some([9; NODE_ID_LEN]),
             None,
+            None,
         )
         .unwrap();
     transaction.commit().unwrap();
@@ -576,6 +577,7 @@ fn following() -> Store {
             "10.0.0.3:9081",
             Roles::SERVING,
             Some([7; NODE_ID_LEN]),
+            None,
             None,
         )
         .unwrap();
@@ -700,6 +702,7 @@ fn a_cluster_is_declared_in_one_transaction_because_the_gate_shuts_on_the_first_
             Roles::SERVING.and(Roles::WRITABLE),
             Some([1; NODE_ID_LEN]),
             None,
+            None,
         )
         .unwrap();
     first
@@ -712,6 +715,7 @@ fn a_cluster_is_declared_in_one_transaction_because_the_gate_shuts_on_the_first_
             "b:9081",
             Roles::SERVING.and(Roles::WRITABLE),
             Some([2; NODE_ID_LEN]),
+            None,
             None,
         )
         .unwrap();
@@ -730,6 +734,7 @@ fn a_cluster_is_declared_in_one_transaction_because_the_gate_shuts_on_the_first_
             Roles::SERVING.and(Roles::WRITABLE),
             Some([1; NODE_ID_LEN]),
             None,
+            None,
         )
         .unwrap();
     catalog
@@ -738,6 +743,7 @@ fn a_cluster_is_declared_in_one_transaction_because_the_gate_shuts_on_the_first_
             "b:9081",
             Roles::SERVING.and(Roles::WRITABLE),
             Some([2; NODE_ID_LEN]),
+            None,
             None,
         )
         .unwrap();
