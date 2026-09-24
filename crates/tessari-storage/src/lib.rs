@@ -43,6 +43,7 @@ mod running;
 mod schema;
 mod sealing;
 mod series;
+mod served;
 mod shards;
 mod snapshots;
 mod store;

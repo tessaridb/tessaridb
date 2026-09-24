@@ -265,6 +265,15 @@ pub(crate) fn declared_for(table: &str, shape: &TableShape) -> Result<Option<Sha
             kind,
         });
     }
+    // A node table of a graph is walked from its neighbours, and a walk has no
+    // span to confine it to one shard; splitting one would make every traversal
+    // on a node holding part of it answer from the part (G031 S3.3).
+    if shape.graph.is_some() {
+        return Err(Error::SplitOnAKindThatIsNotRecords {
+            table: table.to_owned(),
+            kind: "a node table of a graph",
+        });
+    }
     if shape.identity != IdentityKind::Uuid {
         return Err(Error::SplitNeedsGeneratedUuid {
             table: table.to_owned(),

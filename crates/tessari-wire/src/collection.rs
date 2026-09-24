@@ -149,6 +149,16 @@ pub struct Collected {
     /// A body that does not carry it reads `false`, which is the right answer
     /// rather than a default: a leader with no budget never stopped early.
     pub stopped_early: bool,
+    /// The reach this answer was served under — the follower's grant, as the
+    /// leader applied it (G031, ADR-0081).
+    ///
+    /// A fact about the collect, for the reason [`Self::log`] is one: the
+    /// follower records it and uses it only to NARROW — which logs it asks for,
+    /// and which reads it will answer — and the leader keeps refusing every log
+    /// outside the grant whatever the follower recorded. A body from a leader
+    /// that predates the field carries nothing here, which reads as not stated:
+    /// the follower then holds everything it has, as every follower did before.
+    pub over: Option<Reach>,
 }
 
 impl Collected {
@@ -169,6 +179,12 @@ impl Collected {
             frame::put_bytes(&mut body, record.encode().as_slice());
         }
         body.push(u8::from(self.stopped_early));
+        // A tail field after the last one a previous build wrote, so an older
+        // follower stops reading before it and a newer one finds nothing there
+        // in an older leader's answer.
+        if let Some(over) = self.over {
+            frame::put_reach(&mut body, over);
+        }
         body
     }
 
@@ -199,11 +215,18 @@ impl Collected {
         // budget carries nothing here and never stopped early, so the missing
         // byte and the byte it would have written say the same thing.
         let stopped_early = body.get(at).is_some_and(|flag| *flag != 0);
+        let after = at.saturating_add(1);
+        let over = if body.len() > after {
+            Some(frame::take_reach(body, after)?.0)
+        } else {
+            None
+        };
         Ok(Self {
             log,
             previous: Epoch::new(previous),
             records,
             stopped_early,
+            over,
         })
     }
 }
@@ -433,6 +456,7 @@ impl Origin for Serving<'_> {
             previous,
             records,
             stopped_early,
+            over: Some(over),
         })
     }
 }
@@ -676,6 +700,13 @@ impl Collector<'_> {
         // only the leader knows which. It says so, and a follower that read
         // *level* off the budget would record itself current while it is
         // behind, which is precisely the reading the bound exists to exclude.
+        // What the leader served this node under, recorded so the node knows
+        // what it holds (G031, ADR-0081). After the records applied: a record
+        // refused above leaves the old answer standing, which errs toward
+        // answering fewer reads rather than more.
+        if let Some(over) = collected.over {
+            into.record_served(over).map_err(refused)?;
+        }
         let currency = if carried < self.limit && !collected.stopped_early {
             Currency::Level
         } else {
@@ -745,6 +776,14 @@ pub fn logs_to_collect(store: &Store) -> Result<Vec<Reach>> {
         }
     }
     transaction.rollback();
+    // Narrowed by what this node was last served under (G031, ADR-0081): a
+    // follower of one shard replays its table's definition, which names every
+    // shard, and asking for the siblings would be refused every round — a
+    // permanent warning is one an operator learns to skip. Only ever narrows:
+    // the leader still decides what each log carries.
+    if let Some(over) = store.served() {
+        logs.retain(|home| over.contains(*home) || home.contains(over));
+    }
     Ok(logs)
 }
 
@@ -1284,6 +1323,7 @@ mod tests {
                 (Sequence::new(8), LogRecord::at(Epoch::new(4), Vec::new())),
             ],
             stopped_early: true,
+            over: None,
         };
         let back = Collected::decode(&answer.encode()).expect("an answer");
         assert_eq!(back, answer);
@@ -1352,6 +1392,7 @@ mod tests {
             previous: Epoch::new(3),
             records: vec![(Sequence::new(7), record)],
             stopped_early: false,
+            over: None,
         };
 
         let encoded = answer.encode();
@@ -1554,6 +1595,63 @@ mod tests {
     }
 
     #[test]
+    fn an_answer_says_what_it_was_served_under_and_an_older_answer_says_nothing() {
+        use tessari_types::{DatabaseId, NamespaceId, ShardId, TableId};
+        let shard = Reach::Shard(
+            NamespaceId::new(1),
+            DatabaseId::new(2),
+            TableId::new(3),
+            ShardId::new(4),
+        );
+        let answer = Collected {
+            log: LogId::unattributed(Reach::Store),
+            previous: Epoch::ZERO,
+            records: Vec::new(),
+            stopped_early: false,
+            over: Some(shard),
+        };
+        let encoded = answer.encode();
+        assert_eq!(
+            Collected::decode(&encoded).expect("an answer").over,
+            Some(shard)
+        );
+        // The same answer as a leader that predates the field wrote it: the
+        // body ends at the flag, and that reads as not stated.
+        let older = &encoded[..encoded.len() - 17];
+        assert_eq!(
+            Collected::decode(older).expect("an older answer").over,
+            None
+        );
+    }
+
+    #[test]
+    fn a_follower_asks_only_for_logs_its_served_reach_touches() {
+        let db = Db::in_memory().expect("an in-memory store");
+        db.session()
+            .run(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+                 USE DATABASE shop; DEFINE TABLE orders (n int) IDENTITY uuid SPLIT AT 'g';",
+            )
+            .expect("a split table");
+        let every = logs_to_collect(db.store()).expect("this node's own logs");
+        let second = every
+            .iter()
+            .copied()
+            .find(|home| matches!(home, Reach::Shard(_, _, _, shard) if shard.get() == 2))
+            .expect("shard 2 is a log");
+        db.store().record_served(second).expect("recorded");
+        let narrowed = logs_to_collect(db.store()).expect("this node's own logs");
+        assert!(narrowed.contains(&second));
+        assert!(narrowed.contains(&Reach::Store), "the chain above it stays");
+        assert!(
+            !narrowed
+                .iter()
+                .any(|home| matches!(home, Reach::Shard(_, _, _, shard) if shard.get() == 1)),
+            "the sibling shard is not asked for: {narrowed:?}"
+        );
+    }
+
+    #[test]
     fn a_split_tables_shards_are_logs_a_follower_asks_for_after_its_database() {
         let db = Db::in_memory().expect("an in-memory store");
         db.session()
@@ -1653,6 +1751,13 @@ mod tests {
             missing.to_string().contains("no namespace named \"other\""),
             "the namespace beside the subscription never arrived, and the \
              refusal names it: {missing}"
+        );
+        // And the follower recorded what it was served under, from the answer
+        // rather than from anything typed here (G031, ADR-0081).
+        assert!(
+            matches!(follower.store().served(), Some(Reach::Namespace(_))),
+            "the collect recorded its reach: {:?}",
+            follower.store().served()
         );
     }
 

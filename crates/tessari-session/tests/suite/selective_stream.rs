@@ -496,3 +496,178 @@ fn a_namespace_owner_on_a_selective_follower_cannot_read_another_tenancys_creden
         "and they are shown their own, so the listing is bounded rather than empty: {rendered}"
     );
 }
+
+/// A narrower subscription is given the definitions above it (Q-771, G031 S3.2).
+///
+/// Measured before it was repaired: this follower's own reader was refused
+/// `USE NAMESPACE prod` with `OutsideTenancy`, because the namespace's definition
+/// was carried *within the namespace* and a database is not a namespace. The
+/// records had arrived; nothing could name them.
+#[test]
+fn a_database_subscriber_is_given_the_namespace_its_database_lives_in() {
+    let leader = store();
+    two_tenants(&leader);
+    let follower = follow(
+        &leader,
+        Reach::Database(NamespaceId::new(1), tessari_types::DatabaseId::new(1)),
+        "node",
+    );
+    let mut reader = signed_in(&follower, "prod_reader");
+    let answer = reader
+        .run("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM orders;")
+        .unwrap();
+    let Some(Outcome::Records { records, .. }) = answer.last() else {
+        panic!("the subscribed database's reader must be served, got {answer:?}");
+    };
+    assert_eq!(records.len(), 1);
+    // And still nothing sideways: the other tenancy is not a name here.
+    assert!(
+        reader
+            .run("USE NAMESPACE staging; USE DATABASE sandbox; SELECT * FROM payroll;")
+            .is_err()
+    );
+}
+
+/// The table `sharded_tenant` splits, and the follower of one of its shards.
+fn sharded_tenant() -> (Store, tessari_storage::Reach, tessari_types::TableId) {
+    let leader = store();
+    two_tenants(&leader);
+    let mut root = signed_in(&leader, "root");
+    root.run(
+        "USE NAMESPACE prod; USE DATABASE shop; \
+         DEFINE TABLE ledger (total int, peer record) IDENTITY uuid SPLIT AT 'g'; \
+         CREATE ledger:'a' = { total: 1 }; CREATE ledger:'h' = { total: 2, peer: ledger:'a' };",
+    )
+    .unwrap();
+    drop(root);
+    let table = {
+        let mut transaction = leader.begin().unwrap();
+        tessari_storage::Catalog::new(&mut transaction)
+            .table_id(
+                NamespaceId::new(1),
+                tessari_types::DatabaseId::new(1),
+                "ledger",
+            )
+            .unwrap()
+            .unwrap()
+    };
+    let second = Reach::Shard(
+        NamespaceId::new(1),
+        tessari_types::DatabaseId::new(1),
+        table,
+        tessari_types::ShardId::new(2),
+    );
+    (leader, second, table)
+}
+
+/// G031 S3.1 — a follower of one shard holds that shard's records and none of
+/// its sibling's, asserted on the follower's own store rather than on what the
+/// leader sent: presence of the one and absence of the other are both facts
+/// about the follower.
+#[test]
+fn a_shard_subscriber_holds_its_shards_records_and_not_its_siblings() {
+    let (leader, second, table) = sharded_tenant();
+    let follower = follow(&leader, second, "node");
+    let held = |id: &str| {
+        let transaction = follower.begin().unwrap();
+        transaction
+            .get(&tessari_storage::RecordAddress::new(
+                NamespaceId::new(1),
+                tessari_types::DatabaseId::new(1),
+                table,
+                tessari_types::RecordId::from(id),
+            ))
+            .unwrap()
+            .is_some()
+    };
+    assert!(held("h"), "the subscribed shard's record arrived");
+    assert!(!held("a"), "the sibling shard's record did not");
+    // And its own reader can name the table and read the span it holds.
+    let mut reader = signed_in(&follower, "prod_reader");
+    let answer = reader
+        .run("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM ledger:'g'..'z';")
+        .unwrap();
+    let Some(Outcome::Records { records, .. }) = answer.last() else {
+        panic!("the held span answers, got {answer:?}");
+    };
+    assert_eq!(records.len(), 1);
+}
+
+/// G031 S3.3 — a node holding part of what its catalog describes refuses a read
+/// that needs the rest, and answers one inside what it holds.
+///
+/// The reach is recorded here the way the wire collector records it from the
+/// answer (`tessari-wire`'s `a_subscriber_receives_its_namespace…` asserts that
+/// half); this helper applies the stream through the session instead of a
+/// socket, so it records it itself.
+#[test]
+fn a_shard_follower_refuses_a_read_that_needs_what_it_does_not_hold() {
+    let (leader, second, _) = sharded_tenant();
+    let follower = follow(&leader, second, "node");
+    follower.record_served(second).unwrap();
+    let mut reader = signed_in(&follower, "prod_reader");
+    reader
+        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+
+    let refused = |reader: &mut Session<'_>, read: &str| match reader.run(read) {
+        Err(tessari_session::Error::NotHeldHere { table, shards }) => (table, shards),
+        other => panic!("{read}: expected NotHeldHere, got {other:?}"),
+    };
+    assert_eq!(
+        refused(&mut reader, "SELECT * FROM ledger;"),
+        ("ledger".to_owned(), vec![1])
+    );
+    assert_eq!(
+        refused(&mut reader, "SELECT * FROM ledger WHERE total > 0;"),
+        ("ledger".to_owned(), vec![1])
+    );
+    assert_eq!(
+        refused(&mut reader, "SELECT * FROM ledger:'a';"),
+        ("ledger".to_owned(), vec![1])
+    );
+    assert_eq!(
+        refused(&mut reader, "SELECT * FROM ledger:'a'..'z';"),
+        ("ledger".to_owned(), vec![1])
+    );
+    // A table of the same database that is not split: its definition travelled
+    // down with the database's, and none of its records did.
+    assert_eq!(
+        refused(&mut reader, "SELECT * FROM orders;"),
+        ("orders".to_owned(), vec![])
+    );
+
+    // What it holds, it answers.
+    let answered = |reader: &mut Session<'_>, read: &str| match reader.run(read) {
+        Ok(outcomes) => match outcomes.last() {
+            Some(Outcome::Records { records, .. }) => records.len(),
+            other => panic!("{read}: {other:?}"),
+        },
+        Err(error) => panic!("{read}: {error:?}"),
+    };
+    // A reference out of a held record into the shard it lacks (Q-775).
+    assert_eq!(
+        refused(&mut reader, "SELECT * FROM ledger:'h' FETCH peer;"),
+        ("ledger".to_owned(), vec![1])
+    );
+    assert_eq!(answered(&mut reader, "SELECT * FROM ledger:'h';"), 1);
+    assert_eq!(answered(&mut reader, "SELECT * FROM ledger:'g'..'z';"), 1);
+}
+
+#[test]
+fn a_follower_served_the_whole_database_answers_every_read_as_before() {
+    // The control: a namespace follower recorded as such refuses nothing it
+    // holds, split tables included.
+    let (leader, _, _) = sharded_tenant();
+    let over = Reach::Namespace(NamespaceId::new(1));
+    let follower = follow(&leader, over, "node");
+    follower.record_served(over).unwrap();
+    let mut reader = signed_in(&follower, "prod_reader");
+    let outcomes = reader
+        .run("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM ledger;")
+        .unwrap();
+    let Some(Outcome::Records { records, .. }) = outcomes.last() else {
+        panic!("{outcomes:?}");
+    };
+    assert_eq!(records.len(), 2);
+}

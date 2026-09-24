@@ -52,7 +52,8 @@ pub use index_keys::{
 };
 pub use keys::{
     AppliedPositionKey, FormatVersionKey, LogKey, LogRetentionKey, LogStartKey, NodeIdentityKey,
-    REACH_LEN, ReclaimFloorKey, RecordKey, StoreKey, TABLE_PREFIX_LEN, VersionPositionKey,
+    REACH_LEN, ReclaimFloorKey, RecordKey, ServedReach, ServedReachKey, StoreKey, TABLE_PREFIX_LEN,
+    VersionPositionKey,
 };
 pub use kind::KeyKind;
 pub use log_id::{LogId, Writer};

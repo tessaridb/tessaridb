@@ -94,3 +94,24 @@ fn the_clause_reserves_neither_of_its_words() {
         parse(statement).unwrap_or_else(|error| panic!("{statement} was refused: {error:?}"));
     }
 }
+
+#[test]
+fn a_subscription_names_one_shard_fully_qualified() {
+    let parsed =
+        parse("DEFINE REPLICA part AT 'b:9001' REPLICATES SHARD prod.shop.orders 2;").unwrap();
+    let StatementKind::DefineReplica {
+        replicates: Some(tessari_ql::ReachRef::Shard { table, shard, .. }),
+        ..
+    } = &parsed.statements[0].kind
+    else {
+        panic!("{:?}", parsed.statements[0].kind);
+    };
+    assert_eq!((table.text.as_str(), *shard), ("orders", 2));
+    for refused in [
+        "DEFINE REPLICA p AT 'b:9001' REPLICATES SHARD prod.shop.orders 0;",
+        "DEFINE REPLICA p AT 'b:9001' REPLICATES SHARD prod.shop.orders;",
+        "DEFINE REPLICA p AT 'b:9001' REPLICATES SHARD orders 2;",
+    ] {
+        assert!(parse(refused).is_err(), "{refused}");
+    }
+}

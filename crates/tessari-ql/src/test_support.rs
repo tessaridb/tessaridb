@@ -612,6 +612,16 @@ fn erase_reach(reach: &mut ReachRef) {
         ReachRef::Store => {}
         ReachRef::Namespace(name) => erase_name(name),
         ReachRef::Database(table) => erase_table(table),
+        ReachRef::Shard {
+            namespace,
+            database,
+            table,
+            ..
+        } => {
+            erase_name(namespace);
+            erase_name(database);
+            erase_name(table);
+        }
     }
 }
 

@@ -179,6 +179,7 @@ pub struct Store {
     /// feature only a series has.
     series: Arc<crate::series::SeriesRegistry>,
     shards: Arc<crate::shards::ShardRegistry>,
+    served: Arc<crate::served::Served>,
     /// Log divergences refused since this process opened the store.
     ///
     /// Shared with every handle for the same reason the snapshot registry is:
@@ -260,6 +261,7 @@ impl Store {
         }
         seed_version_position(&backend)?;
         crate::node::ensure(&backend)?;
+        let served = Arc::new(crate::served::Served::load(backend.as_ref())?);
         let store = Self {
             backend,
             snapshots: Arc::new(Registry::default()),
@@ -270,6 +272,7 @@ impl Store {
             audit: Arc::new(crate::audit::AuditTrail::default()),
             series: Arc::new(crate::series::SeriesRegistry::default()),
             shards: Arc::new(crate::shards::ShardRegistry::default()),
+            served,
             divergences: Arc::new(AtomicU64::new(0)),
             discarded: Arc::new(AtomicU64::new(0)),
             campaigns: Arc::new(AtomicU64::new(0)),
@@ -764,6 +767,11 @@ impl Store {
     /// Which tables are split, and where.
     pub(crate) fn shards(&self) -> &Arc<crate::shards::ShardRegistry> {
         &self.shards
+    }
+
+    /// What this node was last served under.
+    pub(crate) fn served_state(&self) -> &Arc<crate::served::Served> {
+        &self.served
     }
 
     /// Whether this process can open what the store's vaults hold.

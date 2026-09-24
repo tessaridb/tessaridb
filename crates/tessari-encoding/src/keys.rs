@@ -59,7 +59,7 @@ const REACH_SHARD: u8 = 3;
 /// one contiguous range. The order *between* homes carries no meaning — they
 /// are separate logs, and nothing compares a position in one against a position
 /// in another — so contiguity is the whole requirement.
-fn put_reach(writer: &mut KeyWriter, reach: Reach) {
+pub(crate) fn put_reach(writer: &mut KeyWriter, reach: Reach) {
     let (variant, namespace, database) = match reach {
         Reach::Store => (REACH_STORE, 0, 0),
         Reach::Namespace(namespace) => (REACH_NAMESPACE, namespace.get(), 0),
@@ -85,7 +85,7 @@ fn put_reach(writer: &mut KeyWriter, reach: Reach) {
 /// the reader returns when the bytes are short.
 ///
 /// [`Error::UnknownReach`]: crate::error::Error::UnknownReach
-fn take_reach(reader: &mut KeyReader<'_>) -> Result<Reach> {
+pub(crate) fn take_reach(reader: &mut KeyReader<'_>) -> Result<Reach> {
     let offset = reader.position();
     let variant = reader.take_u8()?;
     let namespace = NamespaceId::new(reader.take_u32()?);
@@ -574,6 +574,54 @@ impl StoreKey for LogRetentionKey {
         reader.expect_kind()?;
         reader.finish()?;
         Ok(Self)
+    }
+}
+
+/// The reach this node's upstream last served it under (G031, ADR-0081).
+///
+/// Absent on a node that has never been served — a leader, a store standing
+/// alone, a follower that has not yet collected — and absent means *holds
+/// everything it has*, which is what every node was before shards existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServedReachKey;
+
+impl StoreKey for ServedReachKey {
+    type Value = ServedReach;
+
+    const KIND: KeyKind = KeyKind::ServedReach;
+
+    fn encode(&self) -> Key {
+        Key::from(vec![Self::KIND.tag()])
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        reader.finish()?;
+        Ok(Self)
+    }
+}
+
+/// The value under [`ServedReachKey`]: one reach, in the form a log key holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServedReach(pub Reach);
+
+impl StoreValue for ServedReach {
+    fn encode(&self) -> tessari_kv::Value {
+        let mut writer = KeyWriter::with_capacity(REACH_LEN.saturating_add(8));
+        put_reach(&mut writer, self.0);
+        let payload = writer.finish();
+        let mut buffer = crate::value::with_header(0, payload.len());
+        buffer.extend_from_slice(&payload);
+        tessari_kv::Value::from(buffer)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let (_, payload) = crate::value::split_header(bytes, 0)?;
+        let mut reader = KeyReader::new(KeyKind::ServedReach, payload);
+        let reach = take_reach(&mut reader)?;
+        reader.finish()?;
+        Ok(Self(reach))
     }
 }
 

@@ -3358,6 +3358,20 @@ pub enum ReachRef {
     Namespace(Name),
     /// `DATABASE prod.orders`, or the bare `prod.orders` — one database.
     Database(TableRef),
+    /// `SHARD prod.shop.orders 2` — one shard of one split table (G031).
+    ///
+    /// Only a subscription says it: `REPLICATES` reads it and no grant does,
+    /// because no authority comes at a shard's reach.
+    Shard {
+        /// The namespace.
+        namespace: Name,
+        /// The database.
+        database: Name,
+        /// The split table.
+        table: Name,
+        /// Which of its shards, numbered as `INFO FOR TABLE` reports them.
+        shard: u32,
+    },
 }
 
 /// What a `DEFINE USER` says the user may do.

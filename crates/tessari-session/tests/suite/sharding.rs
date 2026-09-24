@@ -253,3 +253,98 @@ fn a_split_tables_record_history_is_refused_rather_than_answered_from_one_log() 
         .unwrap();
     assert!(session.run("INFO FOR HISTORY OF plain:1;").is_ok());
 }
+
+/// What `INFO FOR NODE` says a peer is subscribed to, by peer name.
+fn subscribed(session: &mut Session<'_>) -> Vec<(String, Option<String>)> {
+    let Value::Object(report) = report(session, "INFO FOR NODE;") else {
+        panic!("not a report");
+    };
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster group: {report:?}");
+    };
+    let Some(Value::Array(peers)) = cluster.get("peers") else {
+        panic!("no peer list: {cluster:?}");
+    };
+    peers
+        .iter()
+        .map(|peer| {
+            let Value::Object(fields) = peer else {
+                panic!("a peer is an object");
+            };
+            let text = |key: &str| match fields.get(key) {
+                Some(Value::String(text)) => Some(text.clone()),
+                _ => None,
+            };
+            (text("name").unwrap_or_default(), text("replicates"))
+        })
+        .collect()
+}
+
+#[test]
+fn a_peer_subscribes_to_one_shard_and_the_report_spells_it_back() {
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run(
+            "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p'; \
+             DEFINE REPLICA part AT 'b:9001' NODE '9f2c4e1a70bb43d5a1c6e2f480937d55' \
+                 REPLICATES SHARD prod.shop.orders 2;",
+        )
+        .unwrap();
+    assert_eq!(
+        subscribed(&mut session),
+        vec![(
+            "part".to_owned(),
+            Some("SHARD prod.shop.orders 2".to_owned())
+        )]
+    );
+}
+
+#[test]
+fn a_subscription_to_a_shard_that_does_not_exist_is_refused() {
+    // A subscription to nothing is the quietest failure a cluster has: every
+    // node up, every greeting landing, one copy that never changes.
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run("DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g'; DEFINE TABLE plain (n int);")
+        .unwrap();
+    for (clause, shown) in [
+        ("SHARD prod.shop.orders 3", "prod.shop.orders 3"),
+        ("SHARD prod.shop.plain 1", "prod.shop.plain 1"),
+        ("SHARD prod.shop.nowhere 1", "prod.shop.nowhere 1"),
+    ] {
+        match session.run(&format!(
+            "DEFINE REPLICA r AT 'b:9001' NODE '9f2c4e1a70bb43d5a1c6e2f480937d55' REPLICATES {clause};"
+        )) {
+            Err(Error::Unknown { entity, name, .. }) => {
+                assert_eq!((entity, name.as_str()), ("shard", shown));
+            }
+            other => panic!("{clause}: expected an unknown shard, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_graphs_node_table_cannot_be_split() {
+    // A walk reaches a node from its neighbours, and there is no span to confine
+    // it to the shards a node holds — so a node holding part of one would answer
+    // every traversal from the part.
+    let store = store();
+    let mut session = tenancy(&store);
+    session.run("DEFINE GRAPH social;").unwrap();
+    let refused = refusal(
+        &mut session,
+        "DEFINE TABLE person (n int) IN social IDENTITY uuid SPLIT AT 'g';",
+    );
+    assert!(
+        matches!(
+            refused,
+            tessari_storage::Error::SplitOnAKindThatIsNotRecords {
+                kind: "a node table of a graph",
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
+}

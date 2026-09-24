@@ -1458,12 +1458,16 @@ impl Parser<'_> {
         // `REPLICATES` a bare pair would sit where a table name could and this
         // clause has no history to keep.
         let replicates = if self.eat_word("replicates") {
-            match self.reach_keyword()? {
-                Some(reach) => Some(reach),
-                None => {
-                    return Err(
-                        self.error_here("`STORE`, `NAMESPACE` or `DATABASE` after `REPLICATES`")
-                    );
+            if self.eat_word("shard") {
+                Some(self.shard_reach()?)
+            } else {
+                match self.reach_keyword()? {
+                    Some(reach) => Some(reach),
+                    None => {
+                        return Err(self.error_here(
+                            "`STORE`, `NAMESPACE`, `DATABASE` or `SHARD` after `REPLICATES`",
+                        ));
+                    }
                 }
             }
         } else {
@@ -2831,6 +2835,35 @@ impl Parser<'_> {
             }
             _ => Ok(None),
         }
+    }
+
+    /// `prod.shop.orders 2`, once `SHARD` has been read (G031).
+    ///
+    /// Fully qualified and never resolved against the session's `USE`: a
+    /// subscription is a statement about the cluster, and a shard named relative
+    /// to whatever the writing session happened to select would mean different
+    /// shards in two scripts that read the same.
+    fn shard_reach(&mut self) -> Result<ReachRef> {
+        let namespace = self.name()?;
+        self.expect_punct(Punct::Dot, "`.` and the database")?;
+        let database = self.name()?;
+        self.expect_punct(Punct::Dot, "`.` and the split table")?;
+        let table = self.name()?;
+        let expected = "the shard's number, as `INFO FOR TABLE` reports it";
+        let Some(Token::Number(Number::Integer(shard))) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let shard = u32::try_from(*shard)
+            .ok()
+            .filter(|shard| *shard > 0)
+            .ok_or_else(|| self.error_here(expected))?;
+        self.advance();
+        Ok(ReachRef::Shard {
+            namespace,
+            database,
+            table,
+            shard,
+        })
     }
 
     /// A reach in any of its spellings, including the bare `prod.orders`.
