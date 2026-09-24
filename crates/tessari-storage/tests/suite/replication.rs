@@ -63,6 +63,7 @@ fn mutation(id: &str, value: &[u8]) -> Mutation {
         database: DatabaseId::new(1),
         table: TableId::new(1),
         id: RecordId::from(id),
+        shard: None,
         value: StampedValue::new(RecordValue::Present(value.to_vec())),
     }
 }
@@ -335,6 +336,7 @@ fn two_leaderships_writing_one_sequence_are_refused_rather_than_silently_dropped
             database: DatabaseId::new(1),
             table: TableId::new(1),
             id: RecordId::from("contested"),
+            shard: None,
             value: StampedValue::new(RecordValue::Present(b"from-the-new-leader".to_vec())),
         }],
     );
@@ -348,6 +350,7 @@ fn two_leaderships_writing_one_sequence_are_refused_rather_than_silently_dropped
                 database: DatabaseId::new(1),
                 table: TableId::new(1),
                 id: RecordId::from("contested"),
+                shard: None,
                 value: StampedValue::new(RecordValue::Present(b"from-the-old-leader".to_vec())),
             }],
         ),
@@ -435,6 +438,7 @@ fn contested(
             database,
             table: TableId::new(1),
             id: RecordId::from("contested"),
+            shard: None,
             value: StampedValue::new(RecordValue::Present(value.to_vec())),
         }],
     )
@@ -588,6 +592,7 @@ fn re_sending_a_record_the_store_already_holds_stays_a_free_no_op() {
             database: DatabaseId::new(1),
             table: TableId::new(1),
             id: RecordId::from("repeated"),
+            shard: None,
             value: StampedValue::new(RecordValue::Present(b"v".to_vec())),
         }],
     );
@@ -616,6 +621,7 @@ fn replaying_an_older_record_from_an_older_leadership_is_not_a_divergence() {
             database: DatabaseId::new(1),
             table: TableId::new(1),
             id: RecordId::from("old"),
+            shard: None,
             value: StampedValue::new(RecordValue::Present(b"a".to_vec())),
         }],
     );
@@ -626,6 +632,7 @@ fn replaying_an_older_record_from_an_older_leadership_is_not_a_divergence() {
             database: DatabaseId::new(1),
             table: TableId::new(1),
             id: RecordId::from("new"),
+            shard: None,
             value: StampedValue::new(RecordValue::Present(b"b".to_vec())),
         }],
     );
@@ -651,6 +658,7 @@ fn a_replica_that_applied_a_record_can_still_commit_of_its_own_accord() {
         database: DatabaseId::new(1),
         table: TableId::new(1),
         id: RecordId::from("applied"),
+        shard: None,
         value: StampedValue::new(RecordValue::Present(b"from-the-log".to_vec())),
     }]);
     replica
@@ -1469,6 +1477,7 @@ fn a_writer_that_has_seen_both_versions_supersedes_them_and_is_not_refused() {
         database,
         table: TableId::new(1),
         id: RecordId::from("shared"),
+        shard: None,
         value: StampedValue::stamped(seen, RecordValue::Present(b"reconciled".to_vec())),
     }]);
     let own = third.own_log(home).unwrap();

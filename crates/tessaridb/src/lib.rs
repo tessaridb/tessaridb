@@ -509,6 +509,28 @@ impl Db {
         Ok(catalog.table_id(namespace, database, table)?)
     }
 
+    /// The names of the split tables in one database (G031, ADR-0080).
+    ///
+    /// What a reader that follows one log has to know before it starts: those
+    /// tables' writes are in their shards' logs, which it does not read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the catalog cannot be read.
+    pub(crate) fn split_tables_in(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+    ) -> Result<Vec<String>> {
+        let mut transaction = self.store.begin()?;
+        Ok(Catalog::new(&mut transaction)
+            .tables_in(namespace, database)?
+            .into_iter()
+            .filter(|table| table.shards.is_some())
+            .map(|table| table.name)
+            .collect())
+    }
+
     /// The store underneath.
     ///
     /// Exposed for the operations that are not statements. A backup is a read of

@@ -1467,6 +1467,13 @@ fn log_name(home: tessaridb::Reach) -> String {
         tessaridb::Reach::Database(namespace, database) => {
             format!("namespace {} database {}", namespace.get(), database.get())
         }
+        tessaridb::Reach::Shard(namespace, database, table, shard) => format!(
+            "namespace {} database {} table {} shard {}",
+            namespace.get(),
+            database.get(),
+            table.get(),
+            shard.get()
+        ),
     }
 }
 

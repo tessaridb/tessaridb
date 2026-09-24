@@ -17,7 +17,7 @@
 //! is an error rather than something to ignore.
 
 use tessari_kv::Value;
-use tessari_types::{DatabaseId, Epoch, NamespaceId, RecordId, Sequence, TableId};
+use tessari_types::{DatabaseId, Epoch, NamespaceId, RecordId, Sequence, ShardId, TableId};
 
 use crate::causal::CausalStamp;
 use crate::error::{Error, Result};
@@ -52,6 +52,18 @@ const FLAG_EPOCH: u8 = 0b0000_0010;
 /// record written before there was a second master — nothing already on disk is
 /// rewritten, exactly as when bit 1 arrived.
 const FLAG_STAMP: u8 = 0b0000_0100;
+
+/// Bit 3 of the flags byte, on a log record only: every mutation carries the
+/// shard of its table it falls in (G031, ADR-0080).
+///
+/// The writer decides the shard at commit, from the catalog it committed
+/// against, and writes the answer here so that everything reading the record
+/// later — a follower applying it, a stream filter, `home_of` — asks the bytes
+/// rather than a catalog that has moved on since. Set only when some mutation
+/// is in a split table, so a record touching none keeps the bytes it always had;
+/// a build that predates the bit refuses such a record as reserved rather than
+/// reading its shard field as the next mutation's namespace.
+const FLAG_SHARDS: u8 = 0b0000_1000;
 
 /// Bytes of header that precede every payload.
 const HEADER_LEN: usize = 2;
@@ -353,6 +365,9 @@ pub struct Mutation {
     pub table: TableId,
     /// The record's identity within the table.
     pub id: RecordId,
+    /// Which shard of a split table the record falls in, decided by the writer
+    /// at commit; `None` for a table that is not split.
+    pub shard: Option<ShardId>,
     /// What the record becomes at this sequence, and what its writer had seen.
     pub value: StampedValue,
 }
@@ -422,7 +437,7 @@ impl LogRecord {
     /// Returns an error when the bytes are truncated, carry an unsupported
     /// codec version, or set a reserved flag bit.
     pub fn epoch_in(bytes: &[u8]) -> Result<Epoch> {
-        Ok(split_epoch(bytes)?.0)
+        Ok(split_epoch(bytes)?.1)
     }
 }
 
@@ -430,11 +445,12 @@ impl LogRecord {
 ///
 /// One splitter rather than one in `decode` and another in `epoch_in`: two
 /// readings of the same bytes is a thing that can disagree with itself, which is
-/// the reason this record carries no mutation count either.
-fn split_epoch(bytes: &[u8]) -> Result<(Epoch, &[u8])> {
-    let (flags, payload) = split_header(bytes, FLAG_EPOCH)?;
+/// the reason this record carries no mutation count either. Answers the flags as
+/// well, because whether each mutation carries a shard is one of them.
+fn split_epoch(bytes: &[u8]) -> Result<(u8, Epoch, &[u8])> {
+    let (flags, payload) = split_header(bytes, FLAG_EPOCH | FLAG_SHARDS)?;
     if flags & FLAG_EPOCH == 0 {
-        return Ok((Epoch::ZERO, payload));
+        return Ok((flags, Epoch::ZERO, payload));
     }
     let raw: [u8; EPOCH_LEN] = payload
         .get(..EPOCH_LEN)
@@ -444,6 +460,7 @@ fn split_epoch(bytes: &[u8]) -> Result<(Epoch, &[u8])> {
             needed: HEADER_LEN.saturating_add(EPOCH_LEN),
         })?;
     Ok((
+        flags,
         Epoch::new(u64::from_be_bytes(raw)),
         payload.get(EPOCH_LEN..).unwrap_or_default(),
     ))
@@ -460,11 +477,23 @@ impl StoreValue for LogRecord {
     /// exist.
     fn encode(&self) -> Value {
         let mut writer = KeyWriter::with_capacity(self.mutations.len().saturating_mul(32));
+        // Decided over the whole record, because the field is per mutation or
+        // not at all: a decoder has to know before the first mutation whether
+        // each one carries it.
+        let sharded = self
+            .mutations
+            .iter()
+            .any(|mutation| mutation.shard.is_some());
         for mutation in &self.mutations {
             writer
                 .put_u32(mutation.namespace.get())
                 .put_u32(mutation.database.get())
                 .put_u32(mutation.table.get());
+            if sharded {
+                // `0` is not a shard id, so it can stand for *this table is not
+                // split* beside a mutation that is.
+                writer.put_u32(mutation.shard.map_or(0, ShardId::get));
+            }
             crate::record_id::put(&mut writer, &mutation.id);
             let encoded = mutation.value.encode();
             writer
@@ -480,6 +509,7 @@ impl StoreValue for LogRecord {
         } else {
             (FLAG_EPOCH, Some(self.epoch.get().to_be_bytes()))
         };
+        let flags = if sharded { flags | FLAG_SHARDS } else { flags };
         let mut buffer = with_header(flags, payload.len().saturating_add(EPOCH_LEN));
         if let Some(epoch) = epoch {
             buffer.extend_from_slice(&epoch);
@@ -489,7 +519,8 @@ impl StoreValue for LogRecord {
     }
 
     fn decode(bytes: &[u8]) -> Result<Self> {
-        let (epoch, payload) = split_epoch(bytes)?;
+        let (flags, epoch, payload) = split_epoch(bytes)?;
+        let sharded = flags & FLAG_SHARDS != 0;
         // The reader is the crate's bounds-checked byte cursor. The kind it is
         // built with only names the entity in a truncation error, and no kind
         // tag is consumed here — this is a value payload, not a key.
@@ -499,6 +530,13 @@ impl StoreValue for LogRecord {
             let namespace = NamespaceId::new(reader.take_u32()?);
             let database = DatabaseId::new(reader.take_u32()?);
             let table = TableId::new(reader.take_u32()?);
+            let shard = if sharded {
+                Some(reader.take_u32()?)
+                    .filter(|raw| *raw != 0)
+                    .map(ShardId::new)
+            } else {
+                None
+            };
             let id = crate::record_id::take(&mut reader)?;
             let len = reader.take_u32()?;
             let encoded = reader.take_exact(usize::try_from(len).unwrap_or(usize::MAX))?;
@@ -507,6 +545,7 @@ impl StoreValue for LogRecord {
                 database,
                 table,
                 id,
+                shard,
                 value: StampedValue::decode(&encoded)?,
             });
         }
@@ -758,6 +797,7 @@ mod tests {
             database: DatabaseId::new(1),
             table: TableId::new(1),
             id: RecordId::from("a"),
+            shard: None,
             value: StampedValue::stamped(stamp.clone(), RecordValue::Present(b"v".to_vec())),
         }]);
         let encoded = record.encode();
@@ -870,6 +910,7 @@ mod tests {
             database: DatabaseId::new(2),
             table: TableId::new(3),
             id,
+            shard: None,
             value: StampedValue::new(value),
         }
     }
@@ -930,6 +971,7 @@ mod tests {
                 database: DatabaseId::new(1),
                 table: TableId::new(1),
                 id: RecordId::from("a"),
+                shard: None,
                 value: StampedValue::new(RecordValue::Tombstone),
             },
             Mutation {
@@ -937,6 +979,7 @@ mod tests {
                 database: DatabaseId::new(1),
                 table: TableId::new(1),
                 id: RecordId::from("z"),
+                shard: None,
                 value: StampedValue::new(RecordValue::Tombstone),
             },
         ]);
@@ -1068,6 +1111,87 @@ mod tests {
         assert_eq!(decoded.epoch(), Epoch::ZERO);
         assert_eq!(decoded.mutations().len(), 1);
         assert_eq!(decoded.mutations()[0].id, RecordId::from("r"));
+    }
+
+    /// The bytes an unsharded record has always had (G031 S2.1, the goal's kill
+    /// criterion).
+    ///
+    /// Encode direction and a literal, pinned before the shard field existed: a
+    /// record touching no split table must keep exactly these bytes, or sharding
+    /// would rewrite every log and backup already on disk. A round trip could not
+    /// see it — a codec that always wrote the new field would read itself back.
+    #[test]
+    fn a_record_touching_no_split_table_keeps_the_bytes_it_always_had() {
+        let record = LogRecord::new(vec![mutation(
+            RecordId::from("r"),
+            RecordValue::Present(b"v".to_vec()),
+        )]);
+        let golden = [
+            CODEC_VERSION,
+            0, // flags: no epoch, no shards
+            0,
+            0,
+            0,
+            1, // namespace
+            0,
+            0,
+            0,
+            2, // database
+            0,
+            0,
+            0,
+            3, // table — and no shard after it
+            0x02,
+            b'r',
+            0x00,
+            0x01, // a string record id, terminated
+            0,
+            0,
+            0,
+            3, // the value's length
+            CODEC_VERSION,
+            0,
+            b'v', // the value
+        ];
+        assert_eq!(record.encode().as_slice(), &golden[..]);
+    }
+
+    #[test]
+    fn a_record_carries_each_mutations_shard_through_a_round_trip() {
+        let mut split = mutation(RecordId::from("m"), RecordValue::Present(b"v".to_vec()));
+        split.shard = Some(ShardId::new(2));
+        let mut plain = mutation(RecordId::from("z"), RecordValue::Tombstone);
+        plain.table = TableId::new(4);
+        let record = LogRecord::at(Epoch::new(9), vec![split, plain]);
+        let decoded = LogRecord::decode(record.encode().as_slice()).unwrap();
+        assert_eq!(decoded, record);
+        assert_eq!(decoded.mutations()[0].shard, Some(ShardId::new(2)));
+        assert_eq!(
+            decoded.mutations()[1].shard,
+            None,
+            "a mutation of a table that is not split reads back as none, not as shard 0"
+        );
+    }
+
+    #[test]
+    fn the_shard_sits_after_the_table_and_the_flag_says_it_is_there() {
+        let mut split = mutation(RecordId::from("r"), RecordValue::Present(b"v".to_vec()));
+        split.shard = Some(ShardId::new(0x0a0b_0c0d));
+        let bytes = LogRecord::new(vec![split]).encode().into_bytes();
+        assert_eq!(bytes[1], FLAG_SHARDS);
+        assert_eq!(
+            &bytes[HEADER_LEN + 12..HEADER_LEN + 16],
+            &0x0a0b_0c0d_u32.to_be_bytes(),
+            "fixed width, big-endian, right after namespace, database and table"
+        );
+    }
+
+    #[test]
+    fn a_record_whose_shard_field_is_cut_short_is_refused() {
+        let mut split = mutation(RecordId::from("r"), RecordValue::Present(b"v".to_vec()));
+        split.shard = Some(ShardId::new(1));
+        let bytes = LogRecord::new(vec![split]).encode().into_bytes();
+        assert!(LogRecord::decode(&bytes[..HEADER_LEN + 14]).is_err());
     }
 
     #[test]

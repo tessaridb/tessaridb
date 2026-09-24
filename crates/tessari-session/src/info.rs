@@ -445,6 +445,15 @@ impl Session<'_> {
         span: Span,
     ) -> Result<BTreeMap<String, Value>> {
         let (_, address) = self.address(transaction, target)?;
+        if let Some(split) = Catalog::new(transaction)
+            .table(address.table)?
+            .filter(|table| table.shards.is_some())
+        {
+            return Err(Error::SpansShardLogs {
+                table: split.name,
+                what: "a record's history",
+            });
+        }
         let home = Reach::Database(address.namespace, address.database);
         let log = self.store.own_log(home)?;
         let subject = Subject::new(
@@ -1434,6 +1443,23 @@ fn spelled_reach(reach: Reach, catalog: &Catalog<'_, '_>) -> Result<String> {
                 .map_or_else(|| database.get().to_string(), |found| found.name);
             format!("DATABASE {}.{held}", namespace_named(namespace, catalog)?)
         }
+        // `SHARD prod.shop.orders 2` — the clause's own spelling (G031), so the
+        // report pastes back into the statement that would correct it.
+        Reach::Shard(namespace, database, table, shard) => {
+            let held = catalog
+                .databases_in(namespace)?
+                .into_iter()
+                .find(|found| found.id == database)
+                .map_or_else(|| database.get().to_string(), |found| found.name);
+            let named = catalog
+                .table(table)?
+                .map_or_else(|| table.get().to_string(), |found| found.name);
+            format!(
+                "SHARD {}.{held}.{named} {}",
+                namespace_named(namespace, catalog)?,
+                shard.get()
+            )
+        }
     })
 }
 
@@ -1985,6 +2011,18 @@ fn described_authorities(catalog: &Catalog<'_, '_>, user: &UserDefinition) -> Re
                 "{}.{}",
                 named_namespace(catalog, namespace)?,
                 named_database(catalog, database)?
+            ),
+            // Never held — no authority comes at a shard's reach — and reported
+            // faithfully if a stored row ever says so, because a report that
+            // hid it would hide exactly the row worth seeing.
+            Reach::Shard(namespace, database, table, shard) => format!(
+                "{}.{}.{} shard {}",
+                named_namespace(catalog, namespace)?,
+                named_database(catalog, database)?,
+                catalog
+                    .table(table)?
+                    .map_or_else(|| table.get().to_string(), |found| found.name),
+                shard.get()
             ),
         };
         described.push(Value::Object(BTreeMap::from([

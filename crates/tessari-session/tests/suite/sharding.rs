@@ -229,3 +229,27 @@ fn store_with(script: &str) -> Store {
     session.run(script).unwrap();
     fresh
 }
+
+#[test]
+fn a_split_tables_record_history_is_refused_rather_than_answered_from_one_log() {
+    // Its commits are in its shards' logs, and a commit spanning two shards is
+    // in its database's: a history read from any one of them is missing what
+    // the others hold, and would still read as a history.
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run(
+            "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g'; \
+             CREATE orders:'h' = { total: 1 };",
+        )
+        .unwrap();
+    match session.run("INFO FOR HISTORY OF orders:'h';") {
+        Err(Error::SpansShardLogs { table, .. }) => assert_eq!(table, "orders"),
+        other => panic!("expected SpansShardLogs, got {other:?}"),
+    }
+    // The control: an unsplit table's history still answers.
+    session
+        .run("DEFINE TABLE plain (n int); CREATE plain:1 = { n: 1 };")
+        .unwrap();
+    assert!(session.run("INFO FOR HISTORY OF plain:1;").is_ok());
+}

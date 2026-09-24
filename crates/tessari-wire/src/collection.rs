@@ -725,6 +725,23 @@ pub fn logs_to_collect(store: &Store) -> Result<Vec<Reach>> {
         logs.push(Reach::Namespace(namespace.id));
         for database in catalog.databases_in(namespace.id).map_err(refused)? {
             logs.push(Reach::Database(namespace.id, database.id));
+            // Each shard of a split table is a log of its own (G031, ADR-0080),
+            // asked for after its database because the table's definition — and
+            // with it the map naming the shards — arrives in the logs above.
+            // Leaving them out would hold every follower level on everything
+            // except the records of a split table, with nothing in an error
+            // state: the shard logs would simply never be asked for.
+            for table in catalog
+                .tables_in(namespace.id, database.id)
+                .map_err(refused)?
+            {
+                let Some(shards) = &table.shards else {
+                    continue;
+                };
+                for span in shards.spans() {
+                    logs.push(Reach::Shard(namespace.id, database.id, table.id, span.id));
+                }
+            }
         }
     }
     transaction.rollback();
@@ -1323,6 +1340,7 @@ mod tests {
                 database: DatabaseId::new(1),
                 table: TableId::new(1),
                 id: RecordId::from("contested"),
+                shard: None,
                 value: StampedValue::stamped(
                     stamp.clone(),
                     RecordValue::Present(b"from one of two masters".to_vec()),
@@ -1533,6 +1551,36 @@ mod tests {
             said.contains("DEFINE REPLICA") && said.contains("REPLICATES"),
             "and it names the statement that grants one: {said}"
         );
+    }
+
+    #[test]
+    fn a_split_tables_shards_are_logs_a_follower_asks_for_after_its_database() {
+        let db = Db::in_memory().expect("an in-memory store");
+        db.session()
+            .run(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+                 USE DATABASE shop; DEFINE TABLE orders (n int) IDENTITY uuid SPLIT AT 'g';",
+            )
+            .expect("a split table");
+        let logs = logs_to_collect(db.store()).expect("this node's own logs");
+        let at = logs
+            .iter()
+            .position(|home| matches!(home, Reach::Database(..)))
+            .expect("the database is a log");
+        let after: Vec<Option<u32>> = logs[at + 1..]
+            .iter()
+            .map(|home| match home {
+                Reach::Shard(_, _, _, shard) => Some(shard.get()),
+                _ => None,
+            })
+            .collect();
+        let shards: Vec<u32> = after.iter().flatten().copied().collect();
+        assert_eq!(
+            after.len(),
+            shards.len(),
+            "only the table's shards follow its database: {logs:?}"
+        );
+        assert_eq!(shards, vec![1, 2]);
     }
 
     #[test]

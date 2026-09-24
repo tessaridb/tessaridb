@@ -106,6 +106,18 @@ pub(crate) fn carried_to(mutation: &Mutation) -> Result<Carried> {
     {
         // Ordinary data. Its address *is* its tenancy, so this costs no decode
         // at all — which is the case that runs on every record.
+        //
+        // A mutation of a split table carries its shard, stamped by the writer
+        // at commit (G031, ADR-0080), so it is carried within that shard — read
+        // from the record's own bytes, like everything else here.
+        if let Some(shard) = mutation.shard {
+            return Ok(Carried::Within(Reach::Shard(
+                mutation.namespace,
+                mutation.database,
+                mutation.table,
+                shard,
+            )));
+        }
         return Ok(
             match Reach::of(Some(mutation.namespace), Some(mutation.database)) {
                 Some(reach) => Carried::Within(reach),
@@ -308,6 +320,7 @@ mod tests {
             database: system::SYSTEM_DATABASE,
             table,
             id,
+            shard: None,
             value: StampedValue::new(value.map_or(RecordValue::Tombstone, |value| {
                 RecordValue::Present(encode_payload(&value).into_bytes())
             })),
@@ -324,6 +337,7 @@ mod tests {
             database,
             table: TableId::new(4),
             id: RecordId::Int(id),
+            shard: None,
             value: StampedValue::new(RecordValue::Tombstone),
         }
     }
@@ -403,6 +417,7 @@ mod tests {
             database: SHOP,
             table: TableId::new(4),
             id: RecordId::Int(1),
+            shard: None,
             value: StampedValue::new(RecordValue::Tombstone),
         };
         assert_eq!(

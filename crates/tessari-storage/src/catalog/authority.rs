@@ -31,7 +31,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tessari_types::{DatabaseId, NamespaceId, Number, Value};
+use tessari_types::{DatabaseId, NamespaceId, Number, ShardId, TableId, Value};
 
 /// Re-exported so that `catalog::Reach` keeps resolving.
 ///
@@ -49,10 +49,13 @@ use crate::error::{Error, Result};
 const FIELD_REACH: &str = "reach";
 const FIELD_NAMESPACE: &str = "namespace";
 const FIELD_DATABASE: &str = "database";
+const FIELD_TABLE: &str = "table";
+const FIELD_SHARD: &str = "shard";
 
 const REACH_STORE: &str = "store";
 const REACH_NAMESPACE: &str = "namespace";
 const REACH_DATABASE: &str = "database";
+const REACH_SHARD: &str = "shard";
 
 const ENTITY: &str = "authority";
 
@@ -161,7 +164,14 @@ impl Kind {
             // fails to compile here instead of silently answering `true`. The
             // set is closed and a new member is a decision (see the type's own
             // doc); this is one of the places that decision has to be made.
-            Self::Read | Self::Write | Self::Manage | Self::Govern | Self::Operate => true,
+            //
+            // A shard is a range for leading, logging and subscribing, and never
+            // one an authority comes in (G031, ADR-0080): a grant over part of a
+            // table's identities is a row-level permission this model does not
+            // have, and one that slipped in through a reach would be it anyway.
+            Self::Read | Self::Write | Self::Manage | Self::Govern | Self::Operate => {
+                !matches!(reach, Reach::Shard(..))
+            }
         }
     }
 }
@@ -209,6 +219,7 @@ impl ReachCodec for Reach {
                 Reach::Store => REACH_STORE,
                 Reach::Namespace(_) => REACH_NAMESPACE,
                 Reach::Database(_, _) => REACH_DATABASE,
+                Reach::Shard(..) => REACH_SHARD,
             }),
         )]);
         if let Some(namespace) = namespace {
@@ -216,6 +227,10 @@ impl ReachCodec for Reach {
         }
         if let Some(database) = database {
             fields.insert(FIELD_DATABASE.to_owned(), number(database.get()));
+        }
+        if let Reach::Shard(_, _, table, shard) = self {
+            fields.insert(FIELD_TABLE.to_owned(), number(table.get()));
+            fields.insert(FIELD_SHARD.to_owned(), number(shard.get()));
         }
         Value::Object(fields)
     }
@@ -261,6 +276,20 @@ impl ReachCodec for Reach {
                 (Some(namespace), Some(database)) => Ok(Reach::Database(
                     NamespaceId::new(namespace),
                     DatabaseId::new(database),
+                )),
+                _ => Err(malformed()),
+            },
+            REACH_SHARD => match (
+                id(FIELD_NAMESPACE),
+                id(FIELD_DATABASE),
+                id(FIELD_TABLE),
+                id(FIELD_SHARD).filter(|shard| *shard != 0),
+            ) {
+                (Some(namespace), Some(database), Some(table), Some(shard)) => Ok(Reach::Shard(
+                    NamespaceId::new(namespace),
+                    DatabaseId::new(database),
+                    TableId::new(table),
+                    ShardId::new(shard),
                 )),
                 _ => Err(malformed()),
             },
@@ -555,6 +584,18 @@ fn written(authority: Authority) -> String {
             text.push('.');
             text.push_str(&database.get().to_string());
         }
+        // Never held (`Kind::may_be_held_at`), and written faithfully anyway: a
+        // row this could not read back would be a stored fact with no reader,
+        // and one that read back as a wider reach would be a grant nobody made.
+        Reach::Shard(namespace, database, table, shard) => {
+            text.push_str(&format!(
+                "{}.{}.{}.{}",
+                namespace.get(),
+                database.get(),
+                table.get(),
+                shard.get()
+            ));
+        }
     }
     text
 }
@@ -565,13 +606,23 @@ fn read(text: &str) -> Option<Authority> {
     let kind = Kind::parse(kind)?;
     let reach = match reach {
         "store" => Reach::Store,
-        rest => match rest.split_once('.') {
-            None => Reach::Namespace(NamespaceId::new(rest.parse().ok()?)),
-            Some((namespace, database)) => Reach::Database(
-                NamespaceId::new(namespace.parse().ok()?),
-                DatabaseId::new(database.parse().ok()?),
-            ),
-        },
+        rest => {
+            let parts: Vec<&str> = rest.split('.').collect();
+            match parts.as_slice() {
+                [namespace] => Reach::Namespace(NamespaceId::new(namespace.parse().ok()?)),
+                [namespace, database] => Reach::Database(
+                    NamespaceId::new(namespace.parse().ok()?),
+                    DatabaseId::new(database.parse().ok()?),
+                ),
+                [namespace, database, table, shard] => Reach::Shard(
+                    NamespaceId::new(namespace.parse().ok()?),
+                    DatabaseId::new(database.parse().ok()?),
+                    TableId::new(table.parse().ok()?),
+                    ShardId::new(shard.parse().ok().filter(|shard| *shard != 0)?),
+                ),
+                _ => return None,
+            }
+        }
     };
     Some(Authority::new(kind, reach))
 }
@@ -727,6 +778,51 @@ mod tests {
         assert!(held.anything_at(Reach::Database(PROD, LIBRARY)));
         assert!(!held.permits(Kind::Read, Reach::Namespace(PROD)));
         assert!(!held.anything_at(Reach::Namespace(OTHER)));
+    }
+
+    #[test]
+    fn a_shard_is_a_reach_the_catalog_stores_and_no_authority_comes_in() {
+        let shard = Reach::Shard(
+            NamespaceId::new(3),
+            DatabaseId::new(4),
+            TableId::new(5),
+            ShardId::new(2),
+        );
+        assert_eq!(
+            Reach::from_value(&shard.to_value(), "leadership", "range")
+                .expect("a shard reach reads back"),
+            shard
+        );
+        for kind in [
+            Kind::Read,
+            Kind::Write,
+            Kind::Manage,
+            Kind::Govern,
+            Kind::Operate,
+            Kind::Replicate,
+        ] {
+            assert!(!kind.may_be_held_at(shard), "{kind:?} at a shard");
+        }
+        // Written faithfully all the same, so a stored row naming one reads back
+        // as what it says rather than as a wider grant.
+        let held = Authority::new(Kind::Read, shard);
+        assert_eq!(read(&written(held)), Some(held));
+    }
+
+    #[test]
+    fn shard_zero_is_not_a_shard_in_either_spelling() {
+        let mut stored = Reach::Shard(
+            NamespaceId::new(3),
+            DatabaseId::new(4),
+            TableId::new(5),
+            ShardId::new(1),
+        )
+        .to_value();
+        if let Value::Object(fields) = &mut stored {
+            fields.insert(FIELD_SHARD.to_owned(), Value::from(0_i64));
+        }
+        assert!(Reach::from_value(&stored, "leadership", "range").is_err());
+        assert_eq!(read("read@3.4.5.0"), None);
     }
 
     #[test]

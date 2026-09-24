@@ -274,6 +274,14 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             .store()
             .series()
             .learn(id, &definition.kind);
+        // Learned here for the same reason, and because the commit that writes
+        // this table's first records may be this very transaction: the map it
+        // stamps them with must not have to come from a catalog read that cannot
+        // yet see the declaration.
+        self.transaction
+            .store()
+            .shards()
+            .learn(id, definition.shards.as_ref());
         if matches!(definition.kind, TableKind::Edge(_)) {
             // Every edge table gets the endpoint machinery, declared pair or
             // not: what the pair adds is a refusal at the write and an order on

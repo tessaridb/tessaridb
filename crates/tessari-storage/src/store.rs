@@ -178,6 +178,7 @@ pub struct Store {
     /// path there is, and a catalog read there would charge every table for a
     /// feature only a series has.
     series: Arc<crate::series::SeriesRegistry>,
+    shards: Arc<crate::shards::ShardRegistry>,
     /// Log divergences refused since this process opened the store.
     ///
     /// Shared with every handle for the same reason the snapshot registry is:
@@ -268,6 +269,7 @@ impl Store {
             vault: Arc::new(crate::vault::OpenVault::sealed()),
             audit: Arc::new(crate::audit::AuditTrail::default()),
             series: Arc::new(crate::series::SeriesRegistry::default()),
+            shards: Arc::new(crate::shards::ShardRegistry::default()),
             divergences: Arc::new(AtomicU64::new(0)),
             discarded: Arc::new(AtomicU64::new(0)),
             campaigns: Arc::new(AtomicU64::new(0)),
@@ -516,12 +518,19 @@ impl Store {
         let held = crate::catalog::Catalog::new(&mut transaction).leaderships()?;
         drop(transaction);
         let mine = self.leading();
-        let mut refused = None;
+        // Every other node leading a range this writes, and whether this node
+        // leads one too. One other leader and none of our own is a redirect;
+        // anything more is a transaction no node may commit (G031 S2.4, Q-772).
+        // The first range led elsewhere is not enough to answer: redirecting
+        // there sends the client to a node that refuses the rest back.
+        let mut elsewhere: Vec<crate::catalog::LeadershipDefinition> = Vec::new();
+        let mut leads_one_here = false;
         for range in ranges {
             let Some(leader) = crate::catalog::covering(&held, *range) else {
                 continue;
             };
             if leader.node == *me || mine.is_some_and(|mine| mine > leader.epoch) {
+                leads_one_here = true;
                 continue;
             }
             // G027 S2.3 — asked HERE, on the range that is about to be refused,
@@ -540,10 +549,20 @@ impl Store {
             if self.admits_two_writers(*range)? {
                 continue;
             }
-            refused = Some(*leader);
-            break;
+            if !elsewhere.iter().any(|held| held.node == leader.node) {
+                elsewhere.push(*leader);
+            }
         }
-        let Some(elsewhere) = refused else {
+        if elsewhere.len() > 1 || (leads_one_here && !elsewhere.is_empty()) {
+            let mut nodes: Vec<[u8; NODE_ID_LEN]> =
+                elsewhere.iter().map(|leader| leader.node).collect();
+            if leads_one_here {
+                nodes.push(*me);
+            }
+            nodes.sort_unstable();
+            return Err(Error::SpansLeaderships { nodes });
+        }
+        let Some(elsewhere) = elsewhere.pop() else {
             return Ok(());
         };
         let mut transaction = self.begin()?;
@@ -740,6 +759,11 @@ impl Store {
     /// Which tables carry a retention floor.
     pub(crate) fn series(&self) -> &Arc<crate::series::SeriesRegistry> {
         &self.series
+    }
+
+    /// Which tables are split, and where.
+    pub(crate) fn shards(&self) -> &Arc<crate::shards::ShardRegistry> {
+        &self.shards
     }
 
     /// Whether this process can open what the store's vaults hold.

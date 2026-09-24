@@ -668,6 +668,25 @@ pub enum Error {
         span: Span,
     },
 
+    /// A read that follows one log was asked of a split table (G031, ADR-0080).
+    ///
+    /// A split table's commits land in its shards' logs, and a commit spanning
+    /// two shards lands in its database's — so the table's history is spread
+    /// over several logs with no order between them. Answering from one of them
+    /// would be a history missing whatever the others hold, and nothing about
+    /// it would say so; it is refused instead.
+    #[error(
+        "table `{table}` is split, so {what} would have to read its shards' logs \
+         and its database's as one timeline, and no order exists between them — \
+         this build refuses rather than answer from one of them"
+    )]
+    SpansShardLogs {
+        /// The split table.
+        table: String,
+        /// What was asked, as a phrase.
+        what: &'static str,
+    },
+
     /// An edge was given properties that are not a set of named fields.
     ///
     /// An edge record already carries `out` and `in`; anything else it holds has

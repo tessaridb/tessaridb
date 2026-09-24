@@ -193,3 +193,68 @@ fn a_subscription_is_never_told_about_a_tenancy_the_session_could_not_select() {
         );
     }
 }
+
+/// A feed over a split table is refused by name (G031, ADR-0080).
+///
+/// The feed follows the database's log, and a split table's single-shard
+/// commits are in its shards' logs — so without the refusal it would start,
+/// run, and deliver every change except that table's, with nothing in an error
+/// state. The control beside it is a feed over the unsplit table in the same
+/// database, which must still start and deliver.
+#[test]
+fn a_feed_that_cannot_see_a_split_tables_shards_is_refused_by_name() {
+    let db = Db::in_memory().unwrap();
+    let mut session = db.session();
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE TABLE orders (n int) IDENTITY uuid SPLIT AT 'g';\n\
+             DEFINE COLLECTION notes;\n\
+             CREATE notes:1 = 'kept';",
+        )
+        .unwrap();
+    let committed = Commits::default();
+    let refused = |table: Option<&str>, session: &mut tessaridb::Session<'_>| {
+        follow(
+            &db,
+            session,
+            &Following {
+                from: Sequence::new(0),
+                table,
+            },
+            &committed,
+            &|| true,
+            &mut |_, _, _| true,
+        )
+    };
+    for table in [Some("orders"), None] {
+        let refusal = refused(table, &mut session).expect_err("a feed over a split table ran");
+        assert!(
+            refusal.contains("`orders` is split") && refusal.contains("change feed"),
+            "{table:?}: {refusal}"
+        );
+    }
+    let delivered = Cell::new(0_u32);
+    let rounds = Cell::new(0_u32);
+    drop(follow(
+        &db,
+        &mut session,
+        &Following {
+            from: Sequence::new(0),
+            table: Some("notes"),
+        },
+        &committed,
+        &|| {
+            rounds.set(rounds.get().saturating_add(1));
+            rounds.get() > 2
+        },
+        &mut |_, _, _| {
+            delivered.set(delivered.get().saturating_add(1));
+            true
+        },
+    ));
+    assert!(
+        delivered.get() >= 1,
+        "the unsplit table beside it still feeds"
+    );
+}

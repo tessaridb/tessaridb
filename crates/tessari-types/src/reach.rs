@@ -13,7 +13,7 @@
 //!
 //! [`Value`]: crate::Value
 
-use crate::{DatabaseId, NamespaceId};
+use crate::{DatabaseId, NamespaceId, ShardId, TableId};
 
 /// How far an authority reaches.
 ///
@@ -29,6 +29,13 @@ pub enum Reach {
     Namespace(NamespaceId),
     /// One database.
     Database(NamespaceId, DatabaseId),
+    /// One shard of one split table — a span of its identities (G031,
+    /// ADR-0080).
+    ///
+    /// A range for leading, logging and subscribing, and never for holding an
+    /// authority: no grant is written at this reach. It sits inside its
+    /// database, so everything that covers the database covers it.
+    Shard(NamespaceId, DatabaseId, TableId, ShardId),
 }
 
 impl Reach {
@@ -54,11 +61,16 @@ impl Reach {
     /// handle the database-without-a-namespace case, which this type makes
     /// unconstructible.
     #[must_use]
+    ///
+    /// A shard answers its database, which is the tenancy it belongs to; it is
+    /// the one reach `of` cannot give back, because a tenancy has no shard.
     pub const fn parts(self) -> (Option<NamespaceId>, Option<DatabaseId>) {
         match self {
             Self::Store => (None, None),
             Self::Namespace(namespace) => (Some(namespace), None),
-            Self::Database(namespace, database) => (Some(namespace), Some(database)),
+            Self::Database(namespace, database) | Self::Shard(namespace, database, _, _) => {
+                (Some(namespace), Some(database))
+            }
         }
     }
 
@@ -76,12 +88,20 @@ impl Reach {
             (Self::Database(namespace, database), Self::Database(theirs, their_database)) => {
                 namespace == theirs && database == their_database
             }
+            (Self::Namespace(mine), Self::Shard(theirs, _, _, _)) => mine == theirs,
+            (Self::Database(namespace, database), Self::Shard(theirs, their_database, _, _)) => {
+                namespace == theirs && database == their_database
+            }
+            // A shard contains itself and nothing else — not a sibling, and not
+            // the table it is part of, which is not a reach.
+            (Self::Shard(..), Self::Shard(..)) => self == other,
             // A database reach does not contain the namespace above it, and a
             // namespace reach does not contain the store. Written out rather
             // than left to a catch-all so that adding a reach fails to compile
             // here instead of silently answering `false`.
-            (Self::Namespace(_) | Self::Database(_, _), Self::Store)
-            | (Self::Database(_, _), Self::Namespace(_)) => false,
+            (Self::Namespace(_) | Self::Database(_, _) | Self::Shard(..), Self::Store)
+            | (Self::Database(_, _) | Self::Shard(..), Self::Namespace(_))
+            | (Self::Shard(..), Self::Database(_, _)) => false,
         }
     }
 
@@ -121,14 +141,41 @@ impl Reach {
                 }
             }
             (Self::Database(mine, my_database), Self::Database(theirs, their_database)) => {
-                if mine != theirs {
-                    Self::Store
-                } else if my_database == their_database {
-                    Self::Database(mine, my_database)
-                } else {
+                Self::join_databases(mine, my_database, theirs, their_database)
+            }
+            // A shard joins as its database would, except with itself: two
+            // shards of one database meet at that database, never at a table,
+            // because a table is not a range anything is filed under.
+            (Self::Shard(..), Self::Shard(..)) if self == other => self,
+            (Self::Shard(mine, my_database, _, _), Self::Shard(theirs, their_database, _, _))
+            | (Self::Shard(mine, my_database, _, _), Self::Database(theirs, their_database))
+            | (Self::Database(mine, my_database), Self::Shard(theirs, their_database, _, _)) => {
+                Self::join_databases(mine, my_database, theirs, their_database)
+            }
+            (Self::Namespace(mine), Self::Shard(theirs, _, _, _))
+            | (Self::Shard(theirs, _, _, _), Self::Namespace(mine)) => {
+                if mine == theirs {
                     Self::Namespace(mine)
+                } else {
+                    Self::Store
                 }
             }
+        }
+    }
+
+    /// Where two databases meet: themselves, their namespace, or the store.
+    fn join_databases(
+        mine: NamespaceId,
+        my_database: DatabaseId,
+        theirs: NamespaceId,
+        their_database: DatabaseId,
+    ) -> Self {
+        if mine != theirs {
+            Self::Store
+        } else if my_database == their_database {
+            Self::Database(mine, my_database)
+        } else {
+            Self::Namespace(mine)
         }
     }
 }
@@ -141,6 +188,54 @@ mod tests {
     const OTHER: NamespaceId = NamespaceId::new(4);
     const LIBRARY: DatabaseId = DatabaseId::new(7);
     const ARCHIVE: DatabaseId = DatabaseId::new(8);
+
+    const ORDERS: TableId = TableId::new(5);
+
+    fn shard(n: u32) -> Reach {
+        Reach::Shard(PROD, LIBRARY, ORDERS, ShardId::new(n))
+    }
+
+    #[test]
+    fn a_shard_sits_inside_its_database_and_everything_above_it() {
+        assert!(Reach::Store.contains(shard(1)));
+        assert!(Reach::Namespace(PROD).contains(shard(1)));
+        assert!(Reach::Database(PROD, LIBRARY).contains(shard(1)));
+        assert!(!Reach::Database(PROD, ARCHIVE).contains(shard(1)));
+        assert!(!Reach::Namespace(OTHER).contains(shard(1)));
+    }
+
+    #[test]
+    fn a_shard_contains_itself_and_nothing_else() {
+        assert!(shard(1).contains(shard(1)));
+        assert!(!shard(1).contains(shard(2)), "a sibling is not inside it");
+        assert!(!shard(1).contains(Reach::Database(PROD, LIBRARY)));
+        assert!(!shard(1).contains(Reach::Namespace(PROD)));
+        assert!(!shard(1).contains(Reach::Store));
+    }
+
+    #[test]
+    fn two_shards_meet_at_their_database_and_never_at_a_table() {
+        assert_eq!(shard(1).join(shard(1)), shard(1));
+        assert_eq!(shard(1).join(shard(2)), Reach::Database(PROD, LIBRARY));
+        assert_eq!(
+            shard(1).join(Reach::Database(PROD, LIBRARY)),
+            Reach::Database(PROD, LIBRARY)
+        );
+        assert_eq!(
+            shard(1).join(Reach::Database(PROD, ARCHIVE)),
+            Reach::Namespace(PROD)
+        );
+        assert_eq!(shard(1).join(Reach::Namespace(OTHER)), Reach::Store);
+        assert_eq!(
+            Reach::Namespace(PROD).join(shard(3)),
+            Reach::Namespace(PROD)
+        );
+    }
+
+    #[test]
+    fn a_shard_answers_the_tenancy_of_its_database() {
+        assert_eq!(shard(2).parts(), (Some(PROD), Some(LIBRARY)));
+    }
 
     #[test]
     fn two_databases_in_one_namespace_join_at_that_namespace() {

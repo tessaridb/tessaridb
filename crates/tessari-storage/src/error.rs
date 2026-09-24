@@ -322,6 +322,31 @@ pub enum Error {
         epoch: Epoch,
     },
 
+    /// A transaction writes ranges that different nodes lead, so no node may
+    /// commit it (G031 S2.4, ADR-0080, Q-772).
+    ///
+    /// Not a redirect: every node named here would refuse the same transaction
+    /// back, because each leads only part of what it writes. A transaction is
+    /// judged on the node that leads the range it writes, and this one has no
+    /// such node — the remedy is one transaction per leader. The nodes are
+    /// named, sorted, so the caller can see which ranges went where.
+    #[error(
+        "this transaction writes ranges led by {} different nodes ({}), and no \
+         node may commit it — write each leader's ranges in a transaction of \
+         their own",
+        nodes.len(),
+        nodes
+            .iter()
+            .map(|node| tessari_types::RecordId::Uuid(*node).to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )]
+    SpansLeaderships {
+        /// Every node leading a range this transaction writes, this one
+        /// included when it leads one of them.
+        nodes: Vec<[u8; tessari_encoding::NODE_ID_LEN]>,
+    },
+
     /// A write met a record whose stored versions disagree with each other.
     ///
     /// Two nodes wrote this record without either having seen the other's
@@ -813,6 +838,7 @@ impl Error {
             // ever collected into it — so it does not need to look inside.
             | Self::RecordsRefused { .. }
             | Self::IdSpaceExhausted { .. }
+            | Self::SpansLeaderships { .. }
             | Self::SplitNeedsGeneratedUuid { .. }
             | Self::SplitPointsOutOfOrder { .. }
             | Self::SplitOnAKindThatIsNotRecords { .. }
