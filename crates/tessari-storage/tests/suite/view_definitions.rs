@@ -62,6 +62,7 @@ fn view(id: u32, read: &str) -> TableDefinition {
         identity: IdentityKind::default(),
         graph: None,
         conflict: None,
+        shards: None,
     }
 }
 

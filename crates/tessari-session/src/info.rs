@@ -1792,6 +1792,30 @@ fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> {
     if let Some(read) = definition.view_read() {
         shape.insert("view".to_owned(), Value::from(read));
     }
+    // Present only on a split table (G031, ADR-0080). Each bound is the literal
+    // the clause takes — `'g'`, `uuid '…'` — so what the report prints is what
+    // the next declaration types, and `NONE` marks an open end rather than a
+    // shard with nothing in it.
+    if let Some(shards) = &definition.shards {
+        let bound = |at: Option<&tessari_types::RecordId>| {
+            at.map_or(Value::None, |id| Value::from(id.to_literal().as_str()))
+        };
+        shape.insert(
+            "shards".to_owned(),
+            Value::Array(
+                shards
+                    .spans()
+                    .map(|span| {
+                        Value::Object(BTreeMap::from([
+                            ("id".to_owned(), Value::from(i64::from(span.id.get()))),
+                            ("from".to_owned(), bound(span.from)),
+                            ("to".to_owned(), bound(span.to)),
+                        ]))
+                    })
+                    .collect(),
+            ),
+        );
+    }
     // Present only on a table that belongs to one, and reported as the **id**
     // for the reason the endpoints below are: this report says what is stored,
     // and a name resolved here would be a second read able to disagree with the

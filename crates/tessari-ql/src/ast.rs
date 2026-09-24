@@ -143,6 +143,14 @@ pub enum StatementKind {
         /// An edge kind is the asymmetric case and gets its own word, because it
         /// is never selected from and its entries are not records.
         graph: Option<Name>,
+        /// Where the table's shards begin: `DEFINE TABLE orders IDENTITY uuid
+        /// SPLIT AT 'g', 'p'` is three shards (G031, ADR-0080).
+        ///
+        /// In the order the statement wrote them. Empty is one shard — a table
+        /// that says nothing is not split. Whether the points are in key order is
+        /// the catalog's to refuse rather than this list's to fix, because a list
+        /// the parser sorted would hide the mistake the refusal names.
+        split: Vec<RecordId>,
         /// What the table does with a write it cannot order, when the statement
         /// said: `DEFINE TABLE ledger (…) LAST WRITER WINS` (G027 S3.2).
         ///

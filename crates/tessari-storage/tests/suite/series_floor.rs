@@ -100,6 +100,7 @@ impl Fixture {
                     identity: identity_kind,
                     graph: None,
                     conflict: None,
+                    split: Vec::new(),
                 },
             )
             .unwrap();

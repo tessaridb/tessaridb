@@ -95,6 +95,16 @@ define_id! {
 }
 
 define_id! {
+    /// Identifies one shard of a table — one span of its identities (ADR-0080).
+    ///
+    /// Numbered per table from `1`, in key order at declaration, and never
+    /// reused: a shard's span does not change after it is declared, so an id
+    /// names one span for as long as the table exists. `0` is not a shard; the
+    /// log uses it to say a mutation's table is not split at all.
+    ShardId(u32)
+}
+
+define_id! {
     /// Identifies a declared field on a table.
     ///
     /// A field carries an id even though nothing keys on it, because the catalog

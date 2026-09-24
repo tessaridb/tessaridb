@@ -95,6 +95,7 @@ mod selective_stream;
 mod series;
 mod several;
 mod shaping;
+mod sharding;
 mod sign_in_throttle;
 mod spatial_index;
 mod spatial_nearest_reads;

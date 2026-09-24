@@ -1517,6 +1517,7 @@ fn declaring(policy: Option<ConflictPolicy>) -> (Store, NamespaceId, DatabaseId,
                 identity: IdentityKind::default(),
                 graph: None,
                 conflict: policy,
+                split: Vec::new(),
             },
         )
         .unwrap();

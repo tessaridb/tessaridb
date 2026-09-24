@@ -607,6 +607,49 @@ pub enum Error {
         refusals: Vec<Error>,
     },
 
+    /// `SPLIT AT` on a table whose records the store numbers with a counter
+    /// (G031 S1.2, ADR-0080).
+    ///
+    /// A counter is one row the whole store shares, so every generated identity
+    /// would route its insert through the store's own log and leader, and two
+    /// shards written by two nodes could not agree on the next number.
+    #[error(
+        "table `{table}` is split, so its records cannot be numbered by a counter \
+         the whole store shares — declare it `IDENTITY uuid`, or name each record"
+    )]
+    SplitNeedsGeneratedUuid {
+        /// The table being declared.
+        table: String,
+    },
+
+    /// `SPLIT AT` points that do not ascend strictly in key order.
+    ///
+    /// Refused rather than sorted, because a list sorted for its author accepts
+    /// a boundary they wrote in the wrong place and says nothing.
+    #[error(
+        "table `{table}`'s split point {position} does not sort after the one \
+         before it — write the points once each, in key order"
+    )]
+    SplitPointsOutOfOrder {
+        /// The table being declared.
+        table: String,
+        /// The offending point, counted from one in written order.
+        position: usize,
+    },
+
+    /// `SPLIT AT` on a table kind whose rows are not records a caller writes by
+    /// identity — an edge, a bucket, a vault, a queue, a view, a series.
+    #[error(
+        "table `{table}` is {kind}, and only a table or a collection can be split \
+         by the identities of its records"
+    )]
+    SplitOnAKindThatIsNotRecords {
+        /// The table being declared.
+        table: String,
+        /// What it is instead, as a phrase.
+        kind: &'static str,
+    },
+
     /// The parent a catalog entry was to be created under does not exist.
     #[error("no such {entity}: {id}")]
     NoSuchParent {
@@ -770,6 +813,9 @@ impl Error {
             // ever collected into it — so it does not need to look inside.
             | Self::RecordsRefused { .. }
             | Self::IdSpaceExhausted { .. }
+            | Self::SplitNeedsGeneratedUuid { .. }
+            | Self::SplitPointsOutOfOrder { .. }
+            | Self::SplitOnAKindThatIsNotRecords { .. }
             // Validation and not `Unavailable`: the store is healthy and the
             // sequence asked for is the thing that is wrong. Retrying the same
             // read cannot succeed, and a floor only ever rises, so a caller that

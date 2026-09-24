@@ -4,14 +4,14 @@ use core::num::NonZeroU32;
 
 use super::Parser;
 use tessari_types::{
-    Assertion, ConflictPolicy, Duration, FieldKind, Filter, IdentityKind, Number, Path,
+    Assertion, ConflictPolicy, Duration, FieldKind, Filter, IdentityKind, Number, Path, RecordId,
     Replication, ReplicationClass, Step, parse_uuid,
 };
 
 use crate::ast::{
     Answer, Approximation, Assignment, ColumnDeclaration, ConsumerSource, CreateTarget, Direction,
     EdgeClause, EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, FieldMapping, FieldPath, Hop,
-    InfoSubject, JoinSide, Name, OnFailure, Password, Projection, RangeExpr, ReachRef,
+    Identity, InfoSubject, JoinSide, Name, OnFailure, Password, Projection, RangeExpr, ReachRef,
     RecordTarget, Select, Source, Statement, StatementKind, TableChange, TableRef, UserChange,
     UserGrant, Written,
 };
@@ -759,6 +759,7 @@ impl Parser<'_> {
                 let mut identity: Option<IdentityKind> = None;
                 let mut graph: Option<Name> = None;
                 let mut conflict: Option<ConflictPolicy> = None;
+                let mut split: Option<Vec<RecordId>> = None;
                 loop {
                     if strictness.is_none() && self.eat_keyword(Keyword::Schemafull) {
                         strictness = Some(true);
@@ -785,6 +786,12 @@ impl Parser<'_> {
                     } else if conflict.is_none() && self.eat_word("refuse") {
                         self.expect_word("conflicts", "`CONFLICTS` after `REFUSE`")?;
                         conflict = Some(ConflictPolicy::Refuse);
+                    // `SPLIT AT` — contextual words for the reason the conflict
+                    // phrase gives: `split` and `at` are ordinary English a
+                    // stored script may already use as names.
+                    } else if split.is_none() && self.eat_word("split") {
+                        self.expect_word("at", "`AT` and the identity a shard begins at")?;
+                        split = Some(self.split_points()?);
                     } else {
                         break;
                     }
@@ -816,6 +823,7 @@ impl Parser<'_> {
                     edge,
                     identity: identity.unwrap_or_default(),
                     graph,
+                    split: split.unwrap_or_default(),
                     conflict,
                     if_not_exists,
                 })
@@ -2524,6 +2532,31 @@ impl Parser<'_> {
                 answer: self.answer(verb)?,
             },
         })
+    }
+
+    /// The identities after `SPLIT AT`, as written and in the order written.
+    ///
+    /// Each is read by the same `record_id` a `table:id` target uses, so a point
+    /// is spelled exactly as the record it bounds would be addressed. A
+    /// parameter is refused here rather than bound later: a shard boundary is
+    /// read in the script that declared it.
+    fn split_points(&mut self) -> Result<Vec<RecordId>> {
+        let mut points = Vec::new();
+        loop {
+            let at = self.span_here();
+            match self.record_id(at)? {
+                Identity::Fixed(point) => points.push(point),
+                Identity::Parameter(name) => {
+                    return Err(Error::SplitPointIsNotWritten {
+                        name,
+                        span: at.to(self.span_behind()),
+                    });
+                }
+            }
+            if !self.eat_punct(Punct::Comma) {
+                return Ok(points);
+            }
+        }
     }
 
     /// The word after `IDENTITY`.

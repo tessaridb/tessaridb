@@ -35,6 +35,7 @@ mod grant;
 mod graph;
 mod leadership;
 mod replica;
+mod shard;
 pub(crate) mod system;
 mod user;
 mod vault;
@@ -67,6 +68,7 @@ pub(crate) use leadership::covering;
 pub use replica::{
     ReplicaDefinition, another_node_may_write, names_a_peer, the_row_a_greeting_binds,
 };
+pub use shard::{ShardMap, ShardSpan};
 pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
 pub use user::{Role, UserDefinition, Verb};
 pub use vault::VaultRoot;
@@ -245,6 +247,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
                 id: database.get(),
             });
         }
+        let shards = shard::declared_for(name, &shape)?;
         let qualified = qualify(Level::Table, &[namespace.get(), database.get()], name);
         self.reserve_name(&qualified)?;
         let id = TableId::new(self.allocate(Level::Table)?);
@@ -258,6 +261,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             identity: shape.identity,
             graph: shape.graph,
             conflict: shape.conflict,
+            shards,
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());

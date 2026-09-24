@@ -14,11 +14,12 @@ use std::collections::BTreeMap;
 
 use tessari_types::{
     ConflictPolicy, DatabaseId, Duration, GraphId, IdentityKind, IndexId, NamespaceId, Number,
-    Path, Replication, ReplicationClass, TableId, Value,
+    Path, RecordId, Replication, ReplicationClass, TableId, Value,
 };
 
 use tessari_vault::{KeyId, Wrapped};
 
+use super::ShardMap;
 use crate::error::{Error, Result};
 
 const FIELD_ID: &str = "id";
@@ -59,6 +60,7 @@ const FIELD_DISTANCE: &str = "distance";
 const FIELD_REPLICATION: &str = "replication";
 const FIELD_REPLICATION_CLASS: &str = "replication_class";
 const FIELD_CONFLICT: &str = "conflict";
+const FIELD_SHARDS: &str = "shards";
 
 /// A namespace: the outermost tenancy level.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,6 +177,13 @@ pub struct TableDefinition {
     /// seeing each other. A counter can tolerate a dropped update beside a
     /// ledger row in the same namespace that cannot (Q-633).
     pub conflict: Option<ConflictPolicy>,
+    /// Where the table's shards begin, when it is split (G031, ADR-0080).
+    ///
+    /// `None` is a table that is not split, which is every table that existed
+    /// before the clause did — written only when present, so no stored entry is
+    /// touched and no migration step is owed, the contract every optional field
+    /// here keeps.
+    pub shards: Option<ShardMap>,
 }
 
 impl TableDefinition {
@@ -409,6 +418,11 @@ impl TableDefinition {
         if let Some(conflict) = self.conflict {
             fields.insert(FIELD_CONFLICT.to_owned(), conflict.to_value());
         }
+        // Written only when the table is split, for the same reason: an
+        // unsharded table's entry stays byte-for-byte what it was.
+        if let Some(shards) = &self.shards {
+            fields.insert(FIELD_SHARDS.to_owned(), shards.to_value());
+        }
         // A declaration is not a flag, so it is written only by the edge table
         // that has one. Absent is how every edge table declared without a pair
         // reads, which is the same compatibility contract the flags keep: the
@@ -547,6 +561,10 @@ impl TableDefinition {
                     },
                 )?),
             },
+            shards: match fields.get(FIELD_SHARDS) {
+                None => None,
+                Some(held) => Some(ShardMap::from_value(held)?),
+            },
         })
     }
 }
@@ -583,6 +601,12 @@ pub struct TableShape {
     /// forget to pass, and a table silently refusing writes its operator asked
     /// to be taken looks like nothing at all being wrong.
     pub conflict: Option<ConflictPolicy>,
+    /// Where the table's shards begin, as the declaration wrote them.
+    ///
+    /// Empty is a table that is not split. Carried as written rather than as a
+    /// map, because turning it into one is where the refusals live and they
+    /// belong to the catalog that stores the result (`create_table`).
+    pub split: Vec<RecordId>,
 }
 
 /// Which engine's rules a table plays by.
@@ -1955,6 +1979,7 @@ mod tests {
             // absent, which is exactly the bug this assertion is for.
             identity: IdentityKind::Uuid,
             conflict: None,
+            shards: None,
         };
         assert_eq!(
             TableDefinition::from_value(&table.to_value()).unwrap(),
@@ -2063,6 +2088,7 @@ mod tests {
             name: "follows".to_owned(),
             schemafull: false,
             graph: None,
+            shards: None,
             kind: TableKind::Edge(Some(EdgeDeclaration {
                 from: TableId::new(4),
                 to: TableId::new(5),
@@ -2120,6 +2146,7 @@ mod tests {
             name: "embeddings".to_owned(),
             schemafull: false,
             graph: None,
+            shards: None,
             // Deliberately the second distance rather than the first: a store
             // that round tripped as `cosine` whatever it was declared with
             // survives an assertion made with the default.
