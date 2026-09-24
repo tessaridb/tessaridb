@@ -220,11 +220,14 @@ follows is what runs today, not a roadmap.
   <!-- absent: distance-to-a-shape-larger-than-a-position -->
   <!-- absent: nearest-first-under-a-where -->
   <!-- absent: measured-covering-budget -->
-- ⛔ **Not there:** sharding. A namespace lives where its replication says and
-  a range is led by one node or declared open to several, but the store does not
-  split a range across machines and there is no scatter-gather read. There is no
-  cross-range transaction either: a transaction is judged on the node leading
-  the range it writes.
+- ⛔ **Not there:** sharding that spans machines at run time. A table can be
+  split by the identities of its records (`SPLIT AT`), and each shard is logged,
+  replicated and — where a leadership names it — led on its own; but a running
+  cluster still elects one leader for the whole store, a table's shards are
+  fixed when it is declared, and a node holding only some shards refuses a read
+  that needs the rest instead of gathering it — there is no scatter-gather read.
+  There is no cross-range transaction either: one writing ranges that two nodes
+  lead is refused, naming both.
   <!-- absent: sharding-execution -->
   <!-- absent: cross-range-transactions -->
 - 🔄 **Not promised yet:** before 1.0 the query language, the wire format and the
@@ -423,7 +426,7 @@ crates/
 
 Cluster membership, leadership and replication have no crate of their own: they
 live in `tessari-wire` and `tessari-storage`, beside the wire and the log they
-are written in terms of. Sharding has no crate because it is not built. The list
+are written in terms of, and so does splitting a table into shards. The list
 above is what exists, not a plan.
 
 ## Building
