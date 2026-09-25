@@ -241,7 +241,7 @@ pub(crate) fn maintain(
             mutation.table,
             mutation.id.clone(),
         );
-        let previous = view.get(&address)?;
+        let previous = view.get_held(&address)?;
 
         for definition in &definitions {
             batch = apply_one(

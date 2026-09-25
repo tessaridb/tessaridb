@@ -297,6 +297,7 @@ impl Session<'_> {
                 ))))
             }
             ExprKind::Get(target) => self.read_key(transaction, target),
+            ExprKind::Ttl(target) => self.ttl_of(transaction, target),
             ExprKind::Select(select) => self.read_as_value(transaction, select),
         }
     }
@@ -3379,14 +3380,6 @@ pub(crate) fn key_bound(value: &Value, span: Span) -> Result<RecordId> {
         Value::Bytes(bytes) => Ok(RecordId::Bytes(bytes.clone())),
         _ => Err(Error::InvalidKeyBound { span }),
     }
-}
-
-/// Whether a key falls inside a bound pair.
-pub(crate) fn within(id: &RecordId, start: &RecordId, end: &RecordId, inclusive: bool) -> bool {
-    if id < start {
-        return false;
-    }
-    if inclusive { id <= end } else { id < end }
 }
 
 /// What a source produced: the records, how they were reached, and what its

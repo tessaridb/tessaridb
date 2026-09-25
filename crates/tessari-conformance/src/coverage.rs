@@ -117,6 +117,9 @@ forms! {
     Get => "GET",
     Set => "SET",
     Del => "DEL",
+    Expire => "EXPIRE",
+    Persist => "PERSIST",
+    Incr => "INCR",
     Put => "PUT",
     Read => "READ",
     Backup => "BACKUP",
@@ -286,6 +289,9 @@ mod tests {
              GET s:1;\
              SET s:1 = 1;\
              DEL s:1;\
+             EXPIRE s:1 1s;\
+             PERSIST s:1;\
+             INCR s:1;\
              KEYS FROM s;\
              PUT b:'/a.txt' = 0x0a;\
              READ b:'/a.txt';\

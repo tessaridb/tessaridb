@@ -163,7 +163,7 @@ fn basic(name: &str, password: &str) -> String {
 
 #[test]
 fn the_environment_declares_the_first_user_and_closes_the_store() {
-    let port = 47931;
+    let port = 47903;
     let mut child = node(
         port,
         "closes",
@@ -191,7 +191,7 @@ fn the_environment_declares_the_first_user_and_closes_the_store() {
 
 #[test]
 fn a_password_that_looks_like_a_statement_stays_a_password() {
-    let port = 47932;
+    let port = 47904;
     // If this were concatenated rather than escaped, the quote would end the
     // literal and `mallory` would be declared alongside `root` — a second owner
     // nobody asked for, on a node that came up looking correct.
@@ -224,7 +224,7 @@ fn a_password_that_looks_like_a_statement_stays_a_password() {
 
 #[test]
 fn half_a_credential_stops_the_node_rather_than_opening_it() {
-    let port = 47933;
+    let port = 47905;
     // A misspelled password variable would otherwise bring a node up **open**,
     // on a network, looking exactly like one that came up correctly.
     let mut child = node(port, "half", &[("TESSARIDB_INITIAL_USER", "root")]);
@@ -240,7 +240,7 @@ fn half_a_credential_stops_the_node_rather_than_opening_it() {
 
 #[test]
 fn a_name_that_could_carry_a_statement_stops_the_node() {
-    let port = 47934;
+    let port = 47906;
     let mut child = node(
         port,
         "badname",
@@ -255,7 +255,7 @@ fn a_name_that_could_carry_a_statement_stops_the_node() {
 
 #[test]
 fn a_second_start_leaves_the_store_alone() {
-    let port = 47935;
+    let port = 47907;
     let mut child = node(
         port,
         "again",

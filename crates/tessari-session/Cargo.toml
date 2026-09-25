@@ -29,6 +29,8 @@ thiserror.workspace = true
 [dev-dependencies]
 tessari-encoding.workspace = true
 tessari-kv.workspace = true
+tessari-lsm.workspace = true
+tempfile = "3"
 
 [lints]
 workspace = true

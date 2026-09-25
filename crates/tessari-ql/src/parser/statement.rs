@@ -265,6 +265,11 @@ impl Parser<'_> {
             // tracker's own table has a `claim` on it — so reserving them here
             // would take them away from the schema the word exists to serve.
             _ if self.eat_word("claim") => self.claim_statement(start)?,
+            // `expire` and `persist` for the same reason as `claim`: a cache's
+            // own tables are where an `expire` column lives (G035).
+            _ if self.eat_word("expire") => self.expire_statement()?,
+            _ if self.eat_word("persist") => self.persist_statement()?,
+            _ if self.eat_word("incr") => self.incr_statement()?,
             _ if self.eat_word("release") => self.release_statement(start)?,
             _ if self.eat_word("reveal") => self.reveal_statement(start)?,
             _ if self.eat_word("add") => self.add_recipient_statement(start)?,
@@ -2550,7 +2555,7 @@ impl Parser<'_> {
                     self.answer(verb)?,
                 )
             }
-            Keyword::Set => StatementKind::Set { target, value },
+            Keyword::Set => self.set_statement(target, value)?,
             _ => StatementKind::Create {
                 target: CreateTarget::Named(target),
                 value,
@@ -3374,12 +3379,26 @@ impl Parser<'_> {
         self.advance();
         self.expect_keyword(Keyword::From, "`FROM` and the space to list")?;
         let space = self.table_ref()?;
-        let range = if self.eat_keyword(Keyword::Range) {
-            Some(self.range()?)
+        let mut range = None;
+        let mut prefix = None;
+        if self.eat_keyword(Keyword::Range) {
+            range = Some(self.range()?);
+        } else if self.eat_keyword(Keyword::Prefix) {
+            prefix = Some(self.expression()?);
+        }
+        let after = if self.eat_word("after") {
+            Some(self.expression()?)
         } else {
             None
         };
-        Ok(StatementKind::Keys { space, range })
+        let limit = self.bound("limit")?;
+        Ok(StatementKind::Keys {
+            space,
+            range,
+            prefix,
+            after,
+            limit,
+        })
     }
 
     /// The range after `RANGE`, which must be one.

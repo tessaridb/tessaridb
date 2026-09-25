@@ -63,6 +63,7 @@ pub(super) fn reads_a_record(expr: &Expr) -> bool {
         | ExprKind::Table(_)
         | ExprKind::Record(_)
         | ExprKind::Get(_)
+        | ExprKind::Ttl(_)
         | ExprKind::Select(_) => false,
     }
 }
@@ -117,6 +118,7 @@ pub(super) fn answers_afresh(expr: &Expr) -> bool {
         | ExprKind::Table(_)
         | ExprKind::Record(_)
         | ExprKind::Get(_)
+        | ExprKind::Ttl(_)
         | ExprKind::Select(_) => false,
     }
 }
@@ -188,6 +190,7 @@ pub(crate) fn roots_read(expr: &Expr, into: &mut BTreeSet<String>) {
         | ExprKind::Table(_)
         | ExprKind::Record(_)
         | ExprKind::Get(_)
+        | ExprKind::Ttl(_)
         | ExprKind::Select(_) => {}
     }
 }

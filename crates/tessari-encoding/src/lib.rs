@@ -29,6 +29,7 @@
 mod adjacency;
 mod causal;
 mod error;
+mod expiry_key;
 mod index_keys;
 mod index_value;
 mod keys;
@@ -44,6 +45,7 @@ mod value;
 pub use adjacency::{AdjacencyKey, Direction, EdgeProperties};
 pub use causal::{CausalOrder, CausalStamp, CausalVersions};
 pub use error::{Error, Result};
+pub use expiry_key::{ExpiryKey, ExpiryMark};
 pub use index_keys::{
     INDEX_PREFIX_LEN, IndexAddress, IndexTarget, IndexValues, NoPayload, Posting, PostingKey,
     SearchStatistics, SearchStatisticsKey, SearchTermKey, SecondaryIndexKey, SpatialRefinement,

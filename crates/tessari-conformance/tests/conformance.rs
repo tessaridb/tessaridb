@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use tessari_conformance::{
-    FORMS, examples, forms_in, function_spellings, read, run, specification_path,
+    FORMS, examples, forms_in, function_spellings, read, run, run_on, specification_path,
     uncalled_functions, uncovered,
 };
 
@@ -32,6 +32,38 @@ fn corpora() -> Vec<(String, String)> {
     found.sort_by(|left, right| left.0.cmp(&right.0));
     assert!(!found.is_empty(), "no corpus files");
     found
+}
+
+/// The key-value corpus again, on the disk backend: a space must behave the same
+/// wherever it is stored (G035, owner's condition).
+#[test]
+fn the_key_value_corpus_holds_on_the_disk_backend() {
+    let text = fs::read_to_string(corpus_dir().join("key-value.tessariql")).unwrap();
+    let corpus = read("key-value.tessariql", &text).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let backend = tessari_lsm::LsmBackend::open(
+        directory.path(),
+        tessari_lsm::StoreConfig::new(tessari_lsm::Durability::ProcessCrashSafe),
+    )
+    .unwrap();
+    let results = run_on(&corpus, std::sync::Arc::new(backend));
+    let failures: Vec<String> = results
+        .iter()
+        .filter_map(|result| {
+            result.failure.as_ref().map(|failure| {
+                format!(
+                    "{}:{} {} — {failure}",
+                    result.corpus, result.line, result.name
+                )
+            })
+        })
+        .collect();
+    assert!(
+        results.len() > 10,
+        "the corpus holds {} cases",
+        results.len()
+    );
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]

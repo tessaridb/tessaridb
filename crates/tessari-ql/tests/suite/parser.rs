@@ -439,7 +439,7 @@ fn the_key_value_verbs_parse() {
         StatementKind::Set { .. }
     ));
 
-    let StatementKind::Keys { space, range } = one("KEYS FROM sessions;") else {
+    let StatementKind::Keys { space, range, .. } = one("KEYS FROM sessions;") else {
         panic!("expected a key listing");
     };
     assert_eq!(space.name.text, "sessions");

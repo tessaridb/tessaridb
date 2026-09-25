@@ -140,6 +140,9 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::DeleteSpan { .. } => Err(unrenderable("DELETE FROM a span", span)),
         StatementKind::Get { .. } => Err(unrenderable("GET", span)),
         StatementKind::Set { .. } => Err(unrenderable("SET", span)),
+        StatementKind::Expire { .. } => Err(unrenderable("EXPIRE", span)),
+        StatementKind::Persist { .. } => Err(unrenderable("PERSIST", span)),
+        StatementKind::Incr { .. } => Err(unrenderable("INCR", span)),
         StatementKind::Del { .. } => Err(unrenderable("DEL", span)),
         StatementKind::Put { .. } => Err(unrenderable("PUT", span)),
         StatementKind::Read { .. } => Err(unrenderable("READ", span)),
@@ -379,6 +382,7 @@ fn write_expr(out: &mut String, expr: &Expr) -> Result<()> {
         ExprKind::If { .. } => unwritten("a conditional"),
         ExprKind::Coalesce(..) => unwritten("a coalesce"),
         ExprKind::Get(_) => unwritten("an embedded GET"),
+        ExprKind::Ttl(_) => unwritten("an embedded TTL"),
         ExprKind::Select(_) => unwritten("an embedded read"),
     }
 }

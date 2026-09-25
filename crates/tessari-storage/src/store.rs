@@ -180,6 +180,9 @@ pub struct Store {
     series: Arc<crate::series::SeriesRegistry>,
     shards: Arc<crate::shards::ShardRegistry>,
     served: Arc<crate::served::Served>,
+    /// Whether any record version in this store has ever carried an expiry
+    /// (G035). See [`crate::lapse`] for why the commit path asks.
+    expiring: Arc<crate::lapse::Expiring>,
     /// Log divergences refused since this process opened the store.
     ///
     /// Shared with every handle for the same reason the snapshot registry is:
@@ -267,6 +270,7 @@ impl Store {
         seed_version_position(&backend)?;
         crate::node::ensure(&backend)?;
         let served = Arc::new(crate::served::Served::load(backend.as_ref())?);
+        let expiring = Arc::new(crate::lapse::Expiring::load(backend.as_ref())?);
         let store = Self {
             backend,
             snapshots: Arc::new(Registry::default()),
@@ -278,6 +282,7 @@ impl Store {
             series: Arc::new(crate::series::SeriesRegistry::default()),
             shards: Arc::new(crate::shards::ShardRegistry::default()),
             served,
+            expiring,
             divergences: Arc::new(AtomicU64::new(0)),
             discarded: Arc::new(AtomicU64::new(0)),
             campaigns: Arc::new(AtomicU64::new(0)),
@@ -781,6 +786,10 @@ impl Store {
     }
 
     /// Which tables carry a retention floor.
+    pub(crate) fn expiring(&self) -> &crate::lapse::Expiring {
+        &self.expiring
+    }
+
     pub(crate) fn series(&self) -> &Arc<crate::series::SeriesRegistry> {
         &self.series
     }
@@ -1788,6 +1797,9 @@ impl Store {
         // would carry the records and none of the counts, and its planner would
         // then choose a different access path for the same query.
         let batch = crate::cardinality::maintain(self, record, batch, version)?;
+        // And the expiry index, so a follower promoted to leader can remove what
+        // has expired without having written any of it (G035).
+        let batch = crate::lapse::maintain(self, record, batch)?;
         self.backend.apply(batch)?;
         Ok(())
     }

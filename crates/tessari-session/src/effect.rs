@@ -238,6 +238,9 @@ impl Effect {
             | StatementKind::Relate { .. }
             | StatementKind::DeleteEdge { .. }
             | StatementKind::Set { .. }
+            | StatementKind::Expire { .. }
+            | StatementKind::Persist { .. }
+            | StatementKind::Incr { .. }
             | StatementKind::Del { .. }
             | StatementKind::Put { .. } => Self::Write,
         }

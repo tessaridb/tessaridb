@@ -1515,12 +1515,41 @@ pub enum StatementKind {
         /// The key to read.
         target: RecordTarget,
     },
-    /// `SET sessions:'abc' = …`
+    /// `SET sessions:'abc' = … [EXPIRE 30s]`
     Set {
         /// The key to write.
         target: RecordTarget,
         /// The whole value.
         value: Expr,
+        /// When the key stops being answered: a duration from now or a
+        /// datetime. Absent means the key never expires — and a `SET` without
+        /// it clears an expiry the key had, since a write replaces the whole
+        /// version (G035).
+        expire: Option<Expr>,
+        /// Write only when this holds, and answer whether it wrote (G035).
+        condition: Option<SetCondition>,
+    },
+    /// `INCR counters:'hits' [BY 5]` — add to a number and answer the result
+    /// (G035). A missing key counts from zero; an expiry the key had is kept.
+    Incr {
+        /// The key.
+        target: RecordTarget,
+        /// How much to add; absent adds one.
+        by: Option<Expr>,
+    },
+    /// `EXPIRE sessions:'abc' 30s` — give an existing key an expiry, or move
+    /// the one it has (G035). A duration that is zero or negative, or a datetime
+    /// already passed, removes the key.
+    Expire {
+        /// The key.
+        target: RecordTarget,
+        /// A duration from now, or a datetime.
+        at: Expr,
+    },
+    /// `PERSIST sessions:'abc'` — the key stops expiring (G035).
+    Persist {
+        /// The key.
+        target: RecordTarget,
     },
     /// `DEL sessions:'abc'`
     Del {
@@ -1551,12 +1580,20 @@ pub enum StatementKind {
         /// How many bytes to answer with; absent reads to the end.
         limit: Option<u64>,
     },
-    /// `KEYS FROM sessions RANGE 'a'..'m'`
+    /// `KEYS FROM sessions [RANGE 'a'..'m' | PREFIX 'user:'] [AFTER k] [LIMIT n]`
     Keys {
         /// The space to list.
         space: TableRef,
         /// The range of keys, when the statement bounds it.
         range: Option<RangeExpr>,
+        /// The text every listed key begins with, when the statement says
+        /// (G035). Exclusive with `range`: both name the stretch to walk.
+        prefix: Option<Expr>,
+        /// List only the keys after this one — the last key of the previous
+        /// page (G035).
+        after: Option<Expr>,
+        /// At most this many keys (G035).
+        limit: Option<u64>,
     },
     /// `LET $recent = SELECT id FROM notes ORDER BY at DESC LIMIT 5`
     ///
@@ -2911,8 +2948,22 @@ pub enum ExprKind {
     Range(RangeExpr),
     /// `GET sessions:'abc'` in a value position.
     Get(RecordTarget),
+    /// `TTL sessions:'abc'` — how long the key has left: a duration, `NULL`
+    /// when it never expires, `NONE` when there is no key (G035).
+    Ttl(RecordTarget),
     /// `(SELECT * FROM users:1)` in a value position.
     Select(Box<Select>),
+}
+
+/// When a conditional `SET` writes (G035).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetCondition {
+    /// `IF ABSENT` — only when there is no key.
+    Absent,
+    /// `IF PRESENT` — only when there is one.
+    Present,
+    /// `IF = <value>` — only when the key holds this value.
+    Equals(Expr),
 }
 
 /// How a record target names the record.

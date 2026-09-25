@@ -739,6 +739,22 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
 }
 
 /// Every `.rs` file under a directory.
+/// The part of a source file that is production code.
+///
+/// Tests live in one of two places, and both are test code: an inline module
+/// at the end of the file, cut off at its `#[cfg(test)]` (tests last, in one
+/// module, which `cargo fmt` keeps), or a sibling file named `tests.rs`,
+/// declared `#[cfg(test)] mod tests;` by its parent — the layout new modules use
+/// so a module's code is not buried under its tests (owner, 2026-09-26). A
+/// scanner that knew only the first reads the second as production and reports
+/// every fixture in it.
+fn production<'a>(path: &Path, text: &'a str) -> &'a str {
+    if path.file_name().is_some_and(|name| name == "tests.rs") {
+        return "";
+    }
+    text.split("#[cfg(test)]").next().unwrap_or_default()
+}
+
 fn sources(directory: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let Ok(entries) = fs::read_dir(directory) else {
@@ -961,7 +977,7 @@ fn the_campaign_is_the_only_place_an_epoch_is_created() {
         }
         for path in sources(&root) {
             let text = fs::read_to_string(&path).unwrap();
-            let production = text.split("#[cfg(test)]").next().unwrap_or_default();
+            let production = production(&path, &text);
             let shown = path.display().to_string();
             let lines: Vec<&str> = production.lines().collect();
             for (number, line) in lines.iter().enumerate() {
@@ -1057,7 +1073,7 @@ fn a_write_claims_no_epoch_it_was_not_already_carrying() {
         }
         for path in sources(&root) {
             let text = fs::read_to_string(&path).unwrap();
-            let production = text.split("#[cfg(test)]").next().unwrap_or_default();
+            let production = production(&path, &text);
             let shown = path.display().to_string();
             let lines: Vec<&str> = production.lines().collect();
             for (number, line) in lines.iter().enumerate() {

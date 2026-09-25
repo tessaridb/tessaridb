@@ -73,3 +73,86 @@ SELECT * FROM audit:1;
 --- case: a range bound has to be something a key could be
 KEYS FROM sessions RANGE 1.5..2.5;
 --- expect: error InvalidKeyBound
+
+# ---- a space as a cache (G035): expiry, atomic writes, a key walk ----
+
+--- case: a key can expire, and TTL says how long it has left
+DEFINE SPACE cache;
+SET cache:'brief' = 1 EXPIRE 1h;
+RETURN TTL cache:'brief' > 59m;
+--- expect: value true
+
+--- case: a key that never expires has a NULL TTL
+SET cache:'forever' = 1;
+RETURN TTL cache:'forever';
+--- expect: value NULL
+
+--- case: and a key that is not there has none at all
+RETURN TTL cache:'nothing';
+--- expect: value NONE
+
+--- case: a plain SET clears the expiry a key had
+SET cache:'brief' = 2;
+RETURN TTL cache:'brief';
+--- expect: value NULL
+
+--- case: EXPIRE gives a key an expiry and says the key was there
+EXPIRE cache:'forever' 10m;
+--- expect: value true
+
+--- case: and says so when it was not
+EXPIRE cache:'nothing' 10m;
+--- expect: value false
+
+--- case: PERSIST clears an expiry and says there was one
+PERSIST cache:'forever';
+--- expect: value true
+
+--- case: an EXPIRE already past removes the key
+EXPIRE cache:'forever' -1s;
+GET cache:'forever';
+--- expect: value NONE
+
+--- case: a SET whose expiry is not in the future is refused
+SET cache:'x' = 1 EXPIRE 0s;
+--- expect: error InvalidExpiry
+
+--- case: INCR counts from zero and answers the new number
+INCR cache:'hits';
+INCR cache:'hits' BY 4;
+--- expect: value 5
+
+--- case: INCR refuses what is not a number
+SET cache:'word' = 'x';
+INCR cache:'word';
+--- expect: error NotArithmetic
+
+--- case: SET IF ABSENT writes the first time
+SET cache:'lock' = 'me' IF ABSENT EXPIRE 30s;
+--- expect: value true
+
+--- case: and not the second
+SET cache:'lock' = 'you' IF ABSENT;
+--- expect: value false
+
+--- case: SET IF = is a compare-and-set
+SET cache:'lock' = 'you' IF = 'me';
+GET cache:'lock';
+--- expect: value 'you'
+
+--- case: SET IF PRESENT never creates a key
+SET cache:'ghost' = 1 IF PRESENT;
+--- expect: value false
+
+--- case: a prefix lists the keys that begin with it
+DEFINE SPACE walk;
+SET walk:'user:1:a' = 1;
+SET walk:'user:1:b' = 1;
+SET walk:'user:10' = 1;
+SET walk:'user:2:a' = 1;
+KEYS FROM walk PREFIX 'user:1:';
+--- expect: keys 2
+
+--- case: a walk pages with AFTER and LIMIT
+KEYS FROM walk AFTER 'user:1:a' LIMIT 2;
+--- expect: keys 2

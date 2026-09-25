@@ -30,4 +30,4 @@ pub mod runner;
 pub use case::{Case, Corpus, Expectation, MalformedCorpus, read};
 pub use coverage::{FORMS, form_name, forms_in, function_spellings, uncalled_functions, uncovered};
 pub use document::{examples, fenced_blocks, specification, specification_path, split_statements};
-pub use runner::{CaseResult, run};
+pub use runner::{CaseResult, run, run_on};

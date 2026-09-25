@@ -815,6 +815,17 @@ pub enum Error {
         span: Span,
     },
 
+    /// An expiry a key-value write cannot take (G035): not a duration or a
+    /// datetime, a `SET … EXPIRE` that is not in the future, or an instant
+    /// past what a millisecond clock can hold.
+    #[error("{reason} (at {span})")]
+    InvalidExpiry {
+        /// Why the expiry cannot be taken.
+        reason: &'static str,
+        /// Where the expiry is.
+        span: Span,
+    },
+
     /// The store could not produce a record identity.
     ///
     /// Its own refusal rather than [`Error::CallFailed`], which names the

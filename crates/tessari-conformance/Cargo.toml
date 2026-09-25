@@ -16,5 +16,9 @@ tessari-session.workspace = true
 tessari-storage.workspace = true
 tessari-types.workspace = true
 
+[dev-dependencies]
+tessari-lsm.workspace = true
+tempfile = "3"
+
 [lints]
 workspace = true

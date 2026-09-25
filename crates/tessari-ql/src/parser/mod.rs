@@ -15,6 +15,7 @@
 mod assertion;
 mod condition;
 mod expression;
+mod key_value;
 mod path;
 mod shape;
 mod statement;

@@ -34,6 +34,7 @@ mod feed;
 mod followers;
 mod graph;
 mod index;
+mod lapse;
 mod lease;
 mod lines;
 mod log;
@@ -71,6 +72,7 @@ pub use catalog::VaultRoot;
 pub use collections::{Collection, Collections, Currency};
 pub use covering::MEASURED_RELATION;
 pub use expiry::Expired;
+pub use lapse::Lapsed;
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
 // the field but cannot name its type has a public API it cannot use.
 pub use audit::{AuditDevice, AuditTrail, VaultRead, entries as audit_entries, reads_by};

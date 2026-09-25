@@ -46,6 +46,7 @@ mod geometry;
 mod grants;
 mod identity;
 mod info;
+mod kv;
 mod noticed;
 mod outcome;
 mod plan;

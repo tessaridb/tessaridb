@@ -34,8 +34,8 @@
 
 use crate::ast::{
     CreateTarget, Edit, Expr, ExprKind, FieldPath, InfoSubject, JoinSide, Name, Projection,
-    ReachRef, RecordTarget, Script, Select, Source, Statement, StatementKind, TableRef, UserChange,
-    UserGrant, Written,
+    ReachRef, RecordTarget, Script, Select, SetCondition, Source, Statement, StatementKind,
+    TableRef, UserChange, UserGrant, Written,
 };
 use crate::token::Span;
 
@@ -330,9 +330,30 @@ fn erase_statement(statement: &mut Statement) {
             }
             erase_expr(value);
         }
-        StatementKind::Set { target, value } | StatementKind::Put { target, value, .. } => {
+        StatementKind::Set {
+            target,
+            value,
+            expire,
+            condition,
+        } => {
             erase_record(target);
             erase_expr(value);
+            if let Some(expire) = expire {
+                erase_expr(expire);
+            }
+            if let Some(SetCondition::Equals(expected)) = condition {
+                erase_expr(expected);
+            }
+        }
+        StatementKind::Put { target, value, .. } | StatementKind::Expire { target, at: value } => {
+            erase_record(target);
+            erase_expr(value);
+        }
+        StatementKind::Incr { target, by } => {
+            erase_record(target);
+            if let Some(by) = by {
+                erase_expr(by);
+            }
         }
         StatementKind::Update { target, edit, .. } | StatementKind::Upsert { target, edit, .. } => {
             erase_record(target);
@@ -349,6 +370,7 @@ fn erase_statement(statement: &mut Statement) {
         StatementKind::Delete { target, .. }
         | StatementKind::Get { target }
         | StatementKind::Del { target }
+        | StatementKind::Persist { target }
         | StatementKind::Read { target, .. } => erase_record(target),
         StatementKind::DeleteWhere {
             table, condition, ..
@@ -372,11 +394,20 @@ fn erase_statement(statement: &mut Statement) {
             erase_table(table);
             *span = CANONICAL;
         }
-        StatementKind::Keys { space, range } => {
+        StatementKind::Keys {
+            space,
+            range,
+            prefix,
+            after,
+            ..
+        } => {
             erase_table(space);
             if let Some(range) = range {
                 erase_expr(&mut range.start);
                 erase_expr(&mut range.end);
+            }
+            for bound in [prefix, after].into_iter().flatten() {
+                erase_expr(bound);
             }
         }
         // `REVEAL` names one record, so its target is erased the way every
@@ -575,7 +606,9 @@ fn erase_expr(expr: &mut Expr) {
             erase_expr(right);
         }
         ExprKind::Table(table) => erase_table(table),
-        ExprKind::Record(record) | ExprKind::Get(record) => erase_record(record),
+        ExprKind::Record(record) | ExprKind::Get(record) | ExprKind::Ttl(record) => {
+            erase_record(record);
+        }
         ExprKind::Array(items) | ExprKind::Set(items) => {
             for item in items {
                 erase_expr(item);

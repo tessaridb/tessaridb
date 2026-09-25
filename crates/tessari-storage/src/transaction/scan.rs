@@ -554,7 +554,7 @@ impl Transaction<'_> {
             *resolved = Some(decoded.id.clone());
             taken.push((
                 decoded.id,
-                StampedValue::decode(value.as_slice())?.into_value(),
+                StampedValue::decode(value.as_slice())?.into_visible_at(self.reading_at()),
             ));
         }
         Ok(taken)

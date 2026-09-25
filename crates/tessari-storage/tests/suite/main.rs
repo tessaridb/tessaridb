@@ -11,6 +11,7 @@ mod catalog;
 mod counted_reads;
 mod descending_order;
 mod expansion_bound;
+mod expiring;
 mod feed;
 mod index_maintenance;
 mod index_sweep;

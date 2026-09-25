@@ -86,7 +86,7 @@ pub(crate) fn maintain(
             mutation.table,
             mutation.id.clone(),
         );
-        if let Some(previous) = view.get(&address)?
+        if let Some(previous) = view.get_held(&address)?
             && let Some((from, to, _)) = endpoints(&decode_payload(&previous)?)
         {
             batch = write_pair(batch, &kind, &from, &to, None);

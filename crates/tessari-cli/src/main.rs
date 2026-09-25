@@ -688,6 +688,27 @@ fn keep_house(db: &Db, stopping: &tessari_serve::Stopping) {
                 Ok(_) => {}
                 Err(why) => log::warn!("this node cannot trim its log: {why}"),
             }
+            // Removal of expired keys rides the same cadence (G035). Reads never
+            // wait for it; it only returns space. A node that does not lead a
+            // range is refused at commit exactly as any write would be, which is
+            // the design rather than a fault, so that refusal stays quiet.
+            match db.store().remove_expired() {
+                Ok(lapsed) if lapsed.records > 0 || lapsed.stale > 0 => log::info!(
+                    "removed {} expired record(s) in {} commit(s); {} stale expiry entr(ies)",
+                    lapsed.records,
+                    lapsed.batches,
+                    lapsed.stale
+                ),
+                Ok(_) => {}
+                Err(
+                    why @ (tessari_storage::Error::LeaseSpent { .. }
+                    | tessari_storage::Error::NoLeadershipYet
+                    | tessari_storage::Error::WriteIsElsewhere { .. }),
+                ) => {
+                    log::debug!("expired records are removed where the range is led: {why}");
+                }
+                Err(why) => log::warn!("this node cannot remove expired records: {why}"),
+            }
             due = std::time::Instant::now().checked_add(period).unwrap_or(due);
         }
         std::thread::sleep(NAP);
