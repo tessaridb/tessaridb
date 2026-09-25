@@ -287,7 +287,26 @@ const TABLES: &[Table] = &[
         // itself, under the guard that the epoch changed. The day that stops
         // being true the fence is not enough alone, and the grant model has to
         // reach this write.
-        expected: 21,
+        //
+        // 22 since a partial node gathers (G033, ADR-0083): `Db::gather_through`
+        // installs, once, who fetches the shards of a split table this node
+        // lacks. It is a DATA path — gathered records answer reads — and it is
+        // classified **ENFORCED**, at both ends and by code already in the path:
+        //
+        //   * the **session**. Gathered records enter the read as stored
+        //     records and are decoded through `records_of` with the caller's
+        //     visibility, after the statement was authorized — so a grant's
+        //     redaction and every condition apply to them exactly as to a local
+        //     record (`gathered_reads::a_hidden_field_is_hidden_in_gathered_records_too`).
+        //   * the **peer door**. A shard's leader hands its records only to a
+        //     proven member whose subscription holds part of the same table
+        //     (`gathering::door::a_peer_holding_nothing_of_the_table_is_refused_by_name`).
+        //
+        // **Re-classification trigger:** the day anything outside the process
+        // can install a gatherer — a statement, a route, a frame — a read could
+        // be answered by records from a source nobody authenticated, and the
+        // session's redaction would be redacting forgeries.
+        expected: 22,
         count: |text| public_functions(&block(text, "impl Db")),
     },
     Table {
@@ -622,7 +641,21 @@ const TABLES: &[Table] = &[
         // classification says the session gates them, and `RAW_FEED` is what
         // fails the day a serving surface reaches past the session to call them
         // directly.
-        expected: 40,
+        //
+        // 41 and 42 since a placed range became an election line of its own
+        // (G032, ADR-0082): `Store::hold_range` and `Store::leading_of`.
+        // Classified **not a data path**, on the ground `hold` and `leading`
+        // beside them already stand on: the first installs a lease a majority
+        // granted into this process's memory and writes no record; the second
+        // answers the epoch this node holds on one line, which the node publishes
+        // in every greeting it sends. Neither reads or writes a record, a catalog
+        // entry or a grant, and the only caller of the first is the campaign.
+        //
+        // Their re-classification trigger: a caller that can install a lease the
+        // campaign did not win. A lease is admission to write, so the day
+        // anything reachable from a session can call `hold_range`, the write
+        // gate's per-line fence is only as strong as that caller.
+        expected: 42,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -699,7 +732,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // `Store::log_records_newest_first`, both classified in the block above and
     // both added to `RAW_FEED`, so a serving surface reaching past the session
     // to call either one fails the test beside this (W372, Q-739).
-    assert_eq!(total, 93, "the counted tables no longer sum to 93");
+    //
+    // 96 since a partial node gathers: `Db::gather_through`, classified
+    // ENFORCED in the facade's entry above (G033, ADR-0083).
+    assert_eq!(total, 96, "the counted tables no longer sum to 96");
 }
 
 /// Every `.rs` file under a directory.
@@ -794,6 +830,17 @@ const RAW_FEED: &[&str] = &[
 /// raw feed behind a network-facing type instead of in the process that owns
 /// the store.
 ///
+/// **Two, a second site of the same line.** The placed-range pass (G032,
+/// ADR-0082) collects each placed range from that range's leader and reads its
+/// own tail of that log in the identical line, on the identical ground: the
+/// value leaves only as the `from` of an outgoing ask. Named here because an
+/// exact-line match would otherwise admit the second site without anybody
+/// having looked at it.
+///
+/// **Five.** The greeting's placed line (ADR-0082) says how far this node's own
+/// log of the range it stands for reaches — One's field, for one range: a
+/// `Sequence`, sent only after the peer handshake.
+///
 /// **Three and four.** `Serving::fill` is the peer door's scoped log reader —
 /// the loop behind `Serving::collected` that fills one answer under a byte
 /// budget, reading a page at a time so that a follower's uncapped record count
@@ -823,6 +870,10 @@ const CLASSIFIED: &[(&str, &str)] = &[
     (
         "tessari-cli/src/main.rs",
         "let seed = match store.committed_tail(log) {",
+    ),
+    (
+        "tessari-cli/src/main.rs",
+        "tail: store.committed_tail(log).map_err(|why| why.to_string())?,",
     ),
     (
         "tessari-wire/src/collection.rs",

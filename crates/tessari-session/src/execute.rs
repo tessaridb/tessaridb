@@ -52,6 +52,7 @@ struct Peer<'a> {
     roles: Option<&'a [Name]>,
     node: Option<[u8; NODE_ID_LEN]>,
     replicates: Option<&'a ReachRef>,
+    leads: Option<&'a ReachRef>,
 }
 
 struct Declared<'a> {
@@ -94,6 +95,7 @@ impl Session<'_> {
                 edge,
                 identity,
                 graph,
+                split,
                 conflict,
                 if_not_exists,
             } => {
@@ -118,6 +120,7 @@ impl Session<'_> {
                         identity: *identity,
                         graph,
                         conflict: *conflict,
+                        split: split.clone(),
                     },
                     *if_not_exists,
                     span,
@@ -201,6 +204,7 @@ impl Session<'_> {
                 roles,
                 node,
                 replicates,
+                leads,
                 if_not_exists,
             } => self.define_replica(
                 transaction,
@@ -210,6 +214,7 @@ impl Session<'_> {
                     roles: roles.as_deref(),
                     node: *node,
                     replicates: replicates.as_ref(),
+                    leads: leads.as_ref(),
                 },
                 *if_not_exists,
             ),
@@ -642,6 +647,7 @@ impl Session<'_> {
                     identity: IdentityKind::default(),
                     graph: None,
                     conflict: None,
+                    split: Vec::new(),
                 },
                 *if_not_exists,
                 span,
@@ -663,6 +669,7 @@ impl Session<'_> {
                     identity: *identity,
                     graph: None,
                     conflict: None,
+                    split: Vec::new(),
                 },
                 *if_not_exists,
                 span,
@@ -721,6 +728,7 @@ impl Session<'_> {
                         identity: IdentityKind::default(),
                         graph,
                         conflict: None,
+                        split: Vec::new(),
                     },
                     *if_not_exists,
                     span,
@@ -748,6 +756,7 @@ impl Session<'_> {
                     identity: IdentityKind::Uuid,
                     graph: None,
                     conflict: None,
+                    split: Vec::new(),
                 },
                 *if_not_exists,
                 span,
@@ -770,6 +779,7 @@ impl Session<'_> {
                     identity: IdentityKind::default(),
                     graph: None,
                     conflict: None,
+                    split: Vec::new(),
                 },
                 *if_not_exists,
                 span,
@@ -1717,6 +1727,7 @@ impl Session<'_> {
                 identity: IdentityKind::default(),
                 graph: Some(graph.id),
                 conflict: None,
+                split: Vec::new(),
             },
             if_not_exists,
             span,
@@ -2101,6 +2112,7 @@ impl Session<'_> {
                 identity: IdentityKind::default(),
                 graph: None,
                 conflict: None,
+                split: Vec::new(),
             },
             if_not_exists,
             span,
@@ -2308,6 +2320,7 @@ impl Session<'_> {
                 identity: IdentityKind::default(),
                 graph: None,
                 conflict: None,
+                split: Vec::new(),
             },
             if_not_exists,
             span,
@@ -2417,6 +2430,7 @@ impl Session<'_> {
                 identity: IdentityKind::default(),
                 graph: None,
                 conflict: None,
+                split: Vec::new(),
             },
             if_not_exists,
             span,
@@ -3009,12 +3023,19 @@ impl Session<'_> {
             None => None,
             Some(named) => Some(self.reach_of(transaction, named)?),
         };
+        // Resolved by the same reader, so `LEADS SHARD` names a shard the table
+        // has or is refused exactly as `REPLICATES SHARD` is (ADR-0082).
+        let leads = match peer.leads {
+            None => None,
+            Some(named) => Some(self.reach_of(transaction, named)?),
+        };
         Catalog::new(transaction).create_replica(
             &peer.name.text,
             peer.endpoint,
             roles,
             peer.node,
             replicates,
+            leads,
         )?;
         Ok(Outcome::Done)
     }

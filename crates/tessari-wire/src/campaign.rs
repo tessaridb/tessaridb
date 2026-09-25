@@ -42,7 +42,7 @@ use rustls::pki_types::CertificateDer;
 
 use tessari_encoding::NODE_ID_LEN;
 use tessari_storage::Lease;
-use tessari_types::Epoch;
+use tessari_types::{Epoch, Reach};
 
 use crate::grant::{Deciding, Leadership, Refused, Round, Vote};
 use crate::link::{Answered, Ask, Credential, call};
@@ -97,6 +97,9 @@ pub struct Standing<'a> {
     pub peers: &'a [([u8; NODE_ID_LEN], SocketAddr)],
     /// How long a round takes on this network, end to end.
     pub round: Duration,
+    /// Which election line this standing is for — [`Reach::Store`] for the
+    /// store's, a placed range for its own (ADR-0082).
+    pub range: Reach,
 }
 
 impl Stood {
@@ -163,7 +166,8 @@ impl Standing<'_> {
             self.candidate,
             self.peers.len().saturating_add(1),
             now,
-        );
+        )
+        .over(self.range);
         let ballot = round.ballot();
         // Both sides of the comparison are this node's own greeting, so the log
         // restriction never refuses a candidate its own vote — a node is not
@@ -281,6 +285,7 @@ mod tests {
             said,
             peers,
             round: ROUND,
+            range: tessari_types::Reach::Store,
         }
     }
 
@@ -327,6 +332,7 @@ mod tests {
         let elsewhere = Ballot {
             epoch: Epoch::new(40),
             candidate: [200_u8; NODE_ID_LEN],
+            range: tessari_types::Reach::Store,
         };
         assert_eq!(
             spent.asked(&elsewhere, now, LEVEL, LEVEL),
@@ -392,6 +398,7 @@ mod tests {
             Ask::Ballot(&Ballot {
                 epoch: Epoch::new(2),
                 candidate: THERE,
+                range: tessari_types::Reach::Store,
             }),
         )
         .expect("the door is still up, having been asked nothing");
@@ -497,6 +504,7 @@ mod tests {
             Ask::Ballot(&Ballot {
                 epoch: Epoch::new(7),
                 candidate: THERE,
+                range: tessari_types::Reach::Store,
             }),
         )
         .expect("the third door is still up, having been asked nothing");
@@ -633,6 +641,7 @@ mod tests {
             &Ballot {
                 epoch: Epoch::new(11),
                 candidate: rival,
+                range: tessari_types::Reach::Store,
             },
             Instant::now(),
             LEVEL,

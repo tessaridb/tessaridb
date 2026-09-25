@@ -43,6 +43,10 @@ export interface Result {
   readonly records?: readonly Row[];
   readonly path?: string;
   readonly value?: unknown;
+  // Present only when the node had something to say about how it answered —
+  // `gathered` among them, the one sign that an answer was fetched from other
+  // shards' leaders and is not one snapshot.
+  readonly notes?: readonly { readonly kind: string; readonly message: string }[];
 }
 
 /** A whole script's answer, or the refusal that came instead. */

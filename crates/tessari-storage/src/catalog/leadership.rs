@@ -93,6 +93,15 @@ impl LeadershipDefinition {
     #[must_use]
     pub fn key(range: Reach) -> RecordId {
         let (namespace, database) = range.parts();
+        if let Reach::Shard(namespace, database, table, shard) = range {
+            return RecordId::from(format!(
+                "shard:{}:{}:{}:{}",
+                namespace.get(),
+                database.get(),
+                table.get(),
+                shard.get()
+            ));
+        }
         RecordId::from(match (namespace, database) {
             (None, _) => "store".to_owned(),
             (Some(namespace), None) => format!("ns:{}", namespace.get()),
@@ -262,15 +271,35 @@ pub(crate) fn covering(
         .max_by_key(|held| ordered(held.range))
 }
 
+/// The election line a write into `range` is judged on (ADR-0082): the most
+/// specific placed range containing it, else the store line.
+///
+/// Carving comes from the placement and never from a leadership row: a row
+/// reaches the store leader only after the range leader's log does, and in that
+/// window both would write. The same order as [`covering`], so the line and the
+/// row a write is redirected by cannot disagree about which range is narrower.
+#[must_use]
+pub fn governing(placed: &std::collections::BTreeSet<Reach>, range: Reach) -> Reach {
+    placed
+        .iter()
+        .copied()
+        .filter(|placed| placed.contains(range))
+        .max_by_key(|placed| ordered(*placed))
+        .unwrap_or(Reach::Store)
+}
+
 /// A range as a sort key: wider first, and more specific later.
 ///
 /// One function for both the listing order and the most-specific choice, so the
 /// two cannot disagree about which of two ranges is narrower.
-fn ordered(range: Reach) -> (u8, u32, u32) {
+fn ordered(range: Reach) -> (u8, u32, u32, u32, u32) {
     match range {
-        Reach::Store => (0, 0, 0),
-        Reach::Namespace(namespace) => (1, namespace.get(), 0),
-        Reach::Database(namespace, database) => (2, namespace.get(), database.get()),
+        Reach::Store => (0, 0, 0, 0, 0),
+        Reach::Namespace(namespace) => (1, namespace.get(), 0, 0, 0),
+        Reach::Database(namespace, database) => (2, namespace.get(), database.get(), 0, 0),
+        Reach::Shard(namespace, database, table, shard) => {
+            (3, namespace.get(), database.get(), table.get(), shard.get())
+        }
     }
 }
 

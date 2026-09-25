@@ -76,6 +76,7 @@ fn between_two_leaders(leading: Reach, followed: Reach, their_node: [u8; NODE_ID
             Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING),
             Some(their_node),
             None,
+            None,
         )
         .unwrap();
     catalog
@@ -197,6 +198,7 @@ fn a_leadership_over_the_whole_store_still_lets_its_holder_write_everywhere() {
             Roles::SERVING,
             Some(THEIR_NODE),
             None,
+            None,
         )
         .unwrap();
     catalog
@@ -232,6 +234,7 @@ fn a_clustered_node_with_no_leadership_anywhere_still_meets_the_older_refusal() 
             THEIR_ENDPOINT,
             Roles::SERVING.and(Roles::WRITABLE),
             Some(THEIR_NODE),
+            None,
             None,
         )
         .unwrap();
@@ -279,6 +282,7 @@ fn a_clustered_node_with_no_lease_is_redirected_rather_than_told_to_wait() {
             THEIR_ENDPOINT,
             Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING),
             Some(THEIR_NODE),
+            None,
             None,
         )
         .unwrap();
@@ -447,6 +451,7 @@ fn clustered_with(
             Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING),
             Some(THEIR_NODE),
             None,
+            None,
         )
         .unwrap();
     let namespace = catalog.create_namespace("prod").unwrap();
@@ -539,6 +544,7 @@ fn a_declared_range_does_not_exempt_an_undeclared_one_written_beside_it() {
             THEIR_ENDPOINT,
             Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING),
             Some(THEIR_NODE),
+            None,
             None,
         )
         .unwrap();

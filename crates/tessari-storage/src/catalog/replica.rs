@@ -45,6 +45,7 @@ const FIELD_ENDPOINT: &str = "endpoint";
 const FIELD_ROLES: &str = "roles";
 const FIELD_NODE: &str = "node";
 const FIELD_REPLICATES: &str = "replicates";
+const FIELD_LEADS: &str = "leads";
 
 const ENTITY: &str = "replica";
 
@@ -132,6 +133,15 @@ pub struct ReplicaDefinition {
     /// its reach**. [`Reach::Store`] therefore hands over every tenancy's, which
     /// is why it is an operator's explicit word and never a default.
     pub replicates: Option<Reach>,
+    /// The range this row's node stands to lead, when the operator placed one
+    /// (ADR-0082).
+    ///
+    /// `None` is the row as it has always been: the node stands for the store
+    /// and nothing else. A placed range is carved out of the store line for
+    /// EVERY node, not only this one — the store leader stops writing it the
+    /// moment this row commits — so the field is read by the write gate on
+    /// every node and by the campaign only on the node the row names.
+    pub leads: Option<Reach>,
 }
 
 impl ReplicaDefinition {
@@ -157,6 +167,11 @@ impl ReplicaDefinition {
         if let Some(reach) = self.replicates {
             fields.insert(FIELD_REPLICATES.to_owned(), reach.to_value());
         }
+        // Written only when it was stated, so a row with no placement keeps the
+        // bytes it always had.
+        if let Some(reach) = self.leads {
+            fields.insert(FIELD_LEADS.to_owned(), reach.to_value());
+        }
         Value::Object(fields)
     }
 
@@ -181,6 +196,10 @@ impl ReplicaDefinition {
             roles: roles_in(fields)?,
             node: node_in(fields)?,
             replicates: replicates_in(fields)?,
+            leads: fields
+                .get(FIELD_LEADS)
+                .map(|found| Reach::from_value(found, ENTITY, FIELD_LEADS))
+                .transpose()?,
         })
     }
 }
@@ -261,6 +280,7 @@ impl Catalog<'_, '_> {
         roles: Roles,
         node: Option<[u8; NODE_ID_LEN]>,
         replicates: Option<Reach>,
+        leads: Option<Reach>,
     ) -> Result<ReplicaDefinition> {
         if self.replica_row(name)?.is_some() {
             return Err(Error::NameTaken {
@@ -273,6 +293,7 @@ impl Catalog<'_, '_> {
             roles,
             node,
             replicates,
+            leads,
         };
         self.write_replica(&definition);
         Ok(definition)
@@ -344,12 +365,27 @@ impl Catalog<'_, '_> {
     /// longer count that endpoint as a peer*, and a peer that disagrees is a
     /// question for the operator rather than one a catalog write can settle.
     ///
+    /// # A row that places a leader is not dropped
+    ///
+    /// Dropping it would hand its range back to the store line at once on the
+    /// node that committed the drop, while the range's own leader goes on
+    /// writing under its lease until the drop reaches it — two writers on one
+    /// range for up to a lease. Dropping one safely needs every lease on the
+    /// range to have lapsed first, and nothing here can establish that
+    /// (ADR-0082).
+    ///
     /// # Errors
     ///
-    /// Returns an error when the stored definition cannot be read.
+    /// Returns [`Error::PlacementCannotBeDropped`] for a row carrying `LEADS`,
+    /// and an error when the stored definition cannot be read.
     pub fn drop_replica(&mut self, name: &str) -> Result<bool> {
-        if self.replica_row(name)?.is_none() {
+        let Some(found) = self.replica_row(name)? else {
             return Ok(false);
+        };
+        if found.leads.is_some() {
+            return Err(Error::PlacementCannotBeDropped {
+                name: name.to_owned(),
+            });
         }
         self.transaction
             .delete(system::address(system::REPLICAS, RecordId::from(name)));
@@ -587,6 +623,7 @@ mod tests {
             roles: Roles::SERVING,
             node: None,
             replicates: None,
+            leads: None,
         }
     }
 

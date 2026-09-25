@@ -140,6 +140,10 @@ fn referenced(value: &Value, into: &mut BTreeSet<TableId>) {
 #[derive(Debug)]
 pub struct Db {
     store: Store,
+    /// Who fetches the shards of a split table this node lacks (G033), set once
+    /// by the process that knows its peers and handed to every session opened
+    /// here — so every surface that serves a read, whichever it is, gathers.
+    gather: std::sync::OnceLock<Arc<dyn tessari_session::Gather>>,
 }
 
 impl Db {
@@ -157,6 +161,7 @@ impl Db {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
         Ok(Self {
             store: Store::open(backend)?,
+            gather: std::sync::OnceLock::new(),
         })
     }
 
@@ -184,6 +189,7 @@ impl Db {
         let backend = Arc::new(backend) as Arc<dyn KvBackend>;
         Ok(Self {
             store: Store::open(backend)?,
+            gather: std::sync::OnceLock::new(),
         })
     }
 
@@ -194,7 +200,21 @@ impl Db {
     /// on one database are two independent conversations with it.
     #[must_use]
     pub fn session(&self) -> Session<'_> {
-        Session::new(&self.store)
+        let session = Session::new(&self.store);
+        match self.gather.get() {
+            Some(gather) => session.gathering(Arc::clone(gather)),
+            None => session,
+        }
+    }
+
+    /// Gather the shards of a split table this node lacks through `gather`
+    /// (G033, ADR-0083), in every session opened from now on.
+    ///
+    /// Once per process: which peers exist is fixed when the node starts, and a
+    /// second gatherer arriving later would mean two answers to one question.
+    /// Answers `false`, and changes nothing, when one was already set.
+    pub fn gather_through(&self, gather: Arc<dyn tessari_session::Gather>) -> bool {
+        self.gather.set(gather).is_ok()
     }
 
     /// Take or renew the lease this node writes under.
@@ -336,7 +356,10 @@ impl Db {
     /// themselves and wants the front door over it anyway.
     #[must_use]
     pub const fn from_store(store: Store) -> Self {
-        Self { store }
+        Self {
+            store,
+            gather: std::sync::OnceLock::new(),
+        }
     }
 
     /// The names of the tables an answer's record references point at.
@@ -507,6 +530,28 @@ impl Db {
             return Ok(None);
         };
         Ok(catalog.table_id(namespace, database, table)?)
+    }
+
+    /// The names of the split tables in one database (G031, ADR-0080).
+    ///
+    /// What a reader that follows one log has to know before it starts: those
+    /// tables' writes are in their shards' logs, which it does not read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the catalog cannot be read.
+    pub(crate) fn split_tables_in(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+    ) -> Result<Vec<String>> {
+        let mut transaction = self.store.begin()?;
+        Ok(Catalog::new(&mut transaction)
+            .tables_in(namespace, database)?
+            .into_iter()
+            .filter(|table| table.shards.is_some())
+            .map(|table| table.name)
+            .collect())
     }
 
     /// The store underneath.

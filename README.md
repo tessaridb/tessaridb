@@ -10,7 +10,7 @@ A real-time multi-model database, written in Rust, built for AI agents and the
 products around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.3.0--beta-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.4.0--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
 [![conformance](https://img.shields.io/badge/conformance-1369%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
@@ -22,7 +22,7 @@ products around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is a beta — `0.3.0-beta`.** It is released, tested and published as
+> **TessariDB is a beta — `0.4.0-beta`.** It is released, tested and published as
 > a container image, and the licence makes production use free, including inside
 > a commercial company.
 > What a beta does not promise yet is permanence of shape: before 1.0 the query
@@ -160,7 +160,7 @@ surviving version and the node that wrote it.
 
 ## Status
 
-**Stage: active development · `0.3.0-beta` · not published to crates.io.** What
+**Stage: active development · `0.4.0-beta` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 
@@ -220,11 +220,16 @@ follows is what runs today, not a roadmap.
   <!-- absent: distance-to-a-shape-larger-than-a-position -->
   <!-- absent: nearest-first-under-a-where -->
   <!-- absent: measured-covering-budget -->
-- ⛔ **Not there:** sharding. A namespace lives where its replication says and
-  a range is led by one node or declared open to several, but the store does not
-  split a range across machines and there is no scatter-gather read. There is no
-  cross-range transaction either: a transaction is judged on the node leading
-  the range it writes.
+- ⛔ **Not there:** sharding that spans machines at run time. A table can be
+  split by the identities of its records (`SPLIT AT`), and each shard is logged,
+  replicated and — where a member row places it (`LEADS`) — elected and led on
+  its own node, so writes to two shards can be taken by two nodes; but a
+  table's shards are fixed when it is declared. A node holding only some shards
+  answers a read of the rest by fetching those shards' records from their
+  leaders, but pushes nothing down to them, and a join side or a `FETCH` into a
+  shard it lacks is still refused.
+  There is no cross-range transaction either: one writing ranges that two nodes
+  lead is refused, naming both.
   <!-- absent: sharding-execution -->
   <!-- absent: cross-range-transactions -->
 - 🔄 **Not promised yet:** before 1.0 the query language, the wire format and the
@@ -423,7 +428,7 @@ crates/
 
 Cluster membership, leadership and replication have no crate of their own: they
 live in `tessari-wire` and `tessari-storage`, beside the wire and the log they
-are written in terms of. Sharding has no crate because it is not built. The list
+are written in terms of, and so does splitting a table into shards. The list
 above is what exists, not a plan.
 
 ## Building

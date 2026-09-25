@@ -835,6 +835,43 @@ impl Session<'_> {
                 let context = self.tenancy_of(transaction, table)?;
                 Ok(Reach::Database(context.namespace, context.database))
             }
+            // G031 — resolved by name at every level, and refused unless the
+            // table is split and has that shard: a subscription to a shard that
+            // does not exist is a subscription to nothing, which is the quietest
+            // failure a cluster has.
+            ReachRef::Shard {
+                namespace,
+                database,
+                table,
+                shard,
+            } => {
+                let written = format!(
+                    "{}.{}.{} {shard}",
+                    namespace.text, database.text, table.text
+                );
+                let unknown = || Error::Unknown {
+                    entity: "shard",
+                    name: written.clone(),
+                    span: table.span,
+                };
+                let catalog = Catalog::new(transaction);
+                let namespace = catalog.namespace_id(&namespace.text)?.ok_or_else(unknown)?;
+                let database = catalog
+                    .database_id(namespace, &database.text)?
+                    .ok_or_else(unknown)?;
+                let table_id = catalog
+                    .table_id(namespace, database, &table.text)?
+                    .ok_or_else(unknown)?;
+                let shard = tessari_types::ShardId::new(*shard);
+                let held = catalog
+                    .table(table_id)?
+                    .and_then(|definition| definition.shards)
+                    .is_some_and(|shards| shards.holds(shard));
+                if !held {
+                    return Err(unknown());
+                }
+                Ok(Reach::Shard(namespace, database, table_id, shard))
+            }
         }
     }
 

@@ -93,7 +93,7 @@ use std::io::{Read, Write};
 
 use tessari_encoding::{LogId, LogRecord, NodeVersion, StoreValue, Writer};
 use tessari_storage::Store;
-use tessari_types::{DatabaseId, NamespaceId, Reach, Sequence};
+use tessari_types::{DatabaseId, NamespaceId, Reach, Sequence, ShardId, TableId};
 
 mod check;
 
@@ -132,6 +132,14 @@ const FRAME_SECTION: u8 = 1;
 /// A frame that carries one log record, belonging to the section above it.
 const FRAME_RECORD: u8 = 2;
 
+/// A frame that opens a section for one SHARD's log (G031, ADR-0080).
+///
+/// Its own tag rather than a wider name in [`FRAME_SECTION`], so a file holding
+/// no shard log keeps the bytes it always had, and a build that predates shards
+/// meets a tag it refuses (`NotABackup`) instead of reading a shard's table and
+/// shard ids as the start of a writer.
+const FRAME_SHARD_SECTION: u8 = 3;
+
 /// A log as the twenty-five fixed bytes a section names it with.
 ///
 /// Written out here rather than borrowed from the key encoding because a backup
@@ -159,11 +167,15 @@ fn log_in(bytes: [u8; 25]) -> Option<LogId> {
 }
 
 /// A reach as the nine fixed bytes a log key carries it in.
+///
+/// For a shard these are the first nine of its seventeen; the table and the
+/// shard follow in [`shard_log_bytes`], which is the only writer that has them.
 fn home_bytes(home: Reach) -> [u8; 9] {
     let (variant, namespace, database) = match home {
         Reach::Store => (0_u8, 0_u32, 0_u32),
         Reach::Namespace(namespace) => (1, namespace.get(), 0),
         Reach::Database(namespace, database) => (2, namespace.get(), database.get()),
+        Reach::Shard(namespace, database, _, _) => (3, namespace.get(), database.get()),
     };
     let mut bytes = [0_u8; 9];
     bytes[0] = variant;
@@ -183,6 +195,39 @@ fn home_in(bytes: [u8; 9]) -> Option<Reach> {
         2 => Some(Reach::Database(namespace, database)),
         _ => None,
     }
+}
+
+/// A shard's log as the thirty-three fixed bytes a shard section names it with:
+/// the home's nine, the table, the shard, then the writer.
+fn shard_log_bytes(log: LogId) -> Option<[u8; 33]> {
+    let Reach::Shard(_, _, table, shard) = log.home else {
+        return None;
+    };
+    let mut bytes = [0_u8; 33];
+    bytes[..9].copy_from_slice(&home_bytes(log.home));
+    bytes[9..13].copy_from_slice(&table.get().to_be_bytes());
+    bytes[13..17].copy_from_slice(&shard.get().to_be_bytes());
+    bytes[17..].copy_from_slice(&log.writer.bytes());
+    Some(bytes)
+}
+
+/// The log [`shard_log_bytes`] wrote, or `None` when the bytes do not name one.
+fn shard_log_in(bytes: [u8; 33]) -> Option<LogId> {
+    if bytes[0] != 3 {
+        return None;
+    }
+    let namespace = NamespaceId::new(u32::from_be_bytes(bytes[1..5].try_into().ok()?));
+    let database = DatabaseId::new(u32::from_be_bytes(bytes[5..9].try_into().ok()?));
+    let table = TableId::new(u32::from_be_bytes(bytes[9..13].try_into().ok()?));
+    let shard = u32::from_be_bytes(bytes[13..17].try_into().ok()?);
+    if shard == 0 {
+        return None;
+    }
+    let writer: [u8; 16] = bytes[17..].try_into().ok()?;
+    Some(LogId::new(
+        Reach::Shard(namespace, database, table, ShardId::new(shard)),
+        Writer::new(writer),
+    ))
 }
 
 /// How many log records are read from the store at a time.
@@ -477,12 +522,17 @@ fn write_section(
 ) -> Result<(u64, LogSpan)> {
     let start = Sequence::new(from.get().max(1));
     let tail = store.committed_tail(log)?;
-    out.write_all(&[FRAME_SECTION])?;
     // The home before the bounds, because the bounds mean nothing without it:
     // a position counts in one log, and a section that named a range without
     // naming which log it counted in would restore onto the wrong base with no
     // error (Q-621).
-    out.write_all(&log_bytes(log))?;
+    if let Some(named) = shard_log_bytes(log) {
+        out.write_all(&[FRAME_SHARD_SECTION])?;
+        out.write_all(&named)?;
+    } else {
+        out.write_all(&[FRAME_SECTION])?;
+        out.write_all(&log_bytes(log))?;
+    }
     out.write_all(&start.get().to_be_bytes())?;
     out.write_all(&tail.get().to_be_bytes())?;
     let span = LogSpan {
@@ -916,6 +966,7 @@ impl Frame {
         }
         match tag.first().copied().unwrap_or(0) {
             FRAME_SECTION => Self::section(input),
+            FRAME_SHARD_SECTION => Self::shard_section(input),
             FRAME_RECORD => Self::record(input),
             // Not a truncation and not a guess: the framing is self-describing,
             // so a tag this build does not know is a file it cannot read rather
@@ -933,6 +984,27 @@ impl Frame {
         let (named, bounds) = raw.split_at(25);
         let named: [u8; 25] = named.try_into().map_err(|_| Error::NotABackup)?;
         let log = log_in(named).ok_or(Error::NotABackup)?;
+        let (from, tail) = bounds.split_at(8);
+        Ok(Some(Self::Section(LogSpan {
+            log,
+            from: Sequence::new(u64::from_be_bytes(
+                from.try_into().map_err(|_| Error::NotABackup)?,
+            )),
+            tail: Sequence::new(u64::from_be_bytes(
+                tail.try_into().map_err(|_| Error::NotABackup)?,
+            )),
+        })))
+    }
+
+    /// A shard section frame: the shard's log, then the same bounds.
+    fn shard_section(input: &mut impl Read) -> Result<Option<Self>> {
+        let mut raw = [0_u8; 49];
+        if !matches!(fill(input, &mut raw)?, Filled::Whole) {
+            return Ok(Some(Self::Cut));
+        }
+        let (named, bounds) = raw.split_at(33);
+        let named: [u8; 33] = named.try_into().map_err(|_| Error::NotABackup)?;
+        let log = shard_log_in(named).ok_or(Error::NotABackup)?;
         let (from, tail) = bounds.split_at(8);
         Ok(Some(Self::Section(LogSpan {
             log,

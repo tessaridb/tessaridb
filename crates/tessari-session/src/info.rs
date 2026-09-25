@@ -445,8 +445,10 @@ impl Session<'_> {
         span: Span,
     ) -> Result<BTreeMap<String, Value>> {
         let (_, address) = self.address(transaction, target)?;
+        let split = Catalog::new(transaction)
+            .table(address.table)?
+            .and_then(|table| table.shards);
         let home = Reach::Database(address.namespace, address.database);
-        let log = self.store.own_log(home)?;
         let subject = Subject::new(
             address.namespace,
             address.database,
@@ -459,25 +461,63 @@ impl Session<'_> {
         // read of this record", and it is public precisely so a second caller
         // cannot grow a second answer that disagrees with it.
         let visible = self.visible_in(transaction, address.table)?;
-        let history = self.store.history_of(log, &subject, HISTORY_EVENTS)?;
         let _ = span;
+        let described = |change: &tessari_storage::Change| {
+            let mut described =
+                BTreeMap::from([("at".to_owned(), Value::from(change.sequence.to_string()))]);
+            match &change.kind {
+                ChangeKind::Written(value) => {
+                    described.insert("change".to_owned(), Value::from("written"));
+                    described.insert("value".to_owned(), seen(value.clone(), &visible));
+                }
+                ChangeKind::Removed => {
+                    described.insert("change".to_owned(), Value::from("removed"));
+                }
+            }
+            described
+        };
+        // A split table's record is written in its shard's log by a commit
+        // touching one shard and in its database's by one touching two, so its
+        // history is both, merged by the order this node committed them in
+        // (G034, ADR-0084). Each event names its log, because `at` is a position
+        // and a position counts only in its own log.
+        if let Some(shards) = split {
+            let shard = shards.shard_of(&address.id);
+            let logs = [
+                self.store.own_log(Reach::Shard(
+                    address.namespace,
+                    address.database,
+                    address.table,
+                    shard,
+                ))?,
+                self.store.own_log(home)?,
+            ];
+            let history = self.store.history_across(&logs, &subject, HISTORY_EVENTS)?;
+            let events: Vec<Value> = history
+                .events
+                .iter()
+                .map(|(log, change)| {
+                    let mut event = described(change);
+                    let named = match log.home {
+                        Reach::Shard(_, _, _, shard) => format!("shard {}", shard.get()),
+                        _ => "database".to_owned(),
+                    };
+                    event.insert("log".to_owned(), Value::from(named));
+                    Value::Object(event)
+                })
+                .collect();
+            return Ok(BTreeMap::from([
+                ("events".to_owned(), Value::Array(events)),
+                ("complete".to_owned(), Value::Bool(history.complete)),
+                ("walked".to_owned(), Value::from(history.walked.to_string())),
+            ]));
+        }
+        let log = self.store.own_log(home)?;
+        let history = self.store.history_of(log, &subject, HISTORY_EVENTS)?;
         let events: Vec<Value> = history
             .events
             .iter()
-            .map(|change| {
-                let mut described =
-                    BTreeMap::from([("at".to_owned(), Value::from(change.sequence.to_string()))]);
-                match &change.kind {
-                    ChangeKind::Written(value) => {
-                        described.insert("change".to_owned(), Value::from("written"));
-                        described.insert("value".to_owned(), seen(value.clone(), &visible));
-                    }
-                    ChangeKind::Removed => {
-                        described.insert("change".to_owned(), Value::from("removed"));
-                    }
-                }
-                Value::Object(described)
-            })
+            .map(|change| Value::Object(described(change)))
             .collect();
         Ok(BTreeMap::from([
             ("events".to_owned(), Value::Array(events)),
@@ -1410,6 +1450,15 @@ fn described_replica(replica: &ReplicaDefinition, catalog: &Catalog<'_, '_>) -> 
                 Some(reach) => Value::from(spelled_reach(reach, catalog)?.as_str()),
             },
         ),
+        // The placement (ADR-0082), in the spelling `LEADS` takes, so the answer
+        // to *which node stands for which range* is on the row that decides it.
+        (
+            "leads".to_owned(),
+            match replica.leads {
+                None => Value::Null,
+                Some(reach) => Value::from(spelled_reach(reach, catalog)?.as_str()),
+            },
+        ),
     ])))
 }
 
@@ -1433,6 +1482,23 @@ fn spelled_reach(reach: Reach, catalog: &Catalog<'_, '_>) -> Result<String> {
                 .find(|found| found.id == database)
                 .map_or_else(|| database.get().to_string(), |found| found.name);
             format!("DATABASE {}.{held}", namespace_named(namespace, catalog)?)
+        }
+        // `SHARD prod.shop.orders 2` — the clause's own spelling (G031), so the
+        // report pastes back into the statement that would correct it.
+        Reach::Shard(namespace, database, table, shard) => {
+            let held = catalog
+                .databases_in(namespace)?
+                .into_iter()
+                .find(|found| found.id == database)
+                .map_or_else(|| database.get().to_string(), |found| found.name);
+            let named = catalog
+                .table(table)?
+                .map_or_else(|| table.get().to_string(), |found| found.name);
+            format!(
+                "SHARD {}.{held}.{named} {}",
+                namespace_named(namespace, catalog)?,
+                shard.get()
+            )
         }
     })
 }
@@ -1792,6 +1858,30 @@ fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> {
     if let Some(read) = definition.view_read() {
         shape.insert("view".to_owned(), Value::from(read));
     }
+    // Present only on a split table (G031, ADR-0080). Each bound is the literal
+    // the clause takes — `'g'`, `uuid '…'` — so what the report prints is what
+    // the next declaration types, and `NONE` marks an open end rather than a
+    // shard with nothing in it.
+    if let Some(shards) = &definition.shards {
+        let bound = |at: Option<&tessari_types::RecordId>| {
+            at.map_or(Value::None, |id| Value::from(id.to_literal().as_str()))
+        };
+        shape.insert(
+            "shards".to_owned(),
+            Value::Array(
+                shards
+                    .spans()
+                    .map(|span| {
+                        Value::Object(BTreeMap::from([
+                            ("id".to_owned(), Value::from(i64::from(span.id.get()))),
+                            ("from".to_owned(), bound(span.from)),
+                            ("to".to_owned(), bound(span.to)),
+                        ]))
+                    })
+                    .collect(),
+            ),
+        );
+    }
     // Present only on a table that belongs to one, and reported as the **id**
     // for the reason the endpoints below are: this report says what is stored,
     // and a name resolved here would be a second read able to disagree with the
@@ -1961,6 +2051,18 @@ fn described_authorities(catalog: &Catalog<'_, '_>, user: &UserDefinition) -> Re
                 "{}.{}",
                 named_namespace(catalog, namespace)?,
                 named_database(catalog, database)?
+            ),
+            // Never held — no authority comes at a shard's reach — and reported
+            // faithfully if a stored row ever says so, because a report that
+            // hid it would hide exactly the row worth seeing.
+            Reach::Shard(namespace, database, table, shard) => format!(
+                "{}.{}.{} shard {}",
+                named_namespace(catalog, namespace)?,
+                named_database(catalog, database)?,
+                catalog
+                    .table(table)?
+                    .map_or_else(|| table.get().to_string(), |found| found.name),
+                shard.get()
             ),
         };
         described.push(Value::Object(BTreeMap::from([

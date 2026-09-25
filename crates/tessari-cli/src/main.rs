@@ -316,6 +316,31 @@ fn serve(
     // warning behind a listening socket.
     bootstrap::first_user(&db)?;
     let db = std::sync::Arc::new(db);
+    // Every session this node opens gathers the shards of a split table it
+    // lacks from their leaders (G033, ADR-0083) — on the wire and over HTTP
+    // alike, which is why it is set on the store's handle and not on a surface.
+    // A node with no peers has nobody to ask and refuses as it always has.
+    if let Some(surface) = &peers {
+        let me = db
+            .store()
+            .node_identity()
+            .map_err(|why| format!("this node cannot say who it is: {why}"))?
+            .id;
+        let speaking = std::sync::Arc::downgrade(&db);
+        let gathering = tessari_wire::Gathering::new(
+            &db,
+            me,
+            (surface.dialling.duplicate(), surface.authority.clone()),
+            std::sync::Arc::clone(&surface.routing),
+            Box::new(move || {
+                speaking
+                    .upgrade()
+                    .ok_or_else(|| "this node is stopping".to_owned())
+                    .and_then(|db| greeting(&db))
+            }),
+        );
+        db.gather_through(std::sync::Arc::new(gathering));
+    }
     // Both are bound before either serves, so an address that cannot be taken
     // is a failure to start rather than a surface that quietly went missing
     // while the other one answered.
@@ -877,6 +902,12 @@ fn collect_from_upstream(
     // should ask for is not fixed at start: a namespace arrives by collection,
     // and its own log is something to collect only once it has.
     let mut collecting = tessari_wire::Collecting::new();
+    // One cursor set per range leader (ADR-0082): a cursor counts in one
+    // writer's log, and a range whose leader changes is a different log.
+    let mut by_leader: std::collections::BTreeMap<
+        [u8; tessari_storage::NODE_ID_LEN],
+        tessari_wire::Collecting,
+    > = std::collections::BTreeMap::new();
     tessari_wire::every(
         std::time::Duration::from_secs(tessari_constants::COLLECTION_SECONDS),
         stopping,
@@ -911,6 +942,10 @@ fn collect_from_upstream(
                 }
             };
             let heard = published.current();
+            // ADR-0082. Before the store line's early returns below: a node that
+            // may write follows nobody on the STORE line, and must still collect
+            // every placed range it does not lead from that range's leader.
+            collect_placed_ranges(db, (mine, authority), &declared, me, &heard, &mut by_leader);
             // The seed INSTEAD of the catalog, and only while the catalog names
             // no peer but this node — `bootstrap_from` carries the reason it is
             // not a fallback for `upstream` answering `None`. `DEFINE REPLICA`
@@ -959,6 +994,11 @@ fn collect_from_upstream(
                     return;
                 }
             };
+            // Every home is asked in ONE round and applied in the writer's
+            // commit order (ADR-0084): one after another, a later commit filed
+            // in a coarser log was applied before an earlier one in a finer log
+            // and a record both touched ended at the older value (Q-796).
+            let mut asks = Vec::new();
             for home in logs {
                 // The PEER's log as this node holds it, and emphatically not
                 // this node's own. A log is a home AND a writer, so the two are
@@ -985,8 +1025,12 @@ fn collect_from_upstream(
                         continue;
                     }
                 };
+                asks.push((home, collecting.reached(home).unwrap_or(seed)));
+            }
+            let answers = collector.round(store, &asks);
+            for ((home, at), answer) in asks.into_iter().zip(answers) {
                 let before = collecting.reached(home);
-                match collecting.once(home, seed, |at| collector.collect(store, home, at)) {
+                match collecting.once(home, at, |_| answer) {
                     // A refusal, said out loud. It reaches here rather than
                     // being absorbed by the cursor because *the peer turned me
                     // away* and *the peer had nothing for me* leave the cursor
@@ -1008,6 +1052,93 @@ fn collect_from_upstream(
             }
         },
     );
+}
+
+/// Collect each placed range this node does not lead from that range's leader
+/// (ADR-0082), one pass per collection tick.
+///
+/// The store line's pass, narrowed: the homes are the ones this node's catalog
+/// says it should hold, and each is collected from the range that contains it
+/// as that range's leader's log. A failure is logged and the next range still
+/// runs, for the store pass's reason — one peer being unreachable is the
+/// condition replication exists to survive.
+fn collect_placed_ranges(
+    db: &Db,
+    (mine, authority): (
+        &tessari_wire::Credential,
+        &tessari_wire::CertificateDer<'static>,
+    ),
+    declared: &[tessari_storage::ReplicaDefinition],
+    me: [u8; tessari_storage::NODE_ID_LEN],
+    heard: &tessari_wire::Directory,
+    by_leader: &mut std::collections::BTreeMap<
+        [u8; tessari_storage::NODE_ID_LEN],
+        tessari_wire::Collecting,
+    >,
+) {
+    let placed: std::collections::BTreeSet<tessari_types::Reach> =
+        declared.iter().filter_map(|peer| peer.leads).collect();
+    if placed.is_empty() {
+        return;
+    }
+    let store = db.store();
+    let logs = match tessari_wire::logs_to_collect(store) {
+        Ok(logs) => logs,
+        Err(why) => {
+            log::warn!("this node cannot say which logs it should hold: {why}");
+            return;
+        }
+    };
+    let said = match greeting(db) {
+        Ok(said) => said,
+        Err(why) => {
+            log::warn!("this node cannot say what it holds: {why}");
+            return;
+        }
+    };
+    for range in placed {
+        let Some((node, endpoint)) = tessari_wire::leader_of_range(range, declared, heard) else {
+            continue;
+        };
+        if node == me {
+            continue;
+        }
+        let Ok(address) = endpoint.parse() else {
+            log::warn!(
+                "the leader of {range:?} has an endpoint that is not an address: {endpoint}"
+            );
+            continue;
+        };
+        let collector = tessari_wire::Collector {
+            mine,
+            authority,
+            said: &said,
+            peer: (node, address),
+            limit: tessari_constants::COLLECTION_RECORDS,
+        };
+        let collecting = by_leader.entry(node).or_default();
+        // One round per range, applied in its leader's commit order (ADR-0084).
+        let mut asks = Vec::new();
+        for home in logs.iter().copied().filter(|home| range.contains(*home)) {
+            let log = tessari_storage::LogId::new(home, tessari_storage::Writer::new(node));
+            let seed = match store.committed_tail(log) {
+                Ok(tail) => tessari_types::Sequence::new(tail.get().saturating_add(1)),
+                Err(why) => {
+                    log::warn!("this node cannot say how far {home:?} reaches: {why}");
+                    continue;
+                }
+            };
+            asks.push((home, collecting.reached(home).unwrap_or(seed)));
+        }
+        let answers = collector.round(store, &asks);
+        for ((home, at), answer) in asks.into_iter().zip(answers) {
+            if let Err(why) = collecting.once(home, at, |_| answer) {
+                log::warn!(
+                    "collecting {home:?} from {endpoint}, its range's leader, was refused: {why}"
+                );
+            }
+        }
+    }
 }
 
 /// Stand for the leadership this node is declared to hold, once per campaign
@@ -1049,6 +1180,10 @@ fn stand_for_leadership(
     stopping: &tessari_serve::Stopping,
 ) {
     let started = std::time::Instant::now();
+    // The placed range's line, with its own cursor (ADR-0082). `None` until the
+    // first tick finds a placement, and replaced when the placement names a
+    // different range — a cursor carries one line's epochs and no other's.
+    let mut on_a_line: Option<(tessari_types::Reach, tessari_wire::Renewing)> = None;
     let mut renewing = tessari_wire::Renewing::holding(tessari_wire::Leadership {
         epoch: tessari_types::Epoch::ZERO,
         // A lease taken a whole TTL ago is spent, so the first pass stands. If
@@ -1097,6 +1232,25 @@ fn stand_for_leadership(
             let Some(voting) = tessari_wire::voters(me.roles, &declared, &me.id) else {
                 return;
             };
+            // ADR-0082. The placed range first, and on its own line: the store
+            // line's own guards below return early — a follower that hears the
+            // store leader does not stand for the STORE — and a range this node
+            // is placed on must still be stood for while somebody else leads
+            // the store.
+            stand_for_a_placed_range(
+                db,
+                &Candidate {
+                    me: me.id,
+                    declared: &declared,
+                    voting: &voting,
+                    mine,
+                    authority,
+                    voter,
+                    published,
+                },
+                &mut on_a_line,
+                now,
+            );
             // ADR-0066. A node that can still hear a leader does not stand
             // against it — and this is not politeness, it is what stops a
             // follower's own self-vote from refusing that leader's renewal for a
@@ -1187,6 +1341,7 @@ fn stand_for_leadership(
                 said: &said,
                 peers: &peers,
                 round: std::time::Duration::from_secs(tessari_constants::ROUND_SECONDS),
+                range: tessari_types::Reach::Store,
             };
             let before = renewing.standing();
             let held = renewing.once(me.id, now, |lease, next| {
@@ -1221,6 +1376,103 @@ fn stand_for_leadership(
             }
         },
     );
+}
+
+/// Everything one campaign tick knows about who is standing and to whom.
+///
+/// A struct for the reason [`tessari_wire::Standing`] is one: the placed-range
+/// campaign needs the store line's whole context, and nine positional arguments
+/// is past what the linter and a reader accept.
+struct Candidate<'a> {
+    me: [u8; tessari_storage::NODE_ID_LEN],
+    declared: &'a [tessari_storage::ReplicaDefinition],
+    voting: &'a [([u8; tessari_storage::NODE_ID_LEN], String)],
+    mine: &'a tessari_wire::Credential,
+    authority: &'a tessari_wire::CertificateDer<'static>,
+    voter: &'a tessari_wire::Deciding,
+    published: &'a tessari_wire::Published,
+}
+
+/// Stand for the one placed range this node's member row names, on that range's
+/// own line (ADR-0082).
+///
+/// The store line's cadence and its rules, applied to one range: ADR-0066's
+/// *a node that hears a leader does not stand*, read per line; the margin rule
+/// inside [`tessari_wire::Standing::renew`]; and a win recorded as the range's
+/// leadership row, which homes at the range and so commits under the lease just
+/// won. Logged rather than propagated, for the store line's reason: a round a
+/// majority granted is not overturned by a store that refused the record of it.
+fn stand_for_a_placed_range(
+    db: &Db,
+    candidate: &Candidate<'_>,
+    on_a_line: &mut Option<(tessari_types::Reach, tessari_wire::Renewing)>,
+    now: std::time::Instant,
+) {
+    let Some(range) = tessari_wire::stands_for(candidate.declared, &candidate.me) else {
+        *on_a_line = None;
+        return;
+    };
+    if tessari_wire::heard_a_leader_on(
+        range,
+        candidate.me,
+        candidate.declared,
+        &candidate.published.current(),
+        candidate.voter.granted_elsewhere_on(range, candidate.me),
+        now,
+        tessari_storage::LEASE_TTL,
+    ) {
+        return;
+    }
+    let peers: Vec<_> = candidate
+        .voting
+        .iter()
+        .filter_map(|(node, endpoint)| endpoint.parse().ok().map(|address| (*node, address)))
+        .collect();
+    if peers.is_empty() {
+        return;
+    }
+    let said = match greeting(db) {
+        Ok(said) => said,
+        Err(why) => {
+            log::warn!("this node cannot say what it holds: {why}");
+            return;
+        }
+    };
+    if on_a_line.as_ref().is_none_or(|(held, _)| *held != range) {
+        *on_a_line = Some((
+            range,
+            tessari_wire::Renewing::holding(tessari_wire::Leadership {
+                epoch: tessari_types::Epoch::ZERO,
+                from: now.checked_sub(tessari_storage::LEASE_TTL).unwrap_or(now),
+            }),
+        ));
+    }
+    let Some((_, renewing)) = on_a_line.as_mut() else {
+        return;
+    };
+    let standing = tessari_wire::Standing {
+        candidate: candidate.me,
+        mine: candidate.mine,
+        authority: candidate.authority,
+        said: &said,
+        peers: &peers,
+        round: std::time::Duration::from_secs(tessari_constants::ROUND_SECONDS),
+        range,
+    };
+    let before = renewing.standing();
+    let held = renewing.once(candidate.me, now, |lease, next| {
+        standing.renew(candidate.voter, lease, next, now)
+    });
+    if held != before {
+        db.store().hold_range(range, held.epoch, held.lease());
+        log::info!("leading {range:?} at epoch {}", held.epoch.get());
+        if let Err(refused) = db.record_leadership(range, held.epoch) {
+            log::warn!(
+                "leading {range:?} at epoch {} but could not record it: {refused}",
+                held.epoch.get()
+            );
+        }
+    }
 }
 
 fn greet_peers(
@@ -1375,19 +1627,38 @@ fn greeting(db: &Db) -> Result<tessari_wire::Hello, String> {
     // make visible.
     //
     // `None` is the ordinary state today, because nothing sets the row yet.
-    let policy = store
+    let (policy, declared) = store
         .begin()
-        .and_then(|mut transaction| tessari_storage::Catalog::new(&mut transaction).failover())
-        .map_err(|why| why.to_string())?
-        .map(|definition| definition.stamp());
-    Ok(tessari_wire::Hello::about(
+        .and_then(|mut transaction| {
+            let catalog = tessari_storage::Catalog::new(&mut transaction);
+            Ok((catalog.failover()?, catalog.replicas()?))
+        })
+        .map_err(|why| why.to_string())?;
+    let policy = policy.map(|definition| definition.stamp());
+    let mut said = tessari_wire::Hello::about(
         &identity,
         leading,
         tail,
         tail_leadership,
         current_as_of,
         policy,
-    ))
+    );
+    // ADR-0082. The one placed range this node stands for, and where it stands
+    // there: a voter judges a ballot on that range by this, and a candidate
+    // hears a live leader of the range by it. Read in the same transaction as
+    // the policy, so a greeting is one reading of the catalog.
+    if let Some(range) = tessari_wire::stands_for(&declared, &identity.id) {
+        let log = store.own_log(range).map_err(|why| why.to_string())?;
+        said.line = Some(tessari_wire::Line {
+            range,
+            leading: store
+                .leading_of(range)
+                .unwrap_or(tessari_types::Epoch::ZERO),
+            tail: store.committed_tail(log).map_err(|why| why.to_string())?,
+            tail_leadership: store.tail_leadership(log).map_err(|why| why.to_string())?,
+        });
+    }
+    Ok(said)
 }
 
 /// A node id as it is written in a log line.
@@ -1467,6 +1738,13 @@ fn log_name(home: tessaridb::Reach) -> String {
         tessaridb::Reach::Database(namespace, database) => {
             format!("namespace {} database {}", namespace.get(), database.get())
         }
+        tessaridb::Reach::Shard(namespace, database, table, shard) => format!(
+            "namespace {} database {} table {} shard {}",
+            namespace.get(),
+            database.get(),
+            table.get(),
+            shard.get()
+        ),
     }
 }
 
@@ -1520,7 +1798,22 @@ fn health(db: &Db) -> Result<Ended, String> {
     let held = db.store().health().map_err(|failure| failure.to_string())?;
     match held.complaint() {
         None => {
-            println!("well — committed to sequence {}", held.committed);
+            // "this node" rather than the bare number, and the second clause
+            // when there is one. A store whose history was written before logs
+            // named their writer holds every record it ever had in a log
+            // attributed to nobody, so this node's own position is zero — the
+            // same sentence a store nobody has ever written answers, read at
+            // the one moment an upgrade makes somebody run this by hand (Q-764).
+            match held.elsewhere {
+                None => println!(
+                    "well — this node has committed to sequence {}",
+                    held.committed
+                ),
+                Some(elsewhere) => println!(
+                    "well — this node has committed to sequence {}, and another log in this store reaches sequence {elsewhere}",
+                    held.committed
+                ),
+            }
             Ok(Ended::Fine)
         }
         Some(said) => {

@@ -67,6 +67,10 @@ mod driver;
 mod error;
 mod frame;
 #[cfg(feature = "server")]
+mod gatherer;
+#[cfg(feature = "server")]
+mod gathering;
+#[cfg(feature = "server")]
 mod grant;
 #[cfg(feature = "server")]
 mod joining;
@@ -97,9 +101,14 @@ pub use crate::directory::{Destination, Directory, Heard};
 #[cfg(feature = "server")]
 pub use crate::driver::{
     Collecting, Published, Renewing, bootstrap_from, due_in, every, heard_a_leader,
-    heard_a_newer_policy, names_a_peer, stands, upstream, voters,
+    heard_a_leader_on, heard_a_newer_policy, leader_of_range, names_a_peer, stands, stands_for,
+    upstream, voters,
 };
 pub use crate::error::{Error, Result};
+#[cfg(feature = "server")]
+pub use crate::gatherer::{Gathering, Greeting};
+#[cfg(feature = "server")]
+pub use crate::gathering::{Gather, Page, Ungathered};
 #[cfg(feature = "server")]
 pub use crate::grant::{Ballot, Deciding, Leadership, Reached, Refused, Round, Vote, Voter};
 #[cfg(feature = "server")]
@@ -112,7 +121,7 @@ pub use crate::message::{Answer, Correction, Exact, Names, Remark, Request, Sugg
 #[cfg(feature = "server")]
 pub use crate::node::Node;
 #[cfg(feature = "server")]
-pub use crate::peer::{Hello, PeerFrame, Presented, Purpose, admit};
+pub use crate::peer::{Hello, Line, PeerFrame, Presented, Purpose, admit};
 pub use crate::push::{Became, Follow, Happened};
 
 pub use crate::redirect::{Elsewhere, Settlement};

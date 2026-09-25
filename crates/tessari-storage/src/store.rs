@@ -52,11 +52,27 @@ pub struct Health {
     /// store that has stopped keeping its own promises is not less unwell for
     /// having stopped only once.
     pub background_errors: u64,
-    /// The log position every committed write is at or below.
+    /// The log position every write THIS NODE committed is at or below.
     ///
     /// Carried because "the process is up" and "the store is readable" are
     /// different claims and only the second one is useful.
+    ///
+    /// **This node's own log, and once a home admits more than one writer that
+    /// is not the same as the store's history.** It used to be documented as
+    /// the position every committed write is at or below, which stopped being
+    /// true when a log took its writer's name: a follower's records sit in its
+    /// leader's log, and a store migrated from before writers were named holds
+    /// every record it ever had in a log attributed to nobody. Both are
+    /// unreadable from this number alone, which is what [`Health::elsewhere`]
+    /// is for.
     pub committed: Sequence,
+    /// The furthest any OTHER log of the same home reaches, when there is one.
+    ///
+    /// `None` says this node's log is the only one here, which is the ordinary
+    /// state of a store standing alone — and it is the reason this is an option
+    /// rather than a zero, because a store nobody has written and a store whose
+    /// history belongs to somebody else must not answer the same thing (Q-764).
+    pub elsewhere: Option<Sequence>,
     /// Log divergences this process has refused.
     ///
     /// Not persisted, for the reason `crate::running`'s header gives about
@@ -162,6 +178,8 @@ pub struct Store {
     /// path there is, and a catalog read there would charge every table for a
     /// feature only a series has.
     series: Arc<crate::series::SeriesRegistry>,
+    shards: Arc<crate::shards::ShardRegistry>,
+    served: Arc<crate::served::Served>,
     /// Log divergences refused since this process opened the store.
     ///
     /// Shared with every handle for the same reason the snapshot registry is:
@@ -209,6 +227,11 @@ pub struct Store {
     /// from epoch zero, exactly as `None` from the lease is a different
     /// statement from a spent one.
     leading: Arc<std::sync::Mutex<Option<Epoch>>>,
+    /// The placed ranges this node leads on lines of their own (ADR-0082).
+    ///
+    /// Beside the store line's lease and epoch rather than replacing them, so a
+    /// store with no placement never touches it and behaves as it always did.
+    lines: Arc<crate::lines::Lines>,
     /// When this leader's own log reached each position.
     ///
     /// Shared with every handle for the reason the registries above it are, and
@@ -243,6 +266,7 @@ impl Store {
         }
         seed_version_position(&backend)?;
         crate::node::ensure(&backend)?;
+        let served = Arc::new(crate::served::Served::load(backend.as_ref())?);
         let store = Self {
             backend,
             snapshots: Arc::new(Registry::default()),
@@ -252,6 +276,8 @@ impl Store {
             vault: Arc::new(crate::vault::OpenVault::sealed()),
             audit: Arc::new(crate::audit::AuditTrail::default()),
             series: Arc::new(crate::series::SeriesRegistry::default()),
+            shards: Arc::new(crate::shards::ShardRegistry::default()),
+            served,
             divergences: Arc::new(AtomicU64::new(0)),
             discarded: Arc::new(AtomicU64::new(0)),
             campaigns: Arc::new(AtomicU64::new(0)),
@@ -259,6 +285,7 @@ impl Store {
             collections: Arc::new(crate::collections::Collections::default()),
             lease: Arc::new(crate::lease::Held::default()),
             leading: Arc::new(std::sync::Mutex::new(None)),
+            lines: Arc::new(crate::lines::Lines::default()),
             tailmarks: Arc::new(crate::tailmarks::TailMarks::default()),
         };
         // Last, because it reads the catalog: the format is settled and the
@@ -407,7 +434,7 @@ impl Store {
     ///
     /// Returns the substrate's failure, and a decoding failure when a stored
     /// membership row cannot be read.
-    fn in_a_cluster(&self, me: &[u8; NODE_ID_LEN]) -> Result<bool> {
+    pub(crate) fn in_a_cluster(&self, me: &[u8; NODE_ID_LEN]) -> Result<bool> {
         let mut transaction = self.begin()?;
         let declared = crate::catalog::Catalog::new(&mut transaction).replicas()?;
         Ok(crate::catalog::another_node_may_write(&declared, me))
@@ -479,12 +506,15 @@ impl Store {
     /// epoch at all. So nothing a caller asserts about itself in the frame being
     /// judged can reach this comparison.
     ///
-    /// # One epoch, for as long as a round is store-wide
+    /// # One epoch per line, compared on the row's own line
     ///
-    /// A grant in this build covers the whole store, so a node holds exactly one
-    /// epoch and comparing it against a per-range row is the comparison the
-    /// design intends. When a round can grant one range at a time, this becomes
-    /// a per-range comparison with it.
+    /// A placed range is a line of its own (ADR-0082), so a row's epoch is
+    /// compared with this node's epoch on the line the row's range is governed
+    /// by — the store line's for every unplaced range, which is every range of
+    /// a store with no placement and therefore the comparison this always made.
+    ///
+    /// Answers the placed ranges it read, so the caller judges each written
+    /// range's line against the same placement the rows were judged against.
     ///
     /// # Errors
     ///
@@ -495,17 +525,36 @@ impl Store {
         &self,
         ranges: &BTreeSet<Reach>,
         me: &[u8; NODE_ID_LEN],
-    ) -> Result<()> {
+    ) -> Result<BTreeSet<Reach>> {
         let mut transaction = self.begin()?;
-        let held = crate::catalog::Catalog::new(&mut transaction).leaderships()?;
+        let catalog = crate::catalog::Catalog::new(&mut transaction);
+        let held = catalog.leaderships()?;
+        // The placement, read in the same transaction as the rows it carves:
+        // the line a row belongs to and the line a write is judged on are one
+        // question asked of one catalog (ADR-0082).
+        let placed: BTreeSet<Reach> = catalog
+            .replicas()?
+            .into_iter()
+            .filter_map(|peer| peer.leads)
+            .collect();
         drop(transaction);
-        let mine = self.leading();
-        let mut refused = None;
+        // Every other node leading a range this writes, and whether this node
+        // leads one too. One other leader and none of our own is a redirect;
+        // anything more is a transaction no node may commit (G031 S2.4, Q-789).
+        // The first range led elsewhere is not enough to answer: redirecting
+        // there sends the client to a node that refuses the rest back.
+        let mut elsewhere: Vec<crate::catalog::LeadershipDefinition> = Vec::new();
+        let mut leads_one_here = false;
         for range in ranges {
             let Some(leader) = crate::catalog::covering(&held, *range) else {
                 continue;
             };
+            // Per line (ADR-0082): a row's epoch is on the line its range is
+            // governed by, and only this node's epoch on that same line orders
+            // against it. Two lines' epochs are two unrelated counters.
+            let mine = self.leading_of(crate::catalog::governing(&placed, leader.range));
             if leader.node == *me || mine.is_some_and(|mine| mine > leader.epoch) {
+                leads_one_here = true;
                 continue;
             }
             // G027 S2.3 — asked HERE, on the range that is about to be refused,
@@ -524,11 +573,21 @@ impl Store {
             if self.admits_two_writers(*range)? {
                 continue;
             }
-            refused = Some(*leader);
-            break;
+            if !elsewhere.iter().any(|held| held.node == leader.node) {
+                elsewhere.push(*leader);
+            }
         }
-        let Some(elsewhere) = refused else {
-            return Ok(());
+        if elsewhere.len() > 1 || (leads_one_here && !elsewhere.is_empty()) {
+            let mut nodes: Vec<[u8; NODE_ID_LEN]> =
+                elsewhere.iter().map(|leader| leader.node).collect();
+            if leads_one_here {
+                nodes.push(*me);
+            }
+            nodes.sort_unstable();
+            return Err(Error::SpansLeaderships { nodes });
+        }
+        let Some(elsewhere) = elsewhere.pop() else {
+            return Ok(placed);
         };
         let mut transaction = self.begin()?;
         let declared = crate::catalog::Catalog::new(&mut transaction).replicas()?;
@@ -726,6 +785,16 @@ impl Store {
         &self.series
     }
 
+    /// Which tables are split, and where.
+    pub(crate) fn shards(&self) -> &Arc<crate::shards::ShardRegistry> {
+        &self.shards
+    }
+
+    /// What this node was last served under.
+    pub(crate) fn served_state(&self) -> &Arc<crate::served::Served> {
+        &self.served
+    }
+
     /// Whether this process can open what the store's vaults hold.
     ///
     /// Sealed after every restart, deliberately: unsealing is the one thing
@@ -892,9 +961,11 @@ impl Store {
     ///
     /// Returns the backend's failure when the counts cannot be read.
     pub fn health(&self) -> Result<Health> {
+        let own = self.own_log(UNPARTITIONED_REPORT_HOME)?;
         Ok(Health {
             background_errors: self.backend.background_errors()?,
-            committed: self.committed_tail(self.own_log(UNPARTITIONED_REPORT_HOME)?)?,
+            committed: self.committed_tail(own)?,
+            elsewhere: self.furthest_other_log(UNPARTITIONED_REPORT_HOME, own)?,
             log_divergences: self.divergences.load(Ordering::Relaxed),
             discarded_writes: self.discarded.load(Ordering::Relaxed),
             campaigns: self.campaigns.load(Ordering::Relaxed),
@@ -1053,6 +1124,43 @@ impl Store {
         }
     }
 
+    /// Hold a lease a majority granted on `range`'s own line (ADR-0082).
+    ///
+    /// The store line is [`Self::hold`]; this is every other line, and the two
+    /// are one call so a caller campaigning for several ranges does not choose
+    /// the seam by hand.
+    pub fn hold_range(&self, range: Reach, epoch: Epoch, lease: crate::lease::Lease) {
+        if range == Reach::Store {
+            self.hold(epoch, lease);
+        } else {
+            self.lines.hold(range, epoch, lease);
+        }
+    }
+
+    /// The epoch this node holds on `range`'s own line, if a round granted it
+    /// one — [`Self::leading`] for the store line.
+    ///
+    /// A placed range's line answers only while its lease is live; the store
+    /// line's epoch keeps its old meaning and outlives the lease.
+    #[must_use]
+    pub fn leading_of(&self, range: Reach) -> Option<Epoch> {
+        if range == Reach::Store {
+            self.leading()
+        } else {
+            self.lines.epoch_of(range)
+        }
+    }
+
+    /// Where this node stands on a placed range's line.
+    pub(crate) fn line_standing(&self, range: Reach) -> crate::lines::Standing {
+        self.lines.standing(range)
+    }
+
+    /// Whether this node holds any placed range's line.
+    pub(crate) fn holds_lines(&self) -> bool {
+        self.lines.any()
+    }
+
     /// How long this node's lease fence has been closed, if it is.
     ///
     /// `None` means writes may proceed — either because the fence is still open
@@ -1151,6 +1259,36 @@ impl Store {
             Some(value) => Ok(Sequence::decode(value.as_slice())?),
             None => Ok(Sequence::ZERO),
         }
+    }
+
+    /// The furthest any log of `home` reaches other than `own`.
+    ///
+    /// `None` when `own` is the only log there, which is what a store standing
+    /// alone looks like and is therefore the answer that must NOT be a zero:
+    /// the two states this separates are *nothing has been written here* and
+    /// *everything here was written by somebody else*, and they were one
+    /// sentence until Q-764 measured what that sentence invites.
+    ///
+    /// A maximum rather than a sum, and not offered as a position anybody
+    /// resumes from: counters in different logs are unrelated, so this says
+    /// *there is history here and it reaches at least this far* and nothing
+    /// more. The scan costs one prefix walk of the position keyspace, which is
+    /// bounded by the number of writers in the home and not by the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns the backend's failure when the logs or their tails cannot be
+    /// read.
+    fn furthest_other_log(&self, home: Reach, own: LogId) -> Result<Option<Sequence>> {
+        let mut furthest: Option<Sequence> = None;
+        for log in self.logs_of(home)? {
+            if log == own {
+                continue;
+            }
+            let tail = self.committed_tail(log)?;
+            furthest = Some(furthest.map_or(tail, |held| held.max(tail)));
+        }
+        Ok(furthest)
     }
 
     /// The newest version this store has written a record at.
@@ -1463,7 +1601,14 @@ impl Store {
                     kept.push(mutation.clone());
                 }
             }
-            carried.push((sequence, LogRecord::at(record.epoch(), kept)));
+            // An emptied record is still a commit of its writer, and a
+            // follower merging logs by order needs to know where it stood even
+            // when nothing in it was carried (ADR-0084).
+            let mut rebuilt = LogRecord::at(record.epoch(), kept);
+            if let Some(order) = record.order() {
+                rebuilt.set_order(order);
+            }
+            carried.push((sequence, rebuilt));
         }
         Ok(carried)
     }
@@ -2304,6 +2449,74 @@ mod tests {
                 .len(),
             3
         );
+    }
+
+    #[test]
+    fn a_store_whose_history_predates_writers_does_not_report_itself_empty() {
+        // Q-764, measured before it was written: a store written by
+        // `0.0.6-beta` and opened by `0.3.0-beta` answered `--health` with
+        // "well — committed to sequence 0" while `--backup` read every record
+        // out of the same store. A store nobody has ever written answers that
+        // same sentence, so the two states an operator most needs to tell apart
+        // — nothing here, and everything here under a name this node does not
+        // own — were one sentence, at the one moment an upgrade makes somebody
+        // read it.
+        //
+        // The cause is not a lost record. `give_an_older_log_its_writer`
+        // attributes what it rewrites to NOBODY, deliberately and correctly,
+        // and this reports the node's OWN log, which is empty until this node
+        // writes. Both halves are right and the sentence built from one of them
+        // was not.
+        let shared = backend();
+        Store::open(Arc::clone(&shared)).unwrap();
+        let home = Reach::Store;
+        let mut batch = WriteBatch::new().put(
+            FormatVersionKey::keyspace(),
+            FormatVersionKey.encode(),
+            FormatVersion::HOMED_LOG.encode(),
+        );
+        for sequence in 1_u64..=3 {
+            let mut key = vec![KeyKind::LogEntry.tag()];
+            key.extend_from_slice(&unqualified_home(home));
+            key.extend_from_slice(&sequence.to_be_bytes());
+            batch = batch.put(
+                LogKey::keyspace(),
+                Key::from(key),
+                LogRecord::new(Vec::new()).encode(),
+            );
+        }
+        let mut position = vec![KeyKind::AppliedPosition.tag()];
+        position.extend_from_slice(&unqualified_home(home));
+        batch = batch.put(
+            AppliedPositionKey::keyspace(),
+            Key::from(position),
+            Sequence::new(3).encode(),
+        );
+        shared.apply(batch).unwrap();
+
+        let held = Store::open(shared).unwrap().health().unwrap();
+        assert_eq!(
+            held.committed,
+            Sequence::ZERO,
+            "this node has written nothing, and that stays the honest answer \
+             about its own log"
+        );
+        assert_eq!(
+            held.elsewhere,
+            Some(Sequence::new(3)),
+            "but the store is not empty, and this is the number an operator \
+             needs before concluding it is"
+        );
+    }
+
+    #[test]
+    fn a_store_nobody_has_written_holds_nothing_elsewhere() {
+        // The control the test above needs to mean anything: an empty store
+        // must not acquire a second number, or `elsewhere` would report history
+        // in every store there is and stop distinguishing anything.
+        let held = Store::open(backend()).unwrap().health().unwrap();
+        assert_eq!(held.committed, Sequence::ZERO);
+        assert_eq!(held.elsewhere, None);
     }
 
     /// A home as the nine bytes a key carried it in before writers were named.

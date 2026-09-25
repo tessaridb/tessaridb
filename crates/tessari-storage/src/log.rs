@@ -175,6 +175,7 @@ mod tests {
             database: DatabaseId::new(1),
             table: TableId::new(1),
             id: RecordId::from("r"),
+            shard: None,
             value: StampedValue::new(RecordValue::Present(b"v".to_vec())),
         }])
     }

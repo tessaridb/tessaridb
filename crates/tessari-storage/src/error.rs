@@ -322,6 +322,45 @@ pub enum Error {
         epoch: Epoch,
     },
 
+    /// A transaction writes ranges that different nodes lead, so no node may
+    /// commit it (G031 S2.4, ADR-0080, Q-789).
+    ///
+    /// Not a redirect: every node named here would refuse the same transaction
+    /// back, because each leads only part of what it writes. A transaction is
+    /// judged on the node that leads the range it writes, and this one has no
+    /// such node — the remedy is one transaction per leader. The nodes are
+    /// named, sorted, so the caller can see which ranges went where.
+    #[error(
+        "this transaction writes ranges led by {} different nodes ({}), and no \
+         node may commit it — write each leader's ranges in a transaction of \
+         their own",
+        nodes.len(),
+        nodes
+            .iter()
+            .map(|node| tessari_types::RecordId::Uuid(*node).to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )]
+    SpansLeaderships {
+        /// Every node leading a range this transaction writes, this one
+        /// included when it leads one of them.
+        nodes: Vec<[u8; tessari_encoding::NODE_ID_LEN]>,
+    },
+
+    /// A peer row that places a leader (`LEADS`) was asked to be dropped.
+    ///
+    /// Refused rather than taken: the node committing the drop would hand the
+    /// range back to the store line at once while the range's own leader goes
+    /// on writing under its lease until the drop reaches it (ADR-0082).
+    #[error(
+        "peer `{name}` leads a range (`LEADS`), and dropping a placement needs every lease on \
+         that range to have lapsed first, which this build cannot establish"
+    )]
+    PlacementCannotBeDropped {
+        /// The peer's name.
+        name: String,
+    },
+
     /// A write met a record whose stored versions disagree with each other.
     ///
     /// Two nodes wrote this record without either having seen the other's
@@ -607,6 +646,49 @@ pub enum Error {
         refusals: Vec<Error>,
     },
 
+    /// `SPLIT AT` on a table whose records the store numbers with a counter
+    /// (G031 S1.2, ADR-0080).
+    ///
+    /// A counter is one row the whole store shares, so every generated identity
+    /// would route its insert through the store's own log and leader, and two
+    /// shards written by two nodes could not agree on the next number.
+    #[error(
+        "table `{table}` is split, so its records cannot be numbered by a counter \
+         the whole store shares — declare it `IDENTITY uuid`, or name each record"
+    )]
+    SplitNeedsGeneratedUuid {
+        /// The table being declared.
+        table: String,
+    },
+
+    /// `SPLIT AT` points that do not ascend strictly in key order.
+    ///
+    /// Refused rather than sorted, because a list sorted for its author accepts
+    /// a boundary they wrote in the wrong place and says nothing.
+    #[error(
+        "table `{table}`'s split point {position} does not sort after the one \
+         before it — write the points once each, in key order"
+    )]
+    SplitPointsOutOfOrder {
+        /// The table being declared.
+        table: String,
+        /// The offending point, counted from one in written order.
+        position: usize,
+    },
+
+    /// `SPLIT AT` on a table kind whose rows are not records a caller writes by
+    /// identity — an edge, a bucket, a vault, a queue, a view, a series.
+    #[error(
+        "table `{table}` is {kind}, and only a table declared with `DEFINE TABLE` \
+         can be split by the identities of its records"
+    )]
+    SplitOnAKindThatIsNotRecords {
+        /// The table being declared.
+        table: String,
+        /// What it is instead, as a phrase.
+        kind: &'static str,
+    },
+
     /// The parent a catalog entry was to be created under does not exist.
     #[error("no such {entity}: {id}")]
     NoSuchParent {
@@ -675,8 +757,8 @@ pub enum Error {
     /// So it is refused rather than answered, and the refusal carries the repair
     /// as well as the number: there is no position to retry from, and the only
     /// way back is a fresh copy of the state. That is Raft's `InstallSnapshot`,
-    /// etcd's *take a new snapshot and watch from `revision + 1`*, and
-    /// PostgreSQL's *re-create the standby* — every system that prunes a log
+    /// etcd's *take a new snapshot and watch from `revision + 1`*, and a
+    /// replicated database's *re-create the standby* — every system that prunes a log
     /// answers this case with state rather than with more history.
     #[error(
         "sequence {asked} is below the start of this log, which begins at \
@@ -770,6 +852,11 @@ impl Error {
             // ever collected into it — so it does not need to look inside.
             | Self::RecordsRefused { .. }
             | Self::IdSpaceExhausted { .. }
+            | Self::SpansLeaderships { .. }
+            | Self::PlacementCannotBeDropped { .. }
+            | Self::SplitNeedsGeneratedUuid { .. }
+            | Self::SplitPointsOutOfOrder { .. }
+            | Self::SplitOnAKindThatIsNotRecords { .. }
             // Validation and not `Unavailable`: the store is healthy and the
             // sequence asked for is the thing that is wrong. Retrying the same
             // read cannot succeed, and a floor only ever rises, so a caller that

@@ -98,6 +98,13 @@ pub enum KeyKind {
     /// about this machine's disk, and a node that restored a backup must not
     /// inherit the original's answer.
     LogRetention,
+    /// The reach this node's upstream last served it under (G031, ADR-0081).
+    ///
+    /// Local for the same reason as [`Self::LogRetention`], and its own key for
+    /// the reason retention is: folding it into the identity would make a store
+    /// written by this build unreadable by an older one, over a fact neither
+    /// needs to agree on.
+    ServedReach,
 }
 
 impl KeyKind {
@@ -133,6 +140,7 @@ impl KeyKind {
         Self::VersionPosition,
         Self::LogStart,
         Self::LogRetention,
+        Self::ServedReach,
     ];
 
     /// The leading byte that identifies this kind on disk.
@@ -171,6 +179,7 @@ impl KeyKind {
             Self::VersionPosition => 0x3c,
             Self::LogStart => 0x3d,
             Self::LogRetention => 0x3e,
+            Self::ServedReach => 0x3f,
         }
     }
 
@@ -204,7 +213,8 @@ impl KeyKind {
             | Self::ReclaimFloor
             | Self::VersionPosition
             | Self::LogStart
-            | Self::LogRetention => Keyspace::META,
+            | Self::LogRetention
+            | Self::ServedReach => Keyspace::META,
         }
     }
 
@@ -242,6 +252,7 @@ impl KeyKind {
             Self::VersionPosition => "version-position",
             Self::LogStart => "log-start",
             Self::LogRetention => "log-retention",
+            Self::ServedReach => "served-reach",
         }
     }
 
@@ -328,6 +339,7 @@ mod tests {
             (KeyKind::VersionPosition, 0x3c),
             (KeyKind::LogStart, 0x3d),
             (KeyKind::LogRetention, 0x3e),
+            (KeyKind::ServedReach, 0x3f),
         ];
         assert_eq!(expected.len(), KeyKind::ALL.len(), "a kind is untested");
         for (kind, tag) in expected {

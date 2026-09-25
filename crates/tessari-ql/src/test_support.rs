@@ -233,11 +233,15 @@ fn erase_statement(statement: &mut Statement) {
             name,
             roles,
             replicates,
+            leads,
             ..
         } => {
             erase_name(name);
             erase_names(roles.as_deref_mut());
             if let Some(reach) = replicates {
+                erase_reach(reach);
+            }
+            if let Some(reach) = leads {
                 erase_reach(reach);
             }
         }
@@ -612,6 +616,16 @@ fn erase_reach(reach: &mut ReachRef) {
         ReachRef::Store => {}
         ReachRef::Namespace(name) => erase_name(name),
         ReachRef::Database(table) => erase_table(table),
+        ReachRef::Shard {
+            namespace,
+            database,
+            table,
+            ..
+        } => {
+            erase_name(namespace);
+            erase_name(database);
+            erase_name(table);
+        }
     }
 }
 

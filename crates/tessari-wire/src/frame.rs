@@ -22,7 +22,7 @@
 use std::io::{Read, Write};
 
 use tessari_encoding::{LogId, NODE_ID_LEN, Writer};
-use tessari_types::{DatabaseId, NamespaceId, Reach};
+use tessari_types::{DatabaseId, NamespaceId, Reach, ShardId, TableId};
 
 use crate::error::{Error, Result};
 
@@ -386,15 +386,25 @@ impl<R: std::io::Read, W: std::io::Write> std::io::Write for Duplex<'_, R, W> {
 /// The variant leads, then the namespace and the database, both always written.
 /// Fixed width because a frame body that followed it would otherwise start at
 /// three different offsets.
+///
+/// A shard (variant 3) is the one wider home: its table and shard follow the
+/// nine bytes. The variant fixes the width, so a body still starts at one
+/// offset per variant, and a peer that predates shards refuses the variant
+/// rather than reading a table id as the next field.
 pub(crate) fn put_reach(into: &mut Vec<u8>, reach: Reach) {
     let (variant, namespace, database) = match reach {
         Reach::Store => (0_u8, 0_u32, 0_u32),
         Reach::Namespace(namespace) => (1, namespace.get(), 0),
         Reach::Database(namespace, database) => (2, namespace.get(), database.get()),
+        Reach::Shard(namespace, database, _, _) => (3, namespace.get(), database.get()),
     };
     into.push(variant);
     put_u32(into, namespace);
     put_u32(into, database);
+    if let Reach::Shard(_, _, table, shard) = reach {
+        put_u32(into, table.get());
+        put_u32(into, shard.get());
+    }
 }
 
 /// Read one back.
@@ -416,6 +426,22 @@ pub(crate) fn take_reach(from: &[u8], at: usize) -> Result<(Reach, usize)> {
         0 => Reach::Store,
         1 => Reach::Namespace(NamespaceId::new(namespace)),
         2 => Reach::Database(NamespaceId::new(namespace), DatabaseId::new(database)),
+        3 => {
+            let (table, after) = take_u32(from, at)?;
+            let (shard, after) = take_u32(from, after)?;
+            if shard == 0 {
+                return Err(Error::Malformed);
+            }
+            return Ok((
+                Reach::Shard(
+                    NamespaceId::new(namespace),
+                    DatabaseId::new(database),
+                    TableId::new(table),
+                    ShardId::new(shard),
+                ),
+                after,
+            ));
+        }
         _ => return Err(Error::Malformed),
     };
     Ok((reach, at))
@@ -455,8 +481,36 @@ mod tests {
 
     use std::io::Cursor;
 
-    use super::{CEILING, Kind, greet, put_text, read, take_text, write};
+    use super::{CEILING, Kind, greet, put_reach, put_text, read, take_reach, take_text, write};
     use crate::error::Error;
+
+    #[test]
+    fn a_shard_home_crosses_the_wire_and_the_older_three_keep_nine_bytes() {
+        use tessari_types::{DatabaseId, NamespaceId, Reach, ShardId, TableId};
+        let shard = Reach::Shard(
+            NamespaceId::new(1),
+            DatabaseId::new(2),
+            TableId::new(3),
+            ShardId::new(4),
+        );
+        let mut bytes = Vec::new();
+        put_reach(&mut bytes, shard);
+        assert_eq!(
+            bytes,
+            vec![3, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4]
+        );
+        assert!(matches!(take_reach(&bytes, 0), Ok((read, 17)) if read == shard));
+        let mut older = Vec::new();
+        put_reach(
+            &mut older,
+            Reach::Database(NamespaceId::new(1), DatabaseId::new(2)),
+        );
+        assert_eq!(older, vec![2, 0, 0, 0, 1, 0, 0, 0, 2]);
+        // A shard numbered zero is not one, on the wire as in the catalog.
+        let mut zero = bytes.clone();
+        zero[16] = 0;
+        assert!(matches!(take_reach(&zero, 0), Err(Error::Malformed)));
+    }
 
     /// What a node must put on the wire, written as bytes rather than built from
     /// this module's own constants.

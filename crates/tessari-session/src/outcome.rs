@@ -359,6 +359,18 @@ pub enum Note {
         /// The ceiling it is approaching, past which the read is refused.
         most: u64,
     },
+    /// Part of the answer was fetched from other nodes (G033, ADR-0083).
+    ///
+    /// This node holds some of a split table's shards, and the others were read
+    /// from their leaders, each when it was asked. The answer is complete —
+    /// a shard nobody answered for refuses the read — and it is not one
+    /// snapshot, which nothing in its shape shows.
+    Gathered {
+        /// The table.
+        table: String,
+        /// The shards fetched, in key order.
+        shards: Vec<u32>,
+    },
 }
 
 impl Note {
@@ -372,6 +384,7 @@ impl Note {
             Self::CursorWalked => "cursor-walked",
             Self::SubqueryCeiling { .. } => "subquery-ceiling",
             Self::NearingCeiling { .. } => "nearing-ceiling",
+            Self::Gathered { .. } => "gathered",
         }
     }
 
@@ -402,6 +415,19 @@ impl Note {
             Self::NearingCeiling { rows, most } => format!(
                 "this held read holds {rows} records of the {most} it may hold, \
                  past which it is refused rather than shortened",
+            ),
+            Self::Gathered { table, shards } => format!(
+                "shard{} {} of `{table}` {} read from {} leader{} on other nodes, each when \
+                 it was asked, so this answer is complete and not one snapshot",
+                if shards.len() == 1 { "" } else { "s" },
+                shards
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if shards.len() == 1 { "was" } else { "were" },
+                if shards.len() == 1 { "its" } else { "their" },
+                if shards.len() == 1 { "" } else { "s" },
             ),
         }
     }

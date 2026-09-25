@@ -35,14 +35,18 @@ mod followers;
 mod graph;
 mod index;
 mod lease;
+mod lines;
 mod log;
 mod node;
+mod ordering;
 mod pruning;
 mod reclaim;
 mod running;
 mod schema;
 mod sealing;
 mod series;
+mod served;
+mod shards;
 mod snapshots;
 mod store;
 mod tailmarks;
@@ -56,9 +60,10 @@ pub use catalog::{
     GrantDefinition, GraphDefinition, Held, IndexDefinition, IndexShape, Kind,
     LeadershipDefinition, Mapped, NamespaceDefinition, OnFailure, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY,
     QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, Reach, ReplicaDefinition, Role,
-    SYSTEM_DATABASE, SYSTEM_NAMESPACE, SeriesDeclaration, StoredKind, TableDefinition, TableKind,
-    TableShape, UserDefinition, VECTOR_FIELD, VaultDeclaration, VectorDeclaration, VectorDistance,
-    Verb, ViewDeclaration, another_node_may_write, names_a_peer, the_row_a_greeting_binds,
+    SYSTEM_DATABASE, SYSTEM_NAMESPACE, SeriesDeclaration, ShardMap, ShardSpan, StoredKind,
+    TableDefinition, TableKind, TableShape, UserDefinition, VECTOR_FIELD, VaultDeclaration,
+    VectorDeclaration, VectorDistance, Verb, ViewDeclaration, another_node_may_write, governing,
+    names_a_peer, the_row_a_greeting_binds,
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.
@@ -75,6 +80,7 @@ pub use feed::{Change, ChangeKind, Changes, History, Subject, Subscription, Watc
 pub use followers::FollowerLag;
 pub use graph::vector_of;
 pub use lease::{GUARD as LEASE_GUARD, Lease, TTL as LEASE_TTL};
+pub use ordering::{Horizon, MergedHistory, Page, in_writer_order};
 pub use pruning::{Pruned, Trimmed};
 pub use reclaim::Reclaimed;
 pub use running::{Progress, Running};
@@ -86,6 +92,6 @@ pub use sealing::{
 pub use store::{Health, Store};
 pub use tessari_encoding::{BUILD_VERSION, LogId, NODE_ID_LEN, Roles, Writer};
 pub use transaction::{
-    Expansion, Nearby, Neighbour, RecordAddress, Region, StoredRecord, Transaction,
+    Expansion, Nearby, Neighbour, RecordAddress, Region, StoredRecord, Transaction, Window,
 };
 pub use vault::OpenVault;

@@ -1949,6 +1949,88 @@ Checking a table nobody declared is refused rather than answered with an empty
 list: an empty answer is indistinguishable from a clean table, so a typo in the
 name would read as a clean bill of health.
 
+### Splitting a table into shards: `SPLIT AT`
+
+A table can be split by the identities of its records into **shards**, each of
+which is a range of its own — logged, led and replicated separately:
+
+```
+DEFINE TABLE orders (total int, customer string) IDENTITY uuid SPLIT AT 'g', 'p';
+INFO FOR TABLE orders;
+```
+
+The points name where each shard **begins**. Two points make three shards,
+numbered from `1` in key order: `1` holds everything before `'g'`, `2` holds
+`'g'` up to but not including `'p'`, and `3` holds `'p'` and everything after.
+A point is written exactly as the identity it bounds would be addressed — `100`,
+`'m'`, `uuid '0195e0a1-…'`, `0x0102` — and the order is the order a span read
+walks (see *Reading a span of identities*): every integer before every text,
+every text before every uuid.
+
+`INFO FOR TABLE` reports the map beside everything else it says about the table,
+each bound in the spelling the clause takes back, and `NONE` at the open ends:
+
+```text
+shards: [
+  { id: 1, from: NONE, to: "'g'" },
+  { id: 2, from: "'g'", to: "'p'" },
+  { id: 3, from: "'p'", to: NONE }
+]
+```
+
+The `definition` the same report carries includes the `SPLIT AT`, so a table
+re-created from it is split the same way.
+
+**Three declarations are refused, each by name.**
+
+- `SPLIT AT` on a table whose records the store numbers with a counter. The
+  counter is one value the whole store shares, so every generated identity would
+  route its insert through one place, and two shards written by two nodes could
+  not agree on the next number. Declare the table `IDENTITY uuid`, or name each
+  record yourself.
+- Points that do not ascend strictly in key order, or a point written twice. The
+  list is refused rather than sorted, because a list sorted for you accepts a
+  boundary you wrote in the wrong place and says nothing.
+- `SPLIT AT` on anything but a table declared with `DEFINE TABLE`: a collection,
+  a bucket, an edge table, a vault, a queue, a view, a series, a vector or geo
+  store, and a graph's node table — a walk reaches a node from its neighbours and
+  has no span to confine it to one shard.
+
+**Where generated identities land.** A table declared `IDENTITY uuid` names
+records with UUID v7, whose leading bits are a timestamp — so every record the
+store names lands in the **last** shard, and `SPLIT AT` over those identities is
+sharding **by time**: older shards stop receiving writes. That is useful when the
+point is to keep old records apart from new ones. It is not how writes are
+spread: for that, name records by a key whose leading part varies — a tenant, a
+region, an account — and split on that.
+
+**What a shard is, underneath.** A split table's records are stored exactly
+where an unsplit table's are; nothing is rewritten. What changes is the log: a
+commit writing records of one shard is filed in that shard's own log, a commit
+writing two shards is filed at their database, and every log record says which
+shard each of its records is in. That is what lets a shard be led by one node and
+replicated to another on its own (§7d).
+
+**A transaction is committed by the node that leads everything it writes.** On a
+cluster where two nodes lead two shards — or two namespaces — a transaction
+writing both is refused with **`SpansLeaderships`**, naming both nodes. It is not
+a redirect: the node it would send you to leads only part of the transaction
+too, and would refuse it back. Write each leader's part as its own transaction.
+A transaction that one other node leads entirely is still redirected there.
+
+**A split table's record history reads two logs.** A record is written in its
+shard's log by a commit touching one shard and in its database's by a commit
+touching two, so `INFO FOR HISTORY OF` one of its records reads both and merges
+them in the order the node committed them. Each event names the log it came from
+— `log: 'shard 2'` or `log: 'database'` — because its `at` is a position in that
+log and means nothing in the other. A history of an unsplit table is unchanged
+and names no log.
+
+**A change feed over a split table is refused.** A feed's position counts in one
+log, and a split table's writes are in several; following one of them would
+deliver every change except the others' with nothing saying so. A feed over an
+unsplit table beside it is unaffected.
+
 ### What a table declares about its fields
 
 A table is schemaless until something is declared on it, and stays schemaless
@@ -6845,6 +6927,118 @@ correct it. `null` means subscribed to nothing — the quietest failure a cluste
 has, because every node is up, every greeting lands, and one copy simply never
 changes.
 
+**A subscription can name one shard of a split table**, fully qualified and
+never relative to the session's `USE`:
+
+```
+DEFINE REPLICA part AT 'db-4.internal:9000'
+    NODE '5d0c2e7a91f84b36a2e1c7d9f0a3b648'
+    REPLICATES SHARD prod.shop.orders 2;
+```
+
+A shard that does not exist — a number the table does not have, or a table that
+is not split — is refused as an unknown shard rather than stored, because a
+subscription to nothing is the failure described above.
+
+**A narrower subscription is given the definitions above it.** A peer subscribed
+to one database receives its namespace's definition and name, and one subscribed
+to one shard receives its database's and every table's in it, so its readers can
+name what it holds. Definitions travel down; records never travel sideways — the
+shard's sibling shards and the database's other tables arrive as definitions
+with none of their records.
+
+**So a node that holds part of what it can name never answers from the part.**
+Each answer a peer collects says what it was served under, and the node records
+it. A read inside what it holds answers from its own copy: a record in its
+shard, or a span of identities that stays within its shards. A read of a split
+table that needs shards it lacks is **gathered** — see the next section — and
+where gathering does not apply it is refused with **`NotHeldHere`**, naming the
+shards held elsewhere; a table of that database it holds none of is refused the
+same way. A node that was never served anything — a leader, a store on its own —
+and a follower whose subscription covers the whole database refuse nothing new.
+
+### Reading a split table on a node that holds part of it
+
+A node holding some of a split table's shards answers a `SELECT` over the whole
+table, a span, one record or a `WHERE` by **fetching the shards it lacks from
+their leaders** and running the statement over its own records and the fetched
+ones together:
+
+```
+SELECT count(*) AS n FROM orders;
+```
+
+on a node holding shard 3 of `orders` counts shards 1 and 2 as well, read from
+whichever nodes lead them. The records travel and the statement does not, so a
+grant hiding a field hides it in a fetched record exactly as in a local one, and
+a condition on that field matches none of them. A point read or a span asks only
+for the shards it touches, and a span inside what the node holds asks nothing.
+
+**The answer is complete and it is not one snapshot.** Each fetched shard is its
+leader's state when it was asked, beside this node's own. The answer says so
+with the note **`gathered`**, naming the shards fetched. For the same reason a
+read **inside a transaction** or under **`VERSION`** is not gathered — a snapshot
+is what those promise — and stays refused with `NotHeldHere`, as do a join side,
+a `FETCH` into a shard the node lacks, and the read an `UPDATE` or `DELETE`
+makes.
+
+**Nothing is answered in part.** A shard whose leader is not known, cannot be
+reached or declines refuses the whole read with **`NotGathered`**, naming the
+shard and what refused. A gathered read holds every record it needs before it
+answers, so past 100 000 records it is refused with **`GatheredTooMuch`** rather
+than shortened; a `LIMIT` or a `WHERE` does not reduce it, because they run here,
+after the records arrive. Read a span inside the shards the node holds, or read
+on a node that holds the whole table, when the table is larger than that.
+
+**Who may be asked.** A shard's leader hands its records only to a member whose
+subscription holds part of the same table — any of its shards, or its database.
+Placing one shard of a table on a node therefore lets that node read the whole
+table; a follower confined to another tenancy fetches nothing.
+
+
+### Placing a range's leader: `LEADS`
+
+A member row can name the **one range its node stands to lead**, besides the
+store every standing node already stands for:
+
+```
+DEFINE REPLICA b AT 'db-2.internal:9000'
+    NODE '9f2c4e1a70bb43d5a1c6e2f480937d55'
+    ROLES serving, writable, coordinating
+    REPLICATES STORE
+    LEADS SHARD prod.shop.orders 2;
+```
+
+The range is a `NAMESPACE`, a `DATABASE` or a `SHARD`, spelled as `REPLICATES`
+spells it; `LEADS STORE` is refused, and so is a shard the table does not have.
+Several rows naming one range make several **candidates** for it — the way to
+give a range a second node to fail over to.
+
+**A placed range is its own election.** Its candidates stand for it on a line
+of their own — its own epochs and its own lease, separate from the store's —
+so the node leading a shard and the node leading the store can be different
+nodes, and writes to two shards led by two nodes are taken by both at once.
+Every node collects a placed range from whichever node leads it.
+
+**The placement takes the range away from the store's leader at once.** From
+the moment the row commits, the store's leader stops writing that range: a
+write into it is refused **`NoLeadershipYet`** while no candidate has been
+elected, and refused naming the range's leader afterwards — the same refusal a
+write into another node's range always gets. The store's leader is deliberately
+not a fallback for a placed range whose leader is gone, because writing it would
+make two writers of one range. A lapsed lease on a range refuses writes to that
+range alone (**`LeaseSpent`**), and a lapsed lease on the store no longer refuses
+a write whose every range has a live leader of its own.
+
+A transaction that writes ranges led by two different nodes is refused as
+**`SpansLeaderships`**, naming both; write each leader's ranges separately.
+
+`INFO FOR NODE` reports each peer's placement as `leads`, in the clause's own
+spelling, or `null`. **A row carrying `LEADS` cannot be dropped**
+(**`PlacementCannotBeDropped`**): the node committing the drop would hand the
+range back to the store's leader at once, while the range's own leader goes on
+writing under its lease until it hears of the drop.
+
 
 ### How long the cluster waits before it replaces a leader
 
@@ -7016,6 +7210,19 @@ right now, preferring the newer leadership when two of them do. A node that has
 just started follows nobody until its first greeting round lands, which is one
 awareness interval.
 
+**A follower applies what it collects in the order its leader committed it.**
+A leader files each commit in the log of what it touched — the store's, a
+namespace's, a database's or a shard's — so one transaction touching two
+databases lands in their namespace's log, and a later one touching one of them
+lands in that database's. A follower asks for every log it holds in one round
+and applies the answers together, in the order the leader committed them, as far
+as the answers prove nothing is missing below; the rest is asked for again next
+round. Applied one log after another instead, a record written by a one-database
+commit and then by a two-database commit ended at the **older** value on the
+follower, with nothing in an error state. **A follower that ran such
+transactions on a build before this one may already hold the older value and is
+not repaired by upgrading: take a fresh copy of it.**
+
 **A voter refuses a candidate whose log is behind its own.** Opening the
 candidate set makes this necessary rather than merely tidy: a node holding less
 history could otherwise win a majority, lead, and silently drop every write it
@@ -7055,7 +7262,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.3.0", "build": "0.3.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.4.0", "build": "0.4.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],
@@ -7290,6 +7497,11 @@ be, because it is confined to the run its fixed values name.
 | Absent | Why |
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
+| **splitting a table that already exists**, and merging shards — `ALTER TABLE … SPLIT AT` | a table is split when it is declared, and its map does not move. A later split retires a shard and creates two, so every node routing by the old map has to be told — a versioned map and a refusal carrying the new one, which is its own piece of work. §4 |
+| **hash** sharding | shards are spans of identities, which is what keeps a span read one walk. Spreading writes by hash forfeits that order and is a second method the map can carry later, not a change to the first. §4 |
+| a gathered read that **pushes work down** to the shards' leaders | a node lacking shards fetches their records and runs the statement itself, so a `WHERE`, a `LIMIT` or an aggregate costs the missing shards' records on the network; evaluating them on the leaders — and combining a `mean` or a variance correctly across them — is a query engine of its own. A join side and a `FETCH` are not gathered at all. §7d |
+| **choosing among a range's candidates, and moving a placement** | `LEADS` elects a leader per placed range, but whichever candidate wins keeps it — there is no preference, no rebalancing and no hand-over — and a row naming one range cannot name a second or be dropped. Dropping safely needs every lease on the range to have lapsed first. §7d |
+| a change feed **over a split table** | refused: its writes are in several logs, and a feed's position counts in one. Following it needs a cursor holding a position per log. §4 |
 | a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |
 | a bucket narrowed by **content type** — `HOLDS image/png` | the store has no content type for a file. A file's record holds its size, its chunk count and when it was written, and nothing anywhere reads the bytes to decide what they are — so the clause could only enforce the caller's own claim about the caller's own bytes, which is the assertion §6a refuses `CREATE`, `UPDATE` and `SET` in order to avoid, wearing a constraint's clothes. The honest version detects the type by reading the leading bytes against a table of signatures, which is real work with a real failure mode of its own: plain text, CSV and SVG have no signature, and a `HOLDS text/plain` that cannot be checked is worse than no clause at all. The ceiling shipped without it because `MAX` compares against a number the store computes itself. §6a |
 | a **streaming** backup answer | `BACKUP` answers with a value, so the file is materialised. `FROM` bounds it, and the real fix is an answer shape that streams — which is the wall a **whole-file** `READ` still meets even now that a ranged one exists, and worth crossing once for both. §7a |

@@ -66,13 +66,25 @@ use crate::error::Result;
 pub(crate) enum Carried {
     /// It belongs to one tenancy, and travels to a subscription that reaches it.
     Within(Reach),
+    /// It DEFINES something at this reach — a namespace, a database, a table, a
+    /// name, a leadership — and travels to a subscription inside it as well as
+    /// to one containing it (Q-788, G031 S3.2).
+    ///
+    /// Definitions travel down the containment order and data does not travel
+    /// sideways. A subscriber to one database needs the namespace's definition
+    /// and name to be able to say `USE NAMESPACE` at all, and a subscriber to one
+    /// shard needs its table's; carried only `Within` their own level, a
+    /// narrower subscription received records nothing on it could name.
+    Schema(Reach),
     /// It has no tenancy of its own and holds nothing secret, and any tenancy's
     /// schema may point at it — so it travels to every subscriber.
     ///
-    /// Analyzers, and deliberately only analyzers: a name unique across the
-    /// store, a filter chain, and no reference to anybody's data. Withholding
-    /// one would leave a follower holding a full-text field whose analyzer it
-    /// cannot resolve, which fails at read time and looks like corruption.
+    /// Analyzers: a name unique across the store, a filter chain, and no
+    /// reference to anybody's data. Withholding one would leave a follower
+    /// holding a full-text field whose analyzer it cannot resolve, which fails
+    /// at read time and looks like corruption. And the identity class — users
+    /// and the grants that narrow them, which must arrive together (see
+    /// [`carried_to`]).
     Everywhere,
     /// It is the whole store's business, or its tenancy cannot be proven from
     /// the mutation alone. Either way it travels only to a subscriber at
@@ -86,6 +98,7 @@ impl Carried {
         match self {
             Self::Everywhere => true,
             Self::Within(own) => subscription.contains(own),
+            Self::Schema(own) => subscription.contains(own) || own.contains(subscription),
             Self::StoreOnly => subscription == Reach::Store,
         }
     }
@@ -106,6 +119,18 @@ pub(crate) fn carried_to(mutation: &Mutation) -> Result<Carried> {
     {
         // Ordinary data. Its address *is* its tenancy, so this costs no decode
         // at all — which is the case that runs on every record.
+        //
+        // A mutation of a split table carries its shard, stamped by the writer
+        // at commit (G031, ADR-0080), so it is carried within that shard — read
+        // from the record's own bytes, like everything else here.
+        if let Some(shard) = mutation.shard {
+            return Ok(Carried::Within(Reach::Shard(
+                mutation.namespace,
+                mutation.database,
+                mutation.table,
+                shard,
+            )));
+        }
         return Ok(
             match Reach::of(Some(mutation.namespace), Some(mutation.database)) {
                 Some(reach) => Carried::Within(reach),
@@ -129,41 +154,41 @@ pub(crate) fn carried_to(mutation: &Mutation) -> Result<Carried> {
     }
     Ok(match (table, present) {
         (t, _) if t == system::ANALYZERS => Carried::Everywhere,
-        (t, Some(value)) if t == system::NAMESPACES => Carried::Within(Reach::Namespace(
+        (t, Some(value)) if t == system::NAMESPACES => Carried::Schema(Reach::Namespace(
             definition::NamespaceDefinition::from_value(&value)?.id,
         )),
         (t, Some(value)) if t == system::DATABASES => {
             let declared = definition::DatabaseDefinition::from_value(&value)?;
-            Carried::Within(Reach::Database(declared.namespace, declared.id))
+            Carried::Schema(Reach::Database(declared.namespace, declared.id))
         }
         (t, Some(value)) if t == system::TABLES => {
             let declared = super::TableDefinition::from_value(&value)?;
-            Carried::Within(Reach::Database(declared.namespace, declared.database))
+            Carried::Schema(Reach::Database(declared.namespace, declared.database))
         }
         (t, Some(value)) if t == system::INDEXES => {
             let declared = definition::IndexDefinition::from_value(&value)?;
-            Carried::Within(Reach::Database(declared.namespace, declared.database))
+            Carried::Schema(Reach::Database(declared.namespace, declared.database))
         }
         (t, Some(value)) if t == system::FIELDS => {
             let declared = super::FieldDefinition::from_value(&value)?;
-            Carried::Within(Reach::Database(declared.namespace, declared.database))
+            Carried::Schema(Reach::Database(declared.namespace, declared.database))
         }
         (t, Some(value)) if t == system::GRAPHS => {
             let declared = super::GraphDefinition::from_value(&value)?;
-            Carried::Within(Reach::Database(declared.namespace, declared.database))
+            Carried::Schema(Reach::Database(declared.namespace, declared.database))
         }
         (t, Some(value)) if t == system::EDGE_KINDS => {
             let declared = super::EdgeKindDefinition::from_value(&value)?;
-            Carried::Within(Reach::Database(declared.namespace, declared.database))
+            Carried::Schema(Reach::Database(declared.namespace, declared.database))
         }
-        (t, Some(value)) if t == system::CONSUMERS => Carried::Within(Reach::Namespace(
+        (t, Some(value)) if t == system::CONSUMERS => Carried::Schema(Reach::Namespace(
             super::ConsumerDefinition::from_value(&value)?.namespace,
         )),
         // A leadership travels to whoever holds the range it is about: a
         // follower subscribed to one namespace needs to know who leads that
         // namespace, and has no business learning who leads another's.
         (t, Some(value)) if t == system::LEADERSHIPS => {
-            Carried::Within(super::LeadershipDefinition::from_value(&value)?.range)
+            Carried::Schema(super::LeadershipDefinition::from_value(&value)?.range)
         }
         // The identity class, and it is unconditional: every user reaches every
         // subscriber, whatever tenancy they were declared at. Not read from the
@@ -171,10 +196,19 @@ pub(crate) fn carried_to(mutation: &Mutation) -> Result<Carried> {
         // classifying by tenancy is what produced the split this reversed, and
         // leaving the read in place would leave the split one edit away.
         (t, _) if t == system::USERS => Carried::Everywhere,
+        // A user's grants travel with the user, for the same reason and with
+        // the same unconditional rule (G033). A grant NARROWS its user — one
+        // grant reduces a user to exactly what was granted — so a follower
+        // holding the user without the grant holds that user UNRESTRICTED, and
+        // a reader allowed one field reads the whole record there with nothing
+        // in an error state. It was `StoreOnly` because a grant carries a table
+        // id and no tenancy; that was right while users were classified by
+        // tenancy too, and became a widening the day they travelled everywhere.
+        // A revocation's tombstone reaches every node the grant did.
+        (t, _) if t == system::GRANTS => Carried::Everywhere,
         // Everything else, named rather than left to a catch-all so that the
         // ratchet below is a statement about a set somebody wrote down:
         //   ALLOCATORS        one counter per level, for the whole store
-        //   GRANTS            a user and a table id, and no tenancy of its own
         //   REPLICAS          who else is in the cluster is the store's
         //   RECORD_SEQUENCES  keyed by table id, tenancy not in the record
         //   VAULT_ROOT        one record, the store's
@@ -211,16 +245,16 @@ fn named(mutation: &Mutation, value: Option<&Value>) -> Carried {
         (Level::Namespace, _, _) => value
             .and_then(|value| definition::id_of(value, "name", "id").ok())
             .map_or(Carried::StoreOnly, |id| {
-                Carried::Within(Reach::Namespace(NamespaceId::new(id)))
+                Carried::Schema(Reach::Namespace(NamespaceId::new(id)))
             }),
         (Level::Database, Some(&namespace), _) => {
-            Carried::Within(Reach::Namespace(NamespaceId::new(namespace)))
+            Carried::Schema(Reach::Namespace(NamespaceId::new(namespace)))
         }
         (
             Level::Table | Level::Index | Level::Field | Level::Graph | Level::EdgeKind,
             Some(&namespace),
             Some(&database),
-        ) => Carried::Within(Reach::Database(
+        ) => Carried::Schema(Reach::Database(
             NamespaceId::new(namespace),
             DatabaseId::new(database),
         )),
@@ -277,7 +311,7 @@ pub(crate) fn home_of(record: &LogRecord) -> Result<Reach> {
     let mut home = None;
     for mutation in record.mutations() {
         let own = match carried_to(mutation)? {
-            Carried::Within(reach) => reach,
+            Carried::Within(reach) | Carried::Schema(reach) => reach,
             Carried::Everywhere | Carried::StoreOnly => Reach::Store,
         };
         home = Some(match home {
@@ -308,6 +342,7 @@ mod tests {
             database: system::SYSTEM_DATABASE,
             table,
             id,
+            shard: None,
             value: StampedValue::new(value.map_or(RecordValue::Tombstone, |value| {
                 RecordValue::Present(encode_payload(&value).into_bytes())
             })),
@@ -324,6 +359,7 @@ mod tests {
             database,
             table: TableId::new(4),
             id: RecordId::Int(id),
+            shard: None,
             value: StampedValue::new(RecordValue::Tombstone),
         }
     }
@@ -403,6 +439,7 @@ mod tests {
             database: SHOP,
             table: TableId::new(4),
             id: RecordId::Int(1),
+            shard: None,
             value: StampedValue::new(RecordValue::Tombstone),
         };
         assert_eq!(
@@ -440,7 +477,7 @@ mod tests {
                     .to_value()
                 )
             ),
-            Carried::Within(Reach::Namespace(PROD))
+            Carried::Schema(Reach::Namespace(PROD))
         );
 
         // 2 — a database, by the namespace it names.
@@ -457,7 +494,7 @@ mod tests {
                     .to_value()
                 )
             ),
-            Carried::Within(Reach::Database(PROD, SHOP))
+            Carried::Schema(Reach::Database(PROD, SHOP))
         );
 
         // 3, 6, 7, 12, 14, 15 — the tenanted definitions. Asserted by REFUSAL on
@@ -523,11 +560,22 @@ mod tests {
             "a revocation must reach every node the credential reached"
         );
 
-        // 5, 10, 11, 13, 16, 17, 18 — the store's own business, on a payload that
+        // 5, 11, 13, 16, 17, 18 — the store's own business, on a payload that
         // decodes, so the answer is the classification and not a decode failure.
+        // 10 — grants go where users go, and their revocation with them.
+        assert_eq!(
+            class(system::GRANTS, RecordId::Int(1), Some(Value::Null)),
+            Carried::Everywhere,
+            "a grant narrows its user, so a follower holding the user must hold it"
+        );
+        assert_eq!(
+            class(system::GRANTS, RecordId::Int(1), None),
+            Carried::Everywhere,
+            "a revoked grant must leave every node it reached"
+        );
+
         for table in [
             system::ALLOCATORS,
-            system::GRANTS,
             system::REPLICAS,
             system::RECORD_SEQUENCES,
             system::VAULT_ROOT,
@@ -551,6 +599,30 @@ mod tests {
         );
     }
 
+    /// A definition travels to a subscription inside its level as well as one
+    /// containing it; data travels only to one containing it; and neither
+    /// travels sideways (Q-788, G031 S3.2).
+    #[test]
+    fn a_definition_travels_down_and_data_does_not_travel_sideways() {
+        let namespace = Reach::Namespace(PROD);
+        let database = Reach::Database(PROD, SHOP);
+        let shard = Reach::Shard(PROD, SHOP, TableId::new(5), tessari_types::ShardId::new(2));
+        let sibling = Reach::Shard(PROD, SHOP, TableId::new(5), tessari_types::ShardId::new(3));
+        assert!(Carried::Schema(namespace).reaches(database));
+        assert!(Carried::Schema(database).reaches(shard));
+        assert!(Carried::Schema(database).reaches(Reach::Store));
+        assert!(
+            !Carried::Schema(sibling).reaches(shard),
+            "a sibling's definition"
+        );
+        assert!(
+            !Carried::Within(database).reaches(shard),
+            "a database's data"
+        );
+        assert!(Carried::Within(shard).reaches(database));
+        assert!(!Carried::Within(sibling).reaches(shard));
+    }
+
     /// A qualified name is classified from its KEY, so a drop classifies as well
     /// as a definition — which is why `qualify` puts the parent ids in it.
     #[test]
@@ -561,12 +633,12 @@ mod tests {
                 RecordId::Text("tb:7/3/orders".to_owned()),
                 None
             ),
-            Carried::Within(Reach::Database(PROD, SHOP)),
+            Carried::Schema(Reach::Database(PROD, SHOP)),
             "a dropped table's name reaches the follower that held the table"
         );
         assert_eq!(
             class(system::NAMES, RecordId::Text("db:7/shop".to_owned()), None),
-            Carried::Within(Reach::Namespace(PROD))
+            Carried::Schema(Reach::Namespace(PROD))
         );
         // A namespace's own name has no parents in the key, so it is read from
         // the value — and its tombstone is therefore unprovable.
@@ -576,7 +648,7 @@ mod tests {
                 RecordId::Text("ns:prod".to_owned()),
                 Some(definition::number(7))
             ),
-            Carried::Within(Reach::Namespace(PROD))
+            Carried::Schema(Reach::Namespace(PROD))
         );
         assert_eq!(
             class(system::NAMES, RecordId::Text("ns:prod".to_owned()), None),

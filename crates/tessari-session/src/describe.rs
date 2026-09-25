@@ -338,8 +338,26 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
     });
     write_identity(script, definition);
     write_conflict(script, definition);
+    write_split(script, definition);
     script.push_str(";\n");
     Ok(())
+}
+
+/// Where the table's shards begin, when it is split (G031, ADR-0080).
+///
+/// Each point as the literal that addresses a record, which is the spelling the
+/// clause reads. Without it the script re-creates an unsplit table, and nothing
+/// about the restored store is in an error state — every record it takes would
+/// simply land in one shard where the original routed it to three.
+fn write_split(script: &mut String, definition: &TableDefinition) {
+    let Some(shards) = &definition.shards else {
+        return;
+    };
+    let points: Vec<String> = shards
+        .spans()
+        .filter_map(|span| span.from.map(tessari_types::RecordId::to_literal))
+        .collect();
+    let _ = write!(script, " SPLIT AT {}", points.join(", "));
 }
 
 /// What the table does with a write it cannot order, written only when the

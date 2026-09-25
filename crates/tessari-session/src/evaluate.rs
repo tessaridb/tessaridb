@@ -54,6 +54,24 @@ use crate::session::Session;
 /// equal `last` would answer with the wrong members and raise nothing.
 const ORDERED_LEADING_FIELDS: usize = 1;
 
+/// How much of a table a read needs, for [`Session::refuse_reading_a_part`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Part<'a> {
+    /// Every record — a scan, a filter, an index read, a join side.
+    Whole,
+    /// One record, by identity.
+    Record(&'a RecordId),
+    /// The identities between two positions.
+    Span {
+        /// Where the span begins, always included.
+        lower: &'a RecordId,
+        /// Where it ends.
+        upper: &'a RecordId,
+        /// Whether `upper` is included.
+        inclusive: bool,
+    },
+}
+
 impl Session<'_> {
     /// The value an expression denotes, with no record in scope.
     pub(crate) fn evaluate(&self, transaction: &mut Transaction<'_>, expr: &Expr) -> Result<Value> {
@@ -1172,6 +1190,24 @@ impl Session<'_> {
         Ok(())
     }
 
+    /// Refuse a read that needs records this node was not served (G031 S3.3).
+    ///
+    /// Asked beside [`Self::refuse_reading_a_vault`], at the sources that name
+    /// a table and do not gather (G033): a join side and a `FETCH`. What is
+    /// missing is decided by [`Self::missing`], which the gathered read asks
+    /// too, so the two cannot disagree about what this node holds.
+    pub(crate) fn refuse_reading_a_part(
+        &self,
+        transaction: &mut Transaction<'_>,
+        id: TableId,
+        part: Part<'_>,
+    ) -> Result<()> {
+        match self.missing(transaction, id, part)? {
+            Some(missing) => Err(missing.refusal()),
+            None => Ok(()),
+        }
+    }
+
     fn prepare_source<'a>(
         &self,
         transaction: &mut Transaction<'_>,
@@ -1197,6 +1233,19 @@ impl Session<'_> {
             Source::Record(target) => {
                 let (_, address) = self.address(transaction, target)?;
                 self.refuse_reading_a_vault(transaction, address.table, &target.table)?;
+                if let Some((found, note)) =
+                    self.gather_a_part(transaction, address.table, Part::Record(&address.id))?
+                {
+                    reporting.collected.push(note);
+                    let visible = self.visible_in(transaction, address.table)?;
+                    return Ok((
+                        Prepared::Held(
+                            self.records_of(found, &visible)?,
+                            Plan::new(AccessPath::Record).on(target.table.name.text.as_str()),
+                        ),
+                        Searched::default(),
+                    ));
+                }
                 let visible = self.visible_in(transaction, address.table)?;
                 let found = match transaction.get(&address)? {
                     Some(payload) => {
@@ -1216,6 +1265,17 @@ impl Session<'_> {
                 let (context, id) = self.resolve_table(transaction, table)?;
                 self.refuse_reading_a_vault(transaction, id, table)?;
                 let searched = self.searched_for(transaction, id, &shown(select))?;
+                if let Some((found, note)) = self.gather_a_part(transaction, id, Part::Whole)? {
+                    reporting.collected.push(note);
+                    let visible = self.visible_in(transaction, id)?;
+                    return Ok((
+                        Prepared::Held(
+                            self.records_of(found, &visible)?,
+                            Plan::new(AccessPath::Scan).on(table.name.text.as_str()),
+                        ),
+                        searched,
+                    ));
+                }
                 Ok((Prepared::Table(context, id), searched))
             }
             // A walk between two positions in the table's own keyspace. The
@@ -1232,6 +1292,24 @@ impl Session<'_> {
                 let (context, id) = self.resolve_table(transaction, table)?;
                 self.refuse_reading_a_vault(transaction, id, table)?;
                 let visible = self.visible_in(transaction, id)?;
+                if let Some((found, note)) = self.gather_a_part(
+                    transaction,
+                    id,
+                    Part::Span {
+                        lower: lower.fixed(*span)?,
+                        upper: upper.fixed(*span)?,
+                        inclusive: *inclusive,
+                    },
+                )? {
+                    reporting.collected.push(note);
+                    return Ok((
+                        Prepared::Held(
+                            self.records_of(found, &visible)?,
+                            Plan::new(AccessPath::Span).on(table.name.text.as_str()),
+                        ),
+                        Searched::default(),
+                    ));
+                }
                 let found = transaction.records_in_span(
                     context.namespace,
                     context.database,
@@ -1276,6 +1354,33 @@ impl Session<'_> {
                 let mut expressions: Vec<&Expr> = vec![condition];
                 expressions.extend(shown(select));
                 let searched = self.searched_for(transaction, id, &expressions)?;
+                if let Some((found, note)) = self.gather_a_part(transaction, id, Part::Whole)? {
+                    reporting.collected.push(note);
+                    let visible = self.visible_in(transaction, id)?;
+                    // Narrowed after the records are in hand, over the redacted
+                    // record, exactly as a materialised source is: a hidden
+                    // field is as absent to this condition as to a local scan.
+                    let mut kept = Vec::new();
+                    for (record_id, record) in self.records_of(found, &visible)? {
+                        let held = self.evaluate_in(
+                            transaction,
+                            condition,
+                            Scope::searching(&record, &searched)
+                                .identified(&record_id)
+                                .noticing(reporting.noticed),
+                        )?;
+                        if boolean(&held, condition.span)? {
+                            kept.push((record_id, record));
+                        }
+                    }
+                    return Ok((
+                        Prepared::Held(
+                            kept,
+                            Plan::new(AccessPath::Scan).on(table.name.text.as_str()),
+                        ),
+                        searched,
+                    ));
+                }
                 Ok((Prepared::Filtered(context, id, condition), searched))
             }
             Source::Join {
@@ -1780,6 +1885,7 @@ impl Session<'_> {
         match right {
             JoinSide::Table { table, .. } => {
                 let (context, id) = self.resolve_table(transaction, table)?;
+                self.refuse_reading_a_part(transaction, id, Part::Whole)?;
                 let visible = self.visible_in(transaction, id)?;
                 match ordered_index_on(transaction, id, right_key)? {
                     Some(index) => probed = Some((index, visible, context, id)),
@@ -1806,6 +1912,7 @@ impl Session<'_> {
         let (driving, searched) = match left {
             JoinSide::Table { table, .. } => {
                 let (context, id) = self.resolve_table(transaction, table)?;
+                self.refuse_reading_a_part(transaction, id, Part::Whole)?;
                 let visible = self.visible_in(transaction, id)?;
                 let searched = self.searched_for(transaction, id, &shown(select))?;
                 let found = transaction.scan_table(context.namespace, context.database, id)?;

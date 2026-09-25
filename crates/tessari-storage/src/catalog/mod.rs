@@ -35,6 +35,7 @@ mod grant;
 mod graph;
 mod leadership;
 mod replica;
+mod shard;
 pub(crate) mod system;
 mod user;
 mod vault;
@@ -64,9 +65,11 @@ pub use grant::GrantDefinition;
 pub use graph::GraphDefinition;
 pub use leadership::LeadershipDefinition;
 pub(crate) use leadership::covering;
+pub use leadership::governing;
 pub use replica::{
     ReplicaDefinition, another_node_may_write, names_a_peer, the_row_a_greeting_binds,
 };
+pub use shard::{ShardMap, ShardSpan};
 pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
 pub use user::{Role, UserDefinition, Verb};
 pub use vault::VaultRoot;
@@ -245,6 +248,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
                 id: database.get(),
             });
         }
+        let shards = shard::declared_for(name, &shape)?;
         let qualified = qualify(Level::Table, &[namespace.get(), database.get()], name);
         self.reserve_name(&qualified)?;
         let id = TableId::new(self.allocate(Level::Table)?);
@@ -258,6 +262,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             identity: shape.identity,
             graph: shape.graph,
             conflict: shape.conflict,
+            shards,
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
@@ -270,6 +275,14 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             .store()
             .series()
             .learn(id, &definition.kind);
+        // Learned here for the same reason, and because the commit that writes
+        // this table's first records may be this very transaction: the map it
+        // stamps them with must not have to come from a catalog read that cannot
+        // yet see the declaration.
+        self.transaction
+            .store()
+            .shards()
+            .learn(id, definition.shards.as_ref());
         if matches!(definition.kind, TableKind::Edge(_)) {
             // Every edge table gets the endpoint machinery, declared pair or
             // not: what the pair adds is a refusal at the write and an order on

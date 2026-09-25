@@ -57,6 +57,7 @@ fn after_a_failover(granted: Option<u64>) -> Store {
             Roles::SERVING.and(Roles::WRITABLE).and(Roles::COORDINATING),
             Some(OLD_NODE),
             None,
+            None,
         )
         .unwrap();
     catalog

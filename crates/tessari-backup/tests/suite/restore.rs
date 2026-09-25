@@ -328,6 +328,7 @@ fn a_stamped_record_survives_a_backup_and_a_restore() {
             database: DatabaseId::new(1),
             table: TableId::new(1),
             id: RecordId::from("contested"),
+            shard: None,
             value: StampedValue::stamped(
                 stamp.clone(),
                 RecordValue::Present(b"from one of two masters".to_vec()),

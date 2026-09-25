@@ -247,6 +247,22 @@ pub enum Error {
         span: Span,
     },
 
+    /// A `SPLIT AT` point came from a parameter rather than the statement.
+    ///
+    /// A shard map is a declaration somebody reviews and a boundary every later
+    /// write is routed by, so it is read in the script that set it. A point
+    /// supplied from outside is a boundary nobody reading the script can see.
+    #[error(
+        "a split point is written in the statement, not supplied as `${name}` — \
+         name the identity the shard begins at (at {span})"
+    )]
+    SplitPointIsNotWritten {
+        /// The parameter that was written.
+        name: String,
+        /// Where it is.
+        span: Span,
+    },
+
     /// A `START` was written beside an `AFTER`.
     ///
     /// Both say where the page begins, and applying both means the offset counts
@@ -793,6 +809,7 @@ impl Error {
             | Self::InsertRowArity { span, .. }
             | Self::TableWithoutColumns { span, .. }
             | Self::UnknownIdentityKind { span, .. }
+            | Self::SplitPointIsNotWritten { span, .. }
             | Self::UnexpectedToken { span, .. }
             | Self::UnexpectedEnd { span, .. }
             | Self::Unsupported { span, .. }

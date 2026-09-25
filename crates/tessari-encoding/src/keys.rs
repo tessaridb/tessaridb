@@ -10,7 +10,7 @@
 //! record and every index entry that mentions it.
 
 use tessari_kv::{Key, Keyspace};
-use tessari_types::{DatabaseId, NamespaceId, Reach, RecordId, Sequence, TableId};
+use tessari_types::{DatabaseId, NamespaceId, Reach, RecordId, Sequence, ShardId, TableId};
 
 use crate::error::Result;
 use crate::kind::KeyKind;
@@ -44,6 +44,14 @@ const REACH_STORE: u8 = 0;
 const REACH_NAMESPACE: u8 = 1;
 /// The variant byte for [`Reach::Database`].
 const REACH_DATABASE: u8 = 2;
+/// The variant byte for [`Reach::Shard`].
+///
+/// The one variant written wider than [`REACH_LEN`]: the table and the shard
+/// follow the nine bytes every variant has. Every home is still one contiguous
+/// prefix, because the variant byte leads and fixes the width — two homes of
+/// different variants differ in their first byte, and two of one variant have
+/// one width. No key written before shards existed moves.
+const REACH_SHARD: u8 = 3;
 
 /// Append a reach as [`REACH_LEN`] bytes.
 ///
@@ -51,13 +59,17 @@ const REACH_DATABASE: u8 = 2;
 /// one contiguous range. The order *between* homes carries no meaning — they
 /// are separate logs, and nothing compares a position in one against a position
 /// in another — so contiguity is the whole requirement.
-fn put_reach(writer: &mut KeyWriter, reach: Reach) {
+pub(crate) fn put_reach(writer: &mut KeyWriter, reach: Reach) {
     let (variant, namespace, database) = match reach {
         Reach::Store => (REACH_STORE, 0, 0),
         Reach::Namespace(namespace) => (REACH_NAMESPACE, namespace.get(), 0),
         Reach::Database(namespace, database) => (REACH_DATABASE, namespace.get(), database.get()),
+        Reach::Shard(namespace, database, _, _) => (REACH_SHARD, namespace.get(), database.get()),
     };
     writer.put_u8(variant).put_u32(namespace).put_u32(database);
+    if let Reach::Shard(_, _, table, shard) = reach {
+        writer.put_u32(table.get()).put_u32(shard.get());
+    }
 }
 
 /// Read a reach written by [`put_reach`].
@@ -73,7 +85,7 @@ fn put_reach(writer: &mut KeyWriter, reach: Reach) {
 /// the reader returns when the bytes are short.
 ///
 /// [`Error::UnknownReach`]: crate::error::Error::UnknownReach
-fn take_reach(reader: &mut KeyReader<'_>) -> Result<Reach> {
+pub(crate) fn take_reach(reader: &mut KeyReader<'_>) -> Result<Reach> {
     let offset = reader.position();
     let variant = reader.take_u8()?;
     let namespace = NamespaceId::new(reader.take_u32()?);
@@ -82,6 +94,12 @@ fn take_reach(reader: &mut KeyReader<'_>) -> Result<Reach> {
         REACH_STORE => Ok(Reach::Store),
         REACH_NAMESPACE => Ok(Reach::Namespace(namespace)),
         REACH_DATABASE => Ok(Reach::Database(namespace, database)),
+        REACH_SHARD => Ok(Reach::Shard(
+            namespace,
+            database,
+            TableId::new(reader.take_u32()?),
+            ShardId::new(reader.take_u32()?),
+        )),
         found => Err(crate::error::Error::UnknownReach {
             kind: reader.kind(),
             found,
@@ -559,6 +577,54 @@ impl StoreKey for LogRetentionKey {
     }
 }
 
+/// The reach this node's upstream last served it under (G031, ADR-0081).
+///
+/// Absent on a node that has never been served — a leader, a store standing
+/// alone, a follower that has not yet collected — and absent means *holds
+/// everything it has*, which is what every node was before shards existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServedReachKey;
+
+impl StoreKey for ServedReachKey {
+    type Value = ServedReach;
+
+    const KIND: KeyKind = KeyKind::ServedReach;
+
+    fn encode(&self) -> Key {
+        Key::from(vec![Self::KIND.tag()])
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        reader.finish()?;
+        Ok(Self)
+    }
+}
+
+/// The value under [`ServedReachKey`]: one reach, in the form a log key holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServedReach(pub Reach);
+
+impl StoreValue for ServedReach {
+    fn encode(&self) -> tessari_kv::Value {
+        let mut writer = KeyWriter::with_capacity(REACH_LEN.saturating_add(8));
+        put_reach(&mut writer, self.0);
+        let payload = writer.finish();
+        let mut buffer = crate::value::with_header(0, payload.len());
+        buffer.extend_from_slice(&payload);
+        tessari_kv::Value::from(buffer)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let (_, payload) = crate::value::split_header(bytes, 0)?;
+        let mut reader = KeyReader::new(KeyKind::ServedReach, payload);
+        let reach = take_reach(&mut reader)?;
+        reader.finish()?;
+        Ok(Self(reach))
+    }
+}
+
 /// moments presented as one, with no error and plausible data (Q-614).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct VersionPositionKey;
@@ -957,6 +1023,65 @@ mod tests {
         assert!(
             mine_late.as_slice() < theirs_early.as_slice(),
             "a writer's whole log sorts before the next writer's first entry"
+        );
+    }
+
+    #[test]
+    fn the_three_reaches_before_shards_keep_the_bytes_they_always_had() {
+        // G031 S2.2: a shard reach is wider, and the others must not move, or
+        // every log key already on disk would stop naming its own home.
+        let prefix = |home| LogKey::prefix_for_home(home);
+        let tag = KeyKind::LogEntry.tag();
+        assert_eq!(prefix(Reach::Store), vec![tag, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            prefix(Reach::Namespace(NamespaceId::new(0x0102_0304))),
+            vec![tag, 1, 1, 2, 3, 4, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            prefix(Reach::Database(NamespaceId::new(5), DatabaseId::new(6))),
+            vec![tag, 2, 0, 0, 0, 5, 0, 0, 0, 6]
+        );
+    }
+
+    #[test]
+    fn a_shard_home_round_trips_and_is_its_own_prefix() {
+        let shard = |n| {
+            Reach::Shard(
+                NamespaceId::new(5),
+                DatabaseId::new(6),
+                TableId::new(7),
+                ShardId::new(n),
+            )
+        };
+        let tag = KeyKind::LogEntry.tag();
+        assert_eq!(
+            LogKey::prefix_for_home(shard(8)),
+            vec![tag, 3, 0, 0, 0, 5, 0, 0, 0, 6, 0, 0, 0, 7, 0, 0, 0, 8]
+        );
+        let mine = LogKey::new(by(shard(8), 1), Sequence::new(3));
+        assert_eq!(LogKey::decode(mine.encode().as_slice()).unwrap(), mine);
+        let prefix = LogKey::prefix_for_home(shard(8));
+        assert!(mine.encode().as_slice().starts_with(&prefix));
+        for other in [
+            shard(9),
+            Reach::Database(NamespaceId::new(5), DatabaseId::new(6)),
+        ] {
+            let theirs = LogKey::new(by(other, 1), Sequence::new(3)).encode();
+            assert!(
+                !theirs.as_slice().starts_with(&prefix),
+                "{other:?} fell inside the shard's prefix"
+            );
+        }
+        // And the database's own prefix does not reach into its shards' logs:
+        // they are separate homes, asked for by name.
+        assert!(
+            !mine
+                .encode()
+                .as_slice()
+                .starts_with(&LogKey::prefix_for_home(Reach::Database(
+                    NamespaceId::new(5),
+                    DatabaseId::new(6)
+                )))
         );
     }
 

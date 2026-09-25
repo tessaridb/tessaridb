@@ -43,7 +43,8 @@ pub use geojson::{Malformed, from_geojson, geojson_name, to_geojson};
 pub use geometry::{Geometry, Polygon, Position, Ring};
 pub use identity_kind::IdentityKind;
 pub use ids::{
-    DatabaseId, EdgeKindId, Epoch, FieldId, GraphId, IndexId, NamespaceId, Sequence, TableId,
+    DatabaseId, EdgeKindId, Epoch, FieldId, GraphId, IndexId, NamespaceId, Sequence, ShardId,
+    TableId,
 };
 pub use number::Number;
 pub use path::{Path, Step};

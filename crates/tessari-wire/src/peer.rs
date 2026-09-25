@@ -40,7 +40,7 @@ use core::time::Duration;
 
 use tessari_encoding::{NODE_ID_LEN, NodeIdentity, NodeVersion, Roles};
 use tessari_storage::FailoverStamp;
-use tessari_types::{Epoch, RecordId, Sequence};
+use tessari_types::{Epoch, Reach, RecordId, Sequence};
 
 use crate::error::{Error, Result};
 use crate::frame;
@@ -78,6 +78,14 @@ pub enum PeerFrame {
     /// would send an operator to the wrong one of the three, and closing the
     /// socket instead would send them to a packet capture.
     Unsubscribed,
+    /// A node asking a shard's leader for one page of that shard's records
+    /// (G033, ADR-0083).
+    Gather,
+    /// The leader's answer: the page.
+    Gathered,
+    /// The leader declining, with the reason — its own tag for the reason
+    /// [`Self::Unsubscribed`] has one.
+    NotGathered,
 }
 
 impl PeerFrame {
@@ -105,6 +113,10 @@ impl PeerFrame {
             Self::Collected => 10,
             Self::Uncollectable => 11,
             Self::Unsubscribed => 12,
+            // 13 is the client's `Elsewhere`; disjointness is the rule.
+            Self::Gather => 14,
+            Self::Gathered => 15,
+            Self::NotGathered => 16,
         }
     }
 
@@ -119,6 +131,9 @@ impl PeerFrame {
             10 => Some(Self::Collected),
             11 => Some(Self::Uncollectable),
             12 => Some(Self::Unsubscribed),
+            14 => Some(Self::Gather),
+            15 => Some(Self::Gathered),
+            16 => Some(Self::NotGathered),
             _ => None,
         }
     }
@@ -220,6 +235,43 @@ pub struct Hello {
     /// is an older build whose greeting ends before this field. Both mean *this
     /// node said nothing about a policy*, and any stamp supersedes both.
     pub policy: Option<FailoverStamp>,
+    /// The placed range this greeter stands for, and where it stands there
+    /// (ADR-0082).
+    ///
+    /// One and not a list: a node reads one member row — the first bound to its
+    /// id, the rule `desired_roles` already applies — and a row places one
+    /// range. `None` for a node with no placement, which writes nothing here and
+    /// so greets byte-identically to every build before this field.
+    pub line: Option<Line>,
+}
+
+/// Where a greeter stands on the one placed range it stands for.
+///
+/// Everything a voter and a candidate need about that range's line and nothing
+/// else: whether the greeter leads it now, and how far its own log of the range
+/// reaches, as the pair that orders two logs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Line {
+    /// The placed range.
+    pub range: Reach,
+    /// The epoch of a LIVE lease on this range's line, and [`Epoch::ZERO`] when
+    /// the greeter holds none — a lapsed line is not a leader anybody can hear.
+    pub leading: Epoch,
+    /// How far the greeter's own log of this range reaches.
+    pub tail: Sequence,
+    /// The leadership under which the record at that tail was written.
+    pub tail_leadership: Epoch,
+}
+
+impl Line {
+    /// This line's position as the pair a voter orders two logs by.
+    #[must_use]
+    pub const fn reached(&self) -> crate::grant::Reached {
+        crate::grant::Reached {
+            leadership: self.tail_leadership,
+            tail: self.tail,
+        }
+    }
 }
 
 impl Hello {
@@ -247,7 +299,28 @@ impl Hello {
             tail_leadership,
             current_as_of,
             policy,
+            line: None,
         }
+    }
+
+    /// Where this greeter stands on `range`'s line, as the pair a voter orders
+    /// two logs by — zero when the greeter's line is another range or none.
+    ///
+    /// Zero is the true position for a node never placed on the range: only a
+    /// placed node leads it, so the log a node that never led it holds there is
+    /// empty (ADR-0082).
+    #[must_use]
+    pub fn reached_on(&self, range: Reach) -> crate::grant::Reached {
+        if range == Reach::Store {
+            return self.reached();
+        }
+        self.line.filter(|line| line.range == range).map_or(
+            crate::grant::Reached {
+                leadership: Epoch::ZERO,
+                tail: Sequence::ZERO,
+            },
+            |line| line.reached(),
+        )
     }
 
     /// Where this greeter's log has got to, as the pair that orders two logs.
@@ -305,6 +378,15 @@ impl Hello {
                 frame::put_u64(&mut body, 0);
             }
         }
+        // ADR-0082. After everything, for the policy's reason, and written only
+        // when there is one, so a node with no placement greets in the bytes it
+        // always has.
+        if let Some(line) = self.line {
+            frame::put_reach(&mut body, line.range);
+            frame::put_u64(&mut body, line.leading.get());
+            frame::put_u64(&mut body, line.tail.get());
+            frame::put_u64(&mut body, line.tail_leadership.get());
+        }
         body
     }
 
@@ -335,6 +417,12 @@ impl Hello {
             epoch: Epoch::new(epoch),
             version,
         });
+        let line = take_line(body, at)?.map(|(range, leading, tail, written)| Line {
+            range,
+            leading: Epoch::new(leading),
+            tail: Sequence::new(tail),
+            tail_leadership: Epoch::new(written),
+        });
 
         Ok(Self {
             node,
@@ -349,6 +437,7 @@ impl Hello {
             tail_leadership: Epoch::new(tail_leadership),
             current_as_of: (present != 0).then(|| Duration::from_secs(seconds)),
             policy,
+            line,
         })
     }
 }
@@ -374,6 +463,24 @@ fn take_policy(body: &[u8], at: usize) -> Result<Option<(u64, u64)>> {
     let (epoch, at) = frame::take_u64(body, at.checked_add(1).ok_or(Error::Malformed)?)?;
     let (version, _) = frame::take_u64(body, at)?;
     Ok((*present != 0).then_some((epoch, version)))
+}
+
+/// The placed line, when the greeting reaches that far (ADR-0082).
+///
+/// `at` is where the policy stamp begins, which is a fixed seventeen bytes; a
+/// body ending at or before the stamp's end carries no line, as every greeting
+/// from a node with no placement does. Anything after it must read whole. The
+/// numbers and not the epochs, for [`take_policy`]'s reason.
+fn take_line(body: &[u8], at: usize) -> Result<Option<(Reach, u64, u64, u64)>> {
+    let after = at.saturating_add(17);
+    if body.len() <= after {
+        return Ok(None);
+    }
+    let (range, at) = frame::take_reach(body, after)?;
+    let (leading, at) = frame::take_u64(body, at)?;
+    let (tail, at) = frame::take_u64(body, at)?;
+    let (written, _) = frame::take_u64(body, at)?;
+    Ok(Some((range, leading, tail, written)))
 }
 
 /// An age in whole seconds, rounded up.
@@ -443,12 +550,12 @@ pub fn admit(presented: Option<&Presented>, said: &Hello, me: &[u8; NODE_ID_LEN]
 
 #[cfg(test)]
 mod tests {
-    use super::{FailoverStamp, Hello, PeerFrame, Presented, Purpose, admit};
+    use super::{FailoverStamp, Hello, Line, PeerFrame, Presented, Purpose, admit};
     use crate::error::Error;
     use crate::frame;
     use core::time::Duration;
     use tessari_encoding::{NODE_ID_LEN, NodeIdentity, NodeVersion, Roles};
-    use tessari_types::{Epoch, Sequence};
+    use tessari_types::{DatabaseId, Epoch, NamespaceId, Reach, Sequence, ShardId, TableId};
 
     const ONE: [u8; NODE_ID_LEN] = [1; NODE_ID_LEN];
     const ANOTHER: [u8; NODE_ID_LEN] = [2; NODE_ID_LEN];
@@ -470,6 +577,7 @@ mod tests {
             tail_leadership: Epoch::new(7),
             current_as_of: Some(Duration::from_secs(3)),
             policy: None,
+            line: None,
         }
     }
 
@@ -497,12 +605,43 @@ mod tests {
             PeerFrame::Collected,
             PeerFrame::Uncollectable,
             PeerFrame::Unsubscribed,
+            PeerFrame::Gather,
+            PeerFrame::Gathered,
+            PeerFrame::NotGathered,
         ] {
             assert!(
                 frame::Kind::from_tag(kind.tag()).is_none(),
                 "the client reader accepts {kind:?}, which it must close on"
             );
         }
+    }
+
+    /// G033 S2.2 — the seven tags a peer of an earlier build reads keep their
+    /// numbers, and the three gather frames take the next free ones.
+    #[test]
+    fn every_peer_tag_keeps_its_number() {
+        let expected = [
+            (PeerFrame::Hello, 6),
+            (PeerFrame::Ballot, 7),
+            (PeerFrame::Vote, 8),
+            (PeerFrame::Collect, 9),
+            (PeerFrame::Collected, 10),
+            (PeerFrame::Uncollectable, 11),
+            (PeerFrame::Unsubscribed, 12),
+            (PeerFrame::Gather, 14),
+            (PeerFrame::Gathered, 15),
+            (PeerFrame::NotGathered, 16),
+        ];
+        for (kind, tag) in expected {
+            assert_eq!(kind.tag(), tag, "{kind:?}");
+            assert_eq!(PeerFrame::from_tag(tag), Some(kind));
+        }
+        assert_eq!(
+            (0..=u8::MAX)
+                .filter(|tag| PeerFrame::from_tag(*tag).is_some())
+                .count(),
+            expected.len()
+        );
     }
 
     #[test]
@@ -765,5 +904,72 @@ mod tests {
         assert_eq!(said.node, identity.id);
         assert_eq!(said.roles, identity.roles);
         assert_eq!(said.build, identity.version);
+    }
+
+    // ---- G032 S3.1: the placed line on the wire ------------------------------
+
+    /// The one placed line the greeting tests carry.
+    const PLACED: Line = Line {
+        range: Reach::Shard(
+            NamespaceId::new(1),
+            DatabaseId::new(2),
+            TableId::new(3),
+            ShardId::new(2),
+        ),
+        leading: Epoch::new(5),
+        tail: Sequence::new(12),
+        tail_leadership: Epoch::new(4),
+    };
+
+    #[test]
+    fn a_greeting_with_no_placed_line_keeps_the_bytes_it_always_had() {
+        // The kill criterion (G032). Written from `Hello::encode` as it stood at
+        // `a1d0025`, piece by piece, rather than from the encoder under test.
+        let mut golden = Vec::new();
+        golden.extend_from_slice(&ONE);
+        golden.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1]);
+        golden.extend_from_slice(&7_u64.to_be_bytes());
+        golden.push(Roles::ALONE.bits());
+        golden.extend_from_slice(&4096_u64.to_be_bytes());
+        golden.extend_from_slice(&7_u64.to_be_bytes());
+        golden.push(1);
+        golden.extend_from_slice(&3_u64.to_be_bytes());
+        golden.push(0);
+        golden.extend_from_slice(&[0; 16]);
+        assert_eq!(golden.len(), 79);
+        assert_eq!(greeting(ONE).encode(), golden);
+    }
+
+    #[test]
+    fn a_greeting_carries_its_placed_line_and_one_without_it_reads_as_none() {
+        let mut said = greeting(ONE);
+        said.line = Some(PLACED);
+        let whole = said.encode();
+        let heard = Hello::decode(&whole).expect("a greeting this build wrote");
+        assert_eq!(heard.line, Some(PLACED));
+        assert_eq!(heard, said);
+        // The body without the line is a node with no placement, never a
+        // truncation.
+        let older = whole.get(..79).expect("the placement-free prefix");
+        assert_eq!(Hello::decode(older).expect("an older greeting").line, None);
+        // And a line that half-arrived is refused rather than guessed.
+        for stop in 80..whole.len() {
+            let cut = whole.get(..stop).expect("a prefix of a vector");
+            assert!(
+                matches!(Hello::decode(cut), Err(Error::Malformed)),
+                "{stop} bytes -- a half-written line decoded as a greeting"
+            );
+        }
+    }
+
+    #[test]
+    fn a_greeting_answers_its_position_on_a_range_it_stands_for_and_zero_elsewhere() {
+        let mut said = greeting(ONE);
+        said.line = Some(PLACED);
+        assert_eq!(said.reached_on(PLACED.range), PLACED.reached());
+        assert_eq!(said.reached_on(Reach::Store), said.reached());
+        let other = Reach::Namespace(NamespaceId::new(9));
+        assert_eq!(said.reached_on(other).tail, Sequence::ZERO);
+        assert_eq!(said.reached_on(other).leadership, Epoch::ZERO);
     }
 }

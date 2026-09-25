@@ -157,6 +157,27 @@ pub fn follow(
         },
     };
 
+    // A feed follows one log, and a split table's writes are in its shards'
+    // logs (G031, ADR-0080). Following the database's log would deliver every
+    // change except those, with nothing saying so — refused instead, for the
+    // table named or, when everything is watched, for any split table in it.
+    // The writer's order across those logs exists now (ADR-0084); what a feed
+    // still lacks is a cursor holding a position per log (Q-791).
+    let split = db
+        .split_tables_in(tenancy.0, tenancy.1)
+        .map_err(|failure| failure.to_string())?;
+    let blind = match asked.table {
+        Some(name) => split.iter().find(|table| table.as_str() == name),
+        None => split.first(),
+    };
+    if let Some(table) = blind {
+        return Err(format!(
+            "table `{table}` is split, so a change feed would have to follow its shards' \
+             logs and its database's, and a feed's position counts in one log — this \
+             build refuses rather than follow one of them"
+        ));
+    }
+
     // What a subscriber may see of each table, resolved once per table rather
     // than once per change. The feed pushes whole records and never passes
     // through a session's read path, so a field grant reaches it here or not at

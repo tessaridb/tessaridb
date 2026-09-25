@@ -6,18 +6,19 @@
 //! together.
 
 use std::cell::Cell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{BuildHasher, Hasher};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tessari_constants::{COMMIT_BACKOFF_CEILING, COMMIT_BACKOFF_STEP, MAX_COMMIT_ATTEMPTS};
 use tessari_encoding::{
     CausalStamp, LogId, LogRecord, Mutation, RecordValue, StampedValue, decode_payload,
 };
-use tessari_types::Sequence;
+use tessari_types::{Sequence, ShardId, TableId};
 
 use super::{RecordAddress, Transaction};
-use crate::catalog::Reach;
+use crate::catalog::{Reach, ShardMap};
 use crate::error::{Error, Result};
 
 /// What becomes of a settled transaction's batch.
@@ -117,6 +118,20 @@ fn is_a_leadership(address: &RecordAddress) -> bool {
     address.namespace == crate::catalog::system::SYSTEM_NAMESPACE
         && address.database == crate::catalog::system::SYSTEM_DATABASE
         && address.table == crate::catalog::system::LEADERSHIPS
+}
+
+/// Which shard each record a commit writes falls in (G031, ADR-0080).
+struct Placement {
+    maps: BTreeMap<TableId, Arc<ShardMap>>,
+}
+
+impl Placement {
+    /// The shard `address` falls in, or `None` when its table is not split.
+    fn shard_of(&self, address: &RecordAddress) -> Option<ShardId> {
+        self.maps
+            .get(&address.table)
+            .map(|map| map.shard_of(&address.id))
+    }
 }
 
 impl Transaction<'_> {
@@ -225,7 +240,44 @@ impl Transaction<'_> {
         Ok(true)
     }
 
-    fn ranges_written(&self) -> Result<BTreeSet<Reach>> {
+    /// Refuse a placed range this node may not write on its own line, and
+    /// answer the ranges left to the store line (ADR-0082).
+    ///
+    /// A live line admits; a spent one is `LeaseSpent` for that range alone; no
+    /// line at all is `NoLeadershipYet` in a cluster — unless the range admits
+    /// two writers, by the same predicate the store line's question consults.
+    /// The store leader is deliberately NOT a fallback for a placed range with
+    /// no live leader: the placement carved it out, and writing it anyway is
+    /// the two-writer window the carving exists to close.
+    fn admitted_on_their_lines(
+        &self,
+        ranges: &BTreeSet<Reach>,
+        placed: &BTreeSet<Reach>,
+        me: &[u8; tessari_encoding::NODE_ID_LEN],
+    ) -> Result<BTreeSet<Reach>> {
+        let mut on_the_store = BTreeSet::new();
+        for range in ranges {
+            let line = crate::catalog::governing(placed, *range);
+            if line == Reach::Store {
+                on_the_store.insert(*range);
+                continue;
+            }
+            match self.store.line_standing(line) {
+                crate::lines::Standing::Live => {}
+                crate::lines::Standing::Spent(for_the_last) => {
+                    return Err(Error::LeaseSpent { for_the_last });
+                }
+                crate::lines::Standing::NotHeld => {
+                    if self.store.in_a_cluster(me)? && !self.store.admits_two_writers(*range)? {
+                        return Err(Error::NoLeadershipYet);
+                    }
+                }
+            }
+        }
+        Ok(on_the_store)
+    }
+
+    fn ranges_written(&self, placement: &Placement) -> Result<BTreeSet<Reach>> {
         self.writes
             .iter()
             .map(|(address, value)| match value {
@@ -235,9 +287,66 @@ impl Transaction<'_> {
                     )?;
                     Ok(described.range)
                 }
-                _ => Ok(Reach::Database(address.namespace, address.database)),
+                _ => Ok(match placement.shard_of(address) {
+                    Some(shard) => {
+                        Reach::Shard(address.namespace, address.database, address.table, shard)
+                    }
+                    None => Reach::Database(address.namespace, address.database),
+                }),
             })
             .collect()
+    }
+
+    /// The shard maps of every split table this transaction writes (G031).
+    ///
+    /// Resolved once and asked twice — by the admission gate, for the ranges it
+    /// judges, and by the log record, for the shard it stamps on each mutation —
+    /// because two lookups of one fact are two answers that can disagree, and a
+    /// record admitted under one shard and filed under another is exactly the
+    /// failure the stamp exists to make impossible.
+    ///
+    /// The registry answers almost always; a miss reads the committed catalog
+    /// once and teaches the registry, which is what a node that became leader
+    /// after the tables were declared elsewhere meets on its first write.
+    fn placement(&self) -> Result<Placement> {
+        let mut maps: BTreeMap<TableId, Arc<ShardMap>> = BTreeMap::new();
+        let mut unread: BTreeSet<TableId> = BTreeSet::new();
+        for address in self.writes.keys() {
+            if address.namespace == crate::catalog::system::SYSTEM_NAMESPACE
+                || maps.contains_key(&address.table)
+                || unread.contains(&address.table)
+            {
+                continue;
+            }
+            match self.store.shards().known(address.table) {
+                Some(Some(map)) => {
+                    maps.insert(address.table, map);
+                }
+                Some(None) => {}
+                None => {
+                    unread.insert(address.table);
+                }
+            }
+        }
+        if !unread.is_empty() {
+            let mut view = self.store.begin()?;
+            let catalog = crate::catalog::Catalog::new(&mut view);
+            for table in unread {
+                // A record naming a table the catalog does not hold is not split
+                // by anything this store knows of, and is filed as it always was;
+                // whether such a write is allowed at all is not this function's
+                // question. It is NOT learned, so a table declared later is read
+                // again rather than remembered as unsplit.
+                let Some(definition) = catalog.table(table)? else {
+                    continue;
+                };
+                self.store.shards().learn(table, definition.shards.as_ref());
+                if let Some(map) = definition.shards {
+                    maps.insert(table, Arc::new(map));
+                }
+            }
+        }
+        Ok(Placement { maps })
     }
 
     fn settle(self, settle: Settle) -> Result<Sequence> {
@@ -261,8 +370,15 @@ impl Transaction<'_> {
         // it — this function's own header is the argument, and a fence a
         // `VERIFY` cannot see is a refusal an operator meets for the first time
         // in production.
-        if let Some(for_the_last) = self.store.lease_spent() {
-            return Err(Error::LeaseSpent { for_the_last });
+        //
+        // Only while this node holds no placed range's line (ADR-0082): once it
+        // does, a spent store lease refuses the ranges the store line governs
+        // and not the ones a live line of their own does, so the question waits
+        // below until the ranges are known.
+        if !self.store.holds_lines() {
+            if let Some(for_the_last) = self.store.lease_spent() {
+                return Err(Error::LeaseSpent { for_the_last });
+            }
         }
         // And before the store-wide question, because the store-wide question
         // returns early on a live lease and would therefore never reach a leader
@@ -275,8 +391,14 @@ impl Transaction<'_> {
         // ranges this transaction writes, and deriving them separately is how
         // two questions about one thing come to disagree about what that thing
         // was.
-        let ranges = self.ranges_written()?;
-        self.store.refuse_if_led_elsewhere(&ranges, &identity.id)?;
+        let placement = self.placement()?;
+        let ranges = self.ranges_written(&placement)?;
+        let placed = self.store.refuse_if_led_elsewhere(&ranges, &identity.id)?;
+        // ADR-0082: each written range is judged on the line that governs it. A
+        // placed range is admitted only under a live lease on its own line, and
+        // what is left is the store line's, judged exactly as it always was. A
+        // store with no placement puts every range on the store line.
+        let on_the_store = self.admitted_on_their_lines(&ranges, &placed, &identity.id)?;
         // And the other half of *the effective role is the lease* (ADR-0064):
         // a node that takes part in deciding writes under a leadership and at
         // no other time. Asked here rather than only at the statement layer for
@@ -289,10 +411,17 @@ impl Transaction<'_> {
         // `awaiting` returns on an in-memory lease read, so a node that holds a
         // leadership never reaches the catalog lookup, and the exemption is paid
         // for only by a commit that was otherwise about to be refused.
-        if self.store.awaiting(&identity.id)? && !self.every_range_admits_two_writers(&ranges)? {
-            return Err(Error::NoLeadershipYet);
+        if !on_the_store.is_empty() {
+            if let Some(for_the_last) = self.store.lease_spent() {
+                return Err(Error::LeaseSpent { for_the_last });
+            }
+            if self.store.awaiting(&identity.id)?
+                && !self.every_range_admits_two_writers(&on_the_store)?
+            {
+                return Err(Error::NoLeadershipYet);
+            }
         }
-        let record = self.log_record(identity.id)?;
+        let mut record = self.log_record(identity.id, &placement)?;
         // The log this commit belongs to, derived from the record before the
         // loop because it cannot change between attempts: it is a property of
         // what is being written, not of the state being written onto. The
@@ -344,6 +473,11 @@ impl Transaction<'_> {
             // a state that has since moved (Q-614).
             let commit_version =
                 Sequence::new(self.store.committed_version()?.get().saturating_add(1));
+            // And the version is the writer's ORDER, written into the record:
+            // this node files its commits in one log per home, and a follower
+            // applying those logs needs to know where each commit stood among
+            // all of them — which only the writer knows (ADR-0084, Q-796).
+            record.set_order(commit_version);
             // Index entries are derived here rather than carried in the record,
             // and they are derived inside the loop because they depend on the
             // committed state this attempt is building on (see `crate::index`).
@@ -427,7 +561,11 @@ impl Transaction<'_> {
     /// cannot hold two until the engine decides what a write meeting a
     /// concurrency does, which is S3's question and not this criterion's
     /// (Q-645).
-    fn log_record(&self, node: [u8; tessari_encoding::NODE_ID_LEN]) -> Result<LogRecord> {
+    fn log_record(
+        &self,
+        node: [u8; tessari_encoding::NODE_ID_LEN],
+        placement: &Placement,
+    ) -> Result<LogRecord> {
         let mut mutations = Vec::with_capacity(self.writes.len());
         for (address, value) in &self.writes {
             let mut stamp = self
@@ -439,6 +577,7 @@ impl Transaction<'_> {
                 database: address.database,
                 table: address.table,
                 id: address.id.clone(),
+                shard: placement.shard_of(address),
                 value: StampedValue::stamped(stamp, value.clone()),
             });
         }

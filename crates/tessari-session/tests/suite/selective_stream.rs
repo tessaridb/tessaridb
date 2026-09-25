@@ -85,27 +85,71 @@ fn two_tenants(store: &Store) {
 /// from the numbering would be refused here as a parted history, and that
 /// refusal is the assertion the empty-record test below leans on.
 fn follow(leader: &Store, over: Reach, as_user: &str) -> Store {
-    let follower = store();
     let mut node = Session::new(leader);
     node.sign_in(as_user, PASSWORD).unwrap();
-    // Every log the leader holds, one collect each: the GRANT is what narrows a
-    // subscription and the LOG is only where a record was filed (Q-620). In
-    // `logs()` order, so the definitions a range's records depend on arrive
-    // first — and each collect names its log to the applier, because a record
-    // the filter emptied has no mutation left to derive one from (Q-621).
-    for log in leader.logs().unwrap() {
-        let carried = node
-            .replicate_from(leader, A_FOLLOWER, over, log, Sequence::new(1), 256)
-            .unwrap();
-        let mut previous = tessari_types::Epoch::ZERO;
-        for (sequence, record) in carried {
-            follower
-                .apply_from_stream(log, sequence, previous, &record)
+    follow_in_pages(&mut node, leader, over, 256)
+}
+
+/// Collect in rounds of `page` records per log, as a node does: every log the
+/// leader holds is fetched once a round, and the round is applied through the
+/// store's own writer-order apply (ADR-0084) — the same one the wire collector
+/// calls, so these tests exercise the rule a node runs. Each collect names its
+/// log to the applier, because a record the filter emptied has no mutation left
+/// to derive one from (Q-621). A page shorter than asked is level, bounded by
+/// the order the leader had committed before it was read.
+fn follow_in_pages(node: &mut Session<'_>, leader: &Store, over: Reach, page: usize) -> Store {
+    let follower = store();
+    let logs = leader.logs().unwrap();
+    let mut from = vec![Sequence::new(1); logs.len()];
+    let mut previous = vec![tessari_types::Epoch::ZERO; logs.len()];
+    loop {
+        let mut fetched = Vec::new();
+        for (index, log) in logs.iter().enumerate() {
+            let order = leader.committed_version().unwrap();
+            let records = node
+                .replicate_from(leader, A_FOLLOWER, over, *log, from[index], page)
                 .unwrap();
-            previous = record.epoch();
+            let horizon = if records.len() < page {
+                tessari_storage::Horizon::Level(order)
+            } else {
+                tessari_storage::Horizon::Full
+            };
+            fetched.push((records, horizon));
+        }
+        if fetched.iter().all(|(records, _)| records.is_empty()) {
+            return follower;
+        }
+        let pages: Vec<tessari_storage::Page<'_>> = logs
+            .iter()
+            .zip(&fetched)
+            .zip(&previous)
+            .map(
+                |((log, (records, horizon)), before)| tessari_storage::Page {
+                    log: *log,
+                    previous: *before,
+                    records,
+                    horizon: *horizon,
+                },
+            )
+            .collect();
+        let reached = follower.apply_in_writer_order(&pages).unwrap();
+        assert!(
+            reached.iter().any(Option::is_some),
+            "a round with nothing new committed applied nothing — the round stalls"
+        );
+        for (index, at) in reached.iter().enumerate() {
+            let Some(at) = at else { continue };
+            let (records, _) = &fetched[index];
+            let epoch = records
+                .iter()
+                .find(|(held, _)| held == at)
+                .unwrap()
+                .1
+                .epoch();
+            from[index] = Sequence::new(at.get().saturating_add(1));
+            previous[index] = epoch;
         }
     }
-    follower
 }
 
 fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
@@ -495,4 +539,363 @@ fn a_namespace_owner_on_a_selective_follower_cannot_read_another_tenancys_creden
         rendered.contains("\"prod_reader\""),
         "and they are shown their own, so the listing is bounded rather than empty: {rendered}"
     );
+}
+
+/// A narrower subscription is given the definitions above it (Q-788, G031 S3.2).
+///
+/// Measured before it was repaired: this follower's own reader was refused
+/// `USE NAMESPACE prod` with `OutsideTenancy`, because the namespace's definition
+/// was carried *within the namespace* and a database is not a namespace. The
+/// records had arrived; nothing could name them.
+#[test]
+fn a_database_subscriber_is_given_the_namespace_its_database_lives_in() {
+    let leader = store();
+    two_tenants(&leader);
+    let follower = follow(
+        &leader,
+        Reach::Database(NamespaceId::new(1), tessari_types::DatabaseId::new(1)),
+        "node",
+    );
+    let mut reader = signed_in(&follower, "prod_reader");
+    let answer = reader
+        .run("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM orders;")
+        .unwrap();
+    let Some(Outcome::Records { records, .. }) = answer.last() else {
+        panic!("the subscribed database's reader must be served, got {answer:?}");
+    };
+    assert_eq!(records.len(), 1);
+    // And still nothing sideways: the other tenancy is not a name here.
+    assert!(
+        reader
+            .run("USE NAMESPACE staging; USE DATABASE sandbox; SELECT * FROM payroll;")
+            .is_err()
+    );
+}
+
+/// The table `sharded_tenant` splits, and the follower of one of its shards.
+fn sharded_tenant() -> (Store, tessari_storage::Reach, tessari_types::TableId) {
+    let leader = store();
+    two_tenants(&leader);
+    let mut root = signed_in(&leader, "root");
+    root.run(
+        "USE NAMESPACE prod; USE DATABASE shop; \
+         DEFINE TABLE ledger (total int, peer record) IDENTITY uuid SPLIT AT 'g'; \
+         CREATE ledger:'a' = { total: 1 }; CREATE ledger:'h' = { total: 2, peer: ledger:'a' };",
+    )
+    .unwrap();
+    drop(root);
+    let table = {
+        let mut transaction = leader.begin().unwrap();
+        tessari_storage::Catalog::new(&mut transaction)
+            .table_id(
+                NamespaceId::new(1),
+                tessari_types::DatabaseId::new(1),
+                "ledger",
+            )
+            .unwrap()
+            .unwrap()
+    };
+    let second = Reach::Shard(
+        NamespaceId::new(1),
+        tessari_types::DatabaseId::new(1),
+        table,
+        tessari_types::ShardId::new(2),
+    );
+    (leader, second, table)
+}
+
+/// G031 S3.1 — a follower of one shard holds that shard's records and none of
+/// its sibling's, asserted on the follower's own store rather than on what the
+/// leader sent: presence of the one and absence of the other are both facts
+/// about the follower.
+#[test]
+fn a_shard_subscriber_holds_its_shards_records_and_not_its_siblings() {
+    let (leader, second, table) = sharded_tenant();
+    let follower = follow(&leader, second, "node");
+    let held = |id: &str| {
+        let transaction = follower.begin().unwrap();
+        transaction
+            .get(&tessari_storage::RecordAddress::new(
+                NamespaceId::new(1),
+                tessari_types::DatabaseId::new(1),
+                table,
+                tessari_types::RecordId::from(id),
+            ))
+            .unwrap()
+            .is_some()
+    };
+    assert!(held("h"), "the subscribed shard's record arrived");
+    assert!(!held("a"), "the sibling shard's record did not");
+    // And its own reader can name the table and read the span it holds.
+    let mut reader = signed_in(&follower, "prod_reader");
+    let answer = reader
+        .run("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM ledger:'g'..'z';")
+        .unwrap();
+    let Some(Outcome::Records { records, .. }) = answer.last() else {
+        panic!("the held span answers, got {answer:?}");
+    };
+    assert_eq!(records.len(), 1);
+}
+
+/// G031 S3.3 — a node holding part of what its catalog describes refuses a read
+/// that needs the rest, and answers one inside what it holds.
+///
+/// The reach is recorded here the way the wire collector records it from the
+/// answer (`tessari-wire`'s `a_subscriber_receives_its_namespace…` asserts that
+/// half); this helper applies the stream through the session instead of a
+/// socket, so it records it itself.
+#[test]
+fn a_shard_follower_refuses_a_read_that_needs_what_it_does_not_hold() {
+    let (leader, second, _) = sharded_tenant();
+    let follower = follow(&leader, second, "node");
+    follower.record_served(second).unwrap();
+    let mut reader = signed_in(&follower, "prod_reader");
+    reader
+        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+
+    let refused = |reader: &mut Session<'_>, read: &str| match reader.run(read) {
+        Err(tessari_session::Error::NotHeldHere { table, shards }) => (table, shards),
+        other => panic!("{read}: expected NotHeldHere, got {other:?}"),
+    };
+    assert_eq!(
+        refused(&mut reader, "SELECT * FROM ledger;"),
+        ("ledger".to_owned(), vec![1])
+    );
+    assert_eq!(
+        refused(&mut reader, "SELECT * FROM ledger WHERE total > 0;"),
+        ("ledger".to_owned(), vec![1])
+    );
+    assert_eq!(
+        refused(&mut reader, "SELECT * FROM ledger:'a';"),
+        ("ledger".to_owned(), vec![1])
+    );
+    assert_eq!(
+        refused(&mut reader, "SELECT * FROM ledger:'a'..'z';"),
+        ("ledger".to_owned(), vec![1])
+    );
+    // A table of the same database that is not split: its definition travelled
+    // down with the database's, and none of its records did.
+    assert_eq!(
+        refused(&mut reader, "SELECT * FROM orders;"),
+        ("orders".to_owned(), vec![])
+    );
+
+    // What it holds, it answers.
+    let answered = |reader: &mut Session<'_>, read: &str| match reader.run(read) {
+        Ok(outcomes) => match outcomes.last() {
+            Some(Outcome::Records { records, .. }) => records.len(),
+            other => panic!("{read}: {other:?}"),
+        },
+        Err(error) => panic!("{read}: {error:?}"),
+    };
+    // A reference out of a held record into the shard it lacks (Q-792).
+    assert_eq!(
+        refused(&mut reader, "SELECT * FROM ledger:'h' FETCH peer;"),
+        ("ledger".to_owned(), vec![1])
+    );
+    assert_eq!(answered(&mut reader, "SELECT * FROM ledger:'h';"), 1);
+    assert_eq!(answered(&mut reader, "SELECT * FROM ledger:'g'..'z';"), 1);
+}
+
+#[test]
+fn a_follower_served_the_whole_database_answers_every_read_as_before() {
+    // The control: a namespace follower recorded as such refuses nothing it
+    // holds, split tables included.
+    let (leader, _, _) = sharded_tenant();
+    let over = Reach::Namespace(NamespaceId::new(1));
+    let follower = follow(&leader, over, "node");
+    follower.record_served(over).unwrap();
+    let mut reader = signed_in(&follower, "prod_reader");
+    let outcomes = reader
+        .run("USE NAMESPACE prod; USE DATABASE shop; SELECT * FROM ledger;")
+        .unwrap();
+    let Some(Outcome::Records { records, .. }) = outcomes.last() else {
+        panic!("{outcomes:?}");
+    };
+    assert_eq!(records.len(), 2);
+}
+
+/// A user and the grants that narrow them travel together (G033, found by its
+/// S1.5): users reach every subscriber, so a grant withheld from one leaves a
+/// restricted user UNRESTRICTED there — a reader who may see one field sees the
+/// whole record on the follower with nothing in an error state. Asserted on a
+/// namespace follower, the widest selective subscription, and on the shard
+/// follower beside it.
+#[test]
+fn a_field_grant_narrows_its_user_on_a_selective_follower_as_on_the_leader() {
+    let (leader, second, _) = sharded_tenant();
+    signed_in(&leader, "root")
+        .run(
+            "DEFINE USER narrow ON NAMESPACE prod AUTHORITIES read \
+             PASSWORD 'correct horse battery';\n\
+             USE NAMESPACE prod; USE DATABASE shop;\n\
+             GRANT read ON orders FIELDS note TO narrow;\n\
+             GRANT read ON ledger FIELDS note TO narrow;",
+        )
+        .unwrap();
+    for (over, read) in [
+        (
+            Reach::Namespace(NamespaceId::new(1)),
+            "SELECT * FROM orders:1;",
+        ),
+        (second, "SELECT * FROM ledger:'h';"),
+    ] {
+        let follower = follow(&leader, over, "node");
+        follower.record_served(over).unwrap();
+        let mut reader = signed_in(&follower, "narrow");
+        let outcomes = reader
+            .run(&format!("USE NAMESPACE prod; USE DATABASE shop; {read}"))
+            .unwrap();
+        let Some(Outcome::Records { records, .. }) = outcomes.last() else {
+            panic!("{over:?}: {outcomes:?}");
+        };
+        assert_eq!(records.len(), 1, "{over:?}");
+        assert!(
+            !format!("{records:?}").contains("total"),
+            "{over:?}: a field the grant hides was read on the follower: {records:?}"
+        );
+    }
+}
+
+/// Probe (Q-796): a record written by a single-shard commit and then by a
+/// two-shard one ends at the second value on the leader; the follower must end
+/// at the same value whatever order it collects the logs in.
+#[test]
+fn a_record_written_alone_then_across_shards_ends_at_the_same_value_on_a_follower() {
+    let (leader, _, _) = sharded_tenant();
+    signed_in(&leader, "root")
+        .run(
+            "USE NAMESPACE prod; USE DATABASE shop;\n\
+             UPDATE ledger:'h' MERGE { total: 3 };\n\
+             BEGIN; UPDATE ledger:'h' MERGE { total: 4 }; UPDATE ledger:'a' MERGE { total: 5 }; COMMIT;",
+        )
+        .unwrap();
+    let read = |store: &Store| {
+        let mut reader = signed_in(store, "prod_reader");
+        let outcomes = reader
+            .run("USE NAMESPACE prod; USE DATABASE shop; SELECT total FROM ledger:'h';")
+            .unwrap();
+        format!("{:?}", outcomes.last())
+    };
+    let on_leader = read(&leader);
+    assert!(on_leader.contains('4'), "{on_leader}");
+    let over = Reach::Namespace(NamespaceId::new(1));
+    let follower = follow(&leader, over, "node");
+    follower.record_served(over).unwrap();
+    assert_eq!(read(&follower), on_leader);
+}
+
+/// Probe (Q-796), the unsharded shape: a record written by a one-database
+/// commit and then by a two-database one (which homes at the namespace).
+#[test]
+fn a_record_written_alone_then_across_databases_ends_at_the_same_value_on_a_follower() {
+    let leader = store();
+    two_tenants(&leader);
+    signed_in(&leader, "root")
+        .run(
+            "USE NAMESPACE prod; DEFINE DATABASE other; USE DATABASE other; \
+             DEFINE TABLE notes SCHEMALESS; CREATE notes:1 = { n: 0 };\n\
+             USE DATABASE shop; UPDATE orders:1 MERGE { total: 3 };\n\
+             BEGIN; UPDATE orders:1 MERGE { total: 4 }; USE DATABASE other; \
+             UPDATE notes:1 MERGE { n: 1 }; COMMIT;",
+        )
+        .unwrap();
+    let read = |store: &Store| {
+        let mut reader = signed_in(store, "prod_reader");
+        let outcomes = reader
+            .run("USE NAMESPACE prod; USE DATABASE shop; SELECT total FROM orders:1;")
+            .unwrap();
+        format!("{:?}", outcomes.last())
+    };
+    let on_leader = read(&leader);
+    assert!(on_leader.contains('4'), "{on_leader}");
+    let over = Reach::Namespace(NamespaceId::new(1));
+    let follower = follow(&leader, over, "node");
+    follower.record_served(over).unwrap();
+    assert_eq!(read(&follower), on_leader);
+}
+
+/// G034 S1.2 — interleavings of one-shard, two-shard, one-database and
+/// two-database commits over shared records leave every record on a follower
+/// equal to the leader's, at every page size. The commit kinds are the four
+/// homes a record of this store can be filed under; the sequence is a fixed
+/// pseudo-random walk so a failure names a reproducible step.
+#[test]
+fn every_interleaving_of_homes_ends_level_on_a_follower_at_every_page_size() {
+    let (leader, _, _) = sharded_tenant();
+    let mut root = signed_in(&leader, "root");
+    root.run(
+        "USE NAMESPACE prod; DEFINE DATABASE other; USE DATABASE other; \
+         DEFINE TABLE notes SCHEMALESS; CREATE notes:1 = { n: 0 };",
+    )
+    .unwrap();
+    // Each kind writes `@` into the records it names, so the value a record
+    // ends at says which commit was applied last.
+    let kinds: [&str; 6] = [
+        "USE DATABASE shop; UPDATE ledger:'h' MERGE { total: @ };",
+        "USE DATABASE shop; UPDATE ledger:'a' MERGE { total: @ };",
+        "USE DATABASE shop; BEGIN; UPDATE ledger:'a' MERGE { total: @ }; \
+         UPDATE ledger:'h' MERGE { total: @ }; COMMIT;",
+        "USE DATABASE shop; UPDATE orders:1 MERGE { total: @ };",
+        "BEGIN; USE DATABASE shop; UPDATE orders:1 MERGE { total: @ }; \
+         USE DATABASE other; UPDATE notes:1 MERGE { n: @ }; COMMIT;",
+        "BEGIN; USE DATABASE shop; UPDATE ledger:'h' MERGE { total: @ }; \
+         USE DATABASE other; UPDATE notes:1 MERGE { n: @ }; COMMIT;",
+    ];
+    let addresses = {
+        let mut transaction = leader.begin().unwrap();
+        let catalog = tessari_storage::Catalog::new(&mut transaction);
+        let prod = NamespaceId::new(1);
+        let shop = catalog.database_id(prod, "shop").unwrap().unwrap();
+        let other = catalog.database_id(prod, "other").unwrap().unwrap();
+        let table = |database, name: &str| catalog.table_id(prod, database, name).unwrap().unwrap();
+        let (ledger, orders, notes) = (
+            table(shop, "ledger"),
+            table(shop, "orders"),
+            table(other, "notes"),
+        );
+        let address = |database, table, id: tessari_types::RecordId| {
+            tessari_storage::RecordAddress::new(prod, database, table, id)
+        };
+        vec![
+            address(shop, ledger, tessari_types::RecordId::from("a")),
+            address(shop, ledger, tessari_types::RecordId::from("h")),
+            address(shop, orders, tessari_types::RecordId::Int(1)),
+            address(other, notes, tessari_types::RecordId::Int(1)),
+        ]
+    };
+    let held = |store: &Store| -> Vec<Option<Vec<u8>>> {
+        let transaction = store.begin().unwrap();
+        addresses
+            .iter()
+            .map(|address| transaction.get(address).unwrap())
+            .collect()
+    };
+    let mut node = Session::new(&leader);
+    node.sign_in("node", PASSWORD).unwrap();
+    let over = Reach::Namespace(NamespaceId::new(1));
+    let mut state: u64 = 0x9e37_79b9;
+    let mut n = 10_u64;
+    for round in 0..8 {
+        let mut script = String::from("USE NAMESPACE prod; ");
+        for _ in 0..4 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            let kind = kinds[usize::try_from(state >> 33).unwrap() % kinds.len()];
+            n += 1;
+            script.push_str(&kind.replace('@', &n.to_string()));
+        }
+        root.run(&script).unwrap();
+        let expected = held(&leader);
+        for page in [1, 2, 3, 256] {
+            let follower = follow_in_pages(&mut node, &leader, over, page);
+            assert_eq!(
+                held(&follower),
+                expected,
+                "round {round}, page size {page}, after: {script}"
+            );
+        }
+    }
 }

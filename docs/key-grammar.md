@@ -100,6 +100,7 @@ because renumbering after data exists is a full rebuild.
 | `0x3c` | `VersionPosition` | `meta` | implemented |
 | `0x3d` | `LogStart` | `meta` | implemented |
 | `0x3e` | `LogRetention` | `meta` | implemented |
+| `0x3f` | `ServedReach` | `meta` | implemented — the reach this node's upstream last served it under; see §6.2 |
 
 ### 3c. The spatial entry
 
@@ -495,6 +496,40 @@ needs a policy for a commit that exceeds it.
 **Mutations are stored in address order.** Byte-identical replay depends on the
 *encoder* being deterministic, not only on the apply path, so the record type
 orders them at construction rather than trusting its caller to.
+
+#### The log's home, and a split table's shard
+
+A log key names the log it belongs to — its **home**, a reach, and its writer —
+before the sequence. The home leads with a variant byte that fixes its width, so
+every home is one contiguous prefix:
+
+| variant | home | bytes after the variant |
+|---|---|---|
+| `0` | the store | `<0:u32> <0:u32>` |
+| `1` | a namespace | `<namespace:u32> <0:u32>` |
+| `2` | a database | `<namespace:u32> <database:u32>` |
+| `3` | one shard of a split table | `<namespace:u32> <database:u32> <table:u32> <shard:u32>` |
+
+The first three are nine bytes with the variant and never move; the shard is
+seventeen. A home is the narrowest reach covering every mutation a commit writes,
+so a commit inside one shard is filed in that shard's log and one across two
+shards at their database.
+
+When any mutation of a record belongs to a split table, the record's flags carry
+bit 3 (`0b0000_1000`) and **every** mutation carries `<shard:u32>` right after its
+table — `0` for a table that is not split. A record touching no split table
+leaves the bit clear and keeps exactly the bytes it had before shards existed; a
+build that predates the bit refuses such a record as reserved instead of reading
+the shard as the next field. The writer decides the shard at commit from the map
+it committed against and writes the answer here, so a follower applying the
+record and a filter streaming it read the bytes rather than a catalog that has
+moved on since.
+
+A follower records the reach its upstream said it served it under in the
+`ServedReach` singleton (`0x3f`), beside `LogRetention` and for the same reason:
+it describes this machine, a backup does not carry it, and a separate key keeps
+a store written by this build readable by an older one. It is only ever used to
+narrow what the node asks for and answers.
 
 ### 6.2a Index entries — keyspace `index`
 

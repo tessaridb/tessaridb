@@ -79,7 +79,7 @@ use std::time::{Duration, Instant};
 
 use tessari_encoding::NODE_ID_LEN;
 use tessari_storage::{LEASE_TTL, Lease};
-use tessari_types::{Epoch, Sequence};
+use tessari_types::{Epoch, Reach, Sequence};
 
 use crate::error::{Error, Result};
 use crate::frame;
@@ -96,15 +96,29 @@ pub struct Ballot {
     pub epoch: Epoch,
     /// Who is asking.
     pub candidate: [u8; NODE_ID_LEN],
+    /// Which election line the epoch is on (ADR-0082).
+    ///
+    /// [`Reach::Store`] for the store line, which is every ballot a build before
+    /// placement ever put; another range for a placed range's own line. Epochs
+    /// of two lines are unrelated counters, so a voter keeps one memory per line
+    /// and a grant on one never answers a ballot on another.
+    pub range: Reach,
 }
 
 impl Ballot {
     /// The body of a [`crate::PeerFrame::Ballot`] frame.
+    ///
+    /// The range is a tail written only when it is not the store, so a store
+    /// ballot keeps the twenty-four bytes it has always had and an older voter
+    /// reads it unchanged.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut body = Vec::with_capacity(24);
         frame::put_u64(&mut body, self.epoch.get());
         body.extend_from_slice(&self.candidate);
+        if self.range != Reach::Store {
+            frame::put_reach(&mut body, self.range);
+        }
         body
     }
 
@@ -121,9 +135,18 @@ impl Ballot {
             .get(at..at.saturating_add(NODE_ID_LEN))
             .ok_or(Error::Malformed)?;
         candidate.copy_from_slice(rest);
+        // A body that ends here is a store ballot, from this build or an older
+        // one; anything after it is the range and must read whole.
+        let at = at.saturating_add(NODE_ID_LEN);
+        let range = if body.len() > at {
+            frame::take_reach(body, at)?.0
+        } else {
+            Reach::Store
+        };
         Ok(Self {
             epoch: Epoch::new(epoch),
             candidate,
+            range,
         })
     }
 }
@@ -561,6 +584,10 @@ impl Voter {
 #[derive(Debug)]
 pub struct Deciding {
     voter: std::sync::Mutex<Voter>,
+    /// One memory per placed range's line (ADR-0082), each started at the
+    /// store line's start instant: a process that restarted cannot remember a
+    /// grant on ANY line, so the restart guard covers every one of them.
+    lines: std::sync::Mutex<std::collections::BTreeMap<Reach, Voter>>,
 }
 
 impl Deciding {
@@ -575,6 +602,7 @@ impl Deciding {
     pub fn holding(voter: Voter) -> Self {
         Self {
             voter: std::sync::Mutex::new(voter),
+            lines: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         }
     }
 
@@ -589,7 +617,18 @@ impl Deciding {
     /// of the process's life over a panic elsewhere — a permanent availability
     /// loss bought with no safety, because the value being guarded is sound.
     pub fn asked(&self, ballot: &Ballot, now: Instant, mine: Reached, candidate: Reached) -> Vote {
-        self.held().asked(ballot, now, mine, candidate)
+        if ballot.range == Reach::Store {
+            return self.held().asked(ballot, now, mine, candidate);
+        }
+        let started = self.held().started;
+        let mut lines = self
+            .lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        lines
+            .entry(ballot.range)
+            .or_insert_with(|| Voter::started_at(started))
+            .asked(ballot, now, mine, candidate)
     }
 
     /// When this node last granted a ballot to somebody else — see
@@ -597,6 +636,20 @@ impl Deciding {
     #[must_use]
     pub fn granted_elsewhere_at(&self, me: [u8; NODE_ID_LEN]) -> Option<Instant> {
         self.held().granted_elsewhere_at(me)
+    }
+
+    /// The same question on one placed range's line (ADR-0082) — `None` for a
+    /// line this node has never been asked about.
+    #[must_use]
+    pub fn granted_elsewhere_on(&self, range: Reach, me: [u8; NODE_ID_LEN]) -> Option<Instant> {
+        if range == Reach::Store {
+            return self.granted_elsewhere_at(me);
+        }
+        self.lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&range)
+            .and_then(|voter| voter.granted_elsewhere_at(me))
     }
 
     /// The highest epoch this node has granted, if any.
@@ -667,11 +720,22 @@ impl Round {
         opened: Instant,
     ) -> Self {
         Self {
-            ballot: Ballot { epoch, candidate },
+            ballot: Ballot {
+                epoch,
+                candidate,
+                range: Reach::Store,
+            },
             voters,
             opened,
             granted: Vec::new(),
         }
+    }
+
+    /// The same round, on a placed range's own line (ADR-0082).
+    #[must_use]
+    pub const fn over(mut self, range: Reach) -> Self {
+        self.ballot.range = range;
+        self
     }
 
     /// The ballot to put to every voter.
@@ -735,11 +799,11 @@ fn free_at(at: Instant) -> Instant {
 
 #[cfg(test)]
 mod tests {
-    use super::{Ballot, Leadership, Reached, Refused, Round, Vote, Voter, majority};
+    use super::{Ballot, Deciding, Leadership, Reached, Refused, Round, Vote, Voter, majority};
     use std::time::{Duration, Instant};
     use tessari_encoding::NODE_ID_LEN;
     use tessari_storage::{LEASE_GUARD, LEASE_TTL};
-    use tessari_types::{Epoch, Sequence};
+    use tessari_types::{DatabaseId, Epoch, NamespaceId, Reach, Sequence, ShardId, TableId};
 
     /// A log position both sides of a vote share.
     ///
@@ -827,6 +891,7 @@ mod tests {
         let ballot = Ballot {
             epoch: Epoch::new(7),
             candidate: A,
+            range: tessari_types::Reach::Store,
         };
 
         assert_eq!(voter.asked(&ballot, now, LEVEL, LEVEL), Vote::Granted);
@@ -836,7 +901,8 @@ mod tests {
             voter.asked(
                 &Ballot {
                     epoch: Epoch::new(7),
-                    candidate: B
+                    candidate: B,
+                    range: tessari_types::Reach::Store,
                 },
                 long_after,
                 LEVEL,
@@ -869,6 +935,7 @@ mod tests {
         let ballot = Ballot {
             epoch: Epoch::new(4),
             candidate: A,
+            range: tessari_types::Reach::Store,
         };
         assert_eq!(voter.asked(&ballot, now, LEVEL, LEVEL), Vote::Granted);
 
@@ -894,6 +961,7 @@ mod tests {
         let ballot = Ballot {
             epoch: Epoch::new(4),
             candidate: A,
+            range: tessari_types::Reach::Store,
         };
         assert_eq!(voter.asked(&ballot, now, LEVEL, LEVEL), Vote::Granted);
 
@@ -917,7 +985,8 @@ mod tests {
             voter.asked(
                 &Ballot {
                     epoch: Epoch::new(4),
-                    candidate: A
+                    candidate: A,
+                    range: tessari_types::Reach::Store,
                 },
                 now,
                 LEVEL,
@@ -929,7 +998,8 @@ mod tests {
             voter.asked(
                 &Ballot {
                     epoch: Epoch::new(4),
-                    candidate: B
+                    candidate: B,
+                    range: tessari_types::Reach::Store,
                 },
                 after(now, Duration::from_secs(1)),
                 LEVEL,
@@ -958,7 +1028,8 @@ mod tests {
             voter.asked(
                 &Ballot {
                     epoch: Epoch::new(1),
-                    candidate: A
+                    candidate: A,
+                    range: tessari_types::Reach::Store,
                 },
                 now,
                 LEVEL,
@@ -976,7 +1047,8 @@ mod tests {
             voter.asked(
                 &Ballot {
                     epoch: Epoch::new(1),
-                    candidate: A
+                    candidate: A,
+                    range: tessari_types::Reach::Store,
                 },
                 later,
                 LEVEL,
@@ -996,7 +1068,8 @@ mod tests {
             voter.asked(
                 &Ballot {
                     epoch: Epoch::new(2),
-                    candidate: B
+                    candidate: B,
+                    range: tessari_types::Reach::Store,
                 },
                 refused_at,
                 LEVEL,
@@ -1029,7 +1102,8 @@ mod tests {
             voter.asked(
                 &Ballot {
                     epoch: Epoch::new(1),
-                    candidate: A
+                    candidate: A,
+                    range: tessari_types::Reach::Store,
                 },
                 now,
                 LEVEL,
@@ -1057,7 +1131,8 @@ mod tests {
             voter.asked(
                 &Ballot {
                     epoch: Epoch::new(1),
-                    candidate: A
+                    candidate: A,
+                    range: tessari_types::Reach::Store,
                 },
                 now,
                 LEVEL,
@@ -1071,7 +1146,8 @@ mod tests {
             voter.asked(
                 &Ballot {
                     epoch: Epoch::new(2),
-                    candidate: B
+                    candidate: B,
+                    range: tessari_types::Reach::Store,
                 },
                 soon,
                 LEVEL,
@@ -1090,7 +1166,8 @@ mod tests {
             voter.asked(
                 &Ballot {
                     epoch: Epoch::new(2),
-                    candidate: B
+                    candidate: B,
+                    range: tessari_types::Reach::Store,
                 },
                 after(now, LEASE_TTL),
                 LEVEL,
@@ -1107,6 +1184,7 @@ mod tests {
         let ballot = Ballot {
             epoch: Epoch::new(1),
             candidate: A,
+            range: tessari_types::Reach::Store,
         };
 
         let early = after(started, Duration::from_secs(4));
@@ -1136,6 +1214,7 @@ mod tests {
         let high = Ballot {
             epoch: Epoch::new(9),
             candidate: A,
+            range: tessari_types::Reach::Store,
         };
         assert_eq!(
             voter.asked(&high, after(started, Duration::from_secs(1)), LEVEL, LEVEL),
@@ -1157,6 +1236,7 @@ mod tests {
         let low = Ballot {
             epoch: Epoch::new(5),
             candidate: B,
+            range: tessari_types::Reach::Store,
         };
         assert_eq!(
             voter.asked(&low, after(started, LEASE_TTL), LEVEL, LEVEL),
@@ -1171,6 +1251,7 @@ mod tests {
         let caught_up = Ballot {
             epoch: Epoch::new(10),
             candidate: B,
+            range: tessari_types::Reach::Store,
         };
         assert_eq!(
             voter.asked(&caught_up, after(started, LEASE_TTL), LEVEL, LEVEL),
@@ -1189,7 +1270,8 @@ mod tests {
             voter.asked(
                 &Ballot {
                     epoch: Epoch::new(3),
-                    candidate: A
+                    candidate: A,
+                    range: tessari_types::Reach::Store,
                 },
                 opened,
                 LEVEL,
@@ -1201,7 +1283,8 @@ mod tests {
             voter.asked(
                 &Ballot {
                     epoch: Epoch::new(9),
-                    candidate: B
+                    candidate: B,
+                    range: tessari_types::Reach::Store,
                 },
                 opened,
                 LEVEL,
@@ -1218,7 +1301,8 @@ mod tests {
             voter.asked(
                 &Ballot {
                     epoch: Epoch::new(4),
-                    candidate: A
+                    candidate: A,
+                    range: tessari_types::Reach::Store,
                 },
                 free,
                 LEVEL,
@@ -1333,6 +1417,7 @@ mod tests {
         let ballot = Ballot {
             epoch: Epoch::new(4),
             candidate: A,
+            range: tessari_types::Reach::Store,
         };
         let behind = Reached {
             leadership: LEVEL.leadership,
@@ -1370,7 +1455,8 @@ mod tests {
             voter.asked(
                 &Ballot {
                     epoch: Epoch::new(4),
-                    candidate: A
+                    candidate: A,
+                    range: tessari_types::Reach::Store,
                 },
                 now,
                 LEVEL,
@@ -1398,7 +1484,8 @@ mod tests {
             voter.asked(
                 &Ballot {
                     epoch: Epoch::new(9),
-                    candidate: A
+                    candidate: A,
+                    range: tessari_types::Reach::Store,
                 },
                 now,
                 LEVEL,
@@ -1435,6 +1522,106 @@ mod tests {
         assert_eq!(
             Vote::decode(&refused.encode()).expect("a vote this build wrote"),
             refused
+        );
+    }
+
+    // ---- G032 S3.1 and S3.2: a ballot names its line -------------------------
+
+    fn shard(n: u32) -> Reach {
+        Reach::Shard(
+            NamespaceId::new(1),
+            DatabaseId::new(2),
+            TableId::new(3),
+            ShardId::new(n),
+        )
+    }
+
+    #[test]
+    fn a_store_ballot_keeps_its_twenty_four_bytes() {
+        // The kill criterion (G032), from `Ballot::encode` as it stood at
+        // `a1d0025`: the epoch big-endian, then the candidate.
+        let ballot = Ballot {
+            epoch: Epoch::new(7),
+            candidate: [5; NODE_ID_LEN],
+            range: Reach::Store,
+        };
+        let mut golden = vec![0, 0, 0, 0, 0, 0, 0, 7];
+        golden.extend_from_slice(&[5; NODE_ID_LEN]);
+        assert_eq!(ballot.encode(), golden);
+        assert_eq!(Ballot::decode(&golden).expect("a store ballot"), ballot);
+    }
+
+    #[test]
+    fn a_range_ballot_round_trips_and_a_cut_range_is_refused() {
+        let ballot = Round::opened(Epoch::new(3), [6; NODE_ID_LEN], 3)
+            .over(shard(2))
+            .ballot();
+        assert_eq!(ballot.range, shard(2));
+        let body = ballot.encode();
+        assert_eq!(Ballot::decode(&body).expect("a range ballot"), ballot);
+        for stop in 25..body.len() {
+            let cut = body.get(..stop).expect("a prefix");
+            assert!(
+                Ballot::decode(cut).is_err(),
+                "{stop} bytes read as a ballot"
+            );
+        }
+    }
+
+    fn settled_deciding() -> Deciding {
+        Deciding::holding(Voter::started_at(
+            base()
+                .checked_sub(LEASE_TTL)
+                .expect("an hour ahead minus ten seconds"),
+        ))
+    }
+
+    fn ballot(epoch: u64, candidate: u8, range: Reach) -> Ballot {
+        Ballot {
+            epoch: Epoch::new(epoch),
+            candidate: [candidate; NODE_ID_LEN],
+            range,
+        }
+    }
+
+    #[test]
+    fn a_grant_on_one_line_never_answers_a_ballot_on_another() {
+        let deciding = settled_deciding();
+        let now = base();
+        let vote = |ballot: &Ballot| deciding.asked(ballot, now, LEVEL, LEVEL);
+        assert_eq!(vote(&ballot(1, 1, shard(1))), Vote::Granted);
+        // The same line and epoch for somebody else: one epoch, one candidate.
+        assert!(matches!(
+            vote(&ballot(1, 2, shard(1))),
+            Vote::Refused(Refused::EpochAlreadyDecided { .. })
+        ));
+        // Another line's epoch 1 is another counter, and so is the store's.
+        assert_eq!(vote(&ballot(1, 2, shard(2))), Vote::Granted);
+        assert_eq!(vote(&ballot(1, 2, Reach::Store)), Vote::Granted);
+        assert_eq!(
+            deciding.granted_elsewhere_on(shard(1), [2; NODE_ID_LEN]),
+            Some(now)
+        );
+        assert_eq!(
+            deciding.granted_elsewhere_on(shard(1), [1; NODE_ID_LEN]),
+            None
+        );
+        assert_eq!(
+            deciding.granted_elsewhere_on(shard(3), [2; NODE_ID_LEN]),
+            None
+        );
+    }
+
+    #[test]
+    fn every_line_starts_when_the_process_did() {
+        // A restarted voter cannot remember a grant on ANY line, so a line it
+        // has never been asked about is as young as the process.
+        let started = base();
+        let deciding = Deciding::holding(Voter::started_at(started));
+        let vote = deciding.asked(&ballot(1, 1, shard(1)), started, LEVEL, LEVEL);
+        assert!(
+            matches!(vote, Vote::Refused(Refused::TooSoonAfterStarting { .. })),
+            "{vote:?}"
         );
     }
 }

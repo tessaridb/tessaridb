@@ -1355,9 +1355,10 @@ fn the_map_draws_no_figure_the_engine_cannot_answer() {
     // absent, and a lag figure is the single most reassuring thing a cluster
     // screen can display, which is exactly why it must not display one.
     //
-    // PER-RANGE PLACEMENT — there is no sharding. Every node holding a
-    // namespace holds all of it, and a placement diagram would describe a
-    // topology the product does not have.
+    // PER-RANGE PLACEMENT — the engine answers only each peer's own `leads`
+    // row, drawn as that peer's fact. Which node leads a range right now is
+    // another node's lease, so a placement diagram would be a guess drawn as a
+    // topology.
     //
     // Scanned on the SOURCE the map is built from rather than on the rendered
     // page, because a figure that is drawn only when a cluster is present would

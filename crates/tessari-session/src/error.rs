@@ -668,6 +668,65 @@ pub enum Error {
         span: Span,
     },
 
+    /// A read needs records this node does not hold (G031 S3.3, ADR-0081).
+    ///
+    /// The node was served part of what its catalog describes — one shard of a
+    /// split table, or one shard of a database whose other tables it therefore
+    /// holds none of. Answering from what it has would present a part as the
+    /// whole with nothing in an error state, so the read is refused and the
+    /// shards it lacks are named. An empty list means it holds none of the
+    /// table at all.
+    #[error(
+        "this node does not hold all of `{table}`{} — read it on a node that holds \
+         the whole table, or name a span of identities inside what this one holds",
+        if shards.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ": shard{} {} {} held elsewhere",
+                if shards.len() == 1 { "" } else { "s" },
+                shards.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "),
+                if shards.len() == 1 { "is" } else { "are" }
+            )
+        }
+    )]
+    NotHeldHere {
+        /// The table asked for.
+        table: String,
+        /// The shards the read needs and this node does not hold.
+        shards: Vec<u32>,
+    },
+
+    /// A shard this node lacks could not be fetched from its leader (G033).
+    ///
+    /// The whole read is refused, because an answer missing one shard's records
+    /// is a partial answer that looks whole.
+    #[error(
+        "shard {shard} of `{table}` could not be fetched from its leader, so the read is \
+         refused rather than answered without it: {why}"
+    )]
+    NotGathered {
+        /// The table asked for.
+        table: String,
+        /// The shard nobody answered for.
+        shard: u32,
+        /// What refused, in its own words.
+        why: String,
+    },
+
+    /// A gathered read would hold more records than a node holds in memory (G033).
+    #[error(
+        "reading `{table}` here would gather more than {most} records, and this build \
+         refuses rather than shorten the answer — read a span of identities inside the \
+         shards this node holds, or read on a node that holds the whole table"
+    )]
+    GatheredTooMuch {
+        /// The table asked for.
+        table: String,
+        /// The ceiling.
+        most: usize,
+    },
+
     /// An edge was given properties that are not a set of named fields.
     ///
     /// An edge record already carries `out` and `in`; anything else it holds has

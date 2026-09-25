@@ -143,6 +143,14 @@ pub enum StatementKind {
         /// An edge kind is the asymmetric case and gets its own word, because it
         /// is never selected from and its entries are not records.
         graph: Option<Name>,
+        /// Where the table's shards begin: `DEFINE TABLE orders IDENTITY uuid
+        /// SPLIT AT 'g', 'p'` is three shards (G031, ADR-0080).
+        ///
+        /// In the order the statement wrote them. Empty is one shard — a table
+        /// that says nothing is not split. Whether the points are in key order is
+        /// the catalog's to refuse rather than this list's to fix, because a list
+        /// the parser sorted would hide the mistake the refusal names.
+        split: Vec<RecordId>,
         /// What the table does with a write it cannot order, when the statement
         /// said: `DEFINE TABLE ledger (…) LAST WRITER WINS` (G027 S3.2).
         ///
@@ -587,6 +595,13 @@ pub enum StatementKind {
         /// read grant over the addresses it names, and two spellings of one
         /// thing are two things that can come to disagree.
         replicates: Option<ReachRef>,
+        /// The range that peer stands to lead, when the declaration placed one
+        /// (`LEADS`).
+        ///
+        /// Never the store — every node that stands at all stands for the store
+        /// already — so the parser takes `NAMESPACE`, `DATABASE` and `SHARD`
+        /// only. `None` is the row as it has always been.
+        leads: Option<ReachRef>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -2200,7 +2215,7 @@ pub struct AnsweredBy {
 
 /// The two answers `ANSWERED BY` takes.
 ///
-/// Two and not three (BGV-MINIMAL-001): a third waits for something that needs
+/// Two and not three: a third waits for something that needs
 /// it. Named values rather than a `bool`, for the reason every tag in this
 /// workspace is named — a `bool` makes an unrecognised spelling silently become
 /// one of the two, and here the silent direction is the unsafe one.
@@ -3350,6 +3365,20 @@ pub enum ReachRef {
     Namespace(Name),
     /// `DATABASE prod.orders`, or the bare `prod.orders` — one database.
     Database(TableRef),
+    /// `SHARD prod.shop.orders 2` — one shard of one split table (G031).
+    ///
+    /// Only a subscription says it: `REPLICATES` reads it and no grant does,
+    /// because no authority comes at a shard's reach.
+    Shard {
+        /// The namespace.
+        namespace: Name,
+        /// The database.
+        database: Name,
+        /// The split table.
+        table: Name,
+        /// Which of its shards, numbered as `INFO FOR TABLE` reports them.
+        shard: u32,
+    },
 }
 
 /// What a `DEFINE USER` says the user may do.

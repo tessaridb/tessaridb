@@ -63,6 +63,19 @@ enum Reading {
 /// The four readers below differ only in these fields, and they travel together
 /// because a walk is one shape rather than four loose arguments — which is also
 /// what keeps the shared walk's signature readable as the set grows.
+/// Part of a table's identity order whose ends may be open (G033).
+///
+/// A shard's span is open at the table's edges, which a [`Span`] — the
+/// language's, with both ends always written — cannot say.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Window<'a> {
+    /// The first identity inside, or `None` for the start of the table.
+    pub from: Option<&'a RecordId>,
+    /// Where the window stops and whether that identity is inside, or `None`
+    /// for the end of the table.
+    pub to: Option<(&'a RecordId, bool)>,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Walk<'a> {
     /// At least this many records, or every one there is.
@@ -71,6 +84,12 @@ struct Walk<'a> {
     anchor: Option<&'a RecordId>,
     /// Stop at this identity span.
     span: Option<Span<'a>>,
+    /// A window with open ends (G033): the first identity it holds, and where
+    /// it stops with whether that identity is inside. Beside `span` rather than
+    /// instead of it, because a span is the language's and both of its ends are
+    /// always written.
+    from: Option<&'a RecordId>,
+    to: Option<(&'a RecordId, bool)>,
     /// Whether the blocks this walk reads are worth keeping.
     reading: Reading,
 }
@@ -81,6 +100,8 @@ impl Default for Walk<'_> {
             bound: None,
             anchor: None,
             span: None,
+            from: None,
+            to: None,
             reading: Reading::Serving,
         }
     }
@@ -286,6 +307,42 @@ impl Transaction<'_> {
 
     /// The live records of one table, all of them or the first `bound` of them,
     /// starting past `anchor` when a cursor named one.
+    /// The records of a window of the table, after `after`, at most `bound` of
+    /// them — one page of a gather (G033, ADR-0083).
+    ///
+    /// Paged by the caller passing the last identity it received as `after`, so
+    /// a page seam neither repeats nor drops a record.
+    ///
+    /// # Errors
+    ///
+    /// Whatever reading the table returns.
+    pub fn records_between(
+        &self,
+        namespace: NamespaceId,
+        database: DatabaseId,
+        table: TableId,
+        window: Window<'_>,
+        after: Option<&RecordId>,
+        bound: usize,
+    ) -> Result<Vec<(RecordId, Vec<u8>)>> {
+        let mut found = self.table_records(
+            namespace,
+            database,
+            table,
+            Walk {
+                bound: Some(bound),
+                anchor: after,
+                from: window.from,
+                to: window.to,
+                ..Walk::default()
+            },
+        )?;
+        // A walk that knows its bound asks for exactly what it still needs, and
+        // a batch may still end past it; the page is the bound.
+        found.truncate(bound);
+        Ok(found)
+    }
+
     fn table_records(
         &self,
         namespace: NamespaceId,
@@ -308,6 +365,8 @@ impl Transaction<'_> {
             bound,
             anchor,
             span,
+            from: window_from,
+            to: window_to,
             reading,
         } = walk;
         let prefix = RecordKey::table_prefix(namespace, database, table);
@@ -332,6 +391,15 @@ impl Transaction<'_> {
         // carries the millisecond: the scan **starts later** and never reads the
         // records it would have discarded. Taken as a maximum, so a span or a
         // cursor already past the floor is not pulled backwards by it.
+        // A window's lower end raises the opening exactly as the floor below
+        // does: a cursor already past it is not pulled back to it.
+        let opening = match window_from {
+            Some(lower) => {
+                let at = RecordKey::versions_prefix(namespace, database, table, lower);
+                if at > opening { at } else { opening }
+            }
+            None => opening,
+        };
         let floor = self.series_floor(namespace, table)?;
         let opening = match &floor {
             Some(floor) => {
@@ -373,7 +441,13 @@ impl Transaction<'_> {
                 let at = RecordKey::versions_prefix(namespace, database, table, span.upper);
                 if span.inclusive { after(at) } else { at }
             }
-            None => after(prefix),
+            None => match window_to {
+                Some((upper, inclusive)) => {
+                    let at = RecordKey::versions_prefix(namespace, database, table, upper);
+                    if inclusive { after(at) } else { at }
+                }
+                None => after(prefix),
+            },
         };
         loop {
             let request = ScanRequest {
@@ -432,6 +506,14 @@ impl Transaction<'_> {
                 && floor.as_ref().is_none_or(|floor| &address.id >= floor)
                 && anchor.is_none_or(|anchor| &address.id > anchor)
                 && span.as_ref().is_none_or(|span| span.holds(&address.id))
+                && window_from.is_none_or(|lower| &address.id >= lower)
+                && window_to.is_none_or(|(upper, inclusive)| {
+                    if inclusive {
+                        &address.id <= upper
+                    } else {
+                        &address.id < upper
+                    }
+                })
             {
                 live.insert(address.id.clone(), value.clone());
             }

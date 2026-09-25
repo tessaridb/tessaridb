@@ -51,6 +51,7 @@ use crate::collection::{Collect, Collected, Origin};
 use crate::credential;
 use crate::error::{Error, Result};
 use crate::frame;
+use crate::gathering::{Gather, Page, Ungathered};
 use crate::grant::{Ballot, Deciding, Vote};
 use crate::peer::{Hello, PeerFrame, Purpose, admit};
 
@@ -231,6 +232,26 @@ impl Peers {
                     }
                     None
                 }
+                // A shard's records, for a node holding part of its table
+                // (G033). Its refusal crosses as a frame for the reason the
+                // collection's two do.
+                Some(PeerFrame::Gather) => {
+                    let asked = Gather::decode(&body)?;
+                    match log.gathered(said.node, &asked) {
+                        Ok(page) => frame::write_tagged(
+                            &mut link,
+                            PeerFrame::Gathered.tag(),
+                            &page.encode(),
+                        )?,
+                        Err(Error::NotGathered(why)) => frame::write_tagged(
+                            &mut link,
+                            PeerFrame::NotGathered.tag(),
+                            &[why.byte()],
+                        )?,
+                        Err(why) => return Err(why),
+                    }
+                    None
+                }
                 Some(PeerFrame::Ballot) => {
                     let asked = Ballot::decode(&body)?;
                     // The identity that decides a grant is the one the
@@ -247,11 +268,14 @@ impl Peers {
                     // line above gives about its identity: a position a
                     // candidate writes into the ballot being judged is a
                     // position it can choose.
+                    // On the ballot's own line (ADR-0082): a range ballot is
+                    // judged on both greetings' positions for that range, the
+                    // store ballot on the store's exactly as before.
                     let vote = voter.asked(
                         &asked,
                         std::time::Instant::now(),
-                        mine.reached(),
-                        said.reached(),
+                        mine.reached_on(asked.range),
+                        said.reached_on(asked.range),
                     );
                     frame::write_tagged(&mut link, PeerFrame::Vote.tag(), &vote.encode())?;
                     Some(vote)
@@ -321,6 +345,8 @@ pub enum Ask<'a> {
     Ballot(&'a Ballot),
     /// The records after a position this caller does not hold.
     Records(Collect),
+    /// One page of a shard's records, from that shard's leader (G033).
+    Gather(&'a Gather),
 }
 
 /// What the other end answered with.
@@ -337,6 +363,8 @@ pub enum Answered {
     Voted(Vote),
     /// What the peer's log held.
     Collected(Collected),
+    /// One page of a shard's records.
+    Gathered(Page),
 }
 
 /// Reach the peer `at` on `address`, and exchange greetings.
@@ -422,6 +450,21 @@ fn exchange(
                     Err(Error::Uncollectable { from })
                 }
                 Some(PeerFrame::Unsubscribed) => Err(Error::Unsubscribed),
+                Some(_) => Err(Error::OutOfTurn { tag }),
+                None => Err(Error::UnknownFrame { tag }),
+            }
+        }
+        Ask::Gather(gather) => {
+            frame::write_tagged(&mut link, PeerFrame::Gather.tag(), &gather.encode())?;
+            let (tag, body) = answer(&mut link)?;
+            match PeerFrame::from_tag(tag) {
+                Some(PeerFrame::Gathered) => Ok((heard, Answered::Gathered(Page::decode(&body)?))),
+                // The refusal as the leader sent it, for the reason the two
+                // collection refusals above cross the wire as frames.
+                Some(PeerFrame::NotGathered) => {
+                    let why = body.first().copied().ok_or(Error::Malformed)?;
+                    Err(Error::NotGathered(Ungathered::from_byte(why)?))
+                }
                 Some(_) => Err(Error::OutOfTurn { tag }),
                 None => Err(Error::UnknownFrame { tag }),
             }
@@ -803,6 +846,7 @@ pub(crate) mod tests {
             &Ballot {
                 epoch: Epoch::new(1),
                 candidate: HERE,
+                range: tessari_types::Reach::Store,
             },
             std::time::Instant::now(),
             LEVEL,
@@ -819,6 +863,7 @@ pub(crate) mod tests {
         let ballot = Ballot {
             epoch: Epoch::new(12),
             candidate: THERE,
+            range: tessari_types::Reach::Store,
         };
         let (_, vote) = call(
             address,
@@ -869,6 +914,7 @@ pub(crate) mod tests {
             Ask::Ballot(&Ballot {
                 epoch: Epoch::new(12),
                 candidate: THERE,
+                range: tessari_types::Reach::Store,
             }),
         )
         .expect("a peer that proved itself may ask");
@@ -925,6 +971,7 @@ pub(crate) mod tests {
             Ask::Ballot(&Ballot {
                 epoch: Epoch::new(1),
                 candidate: HERE,
+                range: tessari_types::Reach::Store,
             }),
         );
 
@@ -965,6 +1012,7 @@ pub(crate) mod tests {
             Ask::Ballot(&Ballot {
                 epoch: Epoch::new(2),
                 candidate: THERE,
+                range: tessari_types::Reach::Store,
             }),
         )
         .expect("a peer that proved itself may ask")
@@ -1289,5 +1337,65 @@ pub(crate) mod tests {
         // Refused by the transport, inside the handshake — the earliest place a
         // refusal can happen, and before a single frame was parsed.
         assert!(matches!(refused, Error::Transport(_)), "{refused}");
+    }
+
+    #[test]
+    fn a_range_ballot_is_judged_on_both_greetings_positions_for_that_range() {
+        // G032 S3.2. The voter stands for shard 2 and its own log of it reaches
+        // further than the candidate's: a ballot on shard 2 is refused as behind,
+        // while the same candidate's store ballot -- level on the store -- and
+        // its ballot on shard 3, which the voter never stood for, are granted.
+        use crate::peer::Line;
+        use tessari_types::{DatabaseId, NamespaceId, Reach, ShardId, TableId};
+        let shard = |n: u32| {
+            Reach::Shard(
+                NamespaceId::new(1),
+                DatabaseId::new(1),
+                TableId::new(1),
+                ShardId::new(n),
+            )
+        };
+        let line = |n: u32, tail: u64| Line {
+            range: shard(n),
+            leading: Epoch::ZERO,
+            tail: Sequence::new(tail),
+            tail_leadership: Epoch::new(2),
+        };
+        let authority = Authority::new();
+        let (peers, mut mine) = door(&authority);
+        mine.line = Some(line(2, 40));
+        let address = peers.address().expect("the door's address");
+        let deciding = Deciding::holding(settled());
+        let answering = std::thread::spawn(move || {
+            (0..3)
+                .map(|_| peers.greet(|| Ok(mine), &HERE, &deciding, &NoLog))
+                .collect::<Vec<_>>()
+        });
+        let mut candidate = hello(THERE);
+        candidate.line = Some(line(2, 3));
+        let ask = |range: Reach| {
+            let ballot = Round::opened(Epoch::new(1), THERE, 3).over(range).ballot();
+            let (_, answered) = call(
+                address,
+                authority.issue(THERE, Purpose::Peer),
+                &authority.der(),
+                HERE,
+                &candidate,
+                Ask::Ballot(&ballot),
+            )
+            .expect("the door is up");
+            voted(&answered).expect("a door that was asked answers")
+        };
+        assert!(
+            matches!(ask(shard(2)), Vote::Refused(Refused::LogBehind { tail, .. }) if tail == Sequence::new(40)),
+            "behind on the range it asked for"
+        );
+        assert_eq!(ask(Reach::Store), Vote::Granted, "level on the store");
+        assert_eq!(
+            ask(shard(3)),
+            Vote::Granted,
+            "the voter never stood for shard 3"
+        );
+        drop(answering.join().expect("the door's thread"));
     }
 }
