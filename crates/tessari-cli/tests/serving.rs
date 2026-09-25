@@ -2584,8 +2584,8 @@ fn namespaces_on(store: &std::path::Path) -> Vec<String> {
 /// forwarded to a writable peer — and it has declared none, which is the whole
 /// point of a node that has not joined yet. So the operator's remedy is taken
 /// with the store offline, which is also what every system this was ranked
-/// against requires: Elasticsearch's `detach-cluster` and Kafka's
-/// `meta.properties` are both stop-the-node operations.
+/// against requires: detaching a node from its former cluster and rewriting
+/// its stored identity are stop-the-node operations there too.
 ///
 /// The restart is load-bearing beyond convenience: it proves the refusal is a
 /// function of what the store HOLDS rather than a decision remembered from the

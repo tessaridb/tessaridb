@@ -214,7 +214,7 @@ impl Store {
     /// being inside it; one that has fallen further behind than the window is
     /// **not** protected, and its next collect is refused with
     /// [`crate::Error::BelowLogStart`], which names the repair. That is Kafka's
-    /// design and PostgreSQL's `max_slot_wal_keep_size` reaching its limit, and
+    /// design and a replication slot's bounded retention reaching its limit, and
     /// it is deliberate: the alternative — a floor held down by whichever reader
     /// is furthest behind — is the best-documented operational failure in this
     /// whole area, because one stuck reader then fills the disk and the node

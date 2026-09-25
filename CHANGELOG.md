@@ -12,6 +12,61 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.4.0-beta — 2026-09-25
+
+**A table can be split into shards, each shard can be led by a different node,
+and a node holding part of a table still answers a read of all of it.**
+
+- **`SPLIT AT`** declares a table's shards when the table is declared:
+  `DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p';` makes three
+  shards bounded by those identities. `INFO FOR TABLE` reports each shard's
+  bounds, and its definition script re-creates the split. Only a table declared
+  `IDENTITY uuid` can be split, the points must be in order, and **a table's
+  shards are fixed when it is declared** — there is no later split and no merge.
+- **Each shard is logged, led and replicated on its own.** A commit that touches
+  one shard is filed in that shard's log. A peer can subscribe to one shard with
+  `REPLICATES SHARD prod.shop.orders 2`, and every subscriber now receives the
+  definitions above what it holds, so its readers can name what it has.
+- **`LEADS`** places a range's leader: `DEFINE REPLICA … LEADS SHARD
+  prod.shop.orders 2` makes that node a candidate for the range, and a placed
+  range is an election of its own, with its own epochs and lease. Writes to two
+  shards led by two nodes are taken by both at once, and a shard with two
+  candidates fails over between them. A transaction writing ranges that two
+  nodes lead is refused as **`SpansLeaderships`**, naming both. A row carrying
+  `LEADS` cannot be dropped (**`PlacementCannotBeDropped`**) in this release.
+- **A read of a split table is gathered.** A node holding some shards answers a
+  `SELECT` over the whole table by fetching the shards it lacks from their
+  leaders over three new peer frames, and runs the statement itself, so grants
+  and hidden fields apply exactly as they do locally. The answer carries the note
+  **`gathered`**, naming the shards fetched, because it is not one snapshot. A
+  read inside a transaction or under `VERSION` is not gathered and is refused
+  with **`NotHeldHere`**; a shard nobody can serve refuses the whole read with
+  **`NotGathered`**; more than 100 000 records is **`GatheredTooMuch`**. Nothing
+  is ever answered in part.
+
+**Two replication fixes change what an existing follower holds. Re-bootstrap
+every follower that was bootstrapped before this release** — a fresh copy of
+the state, which `Error::BelowLogStart`'s repair describes.
+
+- **A user's grants now travel wherever the user goes.** Users reached every
+  subscriber while grants reached only whole-store ones, so a namespace, database
+  or shard follower held a restricted user **unrestricted**. A follower
+  bootstrapped earlier still holds the user without the grant.
+- **A follower applies one writer's logs in the order the writer committed
+  them.** It used to collect the store, namespace, database and shard logs one
+  after another, and could end at an **older value than its leader** when a
+  record was written in one log and then in another. Each log record now carries
+  its writer's commit order and a collection round merges every log by it. A
+  follower that diverged before this build keeps the older value.
+
+- **The console shows what an answer says about itself.** The query pane prints
+  every note a read carries — `gathered` among them — where it used to drop
+  them, the cluster map shows each peer's `LEADS` placement, and the sentence
+  that said there is no sharding is gone.
+- **`--health` no longer reports a store's history as position zero** after an
+  upgrade from a log older than the writer-qualified format; the sentence says
+  whose position it is and how far the other log reaches.
+
 ## 0.3.0-beta — 2026-09-17
 
 **The log stops growing, a read can say where its answer must come from, and how

@@ -757,8 +757,8 @@ pub enum Error {
     /// So it is refused rather than answered, and the refusal carries the repair
     /// as well as the number: there is no position to retry from, and the only
     /// way back is a fresh copy of the state. That is Raft's `InstallSnapshot`,
-    /// etcd's *take a new snapshot and watch from `revision + 1`*, and
-    /// PostgreSQL's *re-create the standby* — every system that prunes a log
+    /// etcd's *take a new snapshot and watch from `revision + 1`*, and a
+    /// replicated database's *re-create the standby* — every system that prunes a log
     /// answers this case with state rather than with more history.
     #[error(
         "sequence {asked} is below the start of this log, which begins at \
