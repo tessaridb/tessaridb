@@ -6941,16 +6941,53 @@ name what it holds. Definitions travel down; records never travel sideways — t
 shard's sibling shards and the database's other tables arrive as definitions
 with none of their records.
 
-**So a node that holds part of what it can name refuses to answer from the
-part.** Each answer a peer collects says what it was served under, and the node
-records it. A read of a table it holds only some of — a whole-table `SELECT`, a
-`WHERE`, a join side, a `FETCH` into a shard it lacks, a point read of a record
-in one — is refused with **`NotHeldHere`**, naming the shards held elsewhere; a
-table of that database it holds none of is refused the same way. A read inside
-what it holds answers: a record in its shard, or a span of identities that stays
-within its shards. A node that was never served anything — a leader, a store on
-its own — and a follower whose subscription covers the whole database refuse
-nothing new.
+**So a node that holds part of what it can name never answers from the part.**
+Each answer a peer collects says what it was served under, and the node records
+it. A read inside what it holds answers from its own copy: a record in its
+shard, or a span of identities that stays within its shards. A read of a split
+table that needs shards it lacks is **gathered** — see the next section — and
+where gathering does not apply it is refused with **`NotHeldHere`**, naming the
+shards held elsewhere; a table of that database it holds none of is refused the
+same way. A node that was never served anything — a leader, a store on its own —
+and a follower whose subscription covers the whole database refuse nothing new.
+
+### Reading a split table on a node that holds part of it
+
+A node holding some of a split table's shards answers a `SELECT` over the whole
+table, a span, one record or a `WHERE` by **fetching the shards it lacks from
+their leaders** and running the statement over its own records and the fetched
+ones together:
+
+```
+SELECT count(*) AS n FROM orders;
+```
+
+on a node holding shard 3 of `orders` counts shards 1 and 2 as well, read from
+whichever nodes lead them. The records travel and the statement does not, so a
+grant hiding a field hides it in a fetched record exactly as in a local one, and
+a condition on that field matches none of them. A point read or a span asks only
+for the shards it touches, and a span inside what the node holds asks nothing.
+
+**The answer is complete and it is not one snapshot.** Each fetched shard is its
+leader's state when it was asked, beside this node's own. The answer says so
+with the note **`gathered`**, naming the shards fetched. For the same reason a
+read **inside a transaction** or under **`VERSION`** is not gathered — a snapshot
+is what those promise — and stays refused with `NotHeldHere`, as do a join side,
+a `FETCH` into a shard the node lacks, and the read an `UPDATE` or `DELETE`
+makes.
+
+**Nothing is answered in part.** A shard whose leader is not known, cannot be
+reached or declines refuses the whole read with **`NotGathered`**, naming the
+shard and what refused. A gathered read holds every record it needs before it
+answers, so past 100 000 records it is refused with **`GatheredTooMuch`** rather
+than shortened; a `LIMIT` or a `WHERE` does not reduce it, because they run here,
+after the records arrive. Read a span inside the shards the node holds, or read
+on a node that holds the whole table, when the table is larger than that.
+
+**Who may be asked.** A shard's leader hands its records only to a member whose
+subscription holds part of the same table — any of its shards, or its database.
+Placing one shard of a table on a node therefore lets that node read the whole
+table; a follower confined to another tenancy fetches nothing.
 
 
 ### Placing a range's leader: `LEADS`
@@ -7443,7 +7480,7 @@ be, because it is confined to the run its fixed values name.
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
 | **splitting a table that already exists**, and merging shards — `ALTER TABLE … SPLIT AT` | a table is split when it is declared, and its map does not move. A later split retires a shard and creates two, so every node routing by the old map has to be told — a versioned map and a refusal carrying the new one, which is its own piece of work. §4 |
 | **hash** sharding | shards are spans of identities, which is what keeps a span read one walk. Spreading writes by hash forfeits that order and is a second method the map can carry later, not a change to the first. §4 |
-| a read that **gathers** a split table from several nodes | a node answers from what it holds or refuses by name; asking the nodes that hold the rest, and combining a `mean` or a variance correctly across them, is a query engine of its own. §7d |
+| a gathered read that **pushes work down** to the shards' leaders | a node lacking shards fetches their records and runs the statement itself, so a `WHERE`, a `LIMIT` or an aggregate costs the missing shards' records on the network; evaluating them on the leaders — and combining a `mean` or a variance correctly across them — is a query engine of its own. A join side and a `FETCH` are not gathered at all. §7d |
 | **choosing among a range's candidates, and moving a placement** | `LEADS` elects a leader per placed range, but whichever candidate wins keeps it — there is no preference, no rebalancing and no hand-over — and a row naming one range cannot name a second or be dropped. Dropping safely needs every lease on the range to have lapsed first. §7d |
 | a change feed and a record's history **over a split table** | refused with `SpansShardLogs`: its writes are in several logs and nothing orders them against each other yet. §4 |
 | a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |
