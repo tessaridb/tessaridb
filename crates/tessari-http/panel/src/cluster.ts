@@ -110,10 +110,11 @@ export const cluster = (): Node =>
         ),
       ),
       warning(
-        el("strong", {}, "There is no sharding."),
-        " Every node that holds a namespace holds all of it; one dataset is not " +
-          "split across machines by key. A namespace larger than one machine is the " +
-          "case this engine does not serve.",
+        el("strong", {}, "A table's shards are fixed when it is declared."),
+        " A table split with SPLIT AT is logged, led and replicated shard by shard, " +
+          "and a peer's LEADS names the one range it stands to lead. Splitting a " +
+          "table that already exists, merging shards and moving a placement are " +
+          "not done by this engine.",
       ),
       note(el("strong", {}, "No lag figure, and no leadership for other nodes.")),
       behindDisclosure(

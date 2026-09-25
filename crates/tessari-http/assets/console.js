@@ -1669,7 +1669,8 @@
           [
             fact("answers on", told2(peer.endpoint)),
             fact("id", told2(peer.node)),
-            fact("replicates", told2(peer.replicates))
+            fact("replicates", told2(peer.replicates)),
+            fact("leads", told2(peer.leads))
           ],
           "peer",
           {
@@ -1874,6 +1875,9 @@
       pane2.appendChild(
         trailer("(" + records.length + " record(s), via " + String(result.path) + ")")
       );
+      for (const note of result.notes ?? []) {
+        pane2.appendChild(trailer("note " + note.kind + ": " + note.message));
+      }
       return;
     }
     if (result.kind === "done") {

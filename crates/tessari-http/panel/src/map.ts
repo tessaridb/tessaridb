@@ -52,6 +52,7 @@ export interface Peer {
   readonly endpoint?: string;
   readonly node?: string;
   readonly replicates?: string;
+  readonly leads?: string | null;
   readonly roles?: readonly string[];
 }
 
@@ -226,6 +227,7 @@ export function draw(into: HTMLElement, seen: Seen): void {
           fact("answers on", told(peer.endpoint)),
           fact("id", told(peer.node)),
           fact("replicates", told(peer.replicates)),
+          fact("leads", told(peer.leads)),
         ],
         "peer",
         {

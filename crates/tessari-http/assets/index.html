@@ -184,7 +184,7 @@
             <summary>How membership works</summary>
             <p class="note">Membership is a record and not a control plane: a node learns its peers through the same log it replicates data with, so there is nothing to stand up beside the database. A namespace declares how many copies the cluster keeps, and a peer's subscription decides which of them it receives. A leader holds a renewable lease granted by a majority and stops writing before that lease expires, measured on elapsed time rather than on the clock. A read may name the staleness it will accept, and a bound tighter than the cluster can know about itself is refused with the floor named. A write sent to the wrong node comes back as a redirect carrying the endpoint, the node and the epoch it was decided under. A divergence is refused at the first divergent record and counted, never silently ranked.</p>
           </details>
-          <p class="note warn"><strong>There is no sharding.</strong> Every node that holds a namespace holds all of it; one dataset is not split across machines by key. A namespace larger than one machine is the case this engine does not serve.</p>
+          <p class="note warn"><strong>A table's shards are fixed when it is declared.</strong> A table split with SPLIT AT is logged, led and replicated shard by shard, and a peer's LEADS names the one range it stands to lead. Splitting a table that already exists, merging shards and moving a placement are not done by this engine.</p>
           <p class="note"><strong>No lag figure, and no leadership for other nodes.</strong></p>
           <details class="tucked">
             <summary>Why neither is drawn</summary>

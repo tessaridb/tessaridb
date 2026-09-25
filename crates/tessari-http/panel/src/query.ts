@@ -26,6 +26,11 @@ function one(pane: HTMLElement, result: Result): void {
     pane.appendChild(
       trailer("(" + records.length + " record(s), via " + String(result.path) + ")"),
     );
+    // A note is part of the answer, not decoration: dropping it discards the
+    // only signal that, say, a read was gathered from several shards' leaders.
+    for (const note of result.notes ?? []) {
+      pane.appendChild(trailer("note " + note.kind + ": " + note.message));
+    }
     return;
   }
   if (result.kind === "done") {
