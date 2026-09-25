@@ -36,6 +36,7 @@ mod graph;
 mod leadership;
 mod replica;
 mod shard;
+mod space;
 pub(crate) mod system;
 mod user;
 mod vault;
@@ -70,6 +71,7 @@ pub use replica::{
     ReplicaDefinition, another_node_may_write, names_a_peer, the_row_a_greeting_binds,
 };
 pub use shard::{ShardMap, ShardSpan};
+pub use space::{Eviction, SpaceDeclaration, SpaceLimit};
 pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
 pub use user::{Role, UserDefinition, Verb};
 pub use vault::VaultRoot;

@@ -80,3 +80,86 @@ fn a_replica_holds_the_same_expiry_entries_as_the_node_that_wrote_them() {
     crate::replay(&source, &replica);
     assert_eq!(entries(&replica_backend), written);
 }
+
+/// G036 S4.1: evictions reach a replica as the deletes the writer's commit
+/// carried, so the replayed space holds the same keys and the same
+/// modified-order entries.
+#[test]
+fn a_replica_of_a_limited_space_holds_what_the_writer_kept() {
+    use tessari_encoding::ModifiedKey;
+    use tessari_storage::{Catalog, Eviction, SpaceDeclaration, SpaceLimit, TableKind, TableShape};
+
+    let source_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let source = Store::open(Arc::clone(&source_backend)).unwrap();
+    let mut transaction = source.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let namespace = catalog.create_namespace("prod").unwrap();
+    let database = catalog.create_database(namespace.id, "app").unwrap();
+    let space = catalog
+        .create_table(
+            namespace.id,
+            database.id,
+            "lru",
+            TableShape {
+                kind: TableKind::Space(SpaceDeclaration {
+                    limit: Some(SpaceLimit {
+                        max: 3,
+                        eviction: Eviction::Modified,
+                    }),
+                }),
+                ..TableShape::default()
+            },
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+    let at = |id: &str| RecordAddress::new(namespace.id, database.id, space.id, RecordId::from(id));
+    for id in ["a", "b", "c", "d", "e", "b"] {
+        let mut transaction = source.begin().unwrap();
+        transaction.put(at(id), b"v".to_vec());
+        transaction.commit().unwrap();
+    }
+
+    let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
+    crate::replay(&source, &replica);
+
+    let held = |store: &Store| {
+        store
+            .begin()
+            .unwrap()
+            .scan_table(namespace.id, database.id, space.id)
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>()
+    };
+    let order = |backend: &Arc<dyn KvBackend>| {
+        backend
+            .scan(&ScanRequest {
+                keyspace: KeyKind::ModifiedOrder.keyspace(),
+                range: KeyRange::prefix(&[KeyKind::ModifiedOrder.tag()]),
+                direction: ScanDirection::Forward,
+                limit: None,
+            })
+            .unwrap()
+            .into_iter()
+            .map(|(key, _)| ModifiedKey::decode(key.as_slice()).unwrap().id)
+            .collect::<Vec<_>>()
+    };
+    let kept = vec![
+        RecordId::from("b"),
+        RecordId::from("d"),
+        RecordId::from("e"),
+    ];
+    assert_eq!(held(&source), kept);
+    assert_eq!(held(&replica), kept);
+    assert_eq!(
+        order(&source_backend),
+        vec![
+            RecordId::from("d"),
+            RecordId::from("e"),
+            RecordId::from("b")
+        ]
+    );
+    assert_eq!(order(&replica_backend), order(&source_backend));
+}

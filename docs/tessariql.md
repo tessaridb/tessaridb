@@ -5393,6 +5393,33 @@ KEYS FROM sessions AFTER 'user:42:k' LIMIT 100;
   previous page — and `LIMIT n` stops after `n`, so a space is paged with no key
   repeated and none dropped. Expired keys are never listed.
 
+### A space with a limit
+
+```
+DEFINE SPACE cache MAX 10000;
+DEFINE SPACE tickets MAX 500 EVICT NONE;
+```
+
+- `MAX n` is the most **keys** the space holds — a count, not a size in bytes: a
+  count is exact and the same on every node, and the bytes a key occupies on a
+  log-structured store depend on versions and compaction nobody asked about.
+  `MAX 0` is refused.
+- A commit that would take the space past its limit **evicts the least recently
+  modified keys** — those whose newest version is oldest — until it is back at
+  the limit. A read changes nothing, so reading a key does not keep it; writing
+  it does. The keys the committing transaction itself writes are never evicted,
+  and a commit that alone adds more keys than the limit is refused with
+  **`SpaceFull`** rather than trimmed.
+- `EVICT NONE` refuses instead: a commit that would add a key past the limit is
+  refused with **`SpaceFull`**. Overwriting a key the space holds, or deleting
+  one first, is accepted.
+- The limit is enforced in the commit against the committed state, so two
+  writers adding different keys at once cannot both pass it. Evictions are
+  ordinary deletes carried in that commit's log record: a follower applies them
+  and never evicts on its own, and the change feed shows them.
+- A space is written back by `INFO FOR TABLE` as `DEFINE SPACE name [MAX n
+  [EVICT NONE]]`.
+
 ### Composition
 
 A key-value read is an **expression**. It may appear anywhere an expression may,
@@ -7327,7 +7354,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.5.0", "build": "0.5.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.6.0", "build": "0.6.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],

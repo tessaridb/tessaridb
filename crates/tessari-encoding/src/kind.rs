@@ -47,6 +47,10 @@ pub enum KeyKind {
     /// record, so "everything that has expired" is one scan from the start
     /// (G035).
     ExpiryIndex,
+    /// When each key of a limited space was last written: the table, the
+    /// version, then the key, so its least recently modified keys are the first
+    /// entries of the table's prefix (G036).
+    ModifiedOrder,
     /// One entry in the ordered log.
     LogEntry,
     /// The store's own on-disk format version.
@@ -129,6 +133,7 @@ impl KeyKind {
         Self::SpatialRefinement,
         Self::SearchTerm,
         Self::ExpiryIndex,
+        Self::ModifiedOrder,
         Self::LogEntry,
         Self::FormatVersion,
         Self::AppliedPosition,
@@ -169,6 +174,7 @@ impl KeyKind {
             Self::SpatialRefinement => 0x18,
             Self::SearchTerm => 0x19,
             Self::ExpiryIndex => 0x1a,
+            Self::ModifiedOrder => 0x1b,
             Self::LogEntry => 0x20,
             Self::FormatVersion => 0x30,
             Self::AppliedPosition => 0x31,
@@ -204,7 +210,8 @@ impl KeyKind {
             | Self::VectorRecall
             | Self::SpatialRefinement
             | Self::SearchTerm
-            | Self::ExpiryIndex => Keyspace::INDEX,
+            | Self::ExpiryIndex
+            | Self::ModifiedOrder => Keyspace::INDEX,
             Self::LogEntry => Keyspace::LOG,
             Self::FormatVersion
             | Self::AppliedPosition
@@ -244,6 +251,7 @@ impl KeyKind {
             Self::SpatialRefinement => "spatial-refinement",
             Self::SearchTerm => "search-term",
             Self::ExpiryIndex => "expiry-index",
+            Self::ModifiedOrder => "modified-order",
             Self::LogEntry => "log-entry",
             Self::FormatVersion => "format-version",
             Self::AppliedPosition => "applied-position",
@@ -332,6 +340,7 @@ mod tests {
             (KeyKind::SpatialRefinement, 0x18),
             (KeyKind::SearchTerm, 0x19),
             (KeyKind::ExpiryIndex, 0x1a),
+            (KeyKind::ModifiedOrder, 0x1b),
             (KeyKind::LogEntry, 0x20),
             (KeyKind::FormatVersion, 0x30),
             (KeyKind::AppliedPosition, 0x31),

@@ -5,6 +5,7 @@
 //! either, and a feature tested on one backend is a claim about one backend.
 
 mod atomic;
+mod bounded;
 mod expiry;
 mod removal;
 mod walk;

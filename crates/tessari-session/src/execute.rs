@@ -131,10 +131,14 @@ impl Session<'_> {
             StatementKind::DefineSpace {
                 name,
                 if_not_exists,
+                limit,
             } => self.define_table(
                 transaction,
                 name,
-                TableShape::default(),
+                TableShape {
+                    kind: TableKind::Space(crate::kv::declared_space(*limit)),
+                    ..TableShape::default()
+                },
                 *if_not_exists,
                 span,
             ),

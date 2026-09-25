@@ -258,6 +258,7 @@ pub(crate) fn declared_for(table: &str, shape: &TableShape) -> Result<Option<Sha
         TableKind::Queue(_) => Some("a queue"),
         TableKind::View(_) => Some("a view"),
         TableKind::Series(_) => Some("a series"),
+        TableKind::Space(_) => Some("a space"),
     };
     if let Some(kind) = kind {
         return Err(Error::SplitOnAKindThatIsNotRecords {

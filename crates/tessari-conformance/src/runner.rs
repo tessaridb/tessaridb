@@ -350,6 +350,7 @@ fn store_kind(error: &tessari_storage::Error) -> &'static str {
         tessari_storage::Error::NameTaken { .. } => "NameTaken",
         tessari_storage::Error::EmptyIndex { .. } => "EmptyIndex",
         tessari_storage::Error::UniqueViolation { .. } => "UniqueViolation",
+        tessari_storage::Error::SpaceFull { .. } => "SpaceFull",
         tessari_storage::Error::SchemaViolation { .. } => "SchemaViolation",
         tessari_storage::Error::UndeclaredField { .. } => "UndeclaredField",
         tessari_storage::Error::RecordsRefused { .. } => "RecordsRefused",

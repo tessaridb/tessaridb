@@ -12,6 +12,31 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.6.0-beta — 2026-09-26
+
+**A space can hold at most a declared number of keys.** `DEFINE SPACE cache MAX
+10000` keeps the ten thousand most recently written keys: a commit that would
+go past the limit removes the least recently modified ones, never a key that
+commit itself writes. `DEFINE SPACE tickets MAX 500 EVICT NONE` refuses the key
+past the limit instead, with **`SpaceFull`**.
+
+- The limit is a count of keys, not bytes, and it holds under concurrency: it is
+  checked in the commit against the committed state, so two writers adding
+  different keys at once cannot both pass it.
+- Evictions are ordinary deletes in the committing transaction's log record, so
+  followers apply them and the change feed shows them. A commit that alone adds
+  more keys than the limit is refused rather than trimmed.
+- A space is now its own kind: `INFO FOR TABLE` writes it back as `DEFINE SPACE
+  name [MAX n [EVICT NONE]]` — it used to come back as `DEFINE TABLE …
+  SCHEMALESS`, losing the word.
+
+**1390 conformance cases** define the language and run in the build, up from
+1386.
+
+**On disk:** a space's catalog entry carries its declaration, and a limited
+space keeps a modified-order index under a new key kind. A store written by
+this build is not promised to open under an earlier one.
+
 ## 0.5.0-beta — 2026-09-26
 
 **A space can be run as a cache: a key expires, a counter increments without

@@ -156,3 +156,27 @@ KEYS FROM walk PREFIX 'user:1:';
 --- case: a walk pages with AFTER and LIMIT
 KEYS FROM walk AFTER 'user:1:a' LIMIT 2;
 --- expect: keys 2
+
+# ---- a space with a limit (G036) ----
+
+--- case: a limited space keeps the most recently written keys
+DEFINE SPACE capped MAX 2;
+SET capped:'a' = 1;
+SET capped:'b' = 1;
+SET capped:'c' = 1;
+KEYS FROM capped;
+--- expect: keys 2
+
+--- case: and the one it dropped is the least recently written
+GET capped:'a';
+--- expect: value NONE
+
+--- case: a space that evicts none refuses the key past its limit
+DEFINE SPACE strict MAX 1 EVICT NONE;
+SET strict:'a' = 1;
+SET strict:'b' = 1;
+--- expect: error SpaceFull
+
+--- case: a space may not hold nothing
+DEFINE SPACE nothing MAX 0;
+--- expect: error UnexpectedToken
