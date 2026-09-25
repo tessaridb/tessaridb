@@ -213,6 +213,8 @@ pub enum StatementKind {
         name: Name,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
+        /// `MAX n [EVICT NONE]` — the most keys the space holds (G036).
+        limit: Option<SpaceBound>,
     },
     /// `DEFINE BUCKET media MAX 5242880` — a table whose records are files.
     ///
@@ -2953,6 +2955,16 @@ pub enum ExprKind {
     Ttl(RecordTarget),
     /// `(SELECT * FROM users:1)` in a value position.
     Select(Box<Select>),
+}
+
+/// `MAX n [EVICT NONE]` on `DEFINE SPACE` (G036).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpaceBound {
+    /// The most keys the space holds; never zero.
+    pub max: u64,
+    /// `EVICT NONE`: refuse a write past the limit instead of evicting the
+    /// least recently modified keys.
+    pub refuse: bool,
 }
 
 /// When a conditional `SET` writes (G035).

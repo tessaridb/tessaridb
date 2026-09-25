@@ -470,6 +470,19 @@ pub enum Error {
         name: String,
     },
 
+    /// A space declared `MAX n EVICT NONE` already holds `n` keys and this
+    /// commit would add more (G036).
+    ///
+    /// Not a race and not retriable as it stands: the space is full by its own
+    /// declaration. Overwriting a key it holds or deleting one first is accepted.
+    #[error("space {space} holds its limit of {max} keys and evicts none; the write was refused")]
+    SpaceFull {
+        /// The space that refused the write.
+        space: String,
+        /// Its declared limit.
+        max: u64,
+    },
+
     /// A unique index already holds this value for a different record.
     ///
     /// Not a write conflict: no concurrent transaction is involved, and retrying
@@ -844,6 +857,7 @@ impl Error {
             | Self::NoSuchParent { .. }
             | Self::EmptyIndex { .. }
             | Self::UniqueViolation { .. }
+            | Self::SpaceFull { .. }
             | Self::AssertionViolation { .. }
             | Self::SchemaViolation { .. }
             | Self::MissingRequiredField { .. }

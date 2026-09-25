@@ -1800,6 +1800,7 @@ impl Store {
         // And the expiry index, so a follower promoted to leader can remove what
         // has expired without having written any of it (G035).
         let batch = crate::lapse::maintain(self, record, batch)?;
+        let batch = crate::bounded::maintain(self, record, batch, version)?;
         self.backend.apply(batch)?;
         Ok(())
     }

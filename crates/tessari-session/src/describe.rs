@@ -195,6 +195,22 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
     // series naming records any other way is a definition this word cannot
     // restore, and saying so is better than writing a statement that would
     // recreate it wrongly.
+    // A space is written back with its own word and its limit (G036). It holds
+    // single values, so a schema flag or an edge pair is something the word
+    // cannot say, exactly as for a series.
+    if let TableKind::Space(declared) = &definition.kind {
+        if definition.schemafull || definition.is_edge() {
+            return Err(Unwritable::at(format!(
+                "space `{name}` carries flags its declaring word cannot say"
+            )));
+        }
+        let _ = writeln!(
+            script,
+            "DEFINE SPACE {name}{};",
+            crate::kv::space_clause(declared)
+        );
+        return Ok(());
+    }
     if let TableKind::Series(declared) = &definition.kind {
         if definition.schemafull || definition.is_edge() {
             return Err(Unwritable::at(format!(

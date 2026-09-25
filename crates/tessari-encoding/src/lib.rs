@@ -35,6 +35,7 @@ mod index_value;
 mod keys;
 mod kind;
 mod log_id;
+mod modified_key;
 mod node;
 mod order;
 mod payload;
@@ -59,6 +60,7 @@ pub use keys::{
 };
 pub use kind::KeyKind;
 pub use log_id::{LogId, Writer};
+pub use modified_key::ModifiedKey;
 pub use node::{BUILD_VERSION, Membership, NODE_ID_LEN, NodeIdentity, NodeVersion, Roles};
 pub use order::{KeyReader, KeyWriter};
 pub use payload::{decode as decode_payload, encode as encode_payload};

@@ -12,7 +12,7 @@
 //! changes its meaning.
 
 use super::Parser;
-use crate::ast::{Expr, ExprKind, RecordTarget, SetCondition, StatementKind};
+use crate::ast::{Expr, ExprKind, RecordTarget, SetCondition, SpaceBound, StatementKind};
 use crate::error::Result;
 use crate::token::{Keyword, Punct, Token};
 
@@ -56,6 +56,35 @@ impl Parser<'_> {
             "`ABSENT`, `PRESENT` or `=` and the value the key must hold",
         )?;
         Ok(SetCondition::Equals(self.expression()?))
+    }
+
+    /// The optional `MAX n [EVICT NONE]` after `DEFINE SPACE name` (G036).
+    ///
+    /// `max` and `evict` are contextual for the reason every word in this file
+    /// is: they are field names in the schemas that want the feature.
+    pub(super) fn space_bound(&mut self) -> Result<Option<SpaceBound>> {
+        if !self.peek_word("max") {
+            return Ok(None);
+        }
+        if matches!(
+            self.peek_ahead(1),
+            Some(Token::Number(tessari_types::Number::Integer(0)))
+        ) {
+            self.eat_word("max");
+            return Err(self.error_here("a limit above zero"));
+        }
+        let Some(max) = self.bound("max")? else {
+            return Ok(None);
+        };
+        let refuse = if self.eat_word("evict") {
+            if !self.eat_keyword(Keyword::None) {
+                return Err(self.error_here("`NONE` — the one rule a space names"));
+            }
+            true
+        } else {
+            false
+        };
+        Ok(Some(SpaceBound { max, refuse }))
     }
 
     /// `INCR <key> [BY <amount>]`, the verb already consumed.

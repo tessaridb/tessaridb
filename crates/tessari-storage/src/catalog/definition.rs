@@ -54,6 +54,8 @@ const FIELD_READ: &str = "read";
 const FIELD_TIMEOUT: &str = "timeout";
 const FIELD_ATTEMPTS: &str = "attempts";
 const FIELD_SERIES: &str = "series";
+/// A space's declaration: present (possibly empty) exactly when the table is one.
+const FIELD_SPACE: &str = "space";
 const FIELD_RETAIN: &str = "retain";
 const FIELD_DIMENSION: &str = "dimension";
 const FIELD_DISTANCE: &str = "distance";
@@ -494,6 +496,12 @@ impl TableDefinition {
         if let TableKind::Series(declared) = &self.kind {
             fields.insert(FIELD_SERIES.to_owned(), declared.to_value());
         }
+        // A space is carried by its declaration for the reason a series is. A
+        // build that predates the kind reads a plain schemaless table, which is
+        // what a space was until G036, and loses only the limit.
+        if let TableKind::Space(declared) = &self.kind {
+            fields.insert(FIELD_SPACE.to_owned(), declared.to_value());
+        }
         Value::Object(fields)
     }
 
@@ -542,6 +550,10 @@ impl TableDefinition {
                 },
                 series: match fields.get(FIELD_SERIES) {
                     Some(value) => Some(SeriesDeclaration::from_value(value)?),
+                    None => None,
+                },
+                space: match fields.get(FIELD_SPACE) {
+                    Some(value) => Some(super::space::SpaceDeclaration::from_value(value)?),
                     None => None,
                 },
                 ceiling: ceiling(fields)?,
@@ -790,6 +802,10 @@ pub enum TableKind {
     /// act from the hiding.** Correctness comes from the read, so a removal pass
     /// that lags, is throttled or never runs costs storage and never an answer.
     Series(SeriesDeclaration),
+    /// A key-value space, with the limit it declared if any — `DEFINE SPACE`
+    /// (G036). Its own kind so `INFO` writes it back with its own word; see
+    /// [`super::space`].
+    Space(super::space::SpaceDeclaration),
 }
 
 /// How long a series table answers with a record.
@@ -1167,6 +1183,8 @@ pub struct StoredKind {
     pub view: Option<ViewDeclaration>,
     /// A series table's retention.
     pub series: Option<SeriesDeclaration>,
+    /// A space's declaration, when the table is one (G036).
+    pub space: Option<super::space::SpaceDeclaration>,
     /// A bucket's size ceiling.
     pub ceiling: Option<u64>,
 }
@@ -1201,8 +1219,26 @@ impl TableKind {
             queue,
             view,
             series,
+            space,
             ceiling,
         } = stored;
+        // A space sets no flag, and is pulled out first among the declarations
+        // for the reason each of them is: the arms below stay what they were.
+        if let Some(declared) = space {
+            return match (
+                edge, bucket, collection, geo, endpoints, vector, &vault, &queue, &view, &series,
+                ceiling,
+            ) {
+                (false, false, false, false, None, None, None, None, None, None, None) => {
+                    Ok(Self::Space(declared))
+                }
+                _ => Err(Error::CatalogMalformed {
+                    entity: "table",
+                    field: "kind",
+                    found: "more than one kind",
+                }),
+            };
+        }
         // A vault is read first and alone. Every other arm below distinguishes
         // kinds that differ in what a caller may do; this one differs in
         // whether the records can be read at all, so a definition that both

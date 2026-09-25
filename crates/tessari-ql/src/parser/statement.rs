@@ -836,9 +836,11 @@ impl Parser<'_> {
             Some(Keyword::Space) => {
                 self.advance();
                 let if_not_exists = self.eat_if_not_exists()?;
+                let name = self.name()?;
                 Ok(StatementKind::DefineSpace {
-                    name: self.name()?,
+                    name,
                     if_not_exists,
+                    limit: self.space_bound()?,
                 })
             }
             Some(Keyword::Graph) => {

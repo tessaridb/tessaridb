@@ -251,7 +251,7 @@ impl<'a> Transaction<'a> {
     /// that carrying is the entire reason a later comparison can tell ignorance
     /// from sequence — a producer that started from an empty stamp would make
     /// every write concurrent with every other one.
-    pub(super) fn read_newest_stamped(
+    pub(crate) fn read_newest_stamped(
         &self,
         address: &RecordAddress,
     ) -> Result<Option<(Sequence, StampedValue)>> {
