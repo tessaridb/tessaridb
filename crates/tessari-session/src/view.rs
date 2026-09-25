@@ -287,7 +287,8 @@ impl Session<'_> {
             | ExprKind::Path(_)
             | ExprKind::Table(_)
             | ExprKind::Record(_)
-            | ExprKind::Get(_) => Ok(false),
+            | ExprKind::Get(_)
+            | ExprKind::Ttl(_) => Ok(false),
         }
     }
 

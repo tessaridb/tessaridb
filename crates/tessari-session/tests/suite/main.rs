@@ -64,6 +64,7 @@ mod instants;
 mod join_keys;
 mod join_sources;
 mod joins;
+mod key_value;
 mod kinds;
 mod management;
 mod migration;

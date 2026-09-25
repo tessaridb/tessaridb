@@ -29,8 +29,8 @@ pub use ast::{
     ColumnDeclaration, ConsumerSource, CreateTarget, DeleteBound, Direction, EdgeClause,
     EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, Field, FieldMapping, FieldPath, Hop,
     Identity, InfoSubject, JoinSide, Name, OnFailure, Ordering, Password, Projected, Projection,
-    RangeExpr, ReachRef, RecordTarget, Retention, Script, Select, Source, Statement, StatementKind,
-    TableChange, TableRef, Timeout, UserChange, UserGrant, Using, Version, Written,
+    RangeExpr, ReachRef, RecordTarget, Retention, Script, Select, SetCondition, Source, Statement,
+    StatementKind, TableChange, TableRef, Timeout, UserChange, UserGrant, Using, Version, Written,
 };
 pub use bind::Parameters;
 pub use error::{Error, Result};

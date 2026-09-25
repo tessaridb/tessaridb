@@ -238,9 +238,32 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
             found.extend(in_expr(value));
             found
         }
-        StatementKind::Set { target, value } => {
+        StatementKind::Set {
+            target,
+            value,
+            expire,
+            condition,
+        } => {
             let mut found = vec![&target.table];
             found.extend(in_expr(value));
+            if let Some(expire) = expire {
+                found.extend(in_expr(expire));
+            }
+            if let Some(tessari_ql::SetCondition::Equals(expected)) = condition {
+                found.extend(in_expr(expected));
+            }
+            found
+        }
+        StatementKind::Incr { target, by } => {
+            let mut found = vec![&target.table];
+            if let Some(by) = by {
+                found.extend(in_expr(by));
+            }
+            found
+        }
+        StatementKind::Expire { target, at } => {
+            let mut found = vec![&target.table];
+            found.extend(in_expr(at));
             found
         }
         // Every row's values are walked for the same reason a written value is:
@@ -297,6 +320,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::Get { target }
         | StatementKind::Delete { target, .. }
         | StatementKind::Del { target }
+        | StatementKind::Persist { target }
         // A release names one record in one queue, so the queue is the table the
         // grant is asked about, and a targeted claim names one the same way.
         | StatementKind::ClaimRecord { target, .. }
@@ -365,7 +389,9 @@ fn in_expr(expr: &Expr) -> Vec<&TableRef> {
     match &expr.kind {
         ExprKind::Select(select) => in_select(select),
         // A point read of one record names that record's table.
-        ExprKind::Record(target) | ExprKind::Get(target) => vec![&target.table],
+        ExprKind::Record(target) | ExprKind::Get(target) | ExprKind::Ttl(target) => {
+            vec![&target.table]
+        }
         ExprKind::Table(table) => vec![table],
         ExprKind::Not(inner) | ExprKind::Negate(inner) => in_expr(inner),
         // Both arms of a conditional, because either may run and a permission

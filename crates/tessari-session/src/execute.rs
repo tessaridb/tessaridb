@@ -22,7 +22,7 @@ use tessari_types::{
 use crate::condition::boolean;
 use crate::context::Context;
 use crate::error::{Depended, Error, Result};
-use crate::evaluate::{Scope, key_bound, within};
+use crate::evaluate::Scope;
 use crate::generate;
 use crate::geometry::on_the_grid;
 use crate::outcome::Outcome;
@@ -586,12 +586,24 @@ impl Session<'_> {
             }
             // A key-value write replaces whatever was there, which is why it is
             // a different verb from `CREATE` rather than the same one.
-            StatementKind::Set { target, value } => {
-                let (_, address) = self.writable(transaction, target)?;
-                let payload = self.evaluate(transaction, value)?;
-                self.put_record(transaction, address, payload, span)?;
-                Ok(Outcome::Done)
+            StatementKind::Set {
+                target,
+                value,
+                expire,
+                condition,
+            } => self.set_key(
+                transaction,
+                target,
+                value,
+                expire.as_ref(),
+                condition.as_ref(),
+                span,
+            ),
+            StatementKind::Incr { target, by } => {
+                self.increment(transaction, target, by.as_ref(), span)
             }
+            StatementKind::Expire { target, at } => self.expire_key(transaction, target, at),
+            StatementKind::Persist { target } => self.persist_key(transaction, target),
             StatementKind::Delete { target, answer } => {
                 // A file's bytes go with its metadata, in this commit. A bucket
                 // that kept chunks nothing describes would leak space nothing
@@ -885,7 +897,22 @@ impl Session<'_> {
             }
             StatementKind::Explain(select) => self.explain(transaction, select),
             StatementKind::Info { subject } => self.info(transaction, subject, span),
-            StatementKind::Keys { space, range } => self.keys(transaction, space, range.as_ref()),
+            StatementKind::Keys {
+                space,
+                range,
+                prefix,
+                after,
+                limit,
+            } => self.keys(
+                transaction,
+                space,
+                crate::kv::Walk {
+                    range: range.as_ref(),
+                    prefix: prefix.as_ref(),
+                    after: after.as_ref(),
+                    limit: *limit,
+                },
+            ),
             // The transaction verbs and `USE` never reach here; the session
             // handles them, because they change what the next statement runs in
             // rather than touching the store.
@@ -921,7 +948,7 @@ impl Session<'_> {
     /// transformation and the payload is downstream of it. It also returns early
     /// for a table whose schema constrains nothing, which is exactly the table
     /// most geometry will be written to.
-    fn put_record(
+    pub(crate) fn put_record(
         &self,
         transaction: &mut Transaction<'_>,
         address: RecordAddress,
@@ -3398,31 +3425,6 @@ impl Session<'_> {
                 name: name.text.clone(),
                 span: name.span,
             })
-    }
-
-    /// The keys of a space, optionally bounded.
-    ///
-    /// The bound is applied to a scan rather than seeked to. The answer is the
-    /// same either way; the cost is not, and `docs/tessariql.md` §6 says so rather
-    /// than implying a seek this milestone does not perform.
-    fn keys(
-        &self,
-        transaction: &mut Transaction<'_>,
-        space: &TableRef,
-        range: Option<&tessari_ql::RangeExpr>,
-    ) -> Result<Outcome> {
-        let (context, id) = self.resolve_table(transaction, space)?;
-        let found = transaction.scan_table(context.namespace, context.database, id)?;
-        let mut keys: Vec<RecordId> = found.into_iter().map(|(id, _)| id).collect();
-
-        if let Some(range) = range {
-            let start_value = self.evaluate(transaction, &range.start)?;
-            let end_value = self.evaluate(transaction, &range.end)?;
-            let start = key_bound(&start_value, range.start.span)?;
-            let end = key_bound(&end_value, range.end.span)?;
-            keys.retain(|key| within(key, &start, &end, range.inclusive));
-        }
-        Ok(Outcome::Keys(keys))
     }
 }
 

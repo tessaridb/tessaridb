@@ -63,6 +63,13 @@ pub struct Transaction<'a> {
     store: &'a Store,
     snapshot: Sequence,
     writes: BTreeMap<RecordAddress, RecordValue>,
+    /// The instant each buffered write stops being answered at, for the writes
+    /// that carry one (G035). Beside `writes` rather than inside it because a
+    /// buffered value is read in a dozen places that have no use for it, and
+    /// every one of them already sees an instant that has passed: a write whose
+    /// instant is at or before this transaction's clock is buffered as a
+    /// deletion (see [`Transaction::put_expiring`]).
+    expiring: BTreeMap<RecordAddress, u64>,
     /// The instant this transaction judges a series table's floor against.
     ///
     /// Read once, on the first question that needs it, for the reason the
@@ -76,7 +83,7 @@ pub struct Transaction<'a> {
 
 impl Transaction<'_> {
     /// The millisecond this transaction judges retention against.
-    fn reading_at(&self) -> u64 {
+    pub(crate) fn reading_at(&self) -> u64 {
         if let Some(held) = self.reading_at.get() {
             return held;
         }

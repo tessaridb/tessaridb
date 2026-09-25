@@ -137,7 +137,66 @@ impl Placement {
 impl Transaction<'_> {
     /// Buffer a write. Nothing reaches the store until commit.
     pub fn put(&mut self, address: RecordAddress, payload: Vec<u8>) {
+        // A plain write replaces an expiring one whole, instant included — the
+        // rule a key-value `SET` keeps in the system this engine's cache
+        // semantics follow, and the only reading under which a write says
+        // everything about the version it makes.
+        self.expiring.remove(&address);
         self.writes.insert(address, RecordValue::Present(payload));
+    }
+
+    /// Make the write already buffered for `address` stop being answered at
+    /// `at`, in milliseconds since the Unix epoch (G035).
+    ///
+    /// Applied **after** the write, so the value takes the same road every write
+    /// takes — schema, sealing, identity — and the instant is the only thing
+    /// added. Nothing happens when no present value is buffered there: an
+    /// instant on a deletion is meaningless.
+    ///
+    /// An instant at or before this transaction's clock turns the write into a
+    /// **deletion**: the version would be gone the moment it was written, so
+    /// writing it would only leave a value no reader can reach for the removal
+    /// pass to find. It also means every read of this transaction's own writes
+    /// is right without knowing expiry exists, because the transaction judges
+    /// with one clock for its whole life.
+    pub fn expire_pending(&mut self, address: &RecordAddress, at: u64) {
+        if !matches!(self.writes.get(address), Some(RecordValue::Present(_))) {
+            return;
+        }
+        if at <= self.reading_at() {
+            self.delete(address.clone());
+            return;
+        }
+        self.expiring.insert(address.clone(), at);
+    }
+
+    /// The millisecond this transaction judges expiry and retention against.
+    ///
+    /// Public so that a writer computes "thirty seconds from now" on the same
+    /// clock the reader of its own write will use.
+    #[must_use]
+    pub fn clock(&self) -> u64 {
+        self.reading_at()
+    }
+
+    /// The instant a record stops being answered at, as this transaction sees
+    /// it: its own buffered write first, then the stored version.
+    ///
+    /// `None` both for a record that never expires and for one that is not
+    /// there — ask [`Transaction::get`] to tell the two apart.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or stored bytes cannot be
+    /// decoded.
+    pub fn expires(&self, address: &RecordAddress) -> Result<Option<u64>> {
+        if self.writes.contains_key(address) {
+            return Ok(self.expiring.get(address).copied());
+        }
+        let now = self.reading_at();
+        Ok(self
+            .read_stamped_at(address)?
+            .and_then(|stamped| stamped.expires().filter(|at| *at > now)))
     }
 
     /// Buffer a delete.
@@ -145,6 +204,7 @@ impl Transaction<'_> {
     /// A delete is a version carrying a tombstone, not an erased key: a reader
     /// at an older snapshot must still see the record.
     pub fn delete(&mut self, address: RecordAddress) {
+        self.expiring.remove(&address);
         self.writes.insert(address, RecordValue::Tombstone);
     }
 
@@ -497,6 +557,10 @@ impl Transaction<'_> {
             // number as the planner on the leader, or one query takes two access
             // paths depending on which node answered it.
             let batch = crate::cardinality::maintain(self.store, &record, batch, commit_version)?;
+            // The expiry index, last and in the same batch as the records it
+            // describes: an entry written anywhere else is an entry that can be
+            // left behind (G035).
+            let batch = crate::lapse::maintain(self.store, &record, batch)?;
             // Everything above this ran. This is the whole difference between a
             // rehearsal and a write, and it is one line so that it can only ever
             // be the whole difference.
@@ -578,7 +642,10 @@ impl Transaction<'_> {
                 table: address.table,
                 id: address.id.clone(),
                 shard: placement.shard_of(address),
-                value: StampedValue::stamped(stamp, value.clone()),
+                value: match self.expiring.get(address) {
+                    Some(at) => StampedValue::stamped(stamp, value.clone()).expiring(*at),
+                    None => StampedValue::stamped(stamp, value.clone()),
+                },
             });
         }
         Ok(LogRecord::new(mutations))

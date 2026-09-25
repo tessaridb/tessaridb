@@ -73,7 +73,7 @@ pub(crate) fn maintain(
         // over an existing record is a replacement and not an arrival, and a
         // delete of something already gone is not a departure. Both are zero,
         // and only the stored state tells them from the other two cases.
-        let delta = match (view.get(&address)?.is_some(), mutation.value.value()) {
+        let delta = match (view.get_held(&address)?.is_some(), mutation.value.value()) {
             (false, RecordValue::Present(_)) => 1_i64,
             (true, RecordValue::Tombstone) => -1_i64,
             _ => continue,
@@ -101,7 +101,7 @@ fn write_count(
 ) -> Result<WriteBatch> {
     let id = RecordId::Int(i64::from(table.get()));
     let address = system::address(system::RECORD_COUNTS, id.clone());
-    let held = match view.get(&address)? {
+    let held = match view.get_held(&address)? {
         Some(bytes) => definition::count_of(&decode_payload(&bytes)?, "record count", "held")?,
         None => 0_u64,
     };

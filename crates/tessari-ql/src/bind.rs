@@ -34,7 +34,7 @@ use tessari_types::{Number, RecordId};
 
 use crate::ast::{
     CreateTarget, Edit, Expr, ExprKind, Identity, JoinSide, Projection, RangeExpr, RecordTarget,
-    Script, Select, Source, Statement, StatementKind,
+    Script, Select, SetCondition, Source, Statement, StatementKind,
 };
 use crate::error::{Error, Result};
 use crate::token::Span;
@@ -168,10 +168,34 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
             }
             bind_expr(value, binding)
         }
-        StatementKind::Set { target, value } | StatementKind::Put { target, value, .. } => {
+        StatementKind::Set {
+            target,
+            value,
+            expire,
+            condition,
+        } => {
+            bind_target(target, binding)?;
+            bind_expr(value, binding)?;
+            if let Some(expire) = expire {
+                bind_expr(expire, binding)?;
+            }
+            match condition {
+                Some(SetCondition::Equals(expected)) => bind_expr(expected, binding),
+                _ => Ok(()),
+            }
+        }
+        StatementKind::Incr { target, by } => {
+            bind_target(target, binding)?;
+            match by {
+                Some(by) => bind_expr(by, binding),
+                None => Ok(()),
+            }
+        }
+        StatementKind::Put { target, value, .. } | StatementKind::Expire { target, at: value } => {
             bind_target(target, binding)?;
             bind_expr(value, binding)
         }
+        StatementKind::Persist { target } => bind_target(target, binding),
         // A row's values bind exactly as any other value position does. The
         // column list is not walked because it holds **names**, and a name is
         // grammar: there is no stage at which a supplied value could arrive
@@ -261,10 +285,20 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
             bind_identity(lower, *span, binding)?;
             bind_identity(upper, *span, binding)
         }
-        StatementKind::Keys { range, .. } => match range {
-            Some(range) => bind_range(range, binding),
-            None => Ok(()),
-        },
+        StatementKind::Keys {
+            range,
+            prefix,
+            after,
+            ..
+        } => {
+            if let Some(range) = range {
+                bind_range(range, binding)?;
+            }
+            for bound in [prefix, after].into_iter().flatten() {
+                bind_expr(bound, binding)?;
+            }
+            Ok(())
+        }
         StatementKind::Let { value, .. }
         | StatementKind::Return { value }
         | StatementKind::Throw { value } => bind_expr(value, binding),
@@ -579,7 +613,9 @@ fn bind_expr(expr: &mut Expr, binding: &Binding<'_>) -> Result<()> {
         ExprKind::Select(select) => bind_select(select, binding),
         // A literal is already a value; a path, a table and a record are names,
         // which a parameter may never be.
-        ExprKind::Record(target) | ExprKind::Get(target) => bind_target(target, binding),
+        ExprKind::Record(target) | ExprKind::Get(target) | ExprKind::Ttl(target) => {
+            bind_target(target, binding)
+        }
         ExprKind::Literal(_) | ExprKind::Path(_) | ExprKind::Table(_) => Ok(()),
     }
 }

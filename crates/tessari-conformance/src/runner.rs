@@ -39,7 +39,16 @@ impl CaseResult {
 /// exercises.
 #[must_use]
 pub fn run(corpus: &Corpus) -> Vec<CaseResult> {
-    let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    run_on(corpus, Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+}
+
+/// Run every case of a corpus against one fresh store on `backend`.
+///
+/// For a corpus whose promise is that it holds on every backend — the
+/// key-value one is run on the disk backend as well (G035) — so a behaviour
+/// that only the memory backend happens to give cannot pass as the language's.
+#[must_use]
+pub fn run_on(corpus: &Corpus, backend: Arc<dyn KvBackend>) -> Vec<CaseResult> {
     let Ok(store) = Store::open(backend) else {
         return vec![CaseResult {
             corpus: corpus.name.clone(),
@@ -160,7 +169,7 @@ fn value_of(expr: &Expr) -> Option<Value> {
         | ExprKind::Table(_)
         | ExprKind::Record(_)
         | ExprKind::Range(_) => None,
-        ExprKind::Get(_) | ExprKind::Select(_) => None,
+        ExprKind::Get(_) | ExprKind::Ttl(_) | ExprKind::Select(_) => None,
         // A test is not a value, and a path needs a record to read from —
         // neither can stand where a corpus says what it expects. Nor can a
         // parameter: a corpus case supplies no bindings, so an expectation
@@ -231,6 +240,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::NoSuchDistance { .. } => "NoSuchDistance",
         Error::OutsideTenancy { .. } => "OutsideTenancy",
         Error::NotArithmetic { .. } => "NotArithmetic",
+        Error::InvalidExpiry { .. } => "InvalidExpiry",
         Error::ArithmeticFailed { .. } => "ArithmeticFailed",
         Error::WrongArgument { .. } => "WrongArgument",
         Error::GeometryRefused { .. } => "GeometryRefused",

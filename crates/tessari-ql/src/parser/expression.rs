@@ -108,6 +108,9 @@ impl Parser<'_> {
         if let Some(keyword) = self.peek_keyword() {
             return self.keyword_value(keyword, span);
         }
+        if self.ttl_follows() {
+            return self.ttl_expression();
+        }
         match self.peek() {
             // A shape is written the way RFC 7946 writes one, behind a marker:
             // `geometry { type: 'Point', coordinates: [2.35, 48.85] }`.

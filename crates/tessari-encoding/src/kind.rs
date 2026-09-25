@@ -43,6 +43,10 @@ pub enum KeyKind {
     SpatialRefinement,
     /// One distinct term of one search index — the term dictionary.
     SearchTerm,
+    /// When one record version stops being answered: the instant, then the
+    /// record, so "everything that has expired" is one scan from the start
+    /// (G035).
+    ExpiryIndex,
     /// One entry in the ordered log.
     LogEntry,
     /// The store's own on-disk format version.
@@ -124,6 +128,7 @@ impl KeyKind {
         Self::VectorRecall,
         Self::SpatialRefinement,
         Self::SearchTerm,
+        Self::ExpiryIndex,
         Self::LogEntry,
         Self::FormatVersion,
         Self::AppliedPosition,
@@ -163,6 +168,7 @@ impl KeyKind {
             Self::VectorRecall => 0x17,
             Self::SpatialRefinement => 0x18,
             Self::SearchTerm => 0x19,
+            Self::ExpiryIndex => 0x1a,
             Self::LogEntry => 0x20,
             Self::FormatVersion => 0x30,
             Self::AppliedPosition => 0x31,
@@ -197,7 +203,8 @@ impl KeyKind {
             | Self::SpatialIndex
             | Self::VectorRecall
             | Self::SpatialRefinement
-            | Self::SearchTerm => Keyspace::INDEX,
+            | Self::SearchTerm
+            | Self::ExpiryIndex => Keyspace::INDEX,
             Self::LogEntry => Keyspace::LOG,
             Self::FormatVersion
             | Self::AppliedPosition
@@ -236,6 +243,7 @@ impl KeyKind {
             Self::VectorRecall => "vector-recall",
             Self::SpatialRefinement => "spatial-refinement",
             Self::SearchTerm => "search-term",
+            Self::ExpiryIndex => "expiry-index",
             Self::LogEntry => "log-entry",
             Self::FormatVersion => "format-version",
             Self::AppliedPosition => "applied-position",
@@ -323,6 +331,7 @@ mod tests {
             (KeyKind::VectorRecall, 0x17),
             (KeyKind::SpatialRefinement, 0x18),
             (KeyKind::SearchTerm, 0x19),
+            (KeyKind::ExpiryIndex, 0x1a),
             (KeyKind::LogEntry, 0x20),
             (KeyKind::FormatVersion, 0x30),
             (KeyKind::AppliedPosition, 0x31),

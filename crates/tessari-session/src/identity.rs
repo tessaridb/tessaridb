@@ -655,6 +655,9 @@ impl Needs {
             | StatementKind::Relate { .. }
             | StatementKind::DeleteEdge { .. }
             | StatementKind::Set { .. }
+            | StatementKind::Expire { .. }
+            | StatementKind::Persist { .. }
+            | StatementKind::Incr { .. }
             | StatementKind::Del { .. }
             | StatementKind::Put { .. } => Self::WRITE,
         }
@@ -1269,7 +1272,8 @@ fn holds_node_read(expr: &Expr) -> bool {
         | ExprKind::Path(_)
         | ExprKind::Table(_)
         | ExprKind::Record(_)
-        | ExprKind::Get(_) => false,
+        | ExprKind::Get(_)
+        | ExprKind::Ttl(_) => false,
     }
 }
 

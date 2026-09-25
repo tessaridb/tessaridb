@@ -5324,9 +5324,74 @@ KEYS FROM sessions RANGE 'a'..'m';
 - `KEYS` lists keys, optionally over a range. A range is meaningful because keys
   are record ids and record ids are order-encoded (`docs/key-grammar.md` §5), so
   the bound names a contiguous stretch of the space rather than an arbitrary
-  subset. At this milestone the bound is applied to a scan of the space rather
-  than seeked to: the answer is the same, the cost is not, and saying so here is
-  cheaper than a reader discovering it under load.
+  subset — and the walk **seeks** to its start and stops at its end, so keys
+  outside it are never read.
+
+### A key that expires
+
+```
+SET sessions:'abc' = { user: users:1 } EXPIRE 30m;
+SET sessions:'abc' = 'x' EXPIRE datetime '2026-10-01T00:00:00Z';
+EXPIRE sessions:'abc' 10m;
+PERSIST sessions:'abc';
+RETURN TTL sessions:'abc';
+```
+
+- `EXPIRE` after a `SET` takes a **duration** from now or a **datetime**. The
+  key stops being answered at that instant — by `GET`, `KEYS`, `SELECT` and a
+  read an index serves alike, on the memory backend and the disk one.
+- A `SET` replaces the whole version, so a `SET` without `EXPIRE` **clears** an
+  expiry the key had. A `SET` whose `EXPIRE` is not in the future is refused and
+  writes nothing.
+- `EXPIRE key when` sets or moves the expiry of a key that exists and answers
+  `true`, or answers `false` when there is no key. A duration that is zero or
+  negative, or a datetime already past, **removes** the key.
+- `PERSIST key` makes the key stop expiring and answers whether it had an
+  expiry to clear.
+- `TTL key` is a value: the time left as a **duration**, `NULL` for a key that
+  never expires, `NONE` when there is no key.
+- `expire`, `persist` and `ttl` are **not reserved**: they stay usable as field
+  and table names.
+
+The instant is written into the key's version, once, on the writing
+transaction's clock, and every reader compares it against its own clock. So
+expiry is decided by the bytes rather than by a sweep: a follower hides an
+expired key exactly as the node that wrote it does, a restart changes nothing,
+and a transaction judges every key it reads against one clock for its whole
+life. A clock stepped forward expires keys early and one stepped back keeps
+them late; neither is corrected here. Removing an expired key's bytes is a
+separate pass, and an answer never waits for it.
+
+### Atomic writes and a walk of the keys
+
+```
+INCR counters:'hits';
+INCR counters:'hits' BY 10;
+SET locks:'report' = 'worker-7' IF ABSENT EXPIRE 30s;
+SET config:'mode' = 'on' IF PRESENT;
+SET config:'mode' = 'off' IF = 'on';
+KEYS FROM sessions PREFIX 'user:42:';
+KEYS FROM sessions AFTER 'user:42:k' LIMIT 100;
+```
+
+- `INCR key [BY n]` adds to a number and answers the result. A missing key
+  counts from zero, a key holding anything but a number is refused, an integer
+  that would overflow is refused, and an expiry the key had is **kept**.
+- `SET … IF ABSENT` writes only when there is no key, `IF PRESENT` only when
+  there is one, and `IF = value` only when the key holds that value — a
+  compare-and-set. A conditional `SET` answers **whether it wrote**. `IF` and
+  `EXPIRE` may come in either order; `IF ABSENT EXPIRE 30s` is a lock that frees
+  itself.
+- Both read the key and write it in one transaction, so two writers that race
+  cannot both win — no increment is lost. Run as a statement of its own, a lost
+  race is run again on a fresh snapshot for up to a second before the ordinary
+  retriable conflict is answered, so a counter does not fail because a
+  neighbour got there first. Inside `BEGIN … COMMIT` a conflict is the
+  transaction's, as always.
+- `KEYS … PREFIX 'p'` lists the text keys that begin with `p`, and nothing else;
+  an empty prefix is refused. `AFTER k` starts past `k` — the last key of the
+  previous page — and `LIMIT n` stops after `n`, so a space is paged with no key
+  repeated and none dropped. Expired keys are never listed.
 
 ### Composition
 
@@ -7262,7 +7327,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.4.0", "build": "0.4.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.5.0", "build": "0.5.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],

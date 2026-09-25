@@ -608,14 +608,39 @@ impl<'a> Session<'a> {
                     outcome
                 }
                 (None, None) => {
-                    let mut transaction = store.begin()?;
-                    let outcome = self.execute(&mut transaction, other, span)?;
-                    settle(transaction)?;
-                    Ok(outcome)
+                    // A lone atomic key-value write is run again on a conflict,
+                    // since nothing has been committed and a second run is what
+                    // the caller would do (`crate::kv::atomic`).
+                    let retried = crate::kv::retried_on_conflict(other);
+                    let started = std::time::Instant::now();
+                    loop {
+                        let mut transaction = store.begin()?;
+                        let outcome = self.execute(&mut transaction, other, span)?;
+                        match settle(transaction) {
+                            Ok(()) => return Ok(outcome),
+                            Err(Error::Store(refusal))
+                                if retried
+                                    && conflicting(&refusal)
+                                    && started.elapsed() < crate::kv::CONFLICT_DEADLINE =>
+                            {
+                                // Let the winner finish before reading again.
+                                std::thread::yield_now();
+                            }
+                            Err(refusal) => return Err(refusal),
+                        }
+                    }
                 }
             },
         }
     }
+}
+
+/// Whether a store refusal is the write-write race a second run can win.
+const fn conflicting(refusal: &tessari_storage::Error) -> bool {
+    matches!(
+        refusal,
+        tessari_storage::Error::Conflict { .. } | tessari_storage::Error::CommitContention { .. }
+    )
 }
 
 /// Commit, and let the one refusal a caller fixes with a statement carry that

@@ -12,6 +12,46 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.5.0-beta — 2026-09-26
+
+**A space can be run as a cache: a key expires, a counter increments without
+losing a write, a lock takes itself, and a walk of the keys reads only the
+stretch it lists.** Everything here behaves the same on the memory backend and
+the disk one.
+
+- **A key can expire.** `SET sessions:'abc' = … EXPIRE 30m` (a duration from
+  now or a datetime), `EXPIRE key 10m`, `PERSIST key`, and `TTL key` — a
+  duration, `NULL` for a key that never expires, `NONE` for no key. Once its
+  instant passes, the key is answered by **no** read of its table: `GET`,
+  `KEYS`, a scan, a point read and an index-served read alike. A plain `SET`
+  clears an expiry; a `SET` whose expiry is not in the future is refused
+  (**`InvalidExpiry`**); an `EXPIRE` already past removes the key. The instant
+  is stored in the record's version, so a follower and a restarted node judge it
+  exactly as the writer did.
+- **Expired keys are removed through the log.** Each expiring version has an
+  entry in a new expiry index, written in the same batch as the record, and the
+  node's housekeeping removes what has expired as ordinary deletes — replicated,
+  fenced by leadership, and seen on the change feed. Reads never wait for it.
+- **`INCR key [BY n]`** adds to a number and answers the result; a missing key
+  counts from zero and an expiry is kept. **`SET … IF ABSENT | IF PRESENT |
+  IF = value`** writes only when the condition holds and answers whether it
+  wrote, so `SET lock = 'me' IF ABSENT EXPIRE 30s` is a lock that frees itself.
+  A lone one of these that loses a race is run again for up to a second, so four
+  writers incrementing one key land every increment and none is refused.
+- **`KEYS FROM s PREFIX 'user:42:'`**, **`AFTER k`** and **`LIMIT n`**: a key
+  walk now seeks to where it starts and stops where it ends — a prefix over
+  three keys in a space of a thousand reads a handful of entries — and pages
+  with no key repeated or dropped. Expired keys are never listed.
+- `expire`, `persist` and `ttl` are not reserved words; they stay usable as
+  field and table names.
+
+**1386 conformance cases** define the language and run in the build, up from
+1369; the key-value corpus also runs against the disk backend.
+
+**On disk:** a record version may now carry an expiry instant behind a new flag
+bit, and the expiry index is a new key kind. A store written by this build is not
+promised to open under an earlier one.
+
 ## 0.4.0-beta — 2026-09-25
 
 **A table can be split into shards, each shard can be led by a different node,

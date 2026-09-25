@@ -28,6 +28,7 @@ impl<'a> Transaction<'a> {
             store,
             snapshot,
             writes: BTreeMap::new(),
+            expiring: BTreeMap::new(),
             reading_at: std::cell::Cell::new(None),
             floors: std::cell::RefCell::new(BTreeMap::new()),
         }
@@ -72,6 +73,38 @@ impl<'a> Transaction<'a> {
             return Ok(None);
         }
         self.get_uncovered(address)
+    }
+
+    /// A record as it is **held**, an expired version included (G035).
+    ///
+    /// For the code that keeps a derived structure — an index, a count, an
+    /// adjacency list — in step with the records. Those structures hold entries
+    /// for every stored version until the version is removed, so the removal must
+    /// be computed against what is stored and never against what a reader is
+    /// shown: asking [`Self::get`] would report an expired record as absent, and
+    /// overwriting or deleting it would then leave its entries behind for ever.
+    /// The series floor still applies, exactly as it does for [`Self::get`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or stored bytes cannot be
+    /// decoded.
+    pub fn get_held(&self, address: &RecordAddress) -> Result<Option<Vec<u8>>> {
+        if self.below_series_floor(address)? {
+            return Ok(None);
+        }
+        if let Some(pending) = self.writes.get(address) {
+            return Ok(match pending {
+                RecordValue::Present(payload) => Some(payload.clone()),
+                RecordValue::Tombstone => None,
+            });
+        }
+        Ok(
+            match self.read_stamped_at(address)?.map(StampedValue::into_value) {
+                Some(RecordValue::Present(payload)) => Some(payload),
+                Some(RecordValue::Tombstone) | None => None,
+            },
+        )
     }
 
     /// [`Self::get`] without the retention floor.
@@ -144,7 +177,7 @@ impl<'a> Transaction<'a> {
         for (index, pair) in asked.into_iter().zip(found) {
             let Some((_, value)) = pair else { continue };
             if let RecordValue::Present(payload) =
-                StampedValue::decode(value.as_slice())?.into_value()
+                StampedValue::decode(value.as_slice())?.into_visible_at(self.reading_at())
             {
                 answers[index] = Some(payload);
             }
@@ -351,15 +384,32 @@ impl<'a> Transaction<'a> {
         address: &RecordAddress,
         snapshot: Sequence,
     ) -> Result<Option<(Sequence, RecordValue)>> {
+        let now = self.reading_at();
+        Ok(self
+            .read_stamped_as_of(address, snapshot)?
+            .map(|(version, stamped)| (version, stamped.into_visible_at(now))))
+    }
+
+    /// The version a reader at this transaction's snapshot resolves to, stamp
+    /// and expiry included and **not** judged against the clock.
+    pub(crate) fn read_stamped_at(&self, address: &RecordAddress) -> Result<Option<StampedValue>> {
+        Ok(self
+            .read_stamped_as_of(address, self.snapshot)?
+            .map(|(_, stamped)| stamped))
+    }
+
+    fn read_stamped_as_of(
+        &self,
+        address: &RecordAddress,
+        snapshot: Sequence,
+    ) -> Result<Option<(Sequence, StampedValue)>> {
         let prefix = address.versions_prefix();
         let bounds = KeyRange::prefix(&prefix);
         let range = KeyRange::from_bounds(
             Bound::Included(address.key_at(snapshot).encode()),
             bounds.end().clone(),
         );
-        Ok(self
-            .first_in_range(range)?
-            .map(|(version, stamped)| (version, stamped.into_value())))
+        self.first_in_range(range)
     }
 
     /// The newest entry in a span of one record's versions, stamp and all.
