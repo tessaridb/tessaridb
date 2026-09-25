@@ -671,3 +671,45 @@ fn a_follower_served_the_whole_database_answers_every_read_as_before() {
     };
     assert_eq!(records.len(), 2);
 }
+
+/// A user and the grants that narrow them travel together (G033, found by its
+/// S1.5): users reach every subscriber, so a grant withheld from one leaves a
+/// restricted user UNRESTRICTED there — a reader who may see one field sees the
+/// whole record on the follower with nothing in an error state. Asserted on a
+/// namespace follower, the widest selective subscription, and on the shard
+/// follower beside it.
+#[test]
+fn a_field_grant_narrows_its_user_on_a_selective_follower_as_on_the_leader() {
+    let (leader, second, _) = sharded_tenant();
+    signed_in(&leader, "root")
+        .run(
+            "DEFINE USER narrow ON NAMESPACE prod AUTHORITIES read \
+             PASSWORD 'correct horse battery';\n\
+             USE NAMESPACE prod; USE DATABASE shop;\n\
+             GRANT read ON orders FIELDS note TO narrow;\n\
+             GRANT read ON ledger FIELDS note TO narrow;",
+        )
+        .unwrap();
+    for (over, read) in [
+        (
+            Reach::Namespace(NamespaceId::new(1)),
+            "SELECT * FROM orders:1;",
+        ),
+        (second, "SELECT * FROM ledger:'h';"),
+    ] {
+        let follower = follow(&leader, over, "node");
+        follower.record_served(over).unwrap();
+        let mut reader = signed_in(&follower, "narrow");
+        let outcomes = reader
+            .run(&format!("USE NAMESPACE prod; USE DATABASE shop; {read}"))
+            .unwrap();
+        let Some(Outcome::Records { records, .. }) = outcomes.last() else {
+            panic!("{over:?}: {outcomes:?}");
+        };
+        assert_eq!(records.len(), 1, "{over:?}");
+        assert!(
+            !format!("{records:?}").contains("total"),
+            "{over:?}: a field the grant hides was read on the follower: {records:?}"
+        );
+    }
+}

@@ -79,10 +79,12 @@ pub(crate) enum Carried {
     /// It has no tenancy of its own and holds nothing secret, and any tenancy's
     /// schema may point at it — so it travels to every subscriber.
     ///
-    /// Analyzers, and deliberately only analyzers: a name unique across the
-    /// store, a filter chain, and no reference to anybody's data. Withholding
-    /// one would leave a follower holding a full-text field whose analyzer it
-    /// cannot resolve, which fails at read time and looks like corruption.
+    /// Analyzers: a name unique across the store, a filter chain, and no
+    /// reference to anybody's data. Withholding one would leave a follower
+    /// holding a full-text field whose analyzer it cannot resolve, which fails
+    /// at read time and looks like corruption. And the identity class — users
+    /// and the grants that narrow them, which must arrive together (see
+    /// [`carried_to`]).
     Everywhere,
     /// It is the whole store's business, or its tenancy cannot be proven from
     /// the mutation alone. Either way it travels only to a subscriber at
@@ -194,10 +196,19 @@ pub(crate) fn carried_to(mutation: &Mutation) -> Result<Carried> {
         // classifying by tenancy is what produced the split this reversed, and
         // leaving the read in place would leave the split one edit away.
         (t, _) if t == system::USERS => Carried::Everywhere,
+        // A user's grants travel with the user, for the same reason and with
+        // the same unconditional rule (G033). A grant NARROWS its user — one
+        // grant reduces a user to exactly what was granted — so a follower
+        // holding the user without the grant holds that user UNRESTRICTED, and
+        // a reader allowed one field reads the whole record there with nothing
+        // in an error state. It was `StoreOnly` because a grant carries a table
+        // id and no tenancy; that was right while users were classified by
+        // tenancy too, and became a widening the day they travelled everywhere.
+        // A revocation's tombstone reaches every node the grant did.
+        (t, _) if t == system::GRANTS => Carried::Everywhere,
         // Everything else, named rather than left to a catch-all so that the
         // ratchet below is a statement about a set somebody wrote down:
         //   ALLOCATORS        one counter per level, for the whole store
-        //   GRANTS            a user and a table id, and no tenancy of its own
         //   REPLICAS          who else is in the cluster is the store's
         //   RECORD_SEQUENCES  keyed by table id, tenancy not in the record
         //   VAULT_ROOT        one record, the store's
@@ -549,11 +560,22 @@ mod tests {
             "a revocation must reach every node the credential reached"
         );
 
-        // 5, 10, 11, 13, 16, 17, 18 — the store's own business, on a payload that
+        // 5, 11, 13, 16, 17, 18 — the store's own business, on a payload that
         // decodes, so the answer is the classification and not a decode failure.
+        // 10 — grants go where users go, and their revocation with them.
+        assert_eq!(
+            class(system::GRANTS, RecordId::Int(1), Some(Value::Null)),
+            Carried::Everywhere,
+            "a grant narrows its user, so a follower holding the user must hold it"
+        );
+        assert_eq!(
+            class(system::GRANTS, RecordId::Int(1), None),
+            Carried::Everywhere,
+            "a revoked grant must leave every node it reached"
+        );
+
         for table in [
             system::ALLOCATORS,
-            system::GRANTS,
             system::REPLICAS,
             system::RECORD_SEQUENCES,
             system::VAULT_ROOT,
