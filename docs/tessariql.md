@@ -2018,12 +2018,18 @@ a redirect: the node it would send you to leads only part of the transaction
 too, and would refuse it back. Write each leader's part as its own transaction.
 A transaction that one other node leads entirely is still redirected there.
 
-**Two reads that follow one log refuse a split table.** A change feed over it,
-and `INFO FOR HISTORY OF` one of its records, are refused with
-**`SpansShardLogs`**: its writes are in its shards' logs and its database's, and
-nothing orders one log against another, so an answer from any one of them would
-be missing what the others hold while reading as complete. A feed over an unsplit
-table beside it is unaffected.
+**A split table's record history reads two logs.** A record is written in its
+shard's log by a commit touching one shard and in its database's by a commit
+touching two, so `INFO FOR HISTORY OF` one of its records reads both and merges
+them in the order the node committed them. Each event names the log it came from
+— `log: 'shard 2'` or `log: 'database'` — because its `at` is a position in that
+log and means nothing in the other. A history of an unsplit table is unchanged
+and names no log.
+
+**A change feed over a split table is refused.** A feed's position counts in one
+log, and a split table's writes are in several; following one of them would
+deliver every change except the others' with nothing saying so. A feed over an
+unsplit table beside it is unaffected.
 
 ### What a table declares about its fields
 
@@ -7204,6 +7210,19 @@ right now, preferring the newer leadership when two of them do. A node that has
 just started follows nobody until its first greeting round lands, which is one
 awareness interval.
 
+**A follower applies what it collects in the order its leader committed it.**
+A leader files each commit in the log of what it touched — the store's, a
+namespace's, a database's or a shard's — so one transaction touching two
+databases lands in their namespace's log, and a later one touching one of them
+lands in that database's. A follower asks for every log it holds in one round
+and applies the answers together, in the order the leader committed them, as far
+as the answers prove nothing is missing below; the rest is asked for again next
+round. Applied one log after another instead, a record written by a one-database
+commit and then by a two-database commit ended at the **older** value on the
+follower, with nothing in an error state. **A follower that ran such
+transactions on a build before this one may already hold the older value and is
+not repaired by upgrading: take a fresh copy of it.**
+
 **A voter refuses a candidate whose log is behind its own.** Opening the
 candidate set makes this necessary rather than merely tidy: a node holding less
 history could otherwise win a majority, lead, and silently drop every write it
@@ -7482,7 +7501,7 @@ be, because it is confined to the run its fixed values name.
 | **hash** sharding | shards are spans of identities, which is what keeps a span read one walk. Spreading writes by hash forfeits that order and is a second method the map can carry later, not a change to the first. §4 |
 | a gathered read that **pushes work down** to the shards' leaders | a node lacking shards fetches their records and runs the statement itself, so a `WHERE`, a `LIMIT` or an aggregate costs the missing shards' records on the network; evaluating them on the leaders — and combining a `mean` or a variance correctly across them — is a query engine of its own. A join side and a `FETCH` are not gathered at all. §7d |
 | **choosing among a range's candidates, and moving a placement** | `LEADS` elects a leader per placed range, but whichever candidate wins keeps it — there is no preference, no rebalancing and no hand-over — and a row naming one range cannot name a second or be dropped. Dropping safely needs every lease on the range to have lapsed first. §7d |
-| a change feed and a record's history **over a split table** | refused with `SpansShardLogs`: its writes are in several logs and nothing orders them against each other yet. §4 |
+| a change feed **over a split table** | refused: its writes are in several logs, and a feed's position counts in one. Following it needs a cursor holding a position per log. §4 |
 | a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |
 | a bucket narrowed by **content type** — `HOLDS image/png` | the store has no content type for a file. A file's record holds its size, its chunk count and when it was written, and nothing anywhere reads the bytes to decide what they are — so the clause could only enforce the caller's own claim about the caller's own bytes, which is the assertion §6a refuses `CREATE`, `UPDATE` and `SET` in order to avoid, wearing a constraint's clothes. The honest version detects the type by reading the leading bytes against a table of signatures, which is real work with a real failure mode of its own: plain text, CSV and SVG have no signature, and a `HOLDS text/plain` that cannot be checked is worse than no clause at all. The ceiling shipped without it because `MAX` compares against a number the store computes itself. §6a |
 | a **streaming** backup answer | `BACKUP` answers with a value, so the file is materialised. `FROM` bounds it, and the real fix is an answer shape that streams — which is the wall a **whole-file** `READ` still meets even now that a ranged one exists, and worth crossing once for both. §7a |
