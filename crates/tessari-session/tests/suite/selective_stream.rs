@@ -85,27 +85,71 @@ fn two_tenants(store: &Store) {
 /// from the numbering would be refused here as a parted history, and that
 /// refusal is the assertion the empty-record test below leans on.
 fn follow(leader: &Store, over: Reach, as_user: &str) -> Store {
-    let follower = store();
     let mut node = Session::new(leader);
     node.sign_in(as_user, PASSWORD).unwrap();
-    // Every log the leader holds, one collect each: the GRANT is what narrows a
-    // subscription and the LOG is only where a record was filed (Q-620). In
-    // `logs()` order, so the definitions a range's records depend on arrive
-    // first — and each collect names its log to the applier, because a record
-    // the filter emptied has no mutation left to derive one from (Q-621).
-    for log in leader.logs().unwrap() {
-        let carried = node
-            .replicate_from(leader, A_FOLLOWER, over, log, Sequence::new(1), 256)
-            .unwrap();
-        let mut previous = tessari_types::Epoch::ZERO;
-        for (sequence, record) in carried {
-            follower
-                .apply_from_stream(log, sequence, previous, &record)
+    follow_in_pages(&mut node, leader, over, 256)
+}
+
+/// Collect in rounds of `page` records per log, as a node does: every log the
+/// leader holds is fetched once a round, and the round is applied through the
+/// store's own writer-order apply (ADR-0084) — the same one the wire collector
+/// calls, so these tests exercise the rule a node runs. Each collect names its
+/// log to the applier, because a record the filter emptied has no mutation left
+/// to derive one from (Q-621). A page shorter than asked is level, bounded by
+/// the order the leader had committed before it was read.
+fn follow_in_pages(node: &mut Session<'_>, leader: &Store, over: Reach, page: usize) -> Store {
+    let follower = store();
+    let logs = leader.logs().unwrap();
+    let mut from = vec![Sequence::new(1); logs.len()];
+    let mut previous = vec![tessari_types::Epoch::ZERO; logs.len()];
+    loop {
+        let mut fetched = Vec::new();
+        for (index, log) in logs.iter().enumerate() {
+            let order = leader.committed_version().unwrap();
+            let records = node
+                .replicate_from(leader, A_FOLLOWER, over, *log, from[index], page)
                 .unwrap();
-            previous = record.epoch();
+            let horizon = if records.len() < page {
+                tessari_storage::Horizon::Level(order)
+            } else {
+                tessari_storage::Horizon::Full
+            };
+            fetched.push((records, horizon));
+        }
+        if fetched.iter().all(|(records, _)| records.is_empty()) {
+            return follower;
+        }
+        let pages: Vec<tessari_storage::Page<'_>> = logs
+            .iter()
+            .zip(&fetched)
+            .zip(&previous)
+            .map(
+                |((log, (records, horizon)), before)| tessari_storage::Page {
+                    log: *log,
+                    previous: *before,
+                    records,
+                    horizon: *horizon,
+                },
+            )
+            .collect();
+        let reached = follower.apply_in_writer_order(&pages).unwrap();
+        assert!(
+            reached.iter().any(Option::is_some),
+            "a round with nothing new committed applied nothing — the round stalls"
+        );
+        for (index, at) in reached.iter().enumerate() {
+            let Some(at) = at else { continue };
+            let (records, _) = &fetched[index];
+            let epoch = records
+                .iter()
+                .find(|(held, _)| held == at)
+                .unwrap()
+                .1
+                .epoch();
+            from[index] = Sequence::new(at.get().saturating_add(1));
+            previous[index] = epoch;
         }
     }
-    follower
 }
 
 fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
@@ -711,5 +755,147 @@ fn a_field_grant_narrows_its_user_on_a_selective_follower_as_on_the_leader() {
             !format!("{records:?}").contains("total"),
             "{over:?}: a field the grant hides was read on the follower: {records:?}"
         );
+    }
+}
+
+/// Probe (Q-796): a record written by a single-shard commit and then by a
+/// two-shard one ends at the second value on the leader; the follower must end
+/// at the same value whatever order it collects the logs in.
+#[test]
+fn a_record_written_alone_then_across_shards_ends_at_the_same_value_on_a_follower() {
+    let (leader, _, _) = sharded_tenant();
+    signed_in(&leader, "root")
+        .run(
+            "USE NAMESPACE prod; USE DATABASE shop;\n\
+             UPDATE ledger:'h' MERGE { total: 3 };\n\
+             BEGIN; UPDATE ledger:'h' MERGE { total: 4 }; UPDATE ledger:'a' MERGE { total: 5 }; COMMIT;",
+        )
+        .unwrap();
+    let read = |store: &Store| {
+        let mut reader = signed_in(store, "prod_reader");
+        let outcomes = reader
+            .run("USE NAMESPACE prod; USE DATABASE shop; SELECT total FROM ledger:'h';")
+            .unwrap();
+        format!("{:?}", outcomes.last())
+    };
+    let on_leader = read(&leader);
+    assert!(on_leader.contains('4'), "{on_leader}");
+    let over = Reach::Namespace(NamespaceId::new(1));
+    let follower = follow(&leader, over, "node");
+    follower.record_served(over).unwrap();
+    assert_eq!(read(&follower), on_leader);
+}
+
+/// Probe (Q-796), the unsharded shape: a record written by a one-database
+/// commit and then by a two-database one (which homes at the namespace).
+#[test]
+fn a_record_written_alone_then_across_databases_ends_at_the_same_value_on_a_follower() {
+    let leader = store();
+    two_tenants(&leader);
+    signed_in(&leader, "root")
+        .run(
+            "USE NAMESPACE prod; DEFINE DATABASE other; USE DATABASE other; \
+             DEFINE TABLE notes SCHEMALESS; CREATE notes:1 = { n: 0 };\n\
+             USE DATABASE shop; UPDATE orders:1 MERGE { total: 3 };\n\
+             BEGIN; UPDATE orders:1 MERGE { total: 4 }; USE DATABASE other; \
+             UPDATE notes:1 MERGE { n: 1 }; COMMIT;",
+        )
+        .unwrap();
+    let read = |store: &Store| {
+        let mut reader = signed_in(store, "prod_reader");
+        let outcomes = reader
+            .run("USE NAMESPACE prod; USE DATABASE shop; SELECT total FROM orders:1;")
+            .unwrap();
+        format!("{:?}", outcomes.last())
+    };
+    let on_leader = read(&leader);
+    assert!(on_leader.contains('4'), "{on_leader}");
+    let over = Reach::Namespace(NamespaceId::new(1));
+    let follower = follow(&leader, over, "node");
+    follower.record_served(over).unwrap();
+    assert_eq!(read(&follower), on_leader);
+}
+
+/// G034 S1.2 — interleavings of one-shard, two-shard, one-database and
+/// two-database commits over shared records leave every record on a follower
+/// equal to the leader's, at every page size. The commit kinds are the four
+/// homes a record of this store can be filed under; the sequence is a fixed
+/// pseudo-random walk so a failure names a reproducible step.
+#[test]
+fn every_interleaving_of_homes_ends_level_on_a_follower_at_every_page_size() {
+    let (leader, _, _) = sharded_tenant();
+    let mut root = signed_in(&leader, "root");
+    root.run(
+        "USE NAMESPACE prod; DEFINE DATABASE other; USE DATABASE other; \
+         DEFINE TABLE notes SCHEMALESS; CREATE notes:1 = { n: 0 };",
+    )
+    .unwrap();
+    // Each kind writes `@` into the records it names, so the value a record
+    // ends at says which commit was applied last.
+    let kinds: [&str; 6] = [
+        "USE DATABASE shop; UPDATE ledger:'h' MERGE { total: @ };",
+        "USE DATABASE shop; UPDATE ledger:'a' MERGE { total: @ };",
+        "USE DATABASE shop; BEGIN; UPDATE ledger:'a' MERGE { total: @ }; \
+         UPDATE ledger:'h' MERGE { total: @ }; COMMIT;",
+        "USE DATABASE shop; UPDATE orders:1 MERGE { total: @ };",
+        "BEGIN; USE DATABASE shop; UPDATE orders:1 MERGE { total: @ }; \
+         USE DATABASE other; UPDATE notes:1 MERGE { n: @ }; COMMIT;",
+        "BEGIN; USE DATABASE shop; UPDATE ledger:'h' MERGE { total: @ }; \
+         USE DATABASE other; UPDATE notes:1 MERGE { n: @ }; COMMIT;",
+    ];
+    let addresses = {
+        let mut transaction = leader.begin().unwrap();
+        let catalog = tessari_storage::Catalog::new(&mut transaction);
+        let prod = NamespaceId::new(1);
+        let shop = catalog.database_id(prod, "shop").unwrap().unwrap();
+        let other = catalog.database_id(prod, "other").unwrap().unwrap();
+        let table = |database, name: &str| catalog.table_id(prod, database, name).unwrap().unwrap();
+        let (ledger, orders, notes) = (
+            table(shop, "ledger"),
+            table(shop, "orders"),
+            table(other, "notes"),
+        );
+        let address = |database, table, id: tessari_types::RecordId| {
+            tessari_storage::RecordAddress::new(prod, database, table, id)
+        };
+        vec![
+            address(shop, ledger, tessari_types::RecordId::from("a")),
+            address(shop, ledger, tessari_types::RecordId::from("h")),
+            address(shop, orders, tessari_types::RecordId::Int(1)),
+            address(other, notes, tessari_types::RecordId::Int(1)),
+        ]
+    };
+    let held = |store: &Store| -> Vec<Option<Vec<u8>>> {
+        let transaction = store.begin().unwrap();
+        addresses
+            .iter()
+            .map(|address| transaction.get(address).unwrap())
+            .collect()
+    };
+    let mut node = Session::new(&leader);
+    node.sign_in("node", PASSWORD).unwrap();
+    let over = Reach::Namespace(NamespaceId::new(1));
+    let mut state: u64 = 0x9e37_79b9;
+    let mut n = 10_u64;
+    for round in 0..8 {
+        let mut script = String::from("USE NAMESPACE prod; ");
+        for _ in 0..4 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            let kind = kinds[usize::try_from(state >> 33).unwrap() % kinds.len()];
+            n += 1;
+            script.push_str(&kind.replace('@', &n.to_string()));
+        }
+        root.run(&script).unwrap();
+        let expected = held(&leader);
+        for page in [1, 2, 3, 256] {
+            let follower = follow_in_pages(&mut node, &leader, over, page);
+            assert_eq!(
+                held(&follower),
+                expected,
+                "round {round}, page size {page}, after: {script}"
+            );
+        }
     }
 }

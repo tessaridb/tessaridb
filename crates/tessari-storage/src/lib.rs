@@ -38,6 +38,7 @@ mod lease;
 mod lines;
 mod log;
 mod node;
+mod ordering;
 mod pruning;
 mod reclaim;
 mod running;
@@ -79,6 +80,7 @@ pub use feed::{Change, ChangeKind, Changes, History, Subject, Subscription, Watc
 pub use followers::FollowerLag;
 pub use graph::vector_of;
 pub use lease::{GUARD as LEASE_GUARD, Lease, TTL as LEASE_TTL};
+pub use ordering::{Horizon, MergedHistory, Page, in_writer_order};
 pub use pruning::{Pruned, Trimmed};
 pub use reclaim::Reclaimed;
 pub use running::{Progress, Running};

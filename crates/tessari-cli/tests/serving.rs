@@ -3121,3 +3121,105 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
         "a span inside the shard node 2 holds"
     );
 }
+
+// ---- G034 S3.1: one writer's logs, applied in its order, across three processes
+
+/// G034 S3.1's addresses: the three pairs the band had left.
+const ORDERED: Band = [
+    ("127.0.0.1:47839", "127.0.0.1:47840"),
+    ("127.0.0.1:47849", "127.0.0.1:47850"),
+    ("127.0.0.1:47859", "127.0.0.1:47860"),
+];
+
+/// A split table beside a second database, so one leader files commits in a
+/// shard's log, a database's and the namespace's.
+const ORDERED_SCHEMA: &str = "DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
+                              DEFINE DATABASE other; USE DATABASE other; DEFINE TABLE pad SCHEMALESS; \
+                              DEFINE DATABASE shop; USE DATABASE shop; \
+                              DEFINE TABLE orders (n int) IDENTITY uuid SPLIT AT 'g', 'p';";
+
+/// What a read at `surface` answered, as text — or the refusal.
+fn answered_at(surface: &str, read: &str) -> String {
+    let answer = Client::connect(surface)
+        .map_err(|why| why.to_string())
+        .and_then(|mut client| {
+            client
+                .run(&format!("USE NAMESPACE prod; {read}"), None)
+                .map_err(|why| why.to_string())
+        });
+    match answer {
+        Ok(answers) => format!("{:?}", answers.last()),
+        Err(why) => why,
+    }
+}
+
+#[test]
+#[ignore = "real cadences across three processes — a leader is elected and two \
+            followers collect four kinds of commit. It is G034 S3.1's own \
+            validation and is run explicitly: cargo test -p tessari-cli --test \
+            serving a_follower_ends_where -- --ignored"]
+fn a_follower_ends_where_its_leader_ended_after_commits_filed_in_four_logs() {
+    let cluster = a_cluster_declared(&ORDERED, ORDERED_SCHEMA, ["", "", ""]);
+    let logs = cluster.logs.clone();
+    // The leader is the node that takes a write.
+    let began = Instant::now();
+    let leader = loop {
+        if let Some(index) = (0..ORDERED.len())
+            .find(|index| until_taken(ORDERED[*index].0, "z", Duration::from_millis(1)).is_ok())
+        {
+            break index;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(120),
+            "no node took a write{}",
+            what_the_nodes_said(&ORDERED, &logs)
+        );
+        std::thread::sleep(POLL);
+    };
+    // `h1` is written by a one-shard commit (shard 2's log), a two-shard commit
+    // (the database's) and last by a two-database commit (the namespace's), so
+    // its final value came from the coarsest log; `a1` last by the two-shard
+    // one. Applied a log at a time, coarsest first, a follower ends at 2 and 1.
+    let mut client = Client::connect(ORDERED[leader].0).unwrap();
+    client
+        .run(
+            "USE NAMESPACE prod; USE DATABASE other; CREATE pad:1 = { n: 0 }; \
+             USE DATABASE shop; CREATE orders:'h1' = { n: 1 }; CREATE orders:'a1' = { n: 1 }; \
+             UPDATE orders:'h1' MERGE { n: 2 }; \
+             BEGIN; UPDATE orders:'h1' MERGE { n: 3 }; UPDATE orders:'a1' MERGE { n: 3 }; COMMIT; \
+             BEGIN; UPDATE orders:'h1' MERGE { n: 4 }; USE DATABASE other; \
+             UPDATE pad:1 MERGE { n: 4 }; COMMIT;",
+            None,
+        )
+        .unwrap();
+    let reads = [
+        "USE DATABASE shop; SELECT n FROM orders:'h1';",
+        "USE DATABASE shop; SELECT n FROM orders:'a1';",
+        "USE DATABASE other; SELECT n FROM pad:1;",
+    ];
+    let expected: Vec<String> = reads
+        .iter()
+        .map(|read| answered_at(ORDERED[leader].0, read))
+        .collect();
+    assert!(expected[0].contains("Integer(4)"), "{expected:?}");
+    assert!(expected[1].contains("Integer(3)"), "{expected:?}");
+    for follower in (0..ORDERED.len()).filter(|index| *index != leader) {
+        let began = Instant::now();
+        loop {
+            let seen: Vec<String> = reads
+                .iter()
+                .map(|read| answered_at(ORDERED[follower].0, read))
+                .collect();
+            if seen == expected {
+                break;
+            }
+            assert!(
+                began.elapsed() < Duration::from_secs(90),
+                "node {follower} never ended where the leader did: {seen:?} against \
+                 {expected:?}{}",
+                what_the_nodes_said(&ORDERED, &logs)
+            );
+            std::thread::sleep(POLL);
+        }
+    }
+}

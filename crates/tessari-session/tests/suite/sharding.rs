@@ -230,28 +230,78 @@ fn store_with(script: &str) -> Store {
     fresh
 }
 
+/// G034 S2.1 — a split table's record is written in its shard's log by a commit
+/// touching one shard and in its database's by one touching two; its history is
+/// both, newest first in the order they were committed, each event naming its
+/// log. Merged by position instead, the database log's `at 1` would sort below
+/// the shard log's later positions and the two-shard write would land out of
+/// place.
 #[test]
-fn a_split_tables_record_history_is_refused_rather_than_answered_from_one_log() {
-    // Its commits are in its shards' logs, and a commit spanning two shards is
-    // in its database's: a history read from any one of them is missing what
-    // the others hold, and would still read as a history.
+fn a_split_tables_record_history_merges_its_shard_and_database_logs_in_commit_order() {
     let store = store();
     let mut session = tenancy(&store);
     session
         .run(
             "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g'; \
-             CREATE orders:'h' = { total: 1 };",
+             CREATE orders:'h' = { total: 1 }; CREATE orders:'a' = { total: 0 }; \
+             UPDATE orders:'h' MERGE { total: 2 }; \
+             BEGIN; UPDATE orders:'h' MERGE { total: 3 }; UPDATE orders:'a' MERGE { total: 9 }; COMMIT; \
+             UPDATE orders:'h' MERGE { total: 4 };",
         )
         .unwrap();
-    match session.run("INFO FOR HISTORY OF orders:'h';") {
-        Err(Error::SpansShardLogs { table, .. }) => assert_eq!(table, "orders"),
-        other => panic!("expected SpansShardLogs, got {other:?}"),
-    }
-    // The control: an unsplit table's history still answers.
+    let Value::Object(history) = report(&mut session, "INFO FOR HISTORY OF orders:'h';") else {
+        panic!("not a report");
+    };
+    let Some(Value::Array(events)) = history.get("events") else {
+        panic!("no events: {history:?}");
+    };
+    let seen: Vec<(String, String)> = events
+        .iter()
+        .map(|event| {
+            let Value::Object(event) = event else {
+                panic!("not an event: {event:?}");
+            };
+            (
+                format!(
+                    "{:?}",
+                    event.get("value").and_then(|value| match value {
+                        Value::Object(fields) => fields.get("total").cloned(),
+                        _ => None,
+                    })
+                ),
+                format!("{:?}", event.get("log")),
+            )
+        })
+        .collect();
+    let expected: Vec<(String, String)> = [
+        ("4", "shard 2"),
+        ("3", "database"),
+        ("2", "shard 2"),
+        ("1", "shard 2"),
+    ]
+    .iter()
+    .map(|(total, log)| {
+        (
+            format!("{:?}", Some(Value::from(total.parse::<i64>().unwrap()))),
+            format!("{:?}", Some(Value::from(*log))),
+        )
+    })
+    .collect();
+    assert_eq!(seen, expected);
+    assert_eq!(history.get("complete"), Some(&Value::Bool(true)));
+    // The control: an unsplit table's history answers as it always did, with
+    // no log named on its events.
     session
         .run("DEFINE TABLE plain (n int); CREATE plain:1 = { n: 1 };")
         .unwrap();
-    assert!(session.run("INFO FOR HISTORY OF plain:1;").is_ok());
+    let Value::Object(plain) = report(&mut session, "INFO FOR HISTORY OF plain:1;") else {
+        panic!("not a report");
+    };
+    let Some(Value::Array(events)) = plain.get("events") else {
+        panic!("no events: {plain:?}");
+    };
+    assert_eq!(events.len(), 1);
+    assert!(!format!("{events:?}").contains("\"log\""), "{events:?}");
 }
 
 /// What `INFO FOR NODE` says a peer is subscribed to, by peer name.

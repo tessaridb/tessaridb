@@ -994,6 +994,11 @@ fn collect_from_upstream(
                     return;
                 }
             };
+            // Every home is asked in ONE round and applied in the writer's
+            // commit order (ADR-0084): one after another, a later commit filed
+            // in a coarser log was applied before an earlier one in a finer log
+            // and a record both touched ended at the older value (Q-796).
+            let mut asks = Vec::new();
             for home in logs {
                 // The PEER's log as this node holds it, and emphatically not
                 // this node's own. A log is a home AND a writer, so the two are
@@ -1020,8 +1025,12 @@ fn collect_from_upstream(
                         continue;
                     }
                 };
+                asks.push((home, collecting.reached(home).unwrap_or(seed)));
+            }
+            let answers = collector.round(store, &asks);
+            for ((home, at), answer) in asks.into_iter().zip(answers) {
                 let before = collecting.reached(home);
-                match collecting.once(home, seed, |at| collector.collect(store, home, at)) {
+                match collecting.once(home, at, |_| answer) {
                     // A refusal, said out loud. It reaches here rather than
                     // being absorbed by the cursor because *the peer turned me
                     // away* and *the peer had nothing for me* leave the cursor
@@ -1108,6 +1117,8 @@ fn collect_placed_ranges(
             limit: tessari_constants::COLLECTION_RECORDS,
         };
         let collecting = by_leader.entry(node).or_default();
+        // One round per range, applied in its leader's commit order (ADR-0084).
+        let mut asks = Vec::new();
         for home in logs.iter().copied().filter(|home| range.contains(*home)) {
             let log = tessari_storage::LogId::new(home, tessari_storage::Writer::new(node));
             let seed = match store.committed_tail(log) {
@@ -1117,7 +1128,11 @@ fn collect_placed_ranges(
                     continue;
                 }
             };
-            if let Err(why) = collecting.once(home, seed, |at| collector.collect(store, home, at)) {
+            asks.push((home, collecting.reached(home).unwrap_or(seed)));
+        }
+        let answers = collector.round(store, &asks);
+        for ((home, at), answer) in asks.into_iter().zip(answers) {
+            if let Err(why) = collecting.once(home, at, |_| answer) {
                 log::warn!(
                     "collecting {home:?} from {endpoint}, its range's leader, was refused: {why}"
                 );

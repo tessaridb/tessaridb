@@ -1601,7 +1601,14 @@ impl Store {
                     kept.push(mutation.clone());
                 }
             }
-            carried.push((sequence, LogRecord::at(record.epoch(), kept)));
+            // An emptied record is still a commit of its writer, and a
+            // follower merging logs by order needs to know where it stood even
+            // when nothing in it was carried (ADR-0084).
+            let mut rebuilt = LogRecord::at(record.epoch(), kept);
+            if let Some(order) = record.order() {
+                rebuilt.set_order(order);
+            }
+            carried.push((sequence, rebuilt));
         }
         Ok(carried)
     }

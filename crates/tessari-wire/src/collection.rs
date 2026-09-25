@@ -35,7 +35,7 @@ use rustls::pki_types::CertificateDer;
 
 use tessari_constants::{COLLECTION_BUDGET_BYTES, COLLECTION_PAGE_RECORDS};
 use tessari_encoding::{LogId, LogRecord, NODE_ID_LEN, StoreValue};
-use tessari_storage::{Catalog, Currency, Reach, Store};
+use tessari_storage::{Catalog, Currency, Horizon, Reach, Store};
 use tessari_types::{Epoch, Sequence};
 
 use crate::error::{Error, Result};
@@ -160,6 +160,16 @@ pub struct Collected {
     /// that predates the field carries nothing here, which reads as not stated:
     /// the follower then holds everything it has, as every follower did before.
     pub over: Option<Reach>,
+    /// The writer's commit order this leader had reached when it read the
+    /// records (G034, ADR-0084).
+    ///
+    /// Read BEFORE the records, so every commit of this log ordered at or below
+    /// it is in the answer when the answer is level. A follower applying several
+    /// of one writer's logs in commit order needs exactly that: a level page
+    /// with no order proves nothing about what the log may yet hold below a
+    /// record of another log. A body from a leader that predates the field
+    /// carries nothing here, and the follower then applies as it always did.
+    pub order: Option<Sequence>,
 }
 
 impl Collected {
@@ -185,6 +195,10 @@ impl Collected {
         // in an older leader's answer.
         if let Some(over) = self.over {
             frame::put_reach(&mut body, over);
+            // After `over` and only with it, so its position is known.
+            if let Some(order) = self.order {
+                frame::put_u64(&mut body, order.get());
+            }
         }
         body
     }
@@ -217,10 +231,16 @@ impl Collected {
         // byte and the byte it would have written say the same thing.
         let stopped_early = body.get(at).is_some_and(|flag| *flag != 0);
         let after = at.saturating_add(1);
-        let over = if body.len() > after {
-            Some(frame::take_reach(body, after)?.0)
+        let (over, order) = if body.len() > after {
+            let (over, next) = frame::take_reach(body, after)?;
+            let order = if body.len() > next {
+                Some(Sequence::new(frame::take_u64(body, next)?.0))
+            } else {
+                None
+            };
+            (Some(over), order)
         } else {
-            None
+            (None, None)
         };
         Ok(Self {
             log,
@@ -228,6 +248,7 @@ impl Collected {
             records,
             stopped_early,
             over,
+            order,
         })
     }
 }
@@ -459,6 +480,9 @@ impl Origin for Serving<'_> {
         // two differ the ask is larger than anything this node could answer, so
         // the whole log is the honest ceiling.
         let limit = usize::try_from(asked.limit).unwrap_or(usize::MAX);
+        // Before the records, so a commit landing while they are read is above
+        // it rather than missing below it (ADR-0084).
+        let order = self.log.committed_version().map_err(refused)?;
         let (records, stopped_early) = self.fill(over, served, asked.from, limit)?;
         // What the follower now holds: the last position it was handed, or —
         // when it was handed nothing — the one it told us it was at. The same
@@ -477,6 +501,7 @@ impl Origin for Serving<'_> {
             records,
             stopped_early,
             over: Some(over),
+            order: Some(order),
         })
     }
 }
@@ -659,6 +684,114 @@ impl Collector<'_> {
     /// `Store::apply_record_in` already makes about the home: a fact about the
     /// collect, and not a second authority over the record.
     pub fn collect(&self, into: &Store, home: Reach, from: Sequence) -> Result<Sequence> {
+        self.round(into, &[(home, from)])
+            .pop()
+            .unwrap_or_else(|| Ok(Sequence::new(from.get().saturating_sub(1))))
+    }
+
+    /// Collect every `(home, from)` once, apply the answers together in their
+    /// writer's commit order, and answer how far each home now reaches, in the
+    /// order asked.
+    ///
+    /// # Why the logs are applied together
+    ///
+    /// One writer files its commits across these logs, and applying them one
+    /// after another put a later commit of a coarser log before an earlier one of
+    /// a finer log — a record both touched ended at the OLDER value here, with
+    /// nothing in an error state (Q-796). The store's writer-order apply takes
+    /// the whole round and applies only what every answer proves complete; what
+    /// it withholds is asked for again next round (ADR-0084).
+    ///
+    /// # Errors
+    ///
+    /// Each home answers its own dial's refusal. A record the store refuses fails
+    /// every home the round fetched, since the round is applied as one; what was
+    /// applied before it stays, and each cursor stays where it was, so the next
+    /// round re-offers records this node may already hold.
+    pub fn round(&self, into: &Store, asks: &[(Reach, Sequence)]) -> Vec<Result<Sequence>> {
+        let fetched: Vec<Result<Collected>> = asks
+            .iter()
+            .map(|(home, from)| self.fetch(into, *home, *from))
+            .collect();
+        let applied = {
+            let pages: Vec<tessari_storage::Page<'_>> = fetched
+                .iter()
+                .filter_map(|answer| answer.as_ref().ok())
+                .map(|collected| tessari_storage::Page {
+                    log: collected.log,
+                    previous: collected.previous,
+                    records: &collected.records,
+                    horizon: self.horizon_of(collected),
+                })
+                .collect();
+            into.apply_in_writer_order(&pages)
+        };
+        let mut applied = match applied {
+            Ok(applied) => applied.into_iter(),
+            Err(why) => {
+                let message = why.to_string();
+                return fetched
+                    .into_iter()
+                    .map(|answer| {
+                        answer.and_then(|_| {
+                            Err(Error::Refused {
+                                message: message.clone(),
+                            })
+                        })
+                    })
+                    .collect();
+            }
+        };
+        fetched
+            .into_iter()
+            .zip(asks)
+            .map(|(answer, (_, from))| {
+                let collected = answer?;
+                let held = Sequence::new(from.get().saturating_sub(1));
+                let reached = applied.next().flatten();
+                let whole = reached == collected.records.last().map(|(at, _)| *at);
+                // What the leader served this node under, recorded so the node
+                // knows what it holds (G031, ADR-0081). After the records
+                // applied: a refusal above leaves the old answer standing, which
+                // errs toward answering fewer reads rather than more.
+                if let Some(over) = collected.over {
+                    into.record_served(over).map_err(refused)?;
+                }
+                // Level only when the leader had no more AND this node applied
+                // all of it. A short answer is the one moment a node can observe
+                // that its copy was current; a record held back for the next
+                // round means it is not, whatever the leader said.
+                let currency = if whole
+                    && matches!(
+                        self.horizon_of(&collected),
+                        Horizon::Level(_) | Horizon::Unstated
+                    ) {
+                    Currency::Level
+                } else {
+                    Currency::Behind
+                };
+                let reached = reached.unwrap_or(held);
+                into.collected(reached, currency);
+                Ok(reached)
+            })
+            .collect()
+    }
+
+    /// What one answer proves about its log.
+    ///
+    /// Short means the peer had no more — unless it stopped on its byte budget,
+    /// which only it knows and says. A full answer is contact and not arrival.
+    fn horizon_of(&self, collected: &Collected) -> Horizon {
+        let carried = u64::try_from(collected.records.len()).unwrap_or(u64::MAX);
+        if carried < self.limit && !collected.stopped_early {
+            collected.order.map_or(Horizon::Unstated, Horizon::Level)
+        } else {
+            Horizon::Full
+        }
+    }
+
+    /// Ask the peer for `home` from `from`, and hand back its answer unapplied.
+    fn fetch(&self, into: &Store, home: Reach, from: Sequence) -> Result<Collected> {
         let held = Sequence::new(from.get().saturating_sub(1));
         // Before the dial, not after it: a node that must not apply this log has
         // no business opening a connection for it, and refusing after the answer
@@ -691,49 +824,12 @@ impl Collector<'_> {
                 tag: crate::peer::PeerFrame::Collected.tag(),
             });
         };
-
-        let log = collected.log;
-        let carried = u64::try_from(collected.records.len()).unwrap_or(u64::MAX);
-        let mut previous = collected.previous;
-        let mut reached = held;
-        for (at, record) in &collected.records {
-            // The log this collect read, which is the log it is applied into.
-            // The two were allowed to differ while the frame named none: a
-            // namespace subscriber read the leader's namespace log and filed
-            // every record in its OWN store log, so the sequences counted in a
-            // counter they never came from and nothing was in an error state to
-            // say so.
-            into.apply_from_stream(log, *at, previous, record)
-                .map_err(refused)?;
-            previous = record.epoch();
-            reached = *at;
-        }
-
-        // Short means the peer had no more, which is the one moment this node
-        // can observe that its copy was current. A full answer is contact and
-        // not arrival, and recording it as arrival would admit exactly the read
-        // a staleness bound exists to exclude.
-        //
-        // Short is no longer enough on its own. A leader fills one answer under
-        // a byte budget as well as a record count, so an answer can be short
-        // because the leader had no more OR because the answer was full — and
-        // only the leader knows which. It says so, and a follower that read
-        // *level* off the budget would record itself current while it is
-        // behind, which is precisely the reading the bound exists to exclude.
-        // What the leader served this node under, recorded so the node knows
-        // what it holds (G031, ADR-0081). After the records applied: a record
-        // refused above leaves the old answer standing, which errs toward
-        // answering fewer reads rather than more.
-        if let Some(over) = collected.over {
-            into.record_served(over).map_err(refused)?;
-        }
-        let currency = if carried < self.limit && !collected.stopped_early {
-            Currency::Level
-        } else {
-            Currency::Behind
-        };
-        into.collected(reached, currency);
-        Ok(reached)
+        // The log this collect read is the log it is applied into. The two were
+        // allowed to differ while the frame named none: a namespace subscriber
+        // read the leader's namespace log and filed every record in its OWN
+        // store log, so the sequences counted in a counter they never came from
+        // and nothing was in an error state to say so.
+        Ok(collected)
     }
 }
 
@@ -1344,6 +1440,7 @@ mod tests {
             ],
             stopped_early: true,
             over: None,
+            order: None,
         };
         let back = Collected::decode(&answer.encode()).expect("an answer");
         assert_eq!(back, answer);
@@ -1413,6 +1510,7 @@ mod tests {
             records: vec![(Sequence::new(7), record)],
             stopped_early: false,
             over: None,
+            order: None,
         };
 
         let encoded = answer.encode();
@@ -1629,6 +1727,7 @@ mod tests {
             records: Vec::new(),
             stopped_early: false,
             over: Some(shard),
+            order: None,
         };
         let encoded = answer.encode();
         assert_eq!(
@@ -1640,6 +1739,22 @@ mod tests {
         let older = &encoded[..encoded.len() - 17];
         assert_eq!(
             Collected::decode(older).expect("an older answer").over,
+            None
+        );
+        // G034 — the leader's order travels after `over`, and a body that ends
+        // at `over` (a leader that predates it) reads as not stated.
+        let ordered = Collected {
+            order: Some(Sequence::new(42)),
+            ..answer
+        };
+        let bytes = ordered.encode();
+        let back = Collected::decode(&bytes).expect("an ordered answer");
+        assert_eq!(back.order, Some(Sequence::new(42)));
+        assert_eq!(back.over, Some(shard));
+        assert_eq!(
+            Collected::decode(&bytes[..bytes.len() - 8])
+                .expect("an answer without an order")
+                .order,
             None
         );
     }
@@ -1669,6 +1784,67 @@ mod tests {
                 .any(|home| matches!(home, Reach::Shard(_, _, _, shard) if shard.get() == 1)),
             "the sibling shard is not asked for: {narrowed:?}"
         );
+    }
+
+    /// G034 S1.2 over the peer door (Q-796): a record written by a
+    /// one-database commit and then by a two-database one ends at the leader's
+    /// value on a follower that collects every log in one round. Collected a
+    /// log at a time, the namespace log's later commit was applied first and the
+    /// database log's earlier one last.
+    #[test]
+    fn a_round_applies_a_writers_logs_in_the_order_it_committed_them() {
+        let authority = Authority::new();
+        let leader = granting(" REPLICATES NAMESPACE prod");
+        leader
+            .session()
+            .run(
+                "USE NAMESPACE prod; DEFINE DATABASE notes; USE DATABASE notes; \
+                 DEFINE COLLECTION pad; CREATE pad:1 = { n: 0 }; \
+                 USE DATABASE orders; UPDATE users:1 MERGE { n: 3 }; \
+                 BEGIN; UPDATE users:1 MERGE { n: 4 }; USE DATABASE notes; \
+                 UPDATE pad:1 MERGE { n: 1 }; COMMIT;",
+            )
+            .expect("the leader's writes");
+        // The store's log, then the four logs it makes known in one round.
+        let (address, door) = declaring_for(&authority, &leader, 5);
+        let follower = Db::in_memory().expect("an in-memory store");
+        let mine = authority.issue(THERE, Purpose::Peer);
+        let der = authority.der();
+        let said = hello(THERE);
+        let collector = collector(&mine, &der, &said, address, 1024);
+        let store = collector
+            .collect(follower.store(), Reach::Store, Sequence::new(1))
+            .expect("the store's log");
+        let logs = logs_to_collect(follower.store()).expect("this node's own logs");
+        assert_eq!(
+            logs.len(),
+            4,
+            "store, namespace and two databases: {logs:?}"
+        );
+        let asks: Vec<(Reach, Sequence)> = logs
+            .iter()
+            .map(|home| {
+                let from = if *home == Reach::Store {
+                    Sequence::new(store.get() + 1)
+                } else {
+                    Sequence::new(1)
+                };
+                (*home, from)
+            })
+            .collect();
+        for reached in collector.round(follower.store(), &asks) {
+            reached.expect("every log collects");
+        }
+        door.join().expect("the door's thread");
+        let read = |db: &Db| {
+            let outcomes = db
+                .session()
+                .run("USE NAMESPACE prod; USE DATABASE orders; SELECT n FROM users:1;")
+                .expect("a read");
+            format!("{:?}", outcomes.last())
+        };
+        assert!(read(&leader).contains("Integer(4)"), "{}", read(&leader));
+        assert_eq!(read(&follower), read(&leader));
     }
 
     #[test]

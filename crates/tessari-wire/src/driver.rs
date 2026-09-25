@@ -2112,4 +2112,20 @@ mod tests {
         assert_eq!(stands_for(&declared, &NODE), Some(shard(2)));
         assert_eq!(stands_for(&declared, &ANOTHER), None);
     }
+
+    /// G034 S3.2 (Q-797). Two rows bound to one node, each placing a range:
+    /// the node stands for the first row's range only, so it never leads two
+    /// placed lines. A commit spanning two placed lines therefore cannot be
+    /// taken by one node, and a node's own database or namespace log is written
+    /// only under the store line or a coarser placement it leads — both of
+    /// which the collectors already ask it for.
+    #[test]
+    fn a_node_bound_to_two_placing_rows_stands_for_one_range() {
+        let mut first = named("a", "10.0.0.1:9000", NODE);
+        first.leads = Some(shard(2));
+        let mut second = named("c", "10.0.0.1:9000", NODE);
+        second.leads = Some(shard(3));
+        let declared = [first, named("b", "10.0.0.2:9000", ANOTHER), second];
+        assert_eq!(stands_for(&declared, &NODE), Some(shard(2)));
+    }
 }

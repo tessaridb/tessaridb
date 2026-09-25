@@ -421,7 +421,7 @@ impl Transaction<'_> {
                 return Err(Error::NoLeadershipYet);
             }
         }
-        let record = self.log_record(identity.id, &placement)?;
+        let mut record = self.log_record(identity.id, &placement)?;
         // The log this commit belongs to, derived from the record before the
         // loop because it cannot change between attempts: it is a property of
         // what is being written, not of the state being written onto. The
@@ -473,6 +473,11 @@ impl Transaction<'_> {
             // a state that has since moved (Q-614).
             let commit_version =
                 Sequence::new(self.store.committed_version()?.get().saturating_add(1));
+            // And the version is the writer's ORDER, written into the record:
+            // this node files its commits in one log per home, and a follower
+            // applying those logs needs to know where each commit stood among
+            // all of them — which only the writer knows (ADR-0084, Q-796).
+            record.set_order(commit_version);
             // Index entries are derived here rather than carried in the record,
             // and they are derived inside the loop because they depend on the
             // committed state this attempt is building on (see `crate::index`).

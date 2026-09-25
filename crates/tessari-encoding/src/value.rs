@@ -65,11 +65,27 @@ const FLAG_STAMP: u8 = 0b0000_0100;
 /// reading its shard field as the next mutation's namespace.
 const FLAG_SHARDS: u8 = 0b0000_1000;
 
+/// Bit 4 of the flags byte, on a log record only: the record carries its
+/// writer's commit order (G034, ADR-0084).
+///
+/// One writer files its commits in the log of each commit's home, so its one
+/// order is spread over several logs and no position in one says anything about
+/// a position in another. The writer is the only node that knows the order, so
+/// it writes it here — its store version at commit, which already orders every
+/// commit it makes — and a follower applies one writer's records across logs in
+/// it. Without it a later commit filed in a coarser log was applied before an
+/// earlier one filed in a finer log, and the follower ended at the older value
+/// (Q-796). A record without the bit keeps the bytes it always had.
+const FLAG_ORDER: u8 = 0b0001_0000;
+
 /// Bytes of header that precede every payload.
 const HEADER_LEN: usize = 2;
 
 /// Bytes an epoch occupies when a log record carries one.
 const EPOCH_LEN: usize = 8;
+
+/// Bytes a writer's commit order occupies when a log record carries one.
+const ORDER_LEN: usize = 8;
 
 /// Bytes the entry count occupies in front of a stamp's entries.
 const STAMP_COUNT_LEN: usize = 4;
@@ -380,6 +396,8 @@ pub struct Mutation {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LogRecord {
     epoch: Epoch,
+    /// Where this commit stands among every commit its writer made, in any log.
+    order: Option<Sequence>,
     mutations: Vec<Mutation>,
 }
 
@@ -410,7 +428,24 @@ impl LogRecord {
                 &right.id,
             ))
         });
-        Self { epoch, mutations }
+        Self {
+            epoch,
+            order: None,
+            mutations,
+        }
+    }
+
+    /// State where its writer committed this record among all its commits
+    /// (ADR-0084). Set by the commit that decides it, once per attempt.
+    pub const fn set_order(&mut self, order: Sequence) {
+        self.order = Some(order);
+    }
+
+    /// Where the writer committed this record among all its commits, or `None`
+    /// for a record written before commits carried it.
+    #[must_use]
+    pub const fn order(&self) -> Option<Sequence> {
+        self.order
     }
 
     /// The leadership that wrote this record.
@@ -439,6 +474,18 @@ impl LogRecord {
     pub fn epoch_in(bytes: &[u8]) -> Result<Epoch> {
         Ok(split_epoch(bytes)?.1)
     }
+
+    /// Read the writer's commit order out of encoded bytes without decoding
+    /// the mutations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the bytes are truncated, carry an unsupported
+    /// codec version, or set a reserved flag bit.
+    pub fn order_in(bytes: &[u8]) -> Result<Option<Sequence>> {
+        let (flags, _, payload) = split_epoch(bytes)?;
+        Ok(split_order(bytes, flags, payload)?.0)
+    }
 }
 
 /// Split the optional epoch off an encoded log record.
@@ -448,7 +495,7 @@ impl LogRecord {
 /// the reason this record carries no mutation count either. Answers the flags as
 /// well, because whether each mutation carries a shard is one of them.
 fn split_epoch(bytes: &[u8]) -> Result<(u8, Epoch, &[u8])> {
-    let (flags, payload) = split_header(bytes, FLAG_EPOCH | FLAG_SHARDS)?;
+    let (flags, payload) = split_header(bytes, FLAG_EPOCH | FLAG_SHARDS | FLAG_ORDER)?;
     if flags & FLAG_EPOCH == 0 {
         return Ok((flags, Epoch::ZERO, payload));
     }
@@ -463,6 +510,28 @@ fn split_epoch(bytes: &[u8]) -> Result<(u8, Epoch, &[u8])> {
         flags,
         Epoch::new(u64::from_be_bytes(raw)),
         payload.get(EPOCH_LEN..).unwrap_or_default(),
+    ))
+}
+
+/// Split the optional commit order off what follows the epoch.
+fn split_order<'a>(
+    bytes: &[u8],
+    flags: u8,
+    payload: &'a [u8],
+) -> Result<(Option<Sequence>, &'a [u8])> {
+    if flags & FLAG_ORDER == 0 {
+        return Ok((None, payload));
+    }
+    let raw: [u8; ORDER_LEN] = payload
+        .get(..ORDER_LEN)
+        .and_then(|head| head.try_into().ok())
+        .ok_or(Error::ValueTruncated {
+            len: bytes.len(),
+            needed: HEADER_LEN.saturating_add(ORDER_LEN),
+        })?;
+    Ok((
+        Some(Sequence::new(u64::from_be_bytes(raw))),
+        payload.get(ORDER_LEN..).unwrap_or_default(),
     ))
 }
 
@@ -510,9 +579,24 @@ impl StoreValue for LogRecord {
             (FLAG_EPOCH, Some(self.epoch.get().to_be_bytes()))
         };
         let flags = if sharded { flags | FLAG_SHARDS } else { flags };
-        let mut buffer = with_header(flags, payload.len().saturating_add(EPOCH_LEN));
+        let flags = if self.order.is_some() {
+            flags | FLAG_ORDER
+        } else {
+            flags
+        };
+        let mut buffer = with_header(
+            flags,
+            payload
+                .len()
+                .saturating_add(EPOCH_LEN)
+                .saturating_add(ORDER_LEN),
+        );
         if let Some(epoch) = epoch {
             buffer.extend_from_slice(&epoch);
+        }
+        // After the epoch, so the epoch keeps its fixed offset.
+        if let Some(order) = self.order {
+            buffer.extend_from_slice(&order.get().to_be_bytes());
         }
         buffer.extend_from_slice(&payload);
         Value::from(buffer)
@@ -520,6 +604,7 @@ impl StoreValue for LogRecord {
 
     fn decode(bytes: &[u8]) -> Result<Self> {
         let (flags, epoch, payload) = split_epoch(bytes)?;
+        let (order, payload) = split_order(bytes, flags, payload)?;
         let sharded = flags & FLAG_SHARDS != 0;
         // The reader is the crate's bounds-checked byte cursor. The kind it is
         // built with only names the entity in a truncation error, and no kind
@@ -549,7 +634,11 @@ impl StoreValue for LogRecord {
                 value: StampedValue::decode(&encoded)?,
             });
         }
-        Ok(Self { epoch, mutations })
+        Ok(Self {
+            epoch,
+            order,
+            mutations,
+        })
     }
 }
 
@@ -1192,6 +1281,41 @@ mod tests {
         split.shard = Some(ShardId::new(1));
         let bytes = LogRecord::new(vec![split]).encode().into_bytes();
         assert!(LogRecord::decode(&bytes[..HEADER_LEN + 14]).is_err());
+    }
+
+    /// G034 S1.1 — the writer's commit order survives a round trip, sits after
+    /// the epoch so the epoch keeps its fixed offset.
+    #[test]
+    fn a_record_carries_its_writers_order_after_the_epoch() {
+        let written = mutation(RecordId::from("m"), RecordValue::Present(b"v".to_vec()));
+        let mut record = LogRecord::at(Epoch::new(3), vec![written]);
+        record.set_order(Sequence::new(41));
+        let bytes = record.encode().into_bytes();
+        assert_eq!(bytes[1], FLAG_EPOCH | FLAG_ORDER);
+        assert_eq!(LogRecord::epoch_in(&bytes).unwrap(), Epoch::new(3));
+        assert_eq!(
+            &bytes[HEADER_LEN + EPOCH_LEN..HEADER_LEN + EPOCH_LEN + ORDER_LEN],
+            &41_u64.to_be_bytes()
+        );
+        assert_eq!(
+            LogRecord::order_in(&bytes).unwrap(),
+            Some(Sequence::new(41))
+        );
+        let decoded = LogRecord::decode(&bytes).unwrap();
+        assert_eq!(decoded, record);
+        assert_eq!(decoded.order(), Some(Sequence::new(41)));
+        // And a record without one reads back as none, flag clear.
+        let plain = LogRecord::new(Vec::new()).encode().into_bytes();
+        assert_eq!(plain[1] & FLAG_ORDER, 0);
+        assert_eq!(LogRecord::order_in(&plain).unwrap(), None);
+    }
+
+    #[test]
+    fn a_record_claiming_an_order_it_did_not_write_is_truncated_not_guessed() {
+        let mut bytes = LogRecord::new(Vec::new()).encode().into_bytes();
+        bytes[1] = FLAG_ORDER;
+        assert!(LogRecord::decode(&bytes).is_err());
+        assert!(LogRecord::order_in(&bytes).is_err());
     }
 
     #[test]
