@@ -17,6 +17,7 @@ use tessari_types::Sequence;
 use crate::effect::{Effect, admits};
 use crate::elsewhere::Elsewhere;
 use crate::error::{Error, Result};
+use crate::gather::Gather;
 use crate::identity::{self, Identity};
 use crate::outcome::Outcome;
 use crate::throttle;
@@ -67,6 +68,12 @@ pub struct Session<'a> {
     /// node. Visible to the crate because `evaluate.rs` is the one thing that
     /// asks it anything.
     pub(crate) elsewhere: Option<Arc<dyn Elsewhere>>,
+    /// Who fetches the shards of a split table this node lacks (G033).
+    ///
+    /// `None` on a node told of no peers, and withheld for the length of a
+    /// transaction or a `VERSION` read — see [`Session::step`] — so a read
+    /// there refuses exactly as it did before gathering existed.
+    pub(crate) gather: Option<Arc<dyn Gather>>,
 }
 
 /// Who a session is, to a queue.
@@ -98,6 +105,7 @@ impl<'a> Session<'a> {
             database: None,
             consumer: None,
             elsewhere: None,
+            gather: None,
         }
     }
 
@@ -115,6 +123,15 @@ impl<'a> Session<'a> {
     #[must_use]
     pub fn among(mut self, elsewhere: Arc<dyn Elsewhere>) -> Self {
         self.elsewhere = Some(elsewhere);
+        self
+    }
+
+    /// Open this session able to gather the shards of a split table this node
+    /// lacks from their leaders (G033, ADR-0083), rather than refusing a read
+    /// that needs them.
+    #[must_use]
+    pub fn gathering(mut self, gather: Arc<dyn Gather>) -> Self {
+        self.gather = Some(gather);
         self
     }
 
@@ -384,6 +401,7 @@ impl<'a> Session<'a> {
             // is the same fact whoever is asking, and a probe that lost it would
             // answer a bounded read differently from the session that spawned it.
             elsewhere: self.elsewhere.clone(),
+            gather: self.gather.clone(),
         };
         probe.acting_as(id)?;
         Ok(probe)
@@ -568,7 +586,13 @@ impl<'a> Session<'a> {
                 }
                 (Some(version), None) => {
                     let mut transaction = store.begin_at(Sequence::new(version.at))?;
-                    let outcome = self.execute(&mut transaction, other, span)?;
+                    // A past state is one snapshot, and a gathered part would be
+                    // another node's present (G033): withheld, so the read
+                    // refuses as it always has.
+                    let gather = self.gather.take();
+                    let outcome = self.execute(&mut transaction, other, span);
+                    self.gather = gather;
+                    let outcome = outcome?;
                     // Rolled back, not committed. A read of the past has nothing
                     // to commit, and a transaction holding an old snapshot is
                     // exactly what a commit would have to reconcile against the
@@ -576,7 +600,13 @@ impl<'a> Session<'a> {
                     transaction.rollback();
                     Ok(outcome)
                 }
-                (None, Some((transaction, _))) => self.execute(transaction, other, span),
+                // A transaction is one snapshot too, for the same reason.
+                (None, Some((transaction, _))) => {
+                    let gather = self.gather.take();
+                    let outcome = self.execute(transaction, other, span);
+                    self.gather = gather;
+                    outcome
+                }
                 (None, None) => {
                     let mut transaction = store.begin()?;
                     let outcome = self.execute(&mut transaction, other, span)?;

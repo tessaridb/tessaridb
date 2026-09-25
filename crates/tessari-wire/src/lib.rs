@@ -67,6 +67,10 @@ mod driver;
 mod error;
 mod frame;
 #[cfg(feature = "server")]
+mod gatherer;
+#[cfg(feature = "server")]
+mod gathering;
+#[cfg(feature = "server")]
 mod grant;
 #[cfg(feature = "server")]
 mod joining;
@@ -101,6 +105,10 @@ pub use crate::driver::{
     upstream, voters,
 };
 pub use crate::error::{Error, Result};
+#[cfg(feature = "server")]
+pub use crate::gatherer::{Gathering, Greeting};
+#[cfg(feature = "server")]
+pub use crate::gathering::{Gather, Page, Ungathered};
 #[cfg(feature = "server")]
 pub use crate::grant::{Ballot, Deciding, Leadership, Reached, Refused, Round, Vote, Voter};
 #[cfg(feature = "server")]

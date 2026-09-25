@@ -278,7 +278,8 @@ pub(crate) fn covering(
 /// reaches the store leader only after the range leader's log does, and in that
 /// window both would write. The same order as [`covering`], so the line and the
 /// row a write is redirected by cannot disagree about which range is narrower.
-pub(crate) fn governing(placed: &std::collections::BTreeSet<Reach>, range: Reach) -> Reach {
+#[must_use]
+pub fn governing(placed: &std::collections::BTreeSet<Reach>, range: Reach) -> Reach {
     placed
         .iter()
         .copied()

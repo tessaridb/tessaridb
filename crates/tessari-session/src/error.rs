@@ -697,6 +697,36 @@ pub enum Error {
         shards: Vec<u32>,
     },
 
+    /// A shard this node lacks could not be fetched from its leader (G033).
+    ///
+    /// The whole read is refused, because an answer missing one shard's records
+    /// is a partial answer that looks whole.
+    #[error(
+        "shard {shard} of `{table}` could not be fetched from its leader, so the read is \
+         refused rather than answered without it: {why}"
+    )]
+    NotGathered {
+        /// The table asked for.
+        table: String,
+        /// The shard nobody answered for.
+        shard: u32,
+        /// What refused, in its own words.
+        why: String,
+    },
+
+    /// A gathered read would hold more records than a node holds in memory (G033).
+    #[error(
+        "reading `{table}` here would gather more than {most} records, and this build \
+         refuses rather than shorten the answer — read a span of identities inside the \
+         shards this node holds, or read on a node that holds the whole table"
+    )]
+    GatheredTooMuch {
+        /// The table asked for.
+        table: String,
+        /// The ceiling.
+        most: usize,
+    },
+
     /// A read that follows one log was asked of a split table (G031, ADR-0080).
     ///
     /// A split table's commits land in its shards' logs, and a commit spanning

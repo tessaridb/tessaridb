@@ -78,6 +78,14 @@ pub enum PeerFrame {
     /// would send an operator to the wrong one of the three, and closing the
     /// socket instead would send them to a packet capture.
     Unsubscribed,
+    /// A node asking a shard's leader for one page of that shard's records
+    /// (G033, ADR-0083).
+    Gather,
+    /// The leader's answer: the page.
+    Gathered,
+    /// The leader declining, with the reason — its own tag for the reason
+    /// [`Self::Unsubscribed`] has one.
+    NotGathered,
 }
 
 impl PeerFrame {
@@ -105,6 +113,10 @@ impl PeerFrame {
             Self::Collected => 10,
             Self::Uncollectable => 11,
             Self::Unsubscribed => 12,
+            // 13 is the client's `Elsewhere`; disjointness is the rule.
+            Self::Gather => 14,
+            Self::Gathered => 15,
+            Self::NotGathered => 16,
         }
     }
 
@@ -119,6 +131,9 @@ impl PeerFrame {
             10 => Some(Self::Collected),
             11 => Some(Self::Uncollectable),
             12 => Some(Self::Unsubscribed),
+            14 => Some(Self::Gather),
+            15 => Some(Self::Gathered),
+            16 => Some(Self::NotGathered),
             _ => None,
         }
     }
@@ -590,12 +605,43 @@ mod tests {
             PeerFrame::Collected,
             PeerFrame::Uncollectable,
             PeerFrame::Unsubscribed,
+            PeerFrame::Gather,
+            PeerFrame::Gathered,
+            PeerFrame::NotGathered,
         ] {
             assert!(
                 frame::Kind::from_tag(kind.tag()).is_none(),
                 "the client reader accepts {kind:?}, which it must close on"
             );
         }
+    }
+
+    /// G033 S2.2 — the seven tags a peer of an earlier build reads keep their
+    /// numbers, and the three gather frames take the next free ones.
+    #[test]
+    fn every_peer_tag_keeps_its_number() {
+        let expected = [
+            (PeerFrame::Hello, 6),
+            (PeerFrame::Ballot, 7),
+            (PeerFrame::Vote, 8),
+            (PeerFrame::Collect, 9),
+            (PeerFrame::Collected, 10),
+            (PeerFrame::Uncollectable, 11),
+            (PeerFrame::Unsubscribed, 12),
+            (PeerFrame::Gather, 14),
+            (PeerFrame::Gathered, 15),
+            (PeerFrame::NotGathered, 16),
+        ];
+        for (kind, tag) in expected {
+            assert_eq!(kind.tag(), tag, "{kind:?}");
+            assert_eq!(PeerFrame::from_tag(tag), Some(kind));
+        }
+        assert_eq!(
+            (0..=u8::MAX)
+                .filter(|tag| PeerFrame::from_tag(*tag).is_some())
+                .count(),
+            expected.len()
+        );
     }
 
     #[test]

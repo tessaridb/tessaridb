@@ -23,7 +23,7 @@ use std::sync::Arc;
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::encode_payload;
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_storage::{Error, RecordAddress, Store, Transaction};
+use tessari_storage::{Error, RecordAddress, Store, Transaction, Window};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId, Value};
 
 const NAMESPACE: NamespaceId = NamespaceId::new(1);
@@ -191,4 +191,82 @@ fn a_record_rewritten_in_this_transaction_is_handed_over_at_its_new_value() {
         .expect("the rewritten record is still in the answer");
     assert_eq!(held.1, payload("pending"));
     assert_eq!(found, scanned(&transaction));
+}
+
+/// The records `records_between` hands back, page after page, until a page
+/// comes back shorter than asked for.
+fn paged(
+    transaction: &Transaction<'_>,
+    from: Option<&RecordId>,
+    to: Option<(&RecordId, bool)>,
+    page: usize,
+) -> Vec<(RecordId, Vec<u8>)> {
+    let mut found: Vec<(RecordId, Vec<u8>)> = Vec::new();
+    loop {
+        let after = found.last().map(|(id, _)| id.clone());
+        let next = transaction
+            .records_between(
+                NAMESPACE,
+                DATABASE,
+                TABLE,
+                Window { from, to },
+                after.as_ref(),
+                page,
+            )
+            .unwrap();
+        assert!(next.len() <= page, "a page of {page} held {}", next.len());
+        let short = next.len() < page;
+        found.extend(next);
+        if short {
+            return found;
+        }
+    }
+}
+
+/// G033: a shard's leader answers a gather page by page from part of a table,
+/// and what it hands over is the scan narrowed to the window — nothing more,
+/// nothing repeated, nothing dropped at a page seam.
+#[test]
+fn a_window_read_in_pages_is_the_scan_narrowed_to_the_window() {
+    let store = populated();
+    let transaction = store.begin().unwrap();
+    let everything = scanned(&transaction);
+    let low = RecordId::from("r000700");
+    let high = RecordId::from("r001900");
+    let windows = [
+        Window::default(),
+        Window {
+            from: Some(&low),
+            to: None,
+        },
+        Window {
+            from: None,
+            to: Some((&high, false)),
+        },
+        Window {
+            from: Some(&low),
+            to: Some((&high, false)),
+        },
+        Window {
+            from: Some(&low),
+            to: Some((&low, true)),
+        },
+    ];
+    for Window { from, to } in windows {
+        let expected: Vec<_> = everything
+            .iter()
+            .filter(|(id, _)| from.is_none_or(|from| id >= from))
+            .filter(|(id, _)| {
+                to.is_none_or(|(to, inclusive)| if inclusive { id <= to } else { id < to })
+            })
+            .cloned()
+            .collect();
+        for page in [1, 7, RANGE_SCAN_BATCH_ENTRIES + 3] {
+            assert_eq!(
+                paged(&transaction, from, to, page),
+                expected,
+                "window {from:?}..{to:?} in pages of {page}"
+            );
+        }
+    }
 }

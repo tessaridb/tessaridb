@@ -1462,6 +1462,20 @@ fn a_cluster_of_three(band: &Band) -> Three {
 /// row — a placement (ADR-0082) is a clause on the member row, so it is declared
 /// where the row is.
 fn a_cluster_declared(band: &Band, preamble: &str, leads: [&str; 3]) -> Three {
+    let every =
+        |lead: &str| format!("ROLES serving, writable, coordinating REPLICATES STORE{lead}");
+    a_cluster_of_rows(
+        band,
+        preamble,
+        [every(leads[0]), every(leads[1]), every(leads[2])],
+    )
+}
+
+/// [`a_cluster_declared`] with each member row's clauses written out whole —
+/// its roles, its subscription and its placement (G033: a node holding one
+/// shard is a row that is not `REPLICATES STORE`). Each node declares its own
+/// roles as its row states them.
+fn a_cluster_of_rows(band: &Band, preamble: &str, rows: [String; 3]) -> Three {
     let directory = tempfile::tempdir().unwrap();
     let minted = Minted::new();
 
@@ -1518,7 +1532,7 @@ fn a_cluster_declared(band: &Band, preamble: &str, leads: [&str; 3]) -> Three {
     // that used to promise one here was describing work nobody wrote: the
     // subscription this fixture actually grants is the whole store, on every
     // node, and the criterion's replication is observed over that.
-    for store in &stores {
+    for (index, store) in stores.iter().enumerate() {
         let db = tessaridb::Db::open(store).unwrap();
         // The peers FIRST and the role LAST, and the order is load-bearing.
         // `DEFINE NODE ROLES` takes effect immediately and locally, so a node
@@ -1540,12 +1554,15 @@ fn a_cluster_declared(band: &Band, preamble: &str, leads: [&str; 3]) -> Three {
         for other in 0..band.len() {
             let named = tessari_types::RecordId::Uuid(ids[other]).to_string();
             script.push_str(&format!(
-                " DEFINE REPLICA n{other} AT '{}' NODE '{named}' \
-                  ROLES serving, writable, coordinating REPLICATES STORE{};",
-                band[other].1, leads[other]
+                " DEFINE REPLICA n{other} AT '{}' NODE '{named}' {};",
+                band[other].1, rows[other]
             ));
         }
-        script.push_str(" DEFINE NODE ROLES serving, writable, coordinating; COMMIT;");
+        let own = rows[index]
+            .strip_prefix("ROLES ")
+            .and_then(|rest| rest.split(" REPLICATES").next())
+            .unwrap();
+        script.push_str(&format!(" DEFINE NODE ROLES {own}; COMMIT;"));
         db.session()
             .run(&script)
             .expect("a cluster of three, declared");
@@ -2968,4 +2985,139 @@ fn a_shard_placed_on_two_nodes_survives_losing_its_leader() {
             what_the_nodes_said(&SHARD_FAILOVER, &logs)
         );
     }
+}
+
+// ---- G033 S3.1: a read gathered across shards, across three processes ------
+
+/// The gathering cluster's addresses — a band of its own, below the hand-run
+/// floor and clear of every other band in this file.
+const GATHERING: Band = [
+    ("127.0.0.1:47853", "127.0.0.1:47854"),
+    ("127.0.0.1:47855", "127.0.0.1:47856"),
+    ("127.0.0.1:47857", "127.0.0.1:47858"),
+];
+
+/// A read at `surface`, answered as its records' identities — or the refusal.
+fn read_at(surface: &str, read: &str) -> Result<Vec<String>, String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    let script = format!("USE NAMESPACE prod; USE DATABASE shop; {read}");
+    match client.run(&script, None) {
+        Ok(answers) => match answers.last() {
+            Some(Answer::Records { records, .. }) => {
+                // Spelled as the language writes an identity: quoted text.
+                Ok(records
+                    .iter()
+                    .map(|(id, _)| id.trim_matches('\'').to_owned())
+                    .collect())
+            }
+            other => Err(format!("{other:?}")),
+        },
+        Err(why) => Err(why.to_string()),
+    }
+}
+
+#[test]
+#[ignore = "real cadences across three processes — two shard lines and the \
+            store line have to be elected, and a follower of one shard has to \
+            collect it. It is G033 S3.1's own validation and is run explicitly: \
+            cargo test -p tessari-cli --test serving a_node_holding_one_shard -- \
+            --ignored"]
+fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
+    let leads = |shard: u32| {
+        format!(
+            "ROLES serving, writable, coordinating REPLICATES STORE \
+             LEADS SHARD prod.shop.orders {shard}"
+        )
+    };
+    let mut cluster = a_cluster_of_rows(
+        &GATHERING,
+        PLACED,
+        [
+            leads(1),
+            leads(2),
+            "ROLES serving REPLICATES SHARD prod.shop.orders 3".to_owned(),
+        ],
+    );
+    let logs = cluster.logs.clone();
+    // One record per shard: shard 1 through its leader, shard 2 through its
+    // leader, and shard 3 — placed on nobody, so the store line's — through
+    // whichever of the two leads the store.
+    for (index, prefix) in [(0, "a"), (1, "h")] {
+        if let Err(last) = until_taken(GATHERING[index].0, prefix, Duration::from_secs(120)) {
+            panic!(
+                "node {index} never took its shard; last: {last}{}",
+                what_the_nodes_said(&GATHERING, &logs)
+            );
+        }
+    }
+    let began = Instant::now();
+    while [0, 1]
+        .iter()
+        .all(|index| until_taken(GATHERING[*index].0, "x", Duration::from_millis(1)).is_err())
+    {
+        assert!(
+            began.elapsed() < Duration::from_secs(120),
+            "neither leader took shard 3{}",
+            what_the_nodes_said(&GATHERING, &logs)
+        );
+        std::thread::sleep(POLL);
+    }
+
+    // Node 2 holds shard 3 alone, and answers all three: shard 3 from its own
+    // copy once collected, shards 1 and 2 gathered from their leaders.
+    let began = Instant::now();
+    let whole = loop {
+        match read_at(GATHERING[2].0, "SELECT * FROM orders;") {
+            Ok(ids) if ids.len() == 3 => break ids,
+            other => {
+                assert!(
+                    began.elapsed() < Duration::from_secs(90),
+                    "node 2 never answered the whole table; last: {other:?}{}",
+                    what_the_nodes_said(&GATHERING, &logs)
+                );
+                std::thread::sleep(POLL);
+            }
+        }
+    };
+    let first: Vec<char> = whole.iter().filter_map(|id| id.chars().next()).collect();
+    assert_eq!(
+        first,
+        ['a', 'h', 'x'],
+        "one record per shard, in key order: {whole:?}"
+    );
+    let counted = read_at(GATHERING[2].0, "SELECT count(*) AS n FROM orders;").unwrap();
+    assert_eq!(counted.len(), 1);
+    let in_the_middle = whole.get(1).unwrap().clone();
+    assert_eq!(
+        read_at(
+            GATHERING[2].0,
+            &format!("SELECT * FROM orders:'{in_the_middle}';")
+        )
+        .unwrap(),
+        vec![in_the_middle.clone()]
+    );
+
+    // Shard 2's leader stops: a read needing shard 2 is refused naming it —
+    // never answered without it — and a read inside what node 2 holds answers.
+    cluster.running[1] = None;
+    let began = Instant::now();
+    loop {
+        match read_at(GATHERING[2].0, "SELECT * FROM orders;") {
+            Err(why) if why.contains("shard 2") => break,
+            Ok(ids) if ids.len() == 3 => {}
+            other => panic!("a partial or wrong answer while shard 2's leader is gone: {other:?}"),
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "node 2 kept answering a read that needs shard 2"
+        );
+        std::thread::sleep(POLL);
+    }
+    assert_eq!(
+        read_at(GATHERING[2].0, "SELECT * FROM orders:'p'..'zz';")
+            .unwrap()
+            .len(),
+        1,
+        "a span inside the shard node 2 holds"
+    );
 }

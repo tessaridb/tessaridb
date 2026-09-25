@@ -316,6 +316,31 @@ fn serve(
     // warning behind a listening socket.
     bootstrap::first_user(&db)?;
     let db = std::sync::Arc::new(db);
+    // Every session this node opens gathers the shards of a split table it
+    // lacks from their leaders (G033, ADR-0083) — on the wire and over HTTP
+    // alike, which is why it is set on the store's handle and not on a surface.
+    // A node with no peers has nobody to ask and refuses as it always has.
+    if let Some(surface) = &peers {
+        let me = db
+            .store()
+            .node_identity()
+            .map_err(|why| format!("this node cannot say who it is: {why}"))?
+            .id;
+        let speaking = std::sync::Arc::downgrade(&db);
+        let gathering = tessari_wire::Gathering::new(
+            &db,
+            me,
+            (surface.dialling.duplicate(), surface.authority.clone()),
+            std::sync::Arc::clone(&surface.routing),
+            Box::new(move || {
+                speaking
+                    .upgrade()
+                    .ok_or_else(|| "this node is stopping".to_owned())
+                    .and_then(|db| greeting(&db))
+            }),
+        );
+        db.gather_through(std::sync::Arc::new(gathering));
+    }
     // Both are bound before either serves, so an address that cannot be taken
     // is a failure to start rather than a surface that quietly went missing
     // while the other one answered.

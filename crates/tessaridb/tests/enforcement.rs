@@ -287,7 +287,26 @@ const TABLES: &[Table] = &[
         // itself, under the guard that the epoch changed. The day that stops
         // being true the fence is not enough alone, and the grant model has to
         // reach this write.
-        expected: 21,
+        //
+        // 22 since a partial node gathers (G033, ADR-0083): `Db::gather_through`
+        // installs, once, who fetches the shards of a split table this node
+        // lacks. It is a DATA path — gathered records answer reads — and it is
+        // classified **ENFORCED**, at both ends and by code already in the path:
+        //
+        //   * the **session**. Gathered records enter the read as stored
+        //     records and are decoded through `records_of` with the caller's
+        //     visibility, after the statement was authorized — so a grant's
+        //     redaction and every condition apply to them exactly as to a local
+        //     record (`gathered_reads::a_hidden_field_is_hidden_in_gathered_records_too`).
+        //   * the **peer door**. A shard's leader hands its records only to a
+        //     proven member whose subscription holds part of the same table
+        //     (`gathering::door::a_peer_holding_nothing_of_the_table_is_refused_by_name`).
+        //
+        // **Re-classification trigger:** the day anything outside the process
+        // can install a gatherer — a statement, a route, a frame — a read could
+        // be answered by records from a source nobody authenticated, and the
+        // session's redaction would be redacting forgeries.
+        expected: 22,
         count: |text| public_functions(&block(text, "impl Db")),
     },
     Table {
@@ -713,7 +732,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // `Store::log_records_newest_first`, both classified in the block above and
     // both added to `RAW_FEED`, so a serving surface reaching past the session
     // to call either one fails the test beside this (W372, Q-739).
-    assert_eq!(total, 95, "the counted tables no longer sum to 95");
+    //
+    // 96 since a partial node gathers: `Db::gather_through`, classified
+    // ENFORCED in the facade's entry above (G033, ADR-0083).
+    assert_eq!(total, 96, "the counted tables no longer sum to 96");
 }
 
 /// Every `.rs` file under a directory.

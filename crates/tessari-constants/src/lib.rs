@@ -873,3 +873,34 @@ pub const MAX_CLAIM_RECORDS: u64 = 500;
 /// definition records it, so a view means the same thing on a node that changes
 /// it.
 pub const MAX_VIEW_DEPTH: usize = 8;
+
+/// The most records a gathered read may hold (G033, ADR-0083).
+///
+/// Unit: records — this node's own part and every gathered part together.
+///
+/// A read of a split table on a node lacking some shards fetches those shards'
+/// records and evaluates the statement over all of them, so the whole answer is
+/// in memory before the first record is handed on, and nothing the author wrote
+/// bounds it: a `LIMIT` or a `WHERE` is evaluated here, after the records have
+/// arrived. Past this the read is REFUSED rather than shortened, because a
+/// gathered answer missing the records past a ceiling is exactly the partial
+/// answer sharding refuses everywhere else.
+///
+/// Ten times the ceiling on a held read written by hand, because a gathered read
+/// is a table read and not a subquery: a table somebody split is a large one.
+pub const GATHER_RECORDS: usize = 100_000;
+
+/// The most bytes of records one gather answer carries.
+///
+/// Unit: bytes.
+///
+/// [`COLLECTION_BUDGET_BYTES`]'s reasoning applied to a gather page: the bound
+/// that protects the answering leader has to be checked while the answer is
+/// filled, and it stays well under the frame ceiling it is not a copy of.
+pub const GATHER_PAGE_BYTES: usize = COLLECTION_BUDGET_BYTES;
+
+/// The most records the answering leader reads from a shard in one pass while
+/// filling a gather page.
+///
+/// Unit: records.
+pub const GATHER_PAGE_RECORDS: usize = 1024;

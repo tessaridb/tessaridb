@@ -64,7 +64,8 @@ pub use field::{FieldDefinition, FieldShape};
 pub use grant::GrantDefinition;
 pub use graph::GraphDefinition;
 pub use leadership::LeadershipDefinition;
-pub(crate) use leadership::{covering, governing};
+pub(crate) use leadership::covering;
+pub use leadership::governing;
 pub use replica::{
     ReplicaDefinition, another_node_may_write, names_a_peer, the_row_a_greeting_binds,
 };

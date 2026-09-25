@@ -51,6 +51,7 @@ use crate::collection::{Collect, Collected, Origin};
 use crate::credential;
 use crate::error::{Error, Result};
 use crate::frame;
+use crate::gathering::{Gather, Page, Ungathered};
 use crate::grant::{Ballot, Deciding, Vote};
 use crate::peer::{Hello, PeerFrame, Purpose, admit};
 
@@ -231,6 +232,26 @@ impl Peers {
                     }
                     None
                 }
+                // A shard's records, for a node holding part of its table
+                // (G033). Its refusal crosses as a frame for the reason the
+                // collection's two do.
+                Some(PeerFrame::Gather) => {
+                    let asked = Gather::decode(&body)?;
+                    match log.gathered(said.node, &asked) {
+                        Ok(page) => frame::write_tagged(
+                            &mut link,
+                            PeerFrame::Gathered.tag(),
+                            &page.encode(),
+                        )?,
+                        Err(Error::NotGathered(why)) => frame::write_tagged(
+                            &mut link,
+                            PeerFrame::NotGathered.tag(),
+                            &[why.byte()],
+                        )?,
+                        Err(why) => return Err(why),
+                    }
+                    None
+                }
                 Some(PeerFrame::Ballot) => {
                     let asked = Ballot::decode(&body)?;
                     // The identity that decides a grant is the one the
@@ -324,6 +345,8 @@ pub enum Ask<'a> {
     Ballot(&'a Ballot),
     /// The records after a position this caller does not hold.
     Records(Collect),
+    /// One page of a shard's records, from that shard's leader (G033).
+    Gather(&'a Gather),
 }
 
 /// What the other end answered with.
@@ -340,6 +363,8 @@ pub enum Answered {
     Voted(Vote),
     /// What the peer's log held.
     Collected(Collected),
+    /// One page of a shard's records.
+    Gathered(Page),
 }
 
 /// Reach the peer `at` on `address`, and exchange greetings.
@@ -425,6 +450,21 @@ fn exchange(
                     Err(Error::Uncollectable { from })
                 }
                 Some(PeerFrame::Unsubscribed) => Err(Error::Unsubscribed),
+                Some(_) => Err(Error::OutOfTurn { tag }),
+                None => Err(Error::UnknownFrame { tag }),
+            }
+        }
+        Ask::Gather(gather) => {
+            frame::write_tagged(&mut link, PeerFrame::Gather.tag(), &gather.encode())?;
+            let (tag, body) = answer(&mut link)?;
+            match PeerFrame::from_tag(tag) {
+                Some(PeerFrame::Gathered) => Ok((heard, Answered::Gathered(Page::decode(&body)?))),
+                // The refusal as the leader sent it, for the reason the two
+                // collection refusals above cross the wire as frames.
+                Some(PeerFrame::NotGathered) => {
+                    let why = body.first().copied().ok_or(Error::Malformed)?;
+                    Err(Error::NotGathered(Ungathered::from_byte(why)?))
+                }
                 Some(_) => Err(Error::OutOfTurn { tag }),
                 None => Err(Error::UnknownFrame { tag }),
             }

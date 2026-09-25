@@ -1193,81 +1193,18 @@ impl Session<'_> {
     /// Refuse a read that needs records this node was not served (G031 S3.3).
     ///
     /// Asked beside [`Self::refuse_reading_a_vault`], at the sources that name
-    /// a table. A node never served anything — a leader, a store standing alone
-    /// — answers `None` for [`tessari_storage::Store::served`] and pays one
-    /// in-memory read; so does every follower whose reach covers the table's
-    /// database, which is every follower there was before shards.
+    /// a table and do not gather (G033): a join side and a `FETCH`. What is
+    /// missing is decided by [`Self::missing`], which the gathered read asks
+    /// too, so the two cannot disagree about what this node holds.
     pub(crate) fn refuse_reading_a_part(
         &self,
         transaction: &mut Transaction<'_>,
         id: TableId,
         part: Part<'_>,
     ) -> Result<()> {
-        let Some(over) = self.store.served() else {
-            return Ok(());
-        };
-        let Some(definition) = Catalog::new(transaction).table(id)? else {
-            return Ok(());
-        };
-        if over.contains(tessari_storage::Reach::Database(
-            definition.namespace,
-            definition.database,
-        )) {
-            return Ok(());
-        }
-        let refused = |shards: Vec<u32>| Error::NotHeldHere {
-            table: definition.name.clone(),
-            shards,
-        };
-        let Some(map) = &definition.shards else {
-            return Err(refused(Vec::new()));
-        };
-        let holds = |shard: tessari_types::ShardId| {
-            over.contains(tessari_storage::Reach::Shard(
-                definition.namespace,
-                definition.database,
-                id,
-                shard,
-            ))
-        };
-        let needed: Vec<tessari_types::ShardId> = match part {
-            Part::Whole => map.spans().map(|span| span.id).collect(),
-            Part::Record(record) => vec![map.shard_of(record)],
-            Part::Span {
-                lower,
-                upper,
-                inclusive,
-            } => map
-                .spans()
-                .filter(|span| span.to.is_none_or(|to| lower < to))
-                .filter(|span| {
-                    span.from.is_none_or(|from| {
-                        if inclusive {
-                            from <= upper
-                        } else {
-                            from < upper
-                        }
-                    })
-                })
-                .filter(|_| {
-                    if inclusive {
-                        lower <= upper
-                    } else {
-                        lower < upper
-                    }
-                })
-                .map(|span| span.id)
-                .collect(),
-        };
-        let missing: Vec<u32> = needed
-            .into_iter()
-            .filter(|shard| !holds(*shard))
-            .map(tessari_types::ShardId::get)
-            .collect();
-        if missing.is_empty() {
-            Ok(())
-        } else {
-            Err(refused(missing))
+        match self.missing(transaction, id, part)? {
+            Some(missing) => Err(missing.refusal()),
+            None => Ok(()),
         }
     }
 
@@ -1296,7 +1233,19 @@ impl Session<'_> {
             Source::Record(target) => {
                 let (_, address) = self.address(transaction, target)?;
                 self.refuse_reading_a_vault(transaction, address.table, &target.table)?;
-                self.refuse_reading_a_part(transaction, address.table, Part::Record(&address.id))?;
+                if let Some((found, note)) =
+                    self.gather_a_part(transaction, address.table, Part::Record(&address.id))?
+                {
+                    reporting.collected.push(note);
+                    let visible = self.visible_in(transaction, address.table)?;
+                    return Ok((
+                        Prepared::Held(
+                            self.records_of(found, &visible)?,
+                            Plan::new(AccessPath::Record).on(target.table.name.text.as_str()),
+                        ),
+                        Searched::default(),
+                    ));
+                }
                 let visible = self.visible_in(transaction, address.table)?;
                 let found = match transaction.get(&address)? {
                     Some(payload) => {
@@ -1315,8 +1264,18 @@ impl Session<'_> {
             Source::Table(table) => {
                 let (context, id) = self.resolve_table(transaction, table)?;
                 self.refuse_reading_a_vault(transaction, id, table)?;
-                self.refuse_reading_a_part(transaction, id, Part::Whole)?;
                 let searched = self.searched_for(transaction, id, &shown(select))?;
+                if let Some((found, note)) = self.gather_a_part(transaction, id, Part::Whole)? {
+                    reporting.collected.push(note);
+                    let visible = self.visible_in(transaction, id)?;
+                    return Ok((
+                        Prepared::Held(
+                            self.records_of(found, &visible)?,
+                            Plan::new(AccessPath::Scan).on(table.name.text.as_str()),
+                        ),
+                        searched,
+                    ));
+                }
                 Ok((Prepared::Table(context, id), searched))
             }
             // A walk between two positions in the table's own keyspace. The
@@ -1332,7 +1291,8 @@ impl Session<'_> {
             } => {
                 let (context, id) = self.resolve_table(transaction, table)?;
                 self.refuse_reading_a_vault(transaction, id, table)?;
-                self.refuse_reading_a_part(
+                let visible = self.visible_in(transaction, id)?;
+                if let Some((found, note)) = self.gather_a_part(
                     transaction,
                     id,
                     Part::Span {
@@ -1340,8 +1300,16 @@ impl Session<'_> {
                         upper: upper.fixed(*span)?,
                         inclusive: *inclusive,
                     },
-                )?;
-                let visible = self.visible_in(transaction, id)?;
+                )? {
+                    reporting.collected.push(note);
+                    return Ok((
+                        Prepared::Held(
+                            self.records_of(found, &visible)?,
+                            Plan::new(AccessPath::Span).on(table.name.text.as_str()),
+                        ),
+                        Searched::default(),
+                    ));
+                }
                 let found = transaction.records_in_span(
                     context.namespace,
                     context.database,
@@ -1377,7 +1345,6 @@ impl Session<'_> {
                 // than for the shape of its condition — one refusal, and the one
                 // that names the statement to use instead.
                 self.refuse_reading_a_vault(transaction, id, table)?;
-                self.refuse_reading_a_part(transaction, id, Part::Whole)?;
                 // Resolved once for the query rather than once per record: which
                 // analyzer a field carries is a property of the schema, and the
                 // schema does not change under a read; nor does the collection a
@@ -1387,6 +1354,33 @@ impl Session<'_> {
                 let mut expressions: Vec<&Expr> = vec![condition];
                 expressions.extend(shown(select));
                 let searched = self.searched_for(transaction, id, &expressions)?;
+                if let Some((found, note)) = self.gather_a_part(transaction, id, Part::Whole)? {
+                    reporting.collected.push(note);
+                    let visible = self.visible_in(transaction, id)?;
+                    // Narrowed after the records are in hand, over the redacted
+                    // record, exactly as a materialised source is: a hidden
+                    // field is as absent to this condition as to a local scan.
+                    let mut kept = Vec::new();
+                    for (record_id, record) in self.records_of(found, &visible)? {
+                        let held = self.evaluate_in(
+                            transaction,
+                            condition,
+                            Scope::searching(&record, &searched)
+                                .identified(&record_id)
+                                .noticing(reporting.noticed),
+                        )?;
+                        if boolean(&held, condition.span)? {
+                            kept.push((record_id, record));
+                        }
+                    }
+                    return Ok((
+                        Prepared::Held(
+                            kept,
+                            Plan::new(AccessPath::Scan).on(table.name.text.as_str()),
+                        ),
+                        searched,
+                    ));
+                }
                 Ok((Prepared::Filtered(context, id, condition), searched))
             }
             Source::Join {

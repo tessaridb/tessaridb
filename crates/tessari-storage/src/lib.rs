@@ -61,8 +61,8 @@ pub use catalog::{
     QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, Reach, ReplicaDefinition, Role,
     SYSTEM_DATABASE, SYSTEM_NAMESPACE, SeriesDeclaration, ShardMap, ShardSpan, StoredKind,
     TableDefinition, TableKind, TableShape, UserDefinition, VECTOR_FIELD, VaultDeclaration,
-    VectorDeclaration, VectorDistance, Verb, ViewDeclaration, another_node_may_write, names_a_peer,
-    the_row_a_greeting_binds,
+    VectorDeclaration, VectorDistance, Verb, ViewDeclaration, another_node_may_write, governing,
+    names_a_peer, the_row_a_greeting_binds,
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.
@@ -90,6 +90,6 @@ pub use sealing::{
 pub use store::{Health, Store};
 pub use tessari_encoding::{BUILD_VERSION, LogId, NODE_ID_LEN, Roles, Writer};
 pub use transaction::{
-    Expansion, Nearby, Neighbour, RecordAddress, Region, StoredRecord, Transaction,
+    Expansion, Nearby, Neighbour, RecordAddress, Region, StoredRecord, Transaction, Window,
 };
 pub use vault::OpenVault;

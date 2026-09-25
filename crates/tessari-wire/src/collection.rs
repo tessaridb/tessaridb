@@ -40,6 +40,7 @@ use tessari_types::{Epoch, Sequence};
 
 use crate::error::{Error, Result};
 use crate::frame;
+use crate::gathering::{Gather, Page, Ungathered};
 use crate::link::{Answered, Ask, Credential, call};
 use crate::peer::Hello;
 
@@ -251,6 +252,17 @@ pub trait Origin {
     /// cannot be stated, and [`Error::Refused`] carrying the store's own words
     /// when the log cannot be read.
     fn collected(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected>;
+
+    /// Answer a gather of one shard's records for the peer that asked (G033).
+    ///
+    /// Beside collection because it is the same door answering the same peer
+    /// out of the same store, and asked of the same catalog who may have what.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NotGathered`] with the reason when the peer may not have
+    /// the shard or this node cannot give it.
+    fn gathered(&self, asker: [u8; NODE_ID_LEN], asked: &Gather) -> Result<Page>;
 }
 
 /// A door with no log behind it.
@@ -284,6 +296,10 @@ impl Origin for NoLog {
         Err(Error::Uncollectable {
             from: asked.from.get(),
         })
+    }
+
+    fn gathered(&self, _asker: [u8; NODE_ID_LEN], _asked: &Gather) -> Result<Page> {
+        Err(Error::NotGathered(Ungathered::NotHeld))
     }
 }
 
@@ -403,6 +419,10 @@ impl<'a> Serving<'a> {
 }
 
 impl Origin for Serving<'_> {
+    fn gathered(&self, asker: [u8; NODE_ID_LEN], asked: &Gather) -> Result<Page> {
+        crate::gathering::serve(self.log, self.granted, asker, asked, self.budget)
+    }
+
     fn collected(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
         let Some(over) = self.granted.granted(follower)? else {
             // Not `Uncollectable`: *you may not ask* and *I cannot state what

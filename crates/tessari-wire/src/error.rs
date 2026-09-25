@@ -116,6 +116,14 @@ pub enum Error {
     )]
     Unsubscribed,
 
+    /// A shard's leader would not hand over the shard's records (G033).
+    ///
+    /// Its own variant, carrying the reason as the frame did, so the asking
+    /// node's refusal says which of the three repairs applies.
+    #[cfg(feature = "server")]
+    #[error("{0}")]
+    NotGathered(crate::gathering::Ungathered),
+
     /// The first collect of a node that already holds a tenancy of its own.
     ///
     /// A join is a **data-destruction event for the joining node** and this is
