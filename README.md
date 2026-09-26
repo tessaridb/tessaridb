@@ -10,7 +10,7 @@ Eleven engines. One transaction. One binary. A real-time multi-model database,
 written in Rust, for AI applications and the products built around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.9.0--beta-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.9.1--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
 [![conformance](https://img.shields.io/badge/conformance-1420%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
@@ -22,7 +22,7 @@ written in Rust, for AI applications and the products built around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is a beta — `0.9.0-beta`.** It is released and tested, published as
+> **TessariDB is a beta — `0.9.1-beta`.** It is released and tested, published as
 > a container image (`tessaridb/tessaridb:0.9.0-beta`; the image tracks the
 > larger releases), and the licence makes production use free, including inside
 > a commercial company.
@@ -198,7 +198,7 @@ surviving version and the node that wrote it.
 
 ## Status
 
-**Stage: active development · `0.9.0-beta` · not published to crates.io.** What
+**Stage: active development · `0.9.1-beta` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 
