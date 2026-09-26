@@ -220,6 +220,7 @@ fn kind_name(error: &Error) -> &'static str {
         Error::EdgePropertiesNotAnObject { .. } => "EdgePropertiesNotAnObject",
         Error::ConditionNotBoolean { .. } => "ConditionNotBoolean",
         Error::NoRecordInScope { .. } => "NoRecordInScope",
+        Error::NotFused { .. } => "NotFused",
         Error::DefaultDoesNotMatch { .. } => "DefaultDoesNotMatch",
         Error::NotSummable { .. } => "NotSummable",
         Error::NotSignedIn { .. } => "NotSignedIn",

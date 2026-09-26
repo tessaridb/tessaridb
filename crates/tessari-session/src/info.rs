@@ -1762,6 +1762,7 @@ fn reading(table: &TableRef) -> StatementKind {
         split: None,
         group: Vec::new(),
         order: Vec::new(),
+        fusion: None,
         after: None,
         approximate: None,
         start: None,

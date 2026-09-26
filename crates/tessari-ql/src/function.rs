@@ -200,6 +200,10 @@ pub enum Function {
     /// selected the record — see the session's `search::highlight` for why a
     /// second copy of the query is the failure this signature avoids.
     SearchHighlight,
+    /// `search::ranks()` — where this record came in each branch of the fused
+    /// order that answered it (`ORDER BY FUSE`), `none` where a branch did not
+    /// place it within its depth.
+    SearchRanks,
     /// `time::bucket(instant, 1h)` — the start of the window that instant is in.
     TimeBucket,
     /// `geo::intersects(a, b)` — whether the two shapes share any position,
@@ -472,6 +476,7 @@ impl Function {
         VectorDot => "vector::dot",
         SearchScore => "search::score",
         SearchHighlight => "search::highlight",
+        SearchRanks => "search::ranks",
         TimeBucket => "time::bucket",
         GeoIntersects => "geo::intersects",
         GeoDisjoint => "geo::disjoint",
@@ -531,7 +536,7 @@ impl Function {
     /// how many arguments it takes.
     pub const fn arity(self) -> usize {
         match self {
-            Self::TimeNow | Self::RandUuid => 0,
+            Self::TimeNow | Self::RandUuid | Self::SearchRanks => 0,
             Self::StringLen
             | Self::StringLower
             | Self::StringUpper
@@ -645,6 +650,10 @@ impl Function {
             // it *look* constant, and a `SELECT rand::uuid() AS id` evaluated
             // once above the records hands every row the same id.
             Self::RandUuid => Purity::PerCall,
+            // A record's ranks are the fusion's, not a function of anything the
+            // call is given: folded above the records it would answer one row's
+            // ranks for every row.
+            Self::SearchRanks => Purity::PerCall,
             Self::StringLen
             | Self::StringLower
             | Self::StringUpper
@@ -834,7 +843,9 @@ mod tests {
             .filter(|function| function.purity() == Purity::PerCall)
             .map(|function| function.spelling())
             .collect();
-        assert_eq!(afresh, ["rand::uuid"]);
+        // `search::ranks` joined in G038: it reads no argument and no record, so
+        // it looks constant, and folded it would hand every row one row's ranks.
+        assert_eq!(afresh, ["rand::uuid", "search::ranks"]);
     }
 
     #[test]
@@ -842,7 +853,7 @@ mod tests {
         for function in Function::ALL {
             let expected = match function {
                 Function::TimeNow => Purity::PerStatement,
-                Function::RandUuid => Purity::PerCall,
+                Function::RandUuid | Function::SearchRanks => Purity::PerCall,
                 _ => Purity::Pure,
             };
             assert_eq!(function.purity(), expected, "{function} is misclassified");

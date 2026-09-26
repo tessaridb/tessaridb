@@ -44,6 +44,7 @@ mod files;
 mod folds;
 mod follower_lag;
 mod full_tuple;
+mod fusion;
 mod fuzzy;
 mod gathered_reads;
 mod generated;

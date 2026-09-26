@@ -377,6 +377,8 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         // A highlight needs the field's analyzer and what the read asked of that
         // field, for the same reason and by the same route.
         Function::SearchHighlight => Ok(Value::None),
+        // A rank is the fusion's, answered where the scope carries it.
+        Function::SearchRanks => Ok(Value::None),
         // The one function that makes a window sayable, and the reason
         // `GROUP BY` takes an expression: without it a caller would have to
         // store the bucket alongside the instant and keep the two in step.

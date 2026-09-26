@@ -91,7 +91,7 @@ impl Parser<'_> {
         })
     }
 
-    fn positive_count(&mut self, expected: &'static str) -> Result<u64> {
+    pub(super) fn positive_count(&mut self, expected: &'static str) -> Result<u64> {
         let Some(Token::Number(tessari_types::Number::Integer(count))) = self.peek() else {
             return Err(self.error_here(expected));
         };

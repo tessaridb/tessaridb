@@ -217,6 +217,26 @@ pub const BM25_K1: f64 = 1.2;
 /// `docs/tessariql.md` rather than left to be discovered.
 pub const BM25_B: f64 = 0.75;
 
+/// The constant a fused read adds to every rank before dividing a branch's
+/// weight by it (`ORDER BY FUSE`, G038).
+///
+/// Unit: ranks.
+///
+/// It decides how much the first few places of one branch outweigh agreement
+/// lower down: at `0` a first place is worth twice a second and swamps
+/// everything else, and a large value flattens the ranks toward a vote count.
+/// `60` is the value reciprocal rank fusion was published with (Cormack, Clarke
+/// and Büttcher, 2009) and the one production engines ship. A constant, like
+/// `BM25_K1`, because nothing here has been measured against a relevance set —
+/// and changing it changes fused order without any statement changing.
+pub const FUSION_K: u64 = 60;
+
+/// How far down each branch's own order a record may be and still count in a
+/// fused read that names no `DEPTH`.
+///
+/// Unit: records per branch.
+pub const FUSION_DEPTH: u64 = 100;
+
 /// How far past its bound an ordered read under a condition may walk the index
 /// before giving the order up and taking the scan.
 ///

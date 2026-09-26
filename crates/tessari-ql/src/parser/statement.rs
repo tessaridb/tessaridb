@@ -3109,7 +3109,7 @@ impl Parser<'_> {
         // where it is applied: the split is what decides how many there are.
         let split = self.split_path()?;
         let group = self.group_by()?;
-        let order = self.order_by()?;
+        let (order, fusion) = self.order_by()?;
         // After the order, because the order is what it resumes: the anchor is
         // the last record of the page before, and "after" is a position in the
         // sequence the clause above just named. Before `START`, which it is also
@@ -3156,6 +3156,21 @@ impl Parser<'_> {
         let answered_by = self.answered_by()?;
         super::shape::check_grouping(&projection, &group)?;
         super::shape::check_fold_positions(&from, &group, &order)?;
+        // A fused order ranks records, and a grouped read's rows are groups; a
+        // cursor resumes a position in one total order, which a fused order is
+        // not until every branch has been ranked. Both refused by name.
+        if let Some(fused) = &fusion {
+            for (clause, present) in [("GROUP BY", !group.is_empty()), ("AFTER", after.is_some())] {
+                if present {
+                    return Err(Error::UnexpectedToken {
+                        expected: "a read that is not grouped or resumed — a fused order ranks \
+                                   the records themselves, in one pass",
+                        found: clause.to_owned(),
+                        span: fused.span,
+                    });
+                }
+            }
+        }
         super::shape::check_cursor(
             &from,
             after.as_deref(),
@@ -3211,6 +3226,7 @@ impl Parser<'_> {
             split,
             group,
             order,
+            fusion,
             after,
             approximate,
             lift_scan_guard,

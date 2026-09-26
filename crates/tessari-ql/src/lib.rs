@@ -27,7 +27,7 @@ mod token;
 pub use ast::{
     Admitted, Aggregate, Answer, AnsweredBy, Approximation, ArithmeticOp, Assignment,
     ColumnDeclaration, ConsumerSource, CreateTarget, DeleteBound, Direction, EdgeClause,
-    EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, Field, FieldMapping, FieldPath, Hop,
+    EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, Field, FieldMapping, FieldPath, Fusion, Hop,
     Identity, InfoSubject, JoinSide, Name, OnFailure, Ordering, Password, Projected, Projection,
     RangeExpr, ReachRef, RecordTarget, Retention, Script, Select, SetCondition, Source, SpaceBound,
     Statement, StatementKind, TableChange, TableRef, Timeout, TopicClauses, UserChange, UserGrant,

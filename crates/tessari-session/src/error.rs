@@ -1753,6 +1753,19 @@ pub enum Error {
         span: Span,
     },
 
+    /// `search::ranks()` was called where no fused order ranked the record.
+    ///
+    /// A rank is the fusion's, not the record's, so outside the projection of a
+    /// read ordered by `FUSE (…)` there is no answer — and `none` would read as
+    /// "no branch placed it", which is a different claim.
+    #[error(
+        "search::ranks() answers only in the projection of a read ordered by FUSE (…) (at {span})"
+    )]
+    NotFused {
+        /// Where the call was written.
+        span: Span,
+    },
+
     /// A statement that only a bucket answers, aimed at an ordinary table.
     ///
     /// Refused rather than writing a record that looks like a file: the two are

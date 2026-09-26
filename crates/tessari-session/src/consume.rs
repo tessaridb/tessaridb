@@ -229,6 +229,11 @@ impl<'a, 's> Shaping<'a, 's> {
         self.topmost.finish()
     }
 
+    /// The records a fused order put first, each with its ranks.
+    pub(crate) fn finish_fused(self) -> Vec<crate::shape::Fused> {
+        self.topmost.finish_fused()
+    }
+
     /// Resume after one record: keep only what sorts strictly past it.
     ///
     /// The anchor's keys are evaluated **here**, by the stage that evaluates
