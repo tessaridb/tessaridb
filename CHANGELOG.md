@@ -12,6 +12,35 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.9.0-beta — 2026-09-26
+
+**The geo gaps a places application meets.** Distance to shapes, radius reads
+served by the spatial index, a name and a place in one statement, and counting by
+cell.
+
+- **`geo::distance` measures to shapes.** Between a position and a path, an area
+  or several of them it is the distance to the shape's **nearest point** — zero
+  when the shape covers the position, by the same exact rule `geo::covers` uses,
+  and otherwise found by a search that never drops a piece of an edge that could
+  hold a nearer point. Edges are the lon–lat straight lines the geometry says.
+  Two shapes both larger than a position are still refused by name. A
+  nearest-first read over a table holding paths or areas is answered by the scan.
+- **A radius read is served by the spatial index.**
+  `WHERE geo::distance(at, $here) < r` (and `<=`, either way round, either
+  argument) reads the records whose boxes meet the query's box widened by `r` —
+  widened far enough that every position within `r` is inside, including at the
+  poles and across ±180 — and tests the distance on those. `EXPLAIN` says
+  `region`. A lower bound (`> r`) stays a scan: the outside of a disc has no box.
+- **A name and a place in one statement**: `MATCHES` with a radius, or
+  `ORDER BY FUSE (search::score(…) DESC, geo::distance(…))` to rank by both.
+- **`geo::cell(position, level)`** answers the spatial index's own cell at that
+  level (0 the world, 32 the finest) as a polygon, so `GROUP BY geo::cell(at, n)`
+  counts a zoomed-out map's points per cell and the key draws itself. Cells are
+  not equal in area; a density is `count(*) / geo::area(geo::cell(at, n))`.
+
+**1420 conformance cases** define the language and run in the build, up from
+1413.
+
 ## 0.8.0-beta — 2026-09-26
 
 **Several orders in one read, fused by rank.** `ORDER BY FUSE (…)` ranks the
@@ -391,7 +420,7 @@ sequences and time, and the time left on this node's lease.
 
 - **The nearest few is over positions, and the spatial index is untuned**, as in
   `0.1.0-beta`.
-  <!-- absent: distance-to-a-shape-larger-than-a-position -->
+  <!-- absent: distance-between-two-larger-shapes -->
   <!-- absent: nearest-first-under-a-where -->
   <!-- absent: measured-covering-budget -->
 - **No sharding.** A namespace lives where its replication says and a range is
@@ -1735,7 +1764,7 @@ absences is worse than one that is missing more.
   that read is over positions; a nearest-first read under a `WHERE`;
   and any *measured* choice of how finely a query is covered — the budget is a declared constant,
   and the candidate-to-result ratio the store now measures is what will move it.
-  <!-- absent: distance-to-a-shape-larger-than-a-position -->
+  <!-- absent: distance-between-two-larger-shapes -->
   <!-- absent: nearest-first-under-a-where -->
   <!-- absent: measured-covering-budget -->
 - **No sharding, no replication, no cluster membership.** Peers can be declared

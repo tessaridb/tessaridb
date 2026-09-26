@@ -33,8 +33,8 @@ const INDEX: &str = "DEFINE INDEX by_where ON stops FIELDS at SPATIAL;";
 /// of the targets below — a corpus already in the answer's order, or one full of
 /// ties, could not tell a working walk from a broken one.
 ///
-/// Every geometry is a **point**, because `geo::distance` takes positions. The
-/// mixed case has its own test.
+/// Every geometry is a **point**, which is what the walk ranks. The mixed case
+/// has its own test.
 const STOPS: &str = "\
 DEFINE NAMESPACE atlas; USE NAMESPACE atlas;
 DEFINE DATABASE world; USE DATABASE world;
@@ -215,39 +215,37 @@ fn a_bound_the_index_cannot_fill_falls_back_to_the_scan() {
 }
 
 #[test]
-fn a_record_holding_a_shape_answers_the_same_mistake_either_way() {
-    // `geo::distance` takes positions, so a record holding an area is an error
-    // in the statement. The walk must not answer the other records in distance
-    // order and quietly leave the mistake unreported, which would be an index
-    // changing what a read *answers* rather than what it costs.
+fn a_record_holding_a_shape_gives_the_walk_up_to_the_scan_which_answers() {
+    // The distance to a path is the distance to its nearest point, and the index
+    // holds only its box — so the walk cannot rank it and hands the read to the
+    // scan, which measures it. What must not happen is either an error (the
+    // statement is fine) or an answer that differs from the scan's.
     let read = format!(
         "SELECT * FROM stops ORDER BY geo::distance(at, {}) LIMIT 3;",
         place(2.3, 48.8)
     );
-    let area = "CREATE stops:'field' = { at: geometry { type: 'LineString', \
+    let path = "CREATE stops:'field' = { at: geometry { type: 'LineString', \
                 coordinates: [[2.30, 48.80], [2.31, 48.81]] } };";
 
     let bare = store();
     let mut without = ready(&bare);
-    without.run(area).unwrap();
-    let scanned = without.run(&read);
+    without.run(path).unwrap();
+    let scanned = ids(&mut without, &read);
 
     let indexed = store();
     let mut with = ready(&indexed);
     with.run(INDEX).unwrap();
-    with.run(area).unwrap();
-    let served = with.run(&read);
+    with.run(path).unwrap();
+    let served = ids(&mut with, &read);
 
-    assert!(
-        scanned.is_err(),
-        "a shape is not a position and must be refused"
-    );
-    assert_eq!(served.is_err(), scanned.is_err());
+    assert_eq!(served, scanned, "the index changed what the read answers");
     assert_eq!(
-        format!("{:?}", served.err()),
-        format!("{:?}", scanned.err()),
-        "the index answered a different mistake from the scan"
+        scanned.first().map(ToString::to_string).as_deref(),
+        Some("field"),
+        "the path passes through the place asked about, so it is nearest"
     );
+    // The plan still names the walk: whether a record's box is a single position
+    // is known only once the walk reaches it, and the decline happens there.
 }
 
 #[test]

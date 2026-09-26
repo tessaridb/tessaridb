@@ -228,13 +228,18 @@ pub enum Function {
     /// `geo::touches(a, b)` — whether they meet and their interiors do not. Two
     /// positions never touch, and a position touches a path only at an end.
     GeoTouches,
-    /// `geo::distance(a, b)` — how far apart two positions are along the
-    /// ellipsoid, in **metres**. Both arguments must be positions; there is no
-    /// distance between larger shapes yet.
+    /// `geo::distance(a, b)` — how far apart two shapes are along the
+    /// ellipsoid, in **metres**, measured to the nearest point of each. At least
+    /// one argument must be a position; there is no distance between two larger
+    /// shapes yet.
     GeoDistance,
     /// `geo::area(shape)` — how much ground a shape covers, in **square
     /// metres**. Zero for anything with no interior.
     GeoArea,
+    /// `geo::cell(position, level)` — the spatial index's cell holding the
+    /// position at that level of subdivision, as a polygon: a key to group by
+    /// that draws itself.
+    GeoCell,
     /// `crypto::sha256(text)` — the SHA-256 digest of the text's UTF-8 bytes,
     /// as sixty-four lowercase hexadecimal characters.
     ///
@@ -488,6 +493,7 @@ impl Function {
         GeoTouches => "geo::touches",
         GeoDistance => "geo::distance",
         GeoArea => "geo::area",
+        GeoCell => "geo::cell",
         CryptoSha256 => "crypto::sha256",
         CryptoSha512 => "crypto::sha512",
         CryptoMd5 => "crypto::md5",
@@ -620,6 +626,7 @@ impl Function {
             | Self::ArrayIndexOf
             | Self::ObjectHas
             | Self::ObjectMerge
+            | Self::GeoCell
             | Self::GeoDistance => 2,
             Self::ArraySlice | Self::StringSlice | Self::StringLines | Self::StringReplace => 3,
         }
@@ -711,6 +718,7 @@ impl Function {
             | Self::GeoTouches
             | Self::GeoDistance
             | Self::GeoArea
+            | Self::GeoCell
             | Self::CryptoSha256
             | Self::SearchHighlight
             | Self::CryptoMd5

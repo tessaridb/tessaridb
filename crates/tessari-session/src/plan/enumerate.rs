@@ -387,12 +387,27 @@ impl Session<'_> {
             // store's validity rules; it is held to being somewhere on the
             // planet, and one that is not cannot name cells. The scan answers it
             // exactly, and `geo::` reports the refusal from the predicate itself.
-            let Some(bounds) = Geometry::of(&geometry)
+            let Some(mut bounds) = Geometry::of(&geometry)
                 .ok()
                 .and_then(|shape| shape.bounds())
             else {
                 continue;
             };
+            // A radius widens the box by the distance, which must be a number;
+            // anything else — a string, `none`, a negative or unbounded distance —
+            // names no box, and the scan answers it exactly.
+            if let Some(radius) = reach.widened_by {
+                let Value::Number(radius) = self.evaluate(transaction, radius)? else {
+                    continue;
+                };
+                let Some(widened) = radius
+                    .as_float()
+                    .and_then(|metres| tessari_geo::within_reach(bounds, metres))
+                else {
+                    continue;
+                };
+                bounds = widened;
+            }
             let cells: Vec<Cell> =
                 tessari_geo::covering(bounds, tessari_constants::SPATIAL_QUERY_CELLS)
                     .into_iter()

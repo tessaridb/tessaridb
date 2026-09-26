@@ -19,6 +19,11 @@ pub(super) struct Regional<'a> {
     /// Which box test this predicate's semantics permit, with the record's
     /// argument already normalised into first position.
     pub(super) relation: Relation,
+    /// For a radius read, the distance the query's box is widened by before the
+    /// box test — `geo::distance(at, Q) < r` is served as "boxes meeting `Q`'s
+    /// box widened by `r`", and the distance itself is re-tested on what that
+    /// finds. `None` for a relate predicate, whose box is the query's own.
+    pub(super) widened_by: Option<&'a Expr>,
 }
 
 /// The `geo::` conjuncts of a condition a spatial index could serve.
@@ -57,10 +62,54 @@ pub(super) fn regional(condition: &Expr) -> Vec<Regional<'_>> {
                 path: &field.path,
                 query,
                 relation,
+                widened_by: None,
             }]
         }
+        ExprKind::Binary { op, left, right } => radius(*op, left, right).into_iter().collect(),
         _ => Vec::new(),
     }
+}
+
+/// A radius read — `geo::distance(at, Q) < r` — as a regional conjunct.
+///
+/// Both strict and non-strict bounds, written either way round (`r > …` is the
+/// same question), and the distance with the record's field as either argument,
+/// since a distance is symmetric. A lower bound (`> r`) is **not** here: it is
+/// the complement of a disc, and like `geo::disjoint` it has no box holding it.
+///
+/// The radius must be a constant of the statement; a radius read from the
+/// record would differ per candidate and name no box at all.
+fn radius<'a>(op: BinaryOp, left: &'a Expr, right: &'a Expr) -> Option<Regional<'a>> {
+    let (measured, bound) = match op {
+        BinaryOp::Less | BinaryOp::LessOrEqual => (left, right),
+        BinaryOp::Greater | BinaryOp::GreaterOrEqual => (right, left),
+        _ => return None,
+    };
+    if reads_a_record(bound) {
+        return None;
+    }
+    let ExprKind::Call {
+        function: Function::GeoDistance,
+        arguments,
+        ..
+    } = &measured.kind
+    else {
+        return None;
+    };
+    let [one, other] = arguments.as_slice() else {
+        return None;
+    };
+    let (field, query) = match (&one.kind, &other.kind) {
+        (ExprKind::Path(field), _) if !reads_a_record(other) => (field, other),
+        (_, ExprKind::Path(field)) if !reads_a_record(one) => (field, one),
+        _ => return None,
+    };
+    Some(Regional {
+        path: &field.path,
+        query,
+        relation: Relation::Meets,
+        widened_by: Some(bound),
+    })
 }
 
 /// Which box test a predicate allows, once it is known which argument is the
@@ -122,7 +171,9 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         // predicate for a box test to be a superset of; `geo::distance` is
         // served nearest-first instead, which is a different access path
         // entirely.
-        Function::GeoDisjoint | Function::GeoDistance | Function::GeoArea => None,
+        Function::GeoDisjoint | Function::GeoDistance | Function::GeoArea | Function::GeoCell => {
+            None
+        }
         // Nothing else is a predicate over two shapes.
         Function::StringLen
         | Function::StringLower

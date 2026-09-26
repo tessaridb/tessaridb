@@ -356,6 +356,59 @@ fn distance_answers_in_metres_and_orders_a_bounded_read() {
 }
 
 #[test]
+fn a_distance_to_an_area_is_to_its_nearest_point_from_either_side() {
+    let store = store();
+    let mut session = schemaless(&store);
+    place(&mut session, 1, "an area", square(0.0, 1.0));
+
+    // (5, 5) is four degrees east and north of the unit square's far corner, so
+    // the nearest point of the area is that corner — no representative vertex
+    // chosen in advance would be right for every position asked about.
+    let here = Value::Geometry(Geometry::Point(at(5.0, 5.0)));
+    let expected = tessari_geo::distance(
+        tessari_geo::Snapped::of(at(5.0, 5.0)).unwrap(),
+        tessari_geo::Snapped::of(at(1.0, 1.0)).unwrap(),
+    )
+    .unwrap();
+    for statement in [
+        "SELECT geo::distance(shape, $here) AS far FROM places;",
+        "SELECT geo::distance($here, shape) AS far FROM places;",
+    ] {
+        let outcomes = session
+            .run_with(statement, &bound("here", here.clone()))
+            .unwrap();
+        let Some(Outcome::Records { records, .. }) = outcomes.last() else {
+            panic!("a select answers with records")
+        };
+        let Value::Object(fields) = &records[0].1 else {
+            panic!("a record is an object")
+        };
+        let Some(Value::Number(Number::Float(far))) = fields.get("far") else {
+            panic!("a distance is a float, got {fields:?}")
+        };
+        assert!(
+            (far - expected).abs() < 1e-3,
+            "{statement}: {far} against {expected}"
+        );
+    }
+
+    // Inside the area it is no distance at all.
+    let inside = session
+        .run_with(
+            "SELECT geo::distance(shape, $here) AS far FROM places;",
+            &bound("here", Value::Geometry(Geometry::Point(at(0.5, 0.5)))),
+        )
+        .unwrap();
+    let Some(Outcome::Records { records, .. }) = inside.last() else {
+        panic!("a select answers with records")
+    };
+    let Value::Object(fields) = &records[0].1 else {
+        panic!("a record is an object")
+    };
+    assert_eq!(fields.get("far"), Some(&Value::Number(Number::float(0.0))));
+}
+
+#[test]
 fn a_distance_between_shapes_larger_than_positions_is_refused_by_name() {
     let store = store();
     let mut session = schemaless(&store);
@@ -363,10 +416,10 @@ fn a_distance_between_shapes_larger_than_positions_is_refused_by_name() {
 
     let refusal = session
         .run_with(
-            "SELECT geo::distance(shape, $here) AS far FROM places;",
-            &bound("here", Value::Geometry(Geometry::Point(at(5.0, 5.0)))),
+            "SELECT geo::distance(shape, $there) AS far FROM places;",
+            &bound("there", Value::Geometry(square(3.0, 4.0))),
         )
-        .expect_err("a polygon is not a position")
+        .expect_err("neither side is a position")
         .to_string();
     assert!(refusal.contains("geo::distance"), "{refusal}");
     assert!(refusal.contains("position"), "{refusal}");
