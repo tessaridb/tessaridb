@@ -4,28 +4,28 @@
 
 # TessariDB
 
-**Ten engines. One transactional store. One language.**
+**The stack around the model, in one store.**
 
-A real-time multi-model database, written in Rust, built for AI agents and the
-products around them.
+Eleven engines. One transaction. One binary. A real-time multi-model database,
+written in Rust, for AI applications and the products built around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.9.0--beta-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.9.1--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
 [![conformance](https://img.shields.io/badge/conformance-1420%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/tessaridb/tessaridb-protocol) ·
-[Rust SDK](https://github.com/tessaridb/tessaridb-sdk-rust)
+[clients](#clients)
 
 </div>
 
 > [!NOTE]
-> **TessariDB is a beta — `0.9.0-beta`.** It is released and tested, published as
-> a container image (the image tracks the larger releases; the latest is
-> `0.4.0-beta`), and the licence makes production use free, including inside a
-> commercial company.
+> **TessariDB is a beta — `0.9.1-beta`.** It is released and tested, published as
+> a container image (`tessaridb/tessaridb:0.9.0-beta`; the image tracks the
+> larger releases), and the licence makes production use free, including inside
+> a commercial company.
 > What a beta does not promise yet is permanence of shape: before 1.0 the query
 > language, the wire format and the on-disk format may still change, there is no
 > migration between versions, and several engines are still partial. So pin a
@@ -36,17 +36,44 @@ products around them.
 
 ---
 
-Most systems that need more than one data model end up running more than one
-database — a relational store, a vector index, a search cluster, a graph engine,
-an object bucket — and then spend their whole complexity budget keeping those
-copies agreeing with each other. There is no transaction across them, so the
-question is never *whether* they drift, only when somebody notices.
+A project built around a model almost never needs one data system. It needs
+search, a database for everything else and a queue; then a cache, a lock, an
+event log, files, a map of where things are, the relations between them, and
+somewhere for the secrets it must not leak. Each of those is usually one more
+service to stand up, upgrade, back up, secure and keep in step with the others —
+and there is no transaction across them, so the question is never *whether* they
+drift, only when somebody notices. Most projects never load any one of them hard
+enough to need the specialist; all of them pay for running the set.
 
-TessariDB takes the other route: **one transactional record store, several
-access models over the same records.** Documents, tables, edges, keys, files,
-terms, vectors, time windows and geometry are not separate systems bolted
-together — they are different ways of reading the same committed bytes, under
-one snapshot, in one language.
+TessariDB takes the other route: **one transactional record store, eleven access
+models over the same records.** Documents, tables, edges, keys, files, terms,
+vectors, time windows, geometry, queues, topics and sealed fields are not
+separate systems bolted together — they are different ways of reading the same
+committed bytes, under one snapshot, in one language.
+
+| A project would run | Here |
+|---|---|
+| a database | records — declared or schemaless, joined, in transactions |
+| a search engine | full-text — analysed, scored, prefix and fuzzy |
+| a vector index, and a step that re-ranks the two | vectors, exact unless you ask otherwise, and `ORDER BY FUSE` by rank |
+| a cache, a lock, a rate limit | a space — keys that expire, `INCR`, `SET … IF ABSENT`, a limit that evicts |
+| a job queue | `DEFINE QUEUE` — claims that lapse when a worker dies |
+| an event log | `DEFINE TOPIC` — each reader's position kept in the store |
+| a geo database | shapes, radius reads, nearest-first, cells for a map |
+| a graph database | edges as records, traversed |
+| object storage | buckets of files, in the same transaction as their records |
+| somewhere for secrets | a vault — fields sealed before they are stored |
+| a time-series store, an audit trail | series with a retention floor, `VERSION`, the change feed |
+
+**Not the fastest at any one of those jobs; enough at all of them.** A system
+built for one job will beat a general store at it, and nothing here claims
+otherwise — there is no published benchmark. What this removes is the cost of
+running a dozen systems and the seams between them. It grows with the project on
+the same binary — in memory, on disk, with followers, automatic failover, tables
+split by key range and two writers on one range — and a project that outgrows one
+part of it can move that part out later: the data is one log behind a published
+protocol and five clients. The vault seals declared fields; it is not a general
+secrets service with leases and rotation.
 
 ```sql
 DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;
@@ -64,9 +91,9 @@ SELECT * FROM notes
 One statement, one snapshot: a full-text term, a vector neighbourhood and the
 records themselves. No fan-out, no reconciliation, no second client library.
 
-## Why this fits AI agents
+## Why this fits AI applications
 
-An agent's working set is not one shape. Inside a single turn it wants the
+Chunks are the easy part. An agent's working set is not one shape. Inside a single turn it wants the
 document it is editing, the graph of what depends on that document, the vector
 neighbourhood of a memory, the exact phrase somebody typed three weeks ago, the
 file that was attached, and the last handful of events. The usual answer is five
@@ -80,6 +107,16 @@ services and a consistency problem that lands in the agent's own code.
 - **One retrieval, not three round trips.** Hybrid recall — a term, a
   neighbourhood, a hop, a filter, a time window — is one statement evaluated
   against one snapshot, not three queries stitched together in application code.
+  Words and meaning are ranked together with `ORDER BY FUSE`, by where each
+  record came in each order — never by adding a relevance score to a distance.
+- **State for the tools the model calls.** A session that times out, a rate-limit
+  window, a lock that frees itself and a cache of answers that cost money to
+  produce are keys in a space — `EXPIRE`, `INCR`, `SET … IF ABSENT`, `MAX n` —
+  in the same transaction as the records they describe.
+- **Events without a broker beside the store.** A topic keeps every message in
+  commit order at dense positions, and a reader's position moves in the reader's
+  own transaction — so an effect it writes into this store happens once per
+  message. An effect outside the store (an email, a call) is at least once.
 - **One surface to expose as a tool.** An agent tool is `run(script)` and a
   result, rather than six client libraries with six auth models. A
   [typed query builder](crates/tessari-query) is there for when you would rather
@@ -102,10 +139,10 @@ services and a consistency problem that lands in the agent's own code.
 Every row is proven by an executable corpus — a script the build runs and
 compares against expected answers, case by case. The counts are those cases.
 
-**Twelve rows, ten engines.** A row is a corpus rather than an engine, and three
+**Twelve rows, eleven engines.** A row is a corpus rather than an engine: three
 of them — Documents, Relational and References — are three faces of the record
-store rather than three stores. The
-[engines page](https://docs.tessaridb.com/overview/engines) lists the ten.
+store rather than three stores, and queues and topics share one row. The
+[engines page](https://docs.tessaridb.com/overview/engines) lists the eleven.
 
 | Engine | What it gives you | Cases | State |
 |---|---|---|:--|
@@ -161,7 +198,7 @@ surviving version and the node that wrote it.
 
 ## Status
 
-**Stage: active development · `0.9.0-beta` · not published to crates.io.** What
+**Stage: active development · `0.9.1-beta` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 
@@ -361,13 +398,15 @@ why the manual is in one place and this file points at it.
 
 ## Who it is for
 
-- **AI agents and AI products**, whose working set spans documents, a knowledge
-  graph, embeddings, exact text and attached files — and which need all of that
-  to commit together or not at all.
+- **AI applications and the products around them**, whose working set spans
+  documents, a knowledge graph, embeddings, exact text, attached files, tool
+  state, background work and events — and which need all of that to commit
+  together or not at all.
 - **Anyone about to stand up their third datastore.** If the design document
-  says "Postgres for records, a vector index for recall, a search cluster for
-  text, object storage for blobs", that is four operational surfaces, four
-  backup stories, four auth models and zero transactions across them.
+  says "a relational store for records, a vector index for recall, a search
+  cluster for text, a cache, a broker and object storage for blobs", that is six
+  operational surfaces, six backup stories, six auth models and zero
+  transactions across them.
 - **Real-time products**, where something has to know what changed the moment it
   changes, without a polling loop pretending to be a subscription.
 - **Embedded and edge use**, where the same engine that runs as a node also
@@ -383,7 +422,7 @@ demanding first user.
 
 | Goal | What it means here |
 |---|---|
-| **Multi-model** | Documents, graph edges, relational tables, keys, files, vectors, full-text, time windows, geometry and a vault — over one record store, not bolted together |
+| **Multi-model** | Documents, graph edges, relational tables, keys, files, vectors, full-text, time windows, geometry, queues, topics and a vault — over one record store, not bolted together |
 | **One query language** | **TessariQL** — a single surface for every model, including graph traversal and vector search ([the language reference](docs/tessariql.md)) |
 | **Pluggable storage** | Everything above the key–value layer is written against one trait, and two backends prove it: in memory, and durable on a log-structured merge-tree engine |
 | **Transactional** | Real transactions with a declared isolation level, not best-effort batching |
@@ -457,8 +496,9 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-`cargo test --workspace` builds around 216 test binaries. Two of them bind fixed
-ports and must not run beside a second copy of themselves.
+`cargo test --workspace --tests` builds 60 test targets (`cargo metadata
+--no-deps` counts them without compiling). Two of them bind fixed ports and must
+not run beside a second copy of themselves.
 
 ## Branches
 
@@ -472,8 +512,15 @@ of its own: the wire and HTTP specification plus a conformance corpus that every
 client is tested against. It is Apache-2.0, and a client written from it depends
 on nothing in this repository.
 
+Five clients are written from it, each at `0.2.0`:
+
 - **Rust** — [tessaridb-sdk-rust](https://github.com/tessaridb/tessaridb-sdk-rust)
-- Other languages: write one from the spec. That is what it is for.
+- **Python** — [tessaridb-sdk-python](https://github.com/tessaridb/tessaridb-sdk-python)
+- **TypeScript** — [tessaridb-sdk-js](https://github.com/tessaridb/tessaridb-sdk-js)
+- **Go** — [tessaridb-sdk-go](https://github.com/tessaridb/tessaridb-sdk-go)
+- **Kotlin** — [tessaridb-sdk-kotlin](https://github.com/tessaridb/tessaridb-sdk-kotlin)
+
+Another language: write one from the spec. That is what it is for.
 
 ## Provenance
 
@@ -488,7 +535,7 @@ source, and no third-party database is vendored, linked, or derived from here.
 
 TessariDB is **source-available** under the
 [Business Source License 1.1](LICENSE). The source is public, and on
-**2030-09-07** — or four years after any given version is first published,
+**2030-09-26** — or four years after any given version is first published,
 whichever comes first — that version becomes **Apache-2.0** permanently.
 
 **Free, with no agreement and no charge**, for any use — including production,

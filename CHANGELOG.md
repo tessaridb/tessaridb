@@ -12,6 +12,23 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.9.1-beta — 2026-09-26
+
+**The README says what the store is for now.** No engine change: the language, the
+wire format and the on-disk format are exactly those of `0.9.0-beta`, and a store
+written by either opens under the other.
+
+- The README opens on the stack an AI application would otherwise run — a
+  database, a search engine, a vector index, a cache and locks, queues, an event
+  log, places, relations, files and sealed secrets — and what answers each here,
+  with the trade stated beside it: not the fastest at any one of them, enough at
+  all of them, and able to grow onto more machines as the data does.
+- It lists the five clients, names the published image `0.9.0-beta`, carries the
+  licence's current change date and counts the test targets as they are.
+
+**1420 conformance cases** define the language and run in the build, unchanged
+from 0.9.0-beta.
+
 ## 0.9.0-beta — 2026-09-26
 
 **The geo gaps a places application meets.** Distance to shapes, radius reads
