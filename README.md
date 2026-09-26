@@ -10,10 +10,10 @@ A real-time multi-model database, written in Rust, built for AI agents and the
 products around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.7.0--beta-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.8.0--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
-[![conformance](https://img.shields.io/badge/conformance-1405%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![conformance](https://img.shields.io/badge/conformance-1413%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/tessaridb/tessaridb-protocol) ·
@@ -22,7 +22,7 @@ products around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is a beta — `0.7.0-beta`.** It is released and tested, published as
+> **TessariDB is a beta — `0.8.0-beta`.** It is released and tested, published as
 > a container image (the image tracks the larger releases; the latest is
 > `0.4.0-beta`), and the licence makes production use free, including inside a
 > commercial company.
@@ -161,7 +161,7 @@ surviving version and the node that wrote it.
 
 ## Status
 
-**Stage: active development · `0.7.0-beta` · not published to crates.io.** What
+**Stage: active development · `0.8.0-beta` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 

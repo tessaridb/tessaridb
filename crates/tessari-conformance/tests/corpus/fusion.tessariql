@@ -1,0 +1,57 @@
+# Several orders fused by rank: text, vector and place in one statement.
+# A corpus file is one session against one store, so these run in order.
+
+--- case: a table with words, a vector and a place per record
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE library;
+USE DATABASE library;
+DEFINE ANALYZER plain FILTERS lowercase;
+DEFINE TABLE docs SCHEMALESS;
+DEFINE FIELD body ON docs TYPE string ANALYZER plain;
+DEFINE INDEX by_body ON docs FIELDS body SEARCH;
+CREATE docs:1 = { n: 1, body: 'lock contention and a lock', e: [1, 0], at: geometry { type: 'Point', coordinates: [0, 0] } };
+CREATE docs:2 = { n: 2, body: 'a lock', e: [0, 1], at: geometry { type: 'Point', coordinates: [10, 10] } };
+CREATE docs:3 = { n: 3, body: 'nothing to see', e: [0.9, 0.1], at: geometry { type: 'Point', coordinates: [0, 1] } };
+--- expect: ok
+
+--- case: the first in every branch comes first, and agreement lower down decides the rest
+LET $found = SELECT n FROM docs ORDER BY FUSE (
+  search::score(body, 'lock contention') DESC,
+  vector::cosine(e, [1, 0]),
+  geo::distance(at, geometry { type: 'Point', coordinates: [0, 0] })
+);
+RETURN $found;
+--- expect: value [{ n: 1 }, { n: 3 }, { n: 2 }]
+
+--- case: a weight lets one branch outvote the others
+LET $found = SELECT n FROM docs ORDER BY FUSE (
+  search::score(body, 'lock contention') DESC WEIGHT 3,
+  vector::cosine(e, [1, 0])
+);
+RETURN $found;
+--- expect: value [{ n: 1 }, { n: 2 }, { n: 3 }]
+
+--- case: search::ranks() says where each branch placed the record
+LET $found = SELECT n, search::ranks() AS ranks FROM docs ORDER BY FUSE (
+  search::score(body, 'lock contention') DESC,
+  vector::cosine(e, [1, 0])
+) LIMIT 1;
+RETURN $found;
+--- expect: value [{ n: 1, ranks: [1, 1] }]
+
+--- case: and answers only where a fused order ranked it
+SELECT search::ranks() AS ranks FROM docs;
+--- expect: error NotFused
+
+--- case: a record no branch places within the depth is not answered
+SELECT n FROM docs ORDER BY FUSE (search::score(body, 'contention') DESC, vector::cosine(e, [1, 0])) DEPTH 1;
+--- expect: rows 1
+
+--- case: one order is not a fusion
+SELECT n FROM docs ORDER BY FUSE (vector::cosine(e, [1, 0]));
+--- expect: error UnexpectedToken
+
+--- case: nor is an order beside one
+SELECT n FROM docs ORDER BY FUSE (n, n DESC), n;
+--- expect: error UnexpectedToken

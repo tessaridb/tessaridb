@@ -13,8 +13,8 @@ use tessari_types::Number;
 
 use super::Parser;
 use crate::ast::{
-    Admitted, AnsweredBy, DeleteBound, Expr, ExprKind, FieldPath, Hop, Ordering, Projection,
-    RecordTarget, Source, Staleness, Timeout, Using, Version,
+    Admitted, AnsweredBy, DeleteBound, Expr, ExprKind, FieldPath, Fusion, Hop, Ordering,
+    Projection, RecordTarget, Source, Staleness, Timeout, Using, Version,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Span, Token};
@@ -132,21 +132,24 @@ impl Parser<'_> {
     /// Keys are read in the condition position, so a bare name is a route into
     /// the record — the same reading a `WHERE` gives it, and the same one a
     /// projection gives it.
-    pub(super) fn order_by(&mut self) -> Result<Vec<Ordering>> {
+    pub(super) fn order_by(&mut self) -> Result<(Vec<Ordering>, Option<Fusion>)> {
         if !self.eat_word("order") {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), None));
         }
         if !self.eat_word("by") {
             return Err(self.error_here("`BY` after `ORDER`"));
+        }
+        if let Some((branches, fusion)) = self.fused_order()? {
+            return Ok((branches, Some(fusion)));
         }
         let mut keys = vec![self.ordering()?];
         while self.eat_punct(Punct::Comma) {
             keys.push(self.ordering()?);
         }
-        Ok(keys)
+        Ok((keys, None))
     }
 
-    fn ordering(&mut self) -> Result<Ordering> {
+    pub(super) fn ordering(&mut self) -> Result<Ordering> {
         let key = self.condition()?;
         // `ASC` is accepted and means nothing, because a reader who writes it is
         // saying what they mean and a grammar that refused would be pedantry.

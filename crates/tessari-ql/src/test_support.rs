@@ -506,6 +506,9 @@ fn erase_select(select: &mut Select) {
     for ordering in &mut select.order {
         erase_expr(&mut ordering.key);
     }
+    if let Some(fusion) = &mut select.fusion {
+        fusion.span = CANONICAL;
+    }
 }
 
 /// What a `FROM` names.

@@ -133,7 +133,11 @@ fn the_changelog_counts_the_same_cases_the_badge_does() {
 
 /// The corpora the engines table does not name, because they are cross-cutting
 /// rather than the work of one engine.
-const CROSS_CUTTING: [&str; 26] = [
+const CROSS_CUTTING: [&str; 27] = [
+    // A fused order combines the orders of several engines — full-text, vector,
+    // geographic — by rank, and is the work of none of them: filing it under one
+    // would make that engine look like the owner of the other two's answers.
+    "fusion",
     // A span of identities is an access path over the table's own key order,
     // and every table has one — a log, an audit trail, a session table and a
     // queue all want the same window and none of them is a different engine for

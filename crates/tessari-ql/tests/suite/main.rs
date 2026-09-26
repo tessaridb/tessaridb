@@ -8,6 +8,7 @@
 mod assertion;
 mod consumers;
 mod creates;
+mod fusion;
 mod geometry_literal;
 mod identity;
 mod identity_spelling;

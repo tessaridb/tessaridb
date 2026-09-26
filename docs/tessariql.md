@@ -5318,6 +5318,74 @@ therefore correct and possibly short: a record that held the value then and has
 changed since has no entry left to find. Reading at the newest committed state is
 exact.
 
+### Several orders at once: `FUSE`
+
+A search over text and a nearest-neighbour read each answer with an order, and
+an application that wants both — the words a person typed *and* what they meant
+— wants one order made of the two. `FUSE` is that order:
+
+```tessariql
+SELECT title FROM notes
+ WHERE published = true
+ ORDER BY FUSE (
+   search::score(body, 'lock contention') DESC,
+   vector::cosine(embedding, [0.1, 0.9]) WEIGHT 2
+ ) DEPTH 50
+ LIMIT 10;
+```
+
+**Each branch is an order on its own**, meaning exactly what the same words mean
+after `ORDER BY` alone — including its direction and its ties, broken by
+identity. The fused order then asks, of each record, **where it came in each
+branch**, and never what value it came with.
+
+That is the point of it. A relevance score and a distance are not on one scale:
+a score runs from zero to whatever this table's rarest word is worth, a cosine
+distance from zero to two, and added together whichever has the larger range on
+this data decides the order while the weight written beside it decides nothing.
+A place in an order is on one scale whatever produced it.
+
+A record in the first `DEPTH` places of a branch earns `weight / (60 + place)`
+from it, and the fused order is the sum, highest first; equal sums are ordered by
+identity. `60` is a constant of this implementation, as BM25's `k1` and `b` are,
+and changing it in a release would change fused order without any statement
+changing. `WEIGHT` defaults to `1` and must be above zero; `DEPTH` defaults to
+`100`.
+
+Three things follow, each worth knowing before relying on it:
+
+- **A record no branch placed within its depth is not in the answer.** Nothing
+  ranked it, so there is nothing to order it by — a `LIMIT` larger than what the
+  branches placed answers with fewer records.
+- **The `WHERE` applies to every branch.** Each branch ranks the records that
+  passed it, so a filter never removes a record from one side and not the other.
+- **A fused read is exact.** Every branch is ranked over every record that
+  passed the `WHERE`, which is also what it costs: a fused read reads the whole of
+  what it filters, and none of the index-served orders above serves a branch of
+  one. `APPROXIMATE` is permission, so a fused read that writes it answers
+  exactly and its plan says `exact: true`.
+
+**Where each branch placed a record is part of the answer when you ask.**
+`search::ranks()` in a fused read's projection answers one place per branch, in
+the order the branches are written, `none` where a branch did not place the
+record within its depth:
+
+```tessariql
+SELECT title, search::ranks() AS ranks FROM notes
+ ORDER BY FUSE (search::score(body, 'lock') DESC, vector::cosine(embedding, [0.1, 0.9]))
+ LIMIT 3;
+-- ranks: [1, 4], [none, 1], [2, 7] …
+```
+
+It is refused anywhere else, by name, because a place is the fusion's and not
+the record's. For the same reason a fused read projects **after** it orders:
+its branches read the record as it is stored, so a branch naming a projected
+alias reads nothing — name the field or the expression itself.
+
+A fused order is the whole order: another key beside `FUSE (…)`, a single
+branch, a weight of zero, `DEPTH 0`, a `GROUP BY` and an `AFTER` cursor are each
+refused by name.
+
 ## 6. Key-value statements
 
 A space is a table whose records hold a single value rather than an object, a key
@@ -7525,7 +7593,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.7.0", "build": "0.7.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.8.0", "build": "0.8.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],
@@ -7765,6 +7833,7 @@ be, because it is confined to the run its fixed values name.
 | a gathered read that **pushes work down** to the shards' leaders | a node lacking shards fetches their records and runs the statement itself, so a `WHERE`, a `LIMIT` or an aggregate costs the missing shards' records on the network; evaluating them on the leaders — and combining a `mean` or a variance correctly across them — is a query engine of its own. A join side and a `FETCH` are not gathered at all. §7d |
 | **choosing among a range's candidates, and moving a placement** | `LEADS` elects a leader per placed range, but whichever candidate wins keeps it — there is no preference, no rebalancing and no hand-over — and a row naming one range cannot name a second or be dropped. Dropping safely needs every lease on the range to have lapsed first. §7d |
 | a change feed over a split table **on a node that does not write all of it** | a feed merges one writer's logs in that writer's order, and two writers' orders are unrelated counters — so a shard led elsewhere, or a follower, is refused by name rather than merged by a guess. Following it there needs an order across writers. §4 |
+| **an index serving a branch of a fused read** (`ORDER BY FUSE`) | every branch is ranked over every record that passed the `WHERE`, which is exact and costs the filtered read. A branch served from the search walk or the vector graph would stop early, and a fused order needs each branch's places down to its depth — the bound is the depth, not the `LIMIT`, and proving the walk answers the same places is its own piece of work. §5 |
 | a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |
 | a bucket narrowed by **content type** — `HOLDS image/png` | the store has no content type for a file. A file's record holds its size, its chunk count and when it was written, and nothing anywhere reads the bytes to decide what they are — so the clause could only enforce the caller's own claim about the caller's own bytes, which is the assertion §6a refuses `CREATE`, `UPDATE` and `SET` in order to avoid, wearing a constraint's clothes. The honest version detects the type by reading the leading bytes against a table of signatures, which is real work with a real failure mode of its own: plain text, CSV and SVG have no signature, and a `HOLDS text/plain` that cannot be checked is worse than no clause at all. The ceiling shipped without it because `MAX` compares against a number the store computes itself. §6a |
 | a **streaming** backup answer | `BACKUP` answers with a value, so the file is materialised. `FROM` bounds it, and the real fix is an answer shape that streams — which is the wall a **whole-file** `READ` still meets even now that a ranged one exists, and worth crossing once for both. §7a |

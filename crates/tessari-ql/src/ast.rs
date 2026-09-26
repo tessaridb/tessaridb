@@ -21,7 +21,7 @@
 //! [`TableId`]: tessari_types::TableId
 
 use tessari_types::{
-    Assertion, ConflictPolicy, Duration, FieldKind, Filter, IdentityKind, Path, RecordId,
+    Assertion, ConflictPolicy, Duration, FieldKind, Filter, IdentityKind, Number, Path, RecordId,
     Replication, ReplicationClass, Value,
 };
 
@@ -2134,7 +2134,19 @@ pub struct Select {
     /// `GROUP BY city` means what it always did.
     pub group: Vec<Expr>,
     /// The keys the answer is sorted by, in order of significance.
+    ///
+    /// Under [`Select::fusion`] these are the fused read's branches rather than
+    /// sort keys in order of significance: each ranks the records on its own and
+    /// the ranks are what is combined.
     pub order: Vec<Ordering>,
+    /// `ORDER BY FUSE (…)`: the branches in `order` are fused by rank.
+    ///
+    /// Beside `order` rather than a variant of it, so everything that walks the
+    /// keys — binding, reach, views, rendering — reads a fused read's branches
+    /// exactly as it reads sort keys. What must NOT treat them as sort keys is
+    /// every path that serves or bounds an order by its first key, and each of
+    /// those declines when this is set.
+    pub fusion: Option<Fusion>,
     /// The record the answer resumes after, when `AFTER` named one.
     ///
     /// A cursor: the page begins at the first record that sorts **strictly
@@ -2380,6 +2392,24 @@ pub enum Using {
     /// Stronger than a path word and often what is actually meant: `index` says
     /// *an* index answered, this says *which*.
     Index(Name),
+}
+
+/// How the branches of `ORDER BY FUSE (…)` are combined (G038).
+///
+/// A record's fused score is the sum, over the branches where it is within the
+/// first `depth` of that branch's own order, of `weight / (K + rank)` — ranks,
+/// never the branches' values, because a relevance score and a distance are not
+/// on one scale and adding them lets whichever has the larger range decide.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fusion {
+    /// One weight per branch, in the order of `Select::order`; each above zero.
+    pub weights: Vec<Number>,
+    /// How far down each branch's own order a record may be and still count;
+    /// `None` when the statement named no `DEPTH`, so the default is the
+    /// executor's and the statement renders back as it was written.
+    pub depth: Option<u64>,
+    /// Where `FUSE` was written.
+    pub span: Span,
 }
 
 /// One sort key, and which way it runs.

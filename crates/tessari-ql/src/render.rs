@@ -25,11 +25,13 @@
 //! than claimed.
 
 use crate::ast::{
-    Approximation, Expr, ExprKind, FieldPath, Ordering, Projected, Projection, Script, Select,
-    Source, Statement, StatementKind, TableRef, Using,
+    Approximation, Expr, ExprKind, FieldPath, Fusion, Ordering, Projected, Projection, Script,
+    Select, Source, Statement, StatementKind, TableRef, Using,
 };
 use crate::error::{Error, Result};
 use crate::token::Span;
+
+use tessari_types::Number;
 
 /// A script, written back out as TessariQL.
 ///
@@ -205,7 +207,9 @@ fn write_select(out: &mut String, select: &Select) -> Result<()> {
             write_expr(out, key)?;
         }
     }
-    if let Some((first, rest)) = select.order.split_first() {
+    if let Some(fusion) = &select.fusion {
+        write_fusion(out, &select.order, fusion)?;
+    } else if let Some((first, rest)) = select.order.split_first() {
         out.push_str(" ORDER BY ");
         write_ordering(out, first)?;
         for ordering in rest {
@@ -257,6 +261,30 @@ fn write_ordering(out: &mut String, ordering: &Ordering) -> Result<()> {
     write_expr(out, &ordering.key)?;
     if ordering.descending {
         out.push_str(" DESC");
+    }
+    Ok(())
+}
+
+/// `ORDER BY FUSE (…) [DEPTH n]`. A weight of one is left unwritten, because it
+/// is what a branch without `WEIGHT` parses to.
+fn write_fusion(out: &mut String, branches: &[Ordering], fusion: &Fusion) -> Result<()> {
+    out.push_str(" ORDER BY FUSE (");
+    for (position, branch) in branches.iter().enumerate() {
+        if position > 0 {
+            out.push_str(", ");
+        }
+        write_ordering(out, branch)?;
+        if let Some(weight) = fusion.weights.get(position)
+            && *weight != Number::Integer(1)
+        {
+            out.push_str(" WEIGHT ");
+            out.push_str(&weight.to_string());
+        }
+    }
+    out.push(')');
+    if let Some(depth) = fusion.depth {
+        out.push_str(" DEPTH ");
+        out.push_str(&depth.to_string());
     }
     Ok(())
 }

@@ -12,6 +12,35 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.8.0-beta — 2026-09-26
+
+**Several orders in one read, fused by rank.** `ORDER BY FUSE (…)` ranks the
+records of a read by two or more orders at once — a text score, a vector
+distance, a geographic distance, or any other key — and combines them by where
+each record came in each order, never by adding the values: a relevance score
+and a distance are not on one scale.
+
+```
+SELECT title FROM notes
+ ORDER BY FUSE (search::score(body, 'lock') DESC, vector::cosine(embedding, $q) WEIGHT 2)
+ DEPTH 50 LIMIT 10;
+```
+
+- A record earns `weight / (60 + place)` from each branch that places it within
+  the first `DEPTH` (default 100); the fused order is the sum, ties by identity.
+  A record no branch placed is not in the answer.
+- The `WHERE` applies to every branch. A fused read is exact: every branch ranks
+  every record that passed the filter, and `APPROXIMATE` does not change that.
+- `search::ranks()` in a fused read's projection answers where each branch placed
+  the record (`none` outside a branch's depth), and is refused with **`NotFused`**
+  anywhere else. A fused read projects after it orders, so its branches read the
+  stored record rather than a projected alias.
+- One branch, a weight of zero, `DEPTH 0`, a key beside `FUSE (…)`, `GROUP BY` and
+  an `AFTER` cursor are refused by name.
+
+**1413 conformance cases** define the language and run in the build, up from
+1405.
+
 ## 0.7.0-beta — 2026-09-26
 
 **A topic: an append-only order of messages whose readers keep their positions

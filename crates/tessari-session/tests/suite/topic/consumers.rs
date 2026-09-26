@@ -200,5 +200,16 @@ fn info_for_topic_reports_positions_and_each_readers_lag() {
         );
         assert_eq!(readers.get("audit"), Some(&reader(1, 6)));
         assert_eq!(readers.len(), 2);
+        // Retention is reported when declared, and only then.
+        assert_eq!(report.get("retain"), None, "{}", backend.name);
+        run(&mut session, "DEFINE TOPIC kept RETAIN 7d;");
+        let Value::Object(kept) = value(&mut session, "INFO FOR TOPIC kept;") else {
+            panic!("no report");
+        };
+        assert!(
+            matches!(kept.get("retain"), Some(Value::Duration(_))),
+            "{}: {kept:?}",
+            backend.name
+        );
     });
 }

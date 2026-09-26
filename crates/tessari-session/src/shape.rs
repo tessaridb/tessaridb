@@ -5,7 +5,11 @@
 //! of these, in what order* — and because the two rules it holds are the ones a
 //! reader comes looking for.
 
-use tessari_ql::Ordering;
+use tessari_ql::{Fusion, Ordering, Select};
+
+mod fused;
+
+pub(crate) use fused::Fused;
 use tessari_types::{Number, RecordId, Value};
 
 /// A record travelling through the sort: its keys, its id, and itself.
@@ -132,9 +136,24 @@ pub(crate) struct Topmost<'a> {
     /// in front of the bound, the bound keeps the first `wanted` records **of
     /// the page**, which is what was asked for.
     anchor: Option<(Vec<Value>, RecordId)>,
+    /// The fusion the keys are branches of, when the order is `FUSE (…)`: every
+    /// record is held, because a rank depends on all of them.
+    fusion: Option<&'a Fusion>,
 }
 
 impl<'a> Topmost<'a> {
+    /// The collector `select`'s order needs: fused when it is `FUSE (…)`,
+    /// otherwise keeping `wanted`.
+    pub(crate) fn of(select: &'a Select, wanted: Option<usize>) -> Self {
+        match &select.fusion {
+            Some(fusion) => Self {
+                fusion: Some(fusion),
+                ..Self::keeping(&select.order, None)
+            },
+            None => Self::keeping(&select.order, wanted),
+        }
+    }
+
     /// A collector for `wanted` records, or for all of them when it is `None`.
     ///
     /// The buffer is not pre-allocated. `wanted` comes from a `LIMIT` the caller
@@ -148,6 +167,7 @@ impl<'a> Topmost<'a> {
             room: wanted.map(|wanted| wanted.saturating_mul(2).max(1)),
             held: Vec::new(),
             anchor: None,
+            fusion: None,
         }
     }
 
@@ -179,11 +199,30 @@ impl<'a> Topmost<'a> {
 
     /// The records kept, in order.
     pub(crate) fn finish(mut self) -> Vec<(RecordId, Value)> {
+        if let Some(fusion) = self.fusion {
+            return fused::fused(self.held, self.order, fusion)
+                .into_iter()
+                .map(|(id, record, _)| (id, record))
+                .collect();
+        }
         self.compact();
         self.held
             .into_iter()
             .map(|(_, id, record)| (id, record))
             .collect()
+    }
+
+    /// The records a fused order put first, each with its ranks; an order that
+    /// is not fused answers its own records with no ranks.
+    pub(crate) fn finish_fused(self) -> Vec<Fused> {
+        match self.fusion {
+            Some(fusion) => fused::fused(self.held, self.order, fusion),
+            None => self
+                .finish()
+                .into_iter()
+                .map(|(id, record)| (id, record, Vec::new()))
+                .collect(),
+        }
     }
 
     /// Sort what is held and drop everything that cannot reach the answer.

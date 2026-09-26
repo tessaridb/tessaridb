@@ -175,6 +175,7 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::VectorEuclidean
         | Function::VectorDot
         | Function::SearchScore
+        | Function::SearchRanks
         | Function::CryptoMd5
         | Function::CryptoSha1
         | Function::EncodingBase64

@@ -40,6 +40,8 @@ use crate::search::{
 };
 use crate::session::Session;
 
+mod fused;
+
 /// How many of an index's leading values an index-served order compares.
 ///
 /// One, because `plan::ordered` refuses a second sort key — so the field the
@@ -186,6 +188,24 @@ impl Session<'_> {
                 // repeated.
                 if *function == Function::SearchHighlight {
                     return self.highlight(transaction, arguments, scope);
+                }
+                // And a rank, which is the fusion's and not the record's: it
+                // exists only while a fused read projects what it ordered.
+                if *function == Function::SearchRanks {
+                    let Some(ranks) = scope.ranks else {
+                        return Err(Error::NotFused { span: *span });
+                    };
+                    return Ok(Value::Array(
+                        ranks
+                            .iter()
+                            .map(|rank| {
+                                rank.and_then(|rank| i64::try_from(rank).ok())
+                                    .map_or(Value::None, |rank| {
+                                        Value::Number(Number::Integer(rank))
+                                    })
+                            })
+                            .collect(),
+                    ));
                 }
                 let arguments = self.values(transaction, arguments, scope)?;
                 call(*function, &arguments, *span)
@@ -707,7 +727,7 @@ impl Session<'_> {
                 wanted,
                 keys,
                 &searched,
-                crate::shape::Topmost::keeping(&select.order, bound),
+                crate::shape::Topmost::of(select, bound),
                 &mut budget,
                 &noticed,
             );
@@ -766,6 +786,15 @@ impl Session<'_> {
         if let Some(route) = &select.split {
             records = opened(records, &route.path, &mut budget)?;
         }
+        if select.fusion.is_some() {
+            return self.fused_answer(
+                transaction,
+                select,
+                records,
+                (&searched, &noticed),
+                (&mut budget, plan, notes),
+            );
+        }
         let records = if groups(select) {
             // A grouping folds many records into one, and a fold answers about
             // the group rather than about a record — so the star has nothing to
@@ -816,7 +845,7 @@ impl Session<'_> {
                 None,
                 keys,
                 &searched,
-                crate::shape::Topmost::keeping(&select.order, bound),
+                crate::shape::Topmost::of(select, bound),
                 &mut budget,
                 &noticed,
             );
@@ -923,6 +952,19 @@ impl Session<'_> {
         searched: &Searched,
         noticed: &Noticed,
     ) -> Result<Value> {
+        self.project_with(transaction, id, record, wanted, (searched, noticed), None)
+    }
+
+    /// [`Self::project`], with the record's ranks when a fused read projects it.
+    pub(crate) fn project_with(
+        &self,
+        transaction: &mut Transaction<'_>,
+        id: &RecordId,
+        record: &Value,
+        wanted: &Shaped,
+        (searched, noticed): (&Searched, &Noticed),
+        ranks: Option<&[Option<u64>]>,
+    ) -> Result<Value> {
         // The star first, so a value written out by name is written **over** the
         // field it shares a name with. `SELECT *, upper(name) AS name` answers
         // with the computed one, which is the same rule the ordering stage's
@@ -975,12 +1017,13 @@ impl Session<'_> {
             //
             // A fold never reaches here: a projection holding one goes through
             // `grouped`, which is the only place many records become one.
+            let scope = Scope::searching(record, searched)
+                .identified(id)
+                .noticing(noticed);
             let held = self.evaluate_in(
                 transaction,
                 &value.value,
-                Scope::searching(record, searched)
-                    .identified(id)
-                    .noticing(noticed),
+                ranks.map_or(scope, |ranks| scope.with_ranks(ranks)),
             )?;
             if held.is_present() {
                 projected.insert(value.name.text.clone(), held);
@@ -3896,7 +3939,14 @@ fn streams(select: &Select) -> bool {
     // ordering stage below it keeps only as many as the bound can still reach.
     // Streamed, the two would decide that together — the sort discarding rows
     // the split had not produced yet.
-    select.fetch.is_empty() && select.split.is_none() && !select.order.is_empty() && !groups(select)
+    // A fused order projects after it orders — its ranks are what
+    // `search::ranks()` answers — so it takes the collecting path, where the two
+    // stages can be put in that order.
+    select.fetch.is_empty()
+        && select.split.is_none()
+        && !select.order.is_empty()
+        && select.fusion.is_none()
+        && !groups(select)
 }
 
 /// Whether the read folds many records into one.
@@ -4065,6 +4115,10 @@ pub(crate) struct Scope<'a> {
     /// Borrowed, so it cannot outlive the read — which is the whole reason it
     /// hangs here rather than on the session.
     noticed: Option<&'a Noticed>,
+    /// Where this record came in each branch of the fused order that answered
+    /// it, when it is being projected by a fused read — what `search::ranks()`
+    /// answers, and the reason it answers nowhere else.
+    ranks: Option<&'a [Option<u64>]>,
 }
 
 impl<'a> Scope<'a> {
@@ -4080,6 +4134,7 @@ impl<'a> Scope<'a> {
             id: None,
             searched: None,
             noticed: None,
+            ranks: None,
         }
     }
 
@@ -4090,6 +4145,7 @@ impl<'a> Scope<'a> {
             id: None,
             searched: None,
             noticed: None,
+            ranks: None,
         }
     }
 
@@ -4100,6 +4156,7 @@ impl<'a> Scope<'a> {
             id: None,
             searched: Some(searched),
             noticed: None,
+            ranks: None,
         }
     }
 
@@ -4150,6 +4207,15 @@ impl<'a> Scope<'a> {
             id: None,
             searched: Some(searched),
             noticed: Some(noticed),
+            ranks: None,
+        }
+    }
+
+    /// The same scope, projecting a record of a fused read with its ranks.
+    pub(crate) const fn with_ranks(self, ranks: &'a [Option<u64>]) -> Self {
+        Self {
+            ranks: Some(ranks),
+            ..self
         }
     }
 
