@@ -120,9 +120,10 @@ impl Eq for Ranked {}
 /// The true distance from `target` to a record whose stored box is a single
 /// position, or `None` when the walk must give the read up to the scan.
 ///
-/// A box with any extent belongs to a shape rather than a point, and
-/// `geo::distance` takes positions — so that record is an error in the statement
-/// and the scan is the only thing that can say so. A pair the distance refuses
+/// A box with any extent belongs to a shape rather than a point, and the
+/// distance to a shape is the distance to its nearest point — which the box does
+/// not know and the index does not hold — so that record is the scan's to
+/// measure. A pair the distance refuses
 /// as near-antipodal is given up for a different reason: the value layer turns
 /// that refusal into `none`, which sorts *below* every number, so ranking it
 /// last would put it where the scan does not.
@@ -324,8 +325,8 @@ impl Transaction<'_> {
     /// # `None` is the scan, and every one of them is a way the answers differ
     ///
     /// - **a record whose stored box is not a single position.** Only a point has
-    ///   a degenerate box, and `geo::distance` takes positions — a shape is an
-    ///   error in the statement, which the scan reports and this cannot.
+    ///   a degenerate box; the distance to a larger shape is to its nearest
+    ///   point, which needs the geometry the index does not hold.
     /// - **a near-antipodal record.** [`tessari_geo::distance`] refuses those
     ///   rather than guessing, and the value layer above turns that refusal into
     ///   `none`, which sorts *below* every number. A walk that ranked it last

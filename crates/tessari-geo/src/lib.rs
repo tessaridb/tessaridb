@@ -23,16 +23,19 @@
 //! results and finding them plausible.
 
 pub mod accept;
+pub mod around;
 pub mod bounds;
 pub mod curve;
 pub mod grid;
 pub mod measure;
 pub mod predicate;
+pub mod reach;
 pub mod relate;
 pub mod shape;
 mod witness;
 
 pub use crate::accept::{Defect, Refused, accept};
+pub use crate::around::within_reach;
 pub use crate::bounds::{Bounds, Relation};
 pub use crate::curve::{Cell, Class, ORDER, covering, hilbert_index, hilbert_point};
 pub use crate::grid::{Axis, OffGrid, SCALE, Snapped};
@@ -41,6 +44,7 @@ pub use crate::predicate::{
     Containment, Orientation, on_segment, orientation, ring_contains, segments_cross,
     segments_meet, twice_signed_area,
 };
+pub use crate::reach::distance_to;
 pub use crate::relate::{
     contains, covered_by, covers, disjoint, equals, intersects, touches, within,
 };

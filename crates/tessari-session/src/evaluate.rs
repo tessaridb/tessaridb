@@ -2377,9 +2377,8 @@ impl Session<'_> {
     ///   in the index at a place this reader cannot see, and the answer comes
     ///   back in the **wrong order** rather than short.
     ///
-    /// The query position is the last: `geo::distance` takes positions, so an
-    /// argument that is not one is an error in the statement, and the scan is
-    /// what reports it. [`Transaction::records_by_place`] owns the three
+    /// The query position is the last: the walk ranks from a position, and a
+    /// larger query shape is measured by the scan. [`Transaction::records_by_place`] owns the three
     /// remaining refusals, which are facts about the records rather than about
     /// the session.
     fn walk_to_place(

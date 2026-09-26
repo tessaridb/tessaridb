@@ -4453,7 +4453,7 @@ SELECT object::merge(address, $overrides) AS resolved FROM users;
 | `crypto` | `sha256(text)` · `sha512(text)` · `sha1(text)` · `md5(text)` — lowercase hex; see [Digests](#digests) |
 | `encoding` | `base64(bytes)` · `base64_decode(text)` · `hex(bytes)` · `hex_decode(text)` — see [Bytes as text](#bytes-as-text) |
 | `search` | `score(field, 'query')` — see [Ranking](#ranking) |
-| `geo` | `intersects` · `disjoint` · `covers` · `covered_by` · `contains` · `within` · `equals` · `touches` · `distance(a, b)` · `area(shape)` — see [Shapes](#shapes) |
+| `geo` | `intersects` · `disjoint` · `covers` · `covered_by` · `contains` · `within` · `equals` · `touches` · `distance(a, b)` · `area(shape)` · `cell(position, level)` — see [Shapes](#shapes) |
 
 **What earns a place: a function is here when it cannot be expressed by what the
 language already has.** That is why there is no `array::contains` (`CONTAINS`
@@ -4912,11 +4912,25 @@ SELECT name FROM places ORDER BY geo::distance(shape, $me) LIMIT 10;
 SELECT name, geo::area(zone) AS square_metres FROM districts;
 ```
 
-`geo::distance(a, b)` is the distance along the ellipsoid between two
-**positions**, in metres. Both arguments must be positions: the distance from a
-position to a *larger* shape is the distance to the nearest part of it, which is
-a different computation and is not written yet — so a polygon is refused by name
-rather than answered about from one of its corners.
+`geo::distance(a, b)` is the distance along the ellipsoid, in metres. Between two
+**positions** it is the geodesic between them. Between a position and a **larger
+shape** — a path, an area, several of either — it is the distance to the shape's
+**nearest point**: zero when the shape covers the position, by the same exact
+rule `geo::covers` answers with, and otherwise the distance to the nearest point
+of its edges. An edge is the lon–lat straight line the geometry says, as it is for
+`geo::area` and every predicate, so the shape measured to is the shape written.
+Either argument may be the position.
+
+The nearest point of an edge is searched for rather than guessed: the edge is cut
+into pieces, a piece is dropped only when a floor proves nothing on it can be
+nearer than the best found so far, and the pieces left are settled by a local
+search. The answer is always a distance to a point that is on the shape — never a
+corner chosen in advance, which is right for some positions and wrong by
+kilometres for others.
+
+Between **two** shapes that are both larger than a position the nearest pair of
+points is a different search, and it is refused by name rather than answered
+from a representative point of each.
 
 **There is no distance in degrees, anywhere.** Not exposed, not labelled, not
 behind a flag. A function returning degrees is a function somebody reads as
@@ -5067,17 +5081,80 @@ field is not that. `SELECT name FROM places ORDER BY geo::distance(shape, $here)
 LIMIT 3` keeps its bound, because the ordering stage reads the source record
 beneath the projection for a key naming a field the projection did not offer.
 
-`geo::distance` takes positions, so a record holding an area is an error in the
-statement. The walk reports the same error the scan does rather than answering
-around it.
+The walk ranks **positions**. A record holding a path or an area is measured to
+its nearest point, which its stored box does not know, so the walk hands the read
+to the scan when it reaches one — the answer is the scan's either way, and a
+table holding areas is ordered by the scan. For the same reason a query shape
+larger than a position is measured by the scan.
+
+#### Within a distance
+
+"Everything within two kilometres" is an ordinary condition, and the spatial
+index serves it:
+
+```
+SELECT * FROM stops WHERE geo::distance(at, $here) < 2000;
+```
+
+The read widens the query's box by the distance — far enough in latitude and in
+longitude that **every** position within it is inside, which is worked out from
+the same floors the nearest-first walk uses — and reads the records whose boxes
+meet the widened box. The distance itself is then tested on each of them, so the
+widening decides only what the read costs. A widening that reaches a pole or
+crosses ±180 covers every longitude, which is wider than needed and never
+narrower.
+
+`<` and `<=` are served, written either way round (`2000 > geo::distance(…)`)
+and with the place as either argument. `EXPLAIN` reports shape `region`. A
+**lower** bound — `geo::distance(at, $here) > 2000` — is the outside of a disc,
+which has no box holding it, and stays an exact scan, as `geo::disjoint` does. So
+does a radius read from the record itself. A place that is not a position works
+too: the box widened is the shape's own.
+
+#### A name and a place together
+
+"Cafés called *blue* near me" needs no new syntax. Ranked together, the text
+score and the distance are fused by rank (see [Several orders at once](#several-orders-at-once-fuse)):
+
+```
+SELECT * FROM cafes WHERE name MATCHES 'blue cafe'
+ ORDER BY FUSE (search::score(name, 'blue cafe') DESC, geo::distance(at, $here))
+ LIMIT 10;
+```
+
+Or filtered by name within a radius and ordered by distance, where the name is
+served by the search index and the radius is re-tested on what it finds:
+
+```
+SELECT * FROM cafes WHERE name MATCHES 'cafe' AND geo::distance(at, $here) < 2000
+ ORDER BY geo::distance(at, $here) LIMIT 10;
+```
+
+#### Counting by cell
+
+A map zoomed out does not want every point; it wants how many fall in each part
+of the view. `geo::cell(position, level)` answers the spatial index's own cell
+holding the position at that level — 0 is the whole world, each level splits
+every cell in four, 32 is the finest — **as a polygon**, so it groups and draws:
+
+```
+SELECT geo::cell(at, 10) AS cell, count(*) AS n FROM stops GROUP BY geo::cell(at, 10);
+```
+
+The cells of one level tile the world with nothing counted twice. They divide
+longitude and latitude evenly, so they are **not equal in area** — a cell near a
+pole covers less ground than one at the equator. A count is for drawing; a
+density is `count(*) / geo::area(geo::cell(at, 10))`. Only a position has a cell: a path or an
+area spans several, and is refused by name, as is a level that is not a whole
+number from 0 to 32.
 
 #### What is not there yet
 
 There is no measured tuning of how finely a query is covered — the budget is a
 declared constant, and the candidate-to-result ratio the store measures is what
-will move it. A nearest-first read under a `WHERE` is still a scan. And there is
-no distance between shapes larger than positions, which is also why the
-nearest-few read is over positions.
+will move it. A nearest-first read under a `WHERE` is still a scan, and so is one
+over a table holding paths or areas. There is no distance between two shapes
+that are both larger than positions.
 
 ### Ranking
 
@@ -7593,7 +7670,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.8.0", "build": "0.8.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.9.0", "build": "0.9.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],

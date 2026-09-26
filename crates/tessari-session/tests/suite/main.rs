@@ -48,6 +48,7 @@ mod fusion;
 mod fuzzy;
 mod gathered_reads;
 mod generated;
+mod geo_gaps;
 mod geo_store;
 mod geometry_ingest;
 mod geometry_query;

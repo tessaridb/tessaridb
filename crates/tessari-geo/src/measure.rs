@@ -51,7 +51,7 @@ use crate::grid::{Snapped, units_to_degrees};
 use crate::shape::{Area, Loop, Shape};
 
 /// The semi-major axis of WGS-84, in metres. A defining constant of the datum.
-const SEMI_MAJOR: f64 = 6_378_137.0;
+pub(crate) const SEMI_MAJOR: f64 = 6_378_137.0;
 
 /// The flattening of WGS-84, as its defining reciprocal.
 const INVERSE_FLATTENING: f64 = 298.257_223_563;
@@ -75,9 +75,6 @@ const ATTEMPTS: u32 = 200;
 /// a plausible number wrong by an unbounded amount.
 #[must_use]
 pub fn distance(one: Snapped, other: Snapped) -> Option<f64> {
-    let flattening = 1.0 / INVERSE_FLATTENING;
-    let semi_minor = SEMI_MAJOR * (1.0 - flattening);
-
     // The two are put in a fixed order before any arithmetic happens. Vincenty's
     // solution is symmetric on paper and its floating-point evaluation is not:
     // swapping the arguments changes the order of the additions and moves the
@@ -89,8 +86,19 @@ pub fn distance(one: Snapped, other: Snapped) -> Option<f64> {
     } else {
         (other, one)
     };
-    let here = near.to_position();
-    let there = far.to_position();
+    geodesic(near.to_position(), far.to_position())
+}
+
+/// Vincenty's inverse solution between two positions that need not be on the
+/// grid, in metres; `None` when near-antipodal.
+///
+/// [`distance`] is this with its arguments put in a fixed order first. The
+/// search for the nearest point of an edge ([`crate::reach`]) evaluates points
+/// *between* grid positions, and snapping each of them would move the point it
+/// measures to by up to half a grid unit, so it calls this directly.
+pub(crate) fn geodesic(here: Position, there: Position) -> Option<f64> {
+    let flattening = 1.0 / INVERSE_FLATTENING;
+    let semi_minor = SEMI_MAJOR * (1.0 - flattening);
     if here == there {
         return Some(0.0);
     }
@@ -236,14 +244,29 @@ const fn grid_order(position: Snapped) -> (i64, i64) {
 /// account.
 #[must_use]
 pub fn no_closer_than(from: Snapped, bounds: Bounds) -> f64 {
-    across_latitude(from, bounds).max(across_longitude(from, bounds))
+    no_closer_than_degrees(
+        from,
+        [
+            units_to_degrees(bounds.west()),
+            units_to_degrees(bounds.south()),
+            units_to_degrees(bounds.east()),
+            units_to_degrees(bounds.north()),
+        ],
+    )
+}
+
+/// [`no_closer_than`] for a box given in degrees, `[west, south, east, north]`.
+///
+/// The same two floors; the box need not lie on the grid, which is what a piece
+/// of an edge between two grid positions needs.
+pub(crate) fn no_closer_than_degrees(from: Snapped, bounds: [f64; 4]) -> f64 {
+    let [west, south, east, north] = bounds;
+    across_latitude(from, south, north).max(across_longitude(from, west, east))
 }
 
 /// The floor that the band of latitudes alone puts under the distance.
-fn across_latitude(from: Snapped, bounds: Bounds) -> f64 {
+fn across_latitude(from: Snapped, south: f64, north: f64) -> f64 {
     let latitude = units_to_degrees(from.latitude_units());
-    let south = units_to_degrees(bounds.south());
-    let north = units_to_degrees(bounds.north());
     let turn = if latitude < south {
         south - latitude
     } else if latitude > north {
@@ -255,10 +278,8 @@ fn across_latitude(from: Snapped, bounds: Bounds) -> f64 {
 }
 
 /// The floor that the span of longitudes alone puts under the distance.
-fn across_longitude(from: Snapped, bounds: Bounds) -> f64 {
+fn across_longitude(from: Snapped, west: f64, east: f64) -> f64 {
     let longitude = units_to_degrees(from.longitude_units());
-    let west = units_to_degrees(bounds.west());
-    let east = units_to_degrees(bounds.east());
     if west <= longitude && longitude <= east {
         return 0.0;
     }
@@ -281,7 +302,7 @@ fn shortest_turn(one: f64, other: f64) -> f64 {
 }
 
 /// How far a position on the ellipsoid stands from the spin axis, in metres.
-fn distance_from_axis(latitude: f64) -> f64 {
+pub(crate) fn distance_from_axis(latitude: f64) -> f64 {
     let (sin, cos) = latitude.to_radians().sin_cos();
     let prime_vertical = SEMI_MAJOR / (1.0 - squared_eccentricity() * sin * sin).sqrt();
     prime_vertical * cos
@@ -292,13 +313,13 @@ fn distance_from_axis(latitude: f64) -> f64 {
 /// `a(1 − e²)`, which the meridian radius takes at the equator and exceeds at
 /// every other latitude — so it is the multiplier that turns a difference in
 /// latitude into a distance that is certainly not an overestimate.
-fn least_meridian_radius() -> f64 {
+pub(crate) fn least_meridian_radius() -> f64 {
     SEMI_MAJOR * (1.0 - squared_eccentricity())
 }
 
 /// The square of WGS-84's first eccentricity, from the datum's two defining
 /// constants.
-fn squared_eccentricity() -> f64 {
+pub(crate) fn squared_eccentricity() -> f64 {
     let flattening = 1.0 / INVERSE_FLATTENING;
     flattening * (2.0 - flattening)
 }
