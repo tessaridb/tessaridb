@@ -211,6 +211,20 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
         );
         return Ok(());
     }
+    // A topic the same way, with its clauses (G037).
+    if let TableKind::Topic(declared) = &definition.kind {
+        if definition.schemafull || definition.is_edge() {
+            return Err(Unwritable::at(format!(
+                "topic `{name}` carries flags its declaring word cannot say"
+            )));
+        }
+        let _ = writeln!(
+            script,
+            "DEFINE TOPIC {name}{};",
+            crate::topic::topic_clauses(declared)
+        );
+        return Ok(());
+    }
     if let TableKind::Series(declared) = &definition.kind {
         if definition.schemafull || definition.is_edge() {
             return Err(Unwritable::at(format!(

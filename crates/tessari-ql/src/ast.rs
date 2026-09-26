@@ -216,6 +216,28 @@ pub enum StatementKind {
         /// `MAX n [EVICT NONE]` — the most keys the space holds (G036).
         limit: Option<SpaceBound>,
     },
+    /// `DEFINE TOPIC events RETAIN 7d MAX BYTES 4096 PUBLIC RATE 100 PER 1m` —
+    /// an append-only order of messages (G037).
+    DefineTopic {
+        /// The name to create.
+        name: Name,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+        /// What the declaration says about keeping, sizing and opening it.
+        clauses: TopicClauses,
+    },
+    /// `READ FROM events FOR CONSUMER 'billing' AFTER 41 LIMIT 100` — the
+    /// messages of a topic after a position (G037).
+    ReadTopic {
+        /// The topic.
+        topic: TableRef,
+        /// The reader whose stored position the read starts after and advances.
+        consumer: Option<String>,
+        /// The position to read after, instead of the stored one.
+        after: Option<Expr>,
+        /// The most messages to answer.
+        limit: Option<Expr>,
+    },
     /// `DEFINE BUCKET media MAX 5242880` — a table whose records are files.
     ///
     /// The bytes live in a companion table nothing can name, and the records
@@ -1732,6 +1754,8 @@ pub enum InfoSubject {
     /// length, a fingerprint or a key identifier would be a slower oracle rather
     /// than none, and a reader would have no way to tell it was one.
     Vault(Name),
+    /// `INFO FOR TOPIC events` — a topic's positions and its readers' (G037).
+    Topic(TableRef),
     /// `INFO FOR BUCKET media` — one bucket's name and the largest file it takes.
     ///
     /// Distinct from `INFO FOR TABLE` for the reason [`InfoSubject::Vault`] is:
@@ -2955,6 +2979,19 @@ pub enum ExprKind {
     Ttl(RecordTarget),
     /// `(SELECT * FROM users:1)` in a value position.
     Select(Box<Select>),
+}
+
+/// What `DEFINE TOPIC` declares after the name (G037). Every clause is optional
+/// and each appears at most once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TopicClauses {
+    /// `RETAIN 7d` — how long a message is kept.
+    pub retain: Option<Duration>,
+    /// `MAX BYTES n` — the most bytes one message may encode to.
+    pub max_bytes: Option<u64>,
+    /// `PUBLIC RATE n PER d` — appends a caller nobody signed in may make, per
+    /// window, on each node.
+    pub public: Option<(u64, Duration)>,
 }
 
 /// `MAX n [EVICT NONE]` on `DEFINE SPACE` (G036).

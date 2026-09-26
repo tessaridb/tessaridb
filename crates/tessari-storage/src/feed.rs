@@ -36,6 +36,10 @@ use crate::catalog::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
 use crate::error::Result;
 use crate::store::Store;
 
+mod merged;
+
+pub use merged::Merged;
+
 /// What a read of the feed found, and where to resume.
 ///
 /// The position is not a convenience. A log record can produce **no changes** —

@@ -655,7 +655,19 @@ const TABLES: &[Table] = &[
         // campaign did not win. A lease is admission to write, so the day
         // anything reachable from a session can call `hold_range`, the write
         // gate's per-line fence is only as strong as that caller.
-        expected: 42,
+        //
+        // 43 since topics (G037): `Store::admit_public_append`. Classified **not
+        // a data path**: it spends a `PUBLIC` topic's anonymous allowance, which
+        // lives in this process's memory, and reads or writes no record, catalog
+        // entry or grant. It admits nothing on its own — the door is
+        // `Session::public_append`, which decides the statement is an append to
+        // a public topic and nothing else before it asks, and the append then
+        // commits through the ordinary path. A caller spending the allowance
+        // outside that door can only refuse anonymous appenders sooner.
+        //
+        // Its re-classification trigger: a `true` from it treated as permission
+        // to write by anything but that door.
+        expected: 43,
         count: |text| public_functions(&block(text, "impl Store")),
     },
     Table {
@@ -735,7 +747,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 96 since a partial node gathers: `Db::gather_through`, classified
     // ENFORCED in the facade's entry above (G033, ADR-0083).
-    assert_eq!(total, 96, "the counted tables no longer sum to 96");
+    //
+    // 97 since topics: `Store::admit_public_append`, classified not a data path
+    // in the block above (G037).
+    assert_eq!(total, 97, "the counted tables no longer sum to 97");
 }
 
 /// Every `.rs` file under a directory.

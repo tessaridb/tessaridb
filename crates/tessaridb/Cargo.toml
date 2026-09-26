@@ -18,6 +18,8 @@ tessari-storage.workspace = true
 tessari-types.workspace = true
 
 [dev-dependencies]
+tessari-encoding.workspace = true
+tessari-types.workspace = true
 tempfile = "3"
 
 [lints]

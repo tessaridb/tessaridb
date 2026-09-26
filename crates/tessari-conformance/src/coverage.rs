@@ -46,6 +46,8 @@ forms! {
     DefineDatabase => "DEFINE DATABASE",
     DefineTable => "DEFINE TABLE",
     DefineSpace => "DEFINE SPACE",
+    DefineTopic => "DEFINE TOPIC",
+    ReadTopic => "READ FROM",
     DefineBucket => "DEFINE BUCKET",
     DefineCollection => "DEFINE COLLECTION",
     DefineVector => "DEFINE VECTOR",
@@ -222,6 +224,8 @@ mod tests {
              DEFINE DATABASE d;\
              DEFINE TABLE t SCHEMALESS;\
              DEFINE SPACE s;\
+             DEFINE TOPIC events;\
+             READ FROM events FOR CONSUMER 'mail';\
              DEFINE BUCKET b;\
              DEFINE COLLECTION c;\
              DEFINE VECTOR v DIMENSION 3 DISTANCE cosine;\

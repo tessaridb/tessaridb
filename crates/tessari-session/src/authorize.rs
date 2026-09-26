@@ -294,6 +294,10 @@ impl<'a> Session<'a> {
         span: tessari_ql::Span,
     ) -> Result<()> {
         let open = self.refresh(store)?;
+        // A closed store's one door for a caller nobody signed in (G037).
+        if !open && self.identity.user().is_none() {
+            return self.public_append(store, kind, span);
+        }
         self.identity.allows(kind, open, span)?;
         self.within_tenancy(kind, span)?;
         self.within_authority(store, kind, span)?;
@@ -505,6 +509,7 @@ impl<'a> Session<'a> {
             kind,
             StatementKind::DefineTable { .. }
                 | StatementKind::DefineSpace { .. }
+                | StatementKind::DefineTopic { .. }
                 | StatementKind::DefineBucket { .. }
                 | StatementKind::DefineCollection { .. }
         ) {

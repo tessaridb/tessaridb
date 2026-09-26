@@ -19,6 +19,7 @@ mod key_value;
 mod path;
 mod shape;
 mod statement;
+mod topic;
 
 use std::collections::BTreeSet;
 

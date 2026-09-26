@@ -1,0 +1,70 @@
+# Topics: an append-only order of messages whose readers keep their positions.
+
+--- case: the tenancy this file works in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE events;
+USE DATABASE events;
+DEFINE TOPIC orders;
+--- expect: ok
+
+--- case: a message is appended with CREATE and INSERT
+CREATE orders:'o1' = { total: 10 };
+INSERT INTO orders (total) VALUES (20), (30);
+READ FROM orders;
+--- expect: rows 3
+
+--- case: a read after a position answers what follows it
+READ FROM orders AFTER 2;
+--- expect: rows 1
+
+--- case: a limit bounds the read
+READ FROM orders LIMIT 2;
+--- expect: rows 2
+
+--- case: a reader is given the messages after its own position
+READ FROM orders FOR CONSUMER 'billing' LIMIT 2;
+READ FROM orders FOR CONSUMER 'billing';
+--- expect: rows 1
+
+--- case: and nothing once it has been given everything
+READ FROM orders FOR CONSUMER 'billing';
+--- expect: rows 0
+
+--- case: another reader starts from the beginning
+READ FROM orders FOR CONSUMER 'audit';
+--- expect: rows 3
+
+--- case: a message is never rewritten
+UPDATE orders:'o1' SET total = 11;
+--- expect: error TopicIsAppendOnly
+
+--- case: and never deleted by a caller
+DELETE orders:'o1';
+--- expect: error TopicIsAppendOnly
+
+--- case: an identity is appended once
+CREATE orders:'o1' = { total: 12 };
+--- expect: error RecordExists
+
+--- case: a message larger than the topic takes is refused
+DEFINE TOPIC small MAX BYTES 16;
+CREATE small = { text: 'a message well past sixteen bytes' };
+--- expect: error TopicMessageTooLarge
+
+--- case: a plain table is not a topic
+DEFINE TABLE plain SCHEMALESS;
+READ FROM plain;
+--- expect: error NotATopic
+
+--- case: a position is a whole number
+READ FROM orders AFTER 'first';
+--- expect: error InvalidPosition
+
+--- case: a topic open to anyone must bound a message's size
+DEFINE TOPIC open PUBLIC RATE 10 PER 1m;
+--- expect: error UnexpectedToken
+
+--- case: a topic may not keep messages for no time
+DEFINE TOPIC none RETAIN 0s;
+--- expect: error UnexpectedToken

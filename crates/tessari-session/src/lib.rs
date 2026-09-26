@@ -61,6 +61,7 @@ mod shape;
 mod text;
 mod throttle;
 mod ticket;
+mod topic;
 mod vector;
 mod view;
 

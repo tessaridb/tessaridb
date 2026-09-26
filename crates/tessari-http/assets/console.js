@@ -522,7 +522,10 @@
     const line = made("li");
     const became = typeof what.became === "string" ? what.became : "";
     line.classList.add(became === "removed" ? "removed" : "written");
-    line.textContent = "#" + String(what.sequence) + "  " + String(what.table) + ":" + String(what.id) + "  " + became + (what.value === void 0 ? "" : "  " + JSON.stringify(what.value));
+    line.textContent = "#" + String(what.sequence) + "  " + String(what.table) + ":" + String(what.id) + "  " + became + (what.value === void 0 ? "" : "  " + JSON.stringify(what.value)) + (what.cursor === void 0 ? "" : "  cursor " + what.cursor);
+    if (typeof what.cursor === "string") {
+      at("cursor").value = what.cursor;
+    }
     const list = at("changes");
     list.insertBefore(line, list.firstChild);
   }
@@ -540,6 +543,10 @@
     const table = value("table");
     if (table !== "") {
       wanted2.table = table;
+    }
+    const cursor = value("cursor");
+    if (cursor !== "") {
+      wanted2.cursor = cursor;
     }
     const carried = token();
     if (carried !== null) {

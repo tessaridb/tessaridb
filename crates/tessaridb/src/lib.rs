@@ -48,6 +48,7 @@ use std::sync::Arc;
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_lsm::LsmBackend;
 use tessari_storage::{Catalog, ReplicaDefinition, Roles, Store};
+use tessari_types::ShardId;
 
 /// The value a piece of text denotes, when it denotes one by itself.
 ///
@@ -532,10 +533,10 @@ impl Db {
         Ok(catalog.table_id(namespace, database, table)?)
     }
 
-    /// The names of the split tables in one database (G031, ADR-0080).
+    /// The split tables in one database, each with its shards (G031, ADR-0080).
     ///
-    /// What a reader that follows one log has to know before it starts: those
-    /// tables' writes are in their shards' logs, which it does not read.
+    /// What a reader of the database's log has to know before it starts: those
+    /// tables' single-shard writes are in their shards' logs.
     ///
     /// # Errors
     ///
@@ -544,13 +545,15 @@ impl Db {
         &self,
         namespace: NamespaceId,
         database: DatabaseId,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<(String, TableId, Vec<ShardId>)>> {
         let mut transaction = self.store.begin()?;
         Ok(Catalog::new(&mut transaction)
             .tables_in(namespace, database)?
             .into_iter()
-            .filter(|table| table.shards.is_some())
-            .map(|table| table.name)
+            .filter_map(|table| {
+                let shards = table.shards?.spans().map(|span| span.id).collect();
+                Some((table.name, table.id, shards))
+            })
             .collect())
     }
 

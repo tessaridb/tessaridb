@@ -250,6 +250,7 @@ fn feed(
     let following = Following {
         from: Sequence::new(asked.from),
         table: asked.table.as_deref(),
+        cursor: asked.cursor.as_deref(),
     };
     let mut broken = false;
     let outcome = tessaridb::feed::follow(
@@ -258,7 +259,7 @@ fn feed(
         &following,
         committed,
         &|| stopping.asked(),
-        &mut |change, name, allowed| {
+        &mut |change, name, allowed, cursor| {
             let Some(table) = name else {
                 // A change whose table has been dropped has no name to give.
                 return true;
@@ -274,7 +275,7 @@ fn feed(
                     },
                 )])
                 .unwrap_or_default();
-            let text = follow::encode(change, table, allowed, &names);
+            let text = follow::encode(change, table, allowed, &names, cursor);
             if frame::write(socket, true, Opcode::Text, text.as_bytes()).is_err() {
                 broken = true;
                 return follow::GONE;

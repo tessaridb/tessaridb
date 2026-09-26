@@ -76,12 +76,13 @@
             <h2>Follow a table</h2>
             <span id="watch-status" class="status" role="status"></span>
           </div>
-          <p class="note"><code>from</code> is a position in the log rather than a moment in time, so <code>0</code> replays everything the log still holds. Leave the table empty to follow every table you may read.</p>
+          <p class="note"><code>from</code> is a position in the log rather than a moment in time, so <code>0</code> replays everything the log still holds. Leave the table empty to follow every table you may read. A split table resumes from its <code>cursor</code>.</p>
           <div class="row">
             <label>Namespace <input id="namespace" type="text" value="prod" /></label>
             <label>Database <input id="database" type="text" value="library" /></label>
             <label>Table <input id="table" type="text" placeholder="every table" /></label>
             <label>From <input id="from" type="number" value="0" min="0" /></label>
+            <label>Cursor <input id="cursor" type="text" placeholder="split tables only" /></label>
           </div>
           <div class="row">
             <button id="follow" type="button">Follow</button>

@@ -29,6 +29,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // table they are about to create — see `Error::GrantedUserCannotDeclare`.
         StatementKind::DefineTable { .. }
         | StatementKind::DefineSpace { .. }
+        | StatementKind::DefineTopic { .. }
         | StatementKind::DefineBucket { .. }
         | StatementKind::DefineCollection { .. }
         // A vector store and a geo store are tables, and declaring one is
@@ -141,6 +142,13 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // they do everywhere else.
         StatementKind::Info {
             subject: InfoSubject::Table(table) | InfoSubject::Access(table),
+        } => vec![table],
+
+        // A topic's report names its readers and how far each has read, which
+        // is about the topic's contents: only a caller who may read the topic
+        // may ask (G037).
+        StatementKind::Info {
+            subject: InfoSubject::Topic(table),
         } => vec![table],
 
         // Listing a record's recipients names the vault it lives in, and this
@@ -331,6 +339,10 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // file's bytes and its metadata behind **one** permission question
         // rather than two (ADR-0011).
         | StatementKind::Read { target, .. } => vec![&target.table],
+        // A topic read reaches the topic, whether or not it also moves a
+        // reader's position: the position is the reader's own bookkeeping about
+        // that topic and is governed by the same grant (G037).
+        StatementKind::ReadTopic { topic, .. } => vec![topic],
 
         // Releasing many reaches the one queue it names — which is the whole
         // reason it names one: a sweep over every queue would ask a permission

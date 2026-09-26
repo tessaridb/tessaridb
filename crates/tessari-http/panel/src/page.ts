@@ -127,7 +127,9 @@ const query = (): Node =>
         " is a position in the log rather than a moment in time, so ",
         el("code", {}, "0"),
         " replays everything the log still holds. Leave the table empty to follow " +
-          "every table you may read.",
+          "every table you may read. A split table resumes from its ",
+        el("code", {}, "cursor"),
+        ".",
       ),
       row(
         "default",
@@ -135,6 +137,7 @@ const query = (): Node =>
         field("Database", text("database", { value: "library" })),
         field("Table", text("table", { placeholder: "every table" })),
         field("From", number("from", { value: 0, min: 0 })),
+        field("Cursor", text("cursor", { placeholder: "split tables only" })),
       ),
       row(
         "default",

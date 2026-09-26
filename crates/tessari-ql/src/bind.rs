@@ -285,6 +285,12 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
             bind_identity(lower, *span, binding)?;
             bind_identity(upper, *span, binding)
         }
+        StatementKind::ReadTopic { after, limit, .. } => {
+            for bound in [after, limit].into_iter().flatten() {
+                bind_expr(bound, binding)?;
+            }
+            Ok(())
+        }
         StatementKind::Keys {
             range,
             prefix,
@@ -320,6 +326,7 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::DefineDatabase { .. }
         | StatementKind::DefineTable { .. }
         | StatementKind::DefineSpace { .. }
+        | StatementKind::DefineTopic { .. }
         | StatementKind::DefineBucket { .. }
         | StatementKind::DefineCollection { .. }
         | StatementKind::DefineVector { .. }

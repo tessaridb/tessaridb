@@ -74,6 +74,7 @@ impl Effect {
             | StatementKind::Get { .. }
             | StatementKind::Keys { .. }
             | StatementKind::Read { .. }
+            | StatementKind::ReadTopic { consumer: None, .. }
             | StatementKind::Info { .. }
             // `CHECK TABLE` reads every row and writes none, so a follower may
             // serve it. That is the point: the question it answers — does what
@@ -117,6 +118,7 @@ impl Effect {
             | StatementKind::DefineDatabase { .. }
             | StatementKind::DefineTable { .. }
             | StatementKind::DefineSpace { .. }
+            | StatementKind::DefineTopic { .. }
             | StatementKind::DefineBucket { .. }
             | StatementKind::DefineCollection { .. }
             | StatementKind::DefineVector { .. }
@@ -232,6 +234,9 @@ impl Effect {
             // Both change records, so both are writes however much the first one
             // also reads.
             | StatementKind::Claim { .. }
+            // Moving a reader's stored position is a write, so a follower sends
+            // it to the leader like any other (G037).
+            | StatementKind::ReadTopic { consumer: Some(_), .. }
             | StatementKind::ClaimRecord { .. }
             | StatementKind::Release { .. }
             | StatementKind::ReleaseAll { .. }

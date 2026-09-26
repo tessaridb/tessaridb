@@ -142,6 +142,37 @@ impl Session<'_> {
                 *if_not_exists,
                 span,
             ),
+            // A topic declares no fields either; what it declares is how long it
+            // keeps a message, how large one may be, and who may append (G037).
+            StatementKind::DefineTopic {
+                name,
+                if_not_exists,
+                clauses,
+            } => self.define_table(
+                transaction,
+                name,
+                TableShape {
+                    kind: TableKind::Topic(crate::topic::declared_topic(*clauses)),
+                    ..TableShape::default()
+                },
+                *if_not_exists,
+                span,
+            ),
+            StatementKind::ReadTopic {
+                topic,
+                consumer,
+                after,
+                limit,
+            } => self.read_topic(
+                transaction,
+                topic,
+                crate::topic::Reading {
+                    consumer: consumer.as_deref(),
+                    after: after.as_ref(),
+                    limit: limit.as_ref(),
+                },
+                span,
+            ),
             StatementKind::DefineField {
                 name,
                 table,

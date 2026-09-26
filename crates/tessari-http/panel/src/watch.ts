@@ -33,6 +33,7 @@ interface Change {
   readonly id?: string;
   readonly became?: string;
   readonly value?: unknown;
+  readonly cursor?: string;
   readonly refused?: string;
   readonly error?: string;
 }
@@ -43,6 +44,7 @@ interface Asked {
   database: string;
   from: number;
   table?: string;
+  cursor?: string;
   token?: string;
   user?: string;
   password?: string;
@@ -74,7 +76,13 @@ function change(what: Change): void {
     String(what.id) +
     "  " +
     became +
-    (what.value === undefined ? "" : "  " + JSON.stringify(what.value));
+    (what.value === undefined ? "" : "  " + JSON.stringify(what.value)) +
+    (what.cursor === undefined ? "" : "  cursor " + what.cursor);
+  // A split table's changes are counted per log, so the resume point is the
+  // cursor rather than the sequence — kept in the field following again sends.
+  if (typeof what.cursor === "string") {
+    (at("cursor") as HTMLInputElement).value = what.cursor;
+  }
   const list = at("changes");
   list.insertBefore(line, list.firstChild);
 }
@@ -101,6 +109,10 @@ function asked(): Asked {
   const table = value("table");
   if (table !== "") {
     wanted.table = table;
+  }
+  const cursor = value("cursor");
+  if (cursor !== "") {
+    wanted.cursor = cursor;
   }
   // A browser cannot set a header on a `WebSocket`, so whatever authenticates
   // this travels in the message. A token when there is one — it expires and can
@@ -165,7 +177,8 @@ export function wire(): void {
 
     socket.addEventListener("close", (event) => {
       // 1001 is this node stopping. The position is held by the client, so
-      // following again from the last sequence seen resumes exactly there.
+      // following again from the last sequence seen — or, over a split table,
+      // the last cursor, which the field already holds — resumes exactly there.
       //
       // A reason already given is left standing: the node explains a refusal in
       // words and then closes, and replacing those words with `stopped` throws

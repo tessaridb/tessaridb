@@ -526,6 +526,17 @@ impl Transaction<'_> {
             // so only a count read here, per attempt, is exact (G036). The
             // attempt writes the record with its evictions when there are any.
             let mut evicted = crate::bounded::enforce(self.store, &record, identity.id)?;
+            // A topic admits its messages against the same committed state and at
+            // this transaction's clock: never a rewrite, never a deletion before
+            // its retention passed — judged as a reader would judge it — never a
+            // message over its size, and each new one carrying its expiry (G037).
+            if let Some(admitted) = crate::topic::admit(
+                self.store,
+                evicted.as_ref().unwrap_or(&record),
+                self.clock(),
+            )? {
+                evicted = Some(admitted);
+            }
             let carried = match evicted.as_mut() {
                 Some(carrying) => carrying,
                 None => &mut record,
@@ -573,6 +584,8 @@ impl Transaction<'_> {
             // And a limited space's modified-order index, which the evictions
             // above read on the next commit (G036).
             let batch = crate::bounded::maintain(self.store, carried, batch, commit_version)?;
+            // And a topic's positions, dense in commit order (G037).
+            let batch = crate::topic::maintain(self.store, carried, batch)?;
             // Everything above this ran. This is the whole difference between a
             // rehearsal and a write, and it is one line so that it can only ever
             // be the whole difference.

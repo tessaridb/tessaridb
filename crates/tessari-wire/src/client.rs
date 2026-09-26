@@ -508,6 +508,7 @@ mod tests {
             .follow(&Follow {
                 from: 0,
                 table: None,
+                cursor: None,
             })
             .expect("the subscription this test sends");
         assert!(matches!(feed.wait(), Err(Error::UnknownFrame { tag: 13 })));

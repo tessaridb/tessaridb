@@ -52,6 +52,7 @@ mod shards;
 mod snapshots;
 mod store;
 mod tailmarks;
+mod topic;
 mod transaction;
 mod vault;
 
@@ -60,12 +61,13 @@ pub use catalog::{
     ConsumerDefinition, DatabaseDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeKindDefinition,
     EdgeOrder, Eviction, FailoverDefinition, FailoverStamp, FieldDefinition, FieldShape, GEO_FIELD,
     GrantDefinition, GraphDefinition, Held, IndexDefinition, IndexShape, Kind,
-    LeadershipDefinition, Mapped, NamespaceDefinition, OnFailure, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY,
-    QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, Reach, ReplicaDefinition, Role,
-    SYSTEM_DATABASE, SYSTEM_NAMESPACE, SeriesDeclaration, ShardMap, ShardSpan, SpaceDeclaration,
-    SpaceLimit, StoredKind, TableDefinition, TableKind, TableShape, UserDefinition, VECTOR_FIELD,
-    VaultDeclaration, VectorDeclaration, VectorDistance, Verb, ViewDeclaration,
-    another_node_may_write, governing, names_a_peer, the_row_a_greeting_binds,
+    LeadershipDefinition, Mapped, NamespaceDefinition, OnFailure, PublicAppend, QUEUE_ATTEMPTS,
+    QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, Reach,
+    ReplicaDefinition, Role, SYSTEM_DATABASE, SYSTEM_NAMESPACE, SeriesDeclaration, ShardMap,
+    ShardSpan, SpaceDeclaration, SpaceLimit, StoredKind, TableDefinition, TableKind, TableShape,
+    TopicDeclaration, UserDefinition, VECTOR_FIELD, VaultDeclaration, VectorDeclaration,
+    VectorDistance, Verb, ViewDeclaration, another_node_may_write, governing, names_a_peer,
+    the_row_a_greeting_binds,
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.
@@ -74,12 +76,13 @@ pub use collections::{Collection, Collections, Currency};
 pub use covering::MEASURED_RELATION;
 pub use expiry::Expired;
 pub use lapse::Lapsed;
+pub use topic::{Message, Messages};
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
 // the field but cannot name its type has a public API it cannot use.
 pub use audit::{AuditDevice, AuditTrail, VaultRead, entries as audit_entries, reads_by};
 pub use error::{Error, Result};
 pub use failover::Failover;
-pub use feed::{Change, ChangeKind, Changes, History, Subject, Subscription, Watch};
+pub use feed::{Change, ChangeKind, Changes, History, Merged, Subject, Subscription, Watch};
 pub use followers::FollowerLag;
 pub use graph::vector_of;
 pub use lease::{GUARD as LEASE_GUARD, Lease, TTL as LEASE_TTL};

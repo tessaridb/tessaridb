@@ -2026,10 +2026,27 @@ them in the order the node committed them. Each event names the log it came from
 log and means nothing in the other. A history of an unsplit table is unchanged
 and names no log.
 
-**A change feed over a split table is refused.** A feed's position counts in one
-log, and a split table's writes are in several; following one of them would
-deliver every change except the others' with nothing saying so. A feed over an
-unsplit table beside it is unaffected.
+**A change feed over a split table follows all of its logs.** Its single-shard
+writes are in its shards' logs and a write to two shards is in its database's,
+so a feed watching a split table — or watching everything in a database that
+holds one — reads the database's log and each of those shards' logs, and hands
+you their changes in the order the node committed them. No single position says
+where such a feed is, so **every change it delivers carries a `cursor`**: store
+the one from the last change you handled and send it back to resume, and nothing
+is delivered twice or missed. The cursor is opaque — do not build or edit one.
+It names the database it was given in and the logs it counts, so a cursor sent
+to a feed over another database, or naming a table that feed does not follow, is
+refused rather than resumed from the wrong place.
+
+Two things to know. Without a cursor, `from` counts in the database's log and
+each shard's log is read from its beginning, so a client that resumes by `from`
+alone may be given shard changes it already had; it will not miss any. And a
+feed over a split table follows **the writes of the node it runs on**: a shard
+led by another node, or a follower holding another node's logs, is refused by
+name — follow it on the node that writes it. A feed over an unsplit table is
+unchanged and its changes carry no cursor. If a table is split while a feed
+follows it, the feed ends with a refusal and you subscribe again from the last
+change handled.
 
 ### What a table declares about its fields
 
@@ -5955,6 +5972,160 @@ is the reason this is not built: every write to `orders` would pay for every
 view over `orders`, silently, with a cost nobody wrote down, and the write's
 failure modes would come to include the view's.
 
+## 6e. An order of what happened: topics
+
+```tessariql
+DEFINE TOPIC events;
+DEFINE TOPIC audit RETAIN 7d MAX BYTES 4096;
+DEFINE TOPIC signups RETAIN 1d MAX BYTES 1024 PUBLIC RATE 60 PER 1m;
+
+CREATE events = { kind: 'paid', order: orders:'a17' };
+CREATE events:'evt-7f3a' = { kind: 'refunded', order: orders:'a17' };
+
+READ FROM events;
+READ FROM events AFTER 41 LIMIT 100;
+READ FROM events FOR CONSUMER 'billing' LIMIT 50;
+READ FROM events FOR CONSUMER 'billing' AFTER 0;
+
+INFO FOR TOPIC events;
+DROP TOPIC events;
+```
+
+A topic keeps every message it is given, **in the order the messages were
+committed**, and hands each one a position: 1, 2, 3 and on, with no gaps. It is
+for the job a message broker does in a project that would rather not run one —
+events one part of an application publishes and several others read, each at
+its own pace. It is slower than a dedicated broker and will stay slower; what it
+gives in exchange is one server fewer and one guarantee a broker beside a
+database cannot give, described below.
+
+Appending is `CREATE` and `INSERT`, as enqueueing is for a queue: the store
+already has the words. **A message is never changed.** `UPDATE`, `UPSERT` and
+`DELETE` of a message are refused naming the topic — a correction is a new
+message, because a reader that has already acted on the old one cannot be told
+it changed. Naming the identity yourself (`events:'evt-7f3a'`) makes appending
+idempotent: the second `CREATE` of one identity is refused as it is for any
+table, so a producer that retries after a lost answer does not append twice.
+
+### Positions, and why they are dense
+
+The position is decided **when the message commits**, not when the statement
+runs. Two transactions appending at once get positions in the order they
+committed, and a reader never sees position 8 before position 7 exists: a read
+answers a prefix, and stops at the first position its transaction cannot yet
+see. Within one transaction the messages take consecutive positions in the order
+the transaction wrote them.
+
+Dense matters because it makes two questions arithmetic. **How far behind is a
+reader** is the last position minus its own. **Did a reader miss anything** is
+whether the next position it was given is one more than the last.
+
+### A reader's position is kept in the store
+
+`READ FROM events FOR CONSUMER 'billing'` answers the messages after the
+position stored for `billing` and **moves that position to the last message it
+answered, in the reader's own transaction**:
+
+```tessariql
+BEGIN;
+READ FROM events FOR CONSUMER 'billing' LIMIT 50;
+CREATE invoices = { order: 'o-17', total: 40 };  -- what the reader does with them
+COMMIT;
+```
+
+If the transaction commits, the reader's writes and its new position commit
+together; if it is cancelled or fails, neither does, and the next read is given
+the same messages again. So an effect the reader writes **into this store** is
+applied exactly once per message — not by deduplication, but because the
+position and the effect are one commit. An effect **outside** the store — an
+email, a call to another service — happens at least once: do it, then commit,
+and a crash between the two repeats it. Make those effects idempotent.
+
+A lone `READ … FOR CONSUMER` with no transaction around it commits its move
+immediately, which is at most once: a reader that crashes after the answer and
+before acting has lost those messages. Use the transaction form for anything
+that must not be lost.
+
+**Several readers under one name take turns.** They write the same stored
+position, so two of them reading at once conflict, and the store runs the loser
+again — it then reads after the winner's position and is given the next
+messages. Between them they are given every message once. Different names each
+have their own position and each see everything. There is no rebalancing and no
+partition assignment: a name reads in one order, one batch at a time, which is
+the ordering promise and also the throughput ceiling.
+
+`AFTER n` starts after position `n` instead of the stored one; with `FOR
+CONSUMER` it also moves the stored position there, which is how a reader is
+rewound or skipped forward. Without `LIMIT` a read answers at most **100**
+messages.
+
+Each message answers under its own identity as `{ position, value }`.
+
+### Retention, and a reader it left behind
+
+`RETAIN 7d` keeps a message for seven days after it was appended; the node's
+housekeeping then removes it through the log like any other delete. A topic
+without `RETAIN` keeps everything. There is no size-based retention and no
+compaction — a topic that keeps only the newest value per key is a key-value
+space, which already exists.
+
+Removing messages never reuses a position: a topic emptied by retention carries
+on from where it was. **A reader whose next position was removed is told**: the
+read carries a `lapsed` note naming how many messages it passed over, and moves a
+named reader's position past them so the note is given once. Nothing is ever
+skipped silently.
+
+### Size, and letting anyone append
+
+`MAX BYTES n` refuses a message whose encoded value is larger, naming the topic
+and the limit.
+
+`PUBLIC RATE n PER d` lets a caller that has not signed in **append** to this
+topic on a store that otherwise refuses them — a sign-up form, a telemetry
+beacon. It opens appending and nothing else: reading the topic, and every other
+table, still needs a user. `PUBLIC` is refused unless the declaration also says
+`MAX BYTES`, because an open door with no bound on what comes through it is a way
+to fill the store from anywhere.
+
+Exactly what an anonymous caller may run:
+
+- `USE NAMESPACE …` and `USE DATABASE …` — they record names and look nothing up.
+- `CREATE signups = { … }` and `INSERT INTO signups (…) VALUES …`, with an
+  identity the store generates. `CREATE signups:'x'` is refused: the refusal of
+  an id already taken would tell a stranger which messages exist.
+- Nothing that reads. The statement must name the topic and no other table, so a
+  subquery in the value — `{ copy: (SELECT * FROM users) }`, or one reading the
+  topic itself — is refused, because its answer would come back in the reply.
+
+Everything else answers `this store requires a signed-in user`, as before.
+
+The rate is counted **in messages, per node, in memory**: a quiet topic takes
+`n` at once and then one every `d / n`. An append past it is refused with
+`topic signups takes at most 60 anonymous messages per 1m on this node`, and an
+`INSERT` of more rows than `n` is always refused. Two things follow from "per
+node, in memory" and are worth sizing for: a cluster of three nodes that all
+accept writes admits three times the rate, and a restarted node has forgotten
+what it counted. A signed-in caller is never rated.
+
+### What `INFO FOR TOPIC` reports
+
+```text
+{ name: 'events', first: 18, last: 240, retain: 168h,
+  consumers: { billing: { position: 236, lag: 4 }, audit: { position: 90, lag: 150 } } }
+```
+
+`first` is the first position still held, `last` the last one given — held or
+not. **Watch `lag`.** A reader whose lag keeps growing will one day be passed by
+retention, and the `lapsed` note will then be the first thing that says so.
+
+### What a topic is not
+
+A topic cannot be split into shards in this build: one topic is one order.
+Messages are read by asking; a subscriber that wants them pushed follows the
+change feed of the topic's table. A topic is not a queue: a queue hands each
+record to one worker and forgets it when the work is done, a topic keeps every
+message for every reader.
+
 ## 7. Transactions
 
 ```
@@ -7354,7 +7525,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.6.0", "build": "0.6.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.7.0", "build": "0.7.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],
@@ -7593,7 +7764,7 @@ be, because it is confined to the run its fixed values name.
 | **hash** sharding | shards are spans of identities, which is what keeps a span read one walk. Spreading writes by hash forfeits that order and is a second method the map can carry later, not a change to the first. §4 |
 | a gathered read that **pushes work down** to the shards' leaders | a node lacking shards fetches their records and runs the statement itself, so a `WHERE`, a `LIMIT` or an aggregate costs the missing shards' records on the network; evaluating them on the leaders — and combining a `mean` or a variance correctly across them — is a query engine of its own. A join side and a `FETCH` are not gathered at all. §7d |
 | **choosing among a range's candidates, and moving a placement** | `LEADS` elects a leader per placed range, but whichever candidate wins keeps it — there is no preference, no rebalancing and no hand-over — and a row naming one range cannot name a second or be dropped. Dropping safely needs every lease on the range to have lapsed first. §7d |
-| a change feed **over a split table** | refused: its writes are in several logs, and a feed's position counts in one. Following it needs a cursor holding a position per log. §4 |
+| a change feed over a split table **on a node that does not write all of it** | a feed merges one writer's logs in that writer's order, and two writers' orders are unrelated counters — so a shard led elsewhere, or a follower, is refused by name rather than merged by a guess. Following it there needs an order across writers. §4 |
 | a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |
 | a bucket narrowed by **content type** — `HOLDS image/png` | the store has no content type for a file. A file's record holds its size, its chunk count and when it was written, and nothing anywhere reads the bytes to decide what they are — so the clause could only enforce the caller's own claim about the caller's own bytes, which is the assertion §6a refuses `CREATE`, `UPDATE` and `SET` in order to avoid, wearing a constraint's clothes. The honest version detects the type by reading the leading bytes against a table of signatures, which is real work with a real failure mode of its own: plain text, CSV and SVG have no signature, and a `HOLDS text/plain` that cannot be checked is worse than no clause at all. The ceiling shipped without it because `MAX` compares against a number the store computes itself. §6a |
 | a **streaming** backup answer | `BACKUP` answers with a value, so the file is materialised. `FROM` bounds it, and the real fix is an answer shape that streams — which is the wall a **whole-file** `READ` still meets even now that a ranged one exists, and worth crossing once for both. §7a |
