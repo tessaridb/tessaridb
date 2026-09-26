@@ -60,7 +60,8 @@ fn a_topic_that_holds_nothing_or_opens_without_a_size_is_refused() {
                 "DEFINE TOPIC t PUBLIC RATE 5 PER 1m;",
                 "must bound a message's size",
             ),
-            ("DEFINE TOPIC t SPLIT AT 'g';", ""),
+            // Not in a topic's grammar at all: one order is the point.
+            ("DEFINE TOPIC t SPLIT AT 'g';", "found the name `SPLIT`"),
         ] {
             let why = refused(&mut session, script);
             assert!(why.contains(expected), "{}: {script}: {why}", backend.name);
