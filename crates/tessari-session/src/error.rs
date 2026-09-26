@@ -1186,6 +1186,24 @@ pub enum Error {
         span: Span,
     },
 
+    /// An anonymous append to a `PUBLIC` topic went past the rate it declares.
+    ///
+    /// Retriable after a wait: the allowance is earned back over `per`. The rate
+    /// is this node's, so a cluster admits it once per node.
+    #[error(
+        "topic {topic} takes at most {rate} anonymous messages per {per} on this node (at {span})"
+    )]
+    TopicRateExceeded {
+        /// The topic, as the statement named it.
+        topic: String,
+        /// How many messages the topic takes per window.
+        rate: u64,
+        /// The window, as a duration literal.
+        per: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// The signed-in user's role does not allow the statement.
     #[error("{} {role} may not {needs} (at {span})", article(role))]
     RoleForbids {
@@ -1758,6 +1776,26 @@ pub enum Error {
         /// The table as written.
         table: String,
         /// Where it was written.
+        span: Span,
+    },
+
+    /// A statement that only a topic answers, aimed at another kind of table
+    /// (G037).
+    #[error("{table} is not a topic (at {span}) — define it with `DEFINE TOPIC`")]
+    NotATopic {
+        /// The table as written.
+        table: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A position or a count on `READ FROM` that is not a whole number at or
+    /// above zero (G037).
+    #[error("{reason} (at {span})")]
+    InvalidPosition {
+        /// Why the value cannot be taken.
+        reason: &'static str,
+        /// Where it is.
         span: Span,
     },
 

@@ -371,6 +371,18 @@ pub enum Note {
         /// The shards fetched, in key order.
         shards: Vec<u32>,
     },
+    /// Messages of a topic passed their retention before this read reached
+    /// them (G037).
+    ///
+    /// Positions are dense, so the count is exact: a reader told nothing would
+    /// carry on from the first message still held and never learn that it had
+    /// been given less than everything.
+    Lapsed {
+        /// The topic.
+        topic: String,
+        /// How many positions the read passed over.
+        missed: u64,
+    },
 }
 
 impl Note {
@@ -385,6 +397,7 @@ impl Note {
             Self::SubqueryCeiling { .. } => "subquery-ceiling",
             Self::NearingCeiling { .. } => "nearing-ceiling",
             Self::Gathered { .. } => "gathered",
+            Self::Lapsed { .. } => "lapsed",
         }
     }
 
@@ -415,6 +428,13 @@ impl Note {
             Self::NearingCeiling { rows, most } => format!(
                 "this held read holds {rows} records of the {most} it may hold, \
                  past which it is refused rather than shortened",
+            ),
+            Self::Lapsed { topic, missed } => format!(
+                "{missed} message{} of `{topic}` passed {} retention before this read reached \
+                 {}, and will not be given to anyone",
+                if *missed == 1 { "" } else { "s" },
+                "its",
+                if *missed == 1 { "it" } else { "them" },
             ),
             Self::Gathered { table, shards } => format!(
                 "shard{} {} of `{table}` {} read from {} leader{} on other nodes, each when \

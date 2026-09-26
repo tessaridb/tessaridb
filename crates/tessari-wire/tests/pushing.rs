@@ -89,6 +89,7 @@ fn a_change_written_after_a_subscribe_arrives() {
                 .get()
                 + 1,
             table: None,
+            cursor: None,
         },
     );
 
@@ -131,6 +132,7 @@ fn a_subscription_from_an_earlier_position_replays_what_it_missed() {
         &Follow {
             from: before,
             table: None,
+            cursor: None,
         },
     );
 
@@ -156,6 +158,7 @@ fn watching_one_table_is_not_told_about_another() {
                 .get()
                 + 1,
             table: Some("orders".to_owned()),
+            cursor: None,
         },
     );
 
@@ -190,6 +193,7 @@ fn a_removal_is_told_apart_from_a_write() {
                 .get()
                 + 1,
             table: None,
+            cursor: None,
         },
     );
 
@@ -217,6 +221,7 @@ fn a_pushed_value_is_the_value_it_was_and_not_a_projection() {
                 .get()
                 + 1,
             table: None,
+            cursor: None,
         },
     );
 
@@ -253,6 +258,7 @@ fn watching_a_table_that_is_not_there_is_refused_rather_than_silently_empty() {
         .follow(&Follow {
             from: 0,
             table: Some("nonesuch".to_owned()),
+            cursor: None,
         })
         .unwrap();
     let refused = feed.wait().expect_err("a refusal");
@@ -271,6 +277,7 @@ fn watching_a_table_before_a_database_is_selected_says_so() {
         .follow(&Follow {
             from: 0,
             table: Some("users".to_owned()),
+            cursor: None,
         })
         .unwrap();
     let refused = feed.wait().expect_err("a refusal");
@@ -291,6 +298,7 @@ fn a_node_with_a_subscriber_still_answers_everybody_else() {
         .follow(&Follow {
             from: 0,
             table: None,
+            cursor: None,
         })
         .unwrap();
 
@@ -322,6 +330,7 @@ fn a_closed_store_refuses_an_unauthenticated_subscription() {
         .follow(&Follow {
             from: 0,
             table: None,
+            cursor: None,
         })
         .unwrap();
     let said = refused.wait().expect_err("a refusal");
@@ -340,6 +349,7 @@ fn a_closed_store_refuses_an_unauthenticated_subscription() {
         &Follow {
             from: 0,
             table: None,
+            cursor: None,
         },
     );
     // The store is closed now, so even the connection that closed it signs in.
@@ -381,6 +391,7 @@ fn a_subscription_is_confined_to_the_database_the_session_selected() {
                 .get()
                 + 1,
             table: None,
+            cursor: None,
         },
     );
 
@@ -416,6 +427,7 @@ fn following_before_a_database_is_selected_says_so_even_watching_everything() {
         .follow(&Follow {
             from: 0,
             table: None,
+            cursor: None,
         })
         .unwrap();
     let refused = feed.wait().expect_err("a refusal");
@@ -450,6 +462,7 @@ fn a_subscriber_that_stops_reading_is_cut_off_rather_than_buffered_and_loses_not
         .follow(&Follow {
             from: 0,
             table: None,
+            cursor: None,
         })
         .unwrap();
 
@@ -487,6 +500,7 @@ fn a_subscriber_that_stops_reading_is_cut_off_rather_than_buffered_and_loses_not
         &Follow {
             from: last + 1,
             table: None,
+            cursor: None,
         },
     );
     let next = within(&resumed, "the change after the last one delivered");
@@ -545,6 +559,7 @@ fn a_grant_governed_subscriber_is_told_only_about_tables_it_was_granted() {
                 .get()
                 + 1,
             table: None,
+            cursor: None,
         },
     );
 
@@ -566,6 +581,7 @@ fn a_grant_governed_subscriber_is_told_only_about_tables_it_was_granted() {
         .follow(&Follow {
             from: 0,
             table: Some("users".to_owned()),
+            cursor: None,
         })
         .unwrap();
     let said = refused.wait().expect_err("a refusal");
@@ -613,6 +629,7 @@ fn a_field_grant_reaches_the_feed_too() {
                 .get()
                 + 1,
             table: Some("users".to_owned()),
+            cursor: None,
         },
     );
 

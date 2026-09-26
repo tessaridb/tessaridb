@@ -35,6 +35,9 @@ pub(crate) struct Asked {
     pub(crate) from: u64,
     /// One table, or every table the session may read.
     pub(crate) table: Option<String>,
+    /// On a feed over a split table, the `cursor` the last change handled
+    /// carried.
+    pub(crate) cursor: Option<String>,
     /// A credential, when the handshake could not carry one.
     pub(crate) credentials: Option<(String, String)>,
     /// A token from an earlier sign-in, when the handshake could not carry one.
@@ -60,6 +63,7 @@ pub(crate) fn read(body: &str) -> Result<Asked, String> {
     let mut database = None;
     let mut from = 0;
     let mut table = None;
+    let mut cursor = None;
     let mut user = None;
     let mut password = None;
     let mut token = None;
@@ -76,6 +80,7 @@ pub(crate) fn read(body: &str) -> Result<Asked, String> {
                 "database" => database = Some(at.string()?),
                 "from" => from = at.number()?,
                 "table" => table = Some(at.string()?),
+                "cursor" => cursor = Some(at.string()?),
                 "user" => user = Some(at.string()?),
                 "password" => password = Some(at.string()?),
                 "token" => token = Some(at.string()?),
@@ -98,6 +103,7 @@ pub(crate) fn read(body: &str) -> Result<Asked, String> {
         database: database.ok_or_else(|| "a follow request needs a `database`".to_owned())?,
         from,
         table,
+        cursor,
         // Both or neither: a name without a password is a request that would
         // sign in as somebody with no proof, and refusing it here is clearer
         // than letting the sign-in fail for a reason nobody wrote down.
@@ -116,7 +122,17 @@ pub(crate) fn read(body: &str) -> Result<Asked, String> {
 /// number because a dated record should — applies here exactly as it does to a
 /// query answer: the same encoder, so a value does not mean one thing in a
 /// reply and another in a feed.
-pub(crate) fn encode(change: &Change, table: &str, allowed: &Visible, names: &Names) -> String {
+///
+/// A change of a feed over a split table also carries the `cursor` to resume
+/// after it, since its logs count separately and no one `sequence` says where
+/// the feed was.
+pub(crate) fn encode(
+    change: &Change,
+    table: &str,
+    allowed: &Visible,
+    names: &Names,
+    cursor: Option<&str>,
+) -> String {
     let mut out = String::from(r#"{"sequence":"#);
     out.push_str(&change.sequence.get().to_string());
     out.push_str(r#","table":"#);
@@ -133,6 +149,10 @@ pub(crate) fn encode(change: &Change, table: &str, allowed: &Visible, names: &Na
         // *that* a record went is what the table grant already decided this
         // subscriber may know.
         ChangeKind::Removed => out.push_str(r#","became":"removed""#),
+    }
+    if let Some(cursor) = cursor {
+        out.push_str(r#","cursor":"#);
+        json::string(&mut out, cursor);
     }
     out.push('}');
     out
@@ -162,6 +182,10 @@ mod tests {
         assert_eq!(asked.from, 12);
         assert_eq!(asked.table.as_deref(), Some("users"));
         assert!(
+            asked.cursor.is_none(),
+            "a request with no cursor must not carry one"
+        );
+        assert!(
             asked.credentials.is_none(),
             "a request with no user must not arrive carrying one"
         );
@@ -172,6 +196,13 @@ mod tests {
         let asked = read(r#"{"namespace":"n","database":"d"}"#).expect("a well-formed request");
         assert_eq!(asked.from, 0, "an unstated position must mean everything");
         assert!(asked.table.is_none(), "an unstated table must mean all");
+    }
+
+    #[test]
+    fn a_cursor_travels_as_it_was_given() {
+        let asked = read(r#"{"namespace":"n","database":"d","cursor":"d=4,9.1=2"}"#)
+            .expect("a well-formed request");
+        assert_eq!(asked.cursor.as_deref(), Some("d=4,9.1=2"));
     }
 
     #[test]

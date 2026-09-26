@@ -483,6 +483,31 @@ pub enum Error {
         max: u64,
     },
 
+    /// A commit would rewrite a message of a topic, or delete one whose retention
+    /// has not passed (G037).
+    ///
+    /// A topic is an order of what happened, and a correction is a new message.
+    #[error(
+        "topic {topic} is append-only: a message is never rewritten or deleted; append a correction instead"
+    )]
+    TopicIsAppendOnly {
+        /// The topic that refused the write.
+        topic: String,
+    },
+
+    /// A message is larger than its topic's `MAX BYTES` (G037).
+    #[error("topic {topic} takes messages of at most {max} bytes; this one is larger")]
+    TopicMessageTooLarge {
+        /// The topic that refused the message.
+        topic: String,
+        /// Its declared limit.
+        max: u64,
+    },
+
+    /// A topic has given out every position a 64-bit counter holds.
+    #[error("a topic has given out every position it can hold")]
+    TopicPositionsExhausted,
+
     /// A unique index already holds this value for a different record.
     ///
     /// Not a write conflict: no concurrent transaction is involved, and retrying
@@ -858,6 +883,9 @@ impl Error {
             | Self::EmptyIndex { .. }
             | Self::UniqueViolation { .. }
             | Self::SpaceFull { .. }
+            | Self::TopicIsAppendOnly { .. }
+            | Self::TopicMessageTooLarge { .. }
+            | Self::TopicPositionsExhausted
             | Self::AssertionViolation { .. }
             | Self::SchemaViolation { .. }
             | Self::MissingRequiredField { .. }

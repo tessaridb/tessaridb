@@ -67,6 +67,8 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::DefineDatabase { .. } => Err(unrenderable("DEFINE DATABASE", span)),
         StatementKind::DefineTable { .. } => Err(unrenderable("DEFINE TABLE", span)),
         StatementKind::DefineSpace { .. } => Err(unrenderable("DEFINE SPACE", span)),
+        StatementKind::DefineTopic { .. } => Err(unrenderable("DEFINE TOPIC", span)),
+        StatementKind::ReadTopic { .. } => Err(unrenderable("READ FROM", span)),
         StatementKind::DefineBucket { .. } => Err(unrenderable("DEFINE BUCKET", span)),
         StatementKind::DefineCollection { .. } => Err(unrenderable("DEFINE COLLECTION", span)),
         StatementKind::DefineVector { .. } => Err(unrenderable("DEFINE VECTOR", span)),

@@ -10,10 +10,10 @@ A real-time multi-model database, written in Rust, built for AI agents and the
 products around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.6.0--beta-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.7.0--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
-[![conformance](https://img.shields.io/badge/conformance-1390%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![conformance](https://img.shields.io/badge/conformance-1405%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/tessaridb/tessaridb-protocol) ·
@@ -22,7 +22,7 @@ products around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is a beta — `0.6.0-beta`.** It is released and tested, published as
+> **TessariDB is a beta — `0.7.0-beta`.** It is released and tested, published as
 > a container image (the image tracks the larger releases; the latest is
 > `0.4.0-beta`), and the licence makes production use free, including inside a
 > commercial company.
@@ -119,7 +119,7 @@ store rather than three stores. The
 | **Vault** | a store whose declared fields can be `SECRET`, sealed under a per-record key before the record is encoded so the index, the change feed, the replication log and a backup all carry ciphertext, read only by `REVEAL` naming one record, sealed and unsealed by a passphrase that reaches memory and never disk, and dropped by destroying the key rather than the rows, with an opaque recipient set the engine carries and never reads, and a strictness a vault cannot be talked out of because a field nobody declared is a field nothing seals, with a trail every `REVEAL` writes to and `INFO FOR AUDIT` reads back, and edited field by field so that rotating a secret keeps the recipients it was shared with | 54 | ✅ runs |
 | **Time-series** | `DEFINE SERIES` — a table with a declared retention, past which a record is not answered with while its bytes are still there and its removal is a separate act, epoch-anchored windows every process agrees on, aggregates per window, and retention as a statement over any table that reports what it removed | 21 | ✅ runs |
 | **References** | `FETCH` — follow a reference, an array of them, or a nested route, without a join | 12 | ✅ runs |
-| **Queues** | `DEFINE QUEUE` — work handed out one holder at a time under a hold that lapses, first-in-first-out by identity or on the record you name, an attempt ceiling whose dead letter is a predicate rather than a second table, a claim that is an ordinary write so it replicates, recovers and needs no lease manager, and a claimant a session declares so it can hand back everything it holds and nobody else's, by name or one record at a time, on a strict table or a loose one, and work a holder may compare-and-set without losing the hold — declared strict or lenient and in a graph or in none, so a queue is an end of a link like any other table, and a hold that no write can drop by saying nothing about it | 67 | ✅ runs |
+| **Queues & topics** | `DEFINE QUEUE` — work handed out one holder at a time under a hold that lapses, first-in-first-out by identity or on the record you name, an attempt ceiling whose dead letter is a predicate rather than a second table, a claim that is an ordinary write so it replicates, recovers and needs no lease manager, and a claimant a session declares so it can hand back everything it holds and nobody else's, by name or one record at a time, on a strict table or a loose one, and work a holder may compare-and-set without losing the hold — declared strict or lenient and in a graph or in none, so a queue is an end of a link like any other table, and a hold that no write can drop by saying nothing about it; and `DEFINE TOPIC` — an append-only order whose messages hold dense positions decided at commit, whose named readers keep their place in the store and move it in their own transaction, whose retention tells a reader how much it missed, and which a topic declared `PUBLIC` lets a caller nobody signed in append to at a declared rate | 67 + 15 | ✅ runs |
 | **Geospatial** | a geometry type on an exact integer grid, eight predicates over whole shapes, geodesic distance and area, shapes written as literals, a spatial index seven of the eight predicates read through, a nearest-first read over positions, a geo store declared as one so the field, the index and the requirement cannot come apart, and a measured refinement ratio saying what that index's candidates cost | 67 | 🚧 partial — the nearest few is over positions rather than whole shapes |
 
 Underneath all of them, one substrate with two backends: **in memory**, and
@@ -161,7 +161,7 @@ surviving version and the node that wrote it.
 
 ## Status
 
-**Stage: active development · `0.6.0-beta` · not published to crates.io.** What
+**Stage: active development · `0.7.0-beta` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 

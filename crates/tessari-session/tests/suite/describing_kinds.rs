@@ -59,6 +59,7 @@ fn declared_as(kind: &TableKind) -> (&'static str, &'static str) {
         ),
         TableKind::Series(_) => ("DEFINE SERIES t RETAIN 12h;", "DEFINE SERIES t RETAIN 12h"),
         TableKind::Space(_) => ("DEFINE SPACE t MAX 10;", "DEFINE SPACE t MAX 10"),
+        TableKind::Topic(_) => ("DEFINE TOPIC t RETAIN 12h;", "DEFINE TOPIC t RETAIN 12h"),
     }
 }
 
@@ -68,7 +69,7 @@ fn declared_as(kind: &TableKind) -> (&'static str, &'static str) {
 /// the statement that makes a kind is a fact about the grammar. It is kept
 /// honest by the count assertion at the end of the test — if a kind is added to
 /// `declared_as` and not here, the two disagree and the test says so.
-const DECLARATIONS: [&str; 11] = [
+const DECLARATIONS: [&str; 12] = [
     "DEFINE TABLE t SCHEMALESS;",
     "DEFINE COLLECTION t;",
     "DEFINE BUCKET t MAX 1024;",
@@ -80,6 +81,7 @@ const DECLARATIONS: [&str; 11] = [
     "DEFINE VIEW t AS SELECT * FROM base;",
     "DEFINE SERIES t RETAIN 12h;",
     "DEFINE SPACE t MAX 10;",
+    "DEFINE TOPIC t RETAIN 12h;",
 ];
 
 /// The kind the catalog now holds for `prod.shop.t`.

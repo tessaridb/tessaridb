@@ -42,6 +42,13 @@ pub(crate) const fn retried_on_conflict(kind: &StatementKind) -> bool {
                 condition: Some(_),
                 ..
             }
+            // Two readers of one name write one position, so one of them loses;
+            // run again, it reads after the winner's position and is given the
+            // next messages instead (G037).
+            | StatementKind::ReadTopic {
+                consumer: Some(_),
+                ..
+            }
     )
 }
 

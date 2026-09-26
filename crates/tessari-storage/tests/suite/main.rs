@@ -31,6 +31,7 @@ mod spatial_nearest;
 mod spatial_region;
 mod superseded_leadership;
 mod term_dictionary;
+mod topics;
 mod two_leaders;
 mod values_in_records;
 mod view_definitions;

@@ -197,6 +197,12 @@ impl Parser<'_> {
                     value: self.expression()?,
                 }
             }
+            Some(Keyword::Read)
+                if matches!(self.peek_ahead(1), Some(Token::Keyword(Keyword::From))) =>
+            {
+                self.advance();
+                self.read_topic()?
+            }
             Some(Keyword::Read) => {
                 self.advance();
                 let target = self.record_target()?;
@@ -413,7 +419,7 @@ impl Parser<'_> {
         Ok(None)
     }
 
-    fn expect_word(&mut self, word: &str, expected: &'static str) -> Result<()> {
+    pub(super) fn expect_word(&mut self, word: &str, expected: &'static str) -> Result<()> {
         if self.eat_word(word) {
             return Ok(());
         }
@@ -540,6 +546,7 @@ impl Parser<'_> {
             _ if self.eat_word("vector") => InfoSubject::Vector(self.name()?),
             _ if self.eat_word("geo") => InfoSubject::Geo(self.name()?),
             _ if self.eat_word("vault") => InfoSubject::Vault(self.name()?),
+            _ if self.eat_word("topic") => InfoSubject::Topic(self.table_ref()?),
             _ if self.eat_word("recipients") => {
                 self.expect_word("of", "`OF` and the record")?;
                 InfoSubject::Recipients(self.record_target()?)
@@ -562,7 +569,7 @@ impl Parser<'_> {
                 // list wrong is worse than one that lists none, because a caller
                 // reads it as the whole truth and stops looking.
                 return Err(self.error_here(
-                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `GRAPH`, `BUCKET`, `USER`, `USERS`, `ACCESS`, `NODE`, `KAFKA CONSUMER`, `KAFKA CONSUMERS`, `VECTOR`, `GEO`, `VAULT`, `RECIPIENTS OF`, `VERSIONS OF`, `HISTORY OF` or `AUDIT`",
+                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `GRAPH`, `BUCKET`, `USER`, `USERS`, `ACCESS`, `NODE`, `KAFKA CONSUMER`, `KAFKA CONSUMERS`, `VECTOR`, `GEO`, `VAULT`, `TOPIC`, `RECIPIENTS OF`, `VERSIONS OF`, `HISTORY OF` or `AUDIT`",
                 ));
             }
         };
@@ -661,7 +668,7 @@ impl Parser<'_> {
     /// neither `for` nor `consumer` is taken away from an application's own
     /// schema. One function rather than two copies, because the two statements
     /// mean the same thing by it: *the group's hold, not this instance's*.
-    fn for_consumer(&mut self) -> Result<Option<String>> {
+    pub(super) fn for_consumer(&mut self) -> Result<Option<String>> {
         if !self.eat_word("for") {
             return Ok(None);
         }
@@ -950,13 +957,14 @@ impl Parser<'_> {
             // an ordinary table name, and a store that had one before this word
             // existed keeps it.
             _ if self.eat_word("queue") => self.define_queue(),
+            _ if self.eat_word("topic") => self.define_topic(),
             _ if self.eat_word("series") => self.define_series(),
             // Contextual for the same reason as the rest of this run: `view` is
             // an ordinary table name, and a store that had one before this word
             // existed keeps it.
             _ if self.eat_word("view") => self.define_view(),
             _ => Err(self.error_here(
-                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA`, `KAFKA CONSUMER`, `VECTOR`, `GEO`, `VAULT`, `QUEUE` or `VIEW`",
+                "`NAMESPACE`, `DATABASE`, `TABLE`, `SPACE`, `BUCKET`, `INDEX`, `FIELD`, `ANALYZER`, `USER`, `NODE`, `REPLICA`, `KAFKA CONSUMER`, `VECTOR`, `GEO`, `VAULT`, `QUEUE`, `TOPIC` or `VIEW`",
             )),
         }
     }
@@ -2467,6 +2475,11 @@ impl Parser<'_> {
             _ if self.eat_word("geo") => Ok(StatementKind::DropGeo { name: self.name()? }),
             _ if self.eat_word("vault") => Ok(StatementKind::DropVault { name: self.name()? }),
             _ if self.eat_word("queue") => Ok(StatementKind::DropQueue { name: self.name()? }),
+            // A topic is a table carrying its declaration, as a space is, so the
+            // word undefines the same catalog entry (G037).
+            _ if self.eat_word("topic") => Ok(StatementKind::DropTable {
+                table: self.table_ref()?,
+            }),
             _ if self.eat_word("series") => Ok(StatementKind::DropSeries { name: self.name()? }),
             _ if self.eat_word("view") => Ok(StatementKind::DropView { name: self.name()? }),
             // Declined rather than missing, and it says so. `DEFINE NODE` writes

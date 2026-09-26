@@ -56,6 +56,8 @@ const FIELD_ATTEMPTS: &str = "attempts";
 const FIELD_SERIES: &str = "series";
 /// A space's declaration: present (possibly empty) exactly when the table is one.
 const FIELD_SPACE: &str = "space";
+/// A topic's declaration: present (possibly empty) exactly when the table is one.
+const FIELD_TOPIC: &str = "topic";
 const FIELD_RETAIN: &str = "retain";
 const FIELD_DIMENSION: &str = "dimension";
 const FIELD_DISTANCE: &str = "distance";
@@ -502,6 +504,11 @@ impl TableDefinition {
         if let TableKind::Space(declared) = &self.kind {
             fields.insert(FIELD_SPACE.to_owned(), declared.to_value());
         }
+        // A topic the same way (G037). A build that predates the kind reads a
+        // plain schemaless table and would let a message be rewritten.
+        if let TableKind::Topic(declared) = &self.kind {
+            fields.insert(FIELD_TOPIC.to_owned(), declared.to_value());
+        }
         Value::Object(fields)
     }
 
@@ -554,6 +561,10 @@ impl TableDefinition {
                 },
                 space: match fields.get(FIELD_SPACE) {
                     Some(value) => Some(super::space::SpaceDeclaration::from_value(value)?),
+                    None => None,
+                },
+                topic: match fields.get(FIELD_TOPIC) {
+                    Some(value) => Some(super::topic::TopicDeclaration::from_value(value)?),
                     None => None,
                 },
                 ceiling: ceiling(fields)?,
@@ -806,6 +817,9 @@ pub enum TableKind {
     /// (G036). Its own kind so `INFO` writes it back with its own word; see
     /// [`super::space`].
     Space(super::space::SpaceDeclaration),
+    /// An append-only order of messages — `DEFINE TOPIC`. See
+    /// [`super::topic`].
+    Topic(super::topic::TopicDeclaration),
 }
 
 /// How long a series table answers with a record.
@@ -1185,6 +1199,8 @@ pub struct StoredKind {
     pub series: Option<SeriesDeclaration>,
     /// A space's declaration, when the table is one (G036).
     pub space: Option<super::space::SpaceDeclaration>,
+    /// A topic's declaration, when the table is one (G037).
+    pub topic: Option<super::topic::TopicDeclaration>,
     /// A bucket's size ceiling.
     pub ceiling: Option<u64>,
 }
@@ -1220,8 +1236,25 @@ impl TableKind {
             view,
             series,
             space,
+            topic,
             ceiling,
         } = stored;
+        // A topic is pulled out first for the reason a space is below.
+        if let Some(declared) = topic {
+            return match (
+                edge, bucket, collection, geo, endpoints, vector, &vault, &queue, &view, &series,
+                space, ceiling,
+            ) {
+                (false, false, false, false, None, None, None, None, None, None, None, None) => {
+                    Ok(Self::Topic(declared))
+                }
+                _ => Err(Error::CatalogMalformed {
+                    entity: "table",
+                    field: "kind",
+                    found: "more than one kind",
+                }),
+            };
+        }
         // A space sets no flag, and is pulled out first among the declarations
         // for the reason each of them is: the arms below stay what they were.
         if let Some(declared) = space {

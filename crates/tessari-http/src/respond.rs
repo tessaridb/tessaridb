@@ -776,7 +776,9 @@ pub(crate) fn failure(error: &Error) -> Answer {
         // with a different password and one told "too many" must retry with the
         // same one later — and 429 is the status every client library already
         // backs off on.
-        Error::SignInThrottled => 429,
+        // A public topic's anonymous allowance is spent: the same back-off, for
+        // the same reason, and it is earned back over the topic's window.
+        Error::SignInThrottled | Error::TopicRateExceeded { .. } => 429,
         // It knows, and the answer is still no. A different thing entirely, and
         // a client that cannot tell retries a signin that will never help.
         //

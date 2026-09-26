@@ -61,6 +61,10 @@ pub struct Follow {
     pub from: u64,
     /// The table to watch, or every table in the session's database.
     pub table: Option<String>,
+    /// Where to resume a feed over a split table: the [`Happened::cursor`] of
+    /// the last change handled. Opaque; travels after the table, so a body
+    /// without it is the frame every earlier client sends.
+    pub cursor: Option<String>,
 }
 
 impl Follow {
@@ -76,6 +80,9 @@ impl Follow {
             }
             None => body.push(0),
         }
+        if let Some(cursor) = &self.cursor {
+            put_text(&mut body, cursor);
+        }
         body
     }
 
@@ -87,12 +94,24 @@ impl Follow {
     pub fn decode(body: &[u8]) -> Result<Self> {
         let (from, at) = take_u64(body, 0)?;
         let flag = body.get(at).copied().ok_or(Error::Malformed)?;
-        let table = match flag {
-            0 => None,
-            1 => Some(take_text(body, at.saturating_add(1))?.0),
+        let (table, at) = match flag {
+            0 => (None, at.saturating_add(1)),
+            1 => {
+                let (name, at) = take_text(body, at.saturating_add(1))?;
+                (Some(name), at)
+            }
             _ => return Err(Error::Malformed),
         };
-        Ok(Self { from, table })
+        let cursor = if at < body.len() {
+            Some(take_text(body, at)?.0)
+        } else {
+            None
+        };
+        Ok(Self {
+            from,
+            table,
+            cursor,
+        })
     }
 }
 
@@ -121,6 +140,10 @@ pub struct Happened {
     pub id: String,
     /// What became of it.
     pub became: Became,
+    /// On a feed over a split table, the cursor to resume after this change —
+    /// sent back as [`Follow::cursor`]. Its logs count separately, so no one
+    /// `sequence` says where the feed was. Travels last, and only then.
+    pub cursor: Option<String>,
 }
 
 /// What became of a record.
@@ -171,6 +194,9 @@ impl Happened {
             }
             Became::Removed => body.push(kind::REMOVED),
         }
+        if let Some(cursor) = &self.cursor {
+            put_text(&mut body, cursor);
+        }
         body
     }
 
@@ -184,22 +210,28 @@ impl Happened {
         let (sequence, at) = take_u64(body, 0)?;
         let (table, at) = take_text(body, at)?;
         let (id, at) = take_text(body, at)?;
-        let became = match body.get(at).copied().ok_or(Error::Malformed)? {
+        let (became, at) = match body.get(at).copied().ok_or(Error::Malformed)? {
             kind::WRITTEN => {
-                let (bytes, _) = take_bytes(body, at.saturating_add(1))?;
-                Became::Written(decode_payload(&bytes)?)
+                let (bytes, at) = take_bytes(body, at.saturating_add(1))?;
+                (Became::Written(decode_payload(&bytes)?), at)
             }
-            kind::REMOVED => Became::Removed,
+            kind::REMOVED => (Became::Removed, at.saturating_add(1)),
             // Not skipped: a change whose kind this build cannot read is a
             // change it would deliver as the wrong thing, and a feed that
             // silently disagrees with the store is worse than one that stops.
             _ => return Err(Error::Malformed),
+        };
+        let cursor = if at < body.len() {
+            Some(take_text(body, at)?.0)
+        } else {
+            None
         };
         Ok(Self {
             sequence,
             table,
             id,
             became,
+            cursor,
         })
     }
 }
@@ -211,7 +243,11 @@ impl Happened {
 /// subscription still advances past it, which is why this is a filter rather
 /// than a failure.
 #[cfg(feature = "server")]
-pub(crate) fn named(change: &Change, table: Option<String>) -> Option<Happened> {
+pub(crate) fn named(
+    change: &Change,
+    table: Option<String>,
+    cursor: Option<&str>,
+) -> Option<Happened> {
     Some(Happened {
         sequence: sequence_of(change.sequence),
         table: table?,
@@ -220,6 +256,7 @@ pub(crate) fn named(change: &Change, table: Option<String>) -> Option<Happened> 
             ChangeKind::Written(held) => Became::Written(held.clone()),
             ChangeKind::Removed => Became::Removed,
         },
+        cursor: cursor.map(str::to_owned),
     })
 }
 
@@ -242,11 +279,14 @@ mod tests {
     #[test]
     fn a_follow_round_trips_watching_one_table_and_all_of_them() {
         for table in [None, Some("users".to_owned())] {
-            let held = Follow {
-                from: 12_043,
-                table,
-            };
-            assert_eq!(Follow::decode(&held.encode()).expect("a follow"), held);
+            for cursor in [None, Some("d=4,9.1=2".to_owned())] {
+                let held = Follow {
+                    from: 12_043,
+                    table: table.clone(),
+                    cursor,
+                };
+                assert_eq!(Follow::decode(&held.encode()).expect("a follow"), held);
+            }
         }
     }
 
@@ -255,6 +295,7 @@ mod tests {
         let held = Follow {
             from: 1,
             table: Some("users".to_owned()),
+            cursor: None,
         };
         let body = held.encode();
         for cut in 0..body.len() {
@@ -268,13 +309,16 @@ mod tests {
     #[test]
     fn a_change_round_trips_written_and_removed() {
         for became in [Became::Written(Value::from("ada")), Became::Removed] {
-            let held = Happened {
-                sequence: 7,
-                table: "users".to_owned(),
-                id: "1".to_owned(),
-                became,
-            };
-            assert_eq!(Happened::decode(&held.encode()).expect("a change"), held);
+            for cursor in [None, Some("d=8".to_owned())] {
+                let held = Happened {
+                    sequence: 7,
+                    table: "users".to_owned(),
+                    id: "1".to_owned(),
+                    became: became.clone(),
+                    cursor,
+                };
+                assert_eq!(Happened::decode(&held.encode()).expect("a change"), held);
+            }
         }
     }
 
@@ -289,6 +333,7 @@ mod tests {
             became: Became::Written(Value::Number(Number::Decimal(
                 rust_decimal::Decimal::try_from(12.34_f64).expect("a decimal"),
             ))),
+            cursor: None,
         };
         match Happened::decode(&held.encode()).expect("a change").became {
             Became::Written(Value::Number(Number::Decimal(read))) => {
@@ -305,6 +350,7 @@ mod tests {
             table: "users".to_owned(),
             id: "1".to_owned(),
             became: Became::Written(Value::from("ada")),
+            cursor: None,
         };
         let body = held.encode();
         for cut in 0..body.len() {

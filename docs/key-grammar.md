@@ -84,6 +84,11 @@ because renumbering after data exists is a full rebuild.
 | `0x17` | `VectorRecall` | `index` | implemented — see §3d |
 | `0x18` | `SpatialRefinement` | `index` | implemented — see §3e |
 | `0x19` | `SearchTerm` (the term dictionary) | `index` | implemented — see §6.2b-4 |
+| `0x1a` | `ExpiryIndex` | `index` | implemented — see §6.2d |
+| `0x1b` | `ModifiedOrder` (a limited space) | `index` | implemented — see §6.2d |
+| `0x1c` | `TopicOffset` | `index` | implemented — see §6.2d |
+| `0x1d` | `TopicEntry` | `index` | implemented — see §6.2d |
+| `0x1e` | `TopicHead` | `index` | implemented — see §6.2d |
 | `0x20` | `LogEntry` | `log` | implemented |
 | `0x30` | `FormatVersion` | `meta` | implemented |
 | `0x31` | `AppliedPosition` | `meta` | implemented |
@@ -714,6 +719,29 @@ the answer is chosen.
 Components are stored as their **bit patterns**, not in the order-preserving form
 an index key uses: nothing here has to sort, and the walk wants numbers to
 compute with.
+
+### 6.2d Expiry, eviction and topic entries — keyspace `index`
+
+```text
+<0x1a> <at:u64 ms> <namespace:u32> <database:u32> <table:u32> <record-id>             → empty
+<0x1b> <namespace:u32> <database:u32> <table:u32> <version:u64> <record-id>           → empty
+<0x1c> <namespace:u32> <database:u32> <table:u32> <position:u64> <record-id>          → empty
+<0x1d> <namespace:u32> <database:u32> <table:u32> <record-id> <position:u64>          → empty
+<0x1e> <namespace:u32> <database:u32> <table:u32>                                     → <u64>
+```
+
+`0x1a` files each record version that carries an expiry by the millisecond it
+stops being answered, so everything that has expired is one forward read from
+the start. `0x1b` files each key of a space that declared a limit by the version
+it was last written at, so the least recently modified keys come first. `0x1c`
+and `0x1d` file each message of a topic by its position and by its identity —
+the first serves a read after a position, the second the removal of a message,
+which does not carry its position. `0x1e` holds the last position the topic has
+given and is never removed, so a topic that retention has emptied does not start
+numbering again from 1.
+
+Every one of them is written in the batch of the record it describes, on the
+commit and on a follower's apply, and none is carried in the log.
 
 ### 6.3 `FormatVersion` — keyspace `meta`
 

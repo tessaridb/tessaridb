@@ -183,6 +183,9 @@ pub struct Store {
     /// Whether any record version in this store has ever carried an expiry
     /// (G035). See [`crate::lapse`] for why the commit path asks.
     expiring: Arc<crate::lapse::Expiring>,
+    /// How much of each `PUBLIC` topic's anonymous allowance is spent, on this
+    /// node (G037). See [`crate::topic`]'s rate module for why it is not stored.
+    public_appends: Arc<crate::topic::PublicRates>,
     /// Log divergences refused since this process opened the store.
     ///
     /// Shared with every handle for the same reason the snapshot registry is:
@@ -283,6 +286,7 @@ impl Store {
             shards: Arc::new(crate::shards::ShardRegistry::default()),
             served,
             expiring,
+            public_appends: Arc::new(crate::topic::PublicRates::default()),
             divergences: Arc::new(AtomicU64::new(0)),
             discarded: Arc::new(AtomicU64::new(0)),
             campaigns: Arc::new(AtomicU64::new(0)),
@@ -783,6 +787,20 @@ impl Store {
     #[must_use]
     pub fn audit(&self) -> &Arc<crate::audit::AuditTrail> {
         &self.audit
+    }
+
+    /// Whether `count` more anonymous messages may be appended to the `PUBLIC`
+    /// topic `topic` now, under `rule`, spending them from its allowance when
+    /// they may. Counted per node and in memory (G037).
+    #[must_use]
+    pub fn admit_public_append(
+        &self,
+        topic: TableId,
+        rule: crate::catalog::PublicAppend,
+        count: u64,
+    ) -> bool {
+        self.public_appends
+            .admit(topic, rule, count, std::time::Instant::now())
     }
 
     /// Which tables carry a retention floor.
@@ -1801,6 +1819,7 @@ impl Store {
         // has expired without having written any of it (G035).
         let batch = crate::lapse::maintain(self, record, batch)?;
         let batch = crate::bounded::maintain(self, record, batch, version)?;
+        let batch = crate::topic::maintain(self, record, batch)?;
         self.backend.apply(batch)?;
         Ok(())
     }

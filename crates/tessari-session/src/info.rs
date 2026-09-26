@@ -82,6 +82,7 @@ impl Session<'_> {
             InfoSubject::Vector(name) => self.info_vector(transaction, name, span)?,
             InfoSubject::Geo(name) => self.info_geo(transaction, name, span)?,
             InfoSubject::Vault(name) => self.info_vault(transaction, name, span)?,
+            InfoSubject::Topic(table) => self.info_topic(transaction, table, span)?,
             InfoSubject::Bucket(name) => self.info_bucket(transaction, name, span)?,
             InfoSubject::Recipients(target) => self.info_recipients(transaction, target, span)?,
             InfoSubject::Versions(target) => self.info_versions(transaction, target, span)?,

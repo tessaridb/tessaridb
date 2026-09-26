@@ -340,6 +340,10 @@ impl Needs {
             // catch-all, which reads as `Write` — the default that is right for
             // every statement that changes something and wrong for this one.
             | StatementKind::Read { .. }
+            // Reading a topic is reading, including the form that moves a
+            // reader's stored position: that position is the reader's own place
+            // in what it may read (G037).
+            | StatementKind::ReadTopic { .. }
             // Explaining a read is reading: the catalog, about a table. The
             // caller must be allowed both, and `tables_named` says which.
             | StatementKind::Explain(_)
@@ -535,6 +539,7 @@ impl Needs {
             | StatementKind::DefineTable { .. }
             | StatementKind::DropTable { .. }
             | StatementKind::DefineSpace { .. }
+            | StatementKind::DefineTopic { .. }
             | StatementKind::DefineBucket { .. }
             | StatementKind::DefineCollection { .. }
             | StatementKind::DefineVector { .. }

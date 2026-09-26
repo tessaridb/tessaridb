@@ -12,6 +12,47 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.7.0-beta — 2026-09-26
+
+**A topic: an append-only order of messages whose readers keep their positions
+in the store.** For the job a message broker does in a project that would rather
+not run one — slower than a broker, with one guarantee a broker beside a
+database cannot give.
+
+- `DEFINE TOPIC events [RETAIN d] [MAX BYTES n] [PUBLIC RATE n PER d]`.
+  Appending is `CREATE` and `INSERT`; each message gets a **dense position**
+  (1, 2, 3 … no gaps) decided when it commits, so a reader never sees 8 before 7
+  exists. A message is never changed: `UPDATE`, `UPSERT` and `DELETE` of one are
+  refused naming the topic. Naming the identity makes an append idempotent.
+- `READ FROM events [FOR CONSUMER 'name'] [AFTER n] [LIMIT n]`. A named reader's
+  position is stored **and moves in the reader's own transaction**, so an effect
+  it writes into this store commits with the position — exactly once per
+  message. Readers under one name take turns and between them are given every
+  message once.
+- `RETAIN 7d` removes old messages through the log; a reader passed over is told
+  by a `lapsed` note, never skipped silently. `INFO FOR TOPIC` reports each
+  reader's position and lag.
+- `PUBLIC RATE n PER d` (with `MAX BYTES`) lets a caller that has not signed in
+  **append and do nothing else** on a closed store: generated identities only,
+  nothing that reads, counted per node in memory. An append past it is refused
+  with **`TopicRateExceeded`**.
+
+**A change feed follows a split table.** A feed over a split table — or over a
+database holding one — reads the database's log and its shards' logs, delivers
+their changes in the order the node committed them, and gives every change a
+`cursor` to resume from with nothing missed or repeated. The wire and WebSocket
+feeds carry it as an optional trailing field, so a feed over an unsplit table is
+unchanged. A feed over a split table on a node that does not write all of it is
+refused by name.
+
+**1405 conformance cases** define the language and run in the build, up from
+1390.
+
+**On disk:** a topic's catalog entry carries its declaration, and three new key
+kinds hold its positions (offset, entry and head); readers' positions live in a
+new system table. A store written by this build is not promised to open under an
+earlier one.
+
 ## 0.6.0-beta — 2026-09-26
 
 **A space can hold at most a declared number of keys.** `DEFINE SPACE cache MAX

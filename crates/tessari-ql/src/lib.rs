@@ -30,8 +30,8 @@ pub use ast::{
     EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, Field, FieldMapping, FieldPath, Hop,
     Identity, InfoSubject, JoinSide, Name, OnFailure, Ordering, Password, Projected, Projection,
     RangeExpr, ReachRef, RecordTarget, Retention, Script, Select, SetCondition, Source, SpaceBound,
-    Statement, StatementKind, TableChange, TableRef, Timeout, UserChange, UserGrant, Using,
-    Version, Written,
+    Statement, StatementKind, TableChange, TableRef, Timeout, TopicClauses, UserChange, UserGrant,
+    Using, Version, Written,
 };
 pub use bind::Parameters;
 pub use error::{Error, Result};

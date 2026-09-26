@@ -541,6 +541,7 @@ fn follow(
     let following = Following {
         from: Sequence::new(asked.from),
         table: asked.table.as_deref(),
+        cursor: asked.cursor.as_deref(),
     };
     let mut failure = None;
     let outcome = feed::follow(
@@ -549,8 +550,8 @@ fn follow(
         &following,
         committed,
         &|| stopping.asked(),
-        &mut |change, name, allowed| {
-            let Some(named) = push::named(change, name.map(str::to_owned)) else {
+        &mut |change, name, allowed, cursor| {
+            let Some(named) = push::named(change, name.map(str::to_owned), cursor) else {
                 // A change whose table has been dropped has no name to give.
                 return true;
             };

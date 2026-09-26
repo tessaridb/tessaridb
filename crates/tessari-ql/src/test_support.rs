@@ -83,6 +83,7 @@ fn erase_statement(statement: &mut Statement) {
         | StatementKind::DefineDatabase { name, .. }
         | StatementKind::DefineTable { name, .. }
         | StatementKind::DefineSpace { name, .. }
+        | StatementKind::DefineTopic { name, .. }
         | StatementKind::DefineBucket { name, .. }
         | StatementKind::DefineCollection { name, .. }
         // In the name-only list rather than in its own arm, unlike
@@ -190,6 +191,7 @@ fn erase_statement(statement: &mut Statement) {
             | InfoSubject::Bucket(name) => {
                 erase_name(name);
             }
+            InfoSubject::Topic(table) => erase_table(table),
         },
         // Its own arm rather than the name-only list above, because the
         // distance is a `Name` too: left unerased it carries a span, and two
@@ -393,6 +395,17 @@ fn erase_statement(statement: &mut Statement) {
         StatementKind::ReleaseAll { table, span, .. } => {
             erase_table(table);
             *span = CANONICAL;
+        }
+        StatementKind::ReadTopic {
+            topic,
+            after,
+            limit,
+            ..
+        } => {
+            erase_table(topic);
+            for bound in [after, limit].into_iter().flatten() {
+                erase_expr(bound);
+            }
         }
         StatementKind::Keys {
             space,

@@ -34,10 +34,12 @@ mod field;
 mod grant;
 mod graph;
 mod leadership;
+mod position;
 mod replica;
 mod shard;
 mod space;
 pub(crate) mod system;
+mod topic;
 mod user;
 mod vault;
 
@@ -73,6 +75,7 @@ pub use replica::{
 pub use shard::{ShardMap, ShardSpan};
 pub use space::{Eviction, SpaceDeclaration, SpaceLimit};
 pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
+pub use topic::{PublicAppend, TopicDeclaration};
 pub use user::{Role, UserDefinition, Verb};
 pub use vault::VaultRoot;
 

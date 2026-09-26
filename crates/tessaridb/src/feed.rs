@@ -31,9 +31,12 @@ use std::time::Duration;
 
 use tessari_session::redact::Visible;
 use tessari_storage::{Change, Watch};
-use tessari_types::{Reach, TableId};
+use tessari_types::TableId;
 
 use crate::{Db, Sequence, Session};
+
+mod cursor;
+mod source;
 
 /// How long a pusher blocks before looking at the world again.
 ///
@@ -92,6 +95,10 @@ pub struct Following<'a> {
     pub from: Sequence,
     /// The table to watch, or every table in the session's database.
     pub table: Option<&'a str>,
+    /// Where to resume a feed over a split table: the cursor the last change it
+    /// handled carried. Without one, `from` counts in the database's log and
+    /// each shard's log is read from its beginning.
+    pub cursor: Option<&'a str>,
 }
 
 /// Whether a delivered change reached its subscriber.
@@ -101,7 +108,15 @@ pub struct Following<'a> {
 /// is.
 pub type Delivered = bool;
 
+/// Where a feed delivers: the change, its table's name, what of it the
+/// subscriber may see, and — on a feed over a split table — the cursor to
+/// resume after it.
+pub type Deliver<'s> = dyn FnMut(&Change, Option<&str>, &Visible, Option<&str>) -> Delivered + 's;
+
 /// Push changes to `deliver` until `stop` says otherwise or delivery fails.
+///
+/// `deliver` is given the change, its table's name, what of it the subscriber
+/// may see, and — on a feed over a split table — the cursor to resume after it.
 ///
 /// The returned error is a refusal to start, phrased for the subscriber: it is
 /// the answer to "why am I not following anything", and every one of them is a
@@ -113,14 +128,16 @@ pub type Delivered = bool;
 /// has selected one that has since gone, or named a table that does not exist or
 /// that it was not granted — and returns one **mid-feed** when the authority it
 /// was reading on is taken away, which is what ends a subscription a revocation
-/// was meant to end.
+/// was meant to end. A feed over a split table is also refused a cursor it
+/// cannot read and a log holding another node's writes, and ended when a table
+/// it follows is split under it.
 pub fn follow(
     db: &Db,
     session: &mut Session<'_>,
     asked: &Following<'_>,
     committed: &Commits,
     stop: &dyn Fn() -> bool,
-    deliver: &mut dyn FnMut(&Change, Option<&str>, &Visible) -> Delivered,
+    deliver: &mut Deliver<'_>,
 ) -> Result<(), String> {
     if let Err(refusal) = session.may_read(db.store()) {
         return Err(refusal.to_string());
@@ -157,43 +174,27 @@ pub fn follow(
         },
     };
 
-    // A feed follows one log, and a split table's writes are in its shards'
-    // logs (G031, ADR-0080). Following the database's log would deliver every
-    // change except those, with nothing saying so — refused instead, for the
-    // table named or, when everything is watched, for any split table in it.
-    // The writer's order across those logs exists now (ADR-0084); what a feed
-    // still lacks is a cursor holding a position per log (Q-791).
-    let split = db
-        .split_tables_in(tenancy.0, tenancy.1)
-        .map_err(|failure| failure.to_string())?;
-    let blind = match asked.table {
-        Some(name) => split.iter().find(|table| table.as_str() == name),
-        None => split.first(),
+    // A split table's single-shard writes are in its shards' logs and a write
+    // to two shards is in its database's (G031, ADR-0080), so a feed whose scope
+    // holds one follows all of them, in the writer's order, with a cursor per
+    // log (Q-791). A scope with none reads the database's log alone.
+    let in_scope = |split: Vec<source::Split>| -> Vec<source::Split> {
+        split
+            .into_iter()
+            .filter(|(name, _, _)| asked.table.is_none_or(|asked| asked == name))
+            .collect()
     };
-    if let Some(table) = blind {
-        return Err(format!(
-            "table `{table}` is split, so a change feed would have to follow its shards' \
-             logs and its database's, and a feed's position counts in one log — this \
-             build refuses rather than follow one of them"
-        ));
-    }
+    let split = in_scope(
+        db.split_tables_in(tenancy.0, tenancy.1)
+            .map_err(|failure| failure.to_string())?,
+    );
+    let mut source = source::Source::open(db, tenancy, &split, asked.from, asked.cursor, watch)?;
 
     // What a subscriber may see of each table, resolved once per table rather
     // than once per change. The feed pushes whole records and never passes
     // through a session's read path, so a field grant reaches it here or not at
     // all — and "not at all" means pushing a field nobody granted.
     let mut visible: BTreeMap<TableId, Visible> = BTreeMap::new();
-    // The log of the tenancy this session selected — this node's own, which is
-    // the one a local feed has always read. Before the log was partitioned there
-    // was one to read and the filter below did the whole job; now the home is
-    // what makes the position mean anything, the writer is what picks one log
-    // out of a range that admits two, and the filter stays because a database's
-    // log still carries every table in it.
-    let log = match db.store().own_log(Reach::Database(tenancy.0, tenancy.1)) {
-        Ok(log) => log,
-        Err(failure) => return Err(failure.to_string()),
-    };
-    let mut subscription = Db::subscribe(log, asked.from, watch);
     let mut seen = 0;
     loop {
         // A staged shutdown reaches a feed here. A pusher spends its life
@@ -221,10 +222,22 @@ pub fn follow(
         // is now what the cache lives for. A revocation that reached the table
         // list but not the field list would keep pushing a column nobody grants.
         visible.clear();
-        let changes = db
-            .poll(&mut subscription, MOUTHFUL)
-            .map_err(|failure| failure.to_string())?;
-        for change in &changes {
+        // And the logs: a table split, or split again, after this feed began
+        // writes into logs it is not reading, with nothing in an error state.
+        let now = in_scope(
+            db.split_tables_in(tenancy.0, tenancy.1)
+                .map_err(|failure| failure.to_string())?,
+        );
+        if now != split {
+            return Err(
+                "a table this feed follows was split after it began, so its writes \
+                        moved to logs the feed is not reading — subscribe again from the \
+                        last change handled"
+                    .to_owned(),
+            );
+        }
+        let changes = source.next(db, MOUTHFUL)?;
+        for (change, resume) in &changes {
             // The log is every tenancy's. `Watch` filters by table and knows
             // nothing about namespaces, so this is where a subscriber is kept
             // inside the database it selected.
@@ -250,7 +263,7 @@ pub fn follow(
             // inventing one would be worse than not sending it. The cursor has
             // already moved past it either way.
             let named = db.table_name(change.table).unwrap_or(None);
-            if !deliver(change, named.as_deref(), &allowed) {
+            if !deliver(change, named.as_deref(), &allowed, resume.as_deref()) {
                 return Ok(());
             }
         }

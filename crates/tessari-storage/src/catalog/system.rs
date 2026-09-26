@@ -159,6 +159,14 @@ pub const LEADERSHIPS: TableId = TableId::new(19);
 /// arrives ordered against the leadership that wrote it.
 pub const FAILOVER: TableId = TableId::new(20);
 
+/// Each topic reader's stored position (G037).
+///
+/// A row per topic and reader name, written by the reader's own `READ … FOR
+/// CONSUMER` inside the reader's transaction — so the position moves exactly
+/// when the reader's other writes commit, and two readers of one name write the
+/// same row, which is what makes them take turns.
+pub const TOPIC_POSITIONS: TableId = TableId::new(21);
+
 /// The one record [`VAULT_ROOT`] holds.
 pub const VAULT_ROOT_ID: u32 = 1;
 
