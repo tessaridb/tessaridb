@@ -57,6 +57,7 @@ impl Samples {
             total,
             p50: at_percentile(&self.held, 50),
             p90: at_percentile(&self.held, 90),
+            p95: at_percentile(&self.held, 95),
             p99: at_percentile(&self.held, 99),
             max: self.held.last().copied().unwrap_or_default(),
             note: None,
@@ -96,6 +97,8 @@ pub struct Report {
     pub p50: Duration,
     /// The ninetieth percentile.
     pub p90: Duration,
+    /// The ninety-fifth.
+    pub p95: Duration,
     /// The ninety-ninth.
     pub p99: Duration,
     /// The slowest single operation.
@@ -118,6 +121,7 @@ impl Report {
             total: Duration::ZERO,
             p50: Duration::ZERO,
             p90: Duration::ZERO,
+            p95: Duration::ZERO,
             p99: Duration::ZERO,
             max: Duration::ZERO,
             note: Some(said.to_owned()),
@@ -143,15 +147,16 @@ impl Report {
     #[must_use]
     pub fn row(&self) -> String {
         if let Some(said) = &self.note {
-            return format!("| {} | **{said}** | | | | | |", self.phase);
+            return format!("| {} | **{said}** | | | | | | |", self.phase);
         }
         format!(
-            "| {} | {} | {:.0} | {} | {} | {} | {} |",
+            "| {} | {} | {:.0} | {} | {} | {} | {} | {} |",
             self.phase,
             self.operations,
             self.throughput(),
             micros(self.p50),
             micros(self.p90),
+            micros(self.p95),
             micros(self.p99),
             micros(self.max),
         )
@@ -160,8 +165,8 @@ impl Report {
     /// The header those rows sit under.
     #[must_use]
     pub const fn header() -> &'static str {
-        "| phase | ops | ops/s | p50 µs | p90 µs | p99 µs | max µs |\n\
-         |---|---|---|---|---|---|---|"
+        "| phase | ops | ops/s | p50 µs | p90 µs | p95 µs | p99 µs | max µs |\n\
+         |---|---|---|---|---|---|---|---|"
     }
 }
 
@@ -204,6 +209,7 @@ mod tests {
         assert_eq!(report.operations, 100);
         assert_eq!(report.p50, Duration::from_millis(50));
         assert_eq!(report.p90, Duration::from_millis(90));
+        assert_eq!(report.p95, Duration::from_millis(95));
         assert_eq!(report.p99, Duration::from_millis(99));
         assert_eq!(report.max, Duration::from_millis(100));
     }

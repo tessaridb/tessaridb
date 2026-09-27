@@ -174,6 +174,11 @@ pub const ALL: &[Workload] = &[
         about: "what a claim costs behind a prefix of held and of dead-lettered records, and a drain taken one at a time against one taken in a batch",
         run: crate::queue::queue,
     },
+    Workload {
+        name: "update",
+        about: "updates that leave every indexed field alone against updates that move one, on a table with a value and a full-text index, then a grouped aggregate",
+        run: crate::updates::update,
+    },
 ];
 
 /// The workload of this name, if there is one.
