@@ -19,7 +19,7 @@ impl Parser<'_> {
     /// as one of the two things it might mean — then a range, then a primary.
     /// Parentheses override, as everywhere.
     pub(super) fn expression(&mut self) -> Result<Expr> {
-        self.disjunction()
+        self.nested(Self::disjunction)
     }
 
     /// A value, possibly a range of two.

@@ -57,8 +57,8 @@ use std::ops::Bound;
 use rust_decimal::Decimal;
 use tessari_kv::Value as StoredBytes;
 use tessari_types::{
-    Datetime, Duration, Geometry, Number, Polygon, Position, RecordId, RecordRef, Ring, TableId,
-    Value, ValueRange,
+    Datetime, Duration, Geometry, MAX_NESTING, Number, Polygon, Position, RecordId, RecordRef,
+    Ring, TableId, Value, ValueRange,
 };
 
 use crate::error::{Error, Result};
@@ -132,7 +132,7 @@ pub fn decode(bytes: &[u8]) -> Result<Value> {
     // in a truncation message; no kind tag is consumed, because this is a value
     // payload rather than a key.
     let mut reader = KeyReader::new(KeyKind::Record, bytes);
-    let value = take_value(&mut reader)?;
+    let value = take_value(&mut reader, 0)?;
     reader.finish()?;
     Ok(value)
 }
@@ -317,7 +317,7 @@ fn put_geometry(writer: &mut KeyWriter, held: &Geometry) {
     }
 }
 
-fn take_geometry(reader: &mut KeyReader<'_>) -> Result<Geometry> {
+fn take_geometry(reader: &mut KeyReader<'_>, depth: usize) -> Result<Geometry> {
     match reader.take_u8()? {
         shape::POINT => Ok(Geometry::Point(take_position(reader)?)),
         shape::LINE => Ok(Geometry::Line(take_positions(reader)?)),
@@ -340,10 +340,11 @@ fn take_geometry(reader: &mut KeyReader<'_>) -> Result<Geometry> {
             Ok(Geometry::MultiPolygon(polygons))
         }
         shape::COLLECTION => {
+            let inside = deeper(depth)?;
             let count = reader.take_u32()?;
             let mut shapes = Vec::new();
             for _ in 0..count {
-                shapes.push(Box::new(take_geometry(reader)?));
+                shapes.push(Box::new(take_geometry(reader, inside)?));
             }
             Ok(Geometry::Collection(shapes))
         }
@@ -351,7 +352,12 @@ fn take_geometry(reader: &mut KeyReader<'_>) -> Result<Geometry> {
     }
 }
 
-fn take_value(reader: &mut KeyReader<'_>) -> Result<Value> {
+/// One value, inside `depth` containers.
+///
+/// The depth travels down so a payload nested past [`MAX_NESTING`] is refused
+/// before it is followed: every level is a stack frame, and bytes off the wire
+/// are read here before anybody has signed in.
+fn take_value(reader: &mut KeyReader<'_>, depth: usize) -> Result<Value> {
     let tag = reader.take_u8()?;
     match tag {
         tag::NONE => Ok(Value::None),
@@ -386,14 +392,16 @@ fn take_value(reader: &mut KeyReader<'_>) -> Result<Value> {
             Ok(Value::Record(RecordRef::new(table, id)))
         }
         tag::ARRAY => {
+            let inside = deeper(depth)?;
             let count = reader.take_u32()?;
             let mut items = Vec::new();
             for _ in 0..count {
-                items.push(take_value(reader)?);
+                items.push(take_value(reader, inside)?);
             }
             Ok(Value::Array(items))
         }
         tag::OBJECT => {
+            let inside = deeper(depth)?;
             let count = reader.take_u32()?;
             let mut fields = BTreeMap::new();
             for _ in 0..count {
@@ -401,24 +409,26 @@ fn take_value(reader: &mut KeyReader<'_>) -> Result<Value> {
                 let name = String::from_utf8(name).map_err(|_| Error::InvalidUtf8 {
                     kind: KeyKind::Record,
                 })?;
-                fields.insert(name, take_value(reader)?);
+                fields.insert(name, take_value(reader, inside)?);
             }
             Ok(Value::Object(fields))
         }
         tag::RANGE => {
-            let start = take_bound(reader)?;
-            let end = take_bound(reader)?;
+            let inside = deeper(depth)?;
+            let start = take_bound(reader, inside)?;
+            let end = take_bound(reader, inside)?;
             Ok(Value::Range(Box::new(ValueRange::new(start, end))))
         }
         tag::SET => {
+            let inside = deeper(depth)?;
             let count = reader.take_u32()?;
             let mut items = BTreeSet::new();
             for _ in 0..count {
-                items.insert(take_value(reader)?);
+                items.insert(take_value(reader, inside)?);
             }
             Ok(Value::Set(items))
         }
-        tag::GEOMETRY => Ok(Value::Geometry(take_geometry(reader)?)),
+        tag::GEOMETRY => Ok(Value::Geometry(take_geometry(reader, depth)?)),
         tag::REGEX => {
             let bytes = take_bytes(reader)?;
             String::from_utf8(bytes)
@@ -429,6 +439,18 @@ fn take_value(reader: &mut KeyReader<'_>) -> Result<Value> {
         }
         unknown => Err(Error::UnknownValueTag { tag: unknown }),
     }
+}
+
+/// The depth inside the container being entered, or the refusal when that is
+/// one level more than [`MAX_NESTING`] — counted the way
+/// [`Value::nests_deeper_than`] counts, so the decoder and a write agree on
+/// exactly which values exist.
+fn deeper(depth: usize) -> Result<usize> {
+    let inside = depth.saturating_add(1);
+    if inside > MAX_NESTING {
+        return Err(Error::NestedTooDeep { limit: MAX_NESTING });
+    }
+    Ok(inside)
 }
 
 fn put_number(writer: &mut KeyWriter, number: &Number) {
@@ -484,11 +506,11 @@ fn put_bound(writer: &mut KeyWriter, bound: &Bound<Value>) {
     }
 }
 
-fn take_bound(reader: &mut KeyReader<'_>) -> Result<Bound<Value>> {
+fn take_bound(reader: &mut KeyReader<'_>, depth: usize) -> Result<Bound<Value>> {
     match reader.take_u8()? {
         bound_kind::UNBOUNDED => Ok(Bound::Unbounded),
-        bound_kind::INCLUDED => Ok(Bound::Included(take_value(reader)?)),
-        bound_kind::EXCLUDED => Ok(Bound::Excluded(take_value(reader)?)),
+        bound_kind::INCLUDED => Ok(Bound::Included(take_value(reader, depth)?)),
+        bound_kind::EXCLUDED => Ok(Bound::Excluded(take_value(reader, depth)?)),
         unknown => Err(Error::UnknownValueTag { tag: unknown }),
     }
 }

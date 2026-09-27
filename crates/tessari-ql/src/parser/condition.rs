@@ -78,7 +78,7 @@ impl Parser<'_> {
         if !self.eat_keyword(Keyword::Not) {
             return self.comparison();
         }
-        let operand = self.negation()?;
+        let operand = self.nested(Self::negation)?;
         let span = start.to(operand.span);
         Ok(Expr {
             kind: ExprKind::Not(Box::new(operand)),
@@ -161,7 +161,7 @@ impl Parser<'_> {
         if !self.eat_punct(Punct::Minus) {
             return self.spanned_range();
         }
-        let operand = self.negative()?;
+        let operand = self.nested(Self::negative)?;
         let span = start.to(operand.span);
         Ok(Expr {
             kind: ExprKind::Negate(Box::new(operand)),

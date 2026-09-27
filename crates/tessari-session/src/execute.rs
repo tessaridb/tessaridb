@@ -15,8 +15,8 @@ use tessari_storage::{
 };
 
 use tessari_types::{
-    Analyzer, FieldId, FieldKind, Filter, GraphId, IdentityKind, Path, RecordId, RecordRef,
-    Replication, ReplicationClass, Step, TableId, Value,
+    Analyzer, FieldId, FieldKind, Filter, GraphId, IdentityKind, MAX_NESTING, Path, RecordId,
+    RecordRef, Replication, ReplicationClass, Step, TableId, Value,
 };
 
 use crate::condition::boolean;
@@ -1075,6 +1075,14 @@ impl Session<'_> {
             )?,
             None => tessari_storage::seal_secrets(transaction, &address, payload)?,
         };
+        // Checked on exactly what is encoded, after sealing, because that is
+        // what the decoder will be asked to follow on every read.
+        if payload.nests_deeper_than(MAX_NESTING) {
+            return Err(Error::NestedTooDeep {
+                limit: MAX_NESTING,
+                span,
+            });
+        }
         transaction.put(address, encode_payload(&payload).into_bytes());
         Ok(())
     }

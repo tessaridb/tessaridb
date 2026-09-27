@@ -498,6 +498,17 @@ pub enum Error {
         /// Where the read that started it was written.
         span: Span,
     },
+    /// A write would store a value nested deeper than the store keeps.
+    ///
+    /// Refused at the write because the decoder refuses the same depth on the
+    /// way back: storing it would make a record that exists and cannot be read.
+    #[error("the value written nests containers more than {limit} deep (at {span})")]
+    NestedTooDeep {
+        /// The deepest nesting a stored value may have.
+        limit: usize,
+        /// Where the write was written.
+        span: Span,
+    },
     /// A stored view could not be read back as a read.
     ///
     /// The text was parsed when it was declared, so this is a catalog whose

@@ -75,6 +75,7 @@ pub fn parse(source: &str) -> Result<Script> {
         tokens,
         position: 0,
         reading_paths: false,
+        depth: 0,
     }
     .script()
 }
@@ -98,6 +99,7 @@ pub fn parse_expression(source: &str) -> Result<Expr> {
         tokens,
         position: 0,
         reading_paths: false,
+        depth: 0,
     };
     let expression = parser.expression()?;
     if parser.peek().is_some() {
@@ -124,6 +126,7 @@ pub fn parse_read(source: &str) -> Result<Select> {
         tokens,
         position: 0,
         reading_paths: false,
+        depth: 0,
     };
     if parser.peek_keyword() != Some(Keyword::Select) {
         return Err(parser.error_here("`SELECT` — a view is a read"));
@@ -148,7 +151,20 @@ struct Parser<'a> {
     /// expression rule, since every rule between the condition and the name
     /// would otherwise carry a parameter it does not use.
     reading_paths: bool,
+    /// How many expressions deep the reader is, so a statement nested past
+    /// [`MAX_EXPRESSION_DEPTH`] is refused instead of exhausting the stack.
+    depth: usize,
 }
+
+/// How many expressions deep a statement may nest.
+///
+/// The value ceiling, and derived from the stack rather than from it: one
+/// level of a container literal costs about 27 KB of stack in a debug build and
+/// 9 KB in release (measured 2026-09-27), and a parsing thread gets the 2 MiB
+/// every spawned thread gets. So a literal reaches one level short of the
+/// deepest storable value, and a value that deep is sent as a parameter. A test
+/// holds the ceiling inside that stack.
+const MAX_EXPRESSION_DEPTH: usize = tessari_types::MAX_NESTING;
 
 impl Parser<'_> {
     fn script(mut self) -> Result<Script> {
@@ -339,6 +355,24 @@ impl Parser<'_> {
     }
 
     /// The failure for whatever stands under the cursor.
+    /// Run `rule` one expression deeper, refusing past the ceiling.
+    ///
+    /// The reader is recursive descent, and a statement nested without bound
+    /// would end the process by exhausting the stack: an outage rather than a
+    /// refusal, and one any client could cause with a long enough line.
+    fn nested<T>(&mut self, rule: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        if self.depth >= MAX_EXPRESSION_DEPTH {
+            return Err(Error::NestedTooDeep {
+                limit: MAX_EXPRESSION_DEPTH,
+                span: self.span_here(),
+            });
+        }
+        self.depth = self.depth.saturating_add(1);
+        let answer = rule(self);
+        self.depth = self.depth.saturating_sub(1);
+        answer
+    }
+
     fn error_here(&self, expected: &'static str) -> Error {
         let Some(spanned) = self.tokens.get(self.position) else {
             return Error::UnexpectedEnd {
@@ -431,8 +465,46 @@ fn describe(token: &Token) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ABSENT, absent_feature};
+    use super::{ABSENT, MAX_EXPRESSION_DEPTH, absent_feature, parse_expression};
+    use crate::error::Error;
     use crate::token::Keyword;
+
+    /// The deepest statement the reader accepts fits the smallest stack a
+    /// parsing thread runs on, and one level deeper is refused by name.
+    ///
+    /// Run on a thread given that stack explicitly, in whatever profile the
+    /// suite runs in — a debug frame is the larger one — so the ceiling is held
+    /// to the stack rather than trusted to it. Arrays, `NOT` and `-` are the
+    /// three ways to nest, and each is walked to the ceiling.
+    #[test]
+    fn a_statement_at_the_nesting_ceiling_fits_a_small_stack_and_one_deeper_is_refused() {
+        let reader = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                let under = MAX_EXPRESSION_DEPTH.saturating_sub(1);
+                let arrays =
+                    |levels: usize| format!("{}1{}", "[".repeat(levels), "]".repeat(levels));
+                let nots = |levels: usize| format!("{}true", "NOT ".repeat(levels));
+                let negatives = |levels: usize| format!("{}x", "- ".repeat(levels));
+                for shape in [arrays, nots, negatives] {
+                    assert!(parse_expression(&shape(under)).is_ok(), "{}", shape(under));
+                    assert!(matches!(
+                        parse_expression(&shape(MAX_EXPRESSION_DEPTH)),
+                        Err(Error::NestedTooDeep { .. })
+                    ));
+                }
+                // Far past the ceiling is the attack, and it is refused as cheaply.
+                assert!(matches!(
+                    parse_expression(&arrays(100_000)),
+                    Err(Error::NestedTooDeep { .. })
+                ));
+            })
+            .expect("a thread can be started");
+        assert!(
+            reader.join().is_ok(),
+            "the reader overflowed its stack or panicked"
+        );
+    }
 
     /// An entry whose word the lexer reserves can never fire.
     ///
