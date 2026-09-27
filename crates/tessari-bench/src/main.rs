@@ -97,6 +97,10 @@ struct Asked {
     only: Option<String>,
     baseline: Option<PathBuf>,
     list: bool,
+    /// How many times each chosen workload runs, each on a fresh database —
+    /// so a profiler sampling the process sees seconds of the workload rather
+    /// than milliseconds. The reports printed are the last run's.
+    repeat: u32,
 }
 
 fn main() -> ExitCode {
@@ -123,7 +127,7 @@ fn main() -> ExitCode {
 }
 
 const USAGE: &str = "\
-usage: tessari-bench [--backend memory|disk] [--workload <name>] [--baseline <path>] [--list]";
+usage: tessari-bench [--backend memory|disk] [--workload <name>] [--baseline <path>] [--repeat <n>] [--list]";
 
 /// Read the arguments, refusing anything unrecognised.
 ///
@@ -140,6 +144,7 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
         only: None,
         baseline: None,
         list: false,
+        repeat: 1,
     };
     let mut arguments = arguments.peekable();
     while let Some(argument) = arguments.next() {
@@ -168,6 +173,13 @@ fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                     .next()
                     .ok_or_else(|| "--baseline wants a path".to_owned())?;
                 asked.baseline = Some(PathBuf::from(path));
+            }
+            "--repeat" => {
+                asked.repeat = arguments
+                    .next()
+                    .and_then(|count| count.parse().ok())
+                    .filter(|count| *count > 0)
+                    .ok_or_else(|| "--repeat wants a count above zero".to_owned())?;
             }
             "--help" | "-h" => return Err(USAGE.to_owned()),
             other => return Err(format!("unknown option {other:?}")),
@@ -219,7 +231,10 @@ fn run(asked: &Asked) -> Result<(), String> {
 
     let mut lines = Vec::new();
     for held in chosen {
-        let reports = measure(held, asked.backend)?;
+        let mut reports = measure(held, asked.backend)?;
+        for _ in 1..asked.repeat {
+            reports = measure(held, asked.backend)?;
+        }
         lines.push((held.name, held.about, reports));
     }
 

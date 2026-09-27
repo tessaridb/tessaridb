@@ -113,6 +113,13 @@ codegen-units = 1
 panic = "unwind"
 strip = true
 
+# The release build with its symbols kept, for a profiler to name functions.
+# `cargo build --profile profiling -p tessari-bench`; never shipped.
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = "line-tables-only"
+
 [profile.dev]
 debug = "line-tables-only"
 opt-level = 0
