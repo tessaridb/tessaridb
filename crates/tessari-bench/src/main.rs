@@ -33,6 +33,7 @@
 //! the debug build, and reporting those numbers as the store's would be a lie
 //! that looks like data.
 
+mod concurrent;
 #[cfg(feature = "counting")]
 mod counting;
 mod guard;

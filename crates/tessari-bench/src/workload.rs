@@ -81,6 +81,11 @@ pub const ALL: &[Workload] = &[
         run: write,
     },
     Workload {
+        name: "concurrent",
+        about: "point writes from 1 to 16 threads at once into one table — throughput, tail latency and refused commits as writers are added",
+        run: crate::concurrent::concurrent,
+    },
+    Workload {
         name: "read-by-id",
         about: "point reads by record identity — the cheapest access path there is",
         run: read_by_id,
