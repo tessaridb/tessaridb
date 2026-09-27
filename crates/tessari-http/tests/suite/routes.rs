@@ -10,6 +10,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 
+use tessari_constants::HTTP_MAX_BODY_BYTES;
 use tessari_http::Node;
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_storage::Store;
@@ -865,4 +866,66 @@ fn an_unbound_parameter_is_refused_in_the_sessions_own_words() {
     );
     assert!(status >= 400, "{body}");
     assert!(body.contains("who"), "{body}");
+}
+
+/// Send `POST /script` with `framing` in the head and `body` after it, and read
+/// the status the node answers with.
+///
+/// The body is written from its own thread, so a node that answers before
+/// reading all of it is heard rather than deadlocked against. The read gives up
+/// after five seconds, which is what turns "the node is still reading" into a
+/// failure instead of a hang.
+fn status_for_body(address: &str, framing: &str, body: Vec<u8>) -> u16 {
+    let mut stream = TcpStream::connect(address).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let head =
+        format!("POST /script HTTP/1.1\r\nHost: {address}\r\n{framing}Connection: close\r\n\r\n");
+    stream.write_all(head.as_bytes()).unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    // A refusal may close the socket before the body is written, which is the
+    // point, so a failed write here is expected rather than a test failure.
+    let sending = std::thread::spawn(move || drop(writer.write_all(&body)));
+    let mut status_line = String::new();
+    BufReader::new(stream)
+        .read_line(&mut status_line)
+        .expect("an answer before the timeout");
+    drop(sending.join());
+    status_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+#[test]
+fn a_body_declared_past_the_ceiling_is_refused_before_it_is_read() {
+    // Nothing follows the head. A node that tried to read the declared body
+    // would wait for bytes that never come, and the read above times out.
+    let (_node, address) = node();
+    let declared = HTTP_MAX_BODY_BYTES.saturating_add(1);
+    let framing = format!("Content-Length: {declared}\r\n");
+    assert_eq!(status_for_body(&address, &framing, Vec::new()), 413);
+}
+
+#[test]
+fn a_body_that_declares_no_length_is_read_only_to_the_ceiling() {
+    // Chunked, so no length is declared and only reading can find the size:
+    // one mebibyte of spaces at a time, one chunk more than the ceiling holds.
+    let (_node, address) = node();
+    let chunk = vec![b' '; 1024 * 1024];
+    let chunks = HTTP_MAX_BODY_BYTES.checked_div(chunk.len()).unwrap();
+    let mut body = Vec::new();
+    for _ in 0..=chunks {
+        body.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
+        body.extend_from_slice(&chunk);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(b"0\r\n\r\n");
+    assert_eq!(
+        status_for_body(&address, "Transfer-Encoding: chunked\r\n", body),
+        413
+    );
 }
