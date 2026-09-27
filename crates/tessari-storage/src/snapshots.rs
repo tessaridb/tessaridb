@@ -16,7 +16,7 @@
 //! back, or simply let go of.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use tessari_types::Sequence;
@@ -40,13 +40,8 @@ pub(crate) struct Registry {
 impl Registry {
     /// Record that a reader is working at `at`.
     pub(crate) fn register(&self, at: Sequence) {
-        let Ok(mut live) = self.live.lock() else {
-            // A poisoned registry means a panic while holding it. Failing to
-            // register would let reclamation run past a live reader, so the
-            // safe direction is to leave the floor where it is.
-            return;
-        };
-        live.entry(at)
+        self.held()
+            .entry(at)
             .and_modify(|held| held.holders = held.holders.saturating_add(1))
             .or_insert_with(|| Held {
                 holders: 1,
@@ -56,9 +51,7 @@ impl Registry {
 
     /// Record that a reader at `at` has finished.
     pub(crate) fn release(&self, at: Sequence) {
-        let Ok(mut live) = self.live.lock() else {
-            return;
-        };
+        let mut live = self.held();
         let Some(held) = live.get_mut(&at) else {
             return;
         };
@@ -70,8 +63,7 @@ impl Registry {
 
     /// The oldest sequence any live reader still needs.
     pub(crate) fn oldest(&self) -> Option<Sequence> {
-        let live = self.live.lock().ok()?;
-        live.keys().next().copied()
+        self.held().keys().next().copied()
     }
 
     /// How long the oldest live snapshot has been held.
@@ -80,19 +72,55 @@ impl Registry {
     /// snapshot postpones every tombstone in the store" is a sentence nobody can
     /// act on.
     pub(crate) fn oldest_age(&self) -> Option<Duration> {
-        let live = self.live.lock().ok()?;
-        live.values().map(|held| held.since.elapsed()).max()
+        self.held().values().map(|held| held.since.elapsed()).max()
     }
 
     /// How many distinct snapshots are live.
     pub(crate) fn len(&self) -> usize {
-        self.live.lock().map_or(0, |live| live.len())
+        self.held().len()
+    }
+
+    /// The live set, taken as found even after a panic elsewhere held it.
+    ///
+    /// A poisoned lock here must not be read as "nobody is reading": the floor
+    /// would then fall back to the newest version and reclamation would run past
+    /// a live reader. Nothing is torn by a panic under this lock, because every
+    /// change made under it is one map operation.
+    fn held(&self) -> MutexGuard<'_, BTreeMap<Sequence, Held>> {
+        self.live.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_panic_while_the_registry_was_held_does_not_hide_a_live_reader() {
+        let registry = Registry::default();
+        registry.register(Sequence::new(5));
+        let poisoned = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _held = registry.live.lock();
+                    std::panic::resume_unwind(Box::new("a defect while holding the registry"));
+                })
+                .join()
+        });
+        assert!(poisoned.is_err(), "the helper thread must have panicked");
+        assert!(registry.live.is_poisoned());
+
+        registry.register(Sequence::new(3));
+        assert_eq!(
+            registry.oldest(),
+            Some(Sequence::new(3)),
+            "a reader registered after the panic still bounds the floor"
+        );
+        registry.release(Sequence::new(3));
+        assert_eq!(registry.oldest(), Some(Sequence::new(5)));
+        assert_eq!(registry.len(), 1);
+        assert!(registry.oldest_age().is_some());
+    }
 
     #[test]
     fn the_oldest_live_snapshot_is_what_bounds_the_floor() {

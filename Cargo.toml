@@ -107,7 +107,10 @@ unimplemented = "warn"
 [profile.release]
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+# Unwind, not abort: the node contains a panic to the connection, request or
+# cadence that met it (`crates/tessari-cli/src/supervise.rs`), which needs the
+# unwind; the binary refuses to compile as an aborting build.
+panic = "unwind"
 strip = true
 
 [profile.dev]
