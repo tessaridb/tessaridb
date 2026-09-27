@@ -146,3 +146,76 @@ fn commits_arriving_while_one_lands_land_together() {
         );
     }
 }
+
+/// A memory backend whose first group write panics.
+#[derive(Debug)]
+struct PanicsOnce {
+    engine: MemoryBackend,
+    groups: AtomicUsize,
+}
+
+impl KvBackend for PanicsOnce {
+    fn name(&self) -> &'static str {
+        "panics-once"
+    }
+
+    fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<Value>> {
+        self.engine.get(keyspace, key)
+    }
+
+    fn scan(&self, request: &ScanRequest) -> Result<Vec<(Key, Value)>> {
+        self.engine.scan(request)
+    }
+
+    fn apply(&self, batch: WriteBatch) -> Result<()> {
+        self.engine.apply(batch)
+    }
+
+    fn groups_writes(&self) -> bool {
+        true
+    }
+
+    fn apply_group(&self, batches: Vec<WriteBatch>) -> (usize, Result<()>) {
+        if self.groups.fetch_add(1, Ordering::SeqCst) == 0 {
+            panic!("the engine panicked while landing a group");
+        }
+        self.engine.apply_group(batches)
+    }
+}
+
+#[test]
+fn a_landing_that_panicked_does_not_stop_every_later_commit() {
+    let backend = Arc::new(PanicsOnce {
+        engine: MemoryBackend::new(),
+        groups: AtomicUsize::new(0),
+    });
+    let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>).unwrap();
+    let first = {
+        let store = store.clone();
+        std::thread::spawn(move || write(&store, 0))
+    };
+    assert!(
+        first.join().is_err(),
+        "the landing that panicked must not report success"
+    );
+    // On a thread of its own rather than a scoped one, so that a commit left
+    // waiting for ever fails this assertion instead of hanging the suite.
+    let second = {
+        let store = store.clone();
+        std::thread::spawn(move || write(&store, 1))
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !second.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "a commit after the panic never landed: the landing is still marked as running"
+        );
+        std::thread::yield_now();
+    }
+    second.join().unwrap();
+    let transaction = store.begin().unwrap();
+    assert_eq!(
+        transaction.get(&address(1)).unwrap(),
+        Some(b"{\"n\":1}".to_vec())
+    );
+}

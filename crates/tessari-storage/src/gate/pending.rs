@@ -30,6 +30,7 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::ops::Bound;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 
@@ -174,13 +175,24 @@ impl Pending {
             batches.push(member.batch);
         }
         let count = batches.len();
-        let (landed, outcome) = backend.apply_group(batches);
+        // A panic while landing is contained here: left to unwind, it would
+        // leave the landing marked as running and every later commit waiting
+        // for it for ever. The group's writes are answered as unknown — the
+        // engine may or may not have taken them — and the panic goes on up this
+        // thread afterwards.
+        let landing = catch_unwind(AssertUnwindSafe(|| backend.apply_group(batches)));
         let mut state = self.lock();
         state.in_flight.clear();
         state.flushing = false;
+        let (landed, outcome, panicked) = match landing {
+            Ok((landed, outcome)) => (landed, outcome, None),
+            Err(payload) => (0, Ok(()), Some(payload)),
+        };
         let mut failure = outcome.err();
         for (index, (ticket, (keyspace, key))) in tickets.into_iter().zip(named).enumerate() {
-            let answer = if index < landed {
+            let answer = if panicked.is_some() {
+                Err(unknown(backend.name()))
+            } else if index < landed {
                 Ok(())
             } else if let Some(stopped) = failure.take() {
                 Err(stopped)
@@ -189,11 +201,15 @@ impl Pending {
             };
             state.answers.insert(ticket, answer);
         }
-        if landed < count {
+        if panicked.is_some() || landed < count {
             state.refuse_staged();
         }
         self.any.store(!state.is_empty(), Ordering::Release);
         self.settled.notify_all();
+        if let Some(payload) = panicked {
+            drop(state);
+            resume_unwind(payload);
+        }
         state
     }
 
@@ -288,6 +304,15 @@ fn record(ops: &mut Ops, batch: &WriteBatch) {
         ops.entry(op.keyspace())
             .or_default()
             .insert(op.key().as_slice().to_vec(), value);
+    }
+}
+
+/// The answer for a commit whose group write panicked: it may have landed.
+fn unknown(backend: &'static str) -> Error {
+    Error::Backend {
+        backend,
+        reason: "a group write panicked, so whether it landed is unknown".to_owned(),
+        source: None,
     }
 }
 
