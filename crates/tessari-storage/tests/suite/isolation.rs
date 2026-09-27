@@ -352,6 +352,57 @@ fn concurrent_writers_to_different_records_all_succeed() {
 }
 
 #[test]
+fn writers_committing_different_records_are_never_refused() {
+    // The test above retries a refusal and so cannot see one. This one commits
+    // once per record and treats any refusal as the failure it is: nothing two
+    // writers touch here is shared, so a `CommitContention` would mean a commit
+    // was dropped for having lost a race it had no business entering.
+    //
+    // Sized for the regime the refusal lived in: sixteen writers committing two
+    // hundred records each, where racing for the store-wide version refused
+    // dozens of commits per run before writers queued for it instead.
+    const BUSY_WRITERS: u32 = 16;
+    const COMMITS_EACH: u32 = 200;
+    let store = store();
+    let refused = AtomicU32::new(0);
+
+    thread::scope(|scope| {
+        for writer in 0..BUSY_WRITERS {
+            let store = store.clone();
+            let refused = &refused;
+            scope.spawn(move || {
+                for n in 0..COMMITS_EACH {
+                    let mut txn = store.begin().unwrap();
+                    txn.put(at(&format!("w{writer}-{n}")), n.to_string().into_bytes());
+                    match txn.commit() {
+                        Ok(_) => {}
+                        Err(Error::CommitContention { .. }) => {
+                            refused.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(other) => panic!("unexpected error: {other}"),
+                    }
+                }
+            });
+        }
+    });
+
+    assert_eq!(
+        refused.load(Ordering::Relaxed),
+        0,
+        "commits of different records were refused for contention"
+    );
+    for writer in 0..BUSY_WRITERS {
+        for n in 0..COMMITS_EACH {
+            assert_eq!(
+                read(&store, &format!("w{writer}-{n}")),
+                Some(n.to_string().into_bytes()),
+                "writer {writer} lost record {n}"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_reader_holding_a_snapshot_is_unaffected_by_concurrent_commits() {
     for run in 0..CONCURRENCY_RUNS {
         let store = store();

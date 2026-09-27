@@ -245,6 +245,9 @@ pub struct Store {
     /// `Instant`s, which have no meaning outside the process that took them.
     /// See `crate::tailmarks` for why a follower's copy has no age without it.
     tailmarks: Arc<crate::tailmarks::TailMarks>,
+    /// The turn every writer of a log record in this process takes, shared by
+    /// every handle — see `crate::gate` for why writers queue rather than race.
+    writing: Arc<crate::gate::WriteGate>,
 }
 
 impl Store {
@@ -296,6 +299,7 @@ impl Store {
             leading: Arc::new(std::sync::Mutex::new(None)),
             lines: Arc::new(crate::lines::Lines::default()),
             tailmarks: Arc::new(crate::tailmarks::TailMarks::default()),
+            writing: Arc::new(crate::gate::WriteGate::default()),
         };
         // Last, because it reads the catalog: the format is settled and the
         // identity exists by the time this asks which node it is.
@@ -1770,6 +1774,9 @@ impl Store {
 
     /// Apply one record into `home`, whatever named it.
     fn apply_at(&self, log: LogId, at: Sequence, record: &LogRecord) -> Result<()> {
+        // From the tail read to the apply, because the version this allocates is
+        // the one a local commit allocates too (`crate::gate`).
+        let _turn = self.writing.hold();
         let applied = self.committed_tail(log)?;
         if at.get() <= applied.get() {
             self.refuse_a_divergence(log, at, record.epoch())?;
@@ -1985,6 +1992,11 @@ impl Store {
     /// The backend, for the transaction's read and commit paths.
     pub(crate) fn backend(&self) -> &Arc<dyn KvBackend> {
         &self.backend
+    }
+
+    /// The turn a writer of a log record takes (`crate::gate`).
+    pub(crate) fn write_gate(&self) -> &crate::gate::WriteGate {
+        &self.writing
     }
 }
 

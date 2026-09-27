@@ -33,6 +33,7 @@ mod expiry;
 mod failover;
 mod feed;
 mod followers;
+mod gate;
 mod graph;
 mod index;
 mod lapse;

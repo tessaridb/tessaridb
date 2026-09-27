@@ -45,8 +45,8 @@ impl Drop for Transaction<'_> {
 /// meant to break. Spreading them across a widening window is what makes the
 /// second attempt likely to succeed instead of merely later.
 ///
-/// Nothing is held across this wait. The commit takes no lock — it races on the
-/// substrate's conditional apply — so a waiting writer blocks only itself.
+/// Nothing is held across this wait: the writer gives its turn at the write gate
+/// back before it sleeps (`crate::gate`), so a waiting writer blocks only itself.
 fn back_off(attempt: u32) {
     std::thread::sleep(waiting_for(attempt, jitter()));
 }
@@ -503,6 +503,11 @@ impl Transaction<'_> {
                 });
             }
 
+            // Held from reading the tail to applying the batch, so no other
+            // writer in this process can move what this attempt builds on
+            // (`crate::gate`). Dropped at the end of the attempt, the wait
+            // before a retry included.
+            let turn = self.store.write_gate().hold();
             let tail = self.store.committed_tail(log)?;
             self.check_for_conflicts()?;
             // Beside the conflict check, inside the loop, and for the same
@@ -615,6 +620,7 @@ impl Transaction<'_> {
                     // per loser per attempt, and a retry that then succeeds is
                     // the design working rather than an event.
                     log::debug!("commit lost attempt {attempt}, retrying");
+                    drop(turn);
                     back_off(attempt);
                     continue;
                 }

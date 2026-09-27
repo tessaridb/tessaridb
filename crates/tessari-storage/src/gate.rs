@@ -1,0 +1,47 @@
+//! One writer at a time inside this process, by queueing rather than racing.
+//!
+//! # Why writers queue here
+//!
+//! Every write that files a log record — a local commit and a replica's apply
+//! alike — moves the store-wide version counter by one, and asserts the value it
+//! read as a precondition of its batch. Two writers in this process that read the
+//! same counter therefore cannot both land: one wins and the other's attempt is
+//! thrown away with everything derived for it, then retried after a wait. A
+//! commit that lost its bounded number of attempts was **refused** — for writes
+//! that shared no record with anything — and measured on 2026-09-27 that was 258
+//! of 3 200 commits with sixteen writers on disk, beginning at four.
+//!
+//! Racing was never buying concurrency. The counter admits one writer at a time
+//! whatever happens, so the losers' work was pure waste and their waits were pure
+//! latency. Holding this gate from reading the counter to applying the batch
+//! makes the order explicit: a writer waits its turn once, and a turn it is given
+//! cannot be lost to another writer in this process.
+//!
+//! # What still guards the counter
+//!
+//! The batch's own preconditions, unchanged. The engine admits one writing
+//! process per store, so inside it this gate is sufficient — and the assertions
+//! stay, because a guarantee that rests on every caller remembering a lock is
+//! only as strong as the next caller.
+//!
+//! # A poisoned gate is still a gate
+//!
+//! It guards no data of its own. A writer that panicked while holding it left
+//! nothing half-written here — its batch either reached the engine whole or did
+//! not reach it — so the next writer takes the gate as it finds it rather than
+//! refusing every write for the rest of the process's life.
+
+use std::sync::{Mutex, MutexGuard, PoisonError};
+
+/// The turn every in-process writer of log records takes.
+#[derive(Debug, Default)]
+pub(crate) struct WriteGate {
+    turn: Mutex<()>,
+}
+
+impl WriteGate {
+    /// Wait for this writer's turn, holding it until the guard is dropped.
+    pub(crate) fn hold(&self) -> MutexGuard<'_, ()> {
+        self.turn.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
