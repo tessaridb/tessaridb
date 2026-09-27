@@ -186,6 +186,11 @@ fn a_condition_naming_both_columns_examines_one_record_instead_of_every_sharing_
     let (store, counting) = counted();
     let mut session = ready(&store);
     session.run(COMPOSITE).unwrap();
+    // Once uncounted: the index definition dropped the catalog rows held between
+    // statements, so the first read after it would pay for re-reading them and
+    // the second would not — and the subtraction below cancels the catalog only
+    // when both statements pay the same for it.
+    session.run(LEADING).unwrap();
 
     let leading = entries(&mut session, &counting, LEADING);
     let tuple = entries(&mut session, &counting, TUPLE);

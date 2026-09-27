@@ -197,6 +197,9 @@ impl Store {
         let batch = crate::lapse::maintain(self, record, batch)?;
         let batch = crate::bounded::maintain(self, record, batch, version)?;
         let batch = crate::topic::maintain(self, record, batch)?;
+        if crate::catalog::CatalogRows::changes(record) {
+            self.catalog_rows.changed(version);
+        }
         self.backend.apply(batch)?;
         Ok(())
     }

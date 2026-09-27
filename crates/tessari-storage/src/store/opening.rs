@@ -62,6 +62,7 @@ impl Store {
             series: Arc::new(crate::series::SeriesRegistry::default()),
             shards: Arc::new(crate::shards::ShardRegistry::default()),
             decoded_tables: Arc::new(crate::catalog::DecodedTables::default()),
+            catalog_rows: Arc::new(crate::catalog::CatalogRows::default()),
             served,
             expiring,
             public_appends: Arc::new(crate::topic::PublicRates::default()),
@@ -79,6 +80,9 @@ impl Store {
         // Last, because it reads the catalog: the format is settled and the
         // identity exists by the time this asks which node it is.
         store.reconcile_roles()?;
+        // Rows are held only for readers at or above this: history before the
+        // open is not known to have left them unchanged.
+        store.catalog_rows.changed(store.committed_version()?);
         Ok(store)
     }
 

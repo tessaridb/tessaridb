@@ -631,6 +631,11 @@ impl Transaction<'_> {
             if matches!(settle, Settle::Discard) {
                 return Ok(commit_at);
             }
+            // Before the batch can be read: a reader at this version must not be
+            // answered from name or table rows held from before it.
+            if crate::catalog::CatalogRows::changes(carried) {
+                self.store.catalog_rows().changed(commit_version);
+            }
 
             // Staged rather than applied when the backend shares a sync
             // between writes, and the turn handed on before the wait: the next

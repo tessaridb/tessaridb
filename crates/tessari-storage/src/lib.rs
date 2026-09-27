@@ -26,6 +26,8 @@ mod audit;
 mod bounded;
 mod cardinality;
 mod catalog;
+#[cfg(test)]
+mod catalog_rows_tests;
 mod collections;
 mod covering;
 mod error;

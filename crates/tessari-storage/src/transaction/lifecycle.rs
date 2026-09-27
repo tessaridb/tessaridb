@@ -107,6 +107,11 @@ impl<'a> Transaction<'a> {
         )
     }
 
+    /// Whether this transaction has written the record itself.
+    pub(crate) fn has_written(&self, address: &RecordAddress) -> bool {
+        self.writes.contains_key(address)
+    }
+
     /// [`Self::get`] without the retention floor.
     ///
     /// Reserved for the catalog, which must be able to read the declaration that

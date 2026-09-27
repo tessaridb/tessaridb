@@ -120,6 +120,12 @@ impl WriteGate {
         self.pending.staged()
     }
 
+    /// Whether this thread holds the turn, and so may read batches that have
+    /// not landed.
+    pub(crate) fn holding(&self) -> bool {
+        self.held_here()
+    }
+
     /// Whether this thread holds the turn.
     fn held_here(&self) -> bool {
         HOLDING.with(Cell::get) == self.address()

@@ -37,6 +37,7 @@ mod graph;
 mod leadership;
 mod position;
 mod replica;
+mod rows;
 mod shard;
 mod space;
 pub(crate) mod system;
@@ -74,6 +75,7 @@ pub use leadership::governing;
 pub use replica::{
     ReplicaDefinition, another_node_may_write, names_a_peer, the_row_a_greeting_binds,
 };
+pub(crate) use rows::CatalogRows;
 pub use shard::{ShardMap, ShardSpan};
 pub use space::{Eviction, SpaceDeclaration, SpaceLimit};
 pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
@@ -525,10 +527,11 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// Returns an error when the stored definition cannot be read.
     pub fn table(&self, id: TableId) -> Result<Option<TableDefinition>> {
         // The row is read here, at this transaction's snapshot, as every catalog
-        // read is; only decoding it is shared (`decoded`).
+        // read is — held between statements when the snapshot allows (`rows`) —
+        // and decoding it is shared (`decoded`).
         let address: RecordAddress =
             system::address(system::TABLES, RecordId::Int(id_key(id.get())));
-        let Some(stored) = self.transaction.get(&address)? else {
+        let Some(stored) = self.row(&address)? else {
             return Ok(None);
         };
         self.transaction
@@ -867,10 +870,35 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
 
     fn resolve(&self, qualified: &str) -> Result<Option<u32>> {
         let address = system::address(system::NAMES, RecordId::from(qualified));
-        let Some(bytes) = self.transaction.get(&address)? else {
+        let Some(bytes) = self.row(&address)? else {
             return Ok(None);
         };
         definition::id_of(&decode_payload(&bytes)?, "name", "id").map(Some)
+    }
+
+    /// A name or table row at this transaction's snapshot, from the rows held
+    /// between statements when the snapshot allows it (`rows`).
+    fn row(&self, address: &RecordAddress) -> Result<Option<Vec<u8>>> {
+        if !CatalogRows::holds(address) || self.transaction.has_written(address) {
+            return self.transaction.get(address);
+        }
+        let store = self.transaction.store();
+        let fill = match store
+            .catalog_rows()
+            .lookup(address, self.transaction.snapshot())
+        {
+            rows::Lookup::Held(row) => return Ok(row),
+            rows::Lookup::Missing(fill) => fill,
+        };
+        let row = self.transaction.get(address)?;
+        if let Some(generation) = fill {
+            if !store.write_gate().holding() {
+                store
+                    .catalog_rows()
+                    .fill(address.clone(), generation, row.clone());
+            }
+        }
+        Ok(row)
     }
 
     /// The store's vault root record, when one has been created.

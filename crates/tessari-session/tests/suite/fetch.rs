@@ -444,13 +444,14 @@ fn a_fetch_costs_one_ask_however_many_references_it_follows() {
     let fetched = counting.asks.load(AtomicOrdering::Relaxed);
     let fetched_rows = counting.rows.load(AtomicOrdering::Relaxed);
 
-    // One ask for the five records, plus the catalog reads that decide which of
-    // the *other* table's fields may be shown — a question a read without the
-    // clause never has to ask. The number that would fail this is `AUTHORS`:
-    // one ask per distinct reference, which is what it used to be.
+    // One ask for the five records. The catalog rows that decide which of the
+    // *other* table's fields may be shown are already held from the writes that
+    // filled it (`catalog::rows`), so they cost nothing here. The number that
+    // would fail this is `AUTHORS`: one ask per distinct reference, which is what
+    // it used to be.
     assert_eq!(
         fetched.saturating_sub(plain),
-        3,
+        1,
         "plain {plain} asks, fetched {fetched}, for {AUTHORS} distinct \
          references across {POSTS} posts"
     );

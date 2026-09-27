@@ -184,6 +184,8 @@ pub struct Store {
     shards: Arc<crate::shards::ShardRegistry>,
     /// Table definitions already decoded, keyed by their stored bytes.
     decoded_tables: Arc<crate::catalog::DecodedTables>,
+    /// Name and table rows valid for readers at or above the last change to them.
+    catalog_rows: Arc<crate::catalog::CatalogRows>,
     served: Arc<crate::served::Served>,
     /// Whether any record version in this store has ever carried an expiry
     /// (G035). See [`crate::lapse`] for why the commit path asks.

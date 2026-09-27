@@ -91,6 +91,11 @@ impl Store {
         &self.decoded_tables
     }
 
+    /// Name and table rows held between statements (`crate::catalog::rows`).
+    pub(crate) fn catalog_rows(&self) -> &crate::catalog::CatalogRows {
+        &self.catalog_rows
+    }
+
     /// Which tables are split, and where.
     pub(crate) fn shards(&self) -> &Arc<crate::shards::ShardRegistry> {
         &self.shards
