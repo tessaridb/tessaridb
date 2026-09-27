@@ -32,7 +32,9 @@ enum Settle {
 
 impl Drop for Transaction<'_> {
     fn drop(&mut self) {
-        self.store.snapshot_registry().release(self.snapshot);
+        self.store
+            .snapshot_registry()
+            .release(self.snapshot, self.registered);
     }
 }
 

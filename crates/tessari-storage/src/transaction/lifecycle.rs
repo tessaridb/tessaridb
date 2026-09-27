@@ -23,10 +23,11 @@ impl<'a> Transaction<'a> {
     pub(crate) fn new(store: &'a Store, snapshot: Sequence) -> Self {
         // Registered here rather than by the caller, so that a snapshot cannot
         // be read from without the store knowing it is being read from.
-        store.snapshot_registry().register(snapshot);
+        let registered = store.snapshot_registry().register(snapshot);
         Self {
             store,
             snapshot,
+            registered,
             writes: BTreeMap::new(),
             expiring: BTreeMap::new(),
             reading_at: std::cell::Cell::new(None),
