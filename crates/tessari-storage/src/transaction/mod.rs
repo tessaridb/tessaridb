@@ -62,6 +62,8 @@ use crate::store::Store;
 pub struct Transaction<'a> {
     store: &'a Store,
     snapshot: Sequence,
+    /// Where the snapshot was registered, so that it is released there.
+    registered: crate::snapshots::Slot,
     writes: BTreeMap<RecordAddress, RecordValue>,
     /// The instant each buffered write stops being answered at, for the writes
     /// that carry one (G035). Beside `writes` rather than inside it because a

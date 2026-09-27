@@ -215,6 +215,17 @@ pub enum Error {
         nanos: u32,
     },
 
+    /// A payload nests containers deeper than any value this store accepts.
+    ///
+    /// Refused rather than followed: each level is a stack frame, and a payload
+    /// can arrive off the wire before anybody has signed in, so following one
+    /// without bound would let a single frame end the process.
+    #[error("stored value nests containers more than {limit} deep")]
+    NestedTooDeep {
+        /// The deepest nesting a value may have.
+        limit: usize,
+    },
+
     /// A node identity carries a revision, a role or a membership this build
     /// does not know.
     ///
@@ -289,6 +300,7 @@ impl Error {
             | Self::StampOutOfOrder { .. }
             | Self::InvalidDecimal { .. }
             | Self::InvalidSubSecond { .. }
+            | Self::NestedTooDeep { .. }
             | Self::InvalidNodeEndpoint
             | Self::NoSuchCell { .. }
             | Self::NotABox { .. } => ErrorCategory::Corruption,

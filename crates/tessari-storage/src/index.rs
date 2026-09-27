@@ -74,7 +74,7 @@ use tessari_encoding::{
     IndexAddress, IndexTarget, IndexValues, KeyKind, LogRecord, Mutation, NoPayload, Posting,
     PostingKey, RecordValue, SearchStatistics, SearchStatisticsKey, SearchTermKey,
     SecondaryIndexKey, SpatialExtent, SpatialIndexKey, StoreKey, StoreValue, TermStatistics,
-    UniqueIndexKey, decode_payload,
+    UniqueIndexKey, decode_payload, encode_payload,
 };
 use tessari_geo::{Bounds, Cell, Shape};
 use tessari_kv::{Key, KeyRange, Keyspace, ScanDirection, ScanRequest, WriteBatch, WriteOp};
@@ -242,8 +242,12 @@ pub(crate) fn maintain(
             mutation.id.clone(),
         );
         let previous = view.get_held(&address)?;
+        let unchanged = Unchanged::of(previous.as_deref(), mutation)?;
 
         for definition in &definitions {
+            if unchanged.reads_the_same(definition) {
+                continue;
+            }
             batch = apply_one(
                 store,
                 batch,
@@ -601,6 +605,48 @@ fn apply_one(
         }
     }
     Ok(batch)
+}
+
+/// A record's value before and after one mutation, decoded once for every index.
+///
+/// Empty unless the mutation rewrites a record that existed: an insert and a
+/// delete change every index that reads the record at all.
+struct Unchanged {
+    sides: Option<(Value, Value)>,
+}
+
+impl Unchanged {
+    fn of(previous: Option<&[u8]>, mutation: &Mutation) -> Result<Self> {
+        let sides = match (previous, mutation.value.value()) {
+            (Some(before), RecordValue::Present(after)) => {
+                Some((decode_payload(before)?, decode_payload(after)?))
+            }
+            _ => None,
+        };
+        Ok(Self { sides })
+    }
+
+    /// Whether every field `definition` reads holds exactly what it held, so its
+    /// entries — and a full-text index's statistics — are what they already are.
+    ///
+    /// Compared as encoded bytes, not as values: `1` and `1.0` are equal values
+    /// written differently, and an entry built from one is not the entry of the
+    /// other. A vector index is never skipped, because re-inserting a node moves
+    /// the graph's edges and an approximate read over it can answer differently.
+    fn reads_the_same(&self, definition: &IndexDefinition) -> bool {
+        let Some((before, after)) = &self.sides else {
+            return false;
+        };
+        definition.vector.is_none()
+            && definition.fields.iter().all(|path| {
+                let (was, now) = (path.reach(before), path.reach(after));
+                was.len() == now.len()
+                    && was
+                        .iter()
+                        .zip(&now)
+                        .all(|(was, now)| encode_payload(was) == encode_payload(now))
+            })
+    }
 }
 
 fn insert(

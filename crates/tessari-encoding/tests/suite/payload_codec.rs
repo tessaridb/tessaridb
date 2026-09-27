@@ -12,7 +12,9 @@ use std::ops::Bound;
 
 use rust_decimal::Decimal;
 use tessari_encoding::{Error, decode_payload, encode_payload};
-use tessari_types::{Datetime, Duration, Number, RecordId, RecordRef, TableId, Value, ValueRange};
+use tessari_types::{
+    Datetime, Duration, MAX_NESTING, Number, RecordId, RecordRef, TableId, Value, ValueRange,
+};
 
 fn corpus() -> Vec<Value> {
     vec![
@@ -213,5 +215,46 @@ fn a_sub_second_remainder_of_a_whole_second_is_refused() {
         Error::InvalidSubSecond {
             nanos: 1_000_000_000
         }
+    ));
+}
+
+fn arrays(depth: usize) -> Value {
+    (0..depth).fold(Value::Null, |inner, _| Value::Array(vec![inner]))
+}
+
+#[test]
+fn a_value_at_the_nesting_ceiling_round_trips_and_one_past_it_is_refused() {
+    let deepest = arrays(MAX_NESTING);
+    assert_eq!(
+        decode_payload(encode_payload(&deepest).as_slice()).unwrap(),
+        deepest
+    );
+    // Empty at the bottom, so the refusal is on entering the container rather
+    // than on following something inside it.
+    let past = (0..MAX_NESTING).fold(Value::Array(Vec::new()), |inner, _| {
+        Value::Array(vec![inner])
+    });
+    assert!(matches!(
+        decode_payload(encode_payload(&past).as_slice()),
+        Err(Error::NestedTooDeep { limit: MAX_NESTING })
+    ));
+}
+
+#[test]
+fn a_payload_nested_far_past_the_stack_is_refused_rather_than_followed() {
+    // What a client can put in one wire frame before signing in: one array
+    // inside another, a hundred thousand times over. Built as bytes, because
+    // building it as a value would be the recursion under test.
+    let one = encode_payload(&arrays(1));
+    let leaf = encode_payload(&Value::Null);
+    let (one, leaf) = (one.as_slice(), leaf.as_slice());
+    let prefix = one
+        .get(..one.len().checked_sub(leaf.len()).unwrap())
+        .unwrap();
+    let mut hostile = prefix.repeat(100_000);
+    hostile.extend_from_slice(leaf);
+    assert!(matches!(
+        decode_payload(&hostile),
+        Err(Error::NestedTooDeep { limit: MAX_NESTING })
     ));
 }

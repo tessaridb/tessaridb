@@ -12,6 +12,74 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.10.0-beta — 2026-09-28
+
+**Faster where it was measured to be slow.** Every change below answers a cost a
+profile named, was measured before and after on the same data at the same
+durability, and returns exactly what the path it replaced returned. The language
+and the wire format are unchanged; see the last section for the one thing a store
+written by 0.9 may now refuse.
+
+### Performance
+
+- **Concurrent commits share one sync.** With `power-loss-safe` durability every
+  commit used to pay its own device flush while holding the store's single write
+  turn, so sixteen writers committed no faster than one. A commit now checks and
+  builds its batch under the turn, queues it and lets the next writer in; the
+  first waiting commit lands the whole queue in one write and one sync. Measured
+  on disk with sixteen writers: about 185 → 1 500 commits a second, per-commit
+  p99 255 → 18 ms; one writer is unchanged. Nothing in a group is readable before
+  it is synced, and every commit is still checked against the store as the
+  commits ahead of it leave it.
+- **Writers inside one process queue instead of racing.** Commits that touched
+  different records were refused after eight lost races for the store-wide
+  version; they now wait their turn.
+- **The catalog is read once, not per statement.** Namespace, database and table
+  rows are held between statements for every reader at or above the last change
+  to them, and table definitions are decoded once per stored form: a read by id
+  went from 5.0 to 3.3 µs at p50, a create from 16.7 to 12.7 µs.
+- **An update leaves alone every index whose fields it did not change**, the
+  full-text analyzer included.
+- **Many readers no longer queue on one lock.** The registry of live snapshots is
+  split per thread: sixteen readers on disk went from about 286 000 to 415 000
+  reads a second. Two to four disk readers are 10–15 % slower, because their
+  waits moved into the storage engine's own per-iterator lock; that trade is kept
+  deliberately and is recorded.
+- **Vector distances are computed in one pass** over both vectors with nothing
+  allocated: an exact nearest-neighbour scan is about 16 % faster, with answers
+  identical to the bit.
+
+### Correctness and safety
+
+- **On macOS a synced commit now reaches the medium.** The storage engine was
+  built without full-flush support, so a `power-loss-safe` commit on a Mac could
+  sit in the drive's cache. It is now built with it, and the build refuses a Mac
+  target without it. A synced commit on a Mac therefore costs milliseconds, as it
+  should; Linux is unaffected.
+- **A leader's write fence is judged again once a commit holds its turn**, so a
+  commit admitted with little lease left can no longer land after the fence shut.
+- **Values nest at most 64 containers and statements at most 64 expression
+  levels.** One frame of deeply nested arrays could end the node before signing
+  in; it is now refused by name, on decode and on write alike.
+- **An HTTP request body larger than 16 MiB is refused with `413`**, before it is
+  read when its length is declared — bodies were read whole before any
+  credential was checked.
+- **A panic ends the work that met it, not the node**: one connection, one
+  request or one background round. Background work restarts after a second, a
+  consumer whose thread panicked is no longer reported as running, and a panic
+  while landing a group of commits answers that group "outcome unknown" instead
+  of stopping every later commit.
+
+### Compatibility
+
+- The on-disk and wire formats are unchanged, and a store written by 0.9 opens
+  under this version. The one exception is a stored value nested deeper than 64
+  containers, which 0.9 accepted and this version refuses to read; a store
+  holding one must be re-ingested with the value flattened.
+
+**1420 conformance cases** define the language and run in the build, unchanged
+from 0.9.1-beta.
+
 ## 0.9.1-beta — 2026-09-26
 
 **The README says what the store is for now.** No engine change: the language, the

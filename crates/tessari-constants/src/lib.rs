@@ -27,6 +27,33 @@
 /// contended the store is — see that constant.
 pub const MAX_COMMIT_ATTEMPTS: u32 = 8;
 
+/// How many commits one group write may carry.
+///
+/// Unit: commits, counted as the flusher EXAMINES them and checked before it
+/// takes the next one — never as it emits them — so a full group never takes one
+/// more than this.
+///
+/// Concurrent commits share one engine write and one device sync (G040 SG4).
+/// The group takes whatever is staged when its flush starts and never waits for
+/// more, so under a writer that keeps up it is one commit and the bound is never
+/// met; it exists for the backlog, where an unbounded group would make one
+/// write — and every writer waiting on it — as long as the queue.
+///
+/// Sixty-four is provisional until measured on the `concurrent` workload.
+pub const MAX_GROUP_COMMITS: usize = 64;
+
+/// How many bytes of keys and values one group write may carry.
+///
+/// Unit: bytes, checked before the next commit is taken, so a group exceeds it
+/// by at most the one commit that crossed it.
+///
+/// Beside [`MAX_GROUP_COMMITS`] because either bound alone leaves the other
+/// unbounded: sixty-four commits of large values would make a group of hundreds
+/// of megabytes held in memory before it is written.
+///
+/// Four mebibytes is provisional in the same sense.
+pub const MAX_GROUP_BYTES: usize = 4 * 1024 * 1024;
+
 /// How long a commit waits before re-racing for the committed tail, doubling
 /// each time it loses.
 ///
@@ -311,6 +338,19 @@ pub const SOCKET_MAX_FRAME_BYTES: usize = 64 * 1024;
 /// obviously safe rather than measured, and the refusal count is what a
 /// deployment tunes it from.
 pub const MAX_CONNECTIONS: usize = 400;
+
+/// The largest request body the HTTP surface reads.
+///
+/// A body is read before its credential is checked, because the credential
+/// decides what the body may do — so the read is the one cost an anonymous
+/// caller controls, and a read with no ceiling hands them the node's memory.
+/// [`MAX_CONNECTIONS`] bounds how many requests run at once, not how large one
+/// is.
+///
+/// Sixteen mebibytes, the same as the wire protocol's frame: no client can
+/// send over HTTP a single write the protocol would refuse over the wire. A
+/// file larger than this is written in parts, `PUT … START <offset>`.
+pub const HTTP_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 
 /// How long a freshly accepted connection has to send its greeting.
 ///

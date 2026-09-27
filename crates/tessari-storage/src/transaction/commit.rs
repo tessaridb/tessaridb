@@ -32,7 +32,9 @@ enum Settle {
 
 impl Drop for Transaction<'_> {
     fn drop(&mut self) {
-        self.store.snapshot_registry().release(self.snapshot);
+        self.store
+            .snapshot_registry()
+            .release(self.snapshot, self.registered);
     }
 }
 
@@ -45,8 +47,8 @@ impl Drop for Transaction<'_> {
 /// meant to break. Spreading them across a widening window is what makes the
 /// second attempt likely to succeed instead of merely later.
 ///
-/// Nothing is held across this wait. The commit takes no lock — it races on the
-/// substrate's conditional apply — so a waiting writer blocks only itself.
+/// Nothing is held across this wait: the writer gives its turn at the write gate
+/// back before it sleeps (`crate::gate`), so a waiting writer blocks only itself.
 fn back_off(attempt: u32) {
     std::thread::sleep(waiting_for(attempt, jitter()));
 }
@@ -337,6 +339,37 @@ impl Transaction<'_> {
         Ok(on_the_store)
     }
 
+    /// The fences that admitted this commit, judged again once it holds its turn.
+    ///
+    /// Admission runs before the gate and the wait for the gate is unbounded — a
+    /// queue of writers each paying a device sync, or one sync that stalls — while
+    /// the fence's guard covers only the drift between two clocks. Judged once, a
+    /// commit admitted with a millisecond left would land after the fence shut,
+    /// when another node may already have been granted the leadership. Only the
+    /// in-memory fences are asked again: they are what time changes.
+    fn refuse_if_fenced_since(
+        &self,
+        store_line: bool,
+        placed: &BTreeSet<Reach>,
+        ranges: &BTreeSet<Reach>,
+    ) -> Result<()> {
+        if store_line {
+            if let Some(for_the_last) = self.store.lease_spent() {
+                return Err(Error::LeaseSpent { for_the_last });
+            }
+        }
+        for range in ranges {
+            let line = crate::catalog::governing(placed, *range);
+            if line == Reach::Store {
+                continue;
+            }
+            if let crate::lines::Standing::Spent(for_the_last) = self.store.line_standing(line) {
+                return Err(Error::LeaseSpent { for_the_last });
+            }
+        }
+        Ok(())
+    }
+
     fn ranges_written(&self, placement: &Placement) -> Result<BTreeSet<Reach>> {
         self.writes
             .iter()
@@ -435,7 +468,8 @@ impl Transaction<'_> {
         // does, a spent store lease refuses the ranges the store line governs
         // and not the ones a live line of their own does, so the question waits
         // below until the ranges are known.
-        if !self.store.holds_lines() {
+        let held_lines = self.store.holds_lines();
+        if !held_lines {
             if let Some(for_the_last) = self.store.lease_spent() {
                 return Err(Error::LeaseSpent { for_the_last });
             }
@@ -481,6 +515,7 @@ impl Transaction<'_> {
                 return Err(Error::NoLeadershipYet);
             }
         }
+        let store_line = !held_lines || !on_the_store.is_empty();
         let mut record = self.log_record(identity.id, &placement)?;
         // The log this commit belongs to, derived from the record before the
         // loop because it cannot change between attempts: it is a property of
@@ -503,6 +538,12 @@ impl Transaction<'_> {
                 });
             }
 
+            // Held from reading the tail to applying the batch, so no other
+            // writer in this process can move what this attempt builds on
+            // (`crate::gate`). Dropped at the end of the attempt, the wait
+            // before a retry included.
+            let turn = self.store.write_gate().hold();
+            self.refuse_if_fenced_since(store_line, &placed, &ranges)?;
             let tail = self.store.committed_tail(log)?;
             self.check_for_conflicts()?;
             // Beside the conflict check, inside the loop, and for the same
@@ -592,8 +633,29 @@ impl Transaction<'_> {
             if matches!(settle, Settle::Discard) {
                 return Ok(commit_at);
             }
+            // Before the batch can be read: a reader at this version must not be
+            // answered from name or table rows held from before it.
+            if crate::catalog::CatalogRows::changes(carried) {
+                self.store.catalog_rows().changed(commit_version);
+            }
 
-            match self.store.backend().apply(batch) {
+            // Staged rather than applied when the backend shares a sync
+            // between writes, and the turn handed on before the wait: the next
+            // writer derives on this batch while it is on its way to the
+            // device, and whoever finds no landing running lands every staged
+            // batch in one write (`crate::gate`). A backend with no sync to
+            // share is applied under the turn, as grouping would only cost it.
+            let backend = self.store.backend().as_ref();
+            let landed = if backend.groups_writes() {
+                let ticket = self.store.write_gate().stage(batch);
+                drop(turn);
+                self.store.write_gate().land(ticket, backend)
+            } else {
+                let applied = backend.apply(batch);
+                drop(turn);
+                applied
+            };
+            match landed {
                 Ok(()) => {
                     // Counted HERE and not where it was decided. The decision is
                     // re-taken on every attempt, so an attempt that loses its
@@ -605,7 +667,8 @@ impl Transaction<'_> {
                     }
                     return Ok(commit_at);
                 }
-                // The position moved between reading it and applying, so the
+                // The position moved between reading it and applying — or the
+                // batch was derived on a staged one that did not land — so the
                 // conflict check above was made against a stale state and the
                 // whole attempt is repeated rather than patched up — after
                 // waiting, so that this attempt does not re-race into the same

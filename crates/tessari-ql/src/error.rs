@@ -783,6 +783,18 @@ pub enum Error {
         span: Span,
     },
 
+    /// A statement nested deeper than the reader will follow.
+    ///
+    /// The reader is recursive, so a statement nested without bound would end
+    /// the process by exhausting its stack. Refused where it is written.
+    #[error("the statement nests more than {limit} expressions deep (at {span})")]
+    NestedTooDeep {
+        /// How deep the reader follows.
+        limit: usize,
+        /// Where the level past it begins.
+        span: Span,
+    },
+
     /// A script names its answer twice.
     ///
     /// `RETURN` says which value the script answers with, so two of them make
@@ -856,6 +868,7 @@ impl Error {
             | Self::DepthBelowOne { span }
             | Self::VectorWidthBelowOne { span }
             | Self::VectorWidthAboveTheCeiling { span, .. }
+            | Self::NestedTooDeep { span, .. }
             | Self::EffortBelowOne { span } => *span,
         }
     }

@@ -756,6 +756,20 @@ impl Identity {
     }
 }
 
+/// What `DEFINE USER` says, carried to [`Session::define_user`] as one thing.
+pub(crate) struct UserDeclaration<'a> {
+    /// The name signed in with.
+    pub(crate) name: &'a Name,
+    /// How far the user reaches, or the store when absent.
+    pub(crate) scope: Option<&'a ReachRef>,
+    /// What the user may do.
+    pub(crate) role: &'a UserGrant,
+    /// The password, as written.
+    pub(crate) password: &'a Password,
+    /// Whether re-defining an existing name is accepted.
+    pub(crate) if_not_exists: bool,
+}
+
 impl Session<'_> {
     /// Declare a user.
     ///
@@ -764,17 +778,19 @@ impl Session<'_> {
     /// Argon2 hash. The tenancy is resolved to ids the same way every other
     /// reference is, so a user cannot be declared against a database that does
     /// not exist.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn define_user(
         &self,
         transaction: &mut Transaction<'_>,
-        name: &Name,
-        scope: Option<&ReachRef>,
-        role: &UserGrant,
-        password: &Password,
-        if_not_exists: bool,
+        declaration: UserDeclaration<'_>,
         span: Span,
     ) -> Result<Outcome> {
+        let UserDeclaration {
+            name,
+            scope,
+            role,
+            password,
+            if_not_exists,
+        } = declaration;
         let declared = Catalog::new(transaction)
             .users()?
             .into_iter()

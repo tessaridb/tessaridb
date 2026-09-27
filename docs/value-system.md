@@ -176,6 +176,20 @@ the number one compare equal there and could not possibly encode to the same
 bytes here. Making the payload bytes sort as well would be a second ordering
 authority disagreeing with the first.
 
+### A value nests at most 64 containers deep
+
+An array, an object, a set, a range and a geometry collection each count as one
+level; `[[1]]` is two. A write that would store a value deeper than 64 is refused,
+and so is a payload that decodes past it — off the wire, from a parameter, or from
+disk. Both limits are the same number, so no stored value is one the store cannot
+read back.
+
+The reason is the stack, not taste: every reader of a value is recursive, and a
+value nested without bound ends the process rather than failing a statement. A
+statement is held to 64 expression levels for the same reason, so a literal
+reaches one level short of the limit and a value that deep is sent as a
+parameter.
+
 ## 5a. Reaching inside a value
 
 A payload nests without limit: an object holds objects and arrays, and those hold

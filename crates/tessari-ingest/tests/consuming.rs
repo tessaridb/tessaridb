@@ -303,6 +303,43 @@ fn stop_halts_this_consumer_and_says_why() {
     );
 }
 
+/// A source that meets a defect nobody foresaw on its first poll.
+struct Panicking;
+
+impl Source for Panicking {
+    fn poll(&mut self, _patience: Duration) -> Result<Option<Message>, SourceError> {
+        panic!("a defect in the consumer's own code");
+    }
+
+    fn commit(&mut self) -> Result<(), SourceError> {
+        Ok(())
+    }
+}
+
+/// Hands every consumer a [`Panicking`] source.
+struct HandingPanics;
+
+impl Broker for HandingPanics {
+    fn open(&self, _definition: &ConsumerDefinition) -> Result<Box<dyn Source>, SourceError> {
+        Ok(Box::new(Panicking))
+    }
+}
+
+#[test]
+fn a_consumer_that_panicked_is_not_reported_as_running() {
+    // A panic ends the consumer's thread and nothing else — the node keeps
+    // serving. What must not survive it is the registry entry: `INFO FOR KAFKA
+    // CONSUMER` would report a consumer no thread runs as running, for ever.
+    let store = declared("quarantine", "");
+    until(&store, Arc::new(HandingPanics), |store| {
+        store.running().progress("orders_in").is_none()
+    });
+    assert!(
+        store.running().progress("orders_in").is_none(),
+        "a consumer whose thread panicked still reports itself as running"
+    );
+}
+
 #[test]
 fn parallelism_runs_more_than_one_consumer_at_a_time() {
     // ADR-0023 names this explicitly: a parallelism setting that does nothing is

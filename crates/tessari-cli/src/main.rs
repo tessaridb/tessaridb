@@ -42,6 +42,7 @@ mod render;
 mod session;
 mod shutdown;
 mod store;
+mod supervise;
 mod table;
 
 use std::env;
@@ -54,11 +55,20 @@ use tessaridb::Db;
 use crate::arguments::{Asked, Serving, Source, credentials, parse};
 use crate::session::{Ended, Mode};
 
+// A panic ends the unit of work that met it — a connection, a request, one
+// round of a cadence — and not the node; `supervise.rs` says where that holds
+// and where it deliberately does not. All of it needs the build to unwind.
+#[cfg(panic = "abort")]
+compile_error!(
+    "tessaridb contains panics per connection and per cadence; build with panic = \"unwind\""
+);
+
 fn main() -> ExitCode {
     // Before anything that could have something to report. A second logger
     // installed by an embedding caller would already have won, and that is the
     // right outcome — this one belongs to the binary.
     drop(logging::install());
+    supervise::log_panics();
     let asked = match parse(env::args().skip(1)) {
         Ok(asked) => asked,
         Err(complaint) => {
@@ -492,7 +502,9 @@ fn serve(
     let keeping = {
         let db = std::sync::Arc::clone(&db);
         let stopping = std::sync::Arc::clone(&housekeeping);
-        std::thread::spawn(move || keep_house(&db, &stopping))
+        std::thread::spawn(move || {
+            supervise::supervised("housekeeping", &stopping, || keep_house(&db, &stopping));
+        })
     };
 
     // Its own thread rather than an arm of the scope below, so that the peer
@@ -524,7 +536,11 @@ fn serve(
             let db = std::sync::Arc::clone(&db);
             let stopping = std::sync::Arc::clone(&peering);
             let deciding = std::sync::Arc::clone(&deciding);
-            std::thread::spawn(move || greet_peers(&db, &door, &deciding, &stopping))
+            std::thread::spawn(move || {
+                supervise::supervised("the peer door", &stopping, || {
+                    greet_peers(&db, &door, &deciding, &stopping);
+                });
+            })
         };
         // A second thread, because the first one is inside `accept` for as long
         // as no peer calls: a node that only answers learns nothing about a
@@ -550,14 +566,16 @@ fn serve(
             let db = std::sync::Arc::clone(&db);
             let stopping = std::sync::Arc::clone(&peering);
             std::thread::spawn(move || {
-                dial_peers(
-                    &db,
-                    &dialling,
-                    &authority,
-                    &dialling_seeds,
-                    &routing,
-                    &stopping,
-                );
+                supervise::supervised("the greeting round", &stopping, || {
+                    dial_peers(
+                        &db,
+                        &dialling,
+                        &authority,
+                        &dialling_seeds,
+                        &routing,
+                        &stopping,
+                    );
+                });
             })
         };
         // A third, and for the reason `driver.rs` opens with: a missed greeting
@@ -569,14 +587,16 @@ fn serve(
             let db = std::sync::Arc::clone(&db);
             let stopping = std::sync::Arc::clone(&peering);
             std::thread::spawn(move || {
-                collect_from_upstream(
-                    &db,
-                    &collecting_credential,
-                    &collecting_authority,
-                    &collecting_seeds,
-                    &collecting_routing,
-                    &stopping,
-                );
+                supervise::supervised("the collection round", &stopping, || {
+                    collect_from_upstream(
+                        &db,
+                        &collecting_credential,
+                        &collecting_authority,
+                        &collecting_seeds,
+                        &collecting_routing,
+                        &stopping,
+                    );
+                });
             })
         };
         // A fourth, and the last of the three cadences `driver.rs` names. A
@@ -589,14 +609,16 @@ fn serve(
             let db = std::sync::Arc::clone(&db);
             let stopping = std::sync::Arc::clone(&peering);
             std::thread::spawn(move || {
-                stand_for_leadership(
-                    &db,
-                    &standing_credential,
-                    &standing_authority,
-                    &deciding,
-                    &standing_routing,
-                    &stopping,
-                );
+                supervise::supervised("the leadership round", &stopping, || {
+                    stand_for_leadership(
+                        &db,
+                        &standing_credential,
+                        &standing_authority,
+                        &deciding,
+                        &standing_routing,
+                        &stopping,
+                    );
+                });
             })
         };
         (answering, dialling, collecting, standing)
@@ -608,16 +630,16 @@ fn serve(
         // what turns a signal into the stages.
         (Some(wire), Some(http)) => std::thread::scope(|scope| {
             scope.spawn(|| shutdown::watch(&surfaces, quiet.as_ref()));
-            scope.spawn(|| http.serve());
-            wire.serve();
+            scope.spawn(|| supervise::or_the_node_ends("http", || http.serve()));
+            supervise::or_the_node_ends("wire", || wire.serve());
         }),
         (Some(wire), None) => std::thread::scope(|scope| {
             scope.spawn(|| shutdown::watch(&surfaces, quiet.as_ref()));
-            wire.serve();
+            supervise::or_the_node_ends("wire", || wire.serve());
         }),
         (None, Some(http)) => std::thread::scope(|scope| {
             scope.spawn(|| shutdown::watch(&surfaces, quiet.as_ref()));
-            http.serve();
+            supervise::or_the_node_ends("http", || http.serve());
         }),
         // Unreachable through the parser, which sets `Source::Serve` only when
         // an address was given — said here rather than assumed, because the two

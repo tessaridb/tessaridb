@@ -21,6 +21,7 @@ mod geojson;
 mod geometry;
 mod identity_kind;
 mod ids;
+mod nesting;
 mod number;
 mod path;
 mod reach;
@@ -46,6 +47,7 @@ pub use ids::{
     DatabaseId, EdgeKindId, Epoch, FieldId, GraphId, IndexId, NamespaceId, Sequence, ShardId,
     TableId,
 };
+pub use nesting::MAX_NESTING;
 pub use number::Number;
 pub use path::{Path, Step};
 pub use reach::Reach;

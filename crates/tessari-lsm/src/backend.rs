@@ -32,13 +32,15 @@
 //! not a weaker guarantee.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use rocksdb::{ColumnFamily, DB, IteratorMode, Options, ReadOptions, WriteBatch as EngineBatch};
 use tessari_kv::{
     Error, Key, KeyRange, Keyspace, KvBackend, Result, ScanDirection, ScanRequest, Value,
     WriteBatch, WriteOp, delete_range_by_scanning,
 };
+
+mod group;
 
 use crate::error::{BACKEND_NAME, from_engine, from_open, missing_region};
 use crate::options::{Durability, StoreConfig, database_options, regions};
@@ -263,6 +265,18 @@ impl LsmBackend {
                 keyspace: keyspace.name().to_owned(),
             })
     }
+
+    /// The write lock, taken as found even after a panic elsewhere held it.
+    ///
+    /// It guards no data: what it orders is a precondition check and one engine
+    /// batch, and the batch lands whole or not at all. So a poisoned lock says
+    /// nothing about the store, and refusing on it would leave a live node that
+    /// can no longer write until it is restarted.
+    fn writer(&self) -> MutexGuard<'_, ()> {
+        self.write_lock
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 impl KvBackend for LsmBackend {
@@ -382,11 +396,7 @@ impl KvBackend for LsmBackend {
     }
 
     fn apply(&self, batch: WriteBatch) -> Result<()> {
-        let _writer = self.write_lock.lock().map_err(|_| Error::Backend {
-            backend: BACKEND_NAME,
-            reason: "the write lock was poisoned by a panic in another thread".to_owned(),
-            source: None,
-        })?;
+        let _writer = self.writer();
 
         // Every precondition is read here, under the lock, so nothing can move
         // between the check and the write below.
@@ -423,6 +433,15 @@ impl KvBackend for LsmBackend {
         self.database
             .write_opt(engine_batch, &self.durability.write_options())
             .map_err(|error| from_engine(&error))
+    }
+
+    fn apply_group(&self, batches: Vec<WriteBatch>) -> (usize, Result<()>) {
+        self.apply_grouped(batches)
+    }
+
+    fn groups_writes(&self) -> bool {
+        // Only a synced write has a sync to share.
+        self.durability == Durability::PowerLossSafe
     }
 
     /// One range tombstone, rather than one tombstone per key.
@@ -476,11 +495,7 @@ impl KvBackend for LsmBackend {
             return Ok(());
         }
         let region = self.region(keyspace)?;
-        let _writer = self.write_lock.lock().map_err(|_| Error::Backend {
-            backend: BACKEND_NAME,
-            reason: "the write lock was poisoned by a panic in another thread".to_owned(),
-            source: None,
-        })?;
+        let _writer = self.writer();
         let mut engine_batch = EngineBatch::default();
         engine_batch.delete_range_cf(region, &from, &to);
         self.database
@@ -584,6 +599,38 @@ mod tests {
     #![allow(clippy::panic, clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn a_panic_while_writing_does_not_leave_the_store_read_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend =
+            LsmBackend::open(dir.path(), StoreConfig::new(Durability::ProcessCrashSafe)).unwrap();
+        let poisoned = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _writer = backend.write_lock.lock();
+                    std::panic::resume_unwind(Box::new("a defect while holding the write lock"));
+                })
+                .join()
+        });
+        assert!(poisoned.is_err(), "the helper thread must have panicked");
+        assert!(backend.write_lock.is_poisoned());
+
+        let key = Key::from_slice(b"after the panic");
+        let batch = WriteBatch::default().put(Keyspace::INDEX, key.clone(), Value::new(vec![7]));
+        backend.apply(batch).unwrap();
+        assert_eq!(
+            backend.get(Keyspace::INDEX, &key).unwrap(),
+            Some(Value::new(vec![7]))
+        );
+        backend
+            .delete_range(
+                Keyspace::INDEX,
+                &KeyRange::between(Key::from_slice(b"a"), Key::from_slice(b"z")),
+            )
+            .unwrap();
+        assert_eq!(backend.get(Keyspace::INDEX, &key).unwrap(), None);
+    }
 
     #[test]
     fn the_successor_is_greater_than_the_key_and_below_anything_after_it() {

@@ -17,9 +17,9 @@ use std::sync::Arc;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_ql::Parameters;
-use tessari_session::Session;
+use tessari_session::{Error, Session};
 use tessari_storage::Store;
-use tessari_types::{Number, Value};
+use tessari_types::{MAX_NESTING, Number, Value};
 
 fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
@@ -285,4 +285,45 @@ fn upsert_merge_over_an_absent_record_produces_what_it_names() {
 
     let held = record(&mut session, "SELECT * FROM users WHERE name = 'grace';");
     assert_eq!(text(field(field(&held, "address"), "city")), "Paris");
+}
+
+#[test]
+fn a_write_nested_past_the_ceiling_is_refused_and_one_at_it_lands() {
+    // The decoder refuses past the ceiling on every read, so a write past it
+    // would store a record that exists and cannot be read back. The value comes
+    // in as a parameter, the way a client sends one it built itself.
+    let store = store();
+    let mut session = ready(&store);
+    let arrays =
+        |levels: usize| (0..levels).fold(Value::Null, |inner, _| Value::Array(vec![inner]));
+    let write = |session: &mut Session<'_>, id: u8, deep: Value| {
+        let mut parameters = Parameters::new();
+        parameters.insert("deep".to_owned(), deep);
+        session.run_with(
+            &format!("CREATE users:{id} = {{ deep: $deep }};"),
+            &parameters,
+        )
+    };
+    // The record itself is an object, which is one level of its own.
+    let inside = MAX_NESTING.checked_sub(1).unwrap();
+    write(&mut session, 2, arrays(inside)).unwrap();
+    let refused = write(&mut session, 3, arrays(MAX_NESTING));
+    assert!(
+        matches!(
+            refused,
+            Err(Error::NestedTooDeep {
+                limit: MAX_NESTING,
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+    let landed = session.run("SELECT * FROM users;").unwrap();
+    let count = landed
+        .last()
+        .expect("an outcome")
+        .records()
+        .expect("records")
+        .len();
+    assert_eq!(count, 2, "users:1 and users:2 only");
 }

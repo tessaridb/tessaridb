@@ -1,0 +1,288 @@
+//! INFO for this node and its stream consumers.
+
+use std::collections::BTreeMap;
+
+use tessari_ql::{Name, Span};
+use tessari_storage::{BUILD_VERSION, Catalog, Transaction};
+use tessari_types::Value;
+
+use crate::error::{Error, Result};
+use crate::session::Session;
+
+use super::{
+    described_consumer, described_failover, described_follower, described_replica, guarantees,
+    running_state,
+};
+
+impl Session<'_> {
+    /// This node's own settings, and the peers it knows.
+    ///
+    /// Needs `Administer`, decided by `Needs::of` before this runs, for the
+    /// reason `$node` needs it: the subject names no table, so a grant loop
+    /// passes over it vacuously, and neither half has a smaller truthful form.
+    ///
+    /// # The two groups are the answer, not a formatting choice
+    ///
+    /// The flat fields come from the `META` keyspace and describe **this
+    /// machine**. Everything under `cluster` comes from the catalog and
+    /// describes the **topology**. That is ADR-0018's line, and ADR-0020 §3 puts
+    /// it in the shape of the answer on purpose: a reader has to be able to tell
+    /// which fields would follow a backup and which would not, and flattening
+    /// the two would make that a thing you have to remember rather than a thing
+    /// you can see. The bad day it is remembered wrongly on is the one where
+    /// last night's backup goes onto a fresh machine and two processes claim one
+    /// identity.
+    ///
+    /// `membership` is **not** answered, and its absence is the decision. The
+    /// type behind it carries exactly one variant, so the field could only ever
+    /// report `alone` — on a single node, and equally on a node whose writes
+    /// are being fenced for belonging to a cluster. A constant that reads as a
+    /// claim is worse than no field, and this one was read as a claim: it is
+    /// the first thing the console printed on its cluster tab, which is how it
+    /// came to say a node stood alone while the engine refused its writes for
+    /// not doing so. `roles` and `cluster.peers` answer the question people
+    /// were asking this one, and they answer it from the authority the node
+    /// actually holds. The persisted `Membership` stays where it is: it is
+    /// on-disk identity format and the natural home for a real cluster name,
+    /// which is a door for whoever designs cluster identity rather than for a
+    /// response shape.
+    pub(super) fn info_node(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<BTreeMap<String, Value>> {
+        let identity = self.store.node_identity()?;
+        let catalog = Catalog::new(transaction);
+        let peers = catalog
+            .replicas()?
+            .iter()
+            .map(|replica| described_replica(replica, &catalog))
+            .collect::<Result<Vec<_>>>()?;
+        let peers = Value::Array(peers);
+        // Asked of the catalog rather than computed from `peers` above, so that
+        // what is reported and what a reopen would adopt are one answer to one
+        // question. `null` when nothing names this node — which is a different
+        // statement from an empty role set, and the difference is the whole
+        // point: no row is *unbound*, an empty set is *drained*.
+        let desired = match catalog.desired_roles(&identity.id)? {
+            Some(roles) => Value::Array(roles.names().into_iter().map(Value::from).collect()),
+            None => Value::Null,
+        };
+        // Asked of the store rather than the catalog: `REPLICAS` is what the
+        // cluster was told, and this is what actually collected. A peer
+        // declared and never seen appears in `peers` and not here, which is
+        // the most useful thing either list says.
+        // Asked through `health()` rather than of the lease directly, so that
+        // this and `/metrics` are one answer to one question rather than two
+        // that can drift.
+        let held = self.store.health()?;
+        let campaigns = held.campaigns;
+        let lease = match held.lease_remaining {
+            Some(left) => tessari_types::Duration::new(
+                i64::try_from(left.as_secs()).unwrap_or(i64::MAX),
+                left.subsec_nanos(),
+            )
+            .map_or(Value::Null, Value::Duration),
+            None => Value::Null,
+        };
+        let leading = self.store.leading().map_or(Value::Null, |epoch| {
+            Value::from(i64::try_from(epoch.get()).unwrap_or(i64::MAX))
+        });
+        // `null` when nobody has set a policy, and that is a different statement
+        // from *the defaults*. A cluster nobody has configured runs the built-in
+        // periods; reporting those here as a policy would make it impossible to
+        // see whether one ever arrived — which is exactly the observation a
+        // two-node check of replication is trying to make.
+        let failover = match Catalog::new(transaction).failover()? {
+            None => Value::Null,
+            Some(held) => described_failover(&held),
+        };
+        let followers = self
+            .store
+            .follower_lag()?
+            .into_iter()
+            .map(described_follower)
+            .collect();
+        Ok(BTreeMap::from([
+            (
+                "id".to_owned(),
+                Value::from(identity.record_id().to_string().as_str()),
+            ),
+            (
+                // The **effective** role of §6.1, which is the adopted set as
+                // the lease leaves it — asked of the store rather than read off
+                // the identity, so that a node cannot report `writable` while
+                // its fence refuses every write. `cluster.desired` below is
+                // untouched by the lease and must be: the pair is only worth
+                // anything while the two can differ.
+                "roles".to_owned(),
+                Value::Array(
+                    self.store
+                        .effective_roles()?
+                        .names()
+                        .into_iter()
+                        .map(Value::from)
+                        .collect(),
+                ),
+            ),
+            (
+                "version".to_owned(),
+                Value::from(identity.version.to_string().as_str()),
+            ),
+            // The exact build beside the ordered version, for the same reason
+            // it sits beside it in `$node`: an operator holding a pre-release
+            // has to be able to see that they are holding one.
+            ("build".to_owned(), Value::from(BUILD_VERSION)),
+            (
+                "endpoints".to_owned(),
+                Value::Array(
+                    identity
+                        .endpoints
+                        .iter()
+                        .map(|endpoint| Value::from(endpoint.as_str()))
+                        .collect(),
+                ),
+            ),
+            (
+                // Beside `endpoints` rather than under `cluster`, because it is
+                // on the local side of ADR-0018's line: a disk budget describes
+                // this machine and does not travel. `null` is *unbounded*, which
+                // is what every store holds until an operator sets a number —
+                // and reporting it as a number would make *nobody asked for
+                // retention* indistinguishable from a very large window.
+                "retain".to_owned(),
+                self.store.log_retention()?.map_or(Value::Null, |keep| {
+                    // Saturating rather than an `as` cast: the report is a
+                    // number a person reads, and a width that wrapped would
+                    // print a negative retention rather than fail.
+                    Value::from(i64::try_from(keep.get()).unwrap_or(i64::MAX))
+                }),
+            ),
+            (
+                "cluster".to_owned(),
+                Value::Object(BTreeMap::from([
+                    ("peers".to_owned(), peers),
+                    // On the replicated side of ADR-0018's line, because that is
+                    // where it comes from: `roles` above is what this machine
+                    // holds and a backup would not carry, `desired` is what the
+                    // cluster says and every node does carry.
+                    ("desired".to_owned(), desired),
+                    // Beside the peers rather than inside them: a row here is
+                    // about a follower that has collected, and `peers` is about
+                    // what was declared. Joining them would put a lag figure on
+                    // a peer that has never asked for anything.
+                    ("followers".to_owned(), Value::Array(followers)),
+                    // `null` on a node nobody made a leader, which is a
+                    // different statement from zero: a store standing alone is
+                    // not a leader whose time has run out. When it is a
+                    // duration it is the one the concept names as the
+                    // split-brain signal — this at zero while writes are still
+                    // being taken is the state the fence exists to prevent.
+                    ("lease".to_owned(), lease),
+                    // The other half of the pair an operator watches. A lease
+                    // heading toward zero says *how long*, and this says *what
+                    // for* — without it a report cannot distinguish a node
+                    // renewing the leadership it already held from one that has
+                    // just taken it from somebody else, which is the difference
+                    // between a quiet cluster and a failover nobody saw.
+                    //
+                    // `null` on a node no round ever granted anything to, on the
+                    // same reasoning as the lease beside it: not leading is a
+                    // different statement from leading under the first epoch.
+                    ("epoch".to_owned(), leading),
+                    // The third of the pair, and the one that says whether the
+                    // cluster is QUIET. A healthy cluster's followers do not
+                    // stand against a leader they can hear (ADR-0066), so this
+                    // staying flat while somebody holds a lease is the
+                    // observable form of that rule — and a number climbing on a
+                    // node that is not leading says the gate has stopped
+                    // working, which nothing else here would show.
+                    //
+                    // Rounds STOOD and not rounds won: a round that loses is
+                    // exactly the noise worth seeing. From the same `health()`
+                    // the lease above comes from and `/metrics` reports, so the
+                    // two surfaces cannot drift.
+                    (
+                        "campaigns".to_owned(),
+                        Value::from(i64::try_from(campaigns).unwrap_or(i64::MAX)),
+                    ),
+                    // The periods this cluster waits before it replaces a
+                    // leader, with the pair that orders two of them. Beside the
+                    // lease and the epoch because it is what those two are
+                    // measured against: a lease counting down says how long,
+                    // and this says how long it was ever meant to be.
+                    ("failover".to_owned(), failover),
+                ])),
+            ),
+        ]))
+    }
+
+    /// One consumer: what was declared, what this process is doing with it, and
+    /// what it does not promise.
+    ///
+    /// Three named groups rather than one flat object, for `INFO FOR NODE`'s
+    /// reason plus one of its own:
+    ///
+    /// - `declared` is what a backup carries and what every node agrees on;
+    /// - `running` is this process only, and is empty on a node that has not
+    ///   started it;
+    /// - `guarantees` is here because the loudest failure of systems that ship
+    ///   this feature is not a bug, it is that their delivery semantics are
+    ///   documented somewhere other than where a person configures the thing.
+    ///   Somebody reading this output is configuring it right now.
+    pub(super) fn info_consumer(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<BTreeMap<String, Value>> {
+        let found = Catalog::new(transaction)
+            .consumers()?
+            .into_iter()
+            .find(|held| held.name == name.text);
+        let Some(consumer) = found else {
+            return Err(Error::Unknown {
+                entity: "consumer",
+                name: name.text.clone(),
+                span,
+            });
+        };
+        let destination = self.named_table(transaction, &consumer)?;
+        Ok(BTreeMap::from([
+            (
+                "declared".to_owned(),
+                described_consumer(&consumer, &destination),
+            ),
+            (
+                "running".to_owned(),
+                running_state(self.store.running().progress(&consumer.name).as_ref()),
+            ),
+            ("guarantees".to_owned(), guarantees()),
+        ]))
+    }
+
+    /// Every declared consumer, with whether this process is running it.
+    ///
+    /// The counters are left to `INFO FOR KAFKA CONSUMER <name>`: this is the listing
+    /// an operator reads to find out *which* consumer to ask about, and a table
+    /// of every partition position would bury that.
+    pub(super) fn info_consumers(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<BTreeMap<String, Value>> {
+        let declared = Catalog::new(transaction).consumers()?;
+        let mut described = Vec::with_capacity(declared.len());
+        for consumer in declared {
+            let running = self.store.running().progress(&consumer.name).is_some();
+            described.push(Value::Object(BTreeMap::from([
+                ("name".to_owned(), Value::from(consumer.name.as_str())),
+                ("topic".to_owned(), Value::from(consumer.topic.as_str())),
+                ("group".to_owned(), Value::from(consumer.group.as_str())),
+                ("running".to_owned(), Value::Bool(running)),
+            ])));
+        }
+        Ok(BTreeMap::from([(
+            "consumers".to_owned(),
+            Value::Array(described),
+        )]))
+    }
+}

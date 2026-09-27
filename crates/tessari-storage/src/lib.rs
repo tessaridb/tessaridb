@@ -26,6 +26,8 @@ mod audit;
 mod bounded;
 mod cardinality;
 mod catalog;
+#[cfg(test)]
+mod catalog_rows_tests;
 mod collections;
 mod covering;
 mod error;
@@ -33,8 +35,11 @@ mod expiry;
 mod failover;
 mod feed;
 mod followers;
+mod gate;
 mod graph;
 mod index;
+#[cfg(test)]
+mod index_unchanged_tests;
 mod lapse;
 mod lease;
 mod lines;

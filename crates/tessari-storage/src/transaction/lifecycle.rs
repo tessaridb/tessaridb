@@ -23,10 +23,11 @@ impl<'a> Transaction<'a> {
     pub(crate) fn new(store: &'a Store, snapshot: Sequence) -> Self {
         // Registered here rather than by the caller, so that a snapshot cannot
         // be read from without the store knowing it is being read from.
-        store.snapshot_registry().register(snapshot);
+        let registered = store.snapshot_registry().register(snapshot);
         Self {
             store,
             snapshot,
+            registered,
             writes: BTreeMap::new(),
             expiring: BTreeMap::new(),
             reading_at: std::cell::Cell::new(None),
@@ -105,6 +106,11 @@ impl<'a> Transaction<'a> {
                 Some(RecordValue::Tombstone) | None => None,
             },
         )
+    }
+
+    /// Whether this transaction has written the record itself.
+    pub(crate) fn has_written(&self, address: &RecordAddress) -> bool {
+        self.writes.contains_key(address)
     }
 
     /// [`Self::get`] without the retention floor.

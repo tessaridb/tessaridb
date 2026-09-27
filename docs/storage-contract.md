@@ -51,7 +51,7 @@ tells a caller nothing.
 
 | Level | An acknowledged write survives | Cost |
 |---|---|---|
-| `power-loss-safe` | loss of power to the machine | one device sync per commit; throughput is bounded by the device's sync rate |
+| `power-loss-safe` | loss of power to the machine | one device sync per group of commits: commits that arrive while one is being synced wait and are landed together in the next write, so the device's sync rate bounds groups rather than commits |
 | `process-crash-safe` | the process being killed — **lost on power loss** | none beyond the write itself |
 
 `power-loss-safe` is the default, because this store is a system of record.
@@ -66,6 +66,13 @@ discharged by the test suite passing:
   underneath it. A sync that a drive acknowledges out of its own cache is not
   durability, and no software test can tell the difference — confirming it is
   part of taking a store into production on particular hardware.
+- On macOS a plain `fsync` does not flush the drive's own write cache; only
+  `fcntl(F_FULLFSYNC)` does. The engine uses it only when compiled with
+  `HAVE_FULLFSYNC`, so this workspace builds it that way for every Apple target
+  and the persistent backend refuses to build for macOS without it. A synced
+  commit on a Mac therefore costs a full flush, which is milliseconds rather than
+  the microseconds a cache-acknowledged sync takes. Linux needs no such flag:
+  `fdatasync` there reaches the device.
 - The engine setting that keeps a cross-keyspace batch whole across a *flush* is
   in effect and is asserted against the option set the engine itself writes.
   That it holds under a *divergent* flush — one keyspace flushed, another not —
@@ -85,8 +92,15 @@ manager, lock timeouts and deadlock detection to protect a store that already
 has exactly one writer process, which the engine enforces by holding the store
 directory.
 
-The cost is that commits serialise. When that becomes the limit, the answer is
-one writer draining a queue and batching what it finds — not a weaker guarantee.
+The cost is that commits serialise. At `power-loss-safe` the sync is taken out
+of that serial section: a commit checks and builds its batch under the one
+writer, queues it and lets the next writer in, and whichever waiting commit
+finds no write under way lands the whole queue in one engine write and one sync.
+Each batch is checked against the store as the batches ahead of it leave it, and
+nothing in a group is readable before the group is synced. When a batch in a
+group is refused, the batches queued behind it were built on a state that will
+not exist; they are refused as a `conflict` and the layer above builds them
+again from what did land, so the caller sees a retry, never a lost write.
 
 ## Why the keyspace set is fixed
 

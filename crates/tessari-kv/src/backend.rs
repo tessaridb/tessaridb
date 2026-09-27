@@ -269,6 +269,45 @@ pub trait KvBackend: Send + Sync + std::fmt::Debug {
     /// does not hold.
     fn apply(&self, batch: WriteBatch) -> Result<()>;
 
+    /// Apply several batches in order, each judged against the state the ones
+    /// before it leave, and answer how many landed.
+    ///
+    /// Each batch's preconditions are evaluated against the store as the earlier
+    /// batches of the group have changed it, not against the state before the
+    /// group — a batch built on the one before it asserts what that one wrote. The
+    /// first batch that fails is not applied and **neither is any batch after it**,
+    /// because each was built on the one before; the count says where the group
+    /// stopped and the result carries that batch's failure.
+    ///
+    /// The default applies them one at a time, which keeps that ordering and pays
+    /// one write each. A backend whose write is made durable overrides it to land
+    /// every accepted batch in one write and one sync.
+    fn apply_group(&self, batches: Vec<WriteBatch>) -> (usize, Result<()>) {
+        let mut landed = 0;
+        for batch in batches {
+            if let Err(failure) = self.apply(batch) {
+                return (landed, Err(failure));
+            }
+            landed = landed.saturating_add(1);
+        }
+        (landed, Ok(()))
+    }
+
+    /// Whether [`Self::apply_group`] lands several batches for less than landing
+    /// them one at a time.
+    ///
+    /// True for a backend that makes each write durable with a device sync, where
+    /// a group pays one sync in place of one each. A caller that groups for a
+    /// backend answering `false` pays for the grouping and saves nothing: on the
+    /// in-memory backend, sixteen writers committing through groups landed 45 100
+    /// commits a second against 53 400 applied one at a time (G040 SG4).
+    ///
+    /// **Defaulted to `false`**, which is right for any backend that keeps the
+    /// default [`Self::apply_group`].
+    fn groups_writes(&self) -> bool {
+        false
+    }
+
     /// How many background failures this backend has recorded.
     ///
     /// An engine that compacts, flushes and writes ahead does that work on its

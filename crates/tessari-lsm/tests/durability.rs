@@ -329,3 +329,110 @@ fn an_acknowledged_commit_survives_a_kill_after_the_store_has_flushed() {
         "the committed position was recovered behind the records it accounts for"
     );
 }
+
+/// Environment variable carrying the store path into the concurrent child.
+const GROUPED_STORE_PATH: &str = "TESSARIDB_GROUPED_STORE";
+/// Writers committing at once in the concurrent child — enough that commits
+/// arrive while one is being synced, so they land in groups.
+const GROUPED_WRITERS: u64 = 4;
+/// How many acknowledged commits the parent waits for before killing.
+const ACKNOWLEDGED_BEFORE_GROUPED_KILL: usize = 80;
+
+/// The concurrent child. Several writers commit forever, each announcing what
+/// it was handed; commits that arrive while one is syncing land together
+/// (G040 SG4), so the kill can fall in the middle of a group's write.
+#[test]
+#[ignore = "spawned by the grouped durability test; runs until it is killed"]
+fn commit_from_several_writers_until_killed() {
+    let Ok(path) = std::env::var(GROUPED_STORE_PATH) else {
+        panic!("{GROUPED_STORE_PATH} must name the store directory");
+    };
+    let store = open_store(std::path::Path::new(&path));
+    std::thread::scope(|scope| {
+        for writer in 0..GROUPED_WRITERS {
+            let store = &store;
+            scope.spawn(move || {
+                for i in 1..=CHILD_GIVES_UP_AFTER {
+                    let n = writer * CHILD_GIVES_UP_AFTER + i;
+                    let mut transaction = store.begin().unwrap();
+                    transaction.put(address(n), payload(n));
+                    let committed = transaction.commit().unwrap();
+                    use std::io::Write;
+                    let mut stdout = std::io::stdout().lock();
+                    writeln!(stdout, "committed {n} {committed}").unwrap();
+                    stdout.flush().unwrap();
+                }
+            });
+        }
+    });
+}
+
+#[test]
+fn an_acknowledged_commit_survives_a_kill_among_concurrent_writers() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "commit_from_several_writers_until_killed",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env(GROUPED_STORE_PATH, &path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let mut acknowledged: Vec<(u64, Sequence)> = Vec::new();
+    {
+        let stdout = child.stdout.take().unwrap();
+        for line in BufReader::new(stdout).lines() {
+            let line = line.unwrap();
+            let mut parts = line.split_whitespace();
+            if parts.next() != Some("committed") {
+                continue;
+            }
+            let (Some(n), Some(sequence)) = (parts.next(), parts.next()) else {
+                continue;
+            };
+            acknowledged.push((n.parse().unwrap(), Sequence::new(sequence.parse().unwrap())));
+            if acknowledged.len() >= ACKNOWLEDGED_BEFORE_GROUPED_KILL {
+                break;
+            }
+        }
+    }
+
+    child.kill().unwrap();
+    let _ = child.wait();
+
+    assert_eq!(
+        acknowledged.len(),
+        ACKNOWLEDGED_BEFORE_GROUPED_KILL,
+        "the child died before it acknowledged enough commits to test anything"
+    );
+
+    let reopened = open_store(&path);
+    let transaction = reopened.begin().unwrap();
+    for (n, sequence) in &acknowledged {
+        assert_eq!(
+            transaction.get(&address(*n)).unwrap(),
+            Some(payload(*n)),
+            "record {n}, acknowledged at sequence {sequence}, did not survive the kill"
+        );
+    }
+    // Acknowledged out of order across writers, so the highest and not the last.
+    let highest = acknowledged
+        .iter()
+        .map(|(_, sequence)| *sequence)
+        .max()
+        .unwrap();
+    assert!(
+        reopened
+            .committed_tail(reopened.own_log(HOME).unwrap())
+            .unwrap()
+            >= highest,
+        "the committed position was recovered behind the records it accounts for"
+    );
+}

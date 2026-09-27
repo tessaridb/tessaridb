@@ -35,6 +35,7 @@
 #![forbid(unsafe_code)]
 
 mod basic;
+mod body;
 #[cfg(feature = "console")]
 mod console;
 /// Without the `console` feature the binary carries none of the console's bytes,
@@ -359,13 +360,10 @@ fn answer(id: u64, node: &Serving<'_>, busy: &mut Busy, mut request: Request) {
         (Method::Delete, "/session") => respond::close_session(&presented, tokens),
         // Basic only, deliberately: the second proof is the whole route, and a
         // token is not proof of a password.
-        (Method::Post, "/password") => {
-            let mut body = String::new();
-            match request.as_reader().read_to_string(&mut body) {
-                Ok(_) => respond::change_password(db, &presented, body.trim_end_matches('\n')),
-                Err(_) => Answer::bad_request("the request body is not text"),
-            }
-        }
+        (Method::Post, "/password") => match body::text(&mut request) {
+            Ok(body) => respond::change_password(db, &presented, body.trim_end_matches('\n')),
+            Err(refused) => refused,
+        },
         (Method::Post, "/script") => {
             // The body's shape is decided by what the caller says it is, not by
             // sniffing a leading brace: HTTP has a field for this, and a rule
@@ -379,13 +377,12 @@ fn answer(id: u64, node: &Serving<'_>, busy: &mut Busy, mut request: Request) {
                         .to_ascii_lowercase()
                         .contains("application/json")
             });
-            let mut body = String::new();
-            match request.as_reader().read_to_string(&mut body) {
-                Err(_) => Answer::bad_request("the request body is not text"),
-                Ok(_) if !json => {
+            match body::text(&mut request) {
+                Err(refused) => refused,
+                Ok(body) if !json => {
                     respond::script(db, &body, &Default::default(), tokens, &presented)
                 }
-                Ok(_) => match request::envelope(&body) {
+                Ok(body) => match request::envelope(&body) {
                     Ok(read) => {
                         respond::script(db, &read.script, &read.parameters, tokens, &presented)
                     }
@@ -404,13 +401,10 @@ fn answer(id: u64, node: &Serving<'_>, busy: &mut Busy, mut request: Request) {
         ),
         (method, url) => match object::target(url) {
             Some(aimed) => match method {
-                Method::Put | Method::Post => {
-                    let mut body = Vec::new();
-                    match request.as_reader().read_to_end(&mut body) {
-                        Ok(_) => object::put(db, &aimed, body, tokens, &presented),
-                        Err(_) => Answer::bad_request("the request body could not be read"),
-                    }
-                }
+                Method::Put | Method::Post => match body::bytes(&mut request) {
+                    Ok(body) => object::put(db, &aimed, body, tokens, &presented),
+                    Err(refused) => refused,
+                },
                 Method::Get | Method::Head => object::get(db, &aimed, tokens, &presented),
                 Method::Delete => object::delete(db, &aimed, tokens, &presented),
                 _ => Answer::new(

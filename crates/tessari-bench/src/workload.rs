@@ -81,6 +81,16 @@ pub const ALL: &[Workload] = &[
         run: write,
     },
     Workload {
+        name: "concurrent",
+        about: "point writes from 1 to 16 threads at once into one table — throughput, tail latency and refused commits as writers are added",
+        run: crate::concurrent::concurrent,
+    },
+    Workload {
+        name: "readers",
+        about: "point reads from 1 to 16 threads at once over 20 000 records — reads per second and tail latency as readers are added",
+        run: crate::readers::readers,
+    },
+    Workload {
         name: "read-by-id",
         about: "point reads by record identity — the cheapest access path there is",
         run: read_by_id,
@@ -168,6 +178,11 @@ pub const ALL: &[Workload] = &[
         name: "queue",
         about: "what a claim costs behind a prefix of held and of dead-lettered records, and a drain taken one at a time against one taken in a batch",
         run: crate::queue::queue,
+    },
+    Workload {
+        name: "update",
+        about: "updates that leave every indexed field alone against updates that move one, on a table with a value and a full-text index, then a grouped aggregate",
+        run: crate::updates::update,
     },
 ];
 

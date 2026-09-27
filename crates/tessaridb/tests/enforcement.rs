@@ -152,6 +152,48 @@ fn read(relative: &str) -> String {
     fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
 }
 
+/// A module's text: its file, then every file directly in its own directory.
+///
+/// A module split into child files is still one surface — `Store`'s methods sit
+/// in `store.rs` and `store/*.rs` alike — and reading the root alone would
+/// report a method moved into a child as a method that no longer exists.
+fn read_module(relative: &str) -> String {
+    let mut text = read(relative);
+    let children = repo().join(relative.trim_end_matches(".rs"));
+    if let Ok(entries) = fs::read_dir(&children) {
+        let mut files: Vec<_> = entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+            .collect();
+        files.sort();
+        for file in files {
+            text.push('\n');
+            text.push_str(
+                &fs::read_to_string(&file)
+                    .unwrap_or_else(|error| panic!("{}: {error}", file.display())),
+            );
+        }
+    }
+    text
+}
+
+/// Every top-level block `header` opens, joined — for a type whose methods are
+/// spread over several `impl` blocks in several files.
+fn every_block(text: &str, header: &str) -> String {
+    let opening = format!("\n{header} {{\n");
+    let bodies: Vec<&str> = text
+        .split(&opening)
+        .skip(1)
+        .map(|after| after.split("\n}\n").next().unwrap_or_default())
+        .collect();
+    assert!(
+        !bodies.is_empty(),
+        "`{header}` is no longer where this check reads it"
+    );
+    bodies.join("\n")
+}
+
 /// The body of a top-level block, from its opening line to the `}` in column
 /// zero that closes it.
 ///
@@ -668,7 +710,7 @@ const TABLES: &[Table] = &[
         // Its re-classification trigger: a `true` from it treated as permission
         // to write by anything but that door.
         expected: 43,
-        count: |text| public_functions(&block(text, "impl Store")),
+        count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
         file: "crates/tessari-cli/src/arguments.rs",
@@ -714,7 +756,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     let mut moved = Vec::new();
     let mut total = 0;
     for table in TABLES {
-        let found = (table.count)(&read(table.file));
+        let found = (table.count)(&read_module(table.file));
         total += found;
         if found != table.expected {
             moved.push(format!(
@@ -1056,7 +1098,7 @@ fn the_campaign_is_the_only_place_an_epoch_is_created() {
 /// on disk. Both halves of this pair are asserted for the reason
 /// [`PRODUCER`]'s are — a ratchet whose subject has been renamed away passes by
 /// finding nothing.
-const CARRIER: (&str, &str) = ("tessari-storage/src/store.rs", "log_records_within");
+const CARRIER: (&str, &str) = ("tessari-storage/src/store/history.rs", "log_records_within");
 
 #[test]
 fn a_write_claims_no_epoch_it_was_not_already_carrying() {
