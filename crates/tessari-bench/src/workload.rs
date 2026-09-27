@@ -86,6 +86,11 @@ pub const ALL: &[Workload] = &[
         run: crate::concurrent::concurrent,
     },
     Workload {
+        name: "readers",
+        about: "point reads from 1 to 16 threads at once over 20 000 records — reads per second and tail latency as readers are added",
+        run: crate::readers::readers,
+    },
+    Workload {
         name: "read-by-id",
         about: "point reads by record identity — the cheapest access path there is",
         run: read_by_id,

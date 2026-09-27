@@ -42,6 +42,7 @@ mod memory;
 mod paging;
 mod queue;
 mod ranges;
+mod readers;
 mod retention;
 mod samples;
 mod series;
