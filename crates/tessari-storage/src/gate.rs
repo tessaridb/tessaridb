@@ -45,3 +45,65 @@ impl WriteGate {
         self.turn.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tessari_kv::{KvBackend, MemoryBackend};
+    use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
+
+    use crate::{Error, RecordAddress, Store};
+
+    fn write(store: &Store) -> crate::Result<()> {
+        let mut transaction = store.begin()?;
+        transaction.put(
+            RecordAddress::new(
+                NamespaceId::new(1),
+                DatabaseId::new(1),
+                TableId::new(1),
+                RecordId::from("one"),
+            ),
+            b"{}".to_vec(),
+        );
+        transaction.commit().map(|_| ())
+    }
+
+    /// Hold the turn, let a writer queue on it, run `meanwhile`, then let it go.
+    fn queued_behind(store: &Store, meanwhile: impl FnOnce()) -> crate::Result<()> {
+        let turn = store.write_gate().hold();
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(|| write(store));
+            // Long enough for the writer to pass admission and reach the gate;
+            // admission is microseconds of in-memory reads.
+            std::thread::sleep(Duration::from_millis(200));
+            meanwhile();
+            drop(turn);
+            writer.join().unwrap()
+        })
+    }
+
+    #[test]
+    fn a_commit_that_waited_for_its_turn_writes_when_the_fence_is_still_open() {
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+        store.hold_lease(Duration::from_secs(60));
+        queued_behind(&store, || {}).expect("the wait alone refuses nothing");
+    }
+
+    #[test]
+    fn a_commit_that_waited_for_its_turn_is_judged_against_the_fence_it_meets() {
+        // Admitted under a live lease, then queued while the fence shut: a
+        // write landing now could land after another node was granted the
+        // leadership, which is what the fence exists to prevent.
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+        store.hold_lease(Duration::from_secs(60));
+        let refused = queued_behind(&store, || store.hold_lease(Duration::ZERO));
+        assert!(
+            matches!(refused, Err(Error::LeaseSpent { .. })),
+            "{refused:?}"
+        );
+    }
+}
