@@ -40,3 +40,16 @@ lint = "clippy --workspace --all-targets --all-features -- -D warnings"
 # each other again, so iterate inside one crate and switch to the workspace run
 # once, at the boundary. And validate a manifest with `cargo metadata --no-deps`,
 # which compiles nothing, rather than with `cargo check`.
+
+# A synced commit on macOS must reach the medium, not the drive's cache.
+#
+# The engine syncs with `fcntl(F_FULLFSYNC)` only when compiled with
+# `HAVE_FULLFSYNC`, and the storage engine crate's own build never defines it — so a
+# macOS build synced with `fdatasync`, which Apple documents as NOT flushing the
+# drive's write cache, and `Durability::PowerLossSafe` was not power-loss safe
+# there (Q-823, measured 2026-09-27: ~80 µs per "synced" commit). The C++ build
+# reads `CXXFLAGS_<target>`; `crates/tessari-lsm/build.rs` refuses a macOS build
+# that lacks the flag, so a build outside this file cannot quietly go back.
+[env]
+CXXFLAGS_aarch64_apple_darwin = "-DHAVE_FULLFSYNC"
+CXXFLAGS_x86_64_apple_darwin = "-DHAVE_FULLFSYNC"

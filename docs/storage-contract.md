@@ -66,6 +66,13 @@ discharged by the test suite passing:
   underneath it. A sync that a drive acknowledges out of its own cache is not
   durability, and no software test can tell the difference — confirming it is
   part of taking a store into production on particular hardware.
+- On macOS a plain `fsync` does not flush the drive's own write cache; only
+  `fcntl(F_FULLFSYNC)` does. The engine uses it only when compiled with
+  `HAVE_FULLFSYNC`, so this workspace builds it that way for every Apple target
+  and the persistent backend refuses to build for macOS without it. A synced
+  commit on a Mac therefore costs a full flush, which is milliseconds rather than
+  the microseconds a cache-acknowledged sync takes. Linux needs no such flag:
+  `fdatasync` there reaches the device.
 - The engine setting that keeps a cross-keyspace batch whole across a *flush* is
   in effect and is asserted against the option set the engine itself writes.
   That it holds under a *divergent* flush — one keyspace flushed, another not —
