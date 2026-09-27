@@ -273,6 +273,21 @@ fn plain(name: &str) -> bool {
             .all(|held| held.is_ascii_alphanumeric() || held == '_')
 }
 
+/// Forgets a consumer when the thread that ran it ends, however it ends.
+///
+/// Not restarted after a panic: the message that caused it is redelivered to
+/// the next attempt, so a restart would meet the same defect again.
+struct Leaving<'a> {
+    store: &'a Store,
+    name: &'a str,
+}
+
+impl Drop for Leaving<'_> {
+    fn drop(&mut self) {
+        self.store.running().stopped(self.name);
+    }
+}
+
 /// One consumer thread's world.
 struct Consuming {
     store: Store,
@@ -284,25 +299,30 @@ struct Consuming {
 impl Consuming {
     /// Read, shape, write, commit — until told to stop.
     fn run(self, mut source: Box<dyn Source>) {
+        // However this thread leaves — told to stop, halted by a failure, or
+        // unwinding from a panic — the registry entry goes with it, so `INFO FOR
+        // KAFKA CONSUMER` reports it as not running here rather than as running
+        // and stuck. A guard rather than a call at each exit, because a panic is
+        // the exit nobody writes a call for.
+        let _leaving = Leaving {
+            store: &self.store,
+            name: &self.definition.name,
+        };
         while !self.stopping.load(Ordering::Relaxed) {
             match self.once(source.as_mut()) {
                 Ok(()) => {}
                 Err(failure) => {
                     log::error!("consumer {} stopped: {failure}", self.definition.name);
+                    // `stop` halts this consumer and leaves the rest alone.
                     self.store
                         .running()
                         .advanced(&self.definition.name, |progress| {
                             progress.last_error = Some(failure.clone());
                         });
-                    // `stop` halts this consumer and leaves the rest alone. The
-                    // registry entry goes, so `INFO FOR KAFKA CONSUMER` reports it as
-                    // not running here rather than as running and stuck.
-                    self.store.running().stopped(&self.definition.name);
                     return;
                 }
             }
         }
-        self.store.running().stopped(&self.definition.name);
     }
 
     /// One batch: poll, shape, write, then move the offset.
