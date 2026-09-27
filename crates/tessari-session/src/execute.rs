@@ -210,11 +210,13 @@ impl Session<'_> {
                 if_not_exists,
             } => self.define_user(
                 transaction,
-                name,
-                scope.as_ref(),
-                role,
-                password,
-                *if_not_exists,
+                crate::identity::UserDeclaration {
+                    name,
+                    scope: scope.as_ref(),
+                    role,
+                    password,
+                    if_not_exists: *if_not_exists,
+                },
                 span,
             ),
             StatementKind::DefineNode {
