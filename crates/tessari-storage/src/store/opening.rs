@@ -52,6 +52,7 @@ impl Store {
             audit: Arc::new(crate::audit::AuditTrail::default()),
             series: Arc::new(crate::series::SeriesRegistry::default()),
             shards: Arc::new(crate::shards::ShardRegistry::default()),
+            decoded_tables: Arc::new(crate::catalog::DecodedTables::default()),
             served,
             expiring,
             public_appends: Arc::new(crate::topic::PublicRates::default()),

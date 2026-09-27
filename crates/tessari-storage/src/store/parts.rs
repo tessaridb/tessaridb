@@ -86,6 +86,11 @@ impl Store {
         &self.series
     }
 
+    /// Table definitions already decoded (`crate::catalog::decoded`).
+    pub(crate) fn decoded_tables(&self) -> &crate::catalog::DecodedTables {
+        &self.decoded_tables
+    }
+
     /// Which tables are split, and where.
     pub(crate) fn shards(&self) -> &Arc<crate::shards::ShardRegistry> {
         &self.shards

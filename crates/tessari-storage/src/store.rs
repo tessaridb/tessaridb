@@ -182,6 +182,8 @@ pub struct Store {
     /// feature only a series has.
     series: Arc<crate::series::SeriesRegistry>,
     shards: Arc<crate::shards::ShardRegistry>,
+    /// Table definitions already decoded, keyed by their stored bytes.
+    decoded_tables: Arc<crate::catalog::DecodedTables>,
     served: Arc<crate::served::Served>,
     /// Whether any record version in this store has ever carried an expiry
     /// (G035). See [`crate::lapse`] for why the commit path asks.

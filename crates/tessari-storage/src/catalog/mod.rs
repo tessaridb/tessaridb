@@ -27,6 +27,7 @@ mod consumer;
 // `pub(crate)` for the counter helpers: `crate::cardinality` stores a record
 // count with the same `count`/`count_of` pair the record sequence uses, so the
 // two per-table numbers are written and read one way rather than two.
+mod decoded;
 pub(crate) mod definition;
 mod edge_kind;
 mod failover;
@@ -54,6 +55,7 @@ pub use authority::{Authority, Held, Kind, Reach};
 pub(crate) use carried::{carried_to, home_of};
 pub(crate) use change::{CatalogChange, catalog_change, defined_index};
 pub use consumer::{ConsumerDefinition, Mapped, OnFailure};
+pub(crate) use decoded::DecodedTables;
 pub use definition::{
     CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, DatabaseDefinition, EdgeDeclaration, EdgeOrder,
     GEO_FIELD, IndexDefinition, IndexShape, NamespaceDefinition, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY,
@@ -522,10 +524,18 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     ///
     /// Returns an error when the stored definition cannot be read.
     pub fn table(&self, id: TableId) -> Result<Option<TableDefinition>> {
-        self.read(system::TABLES, id.get())?
-            .as_ref()
-            .map(TableDefinition::from_value)
-            .transpose()
+        // The row is read here, at this transaction's snapshot, as every catalog
+        // read is; only decoding it is shared (`decoded`).
+        let address: RecordAddress =
+            system::address(system::TABLES, RecordId::Int(id_key(id.get())));
+        let Some(stored) = self.transaction.get(&address)? else {
+            return Ok(None);
+        };
+        self.transaction
+            .store()
+            .decoded_tables()
+            .definition(&stored)
+            .map(Some)
     }
 
     /// Every namespace that has been created.
