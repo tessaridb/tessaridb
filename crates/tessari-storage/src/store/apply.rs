@@ -143,6 +143,10 @@ impl Store {
         // From the tail read to the apply, because the version this allocates is
         // the one a local commit allocates too (`crate::gate`).
         let _turn = self.writing.hold();
+        // And with nothing staged behind a local commit's turn still to land:
+        // this apply allocates the next version too, and writes its batch
+        // itself rather than staging it.
+        self.writing.land_all(self.backend.as_ref());
         let applied = self.committed_tail(log)?;
         if at.get() <= applied.get() {
             self.refuse_a_divergence(log, at, record.epoch())?;

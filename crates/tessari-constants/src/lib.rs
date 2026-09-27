@@ -27,6 +27,33 @@
 /// contended the store is — see that constant.
 pub const MAX_COMMIT_ATTEMPTS: u32 = 8;
 
+/// How many commits one group write may carry.
+///
+/// Unit: commits, counted as the flusher EXAMINES them and checked before it
+/// takes the next one — never as it emits them — so a full group never takes one
+/// more than this.
+///
+/// Concurrent commits share one engine write and one device sync (G040 SG4).
+/// The group takes whatever is staged when its flush starts and never waits for
+/// more, so under a writer that keeps up it is one commit and the bound is never
+/// met; it exists for the backlog, where an unbounded group would make one
+/// write — and every writer waiting on it — as long as the queue.
+///
+/// Sixty-four is provisional until measured on the `concurrent` workload.
+pub const MAX_GROUP_COMMITS: usize = 64;
+
+/// How many bytes of keys and values one group write may carry.
+///
+/// Unit: bytes, checked before the next commit is taken, so a group exceeds it
+/// by at most the one commit that crossed it.
+///
+/// Beside [`MAX_GROUP_COMMITS`] because either bound alone leaves the other
+/// unbounded: sixty-four commits of large values would make a group of hundreds
+/// of megabytes held in memory before it is written.
+///
+/// Four mebibytes is provisional in the same sense.
+pub const MAX_GROUP_BYTES: usize = 4 * 1024 * 1024;
+
 /// How long a commit waits before re-racing for the committed tail, doubling
 /// each time it loses.
 ///

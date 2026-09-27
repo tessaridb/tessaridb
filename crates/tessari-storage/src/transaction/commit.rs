@@ -632,7 +632,23 @@ impl Transaction<'_> {
                 return Ok(commit_at);
             }
 
-            match self.store.backend().apply(batch) {
+            // Staged rather than applied when the backend shares a sync
+            // between writes, and the turn handed on before the wait: the next
+            // writer derives on this batch while it is on its way to the
+            // device, and whoever finds no landing running lands every staged
+            // batch in one write (`crate::gate`). A backend with no sync to
+            // share is applied under the turn, as grouping would only cost it.
+            let backend = self.store.backend().as_ref();
+            let landed = if backend.groups_writes() {
+                let ticket = self.store.write_gate().stage(batch);
+                drop(turn);
+                self.store.write_gate().land(ticket, backend)
+            } else {
+                let applied = backend.apply(batch);
+                drop(turn);
+                applied
+            };
+            match landed {
                 Ok(()) => {
                     // Counted HERE and not where it was decided. The decision is
                     // re-taken on every attempt, so an attempt that loses its
@@ -644,7 +660,8 @@ impl Transaction<'_> {
                     }
                     return Ok(commit_at);
                 }
-                // The position moved between reading it and applying, so the
+                // The position moved between reading it and applying — or the
+                // batch was derived on a staged one that did not land — so the
                 // conflict check above was made against a stale state and the
                 // whole attempt is repeated rather than patched up — after
                 // waiting, so that this attempt does not re-race into the same
@@ -654,7 +671,6 @@ impl Transaction<'_> {
                     // per loser per attempt, and a retry that then succeeds is
                     // the design working rather than an event.
                     log::debug!("commit lost attempt {attempt}, retrying");
-                    drop(turn);
                     back_off(attempt);
                     continue;
                 }

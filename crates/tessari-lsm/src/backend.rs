@@ -40,6 +40,8 @@ use tessari_kv::{
     WriteBatch, WriteOp, delete_range_by_scanning,
 };
 
+mod group;
+
 use crate::error::{BACKEND_NAME, from_engine, from_open, missing_region};
 use crate::options::{Durability, StoreConfig, database_options, regions};
 
@@ -431,6 +433,15 @@ impl KvBackend for LsmBackend {
         self.database
             .write_opt(engine_batch, &self.durability.write_options())
             .map_err(|error| from_engine(&error))
+    }
+
+    fn apply_group(&self, batches: Vec<WriteBatch>) -> (usize, Result<()>) {
+        self.apply_grouped(batches)
+    }
+
+    fn groups_writes(&self) -> bool {
+        // Only a synced write has a sync to share.
+        self.durability == Durability::PowerLossSafe
     }
 
     /// One range tombstone, rather than one tombstone per key.

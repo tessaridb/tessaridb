@@ -42,8 +42,17 @@ impl Store {
         crate::node::ensure(&backend)?;
         let served = Arc::new(crate::served::Served::load(backend.as_ref())?);
         let expiring = Arc::new(crate::lapse::Expiring::load(backend.as_ref())?);
+        let writing = Arc::new(crate::gate::WriteGate::default());
         let store = Self {
-            backend,
+            // Every read the turn's holder makes sees what is staged behind it;
+            // every other read sees the engine alone (`crate::gate`). Only a
+            // backend that lands writes in groups has anything staged, so one
+            // that does not is read directly and pays nothing for the view.
+            backend: if backend.groups_writes() {
+                Arc::new(crate::gate::Overlaid::new(backend, Arc::clone(&writing)))
+            } else {
+                backend
+            },
             snapshots: Arc::new(Registry::default()),
             running: Arc::new(crate::running::Running::default()),
             // Sealed. A store that opened unsealed would be one that opens
@@ -65,7 +74,7 @@ impl Store {
             leading: Arc::new(std::sync::Mutex::new(None)),
             lines: Arc::new(crate::lines::Lines::default()),
             tailmarks: Arc::new(crate::tailmarks::TailMarks::default()),
-            writing: Arc::new(crate::gate::WriteGate::default()),
+            writing,
         };
         // Last, because it reads the catalog: the format is settled and the
         // identity exists by the time this asks which node it is.

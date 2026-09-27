@@ -30,19 +30,103 @@
 //! nothing half-written here — its batch either reached the engine whole or did
 //! not reach it — so the next writer takes the gate as it finds it rather than
 //! refusing every write for the rest of the process's life.
+//!
+//! # A turn ends at staging, not at the device
+//!
+//! A commit holds the turn while it derives its batch and hands the batch to
+//! [`pending`] rather than applying it, so the next writer derives while the
+//! one before it is still being synced — and a group of them lands in one
+//! write (G040 SG4). What a writer holding the turn reads includes what is
+//! pending ([`Overlaid`]); what anybody else reads does not.
 
+#[cfg(test)]
+mod group_tests;
+mod overlay;
+#[cfg(test)]
+mod overlay_tests;
+mod pending;
+
+use std::cell::Cell;
 use std::sync::{Mutex, MutexGuard, PoisonError};
+
+use tessari_kv::{KvBackend, WriteBatch};
+
+pub(crate) use overlay::Overlaid;
+pub(crate) use pending::Ticket;
+
+thread_local! {
+    /// The gate this thread holds the turn of, by address; zero for none.
+    static HOLDING: Cell<usize> = const { Cell::new(0) };
+}
 
 /// The turn every in-process writer of log records takes.
 #[derive(Debug, Default)]
 pub(crate) struct WriteGate {
     turn: Mutex<()>,
+    pending: pending::Pending,
+}
+
+/// A held turn. Dropping it hands the turn on.
+#[derive(Debug)]
+pub(crate) struct Turn<'a> {
+    _held: MutexGuard<'a, ()>,
+    before: usize,
+}
+
+impl Drop for Turn<'_> {
+    fn drop(&mut self) {
+        HOLDING.with(|holding| holding.set(self.before));
+    }
 }
 
 impl WriteGate {
     /// Wait for this writer's turn, holding it until the guard is dropped.
-    pub(crate) fn hold(&self) -> MutexGuard<'_, ()> {
-        self.turn.lock().unwrap_or_else(PoisonError::into_inner)
+    pub(crate) fn hold(&self) -> Turn<'_> {
+        let held = self.turn.lock().unwrap_or_else(PoisonError::into_inner);
+        let before = HOLDING.with(|holding| holding.replace(self.address()));
+        Turn {
+            _held: held,
+            before,
+        }
+    }
+
+    /// Hand a derived batch over to be landed with whatever else is staged.
+    /// Called holding the turn; the answer comes from [`Self::land`].
+    pub(crate) fn stage(&self, batch: WriteBatch) -> Ticket {
+        self.pending.stage(batch)
+    }
+
+    /// Wait for a staged batch to land, landing a group when nobody else is.
+    /// Called after the turn is released.
+    ///
+    /// # Errors
+    ///
+    /// The batch's own failure, or the retryable conflict when it was derived
+    /// on a batch that did not land.
+    pub(crate) fn land(&self, ticket: Ticket, backend: &dyn KvBackend) -> tessari_kv::Result<()> {
+        self.pending.land(ticket, backend)
+    }
+
+    /// Land everything pending. For a writer holding the turn that applies its
+    /// own batch — a replica's apply — so that it allocates from a store with
+    /// nothing in flight.
+    pub(crate) fn land_all(&self, backend: &dyn KvBackend) {
+        self.pending.land_all(backend);
+    }
+
+    /// How many commits are staged and not yet in flight.
+    #[cfg(test)]
+    pub(crate) fn staged(&self) -> usize {
+        self.pending.staged()
+    }
+
+    /// Whether this thread holds the turn.
+    fn held_here(&self) -> bool {
+        HOLDING.with(Cell::get) == self.address()
+    }
+
+    fn address(&self) -> usize {
+        std::ptr::from_ref(self).addr()
     }
 }
 
