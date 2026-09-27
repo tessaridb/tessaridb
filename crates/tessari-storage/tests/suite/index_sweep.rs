@@ -497,7 +497,8 @@ fn tags(rolls: &mut Rolls) -> Value {
     }
 }
 
-/// One workload step: a write, a write of a record missing a field, or a delete.
+/// One workload step: a write, a write of a record missing a field, a rewrite of
+/// only an unindexed field, or a delete.
 fn step(fixture: &Fixture, rolls: &mut Rolls) {
     let n = rolls.below(RECORDS);
     let address = fixture.at(n);
@@ -513,6 +514,23 @@ fn step(fixture: &Fixture, rolls: &mut Rolls) {
                 "name".to_owned(),
                 Value::from(format!("n{}", rolls.below(VALUES))),
             )]);
+            transaction.put(address, encode_payload(&Value::Object(fields)).into_bytes());
+        }
+        4 => {
+            // A rewrite that moves only the unindexed `name`: every index keeps
+            // its entries as they are, which is the path an update skips index
+            // work on. A record that is not there is written whole instead.
+            let current = transaction.get(&address).unwrap();
+            let fields = match current.map(|held| decode_payload(&held).unwrap()) {
+                Some(Value::Object(mut fields)) => {
+                    fields.insert(
+                        "name".to_owned(),
+                        Value::from(format!("n{}", rolls.below(VALUES))),
+                    );
+                    fields
+                }
+                _ => BTreeMap::from([("name".to_owned(), Value::from("fresh"))]),
+            };
             transaction.put(address, encode_payload(&Value::Object(fields)).into_bytes());
         }
         3 => {

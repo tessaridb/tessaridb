@@ -36,6 +36,8 @@ mod followers;
 mod gate;
 mod graph;
 mod index;
+#[cfg(test)]
+mod index_unchanged_tests;
 mod lapse;
 mod lease;
 mod lines;
