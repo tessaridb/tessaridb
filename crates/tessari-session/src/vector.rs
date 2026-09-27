@@ -47,26 +47,33 @@ use tessari_types::{Number, Value};
 /// Anything that is not a pair of same-length vectors is infinitely far; see the
 /// module documentation for why that is a distance rather than an absence.
 pub(crate) fn distance(function: Function, left: &Value, right: &Value) -> Value {
-    let (Some(left), Some(right)) = (numbers(left), numbers(right)) else {
+    let (Value::Array(left), Value::Array(right)) = (left, right) else {
         return unreachable_distance();
     };
     if left.is_empty() || left.len() != right.len() {
         return unreachable_distance();
     }
-
-    let dot: f64 = left.iter().zip(right.iter()).map(|(a, b)| a * b).sum();
+    // One pass over both, allocating nothing: a nearest-neighbour scan calls
+    // this once per record, and collecting each side into a vector of floats
+    // first — the query's own side again on every record — was a sixth of the
+    // scan (G040 M6). Every sum starts at `-0.0` and adds in component order,
+    // which is exactly what `Iterator::sum` does, so the answers are the same
+    // floats to the bit.
+    let (mut dot, mut squared, mut left_norm, mut right_norm) = (-0.0, -0.0, -0.0, -0.0);
+    for (a, b) in left.iter().zip(right) {
+        let (Some(a), Some(b)) = (approximate(a), approximate(b)) else {
+            return unreachable_distance();
+        };
+        dot += a * b;
+        squared += (a - b) * (a - b);
+        left_norm += a * a;
+        right_norm += b * b;
+    }
     match function {
         Function::VectorDot => Value::Number(Number::float(dot)),
-        Function::VectorEuclidean => {
-            let squared: f64 = left
-                .iter()
-                .zip(right.iter())
-                .map(|(a, b)| (a - b) * (a - b))
-                .sum();
-            Value::Number(Number::float(squared.sqrt()))
-        }
+        Function::VectorEuclidean => Value::Number(Number::float(squared.sqrt())),
         Function::VectorCosine => {
-            let magnitude = norm(&left) * norm(&right);
+            let magnitude = left_norm.sqrt() * right_norm.sqrt();
             if magnitude == 0.0 {
                 // A zero vector points nowhere, so there is no angle to it —
                 // and no angle is as far away as it gets.
@@ -83,14 +90,6 @@ fn unreachable_distance() -> Value {
     Value::Number(Number::float(f64::INFINITY))
 }
 
-/// The vector a value holds, if it holds one.
-fn numbers(value: &Value) -> Option<Vec<f64>> {
-    let Value::Array(items) = value else {
-        return None;
-    };
-    items.iter().map(approximate).collect()
-}
-
 /// One component as a float, refusing anything that is not a number.
 fn approximate(value: &Value) -> Option<f64> {
     match value {
@@ -100,10 +99,6 @@ fn approximate(value: &Value) -> Option<f64> {
             .and_then(|exact| f64::try_from(exact).ok()),
         _ => None,
     }
-}
-
-fn norm(vector: &[f64]) -> f64 {
-    vector.iter().map(|held| held * held).sum::<f64>().sqrt()
 }
 
 #[cfg(test)]
@@ -170,6 +165,100 @@ mod tests {
             ),
             11.0
         ));
+    }
+
+    /// The implementation this one replaced, kept as the oracle: each side
+    /// collected into floats, then summed with `Iterator::sum`.
+    fn collected(function: Function, left: &Value, right: &Value) -> Value {
+        fn numbers(value: &Value) -> Option<Vec<f64>> {
+            let Value::Array(items) = value else {
+                return None;
+            };
+            items.iter().map(super::approximate).collect()
+        }
+        fn norm(vector: &[f64]) -> f64 {
+            vector.iter().map(|held| held * held).sum::<f64>().sqrt()
+        }
+        let (Some(left), Some(right)) = (numbers(left), numbers(right)) else {
+            return super::unreachable_distance();
+        };
+        if left.is_empty() || left.len() != right.len() {
+            return super::unreachable_distance();
+        }
+        let dot: f64 = left.iter().zip(right.iter()).map(|(a, b)| a * b).sum();
+        match function {
+            Function::VectorDot => Value::Number(Number::float(dot)),
+            Function::VectorEuclidean => {
+                let squared: f64 = left
+                    .iter()
+                    .zip(right.iter())
+                    .map(|(a, b)| (a - b) * (a - b))
+                    .sum();
+                Value::Number(Number::float(squared.sqrt()))
+            }
+            Function::VectorCosine => {
+                let magnitude = norm(&left) * norm(&right);
+                if magnitude == 0.0 {
+                    return super::unreachable_distance();
+                }
+                Value::Number(Number::float(1.0 - dot / magnitude))
+            }
+            _ => super::unreachable_distance(),
+        }
+    }
+
+    fn bits(value: &Value) -> u64 {
+        match value {
+            Value::Number(Number::Float(held)) => held.to_bits(),
+            other => panic!("a distance answered {other:?}"),
+        }
+    }
+
+    #[test]
+    fn one_pass_answers_the_same_floats_as_collecting_first() {
+        // Components drawn from a fixed sequence: floats of every sign and
+        // scale, exact decimals, zeros, and now and then something that is not
+        // a number, over lengths that sometimes differ.
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let component = |next: &mut dyn FnMut() -> u64| -> Value {
+            let draw = next();
+            let magnitude = f64::from(u32::try_from(draw >> 40).unwrap_or(0)) / 1024.0 - 8192.0;
+            match draw % 11 {
+                0 => Value::Number(Number::float(0.0)),
+                1 => Value::Number(Number::Decimal(rust_decimal::Decimal::new(
+                    i64::try_from(draw >> 44).unwrap_or(0) - 500_000,
+                    4,
+                ))),
+                2 if draw % 7 == 0 => Value::from("x"),
+                _ => Value::Number(Number::float(magnitude)),
+            }
+        };
+        let mut compared = 0_u32;
+        for _ in 0..4_000 {
+            let length = usize::try_from(next() % 9).unwrap_or(0);
+            let other = if next() % 13 == 0 { length + 1 } else { length };
+            let left = Value::Array((0..length).map(|_| component(&mut next)).collect());
+            let right = Value::Array((0..other).map(|_| component(&mut next)).collect());
+            for function in [
+                Function::VectorCosine,
+                Function::VectorEuclidean,
+                Function::VectorDot,
+            ] {
+                assert_eq!(
+                    bits(&distance(function, &left, &right)),
+                    bits(&collected(function, &left, &right)),
+                    "{function:?} {left:?} {right:?}"
+                );
+                compared += 1;
+            }
+        }
+        assert_eq!(compared, 12_000);
     }
 
     fn unreachable(value: &Value) -> bool {
