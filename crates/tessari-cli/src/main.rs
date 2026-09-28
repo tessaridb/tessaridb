@@ -317,9 +317,9 @@ fn serve(
         }
         None => None,
     };
-    // Taken here because `peers` is moved into the peer threads further down,
+    // Taken here because `peers` is moved into the peer tasks further down,
     // while the surface that needs it is bound in between. Both ends hold the
-    // same `Published`: the dialling thread swaps a new round in, and every
+    // same `Published`: the greeting round swaps a new round in, and every
     // session this node opens reads whatever the last completed round left.
     let routing = peers
         .as_ref()
@@ -455,12 +455,12 @@ fn serve(
             wake: Box::new(move || stop.cancel()),
         });
     }
-    // The peer door's own flag, made here rather than owned by the door,
-    // because the cadences that read it live in this binary. Counted alongside
+    // The peer surface's own counts, made here rather than owned by the door,
+    // because the cadences beside it live in this binary. Counted alongside
     // the others so a drain waits on it and a scrape reports it, for the reason
     // the census is shared at all: what a shutdown waits on and what a reader
-    // sees must be one set of numbers. The door itself stops on the token, as
-    // the two client surfaces do.
+    // sees must be one set of numbers. The door and the cadences stop on the
+    // token, as the two client surfaces do.
     let peering = tessari_serve::Stopping::new();
     let peer_stops = tokio_util::sync::CancellationToken::new();
     if peers.is_some() {
@@ -497,205 +497,218 @@ fn serve(
     // log grows with nothing to collect it. The cadence that bounds a disk
     // cannot be one only a cluster has.
     let housekeeping = tessari_serve::Stopping::new();
-    surfaces.push(shutdown::Surface {
-        name: "housekeeping",
-        stopping: std::sync::Arc::clone(&housekeeping),
-        // Nothing to interrupt: the loop is asleep for a quarter of a second at
-        // a time and reads the flag between naps, so it leaves on its own.
-        wake: Box::new(|| {}),
-    });
-    let keeping = {
-        let db = std::sync::Arc::clone(&db);
-        let stopping = std::sync::Arc::clone(&housekeeping);
-        std::thread::spawn(move || {
-            supervise::supervised("housekeeping", &stopping, || keep_house(&db, &stopping));
-        })
-    };
-
-    // Its own thread rather than an arm of the scope below, so that the peer
-    // door runs whichever of the two client surfaces was asked for — including
-    // neither combination the match has to spell out. It holds a handle on the
-    // store, so it is joined before the store is dropped and not after.
-    let peer_threads = peers.map(|surface| {
-        let Peering {
-            door,
-            seeds,
-            dialling,
-            authority,
-            routing,
-        } = surface;
-        // One copy per cadence, because the two threads that read them outlive
-        // each other independently: the greeting round dials the seeds while
-        // the catalog names nobody, and the collection round pulls from one of
-        // them on the same condition.
-        let collecting_seeds = seeds.clone();
-        let dialling_seeds = seeds;
-        // One voting memory, held by the door and by the campaign alike. A
-        // node votes in two places — a peer's ballot arrives at the door, its
-        // own arrives at home — and *a voter grants an epoch at most once* is a
-        // statement about the node rather than about whichever thread happens to
-        // hold the variable. Two memories would let this node grant one epoch
-        // twice and hand two candidates an honest majority each.
-        let deciding = std::sync::Arc::new(tessari_wire::Deciding::started());
-        // Served on the runtime, each peer in its own task (ADR-0085 §7); this
-        // thread only supervises it, so a door that panicked is started again
-        // exactly as the loop it replaced was.
-        let answering = {
-            let db = std::sync::Arc::clone(&db);
-            let stopping = std::sync::Arc::clone(&peering);
-            let deciding = std::sync::Arc::clone(&deciding);
-            let runtime = runtime.handle().clone();
-            let stop = peer_stops.clone();
-            std::thread::spawn(move || {
-                // Settled once: an identity is fixed when the store is
-                // initialised, and a node that cannot say who it is cannot
-                // admit anybody either.
-                let me = match db.store().node_identity() {
-                    Ok(identity) => identity.id,
-                    Err(why) => {
-                        log::warn!("the peer door cannot say who this node is: {why}");
-                        return;
-                    }
-                };
-                let holding = std::sync::Arc::new(PeerDoor { db });
-                supervise::supervised("the peer door", &stopping, || {
-                    let served = runtime.block_on(door.serve(
-                        stop.clone(),
-                        me,
-                        std::sync::Arc::clone(&deciding),
-                        std::sync::Arc::clone(&holding),
-                    ));
-                    match served {
-                        Ok(()) => {}
-                        // The store itself would not answer. The door ends
-                        // rather than failing every peer in turn, and the client
-                        // surfaces are untouched.
-                        Err(why @ tessari_wire::Error::NothingToSay(_)) => {
-                            log::warn!("the peer door cannot say what this node holds: {why}");
-                        }
-                        Err(why) => {
-                            log::error!("the peer door failed ({why}); the node ends here");
-                            std::process::abort();
-                        }
-                    }
-                });
-            })
-        };
-        // A second thread, because the first one is inside `accept` for as long
-        // as no peer calls: a node that only answers learns nothing about a
-        // cluster that has stopped calling it. They share one flag, so the peer
-        // surface stops as one thing.
-        let collecting_credential = dialling.duplicate();
-        let collecting_authority = authority.clone();
-        // A third holder of the same `Published`. The greeting round writes it,
-        // the sessions read it for staleness routing, and the collection cadence
-        // now reads it to decide whose records to pull — which is the whole of
-        // ADR-0065: the catalog says who may be followed, the greeting says
-        // which of them is the origin right now.
-        let collecting_routing = std::sync::Arc::clone(&routing);
-        // A fourth holder, and the last reader the awareness round gains. A node
-        // that can hear a leader does not stand against it (ADR-0066) — without
-        // this the campaign cadence sees only its own lease, and a follower that
-        // has none stands every second, granting an epoch to itself each time
-        // and refusing the real leader's renewal for a whole TTL.
-        let standing_routing = std::sync::Arc::clone(&routing);
-        let standing_credential = dialling.duplicate();
-        let standing_authority = authority.clone();
-        let dialling = {
-            let db = std::sync::Arc::clone(&db);
-            let stopping = std::sync::Arc::clone(&peering);
-            std::thread::spawn(move || {
-                supervise::supervised("the greeting round", &stopping, || {
-                    dial_peers(
-                        &db,
-                        &dialling,
-                        &authority,
-                        &dialling_seeds,
-                        &routing,
-                        &stopping,
-                    );
-                });
-            })
-        };
-        // A third, and for the reason `driver.rs` opens with: a missed greeting
-        // costs the freshness of a routing reading while a missed collection
-        // costs data, and a collection blocked on a dead peer's TCP connect
-        // would otherwise hold up a greeting round that has nothing to do with
-        // it.
-        let collecting = {
-            let db = std::sync::Arc::clone(&db);
-            let stopping = std::sync::Arc::clone(&peering);
-            std::thread::spawn(move || {
-                supervise::supervised("the collection round", &stopping, || {
-                    collect_from_upstream(
-                        &db,
-                        &collecting_credential,
-                        &collecting_authority,
-                        &collecting_seeds,
-                        &collecting_routing,
-                        &stopping,
-                    );
-                });
-            })
-        };
-        // A fourth, and the last of the three cadences `driver.rs` names. A
-        // missed renewal costs *leadership*, and it costs it on the tightest
-        // deadline of the three — a fence that shuts whether or not anyone
-        // noticed. Sharing a thread with a collection blocked on a dead peer's
-        // TCP connect is precisely how a healthy leader would lose a lease it
-        // could have renewed.
-        let standing = {
-            let db = std::sync::Arc::clone(&db);
-            let stopping = std::sync::Arc::clone(&peering);
-            std::thread::spawn(move || {
-                supervise::supervised("the leadership round", &stopping, || {
-                    stand_for_leadership(
-                        &db,
-                        &standing_credential,
-                        &standing_authority,
-                        &deciding,
-                        &standing_routing,
-                        &stopping,
-                    );
-                });
-            })
-        };
-        (answering, dialling, collecting, standing)
-    });
-
-    match (wire, http) {
-        // A thread for one and this thread for the other: two listeners, one
-        // store, and the runtime holds neither of them yet. The watcher is a
-        // third, and it is what turns the stop token into the stages.
-        (Some(wire), Some(http)) => std::thread::scope(|scope| {
-            scope.spawn(|| shutdown::watch(&runtime, &asked, &surfaces, quiet.as_ref()));
-            scope.spawn(|| supervise::http(&runtime, &http, &http_stops));
-            supervise::wire(&runtime, &wire, &wire_stops);
-        }),
-        (Some(wire), None) => std::thread::scope(|scope| {
-            scope.spawn(|| shutdown::watch(&runtime, &asked, &surfaces, quiet.as_ref()));
-            supervise::wire(&runtime, &wire, &wire_stops);
-        }),
-        (None, Some(http)) => std::thread::scope(|scope| {
-            scope.spawn(|| shutdown::watch(&runtime, &asked, &surfaces, quiet.as_ref()));
-            supervise::http(&runtime, &http, &http_stops);
-        }),
-        // Unreachable through the parser, which sets `Source::Serve` only when
-        // an address was given — said here rather than assumed, because the two
-        // are far enough apart to drift.
-        (None, None) => return Err("--serve or --http wants an address".to_owned()),
+    let house_stops = tokio_util::sync::CancellationToken::new();
+    {
+        let stop = house_stops.clone();
+        surfaces.push(shutdown::Surface {
+            name: "housekeeping",
+            stopping: std::sync::Arc::clone(&housekeeping),
+            // The cadence waits on this token between rounds, so cancelling it
+            // is all a stop has to do.
+            wake: Box::new(move || stop.cancel()),
+        });
     }
-    // Before the store, not after, and for the reason the consumers are: this
-    // thread holds an `Arc` on the store, so `drop(db)` below would release one
-    // handle of two and flush nothing until it ended.
-    if let Some((answering, dialling, collecting, standing)) = peer_threads {
-        drop(answering.join());
-        drop(dialling.join());
-        drop(collecting.join());
-        drop(standing.join());
+
+    // Unreachable through the parser, which sets `Source::Serve` only when an
+    // address was given — said here rather than assumed, because the two are
+    // far enough apart to drift. Checked before anything is started, so a
+    // refusal leaves nothing running behind it.
+    if wire.is_none() && http.is_none() {
+        return Err("--serve or --http wants an address".to_owned());
     }
-    // Before the store, for the reason the peer threads are: it holds a handle.
-    drop(keeping.join());
+    let wire = wire.map(std::sync::Arc::new);
+    let http = http.map(std::sync::Arc::new);
+
+    // Everything this process runs lives on the one runtime: the listeners,
+    // the peer door, the cadences and the stages that stop them. The store is
+    // reached from the runtime's blocking pool, never from a worker.
+    runtime.block_on(async {
+        // The node's own work — housekeeping, the peer door and the cluster
+        // rounds — each under a supervisor that starts it again after a panic.
+        // Joined before the store is dropped, because each holds a handle on it.
+        let mut hosting = tokio::task::JoinSet::new();
+        {
+            let db = std::sync::Arc::clone(&db);
+            let stop = house_stops.clone();
+            hosting.spawn(supervise::supervised(
+                "housekeeping",
+                house_stops.clone(),
+                move || keep_house(std::sync::Arc::clone(&db), stop.clone()),
+            ));
+        }
+
+        if let Some(surface) = peers {
+            let Peering {
+                door,
+                seeds,
+                dialling,
+                authority,
+                routing,
+            } = surface;
+            // One voting memory, held by the door and by the campaign alike. A
+            // node votes in two places — a peer's ballot arrives at the door,
+            // its own arrives at home — and *a voter grants an epoch at most
+            // once* is a statement about the node rather than about whichever
+            // task happens to hold the variable. Two memories would let this
+            // node grant one epoch twice and hand two candidates an honest
+            // majority each.
+            let deciding = std::sync::Arc::new(tessari_wire::Deciding::started());
+            // Served on the runtime, each peer in its own task (ADR-0085 §7);
+            // its supervisor starts it again after a panic, as every cadence is.
+            {
+                let db = std::sync::Arc::clone(&db);
+                let deciding = std::sync::Arc::clone(&deciding);
+                let stop = peer_stops.clone();
+                let door = std::sync::Arc::new(door);
+                hosting.spawn(async move {
+                    // Settled once: an identity is fixed when the store is
+                    // initialised, and a node that cannot say who it is cannot
+                    // admit anybody either.
+                    let asking = std::sync::Arc::clone(&db);
+                    let me =
+                        match tokio::task::spawn_blocking(move || asking.store().node_identity())
+                            .await
+                        {
+                            Ok(Ok(identity)) => identity.id,
+                            Ok(Err(why)) => {
+                                log::warn!("the peer door cannot say who this node is: {why}");
+                                return;
+                            }
+                            Err(why) => {
+                                log::warn!("the peer door cannot say who this node is: {why}");
+                                return;
+                            }
+                        };
+                    let holding = std::sync::Arc::new(PeerDoor { db });
+                    supervise::supervised("the peer door", stop.clone(), move || {
+                        let door = std::sync::Arc::clone(&door);
+                        let stop = stop.clone();
+                        let deciding = std::sync::Arc::clone(&deciding);
+                        let holding = std::sync::Arc::clone(&holding);
+                        async move {
+                            match door.serve(stop, me, deciding, holding).await {
+                                Ok(()) => {}
+                                // The store itself would not answer. The door
+                                // ends rather than failing every peer in turn,
+                                // and the client surfaces are untouched.
+                                Err(why @ tessari_wire::Error::NothingToSay(_)) => {
+                                    log::warn!(
+                                        "the peer door cannot say what this node holds: {why}"
+                                    );
+                                }
+                                Err(why) => {
+                                    log::error!("the peer door failed ({why}); the node ends here");
+                                    std::process::abort();
+                                }
+                            }
+                        }
+                    })
+                    .await;
+                });
+            }
+            // The three cadences `driver.rs` names, each a task of its own: a
+            // missed greeting costs the freshness of a routing reading, a missed
+            // collection costs data, and a missed renewal costs leadership on
+            // the tightest deadline of the three — so a collection blocked on a
+            // dead peer's TCP connect must hold up neither of the others.
+            //
+            // The routing directory has three readers besides the sessions: the
+            // greeting round writes it, the collection round reads it to decide
+            // whose records to pull (ADR-0065), and the campaign reads it so a
+            // node that can hear a leader does not stand against it (ADR-0066).
+            {
+                let db = std::sync::Arc::clone(&db);
+                let stop = peer_stops.clone();
+                let (mine, authority, seeds, routing) = (
+                    dialling.duplicate(),
+                    authority.clone(),
+                    seeds.clone(),
+                    std::sync::Arc::clone(&routing),
+                );
+                hosting.spawn(supervise::supervised(
+                    "the greeting round",
+                    peer_stops.clone(),
+                    move || {
+                        dial_peers(
+                            std::sync::Arc::clone(&db),
+                            mine.duplicate(),
+                            authority.clone(),
+                            seeds.clone(),
+                            std::sync::Arc::clone(&routing),
+                            stop.clone(),
+                        )
+                    },
+                ));
+            }
+            {
+                let db = std::sync::Arc::clone(&db);
+                let stop = peer_stops.clone();
+                let (mine, authority, seeds, routing) = (
+                    dialling.duplicate(),
+                    authority.clone(),
+                    seeds.clone(),
+                    std::sync::Arc::clone(&routing),
+                );
+                hosting.spawn(supervise::supervised(
+                    "the collection round",
+                    peer_stops.clone(),
+                    move || {
+                        collect_from_upstream(
+                            std::sync::Arc::clone(&db),
+                            mine.duplicate(),
+                            authority.clone(),
+                            seeds.clone(),
+                            std::sync::Arc::clone(&routing),
+                            stop.clone(),
+                        )
+                    },
+                ));
+            }
+            {
+                let db = std::sync::Arc::clone(&db);
+                let stop = peer_stops.clone();
+                hosting.spawn(supervise::supervised(
+                    "the leadership round",
+                    peer_stops.clone(),
+                    move || {
+                        stand_for_leadership(
+                            std::sync::Arc::clone(&db),
+                            dialling.duplicate(),
+                            authority.clone(),
+                            std::sync::Arc::clone(&deciding),
+                            std::sync::Arc::clone(&routing),
+                            stop.clone(),
+                        )
+                    },
+                ));
+            }
+        }
+
+        // The listeners end when the stage that refuses new connections
+        // cancels their tokens; a listener that fails or panics ends the node.
+        let mut listening = tokio::task::JoinSet::new();
+        if let Some(node) = wire {
+            let stop = wire_stops.clone();
+            listening.spawn(supervise::listener("wire", async move {
+                node.serve(stop).await
+            }));
+        }
+        if let Some(node) = http {
+            let stop = http_stops.clone();
+            listening.spawn(supervise::listener("http", async move {
+                node.serve(stop).await
+            }));
+        }
+        // The watcher is what turns the stop token into the stages, and it runs
+        // beside the listeners it stops.
+        tokio::join!(shutdown::watch(&asked, &surfaces, quiet.as_ref()), async {
+            while listening.join_next().await.is_some() {}
+        });
+        // Before the store, not after: every one of these holds an `Arc` on it,
+        // so `drop(db)` below would release one handle of several and flush
+        // nothing until they ended.
+        while hosting.join_next().await.is_some() {}
+    });
     // Before the store, not after. Stage 1 told the consumers to stop and did
     // not wait; this is the wait. Joining after `drop(db)` would flush the store
     // and release its lock while threads were still writing through it.
@@ -722,25 +735,21 @@ fn serve(
 /// thing to do quietly, and the line is the only place an operator sees that the
 /// number they set is actually being enforced.
 ///
-/// # Why it naps rather than sleeping the period
+/// # Why a stop does not wait out the period
 ///
-/// `tessari_wire::every` sleeps the whole period and reads the flag once per
-/// round, which the peer cadences can afford because a clustered node is already
-/// paying that on the way out. A standalone node was not paying it at all, and
-/// adding ten seconds to every `docker stop` in exchange for a cleanup nobody is
-/// waiting on would be a bad trade made invisibly.
-fn keep_house(db: &Db, stopping: &tessari_serve::Stopping) {
-    /// How long the thread sleeps between reading the flag.
-    const NAP: std::time::Duration = std::time::Duration::from_millis(250);
-
-    let period = std::time::Duration::from_secs(tessari_constants::AWARENESS_SECONDS);
-    // Due immediately, so a node started with a retention already set enforces
-    // it at once rather than a cadence later. A store opened after an outage may
-    // have a great deal to remove, and making it wait is the one moment the
-    // delay is least affordable.
-    let mut due = std::time::Instant::now();
-    while !stopping.asked() {
-        if std::time::Instant::now() >= due {
+/// The cadence's wait ends the moment the token is cancelled, so a standalone
+/// node — which runs no peer cadence and so was never paying a period on the
+/// way out — adds nothing to a `docker stop` for a cleanup nobody is waiting on.
+///
+/// It runs at once rather than a period after start, so a node started with a
+/// retention already set enforces it at once. A store opened after an outage
+/// may have a great deal to remove, and making it wait is the one moment the
+/// delay is least affordable.
+async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::CancellationToken) {
+    tessari_wire::every(
+        std::time::Duration::from_secs(tessari_constants::AWARENESS_SECONDS),
+        &stop,
+        move |_| {
             match db.store().trim_logs() {
                 Ok(Some(trimmed)) if trimmed.records > 0 => log::info!(
                     "pruned {} log record(s) across {} log(s) to the retained count",
@@ -771,10 +780,9 @@ fn keep_house(db: &Db, stopping: &tessari_serve::Stopping) {
                 }
                 Err(why) => log::warn!("this node cannot remove expired records: {why}"),
             }
-            due = std::time::Instant::now().checked_add(period).unwrap_or(due);
-        }
-        std::thread::sleep(NAP);
-    }
+        },
+    )
+    .await;
 }
 
 /// The peer surface, once the door is open.
@@ -797,7 +805,7 @@ struct Peering {
     dialling: tessari_wire::Credential,
     /// The one root every peer in this cluster is issued by.
     authority: tessari_wire::CertificateDer<'static>,
-    /// What the dialling thread writes and the client surface reads.
+    /// What the greeting round writes and the client surface reads.
     ///
     /// One of these, shared, and that sharing is the point of the field: a
     /// directory written by a thread nobody reads from is an accumulator, and
@@ -832,18 +840,20 @@ struct Peering {
 /// a healthy node out of all routing. A round in which nobody answered is a
 /// cluster in trouble rather than an operation that went wrong, so it is logged
 /// and the cadence runs again.
-fn dial_peers(
-    db: &Db,
-    mine: &tessari_wire::Credential,
-    authority: &tessari_wire::CertificateDer<'static>,
-    seeds: &[tessari_wire::Seed],
-    published: &tessari_wire::Published,
-    stopping: &tessari_serve::Stopping,
+async fn dial_peers(
+    db: std::sync::Arc<Db>,
+    mine: tessari_wire::Credential,
+    authority: tessari_wire::CertificateDer<'static>,
+    seeds: Vec<tessari_wire::Seed>,
+    published: std::sync::Arc<tessari_wire::Published>,
+    stop: tokio_util::sync::CancellationToken,
 ) {
     tessari_wire::every(
         std::time::Duration::from_secs(tessari_constants::AWARENESS_SECONDS),
-        stopping,
-        |now| {
+        &stop,
+        move |now| {
+            let (db, mine, authority, seeds, published) =
+                (&*db, &mine, &authority, &seeds[..], &*published);
             // Read through the pieces the facade already publishes rather than
             // through a new `Db` method: `Db::store` and `Store::begin` are both
             // public, so a `Db::declared_peers` would be a second name for a
@@ -928,7 +938,8 @@ fn dial_peers(
                 log::info!("{reached} of {dialled} {kind}(s) answered");
             }
         },
-    );
+    )
+    .await;
 }
 
 /// Collect the records this node does not hold, once per collection interval.
@@ -962,13 +973,13 @@ fn dial_peers(
 /// the cursor alone and are logged. The node goes on serving what it holds, and
 /// its copy goes on ageing, which is exactly what a staleness bound is there to
 /// notice.
-fn collect_from_upstream(
-    db: &Db,
-    mine: &tessari_wire::Credential,
-    authority: &tessari_wire::CertificateDer<'static>,
-    seeds: &[tessari_wire::Seed],
-    published: &tessari_wire::Published,
-    stopping: &tessari_serve::Stopping,
+async fn collect_from_upstream(
+    db: std::sync::Arc<Db>,
+    mine: tessari_wire::Credential,
+    authority: tessari_wire::CertificateDer<'static>,
+    seeds: Vec<tessari_wire::Seed>,
+    published: std::sync::Arc<tessari_wire::Published>,
+    stop: tokio_util::sync::CancellationToken,
 ) {
     // One cursor per log. A node holds one log per home, and which logs it
     // should ask for is not fixed at start: a namespace arrives by collection,
@@ -982,8 +993,10 @@ fn collect_from_upstream(
     > = std::collections::BTreeMap::new();
     tessari_wire::every(
         std::time::Duration::from_secs(tessari_constants::COLLECTION_SECONDS),
-        stopping,
-        |_| {
+        &stop,
+        move |_| {
+            let (db, mine, authority, seeds, published) =
+                (&*db, &mine, &authority, &seeds[..], &*published);
             let store = db.store();
             let roles = match store.effective_roles() {
                 Ok(roles) => roles,
@@ -1123,7 +1136,8 @@ fn collect_from_upstream(
                 }
             }
         },
-    );
+    )
+    .await;
 }
 
 /// Collect each placed range this node does not lead from that range's leader
@@ -1243,13 +1257,13 @@ fn collect_placed_ranges(
 /// while there was still margin asked nobody at all. Standing down on that would
 /// make a healthy leader resign on a timer. What ends a leadership is the fence,
 /// which the store closes on its own.
-fn stand_for_leadership(
-    db: &Db,
-    mine: &tessari_wire::Credential,
-    authority: &tessari_wire::CertificateDer<'static>,
-    voter: &tessari_wire::Deciding,
-    published: &tessari_wire::Published,
-    stopping: &tessari_serve::Stopping,
+async fn stand_for_leadership(
+    db: std::sync::Arc<Db>,
+    mine: tessari_wire::Credential,
+    authority: tessari_wire::CertificateDer<'static>,
+    voter: std::sync::Arc<tessari_wire::Deciding>,
+    published: std::sync::Arc<tessari_wire::Published>,
+    stop: tokio_util::sync::CancellationToken,
 ) {
     let started = std::time::Instant::now();
     // The placed range's line, with its own cursor (ADR-0082). `None` until the
@@ -1268,8 +1282,10 @@ fn stand_for_leadership(
     });
     tessari_wire::every(
         std::time::Duration::from_secs(tessari_constants::CAMPAIGN_SECONDS),
-        stopping,
-        |now| {
+        &stop,
+        move |now| {
+            let (db, mine, authority, voter, published) =
+                (&*db, &mine, &authority, &*voter, &*published);
             let store = db.store();
             // Identity first, and the catalog only once this node is known to
             // stand. Reading the roles costs a record; reading every replica the
@@ -1447,7 +1463,8 @@ fn stand_for_leadership(
                 }
             }
         },
-    );
+    )
+    .await;
 }
 
 /// Everything one campaign tick knows about who is standing and to whom.

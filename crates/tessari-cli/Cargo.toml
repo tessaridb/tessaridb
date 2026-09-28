@@ -50,6 +50,8 @@ tessari-kv.workspace = true
 # Already in the tree through `tessari-lsm`; the process-level test needs a
 # directory that cleans itself up when the node it served is killed.
 tempfile = "3"
+# The supervisor's restart pause is tested on a paused clock.
+tokio = { workspace = true, features = ["rt-multi-thread", "signal", "macros", "test-util"] }
 
 [lints]
 workspace = true

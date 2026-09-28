@@ -53,9 +53,9 @@ use std::time::{Duration, Instant};
 /// How long to wait between checks while draining.
 ///
 /// Short enough that a shutdown of an idle node is not perceptibly delayed, long
-/// enough that draining is not a spin. This parks the thread rather than
-/// yielding: a drain waits far longer than a scheduler quantum, and yielding for
-/// that long burns a core to no purpose.
+/// enough that draining is not a spin. The drain sleeps on the runtime's timer
+/// rather than yielding: it waits far longer than a scheduler quantum, and
+/// yielding for that long burns a core to no purpose.
 const GLANCE: Duration = Duration::from_millis(10);
 
 /// The state a stopping process shares with its surfaces.
@@ -183,16 +183,17 @@ impl Stopping {
     ///
     /// Waits on requests **only**. Feeds are stage 3 and waiting for them here
     /// is the mistake this type exists to make impossible.
-    #[must_use]
-    pub fn drain(&self, patience: Duration) -> Drained {
-        let began = Instant::now();
+    ///
+    /// Must be awaited inside a Tokio runtime with its timer enabled.
+    pub async fn drain(&self, patience: Duration) -> Drained {
+        let began = tokio::time::Instant::now();
         while self.requests() > 0 {
             if began.elapsed() >= patience {
                 return Drained::Deadline {
                     left: self.requests(),
                 };
             }
-            std::thread::park_timeout(GLANCE);
+            tokio::time::sleep(GLANCE).await;
         }
         Drained::Finished
     }
@@ -507,15 +508,15 @@ mod tests {
         assert_eq!((stopping.requests(), stopping.feeds()), (0, 0));
     }
 
-    #[test]
-    fn a_drain_waits_for_a_request_and_not_for_a_feed() {
+    #[tokio::test(start_paused = true)]
+    async fn a_drain_waits_for_a_request_and_not_for_a_feed() {
         let stopping = Stopping::new();
         let mut feed = stopping.busy();
         feed.became_a_feed();
         // A feed is open, and the drain still finishes — which is the whole
         // reason the two counts are apart. Waiting on both, this would time out.
         assert_eq!(
-            stopping.drain(Duration::from_secs(5)),
+            stopping.drain(Duration::from_secs(5)).await,
             Drained::Finished,
             "the drain waited for a subscription, which never ends on its own"
         );
@@ -523,12 +524,12 @@ mod tests {
         let working = stopping.busy();
         let patience = Duration::from_millis(30);
         assert_eq!(
-            stopping.drain(patience),
+            stopping.drain(patience).await,
             Drained::Deadline { left: 1 },
             "the drain did not wait for a request that never finished"
         );
         drop(working);
-        assert_eq!(stopping.drain(patience), Drained::Finished);
+        assert_eq!(stopping.drain(patience).await, Drained::Finished);
     }
 
     #[test]

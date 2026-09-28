@@ -68,7 +68,7 @@ thiserror.workspace = true
 [dev-dependencies]
 tessari-constants.workspace = true
 # The tests serve a node, and a node is served on a runtime the caller owns.
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 tokio-util.workspace = true
 # Replication is driven explicitly in the forwarding test: nothing pulls on its
 # own yet (Q-83), so "visible on both" is shown by moving the log across rather

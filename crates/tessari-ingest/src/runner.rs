@@ -1,11 +1,15 @@
 //! Starting what the catalog declares, and stopping it cleanly.
 //!
-//! # One OS thread per consumer, and no runtime
+//! # One OS thread per consumer, beside the runtime
 //!
-//! This node carries no async runtime, deliberately (G007): the store below is
-//! synchronous, and an async server over a synchronous store is a thread pool
-//! wearing a runtime's clothes. A consumer is a loop that blocks on a broker and
-//! then blocks on a commit, which is the shape a thread is for.
+//! The node serves from one async runtime (ADR-0085), and a consumer is the one
+//! thing it runs that is not a task on it. A consumer holds a broker client
+//! that is a blocking C library, and waits in it for as long as a quiet topic
+//! is quiet; on the runtime's blocking pool that wait would hold one of the
+//! threads the store calls are bounded to, for the life of the process. A
+//! long-lived blocking client on a thread of its own is the shape a thread is
+//! for, and what the runtime shares with it is only the moment it is told to
+//! stop.
 //!
 //! ADR-0024 measured that the chosen client has a synchronous surface, so this
 //! is a decision supported by evidence rather than a preference held despite it.

@@ -51,7 +51,7 @@ const LAME_DUCK: Duration = Duration::from_secs(5);
 
 /// How often a waiting stage looks again.
 ///
-/// Parked rather than spun: most of a stop is waiting.
+/// Slept on the runtime's timer rather than spun: most of a stop is waiting.
 const GLANCE: Duration = Duration::from_millis(100);
 
 /// Ask to be told when the operating system wants this process to stop.
@@ -119,15 +119,14 @@ fn leave_now() -> ! {
 /// because they never end on their own, and waiting for one in stage 2 would
 /// mean the drain never completes.
 ///
-/// Called from a thread of its own and never from the runtime, because it waits
-/// on the runtime from outside it.
-pub fn watch(
-    runtime: &Runtime,
+/// Awaited on the runtime beside the listeners it stops; every wait in it is a
+/// timer, so it holds no thread while it waits.
+pub async fn watch(
     asked: &CancellationToken,
     surfaces: &[Surface],
     quiet: &(dyn Fn() + Send + Sync),
 ) {
-    runtime.block_on(asked.cancelled());
+    asked.cancelled().await;
     eprintln!("tessaridb — stopping; a second signal exits immediately");
 
     // Stage 0. Say *not ready* and keep serving, so whatever is routing traffic
@@ -143,10 +142,7 @@ pub fn watch(
     // No check for a second signal here: the listener exits the process itself
     // on the second one, so an operator who does not want to wait out this
     // window is already gone before this loop could look.
-    let began = std::time::Instant::now();
-    while began.elapsed() < LAME_DUCK {
-        std::thread::park_timeout(GLANCE);
-    }
+    tokio::time::sleep(LAME_DUCK).await;
 
     // Stage 1. The intent is set on every surface first, then each is woken —
     // in that order, or a listener can find nothing set and block again.
@@ -172,7 +168,7 @@ pub fn watch(
     // Stage 2. Requests only. Feeds are stage 3 and were moved off this count
     // when they became feeds, which is what lets this finish at all.
     for surface in surfaces {
-        match surface.stopping.drain(PATIENCE) {
+        match surface.stopping.drain(PATIENCE).await {
             Drained::Finished => {}
             Drained::Deadline { left } => {
                 eprintln!(
@@ -188,9 +184,9 @@ pub fn watch(
     // already wakes on. Nothing is lost: a subscriber's cursor is a position it
     // holds, so it resumes exactly where it stopped.
     for surface in surfaces {
-        let began = std::time::Instant::now();
+        let began = tokio::time::Instant::now();
         while surface.stopping.feeds() > 0 && began.elapsed() < PATIENCE {
-            std::thread::park_timeout(GLANCE);
+            tokio::time::sleep(GLANCE).await;
         }
     }
 }
@@ -207,7 +203,7 @@ pub struct Surface {
     /// generalises: an HTTP server here has a call for it, and a plain
     /// `TcpListener` is woken by connecting to it.
     ///
-    /// `Sync` as well as `Send` because the watcher reads this from a thread
+    /// `Sync` as well as `Send` because the watcher reads this from one task
     /// while the surfaces are serving on others — the list is shared, not moved.
     pub wake: Box<dyn Fn() + Send + Sync>,
 }

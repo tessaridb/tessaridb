@@ -1,6 +1,6 @@
-//! The three cadences a node runs, and why each gets a thread of its own.
+//! The three cadences a node runs, and why each gets a task of its own.
 //!
-//! # Three cadences, three threads
+//! # Three cadences, three tasks
 //!
 //! A node that has joined a cluster has three things to do on a timer: greet its
 //! peers so it knows how current each one is, collect records from whoever it
@@ -14,11 +14,11 @@
 //! noticed.
 //!
 //! One loop gives all three a single period, a single failure path, and a single
-//! thread's fate. The sharpest consequence is the last: `collect` and `renew`
+//! task's fate. The sharpest consequence is the last: `collect` and `renew`
 //! both dial peers, so a collection blocked on a dead peer's TCP connect would
 //! hold up a renewal whose fence is closing. The cadence with the tightest
 //! deadline would be delayed by the one with the loosest, for no reason beyond
-//! their sharing a thread.
+//! their sharing a loop.
 //!
 //! # Nothing here hands a `Result` to a timer
 //!
@@ -41,9 +41,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use tessari_encoding::{NODE_ID_LEN, Roles};
-use tessari_serve::Stopping;
 use tessari_storage::{FailoverStamp, Lease, ReplicaDefinition};
 use tessari_types::{Epoch, Reach, Sequence};
+use tokio_util::sync::CancellationToken;
 
 use crate::campaign::Stood;
 use crate::directory::{Destination, Directory};
@@ -71,20 +71,44 @@ pub fn due_in(period: Duration, ran_at: Instant, now: Instant) -> Duration {
 
 /// Run `pass` on `period` until the node is asked to stop.
 ///
-/// The flag is checked **before** each pass, so a node already stopping runs
-/// none. Stopping during the wait takes effect at the end of it: a cadence is
-/// not on the shutdown path, and waking it early would buy a fraction of a
-/// period at the cost of a second way to interrupt a thread.
+/// The token is checked **before** each pass, so a node already stopping runs
+/// none, and it ends the wait between passes the moment it is cancelled — a
+/// cadence holds nothing a stop would have to wait for.
 ///
-/// The stop flag is the node's own [`Stopping`] rather than one of this
-/// module's. A driver with a private flag gives a process two ways to ask a node
-/// to stop, and the state between them — a node that has stopped serving while
-/// it goes on dialling peers — is worse than either.
-pub fn every(period: Duration, stopping: &Stopping, mut pass: impl FnMut(Instant)) {
-    while !stopping.asked() {
+/// Each pass runs on the runtime's blocking pool, because a pass is store work
+/// and a TLS call, both synchronous. The closure is moved there and back, so a
+/// pass keeps what it learned between rounds, and one cadence's passes never
+/// overlap: the campaign's ballots stay one after another. A pass that panics
+/// is re-raised on this task, where the supervisor that started it sees it.
+///
+/// The token is the node's own stop rather than one of this module's. A driver
+/// with a private flag gives a process two ways to ask a node to stop, and the
+/// state between them — a node that has stopped serving while it goes on
+/// dialling peers — is worse than either.
+pub async fn every<P>(period: Duration, stop: &CancellationToken, mut pass: P)
+where
+    P: FnMut(Instant) + Send + 'static,
+{
+    while !stop.is_cancelled() {
         let ran_at = Instant::now();
-        pass(ran_at);
-        std::thread::sleep(due_in(period, ran_at, Instant::now()));
+        pass = match tokio::task::spawn_blocking(move || {
+            pass(ran_at);
+            pass
+        })
+        .await
+        {
+            Ok(pass) => pass,
+            Err(ended) => match ended.try_into_panic() {
+                Ok(payload) => std::panic::resume_unwind(payload),
+                // Cancelled: the runtime is shutting down under it.
+                Err(_) => return,
+            },
+        };
+        tokio::select! {
+            biased;
+            () = stop.cancelled() => return,
+            () = tokio::time::sleep(due_in(period, ran_at, Instant::now())) => {}
+        }
     }
 }
 
@@ -922,12 +946,13 @@ impl Renewing {
 mod tests {
     use std::cell::RefCell;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
     use tessari_encoding::{NODE_ID_LEN, NodeVersion, Roles};
-    use tessari_serve::Stopping;
     use tessari_storage::Lease;
     use tessari_types::{Epoch, NamespaceId, Reach, Sequence};
+    use tokio_util::sync::CancellationToken;
 
     use super::{
         Collecting, FailoverStamp, Published, Renewing, ReplicaDefinition, Seed, Stood,
@@ -1840,19 +1865,67 @@ mod tests {
         assert_eq!(due_in(period, ran_at, soon), Duration::from_secs(7));
     }
 
-    #[test]
-    fn a_cadence_runs_no_pass_once_the_node_is_asked_to_stop() {
-        let stopping = Stopping::new();
-        stopping.refuse_new();
-        let passes = RefCell::new(0_usize);
-        every(Duration::ZERO, &stopping, |_| {
-            *passes.borrow_mut() += 1;
-        });
+    #[tokio::test(start_paused = true)]
+    async fn a_cadence_runs_no_pass_once_the_node_is_asked_to_stop() {
+        let stop = CancellationToken::new();
+        stop.cancel();
+        let passes = Arc::new(AtomicUsize::new(0));
+        let counting = Arc::clone(&passes);
+        every(Duration::ZERO, &stop, move |_| {
+            counting.fetch_add(1, Ordering::Relaxed);
+        })
+        .await;
         assert_eq!(
-            *passes.borrow(),
+            passes.load(Ordering::Relaxed),
             0,
             "a node already stopping still ran a cadence pass"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cadence_keeps_its_state_between_passes_and_a_stop_ends_its_wait() {
+        let stop = CancellationToken::new();
+        let passes = Arc::new(AtomicUsize::new(0));
+        let counting = Arc::clone(&passes);
+        let stopping = stop.clone();
+        // State the closure owns, carried from one pass to the next across the
+        // hop to the blocking pool and back.
+        let mut rounds = 0_usize;
+        let cadence = tokio::spawn(async move {
+            every(Duration::from_secs(3600), &stopping, move |_| {
+                rounds = rounds.saturating_add(1);
+                counting.store(rounds, Ordering::Relaxed);
+            })
+            .await;
+        });
+        // The clock is paused and moves only when every task is waiting, so
+        // each of these sleeps lets exactly the cadence's own wait run out.
+        while passes.load(Ordering::Relaxed) < 3 {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+        }
+        // Half a period on, so the stop lands in the middle of a wait rather than
+        // at its end: the stop has to end that wait itself.
+        tokio::time::sleep(Duration::from_secs(1800)).await;
+        stop.cancel();
+        tokio::time::timeout(Duration::from_secs(1), cadence)
+            .await
+            .expect("a stop did not end the cadence's wait")
+            .expect("the cadence task");
+        assert!(passes.load(Ordering::Relaxed) >= 3);
+    }
+
+    #[tokio::test]
+    async fn a_pass_that_panics_is_raised_on_the_cadence_task() {
+        let stop = CancellationToken::new();
+        let stopping = stop.clone();
+        let cadence = tokio::spawn(async move {
+            every(Duration::ZERO, &stopping, |_| {
+                std::panic::resume_unwind(Box::new("a defect in a pass"));
+            })
+            .await;
+        });
+        let ended = cadence.await.expect_err("the panic did not reach the task");
+        assert!(ended.is_panic());
     }
 
     #[test]
