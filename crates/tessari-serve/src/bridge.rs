@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// What a bridged call came back with.
 ///
@@ -81,6 +81,22 @@ impl Bridge {
             Ok(answer) => Bridged::Answered(answer),
             Err(_) => Bridged::Panicked,
         }
+    }
+
+    /// Take a slot for a store call the caller runs on its own thread, or `None`
+    /// — counted as refused — when every slot is taken.
+    ///
+    /// For a thread that may already block: the call is bounded by the same
+    /// slots and refused by the same rule as [`Bridge::call`], and pays no hop
+    /// to reach the blocking pool because it is already there. The slot is given
+    /// back when the permit is dropped, on return and on unwind alike.
+    #[must_use]
+    pub fn slot(&self) -> Option<OwnedSemaphorePermit> {
+        let taken = Arc::clone(&self.slots).try_acquire_owned().ok();
+        if taken.is_none() {
+            self.refused.fetch_add(1, Ordering::Relaxed);
+        }
+        taken
     }
 
     /// How many calls have been refused as busy since the bridge was built.

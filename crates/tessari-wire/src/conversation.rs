@@ -18,9 +18,16 @@
 //! forwarded write all block, so all of them run through the node's [`Bridge`].
 //! When every slot is taken the statement is refused at once with a refusal the
 //! client can read, and the session comes back untouched for the next one.
+//!
+//! # A busy connection is served on a thread
+//!
+//! A statement that arrives close behind its connection's last answer takes the
+//! whole connection to a store thread instead of hopping there and back, and the
+//! thread keeps it until the client falls quiet (`hot.rs`). The slots and the
+//! refusal are the same on both paths.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tessari_constants::GREETING_SECONDS;
 use tessari_serve::{Admitted, Bridge, Bridged, Busy, Stopping};
@@ -30,8 +37,10 @@ use tessaridb::{Db, Sequence};
 use tokio::io::{AsyncReadExt, BufReader, BufWriter as AsyncBufWriter};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::sync::Semaphore;
 
 use crate::error::{Error, Result};
+use crate::hot::{self, Cooled};
 use crate::message::Request;
 use crate::push::Follow;
 use crate::{READING, frame, frame_async, message, node, push, redirect};
@@ -41,6 +50,7 @@ pub(crate) const BUSY: &str =
     "this node is running as many statements as it will; try again shortly";
 
 /// What one conversation shares with the node that accepted it.
+#[derive(Clone)]
 pub(crate) struct Conversation {
     /// Names this connection across every line it produces.
     pub(crate) id: u64,
@@ -50,14 +60,16 @@ pub(crate) struct Conversation {
     pub(crate) bridge: Arc<Bridge>,
     /// The bound on feed rounds, apart from statements — see `Node::rounds`.
     pub(crate) rounds: Arc<Bridge>,
+    /// How many connections may be served on a store thread at once (`hot.rs`).
+    pub(crate) hot: Arc<Semaphore>,
 }
 
 /// One answer, decided on the blocking pool and written from the task.
-struct Answer {
-    kind: frame::Kind,
-    body: Vec<u8>,
+pub(crate) struct Answer {
+    pub(crate) kind: frame::Kind,
+    pub(crate) body: Vec<u8>,
     /// Whether a pusher should look at the log: a statement ran to an answer.
-    signal: bool,
+    pub(crate) signal: bool,
 }
 
 /// Hold one connection until it ends.
@@ -86,7 +98,19 @@ pub(crate) async fn converse(
     .map_err(|_| Error::Io(std::io::ErrorKind::TimedOut.into()))??;
 
     let mut session = session;
-    while let Some((kind, body)) = frame_async::read(&mut reader).await? {
+    // When this connection last had an answer written from the task, for
+    // `hot.rs`'s rule: a statement arriving close behind it goes to a thread.
+    let mut answered_at: Option<Instant> = None;
+    // A frame a busy spell read and handed back rather than handling itself.
+    let mut handed_back: Option<(frame::Kind, Vec<u8>)> = None;
+    loop {
+        let (kind, body) = match handed_back.take() {
+            Some(frame) => frame,
+            None => match frame_async::read(&mut reader).await? {
+                Some(frame) => frame,
+                None => break,
+            },
+        };
         if kind == frame::Kind::Subscribe {
             // The connection stops being a conversation and becomes a feed; see
             // `push.rs` for why one connection does one job. Moved to the feed
@@ -104,6 +128,45 @@ pub(crate) async fn converse(
             return Err(Error::UnknownFrame { tag: kind.tag() });
         }
         let request = Request::decode(&body)?;
+        // Nothing read ahead, because the thread reads from the socket itself.
+        let close_behind =
+            answered_at.is_some_and(|at| at.elapsed() < hot::QUIET) && reader.buffer().is_empty();
+        if close_behind && let Ok(held) = Arc::clone(&talk.hot).try_acquire_owned() {
+            let stream = reader
+                .into_inner()
+                .reunite(writer.into_inner())
+                .map_err(|_| Error::Io(std::io::Error::other("a connection's halves parted")))?
+                .into_std()?;
+            stream.set_nonblocking(false)?;
+            let spell = talk.clone();
+            let cooled = tokio::task::spawn_blocking(move || {
+                let cooled = hot::serve(&spell, session, stream, request, theirs);
+                drop(held);
+                cooled
+            })
+            .await
+            // As on the bridge: the session went down with the statement.
+            .map_err(|_| {
+                Error::Io(std::io::Error::other(
+                    "the statement panicked, and the session it held went with it",
+                ))
+            })??;
+            let (back, stream) = match cooled {
+                Cooled::Closed => return Ok(()),
+                Cooled::Quiet(back, stream) => (back, stream),
+                Cooled::Frame(back, stream, kind, body) => {
+                    handed_back = Some((kind, body));
+                    (back, stream)
+                }
+            };
+            session = back;
+            answered_at = None;
+            stream.set_nonblocking(true)?;
+            let (read_half, write_half) = TcpStream::from_std(stream)?.into_split();
+            reader = BufReader::new(read_half);
+            writer = AsyncBufWriter::new(write_half);
+            continue;
+        }
         let db = Arc::clone(&talk.db);
         let id = talk.id;
         let bridged = talk
@@ -118,6 +181,7 @@ pub(crate) async fn converse(
             Bridged::Answered((back, answer)) => {
                 session = back;
                 reply(&mut writer, &talk.stopping, answer.kind, &answer.body).await?;
+                answered_at = Some(Instant::now());
                 if answer.signal {
                     // Every commit against this store arrives through some
                     // connection of this node, so this is where a pusher learns
@@ -168,7 +232,7 @@ async fn reply(
 ///
 /// Runs on the blocking pool — a password hash, a statement and a forwarded
 /// write all block.
-fn respond(
+pub(crate) fn respond(
     id: u64,
     db: &Db,
     session: &mut tessaridb::Session<'_>,

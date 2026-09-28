@@ -9,13 +9,15 @@ use std::time::Duration;
 
 use tokio::runtime::{Builder, Runtime};
 
-/// How many store calls may block at once, which is how many blocking threads
-/// the runtime may start.
+/// How many blocking threads the runtime may start: one per store call in
+/// flight, and one per busy wire connection served on its own thread.
 ///
-/// The count ADR-0085 opens with: the connection bound the synchronous node
-/// already held, so moving to the runtime changes how the store is waited on
-/// without changing how many callers may wait on it.
-const BLOCKING: usize = tessari_constants::MAX_STORE_CALLS;
+/// The first half is the count ADR-0085 opens with — the connection bound the
+/// synchronous node already held. The second is `tessari-wire`'s `hot` bound,
+/// which is the same number: a busy connection holds its thread between
+/// statements, so without room of its own it would take the threads the store
+/// calls queue for.
+const BLOCKING: usize = tessari_constants::MAX_STORE_CALLS * 2;
 
 /// How long the runtime's own tasks are given to end when the node stops.
 ///

@@ -111,6 +111,43 @@ fn a_change_written_after_a_subscribe_arrives() {
 }
 
 #[test]
+fn a_connection_that_subscribes_close_behind_its_statements_is_fed() {
+    // Statements close behind one another are answered on a store thread
+    // (`hot.rs`), which reads the subscription itself and must hand it back to
+    // the runtime with the session that selected the database.
+    let db = Arc::new(Db::in_memory().unwrap());
+    let (_node, address) = serving(Arc::clone(&db));
+    let mut writer = Client::connect(&address).unwrap();
+    writer.run(READY, None).unwrap();
+
+    let mut busy = Client::connect(&address).unwrap();
+    for script in [
+        "USE NAMESPACE prod;",
+        "USE DATABASE orders;",
+        "SELECT * FROM users;",
+    ] {
+        busy.run(script, None).unwrap();
+    }
+    let feed = feeding(
+        busy,
+        &Follow {
+            from: db
+                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .unwrap()
+                .get()
+                + 1,
+            table: None,
+            cursor: None,
+        },
+    );
+
+    writer
+        .run("CREATE users:1 = { name: 'ada' };", None)
+        .unwrap();
+    assert_eq!(within(&feed, "a change").id, "1");
+}
+
+#[test]
 fn a_subscription_from_an_earlier_position_replays_what_it_missed() {
     // The whole reason a position is a number the client keeps: a subscriber
     // that was away comes back to what happened while it was.

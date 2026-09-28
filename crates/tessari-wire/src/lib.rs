@@ -81,6 +81,8 @@ mod gathering;
 #[cfg(feature = "server")]
 mod grant;
 #[cfg(feature = "server")]
+mod hot;
+#[cfg(feature = "server")]
 mod joining;
 #[cfg(feature = "server")]
 mod link;
