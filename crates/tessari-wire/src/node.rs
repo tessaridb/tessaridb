@@ -490,6 +490,87 @@ mod tests {
         (header[0], answer)
     }
 
+    /// Send one request carrying `credentials`, and answer with the tag that came back.
+    fn ask_as(stream: &mut TcpStream, script: &str, credentials: Option<(&str, &str)>) -> u8 {
+        let body = Request {
+            script: script.to_owned(),
+            credentials: credentials.map(|(name, password)| (name.to_owned(), password.to_owned())),
+            parameters: Parameters::new(),
+        }
+        .encode();
+        frame::write(stream, frame::Kind::Request, &body).expect("the request");
+        frame::read(stream)
+            .expect("an answer")
+            .expect("an answer, not a hang-up")
+            .0
+            .tag()
+    }
+
+    #[test]
+    fn a_node_on_one_worker_answers_while_a_slow_statement_runs() {
+        // S11: no store call runs on a runtime worker. One worker, and a sign-in
+        // that costs a password hash on the store's side: a client arriving
+        // while it runs is answered first. A statement run on the worker would
+        // hold it, and nothing else on the node could even be read until the
+        // hash was done.
+        const PASSWORD: &str = "correct horse battery";
+        let db = Arc::new(Db::in_memory().expect("an in-memory store"));
+        db.session()
+            .run(&format!(
+                "DEFINE USER root ROLE owner PASSWORD '{PASSWORD}';"
+            ))
+            .expect("the store closed");
+        let node = Node::bind(db, "127.0.0.1:0").expect("a loopback port");
+        let address = node.address().expect("the port it took");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("a one-worker runtime");
+        drop(std::thread::spawn(move || {
+            drop(runtime.block_on(node.serve(tokio_util::sync::CancellationToken::new())));
+        }));
+
+        let mut quick = TcpStream::connect(&address).expect("the node this test started");
+        greet_as(&mut quick, frame::MINOR);
+        let mut slow = TcpStream::connect(&address).expect("the node this test started");
+        greet_as(&mut slow, frame::MINOR);
+        // The sign-in is on the wire before the other client asks, and is given
+        // a few milliseconds to reach its hash — which takes ~15 ms here.
+        let body = Request {
+            script: "INFO FOR NODE;".to_owned(),
+            credentials: Some(("root".to_owned(), PASSWORD.to_owned())),
+            parameters: Parameters::new(),
+        }
+        .encode();
+        frame::write(&mut slow, frame::Kind::Request, &body).expect("the sign-in");
+        let hashing = std::thread::spawn(move || {
+            let answered = frame::read(&mut slow)
+                .expect("an answer")
+                .expect("an answer, not a hang-up");
+            (answered.0.tag(), Instant::now())
+        });
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        // Anonymous on a closed store: refused by the session, with no hash.
+        let tag = ask_as(&mut quick, "INFO FOR NODE;", None);
+        let quick_at = Instant::now();
+        assert_eq!(
+            tag,
+            frame::Kind::Refusal.tag(),
+            "an anonymous statement was not refused"
+        );
+        let (tag, slow_at) = hashing.join().expect("the sign-in's thread");
+        assert_eq!(
+            tag,
+            frame::Kind::Answer.tag(),
+            "the owner's sign-in was refused"
+        );
+        assert!(
+            quick_at < slow_at,
+            "the node answered nobody while one statement hashed a password"
+        );
+    }
+
     #[test]
     fn a_statement_refused_as_busy_keeps_the_session_it_arrived_in() {
         let db = Arc::new(Db::in_memory().expect("an in-memory store"));
