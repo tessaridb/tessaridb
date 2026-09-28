@@ -91,6 +91,11 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # directly: it is what lets a credential be ASKED whether it is valid for a name
 # instead of being parsed for one. Naming it costs no crate and makes the
 # dependency visible where it is used.
+# The peer door's TLS on the runtime (ADR-0085 §7): the same `rustls` 0.23 and
+# the same `ring` provider, so the configuration the synchronous link builds is
+# the one the door accepts with. Default features off, because the default is
+# the other provider.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["std", "ring"] }
 # The only way a chain reaches the process. `Credential.chain` is a chain, and
 # DER has no container for one — a DER-only reader would force one file per

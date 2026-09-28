@@ -341,6 +341,19 @@ pub const SOCKET_MAX_FRAME_BYTES: usize = 64 * 1024;
 /// deployment tunes it from.
 pub const MAX_CONNECTIONS: usize = 400;
 
+/// How many peer connections the peer door serves at once.
+///
+/// The door used to serve one: a peer that connected and then said nothing
+/// held it for a whole [`GREETING_SECONDS`] per read, and every ballot,
+/// greeting and collection from every other peer waited behind it. Each
+/// connection is now its own task, so the bound is what keeps a stranger who
+/// opens sockets from turning that into memory instead. A peer holds at most a
+/// few connections at once — a greeting, a collection, a ballot, a gather — so
+/// sixty-four is a cluster of a dozen nodes all calling at the same moment,
+/// with room. A connection beyond it is closed unanswered and the peer's next
+/// round tries again.
+pub const PEER_CONNECTIONS: usize = 64;
+
 /// The largest request body the HTTP surface reads.
 ///
 /// A body is read before its credential is checked, because the credential

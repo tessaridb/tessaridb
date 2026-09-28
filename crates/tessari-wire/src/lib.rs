@@ -67,6 +67,8 @@ mod credential;
 #[cfg(feature = "server")]
 mod directory;
 #[cfg(feature = "server")]
+mod door;
+#[cfg(feature = "server")]
 mod driver;
 mod error;
 mod frame;
@@ -104,6 +106,8 @@ pub use crate::collection::{
 pub use crate::credential::{fingerprint, names, presented};
 #[cfg(feature = "server")]
 pub use crate::directory::{Destination, Directory, Heard};
+#[cfg(feature = "server")]
+pub use crate::door::Holding;
 #[cfg(feature = "server")]
 pub use crate::driver::{
     Collecting, Published, Renewing, bootstrap_from, due_in, every, heard_a_leader,

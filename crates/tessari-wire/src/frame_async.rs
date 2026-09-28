@@ -20,7 +20,20 @@ pub(crate) async fn write(
     kind: Kind,
     body: &[u8],
 ) -> Result<()> {
-    out.write_all(&frame::header(kind.tag(), body)?).await?;
+    write_tagged(out, kind.tag(), body).await
+}
+
+/// Write one frame under a raw tag — the peer link's tag space.
+///
+/// # Errors
+///
+/// As [`write`].
+pub(crate) async fn write_tagged(
+    out: &mut (impl AsyncWrite + Unpin),
+    tag: u8,
+    body: &[u8],
+) -> Result<()> {
+    out.write_all(&frame::header(tag, body)?).await?;
     out.write_all(body).await?;
     out.flush().await?;
     Ok(())
@@ -34,6 +47,26 @@ pub(crate) async fn write(
 /// [`Error::UnknownFrame`] for a kind this build does not have,
 /// [`Error::Truncated`] for a partial frame, and the stream's own failure.
 pub(crate) async fn read(input: &mut (impl AsyncRead + Unpin)) -> Result<Option<(Kind, Vec<u8>)>> {
+    let Some((tag, body)) = read_tagged(input).await? else {
+        return Ok(None);
+    };
+    let Some(kind) = Kind::from_tag(tag) else {
+        return Err(Error::UnknownFrame { tag });
+    };
+    Ok(Some((kind, body)))
+}
+
+/// Read one frame under a raw tag, or `None` on a clean goodbye between frames.
+///
+/// The peer link's reader: its tags are its own space, so the kind is judged
+/// by the caller rather than here.
+///
+/// # Errors
+///
+/// As [`read`], less the unknown kind.
+pub(crate) async fn read_tagged(
+    input: &mut (impl AsyncRead + Unpin),
+) -> Result<Option<(u8, Vec<u8>)>> {
     let mut header = [0_u8; 5];
     let mut held = 0;
     while held < header.len() {
@@ -56,10 +89,7 @@ pub(crate) async fn read(input: &mut (impl AsyncRead + Unpin)) -> Result<Option<
         .read_exact(&mut body)
         .await
         .map_err(|_| Error::Truncated)?;
-    let Some(kind) = Kind::from_tag(header[0]) else {
-        return Err(Error::UnknownFrame { tag: header[0] });
-    };
-    Ok(Some((kind, body)))
+    Ok(Some((header[0], body)))
 }
 
 /// Say hello, and hear one back — [`frame::greet`] without the thread.

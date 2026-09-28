@@ -29,7 +29,7 @@ use crate::{client, frame, frame_async};
 /// Out of file descriptors, a connection reset before it was accepted: each
 /// clears on its own, and retrying at once turns one into a spinning core
 /// (Q-834). Short, because while it rests nobody new is admitted.
-const ACCEPT_PAUSE: Duration = Duration::from_millis(100);
+pub(crate) const ACCEPT_PAUSE: Duration = Duration::from_millis(100);
 
 /// Names one connection across every line it produces.
 ///
@@ -71,7 +71,7 @@ fn from_where(stream: &tokio::net::TcpStream) -> String {
 ///
 /// Everything else — the listener itself gone bad — ends the node rather than
 /// being retried forever, which is what Q-834 found the old loop doing.
-fn passes(failure: &std::io::Error) -> bool {
+pub(crate) fn passes(failure: &std::io::Error) -> bool {
     use std::io::ErrorKind::{ConnectionAborted, ConnectionReset, Interrupted, WouldBlock};
     // EMFILE and ENFILE: this process, or the whole system, is out of file
     // descriptors until a connection closes.

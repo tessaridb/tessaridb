@@ -29,8 +29,9 @@
 //! issues, rotates or revokes a certificate. One connection is served per call
 //! to [`Peers::greet`], and ONE follow-up rides it — a ballot or a collection,
 //! never both, which is why [`Ask`] is an enum rather than two optional
-//! arguments. A node that accepts peers continuously, and holds the connection
-//! open between rounds, is a later wave.
+//! arguments. A node serving peers continuously does it on the runtime, one
+//! task per connection (`door.rs`); holding a connection open between rounds
+//! is a later wave.
 //!
 //! Nothing decides **when** to stand for leadership or how often to renew. A
 //! round is opened by its caller. What this module owes is that the ballot can
@@ -67,8 +68,8 @@ pub struct Credential {
 /// A door peers arrive at.
 #[derive(Debug)]
 pub struct Peers {
-    listener: TcpListener,
-    settings: Arc<ServerConfig>,
+    pub(crate) listener: TcpListener,
+    pub(crate) settings: Arc<ServerConfig>,
 }
 
 impl Peers {
@@ -196,95 +197,105 @@ impl Peers {
         };
         let voted = match asked {
             None => None,
-            Some((tag, body)) => match PeerFrame::from_tag(tag) {
-                Some(PeerFrame::Collect) => {
-                    let asked = Collect::decode(&body)?;
-                    // The follower names itself by the id the handshake proved,
-                    // never by one it writes into a frame — so a peer cannot
-                    // record somebody else's progress, and the per-follower lag
-                    // report stays per follower.
-                    match log.collected(said.node, asked) {
-                        Ok(collected) => frame::write_tagged(
-                            &mut link,
-                            PeerFrame::Collected.tag(),
-                            &collected.encode(),
-                        )?,
-                        // A refusal crosses the wire as the refusal it was. The
-                        // alternative is closing the socket, which reaches the
-                        // other end as a truncated conversation and sends
-                        // whoever reads it to look for a network fault.
-                        Err(Error::Uncollectable { from }) => {
-                            let mut refused = Vec::with_capacity(8);
-                            frame::put_u64(&mut refused, from);
-                            frame::write_tagged(
-                                &mut link,
-                                PeerFrame::Uncollectable.tag(),
-                                &refused,
-                            )?;
-                        }
-                        // The same rule one step out: a node nobody
-                        // subscribed learns that, rather than watching its
-                        // socket close and reading it as a network fault.
-                        Err(Error::Unsubscribed) => {
-                            frame::write_tagged(&mut link, PeerFrame::Unsubscribed.tag(), &[])?
-                        }
-                        Err(why) => return Err(why),
-                    }
-                    None
-                }
-                // A shard's records, for a node holding part of its table
-                // (G033). Its refusal crosses as a frame for the reason the
-                // collection's two do.
-                Some(PeerFrame::Gather) => {
-                    let asked = Gather::decode(&body)?;
-                    match log.gathered(said.node, &asked) {
-                        Ok(page) => frame::write_tagged(
-                            &mut link,
-                            PeerFrame::Gathered.tag(),
-                            &page.encode(),
-                        )?,
-                        Err(Error::NotGathered(why)) => frame::write_tagged(
-                            &mut link,
-                            PeerFrame::NotGathered.tag(),
-                            &[why.byte()],
-                        )?,
-                        Err(why) => return Err(why),
-                    }
-                    None
-                }
-                Some(PeerFrame::Ballot) => {
-                    let asked = Ballot::decode(&body)?;
-                    // The identity that decides a grant is the one the
-                    // handshake proved, never the one the frame claims. Checked
-                    // here rather than inside the voter because this is the only
-                    // place both are in scope, and because a rule that took a
-                    // proved identity as an argument would be a rule that could
-                    // be handed an unproved one.
-                    if asked.candidate != said.node {
-                        return Err(Error::NotItsOwnBallot);
-                    }
-                    // The candidate's log position comes from the greeting it
-                    // proved a moment ago on this connection, for the reason the
-                    // line above gives about its identity: a position a
-                    // candidate writes into the ballot being judged is a
-                    // position it can choose.
-                    // On the ballot's own line (ADR-0082): a range ballot is
-                    // judged on both greetings' positions for that range, the
-                    // store ballot on the store's exactly as before.
-                    let vote = voter.asked(
-                        &asked,
-                        std::time::Instant::now(),
-                        mine.reached_on(asked.range),
-                        said.reached_on(asked.range),
-                    );
-                    frame::write_tagged(&mut link, PeerFrame::Vote.tag(), &vote.encode())?;
-                    Some(vote)
-                }
-                Some(_) => return Err(Error::OutOfTurn { tag }),
-                None => return Err(Error::UnknownFrame { tag }),
-            },
+            Some((tag, body)) => {
+                let (tag, reply, voted) = answering(tag, &body, &said, &mine, voter, log)?;
+                frame::write_tagged(&mut link, tag, &reply)?;
+                voted
+            }
         };
         Ok(Met { said, voted })
+    }
+}
+
+/// The one frame that answers a peer's follow-up, and the vote it cast if it was a ballot.
+///
+/// The door's decision, in one place for both doors: the synchronous
+/// [`Peers::greet`] and the door that serves on the runtime (`door.rs`) write
+/// whatever this returns. `said` is the greeting the handshake-proved peer sent
+/// on this connection and `mine` is what this node answered it with; both are
+/// what a ballot is judged on, for the reasons given where they are used.
+///
+/// # Errors
+///
+/// [`Error::NotItsOwnBallot`] when a ballot names a candidate other than the
+/// proved peer, [`Error::OutOfTurn`] or [`Error::UnknownFrame`] for anything
+/// that is not a follow-up, a malformed body, and a store failure other than the
+/// refusals that cross the wire as frames.
+pub(crate) fn answering(
+    tag: u8,
+    body: &[u8],
+    said: &Hello,
+    mine: &Hello,
+    voter: &Deciding,
+    log: &dyn Origin,
+) -> Result<(u8, Vec<u8>, Option<Vote>)> {
+    match PeerFrame::from_tag(tag) {
+        Some(PeerFrame::Collect) => {
+            let asked = Collect::decode(body)?;
+            // The follower names itself by the id the handshake proved,
+            // never by one it writes into a frame — so a peer cannot
+            // record somebody else's progress, and the per-follower lag
+            // report stays per follower.
+            match log.collected(said.node, asked) {
+                Ok(collected) => Ok((PeerFrame::Collected.tag(), collected.encode(), None)),
+                // A refusal crosses the wire as the refusal it was. The
+                // alternative is closing the socket, which reaches the
+                // other end as a truncated conversation and sends
+                // whoever reads it to look for a network fault.
+                Err(Error::Uncollectable { from }) => {
+                    let mut refused = Vec::with_capacity(8);
+                    frame::put_u64(&mut refused, from);
+                    Ok((PeerFrame::Uncollectable.tag(), refused, None))
+                }
+                // The same rule one step out: a node nobody
+                // subscribed learns that, rather than watching its
+                // socket close and reading it as a network fault.
+                Err(Error::Unsubscribed) => Ok((PeerFrame::Unsubscribed.tag(), Vec::new(), None)),
+                Err(why) => Err(why),
+            }
+        }
+        // A shard's records, for a node holding part of its table
+        // (G033). Its refusal crosses as a frame for the reason the
+        // collection's two do.
+        Some(PeerFrame::Gather) => {
+            let asked = Gather::decode(body)?;
+            match log.gathered(said.node, &asked) {
+                Ok(page) => Ok((PeerFrame::Gathered.tag(), page.encode(), None)),
+                Err(Error::NotGathered(why)) => {
+                    Ok((PeerFrame::NotGathered.tag(), vec![why.byte()], None))
+                }
+                Err(why) => Err(why),
+            }
+        }
+        Some(PeerFrame::Ballot) => {
+            let asked = Ballot::decode(body)?;
+            // The identity that decides a grant is the one the
+            // handshake proved, never the one the frame claims. Checked
+            // here rather than inside the voter because this is the only
+            // place both are in scope, and because a rule that took a
+            // proved identity as an argument would be a rule that could
+            // be handed an unproved one.
+            if asked.candidate != said.node {
+                return Err(Error::NotItsOwnBallot);
+            }
+            // The candidate's log position comes from the greeting it
+            // proved a moment ago on this connection, for the reason the
+            // line above gives about its identity: a position a
+            // candidate writes into the ballot being judged is a
+            // position it can choose.
+            // On the ballot's own line (ADR-0082): a range ballot is
+            // judged on both greetings' positions for that range, the
+            // store ballot on the store's exactly as before.
+            let vote = voter.asked(
+                &asked,
+                std::time::Instant::now(),
+                mine.reached_on(asked.range),
+                said.reached_on(asked.range),
+            );
+            Ok((PeerFrame::Vote.tag(), vote.encode(), Some(vote)))
+        }
+        Some(_) => Err(Error::OutOfTurn { tag }),
+        None => Err(Error::UnknownFrame { tag }),
     }
 }
 
@@ -487,8 +498,15 @@ fn hear(link: &mut impl std::io::Read) -> Result<Hello> {
     let Some((tag, body)) = frame::read_tagged(link)? else {
         return Err(Error::Truncated);
     };
+    greeting(tag, &body)
+}
+
+/// A frame that has to be a greeting, and is refused as anything else.
+///
+/// Shared with the door on the runtime, which reads the frame its own way.
+pub(crate) fn greeting(tag: u8, body: &[u8]) -> Result<Hello> {
     match PeerFrame::from_tag(tag) {
-        Some(PeerFrame::Hello) => Hello::decode(&body),
+        Some(PeerFrame::Hello) => Hello::decode(body),
         Some(_) => Err(Error::OutOfTurn { tag }),
         None => Err(Error::UnknownFrame { tag }),
     }

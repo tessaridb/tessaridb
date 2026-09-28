@@ -456,25 +456,20 @@ fn serve(
         });
     }
     // The peer door's own flag, made here rather than owned by the door,
-    // because `Peers` serves one connection per call and the loop that calls it
-    // lives in this binary. Counted alongside the others so a drain waits on it
-    // and a scrape reports it, for the reason the census is shared at all: what
-    // a shutdown waits on and what a reader sees must be one set of numbers.
+    // because the cadences that read it live in this binary. Counted alongside
+    // the others so a drain waits on it and a scrape reports it, for the reason
+    // the census is shared at all: what a shutdown waits on and what a reader
+    // sees must be one set of numbers. The door itself stops on the token, as
+    // the two client surfaces do.
     let peering = tessari_serve::Stopping::new();
-    if let Some(surface) = &peers {
-        let bound = surface
-            .door
-            .address()
-            .map_err(|failure| failure.to_string())?;
+    let peer_stops = tokio_util::sync::CancellationToken::new();
+    if peers.is_some() {
         census.counting("peers", std::sync::Arc::clone(&peering));
+        let stop = peer_stops.clone();
         surfaces.push(shutdown::Surface {
             name: "the peer door",
             stopping: std::sync::Arc::clone(&peering),
-            // The same throwaway connection the wire surface uses, and for the
-            // same reason: `accept` blocks and a flag does not wake it. Here the
-            // connection also fails its TLS handshake, which is the outcome
-            // being asked for — the loop checks the flag before waiting again.
-            wake: Box::new(move || drop(std::net::TcpStream::connect(bound))),
+            wake: Box::new(move || stop.cancel()),
         });
     }
 
@@ -542,13 +537,47 @@ fn serve(
         // hold the variable. Two memories would let this node grant one epoch
         // twice and hand two candidates an honest majority each.
         let deciding = std::sync::Arc::new(tessari_wire::Deciding::started());
+        // Served on the runtime, each peer in its own task (ADR-0085 §7); this
+        // thread only supervises it, so a door that panicked is started again
+        // exactly as the loop it replaced was.
         let answering = {
             let db = std::sync::Arc::clone(&db);
             let stopping = std::sync::Arc::clone(&peering);
             let deciding = std::sync::Arc::clone(&deciding);
+            let runtime = runtime.handle().clone();
+            let stop = peer_stops.clone();
             std::thread::spawn(move || {
+                // Settled once: an identity is fixed when the store is
+                // initialised, and a node that cannot say who it is cannot
+                // admit anybody either.
+                let me = match db.store().node_identity() {
+                    Ok(identity) => identity.id,
+                    Err(why) => {
+                        log::warn!("the peer door cannot say who this node is: {why}");
+                        return;
+                    }
+                };
+                let holding = std::sync::Arc::new(PeerDoor { db });
                 supervise::supervised("the peer door", &stopping, || {
-                    greet_peers(&db, &door, &deciding, &stopping);
+                    let served = runtime.block_on(door.serve(
+                        stop.clone(),
+                        me,
+                        std::sync::Arc::clone(&deciding),
+                        std::sync::Arc::clone(&holding),
+                    ));
+                    match served {
+                        Ok(()) => {}
+                        // The store itself would not answer. The door ends
+                        // rather than failing every peer in turn, and the client
+                        // surfaces are untouched.
+                        Err(why @ tessari_wire::Error::NothingToSay(_)) => {
+                            log::warn!("the peer door cannot say what this node holds: {why}");
+                        }
+                        Err(why) => {
+                            log::error!("the peer door failed ({why}); the node ends here");
+                            std::process::abort();
+                        }
+                    }
                 });
             })
         };
@@ -748,17 +777,6 @@ fn keep_house(db: &Db, stopping: &tessari_serve::Stopping) {
     }
 }
 
-/// Take peers, one at a time, until the process is asked to stop.
-///
-/// One connection per pass, because that is what [`tessari_wire::Peers::greet`]
-/// serves: a greeting, and one follow-up riding the connection it opened. A
-/// thread per peer would buy concurrency this node has no use for — a cluster
-/// runs three to seven voting members and a round is a handful of short
-/// conversations, not a client population.
-///
-/// A connection that goes wrong ends that connection and nothing else. A node
-/// that could be stopped by one malformed peer frame would be a node anybody
-/// holding a peer credential could stop.
 /// The peer surface, once the door is open.
 ///
 /// A struct rather than a tuple because the dialling half needs two things the
@@ -1529,65 +1547,50 @@ fn stand_for_a_placed_range(
     }
 }
 
-fn greet_peers(
-    db: &Db,
-    door: &tessari_wire::Peers,
-    voter: &tessari_wire::Deciding,
-    stopping: &tessari_serve::Stopping,
-) {
-    // Settled once, before the loop, and deliberately unlike the greeting below
-    // it. An identity is fixed when the store is initialised, so reading it here
-    // cannot go stale the way an epoch or a log tail would; a node that cannot
-    // say who it is cannot admit anybody either, and the loop never opens.
-    let me = match db.store().node_identity() {
-        Ok(identity) => identity.id,
-        Err(why) => {
-            log::warn!("the peer door cannot say who this node is: {why}");
-            return;
-        }
-    };
-    while !stopping.asked() {
-        // The facts are read inside the door, when a peer has arrived and
-        // proved who it is — not here, before the wait. A door idle for an hour
-        // used to greet with hour-old epoch, tail and copy age, which are
-        // exactly the fields a router reads.
-        let mine =
-            || greeting(db).map_err(|why| tessari_wire::Error::NothingToSay(why.to_string()));
-        // The door serves the log at last, and serves it to exactly the peers
-        // this store's own catalog subscribed — `NoLog` was the honest answer
-        // only while nothing could ask the catalog that question.
-        match door.greet(
-            mine,
-            &me,
-            voter,
-            &tessari_wire::Serving::declared(db.store()),
-        ) {
-            Ok(met) => {
-                log::info!(
-                    "peer {} greeted at epoch {}, tail {}{}",
-                    hex(&met.said.node),
-                    met.said.epoch.get(),
-                    met.said.tail.get(),
-                    met.voted
-                        .map_or(String::new(), |vote| format!(", {vote:?}")),
-                );
-                bind_the_greeter(db, met.said.node);
-            }
-            // Not a connection failure: the store itself would not answer. The
-            // loop ends rather than spinning on it, and the client surfaces are
-            // untouched — a node that cannot greet can still serve. It reaches
-            // here rather than being read before the wait because that is the
-            // whole point of reading it on arrival.
-            Err(why @ tessari_wire::Error::NothingToSay(_)) => {
-                log::warn!("the peer door cannot say what this node holds: {why}");
-                break;
-            }
-            // Info and not warn. A peer hanging up, a wake-up connection, and a
-            // credential this cluster does not issue are all ordinary events on
-            // a door, and reporting them as problems makes the level useless for
-            // finding one.
-            Err(why) => log::info!("a peer connection ended: {why}"),
-        }
+/// The node behind the peer door: its log, what it holds, and the catalog a
+/// greeting may bind a row in.
+struct PeerDoor {
+    db: std::sync::Arc<Db>,
+}
+
+impl tessari_wire::Origin for PeerDoor {
+    // The door serves the log to exactly the peers this store's own catalog
+    // subscribed.
+    fn collected(
+        &self,
+        follower: [u8; tessari_storage::NODE_ID_LEN],
+        asked: tessari_wire::Collect,
+    ) -> tessari_wire::Result<tessari_wire::Collected> {
+        tessari_wire::Serving::declared(self.db.store()).collected(follower, asked)
+    }
+
+    fn gathered(
+        &self,
+        asker: [u8; tessari_storage::NODE_ID_LEN],
+        asked: &tessari_wire::Gather,
+    ) -> tessari_wire::Result<tessari_wire::Page> {
+        tessari_wire::Serving::declared(self.db.store()).gathered(asker, asked)
+    }
+}
+
+impl tessari_wire::Holding for PeerDoor {
+    // Read when a peer has arrived and proved who it is — not before the wait.
+    // A door idle for an hour used to greet with hour-old epoch, tail and copy
+    // age, which are exactly the fields a router reads.
+    fn hello(&self) -> tessari_wire::Result<tessari_wire::Hello> {
+        greeting(&self.db).map_err(|why| tessari_wire::Error::NothingToSay(why.to_string()))
+    }
+
+    fn met(&self, met: &tessari_wire::Met) {
+        log::info!(
+            "peer {} greeted at epoch {}, tail {}{}",
+            hex(&met.said.node),
+            met.said.epoch.get(),
+            met.said.tail.get(),
+            met.voted
+                .map_or(String::new(), |vote| format!(", {vote:?}")),
+        );
+        bind_the_greeter(&self.db, met.said.node);
     }
 }
 
