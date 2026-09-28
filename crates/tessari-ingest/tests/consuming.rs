@@ -163,7 +163,7 @@ impl Broker for Handing {
 /// machine or slow on an idle one, and this file already has one test whose
 /// whole point is timing.
 fn until(store: &Store, broker: Arc<dyn Broker>, settled: impl Fn(&Store) -> bool) {
-    let mut started = Runner::start(store, &broker).unwrap();
+    let mut started = Runner::start(store, Arc::clone(&broker)).unwrap();
     let deadline = Instant::now()
         .checked_add(Duration::from_secs(5))
         .unwrap_or_else(Instant::now);
@@ -286,7 +286,7 @@ fn stop_halts_this_consumer_and_says_why() {
         slow: Duration::ZERO,
         handed: Arc::new(AtomicBool::new(false)),
     });
-    let mut started = Runner::start(&store, &broker).unwrap();
+    let mut started = Runner::start(&store, Arc::clone(&broker)).unwrap();
     let deadline = Instant::now()
         .checked_add(Duration::from_secs(5))
         .unwrap_or_else(Instant::now);
@@ -361,7 +361,7 @@ fn parallelism_runs_more_than_one_consumer_at_a_time() {
         handed: Arc::new(AtomicBool::new(false)),
     });
     let began = Instant::now();
-    let mut started = Runner::start(&store, &broker).unwrap();
+    let mut started = Runner::start(&store, Arc::clone(&broker)).unwrap();
     assert_eq!(started.threads(), 4, "four consumers were not started");
 
     // Wait until at least four polls have happened.
@@ -400,7 +400,7 @@ fn a_consumer_that_was_started_reports_what_it_has_applied() {
         slow: Duration::ZERO,
         handed: Arc::new(AtomicBool::new(false)),
     });
-    let mut started = Runner::start(&store, &broker).unwrap();
+    let mut started = Runner::start(&store, Arc::clone(&broker)).unwrap();
     let deadline = Instant::now()
         .checked_add(Duration::from_secs(5))
         .unwrap_or_else(Instant::now);
@@ -436,7 +436,7 @@ fn stopping_joins_the_threads_rather_than_abandoning_them() {
         slow: Duration::from_millis(50),
         handed: Arc::new(AtomicBool::new(false)),
     });
-    let mut started = Runner::start(&store, &broker).unwrap();
+    let mut started = Runner::start(&store, Arc::clone(&broker)).unwrap();
     assert_eq!(started.threads(), 2);
     started.stop();
     assert_eq!(started.threads(), 0, "stop() left threads behind");
@@ -463,7 +463,7 @@ fn a_declaration_whose_destination_has_gone_is_skipped_rather_than_fatal() {
         slow: Duration::ZERO,
         handed: Arc::new(AtomicBool::new(false)),
     });
-    let mut started = Runner::start(&store, &broker).unwrap();
+    let mut started = Runner::start(&store, Arc::clone(&broker)).unwrap();
     assert_eq!(
         started.threads(),
         0,
@@ -483,7 +483,7 @@ fn a_store_with_nothing_declared_starts_nothing() {
         slow: Duration::ZERO,
         handed: Arc::new(AtomicBool::new(false)),
     });
-    let mut started = Runner::start(&store, &broker).unwrap();
+    let mut started = Runner::start(&store, Arc::clone(&broker)).unwrap();
     assert_eq!(started.threads(), 0);
     started.stop();
 }
@@ -511,7 +511,7 @@ fn stopping_finishes_the_batch_in_flight_rather_than_abandoning_it() {
         handed: Arc::clone(&handed),
     });
 
-    let mut started = Runner::start(&store, &broker).unwrap();
+    let mut started = Runner::start(&store, Arc::clone(&broker)).unwrap();
     let deadline = Instant::now()
         .checked_add(Duration::from_secs(5))
         .unwrap_or_else(Instant::now);

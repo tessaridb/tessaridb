@@ -152,7 +152,7 @@ impl Runner {
     /// Returns the store's failure when the catalog cannot be read at all.
     pub fn start(
         store: &Store,
-        broker: &Arc<dyn Broker>,
+        broker: Arc<dyn Broker>,
     ) -> Result<Started, tessari_storage::Error> {
         let declared = declarations(store)?;
         let stopping = Arc::new(AtomicBool::new(false));

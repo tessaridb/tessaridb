@@ -40,7 +40,7 @@ impl Store {
     /// gone, or a decoding failure when the stored bytes carry a revision, role
     /// or membership this build does not know.
     pub fn node_identity(&self) -> Result<NodeIdentity> {
-        crate::node::read(&self.backend)?.ok_or(Error::NoIdentity)
+        crate::node::read(Arc::clone(&self.backend))?.ok_or(Error::NoIdentity)
     }
 
     /// What this process is doing with the consumers the catalog declares.
@@ -142,7 +142,7 @@ impl Store {
         if let Some(keep) = retain {
             self.set_log_retention(keep)?;
         }
-        crate::node::configure(&self.backend, roles, endpoints)
+        crate::node::configure(Arc::clone(&self.backend), roles, endpoints)
     }
 
     /// Begin a transaction at the newest version this store has written.

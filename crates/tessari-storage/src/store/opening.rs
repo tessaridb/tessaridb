@@ -30,16 +30,16 @@ impl Store {
         // The format is settled before anything else is written, the node
         // identity included: a store this build is about to refuse must not be
         // modified on the way to refusing it.
-        match read_format_version(&backend)? {
+        match read_format_version(Arc::clone(&backend))? {
             Some(found) => {
                 found.check_supported()?;
-                give_an_older_log_its_home(&backend, found)?;
-                give_an_older_log_its_writer(&backend, found)?;
+                give_an_older_log_its_home(Arc::clone(&backend), found)?;
+                give_an_older_log_its_writer(Arc::clone(&backend), found)?;
             }
-            None => write_initial_metadata(&backend)?,
+            None => write_initial_metadata(Arc::clone(&backend))?,
         }
-        seed_version_position(&backend)?;
-        crate::node::ensure(&backend)?;
+        seed_version_position(Arc::clone(&backend))?;
+        crate::node::ensure(Arc::clone(&backend))?;
         let served = Arc::new(crate::served::Served::load(backend.as_ref())?);
         let expiring = Arc::new(crate::lapse::Expiring::load(backend.as_ref())?);
         let writing = Arc::new(crate::gate::WriteGate::default());

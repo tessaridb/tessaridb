@@ -342,7 +342,7 @@ fn serve(
             .id;
         let speaking = std::sync::Arc::downgrade(&db);
         let gathering = tessari_wire::Gathering::new(
-            &db,
+            std::sync::Arc::clone(&db),
             me,
             (surface.dialling.duplicate(), surface.authority.clone()),
             std::sync::Arc::clone(&surface.routing),
@@ -418,7 +418,7 @@ fn serve(
     // Stopped at the stage that refuses new connections and joined before the
     // store is dropped — see `consumers.rs` for why a `Drop` at the end of this
     // function is neither of those moments.
-    let running = consumers::start(&db);
+    let running = consumers::start(std::sync::Arc::clone(&db));
     let quiet = consumers::halting(&running);
 
     // What the stages will act on, taken before either surface starts serving:

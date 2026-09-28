@@ -92,14 +92,14 @@ impl Gathering {
     /// A gatherer for the node that holds `db`, speaking as `me`.
     #[must_use]
     pub fn new(
-        db: &Arc<tessaridb::Db>,
+        db: Arc<tessaridb::Db>,
         me: [u8; NODE_ID_LEN],
         (credential, authority): (Credential, CertificateDer<'static>),
         routing: Arc<Published>,
         greeting: Greeting,
     ) -> Self {
         Self {
-            db: Arc::downgrade(db),
+            db: Arc::downgrade(&db),
             me,
             credential,
             authority,
