@@ -127,6 +127,11 @@ panic = "deny"
 arithmetic_side_effects = "warn"
 todo = "warn"
 unimplemented = "warn"
+# A std lock guard or a `RefCell` borrow alive across an `.await` stalls every
+# task that needs it on that worker; denied outright rather than left to the
+# default warning.
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
 
 [profile.release]
 lto = "fat"

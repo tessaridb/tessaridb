@@ -10,9 +10,8 @@
 
 use std::io;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, PoisonError};
-
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
 /// Where connections come from: the runtime's listener, or a test's script.
@@ -34,17 +33,23 @@ impl Accept for TcpListener {
 /// A listener that gives up on a failure that will not pass.
 pub(crate) struct Listening<A> {
     accepting: A,
-    /// Why the listener ended, for [`crate::Node::serve`] to return.
-    failed: Arc<Mutex<Option<io::Error>>>,
+    /// Why the listener ended, handed once to [`crate::Node::serve`] to return.
+    /// A one-shot channel rather than a shared slot: one value crosses from
+    /// the accept loop to the caller, once, and nothing needs a lock for that.
+    failed: Option<oneshot::Sender<io::Error>>,
+    /// The other end, until the caller takes it.
+    failure: Option<oneshot::Receiver<io::Error>>,
     /// Cancelled when it ends, which is what stops the server.
     ended: CancellationToken,
 }
 
 impl<A: Accept> Listening<A> {
     pub(crate) fn new(accepting: A) -> Self {
+        let (failed, failure) = oneshot::channel();
         Self {
             accepting,
-            failed: Arc::new(Mutex::new(None)),
+            failed: Some(failed),
+            failure: Some(failure),
             ended: CancellationToken::new(),
         }
     }
@@ -54,9 +59,10 @@ impl<A: Accept> Listening<A> {
         self.ended.clone()
     }
 
-    /// Where the listener's failure will be, once it has one.
-    pub(crate) fn failure(&self) -> Arc<Mutex<Option<io::Error>>> {
-        Arc::clone(&self.failed)
+    /// Where the listener's failure will arrive, once it has one; `None` once
+    /// it has been taken.
+    pub(crate) fn failure(&mut self) -> Option<oneshot::Receiver<io::Error>> {
+        self.failure.take()
     }
 }
 
@@ -76,7 +82,11 @@ impl<A: Accept> axum::serve::Listener for Listening<A> {
                 }
                 Err(why) => {
                     log::error!("the HTTP listener failed ({why})");
-                    *self.failed.lock().unwrap_or_else(PoisonError::into_inner) = Some(why);
+                    if let Some(failed) = self.failed.take() {
+                        // A caller that stopped listening for the failure has
+                        // nothing to be told.
+                        drop(failed.send(why));
+                    }
                     self.ended.cancel();
                     // Nothing is accepted after this; the server stops on `ended`.
                     std::future::pending::<()>().await;
@@ -137,7 +147,7 @@ mod tests {
                 Err(io::Error::from_raw_os_error(9)),
             ])));
             let ended = listening.ended();
-            let failure = listening.failure();
+            let mut failure = listening.failure().expect("the failure's receiver");
             // Bounded, so a listener that retried instead of ending fails here
             // rather than hanging; paused time makes the bound instant.
             let waited = tokio::time::timeout(std::time::Duration::from_secs(60), async {
@@ -149,7 +159,7 @@ mod tests {
             })
             .await;
             assert!(waited.is_ok(), "a listener gone bad went on retrying");
-            let recorded = failure.lock().expect("the record").take();
+            let recorded = failure.try_recv().ok();
             assert_eq!(
                 recorded.and_then(|why| why.raw_os_error()),
                 Some(9),

@@ -54,8 +54,8 @@ mod tokens;
 mod websocket;
 
 use std::net::{SocketAddr, TcpListener};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, PoisonError};
 
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
@@ -163,7 +163,7 @@ impl Node {
             rounds: Arc::clone(&self.rounds),
         });
         let app = axum::Router::new().fallback(handle).with_state(shared);
-        let listening = listening::Listening::new(listener);
+        let mut listening = listening::Listening::new(listener);
         let (ended, failure) = (listening.ended(), listening.failure());
         axum::serve(
             // Tapped for the address alone: axum hands a peer's address to
@@ -178,12 +178,9 @@ impl Node {
             }
         })
         .await?;
-        // Taken into its own binding so the guard is gone before the return.
-        let failed = failure
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
-        failed.map_or(Ok(()), Err)
+        failure
+            .and_then(|mut failed| failed.try_recv().ok())
+            .map_or(Ok(()), Err)
     }
 }
 

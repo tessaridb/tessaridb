@@ -1,3 +1,15 @@
 # `expect_used` is denied for production code (workspace lints); a test states
 # its own expectation, so tests may use it.
 allow-expect-in-tests = true
+# Guards that are live locks, which must never be held across an `.await`
+# (checked by the default-on `await_holding_invalid_type` lint). The shard
+# guards of the concurrent map, and the ordered map's epoch guard, which pins
+# reclamation for as long as the task holding it is suspended.
+await-holding-invalid-types = [
+  { path = "dashmap::mapref::one::Ref", reason = "DashMap shard lock: clone the value out and drop the guard before .await" },
+  { path = "dashmap::mapref::one::RefMut", reason = "DashMap shard lock: finish the mutation and drop the guard before .await" },
+  { path = "dashmap::mapref::entry::Entry", reason = "DashMap entry holds the shard write lock: complete it before .await" },
+  { path = "dashmap::mapref::multiple::RefMulti", reason = "DashMap iteration guard: collect what you need, drop the iterator, then .await" },
+  { path = "dashmap::mapref::multiple::RefMutMulti", reason = "DashMap mutable iteration guard: never suspend while iterating" },
+  { path = "scc::Guard", reason = "scc epoch guard pins reclamation: copy out with peek_with, or finish the borrow before .await" },
+]
