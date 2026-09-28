@@ -1,14 +1,16 @@
 //! Running a corpus, and saying precisely what failed.
 
+mod kinds;
 use std::sync::Arc;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_ql::{Expr, ExprKind, StatementKind, parse};
-use tessari_session::{Error, Outcome, Session};
+use tessari_session::{Outcome, Session};
 use tessari_storage::Store;
 use tessari_types::Value;
 
 use crate::case::{Case, Corpus, Expectation};
+pub(crate) use kinds::kind_name;
 
 /// What one case did.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,202 +184,5 @@ fn value_of(expr: &Expr) -> Option<Value> {
         // expectation that computes is one that can be wrong in the same way
         // the thing it checks is wrong.
         ExprKind::Negate(_) | ExprKind::Arithmetic { .. } | ExprKind::Call { .. } => None,
-    }
-}
-
-/// The name a corpus uses for a failure.
-///
-/// The variant, not the message: a corpus that asserted wording would fail every
-/// time a message improved, and would stop being changed.
-fn kind_name(error: &Error) -> &'static str {
-    match error {
-        Error::Script(inner) => script_kind(inner),
-        Error::Store(inner) => store_kind(inner),
-        // Named for the refusal it carries, not for the wrapper. A corpus row
-        // asserts what was refused; whether the session could also say how to
-        // fix it is an improvement to the message, which is exactly what this
-        // function exists not to be sensitive to.
-        Error::UndeclaredField { refusal, .. } => store_kind(refusal),
-        Error::Encoding(_) => "Encoding",
-        Error::WriteWouldLeaveAHole { .. } => "WriteWouldLeaveAHole",
-        Error::FileAboveBucketCeiling { .. } => "FileAboveBucketCeiling",
-        Error::NoSuchRouteToAssign { .. } => "NoSuchRouteToAssign",
-        Error::NoNamespaceSelected { .. } => "NoNamespaceSelected",
-        Error::NoDatabaseSelected { .. } => "NoDatabaseSelected",
-        Error::Unknown { .. } => "Unknown",
-        Error::NestedTransaction { .. } => "NestedTransaction",
-        Error::NoOpenTransaction { .. } => "NoOpenTransaction",
-        Error::VersionInsideTransaction { .. } => "VersionInsideTransaction",
-        Error::UnclosedTransaction { .. } => "UnclosedTransaction",
-        Error::RecordExists { .. } => "RecordExists",
-        Error::NoSuchRecord { .. } => "NoSuchRecord",
-        Error::ConditionNotMet { .. } => "ConditionNotMet",
-        Error::InvalidKeyBound { .. } => "InvalidKeyBound",
-        Error::NotAnEdgeTable { .. } => "NotAnEdgeTable",
-        Error::EndpointsNotDeclared { .. } => "EndpointsNotDeclared",
-        Error::EndpointOutsideGraph { .. } => "EndpointOutsideGraph",
-        Error::NoHistoricalTraversal { .. } => "NoHistoricalTraversal",
-        Error::EdgePropertiesNotAnObject { .. } => "EdgePropertiesNotAnObject",
-        Error::ConditionNotBoolean { .. } => "ConditionNotBoolean",
-        Error::NoRecordInScope { .. } => "NoRecordInScope",
-        Error::NotFused { .. } => "NotFused",
-        Error::DefaultDoesNotMatch { .. } => "DefaultDoesNotMatch",
-        Error::NotSummable { .. } => "NotSummable",
-        Error::NotSignedIn { .. } => "NotSignedIn",
-        Error::TopicRateExceeded { .. } => "TopicRateExceeded",
-        Error::RoleForbids { .. } => "RoleForbids",
-        Error::SignInRefused => "SignInRefused",
-        Error::SignInThrottled => "SignInThrottled",
-        Error::NoSuchRole { .. } => "NoSuchRole",
-        Error::NoSuchVerb { .. } => "NoSuchVerb",
-        Error::NoSuchAuthority { .. } => "NoSuchAuthority",
-        Error::CannotHandOut { .. } => "CannotHandOut",
-        Error::NotGranted { .. } => "NotGranted",
-        Error::GrantedUserCannotDeclare { .. } => "GrantedUserCannotDeclare",
-        Error::LastGrant { .. } => "LastGrant",
-        Error::NoSearchIndex { .. } => "NoSearchIndex",
-        Error::PrefixTooShort { .. } => "PrefixTooShort",
-        Error::MalformedSlop { .. } => "MalformedSlop",
-        Error::NegationWithoutTerm { .. } => "NegationWithoutTerm",
-        Error::NoSuchDistance { .. } => "NoSuchDistance",
-        Error::OutsideTenancy { .. } => "OutsideTenancy",
-        Error::NotArithmetic { .. } => "NotArithmetic",
-        Error::InvalidExpiry { .. } => "InvalidExpiry",
-        Error::ArithmeticFailed { .. } => "ArithmeticFailed",
-        Error::WrongArgument { .. } => "WrongArgument",
-        Error::GeometryRefused { .. } => "GeometryRefused",
-        Error::CallFailed { .. } => "CallFailed",
-        Error::NotCastable { .. } => "NotCastable",
-        Error::NotABucket { .. } => "NotABucket",
-        Error::NotAQueue { .. } => "NotAQueue",
-        Error::NotATopic { .. } => "NotATopic",
-        Error::InvalidPosition { .. } => "InvalidPosition",
-        Error::ViewIsNotATable { .. } => "ViewIsNotATable",
-        Error::ViewsTooDeep { .. } => "ViewsTooDeep",
-        Error::ViewUnreadable { .. } => "ViewUnreadable",
-        Error::QueueFieldIsTheEngines { .. } => "QueueFieldIsTheEngines",
-        Error::ClaimAboveCeiling { .. } => "ClaimAboveCeiling",
-        Error::ClaimDeadlineUnreachable { .. } => "ClaimDeadlineUnreachable",
-        Error::NotWrittenByHand { .. } => "NotWrittenByHand",
-        Error::FileNeedsAPath { .. } => "FileNeedsAPath",
-        Error::FileIsNotBytes { .. } => "FileIsNotBytes",
-        Error::FileIsIncomplete { .. } => "FileIsIncomplete",
-        Error::NotWritable { .. } => "NotWritable",
-        Error::ManyWritablePeers { .. } => "ManyWritablePeers",
-        Error::DuplicateMapping { .. } => "DuplicateMapping",
-        Error::MergeIsNotAnObject { .. } => "MergeIsNotAnObject",
-        Error::Thrown { .. } => "Thrown",
-        Error::JoinKeysDiffer { .. } => "JoinKeysDiffer",
-        Error::NoSuchAccessPath { .. } => "NoSuchAccessPath",
-        Error::PathNotTaken { .. } => "PathNotTaken",
-        Error::IndexNotUsed { .. } => "IndexNotUsed",
-        Error::TimedOut { .. } => "TimedOut",
-        Error::Unbounded { .. } => "Unbounded",
-        Error::UnboundedCollection { .. } => "UnboundedCollection",
-        Error::NotAlone { .. } => "NotAlone",
-        Error::AnchorGone { .. } => "AnchorGone",
-        Error::StillDepended { .. } => "StillDepended",
-        Error::TableBelongsToGraph { .. } => "TableBelongsToGraph",
-        Error::NotReadBySelect { .. } => "NotReadBySelect",
-        Error::NotIndexable { .. } => "NotIndexable",
-        Error::SecretNeedsVault { .. } => "SecretNeedsVault",
-        Error::NotASecret { .. } => "NotASecret",
-        Error::VaultIsStrict { .. } => "VaultIsStrict",
-        Error::VaultEditComputesFromTheRecord { .. } => "VaultEditComputesFromTheRecord",
-        Error::RecipientIsNotAName { .. } => "RecipientIsNotAName",
-        Error::ReplicationUnstated { .. } => "ReplicationUnstated",
-        Error::FailoverRefused { .. } => "FailoverRefused",
-        _ => "Unnamed",
-    }
-}
-
-fn script_kind(error: &tessari_ql::Error) -> &'static str {
-    match error {
-        tessari_ql::Error::EmptyTimeout { .. } => "EmptyTimeout",
-        tessari_ql::Error::EmptyRetention { .. } => "EmptyRetention",
-        tessari_ql::Error::UnexpectedCharacter { .. } => "UnexpectedCharacter",
-        tessari_ql::Error::UnterminatedString { .. } => "UnterminatedString",
-        tessari_ql::Error::InvalidEscape { .. } => "InvalidEscape",
-        tessari_ql::Error::InvalidNumber { .. } => "InvalidNumber",
-        tessari_ql::Error::InvalidBytes { .. } => "InvalidBytes",
-        tessari_ql::Error::InvalidDuration { .. } => "InvalidDuration",
-        tessari_ql::Error::UnexpectedToken { .. } => "UnexpectedToken",
-        tessari_ql::Error::UnexpectedEnd { .. } => "UnexpectedEnd",
-        tessari_ql::Error::Unsupported { .. } => "Unsupported",
-        tessari_ql::Error::InvalidDatetime { .. } => "InvalidDatetime",
-        tessari_ql::Error::InvalidUuid { .. } => "InvalidUuid",
-        tessari_ql::Error::InvalidDecimal { .. } => "InvalidDecimal",
-        tessari_ql::Error::InvalidRecordId { .. } => "InvalidRecordId",
-        tessari_ql::Error::NotARange { .. } => "NotARange",
-        tessari_ql::Error::DuplicateField { .. } => "DuplicateField",
-        tessari_ql::Error::DuplicateProjection { .. } => "DuplicateProjection",
-        tessari_ql::Error::UnnamedProjection { .. } => "UnnamedProjection",
-        tessari_ql::Error::NotASideOfTheJoin { .. } => "NotASideOfTheJoin",
-        tessari_ql::Error::OneSidedJoin { .. } => "OneSidedJoin",
-        tessari_ql::Error::JoinKeyIsNotAField { .. } => "JoinKeyIsNotAField",
-        tessari_ql::Error::NoSuchFunction { .. } => "NoSuchFunction",
-        tessari_ql::Error::WrongArity { .. } => "WrongArity",
-        tessari_ql::Error::UngroupedProjection { .. } => "UngroupedProjection",
-        tessari_ql::Error::StarIsOnlyForCount { .. } => "StarIsOnlyForCount",
-        tessari_ql::Error::SeveralOutsideAComparison { .. } => "SeveralOutsideAComparison",
-        tessari_ql::Error::AssertionNotAConstraint { .. } => "AssertionNotAConstraint",
-        tessari_ql::Error::SeveralInAUniqueIndex { .. } => "SeveralInAUniqueIndex",
-        tessari_ql::Error::SeveralInAnAnalysedIndex { .. } => "SeveralInAnAnalysedIndex",
-        tessari_ql::Error::SeveralRoutesInOneIndex { .. } => "SeveralRoutesInOneIndex",
-        tessari_ql::Error::FoldInsideAFold { .. } => "FoldInsideAFold",
-        tessari_ql::Error::FoldInAFilter { .. } => "FoldInAFilter",
-        tessari_ql::Error::MalformedGeometry { .. } => "MalformedGeometry",
-        tessari_ql::Error::ComputedGeometry { .. } => "ComputedGeometry",
-        tessari_ql::Error::UnboundParameter { .. } => "UnboundParameter",
-        tessari_ql::Error::BoundTwice { .. } => "BoundTwice",
-        tessari_ql::Error::BindingCollidesWithParameter { .. } => "BindingCollidesWithParameter",
-        tessari_ql::Error::ReturnedTwice { .. } => "ReturnedTwice",
-        tessari_ql::Error::CursorBesideAnOffset { .. } => "CursorBesideAnOffset",
-        tessari_ql::Error::CursorBesideAReshaping { .. } => "CursorBesideAReshaping",
-        tessari_ql::Error::AnchorFromAnotherTable { .. } => "AnchorFromAnotherTable",
-        tessari_ql::Error::InsertRowArity { .. } => "InsertRowArity",
-        tessari_ql::Error::TableWithoutColumns { .. } => "TableWithoutColumns",
-        tessari_ql::Error::DepthNeedsOneHopToATable { .. } => "DepthNeedsOneHopToATable",
-        tessari_ql::Error::DepthBelowOne { .. } => "DepthBelowOne",
-        tessari_ql::Error::VectorWidthBelowOne { .. } => "VectorWidthBelowOne",
-        tessari_ql::Error::VectorWidthAboveTheCeiling { .. } => "VectorWidthAboveTheCeiling",
-        tessari_ql::Error::EffortBelowOne { .. } => "EffortBelowOne",
-        tessari_ql::Error::EmptyPeriod { .. } => "EmptyPeriod",
-        _ => "Unnamed",
-    }
-}
-
-fn store_kind(error: &tessari_storage::Error) -> &'static str {
-    match error {
-        tessari_storage::Error::Conflict { .. } => "Conflict",
-        tessari_storage::Error::CommitContention { .. } => "CommitContention",
-        tessari_storage::Error::NameTaken { .. } => "NameTaken",
-        tessari_storage::Error::EmptyIndex { .. } => "EmptyIndex",
-        tessari_storage::Error::UniqueViolation { .. } => "UniqueViolation",
-        tessari_storage::Error::SpaceFull { .. } => "SpaceFull",
-        tessari_storage::Error::TopicIsAppendOnly { .. } => "TopicIsAppendOnly",
-        tessari_storage::Error::TopicMessageTooLarge { .. } => "TopicMessageTooLarge",
-        tessari_storage::Error::SchemaViolation { .. } => "SchemaViolation",
-        tessari_storage::Error::UndeclaredField { .. } => "UndeclaredField",
-        tessari_storage::Error::RecordsRefused { .. } => "RecordsRefused",
-        tessari_storage::Error::MissingRequiredField { .. } => "MissingRequiredField",
-        tessari_storage::Error::AssertionViolation { .. } => "AssertionViolation",
-        tessari_storage::Error::NoSuchParent { .. } => "NoSuchParent",
-        tessari_storage::Error::VersionReclaimed { .. } => "VersionReclaimed",
-        tessari_storage::Error::VersionInTheFuture { .. } => "VersionInTheFuture",
-        // One name for every refusal the vault crate raises, deliberately. The
-        // distinctions it draws — sealed, wrong key, unknown algorithm — matter
-        // to an operator and must not become a corpus vocabulary a client can
-        // branch on: "which of these went wrong" is exactly the question an
-        // attacker asks, and a stable name per variant is an answer.
-        tessari_storage::Error::Vault(_) => "Vault",
-        tessari_storage::Error::VaultUnavailable => "VaultUnavailable",
-        tessari_storage::Error::VaultReservedField { .. } => "VaultReservedField",
-        tessari_storage::Error::VaultNotAnObject { .. } => "VaultNotAnObject",
-        tessari_storage::Error::VaultNoKey { .. } => "VaultNoKey",
-        tessari_storage::Error::VaultReservedRecipient { .. } => "VaultReservedRecipient",
-        tessari_storage::Error::VaultRecipientExists { .. } => "VaultRecipientExists",
-        tessari_storage::Error::VaultNoRecipient { .. } => "VaultNoRecipient",
-        _ => "Unnamed",
     }
 }

@@ -161,6 +161,33 @@ fn read(relative: &str) -> String {
 /// report a method moved into a child as a method that no longer exists.
 fn read_module(relative: &str) -> String {
     let mut text = read(relative);
+    // A crate root or a `mod.rs` keeps its children beside it, one file per
+    // `mod name;` it declares, rather than in a directory named after it.
+    let beside = ["lib.rs", "main.rs", "mod.rs"]
+        .iter()
+        .any(|root| relative.ends_with(&format!("/{root}")));
+    if beside {
+        let directory = repo().join(relative).parent().map(Path::to_path_buf);
+        let declared: Vec<String> = text
+            .lines()
+            .filter_map(|line| {
+                line.trim_start_matches("pub(crate) ")
+                    .trim_start_matches("pub ")
+                    .strip_prefix("mod ")
+                    .and_then(|rest| rest.strip_suffix(';'))
+                    .map(str::to_owned)
+            })
+            .collect();
+        for name in declared {
+            if let Some(file) = directory.as_ref().map(|at| at.join(format!("{name}.rs")))
+                && let Ok(child) = fs::read_to_string(&file)
+            {
+                text.push('\n');
+                text.push_str(&child);
+            }
+        }
+        return text;
+    }
     let children = repo().join(relative.trim_end_matches(".rs"));
     if let Ok(entries) = fs::read_dir(&children) {
         let mut files: Vec<_> = entries
