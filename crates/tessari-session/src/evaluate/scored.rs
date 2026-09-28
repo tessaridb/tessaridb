@@ -11,7 +11,7 @@ use crate::plan;
 use crate::rank::{self};
 use crate::session::Session;
 
-use super::{Walked, as_count, keep_best};
+use super::Walked;
 
 impl Session<'_> {
     /// A bounded read ordered by how well a record answers a query.
@@ -255,4 +255,26 @@ impl Session<'_> {
         }
         Ok(Some((index, visible)))
     }
+}
+
+/// Remember one score if it is among the best `wanted` seen so far.
+///
+/// Kept ascending and capped, so `best[0]` is the score in last place — the
+/// threshold a pruning walk compares a term suffix against. A shorter list is a
+/// read that has not yet seen enough records to have a last place, which is why
+/// the caller checks the length before reading the front.
+fn keep_best(best: &mut Vec<f64>, score: f64, wanted: usize) {
+    if best.len() >= wanted && score <= best[0] {
+        return;
+    }
+    let at = best.partition_point(|seen| *seen < score);
+    best.insert(at, score);
+    if best.len() > wanted {
+        best.remove(0);
+    }
+}
+
+/// A count of repeats as a weight, without an `as` cast.
+fn as_count(repeats: usize) -> f64 {
+    f64::from(u32::try_from(repeats).unwrap_or(u32::MAX))
 }

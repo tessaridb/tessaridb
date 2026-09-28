@@ -4,6 +4,7 @@ use std::ops::ControlFlow;
 
 use tessari_ql::Select;
 use tessari_storage::Transaction;
+use tessari_types::{RecordId, Value};
 
 use crate::condition::boolean;
 use crate::consume::Consumer;
@@ -15,8 +16,7 @@ use crate::search::Searched;
 use crate::session::Session;
 
 use super::{
-    Asked, Candidates, Prepared, Reached, Reporting, Scope, Testing, Walked, hand_over, sought,
-    table_named,
+    Asked, Candidates, Prepared, Reached, Reporting, Scope, Testing, Walked, sought, table_named,
 };
 
 impl Session<'_> {
@@ -358,4 +358,25 @@ impl Session<'_> {
             }
         }
     }
+}
+
+/// Hand a collection to the consumer, stopping where it says to.
+///
+/// The count is exact here, so it is passed on: these are the arms that had to
+/// build their collection to reach their context, and a consumer that keeps
+/// every record can size itself once instead of doubling its way there.
+fn hand_over(
+    found: Vec<(RecordId, Value)>,
+    transaction: &mut Transaction<'_>,
+    consumer: &mut dyn Consumer,
+) -> Result<()> {
+    consumer.expecting(found.len());
+    for (id, record) in found {
+        if consumer.take(transaction, id, record)?.is_break() {
+            // Nothing follows in any arm that calls this, so stopping the loop
+            // is the whole of honouring the break.
+            break;
+        }
+    }
+    Ok(())
 }
