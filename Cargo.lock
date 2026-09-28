@@ -1630,6 +1630,7 @@ dependencies = [
 name = "tessari-cli"
 version = "0.10.0-beta"
 dependencies = [
+ "futures-util",
  "libc",
  "log",
  "rcgen",

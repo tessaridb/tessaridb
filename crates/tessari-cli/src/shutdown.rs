@@ -167,7 +167,22 @@ pub async fn watch(
 
     // Stage 2. Requests only. Feeds are stage 3 and were moved off this count
     // when they became feeds, which is what lets this finish at all.
-    for surface in surfaces {
+    drain_requests(surfaces).await;
+
+    // Stage 3. A feed notices the same flag stage 1 set, within the interval it
+    // already wakes on. Nothing is lost: a subscriber's cursor is a position it
+    // holds, so it resumes exactly where it stopped.
+    end_feeds(surfaces).await;
+}
+
+/// Stage 2 on every surface at once.
+///
+/// Together rather than one after another: each surface is given [`PATIENCE`],
+/// and waiting on them in turn would give a stop with work stuck on three
+/// surfaces three times that — past a supervisor's own patience, which is the
+/// deadline this one was chosen to stay inside.
+async fn drain_requests(surfaces: &[Surface]) {
+    futures_util::future::join_all(surfaces.iter().map(|surface| async move {
         match surface.stopping.drain(PATIENCE).await {
             Drained::Finished => {}
             Drained::Deadline { left } => {
@@ -178,17 +193,19 @@ pub async fn watch(
                 );
             }
         }
-    }
+    }))
+    .await;
+}
 
-    // Stage 3. A feed notices the same flag stage 1 set, within the interval it
-    // already wakes on. Nothing is lost: a subscriber's cursor is a position it
-    // holds, so it resumes exactly where it stopped.
-    for surface in surfaces {
+/// Stage 3 on every surface at once, for the reason stage 2 is.
+async fn end_feeds(surfaces: &[Surface]) {
+    futures_util::future::join_all(surfaces.iter().map(|surface| async move {
         let began = tokio::time::Instant::now();
         while surface.stopping.feeds() > 0 && began.elapsed() < PATIENCE {
             tokio::time::sleep(GLANCE).await;
         }
-    }
+    }))
+    .await;
 }
 
 /// One serving surface, as the stages see it.
@@ -206,4 +223,44 @@ pub struct Surface {
     /// `Sync` as well as `Send` because the watcher reads this from one task
     /// while the surfaces are serving on others — the list is shared, not moved.
     pub wake: Box<dyn Fn() + Send + Sync>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn surface(name: &'static str) -> Surface {
+        Surface {
+            name,
+            stopping: Stopping::new(),
+            wake: Box::new(|| {}),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn surfaces_with_stuck_work_are_waited_on_together_not_in_turn() {
+        let surfaces = [surface("one"), surface("two"), surface("three")];
+        // A request on every surface that never finishes, and a feed that never ends.
+        let stuck: Vec<_> = surfaces.iter().map(|each| each.stopping.busy()).collect();
+        let mut feeding: Vec<_> = surfaces.iter().map(|each| each.stopping.busy()).collect();
+        for feed in &mut feeding {
+            feed.became_a_feed();
+        }
+
+        let began = tokio::time::Instant::now();
+        drain_requests(&surfaces).await;
+        let drained = began.elapsed();
+        end_feeds(&surfaces).await;
+        let ended = began.elapsed().saturating_sub(drained);
+
+        assert!(
+            drained < PATIENCE.saturating_mul(2) && drained >= PATIENCE,
+            "three stuck surfaces took {drained:?} to drain"
+        );
+        assert!(
+            ended < PATIENCE.saturating_mul(2) && ended >= PATIENCE,
+            "three open feeds took {ended:?} to be given up on"
+        );
+        drop((stuck, feeding));
+    }
 }

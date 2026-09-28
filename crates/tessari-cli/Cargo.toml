@@ -31,6 +31,7 @@ tessari-constants.workspace = true
 libc = "0.2"
 tokio = { workspace = true, features = ["rt-multi-thread", "signal", "macros"] }
 tokio-util.workspace = true
+futures-util.workspace = true
 log.workspace = true
 tessari-ql.workspace = true
 tessari-session.workspace = true
