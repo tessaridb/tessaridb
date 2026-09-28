@@ -350,7 +350,16 @@ const TABLES: &[Table] = &[
         // can install a gatherer — a statement, a route, a frame — a read could
         // be answered by records from a source nobody authenticated, and the
         // session's redaction would be redacting forgeries.
-        expected: 22,
+        //
+        // 23 since feeds wake on landings (G041 W13b, Q-838): `Db::commits`.
+        // Classified **not a data path**: it hands out a count that moves when
+        // the store lands a log record, and carries no record, catalog entry,
+        // grant or even a table name. A feed woken by it still reads what landed
+        // through its own session's round, authorized per round as before.
+        //
+        // Re-classification trigger: the day the announcement carries WHAT
+        // landed, it discloses writes to anyone holding a `Db`, grant or no.
+        expected: 23,
         count: |text| public_functions(&block(text, "impl Db")),
     },
     Table {
@@ -711,7 +720,13 @@ const TABLES: &[Table] = &[
         //
         // Its re-classification trigger: a `true` from it treated as permission
         // to write by anything but that door.
-        expected: 43,
+        //
+        // 44 since feeds wake on landings (G041 W13b, Q-838): `Store::when_landed`.
+        // Classified **not a data path** on `Db::commits`'s ground: the hook is
+        // called with nothing and learns only that a log record landed.
+        //
+        // Its re-classification trigger: a hook that is handed the batch.
+        expected: 44,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -794,7 +809,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 97 since topics: `Store::admit_public_append`, classified not a data path
     // in the block above (G037).
-    assert_eq!(total, 97, "the counted tables no longer sum to 97");
+    //
+    // 99 since feeds wake on landings: `Db::commits` and `Store::when_landed`,
+    // both classified not a data path above (G041 W13b, Q-838).
+    assert_eq!(total, 99, "the counted tables no longer sum to 99");
 }
 
 /// Every `.rs` file under a directory.

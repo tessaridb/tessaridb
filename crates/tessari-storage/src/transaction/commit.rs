@@ -647,7 +647,7 @@ impl Transaction<'_> {
                 drop(turn);
                 self.store.write_gate().land(ticket, backend)
             } else {
-                let applied = backend.apply(batch);
+                let applied = self.store.write_gate().apply(batch, backend);
                 drop(turn);
                 applied
             };

@@ -38,6 +38,14 @@
 //! one before it is still being synced — and a group of them lands in one
 //! write (G040 SG4). What a writer holding the turn reads includes what is
 //! pending ([`Overlaid`]); what anybody else reads does not.
+//!
+//! # Every landing is announced from here
+//!
+//! A commit's landing, a batch applied under the turn and a replica's apply all
+//! pass through this gate, so it is the one place that knows a log record has
+//! become readable whichever surface, cadence or peer produced it. A follower of
+//! the log waits on that announcement ([`WriteGate::when_landed`]) rather than
+//! on a timer.
 
 #[cfg(test)]
 mod group_tests;
@@ -47,7 +55,7 @@ mod overlay_tests;
 mod pending;
 
 use std::cell::Cell;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError, RwLock};
 
 use tessari_kv::{KvBackend, WriteBatch};
 
@@ -64,6 +72,17 @@ thread_local! {
 pub(crate) struct WriteGate {
     turn: Mutex<()>,
     pending: pending::Pending,
+    landed: Hooks,
+}
+
+/// What to call once a write that filed a log record has landed.
+#[derive(Default)]
+struct Hooks(RwLock<Vec<Box<dyn Fn() + Send + Sync>>>);
+
+impl std::fmt::Debug for Hooks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Hooks").finish_non_exhaustive()
+    }
 }
 
 /// A held turn. Dropping it hands the turn on.
@@ -104,7 +123,56 @@ impl WriteGate {
     /// The batch's own failure, or the retryable conflict when it was derived
     /// on a batch that did not land.
     pub(crate) fn land(&self, ticket: Ticket, backend: &dyn KvBackend) -> tessari_kv::Result<()> {
-        self.pending.land(ticket, backend)
+        let landed = self.pending.land(ticket, backend);
+        if landed.is_ok() {
+            self.announce();
+        }
+        landed
+    }
+
+    /// Apply a batch that is not staged — a backend with no sync to share, or a
+    /// replica's apply — and announce it once it has landed. Called holding the
+    /// turn.
+    ///
+    /// # Errors
+    ///
+    /// The batch's own failure.
+    pub(crate) fn apply(
+        &self,
+        batch: WriteBatch,
+        backend: &dyn KvBackend,
+    ) -> tessari_kv::Result<()> {
+        let applied = backend.apply(batch);
+        if applied.is_ok() {
+            self.announce();
+        }
+        applied
+    }
+
+    /// Call `hook` after every write that files a log record lands, on the
+    /// writer that landed it — after a commit's turn is handed on, but still
+    /// holding it for an apply under the turn.
+    ///
+    /// Short and non-blocking by contract, and never taking the turn: it runs
+    /// on the commit path.
+    pub(crate) fn when_landed(&self, hook: Box<dyn Fn() + Send + Sync>) {
+        self.landed
+            .0
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(hook);
+    }
+
+    fn announce(&self) {
+        for hook in self
+            .landed
+            .0
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+        {
+            hook();
+        }
     }
 
     /// Land everything pending. For a writer holding the turn that applies its

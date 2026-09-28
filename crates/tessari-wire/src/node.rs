@@ -135,10 +135,11 @@ impl Node {
         let listener = TcpListener::bind(address)?;
         // The runtime's listener requires it, and nothing here reads it blocking.
         listener.set_nonblocking(true)?;
+        let committed = Arc::clone(db.commits());
         Ok(Self {
             listener,
             db,
-            committed: Arc::new(Commits::default()),
+            committed,
             stopping: Stopping::new(),
             door: Admitting::to(MAX_CONNECTIONS),
             bridge: Arc::new(Bridge::new(MAX_STORE_CALLS)),

@@ -50,15 +50,17 @@ const PATIENCE: Duration = Duration::from_millis(250);
 /// How many changes one poll may take.
 const MOUTHFUL: usize = 256;
 
-/// A wake-up shared by the connections of one node.
+/// A wake-up for whatever follows the log.
 ///
-/// Deliberately **not** a condvar in the commit path: the feed design leaves
-/// that path lock-free, and reaching into it would be to learn something a node
-/// already knows when a commit arrives through one of its own connections.
+/// The database's own ([`crate::Db::commits`]) is signalled by the store after
+/// every landing — a commit through any session or surface, a record applied
+/// from another writer's stream — so a feed learns of a change nobody on its
+/// surface made. It used to be signalled by each surface after its own
+/// statements, and a feed then found everything else by polling (Q-838).
 ///
-/// A node whose commit happened elsewhere — through a different surface, or a
-/// different process — is never signalled, and that costs latency rather than
-/// correctness, because [`Commits::wait`] returns on a timeout regardless.
+/// [`Commits::wait`] still returns on a timeout, so a missed signal delays a
+/// change rather than losing it.
+#[derive(Debug)]
 pub struct Commits {
     count: Mutex<u64>,
     happened: Condvar,
@@ -139,10 +141,13 @@ pub type Delivered = bool;
 /// resume after it.
 pub type Deliver<'s> = dyn FnMut(&Change, Option<&str>, &Visible, Option<&str>) -> Delivered + 's;
 
-/// How long an async feed waits for a commit signal before looking anyway.
+/// How long an async feed waits on its announcement before checking whether it
+/// has been asked to stop.
 ///
-/// The same bound [`Commits::wait`] keeps: a commit made elsewhere never signals
-/// this node, so a feed looks at least this often whatever it is told.
+/// Not a polling interval: a feed following [`crate::Db::commits`] runs a round
+/// when a landing is announced and at no other time, because every write that
+/// files a log record announces itself (Q-838). The same bound
+/// [`Commits::wait`] keeps for a feed on a thread.
 pub const PATIENCE_BETWEEN_ROUNDS: Duration = PATIENCE;
 
 /// What one round of a feed did.

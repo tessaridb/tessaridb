@@ -23,7 +23,7 @@ use tessari_serve::Stopping;
 use tessari_session::Detached;
 
 use crate::conversation::{self, Answer, BUSY, Conversation};
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::frame;
 use crate::message::Request;
 
@@ -43,7 +43,10 @@ pub(crate) enum Cooled {
     /// The client fell quiet with nothing unread; the connection goes back to
     /// the runtime with its session.
     Quiet(Detached, TcpStream),
-    /// The client sent something that is not a statement, and nothing after it.
+    /// The client sent something that is not a statement. Whatever it sent
+    /// after it is dropped: after a subscription that is exactly what the feed
+    /// does with a subscriber's bytes, and after any other frame the task ends
+    /// the connection.
     Frame(Detached, TcpStream, frame::Kind, Vec<u8>),
     /// The client hung up between frames.
     Closed,
@@ -55,10 +58,7 @@ pub(crate) enum Cooled {
 ///
 /// # Errors
 ///
-/// A socket that fails, a frame that does not decode, or bytes after a frame
-/// that hands the connection back — the only such frame a client may send is a
-/// subscription, and a client that keeps talking after asking for a feed has
-/// ended it (`push.rs`).
+/// A socket that fails, or a frame that does not decode.
 pub(crate) fn serve(
     talk: &Conversation,
     session: Detached,
@@ -86,14 +86,10 @@ pub(crate) fn serve(
                 Answer {
                     kind: frame::Kind::Refusal,
                     body: BUSY.as_bytes().to_vec(),
-                    signal: false,
                 }
             }
         };
         reply(&mut writer, &talk.stopping, &answer)?;
-        if answer.signal {
-            talk.committed.signal();
-        }
         if reader.buffer().is_empty() {
             stream.set_read_timeout(Some(QUIET))?;
             let waited = reader.fill_buf().map(<[u8]>::len);
@@ -110,14 +106,7 @@ pub(crate) fn serve(
         match frame::read(&mut reader)? {
             None => return Ok(Cooled::Closed),
             Some((frame::Kind::Request, body)) => request = Request::decode(&body)?,
-            Some((kind, body)) => {
-                if !reader.buffer().is_empty() {
-                    return Err(Error::Io(std::io::Error::other(
-                        "the client kept talking after a frame that ends the conversation",
-                    )));
-                }
-                return Ok(Cooled::Frame(attached.detach(), stream, kind, body));
-            }
+            Some((kind, body)) => return Ok(Cooled::Frame(attached.detach(), stream, kind, body)),
         }
     }
 }
@@ -144,7 +133,7 @@ mod tests {
 
     use super::{Cooled, serve};
     use crate::conversation::{BUSY, Conversation};
-    use crate::error::{Error, Result};
+    use crate::error::Result;
     use crate::frame;
     use crate::message::Request;
 
@@ -253,19 +242,18 @@ mod tests {
     }
 
     #[test]
-    fn a_client_that_keeps_talking_after_a_subscription_ends_the_connection() {
+    fn bytes_after_a_subscription_are_not_answered_as_statements() {
+        // A feed reads a subscriber's bytes and answers none of them; the spell
+        // must not answer them either, nor refuse the subscription over them.
         let mut both = Vec::new();
         frame::write(&mut both, frame::Kind::Subscribe, b"follow").expect("a frame");
         both.extend(statement("SELECT * FROM items;"));
         let (mut client, outcome, _db) = spell(Arc::new(Bridge::new(1)), SETUP, &both);
         assert_eq!(answered(&mut client).0, frame::Kind::Answer);
-        let Err(Error::Io(why)) = ended(&outcome) else {
-            panic!("bytes after a subscription were not refused");
+        let Ok(Cooled::Frame(_, _, kind, _)) = ended(&outcome) else {
+            panic!("the subscription was answered, refused or lost");
         };
-        assert!(
-            why.to_string().contains("kept talking"),
-            "refused for {why}"
-        );
+        assert_eq!(kind, frame::Kind::Subscribe);
     }
 
     #[test]

@@ -175,6 +175,9 @@ pub struct Db {
     /// by the process that knows its peers and handed to every session opened
     /// here — so every surface that serves a read, whichever it is, gathers.
     gather: std::sync::OnceLock<Arc<dyn tessari_session::Gather>>,
+    /// What this store has landed, for whatever follows it — made on first
+    /// asking, so a database nobody follows pays nothing on its commits.
+    commits: std::sync::OnceLock<Arc<feed::Commits>>,
 }
 
 impl Db {
@@ -193,6 +196,7 @@ impl Db {
         Ok(Self {
             store: Store::open(backend)?,
             gather: std::sync::OnceLock::new(),
+            commits: std::sync::OnceLock::new(),
         })
     }
 
@@ -221,6 +225,7 @@ impl Db {
         Ok(Self {
             store: Store::open(backend)?,
             gather: std::sync::OnceLock::new(),
+            commits: std::sync::OnceLock::new(),
         })
     }
 
@@ -236,6 +241,22 @@ impl Db {
             Some(gather) => session.gathering(Arc::clone(gather)),
             None => session,
         }
+    }
+
+    /// Every landing in this store, announced: a commit through any session or
+    /// surface, and a record applied from another writer's stream.
+    ///
+    /// One per database, so every feed on every surface of a process waits on
+    /// the same announcement, and a change none of them caused still wakes
+    /// them.
+    #[must_use]
+    pub fn commits(&self) -> &Arc<feed::Commits> {
+        self.commits.get_or_init(|| {
+            let commits = Arc::new(feed::Commits::default());
+            let announced = Arc::clone(&commits);
+            self.store.when_landed(move || announced.signal());
+            commits
+        })
     }
 
     /// Gather the shards of a split table this node lacks through `gather`
@@ -390,6 +411,7 @@ impl Db {
         Self {
             store,
             gather: std::sync::OnceLock::new(),
+            commits: std::sync::OnceLock::new(),
         }
     }
 

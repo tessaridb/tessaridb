@@ -454,6 +454,37 @@ fn a_change_committed_on_another_connection_arrives_as_a_frame_on_this_one() {
 }
 
 #[test]
+fn a_change_committed_past_the_node_arrives_on_its_feed() {
+    // Committed on the database itself, through no request to this node — what
+    // a replica's apply, the wire surface or a cadence does. A feed runs a round
+    // only when the store announces a landing, so a landing it did not announce
+    // would never arrive (Q-838).
+    let db = Arc::new(Db::in_memory().unwrap());
+    let node = Arc::new(Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap());
+    let address = node.address();
+    let serving = Arc::clone(&node);
+    std::thread::spawn(move || crate::serve_until_the_test_ends(&serving));
+    assert_eq!(script(&address, READY), 200, "the fixture did not build");
+
+    let (mut stream, status, _) = upgrade(&address);
+    assert_eq!(status, 101);
+    send(
+        &mut stream,
+        true,
+        1,
+        br#"{"namespace":"prod","database":"library","from":0,"table":"users"}"#,
+    );
+    db.session()
+        .run("USE NAMESPACE prod; USE DATABASE library; CREATE users:1 = { name: 'ada' };")
+        .unwrap();
+
+    let (_, opcode, payload) = receive(&mut stream);
+    assert_eq!(opcode, 1, "a change must arrive as a text frame");
+    let text = String::from_utf8(payload).expect("a text frame carries text");
+    assert!(text.contains("ada"), "not the change that was made: {text}");
+}
+
+#[test]
 fn a_follow_request_naming_no_database_is_refused_in_words() {
     // A close code is five bits of meaning. "you named no database" and "that
     // table is not yours" are different things a subscriber must tell apart.

@@ -309,4 +309,15 @@ impl Store {
     pub(crate) fn write_gate(&self) -> &crate::gate::WriteGate {
         &self.writing
     }
+
+    /// Call `hook` after every write that files a log record lands — a commit,
+    /// or a record applied from another writer's stream — whichever surface,
+    /// cadence or peer it came from.
+    ///
+    /// For whatever follows the log: it is how a follower learns there is
+    /// something new without looking. The hook runs on the writer's thread
+    /// after the write is readable, so it must be short and must not block.
+    pub fn when_landed(&self, hook: impl Fn() + Send + Sync + 'static) {
+        self.writing.when_landed(Box::new(hook));
+    }
 }

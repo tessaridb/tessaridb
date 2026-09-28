@@ -101,12 +101,13 @@ impl Node {
         let listener = TcpListener::bind(address)?;
         // The runtime's listener requires it, and nothing here reads it blocking.
         listener.set_nonblocking(true)?;
+        let committed = Arc::clone(db.commits());
         Ok(Self {
             db,
             listener,
             stopping: Stopping::new(),
             census: None,
-            committed: Arc::new(Commits::default()),
+            committed,
             door: Admitting::to(MAX_CONNECTIONS),
             tokens: Arc::new(tokens::Tokens::default()),
             bridge: Arc::new(Bridge::new(MAX_STORE_CALLS)),
@@ -289,7 +290,6 @@ fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
     let tokens = node.tokens.as_ref();
     let stopping = node.stopping.as_ref();
     let census = node.census.as_deref();
-    let committed = node.committed.as_ref();
     let route = (request.method.clone(), request.url.clone());
     let presented = basic::presented(request.header("Authorization"));
     let reply = match (route.0.clone(), route.1.as_str()) {
@@ -392,15 +392,6 @@ fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
         log::warn!("request {id} answered {}", reply.status);
     } else {
         log::info!("request {id} answered {}", reply.status);
-    }
-
-    // A statement that succeeded may have committed something, so wake this
-    // node's subscribers rather than leaving them to notice on their next
-    // timeout. Not required for correctness — `Commits::wait` returns anyway —
-    // and the signal is deliberately coarse: it says "look", never what changed,
-    // so it cannot disagree with the log about what actually happened.
-    if route.0 == Method::POST && route.1 == "/script" && reply.status < 400 {
-        committed.signal();
     }
 
     reply

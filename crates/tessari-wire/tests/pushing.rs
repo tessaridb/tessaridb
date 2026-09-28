@@ -148,6 +148,36 @@ fn a_connection_that_subscribes_close_behind_its_statements_is_fed() {
 }
 
 #[test]
+fn a_change_committed_past_the_node_reaches_its_feeds() {
+    // Committed on the database itself, through no connection of this node —
+    // what a replica's apply, the other surface or a cadence does. A feed runs a
+    // round only when the store announces a landing, so a landing it did not
+    // announce would never arrive (Q-838).
+    let db = Arc::new(Db::in_memory().unwrap());
+    let (_node, address) = serving(Arc::clone(&db));
+    let mut writer = Client::connect(&address).unwrap();
+    writer.run(READY, None).unwrap();
+    let feed = feeding(
+        selected(&address),
+        &Follow {
+            from: db
+                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .unwrap()
+                .get()
+                + 1,
+            table: None,
+            cursor: None,
+        },
+    );
+
+    let mut elsewhere = db.session();
+    elsewhere
+        .run("USE NAMESPACE prod; USE DATABASE orders; CREATE users:7 = { name: 'bo' };")
+        .unwrap();
+    assert_eq!(within(&feed, "a change nobody on this node made").id, "7");
+}
+
+#[test]
 fn a_subscription_from_an_earlier_position_replays_what_it_missed() {
     // The whole reason a position is a number the client keeps: a subscriber
     // that was away comes back to what happened while it was.

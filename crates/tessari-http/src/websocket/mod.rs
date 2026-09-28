@@ -162,64 +162,79 @@ async fn follow(mut socket: WebSocket, node: &Shared, presented: Presented, body
         Bridged::Panicked => return end(&mut socket, 1011).await,
     };
     let mut commits = node.committed.watching();
+    // Whether the log may hold something this feed has not read: at the start,
+    // and after every landing the store announces (Q-838).
+    let mut due = true;
     loop {
         // A staged shutdown reaches a feed here, within one wait.
         if node.stopping.asked() {
             return end(&mut socket, 1001).await;
         }
-        let db = Arc::clone(&node.db);
-        let ran = node
-            .rounds
-            .call(
-                (session, following),
-                move |(held, mut open): (Detached, Feed)| {
-                    let mut attached = held.attach(db.store());
-                    let mut texts = Vec::new();
-                    let round =
-                        open.round(&db, &mut attached, &mut |change, name, allowed, cursor| {
-                            // A change whose table has been dropped has no name to give.
-                            let Some(table) = name else {
-                                return true;
-                            };
-                            let names = db
-                                .names_in(&[(
-                                    change.id.clone(),
-                                    match &change.kind {
-                                        tessaridb::ChangeKind::Written(held) => held.clone(),
-                                        tessaridb::ChangeKind::Removed => tessaridb::Value::Null,
-                                    },
-                                )])
-                                .unwrap_or_default();
-                            texts.push(follow::encode(change, table, allowed, &names, cursor));
-                            true
-                        });
-                    ((attached.detach(), open), round, texts)
-                },
-            )
-            .await;
-        let round = match ran {
-            Bridged::Answered(((back, open), round, texts)) => {
-                (session, following) = (back, open);
-                for text in texts {
-                    if socket.send(Message::Text(text.into())).await.is_err() {
-                        // The client has gone; nobody is left to close to.
-                        return;
+        if due {
+            // Marked seen BEFORE the round, so a landing during it wakes the wait.
+            commits.borrow_and_update();
+            let db = Arc::clone(&node.db);
+            let ran = node
+                .rounds
+                .call(
+                    (session, following),
+                    move |(held, mut open): (Detached, Feed)| {
+                        let mut attached = held.attach(db.store());
+                        let mut texts = Vec::new();
+                        let round =
+                            open.round(&db, &mut attached, &mut |change, name, allowed, cursor| {
+                                // A change whose table has been dropped has no name to give.
+                                let Some(table) = name else {
+                                    return true;
+                                };
+                                let names = db
+                                    .names_in(&[(
+                                        change.id.clone(),
+                                        match &change.kind {
+                                            tessaridb::ChangeKind::Written(held) => held.clone(),
+                                            tessaridb::ChangeKind::Removed => {
+                                                tessaridb::Value::Null
+                                            }
+                                        },
+                                    )])
+                                    .unwrap_or_default();
+                                texts.push(follow::encode(change, table, allowed, &names, cursor));
+                                true
+                            });
+                        ((attached.detach(), open), round, texts)
+                    },
+                )
+                .await;
+            let round = match ran {
+                Bridged::Answered(((back, open), round, texts)) => {
+                    (session, following) = (back, open);
+                    due = false;
+                    for text in texts {
+                        if socket.send(Message::Text(text.into())).await.is_err() {
+                            // The client has gone; nobody is left to close to.
+                            return;
+                        }
                     }
+                    round
                 }
-                round
+                // Every round slot is taken: stay due and try again after the next
+                // wait. A busy node delays a feed; it does not refuse a subscriber
+                // already admitted.
+                Bridged::Busy((back, open)) => {
+                    (session, following) = (back, open);
+                    Ok(Round::Empty)
+                }
+                Bridged::Panicked => return end(&mut socket, 1011).await,
+            };
+            match round {
+                // A mouthful: there may be more, so look again at once.
+                Ok(Round::Delivered) => {
+                    due = true;
+                    continue;
+                }
+                Ok(Round::Empty | Round::Ended) => {}
+                Err(reason) => return refuse_on(&mut socket, &reason.to_string()).await,
             }
-            // Every round slot is taken: wait for the next signal. A busy node
-            // delays a feed; it does not refuse a subscriber already admitted.
-            Bridged::Busy((back, open)) => {
-                (session, following) = (back, open);
-                Ok(Round::Empty)
-            }
-            Bridged::Panicked => return end(&mut socket, 1011).await,
-        };
-        match round {
-            Ok(Round::Delivered) => continue,
-            Ok(Round::Empty | Round::Ended) => {}
-            Err(reason) => return refuse_on(&mut socket, &reason.to_string()).await,
         }
         tokio::select! {
             biased;
@@ -232,7 +247,7 @@ async fn follow(mut socket: WebSocket, node: &Shared, presented: Presented, body
                 // by the protocol layer.
                 Some(Ok(_)) => {}
             },
-            _ = commits.changed() => {}
+            _ = commits.changed() => due = true,
             () = tokio::time::sleep(feed::PATIENCE_BETWEEN_ROUNDS) => {}
         }
     }

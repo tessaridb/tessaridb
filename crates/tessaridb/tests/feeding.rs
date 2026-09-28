@@ -343,6 +343,48 @@ fn a_feed_over_a_split_table_merges_its_logs_in_commit_order_and_resumes_from_it
 /// writer's order is the only order there is to merge by, and a shard led
 /// elsewhere is not in this node's logs at all.
 #[test]
+fn every_landing_is_announced_to_the_database_and_a_read_is_not() {
+    // A feed wakes on what the store landed, whichever way it arrived: a commit
+    // made on a session, and a record applied from another writer's stream,
+    // which no surface of this node ever saw. A read lands nothing.
+    let db = Db::in_memory().unwrap();
+    let mut landed = db.commits().watching();
+    let mut session = db.session();
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE COLLECTION orders;",
+        )
+        .unwrap();
+    assert!(landed.has_changed().unwrap(), "a commit was not announced");
+    landed.borrow_and_update();
+
+    session.run("SELECT * FROM orders;").unwrap();
+    assert!(
+        !landed.has_changed().unwrap(),
+        "a read was announced as a landing"
+    );
+
+    let (namespace, database) = db.tenancy_in("prod", "shop").unwrap().unwrap();
+    let elsewhere = tessaridb::LogId::new(
+        tessaridb::Reach::Database(namespace, database),
+        tessaridb::Writer::new([7; 16]),
+    );
+    db.store()
+        .apply_from_stream(
+            elsewhere,
+            Sequence::new(1),
+            tessari_types::Epoch::ZERO,
+            &tessari_encoding::LogRecord::at(tessari_types::Epoch::new(1), Vec::new()),
+        )
+        .unwrap();
+    assert!(
+        landed.has_changed().unwrap(),
+        "a record applied from another writer was not announced"
+    );
+}
+
+#[test]
 fn a_split_feed_over_another_writers_log_is_refused_by_name() {
     let db = Db::in_memory().unwrap();
     let mut session = db.session();
