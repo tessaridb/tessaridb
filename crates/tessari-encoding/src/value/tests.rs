@@ -1,6 +1,7 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 
 use super::*;
+use tessari_types::{DatabaseId, Epoch, NamespaceId, RecordId, Sequence, ShardId, TableId};
 
 const ONE_NODE: [u8; NODE_ID_LEN] = [1; NODE_ID_LEN];
 const ANOTHER_NODE: [u8; NODE_ID_LEN] = [2; NODE_ID_LEN];
