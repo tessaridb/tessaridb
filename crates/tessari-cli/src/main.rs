@@ -42,6 +42,7 @@ mod line;
 mod logging;
 mod raw;
 mod render;
+mod runtime;
 mod session;
 mod shutdown;
 mod store;
@@ -481,9 +482,12 @@ fn serve(
         node.watching(std::sync::Arc::clone(&census));
     }
 
-    // Asked for before anything serves, so a signal arriving during startup is
-    // counted rather than killing the process where it stands.
-    shutdown::listen();
+    // The one runtime this process owns, and the token a stop arrives on — both
+    // before anything serves, so a signal arriving during startup is counted
+    // rather than killing the process where it stands.
+    let runtime = runtime::build().map_err(|why| format!("the runtime would not start: {why}"))?;
+    let asked = shutdown::listen(&runtime)
+        .map_err(|why| format!("stop signals could not be registered: {why}"))?;
 
     // Housekeeping, and deliberately NOT one of the peer cadences.
     //
@@ -629,19 +633,19 @@ fn serve(
 
     match (wire, http) {
         // A thread for one and this thread for the other: two listeners, one
-        // store, and no runtime to hold them. The watcher is a third, and it is
-        // what turns a signal into the stages.
+        // store, and the runtime holds neither of them yet. The watcher is a
+        // third, and it is what turns the stop token into the stages.
         (Some(wire), Some(http)) => std::thread::scope(|scope| {
-            scope.spawn(|| shutdown::watch(&surfaces, quiet.as_ref()));
+            scope.spawn(|| shutdown::watch(&runtime, &asked, &surfaces, quiet.as_ref()));
             scope.spawn(|| supervise::or_the_node_ends("http", || http.serve()));
             supervise::or_the_node_ends("wire", || wire.serve());
         }),
         (Some(wire), None) => std::thread::scope(|scope| {
-            scope.spawn(|| shutdown::watch(&surfaces, quiet.as_ref()));
+            scope.spawn(|| shutdown::watch(&runtime, &asked, &surfaces, quiet.as_ref()));
             supervise::or_the_node_ends("wire", || wire.serve());
         }),
         (None, Some(http)) => std::thread::scope(|scope| {
-            scope.spawn(|| shutdown::watch(&surfaces, quiet.as_ref()));
+            scope.spawn(|| shutdown::watch(&runtime, &asked, &surfaces, quiet.as_ref()));
             supervise::or_the_node_ends("http", || http.serve());
         }),
         // Unreachable through the parser, which sets `Source::Serve` only when
@@ -668,6 +672,7 @@ fn serve(
     // lock, and it happens here rather than in the stages because this is what
     // owns it — the stages know about surfaces, not about a store.
     drop(db);
+    runtime.shutdown_timeout(runtime::LEAVING);
     eprintln!("tessaridb — stopped");
     Ok(Ended::Fine)
 }

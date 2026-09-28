@@ -31,6 +31,12 @@ tessari-serve = { path = "crates/tessari-serve", version = "0.10.0-beta" }
 tessari-vault = { path = "crates/tessari-vault", version = "0.10.0-beta" }
 
 thiserror = "2"
+# The serving runtime (ADR-0085). Default features off here, so every crate names
+# only what it uses: a library takes `rt` and `sync`, and only the binary asks for
+# the multi-threaded scheduler, the signal driver and the macros.
+tokio = { version = "1", default-features = false }
+# `CancellationToken`, the one signal every stage of a shutdown waits on.
+tokio-util = { version = "0.7", default-features = false }
 serde = { version = "1", features = ["derive"] }
 rust_decimal = { version = "1", default-features = false, features = ["std"] }
 argon2 = { version = "0.5", features = ["std"] }

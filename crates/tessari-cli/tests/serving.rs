@@ -243,6 +243,53 @@ fn a_node_says_it_is_not_ready_while_it_is_still_answering() {
 }
 
 #[test]
+fn a_second_stop_signal_ends_the_node_without_waiting_out_the_window() {
+    // The first signal buys the load balancer five seconds; an operator who
+    // sends another is saying they will not wait for them.
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let http = "127.0.0.1:47904";
+    let mut node = serving_both(&path, "127.0.0.1:47903", http);
+    let pid = node.0.id().to_string();
+    let terminate = || {
+        let sent = Command::new("kill").args(["-TERM", &pid]).status().unwrap();
+        assert!(sent.success(), "the signal was not delivered");
+    };
+
+    terminate();
+    // The second is sent only once the first has been acted on: two signals
+    // sent back to back may arrive as one, and that would test nothing.
+    let began = Instant::now();
+    while !probing(http, "/ready").is_ok_and(|answer| answer.starts_with("HTTP/1.1 503")) {
+        assert!(
+            began.elapsed() < Duration::from_secs(4),
+            "the node never started leaving"
+        );
+        std::thread::yield_now();
+    }
+    let second = Instant::now();
+    terminate();
+
+    // Well inside the five-second window, so a node that ignored the second
+    // signal and stopped on schedule cannot pass.
+    let ended = loop {
+        if let Some(status) = node.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            second.elapsed() < Duration::from_secs(3),
+            "the node was still running after a second stop signal"
+        );
+        std::thread::yield_now();
+    };
+    assert_eq!(
+        ended.code(),
+        Some(1),
+        "a stop cut short is not a clean stop"
+    );
+}
+
+#[test]
 fn a_scrape_describes_the_whole_process_and_not_one_listener() {
     // The census is what makes this possible and it is the claim: the metrics
     // route is served by HTTP but must report the **wire** protocol's counters

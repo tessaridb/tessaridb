@@ -26,9 +26,11 @@ tessari-http.workspace = true
 tessari-ingest.workspace = true
 tessari-serve.workspace = true
 tessari-constants.workspace = true
-# Installing a signal handler is not expressible in safe Rust and `std` has no
-# signal API. Already in the tree through the engine, so this costs no crate.
+# The terminal's raw mode, and the immediate exit a second stop signal asks for.
+# Already in the tree through the engine, so this costs no crate.
 libc = "0.2"
+tokio = { workspace = true, features = ["rt-multi-thread", "signal", "macros"] }
+tokio-util.workspace = true
 log.workspace = true
 tessari-ql.workspace = true
 tessari-session.workspace = true
