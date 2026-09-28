@@ -37,6 +37,8 @@ use crate::store::{Embedded, Remote, Store};
 // `roundtrip.rs` already includes the renderer.
 #[path = "../src/render.rs"]
 mod render;
+#[path = "../src/scanner.rs"]
+mod scanner;
 #[path = "../src/session.rs"]
 mod session;
 #[path = "../src/store.rs"]

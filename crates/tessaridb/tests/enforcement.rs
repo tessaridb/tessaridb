@@ -957,15 +957,15 @@ const CLASSIFIED: &[(&str, &str)] = &[
     // which is a fact about the read and changes none of the classifications
     // above (Q-621, Q-641).
     (
-        "tessari-cli/src/main.rs",
+        "tessari-cli/src/greeting_round.rs",
         "let tail = store.committed_tail(own)?;",
     ),
     (
-        "tessari-cli/src/main.rs",
+        "tessari-cli/src/collection_round.rs",
         "let seed = match store.committed_tail(log) {",
     ),
     (
-        "tessari-cli/src/main.rs",
+        "tessari-cli/src/greeting_round.rs",
         "tail: store.committed_tail(log)?,",
     ),
     (
