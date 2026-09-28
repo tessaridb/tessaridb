@@ -1032,7 +1032,7 @@ const DECODERS: [&str; 3] = ["decode", "from_value", "split_epoch"];
 /// this pair are asserted: that nothing else creates one, and that this still
 /// does — a ratchet whose subject has been renamed away passes by finding
 /// nothing, which is the failure mode of every allow-list nobody re-reads.
-const PRODUCER: (&str, &str) = ("tessari-wire/src/driver.rs", "once");
+const PRODUCER: (&str, &str) = ("tessari-wire/src/driver/leadership.rs", "once");
 
 #[test]
 fn the_campaign_is_the_only_place_an_epoch_is_created() {
