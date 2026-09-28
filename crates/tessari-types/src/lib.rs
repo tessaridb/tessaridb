@@ -19,6 +19,7 @@ mod condition;
 mod conflict_policy;
 mod edits;
 mod field_kind;
+mod float_order;
 mod geojson;
 mod geometry;
 mod identity_kind;

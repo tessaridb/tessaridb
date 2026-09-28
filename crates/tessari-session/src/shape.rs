@@ -240,7 +240,8 @@ impl<'a> Topmost<'a> {
     }
 }
 
-/// A value with every finite float replaced by the decimal it compares as.
+/// A value with every finite number other than a float replaced by the decimal
+/// it compares as.
 ///
 /// **This cannot change an order, and the reason is worth stating precisely.**
 /// `Number::cmp` decides between two finite numbers by comparing
@@ -254,9 +255,18 @@ impl<'a> Topmost<'a> {
 /// projection, and rewriting them would be changing an answer rather than
 /// precomputing one.
 ///
+/// A float is left as it is, too, though it has a projection. Comparing two
+/// floats, or a float and another number, is answered without converting either
+/// whenever the two are far enough apart that the conversion could not change
+/// the answer — which is nearly every pair a sort meets — so converting each
+/// key up front would pay for the conversion on every record to save it on the
+/// few that are close (an exact nearest-neighbour read spent a sixth of its time
+/// here).
+///
 /// Arrays and objects are walked, since a sort key may be either.
 fn projected(value: Value) -> Value {
     match value {
+        Value::Number(held @ Number::Float(_)) => Value::Number(held),
         Value::Number(held) => match held.as_decimal() {
             Some(exact) if held.position_is_finite() => Value::Number(Number::Decimal(exact)),
             _ => Value::Number(held),
@@ -364,11 +374,11 @@ mod tests {
     fn the_walk_reaches_inside_an_array_and_an_object() {
         // A sort key may be either, so a projection that stopped at the top
         // would leave the expensive case exactly where it was.
-        let nested = Value::Array(vec![Value::Number(Number::float(1.5))]);
+        let nested = Value::Array(vec![Value::Number(Number::Integer(3))]);
         assert_eq!(
             projected(nested),
             Value::Array(vec![Value::Number(Number::Decimal(
-                rust_decimal::Decimal::try_from(1.5_f64).expect("a decimal")
+                rust_decimal::Decimal::from(3_i64)
             ))])
         );
     }

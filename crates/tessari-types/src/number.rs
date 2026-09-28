@@ -236,6 +236,9 @@ impl Ord for Number {
         if self.position() != Position::Finite {
             return Ordering::Equal;
         }
+        if let Some(order) = crate::float_order::ordered(self, other) {
+            return order;
+        }
         match (self.as_decimal(), other.as_decimal()) {
             (Some(left), Some(right)) => left.cmp(&right),
             // One side is a finite float beyond decimal range. Nothing a decimal
