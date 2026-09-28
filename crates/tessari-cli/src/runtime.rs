@@ -15,7 +15,7 @@ use tokio::runtime::{Builder, Runtime};
 /// The count ADR-0085 opens with: the connection bound the synchronous node
 /// already held, so moving to the runtime changes how the store is waited on
 /// without changing how many callers may wait on it.
-const BLOCKING: usize = tessari_constants::MAX_CONNECTIONS;
+const BLOCKING: usize = tessari_constants::MAX_STORE_CALLS;
 
 /// How long the runtime's own tasks are given to end when the node stops.
 ///

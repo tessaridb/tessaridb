@@ -483,6 +483,51 @@ fn a_subscriber_that_hangs_up_on_a_quiet_feed_gives_its_place_back() {
 }
 
 #[test]
+fn a_node_holds_more_idle_feeds_than_store_calls_and_still_answers() {
+    // After the port a held feed costs a task and no store call, so the number
+    // of conversations a surface holds is no longer the number of store calls
+    // in flight (ADR-0085 §3). One feed past the store-call bound is held, and
+    // a statement is still answered beside all of them.
+    let db = Arc::new(Db::in_memory().unwrap());
+    let (node, address) = serving(Arc::clone(&db));
+    let mut writer = Client::connect(&address).unwrap();
+    writer.run(READY, None).unwrap();
+    drop(writer);
+
+    let wanted = tessari_constants::MAX_STORE_CALLS + 1;
+    let feeds: Vec<_> = (0..wanted)
+        .map(|_| {
+            selected(&address)
+                .follow(&Follow {
+                    from: 0,
+                    table: None,
+                    cursor: None,
+                })
+                .unwrap()
+        })
+        .collect();
+    let stopping = node.stopping();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while stopping.feeds() < wanted {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "only {} of {wanted} feeds were admitted",
+            stopping.feeds()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let mut reader = selected(&address);
+    let answered = reader.run("SELECT * FROM users;", None).unwrap();
+    assert_eq!(
+        answered.len(),
+        1,
+        "one statement, one answer, beside {wanted} feeds"
+    );
+    drop(feeds);
+}
+
+#[test]
 #[ignore = "waits out the node's write timeout, which is 30 seconds by design"]
 fn a_subscriber_that_stops_reading_is_cut_off_rather_than_buffered_and_loses_nothing() {
     // The backpressure story, observed rather than claimed, in both halves.

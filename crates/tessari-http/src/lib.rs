@@ -59,7 +59,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use tessari_constants::MAX_CONNECTIONS;
+use tessari_constants::{MAX_CONNECTIONS, MAX_STORE_CALLS};
 use tessari_serve::{Admitting, Bridge, Bridged, Census, Stopping};
 use tessaridb::Db;
 use tessaridb::feed::Commits;
@@ -109,7 +109,7 @@ impl Node {
             committed: Arc::new(Commits::default()),
             door: Admitting::to(MAX_CONNECTIONS),
             tokens: Arc::new(tokens::Tokens::default()),
-            bridge: Arc::new(Bridge::new(MAX_CONNECTIONS)),
+            bridge: Arc::new(Bridge::new(MAX_STORE_CALLS)),
             rounds: Arc::new(Bridge::new(
                 std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
             )),

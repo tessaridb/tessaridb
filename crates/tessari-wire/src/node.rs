@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use tessari_constants::MAX_CONNECTIONS;
+use tessari_constants::{MAX_CONNECTIONS, MAX_STORE_CALLS};
 use tessari_serve::{Admitting, Bridge, Stopping};
 use tessaridb::Db;
 use tessaridb::feed::Commits;
@@ -136,7 +136,7 @@ impl Node {
             committed: Arc::new(Commits::default()),
             stopping: Stopping::new(),
             door: Admitting::to(MAX_CONNECTIONS),
-            bridge: Arc::new(Bridge::new(MAX_CONNECTIONS)),
+            bridge: Arc::new(Bridge::new(MAX_STORE_CALLS)),
             rounds: Arc::new(Bridge::new(
                 std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
             )),
