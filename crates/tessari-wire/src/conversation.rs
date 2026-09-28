@@ -19,22 +19,22 @@
 //! When every slot is taken the statement is refused at once with a refusal the
 //! client can read, and the session comes back untouched for the next one.
 
-use std::io::BufWriter;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tessari_constants::GREETING_SECONDS;
 use tessari_serve::{Admitted, Bridge, Bridged, Busy, Stopping};
 use tessari_session::Detached;
-use tessaridb::Db;
-use tessaridb::feed::Commits;
-use tokio::io::{BufReader, BufWriter as AsyncBufWriter};
+use tessaridb::feed::{self, Commits, Feed, Following, Round};
+use tessaridb::{Db, Sequence};
+use tokio::io::{AsyncReadExt, BufReader, BufWriter as AsyncBufWriter};
 use tokio::net::TcpStream;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
 use crate::error::{Error, Result};
 use crate::message::Request;
 use crate::push::Follow;
-use crate::{frame, frame_async, message, node, redirect};
+use crate::{READING, frame, frame_async, message, node, push, redirect};
 
 /// What a client is told when every store call slot is taken.
 pub(crate) const BUSY: &str =
@@ -48,6 +48,8 @@ pub(crate) struct Conversation {
     pub(crate) committed: Arc<Commits>,
     pub(crate) stopping: Arc<Stopping>,
     pub(crate) bridge: Arc<Bridge>,
+    /// The bound on feed rounds, apart from statements — see `Node::rounds`.
+    pub(crate) rounds: Arc<Bridge>,
 }
 
 /// One answer, decided on the blocking pool and written from the task.
@@ -92,13 +94,7 @@ pub(crate) async fn converse(
             busy.became_a_feed();
             log::info!("connection {} became a subscription", talk.id);
             let asked = Follow::decode(&body)?;
-            let stream = reader
-                .into_inner()
-                .reunite(writer.into_inner())
-                .map_err(|_| Error::Io(std::io::ErrorKind::InvalidData.into()))?
-                .into_std()?;
-            stream.set_nonblocking(false)?;
-            let fed = feed(talk, session, stream, asked).await;
+            let fed = feed(talk, session, reader, writer, asked).await;
             drop((busy, place));
             return fed;
         }
@@ -265,42 +261,135 @@ fn respond(
     }
 }
 
-/// Push changes down this connection on a thread of its own, until it ends.
+/// Push changes down this connection until it ends — as a task, not a thread.
 ///
-/// A feed still holds a thread: the async feed — waiting on the commit signal,
-/// the socket and the stop token at once — is the next step (ADR-0085 §4). It
-/// runs on a dedicated thread rather than the blocking pool, because a feed
-/// lives as long as its subscriber and would otherwise hold a slot every
-/// statement on the node competes for. The task waits for it, so the
-/// connection's place at the door is held exactly as long as the feed is.
+/// Opening and every round cross the bridge like a statement, because both read
+/// the store. Between rounds the task waits on three things and holds nothing:
+/// the commit signal, the socket, and [`feed::PATIENCE_BETWEEN_ROUNDS`] — the
+/// last because a commit made through another surface never signals this node.
+/// The socket is where a subscriber that hung up on a quiet feed is noticed
+/// (F-S1): reading end-of-stream ends the feed, with no write needed to learn it.
 async fn feed(
     talk: Conversation,
     session: Detached,
-    stream: std::net::TcpStream,
+    mut reader: BufReader<OwnedReadHalf>,
+    mut writer: AsyncBufWriter<OwnedWriteHalf>,
     asked: Follow,
 ) -> Result<()> {
-    let (done, finished) = tokio::sync::oneshot::channel();
-    let spawned = std::thread::Builder::new()
-        .name(format!("tessaridb-feed-{}", talk.id))
-        .spawn(move || {
-            let mut attached = session.attach(talk.db.store());
-            let mut writer = BufWriter::new(stream);
-            let fed = node::follow(
-                &talk.db,
-                &talk.committed,
-                &talk.stopping,
-                &mut attached,
+    let db = Arc::clone(&talk.db);
+    let opened = talk
+        .bridge
+        .call(session, move |held: Detached| {
+            let mut attached = held.attach(db.store());
+            let following = Following {
+                from: Sequence::new(asked.from),
+                table: asked.table.as_deref(),
+                cursor: asked.cursor.as_deref(),
+            };
+            let opened = Feed::open(&db, &mut attached, &following);
+            (attached.detach(), opened)
+        })
+        .await;
+    let (mut session, mut following) = match opened {
+        Bridged::Answered((back, Ok(opened))) => (back, opened),
+        // The store's own words, travelling as a refusal: every one of them is a
+        // state the subscriber can correct.
+        Bridged::Answered((_, Err(refusal))) => {
+            return frame_async::write(
                 &mut writer,
-                &asked,
-            );
-            drop(done.send(fed));
-        });
-    spawned?;
-    // A feed thread that panicked drops its sender, which reads as an ended
-    // connection — the same outcome a panicking connection thread always had.
-    finished.await.unwrap_or_else(|_| {
-        Err(Error::Io(std::io::Error::other(
-            "the feed's thread ended without an answer",
-        )))
-    })
+                frame::Kind::Refusal,
+                refusal.to_string().as_bytes(),
+            )
+            .await;
+        }
+        Bridged::Busy(_) => {
+            return frame_async::write(&mut writer, frame::Kind::Refusal, BUSY.as_bytes()).await;
+        }
+        Bridged::Panicked => {
+            return Err(Error::Io(std::io::Error::other(
+                "opening the feed panicked",
+            )));
+        }
+    };
+    let mut commits = talk.committed.watching();
+    let mut stray = [0_u8; 64];
+    loop {
+        // A staged shutdown reaches a feed here, within one wait: the cursor is a
+        // position the subscriber holds, so it resumes exactly where it stopped.
+        if talk.stopping.asked() {
+            return Ok(());
+        }
+        let db = Arc::clone(&talk.db);
+        let ran = talk
+            .rounds
+            .call(
+                (session, following),
+                move |(held, mut open): (Detached, Feed)| {
+                    let mut attached = held.attach(db.store());
+                    let mut frames = Vec::new();
+                    let round =
+                        open.round(&db, &mut attached, &mut |change, name, allowed, cursor| {
+                            // A change whose table has been dropped has no name to give.
+                            if let Some(named) =
+                                push::named(change, name.map(str::to_owned), cursor)
+                            {
+                                frames.push(named.hiding(allowed).encode());
+                            }
+                            true
+                        });
+                    ((attached.detach(), open), round, frames)
+                },
+            )
+            .await;
+        let round = match ran {
+            Bridged::Answered(((back, open), round, frames)) => {
+                (session, following) = (back, open);
+                for change in &frames {
+                    // A subscriber that stops reading ends its own feed rather
+                    // than holding its place until the process stops.
+                    tokio::time::timeout(
+                        READING,
+                        frame_async::write(&mut writer, frame::Kind::Change, change),
+                    )
+                    .await
+                    .map_err(|_| Error::Io(std::io::ErrorKind::TimedOut.into()))??;
+                }
+                round
+            }
+            // Every round slot is taken: this feed waits for the next signal. A
+            // busy node delays a feed; it does not refuse a subscriber who was
+            // already admitted.
+            Bridged::Busy((back, open)) => {
+                (session, following) = (back, open);
+                Ok(Round::Empty)
+            }
+            Bridged::Panicked => {
+                return Err(Error::Io(std::io::Error::other("a feed round panicked")));
+            }
+        };
+        match round {
+            Ok(Round::Delivered) => continue,
+            Ok(Round::Empty | Round::Ended) => {}
+            Err(refusal) => {
+                return frame_async::write(
+                    &mut writer,
+                    frame::Kind::Refusal,
+                    refusal.to_string().as_bytes(),
+                )
+                .await;
+            }
+        }
+        tokio::select! {
+            biased;
+            read = reader.read(&mut stray) => match read {
+                // End of stream, or a socket error: the subscriber has gone.
+                Ok(0) | Err(_) => return Ok(()),
+                // Bytes mean the subscriber is still there; a feed carries
+                // nothing in that direction, so they are not answered.
+                Ok(_) => {}
+            },
+            _ = commits.changed() => {}
+            () = tokio::time::sleep(feed::PATIENCE_BETWEEN_ROUNDS) => {}
+        }
+    }
 }

@@ -41,10 +41,8 @@
 #![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 mod bridge;
-mod hangup;
 
 pub use crate::bridge::{Bridge, Bridged};
-pub use crate::hangup::hung_up;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};

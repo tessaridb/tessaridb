@@ -7,24 +7,22 @@
 //! talks to stays synchronous behind the node's bridge (ADR-0085). The
 //! conversation itself is `conversation.rs`.
 
-use std::io::BufWriter;
-use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{TcpListener, ToSocketAddrs};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tessari_constants::MAX_CONNECTIONS;
 use tessari_serve::{Admitting, Bridge, Stopping};
-use tessaridb::feed::{self, Commits, Following};
-use tessaridb::{Db, Sequence};
+use tessaridb::Db;
+use tessaridb::feed::Commits;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::conversation::{self, Conversation};
 use crate::error::{Error, Result};
 use crate::message::Request;
-use crate::push::Follow;
-use crate::{READING, client, frame, frame_async, push};
+use crate::{client, frame, frame_async};
 
 /// How long the accept loop rests after a failure it expects to pass.
 ///
@@ -98,6 +96,16 @@ pub struct Node {
     /// Sized at the door's ceiling for now, which is what one thread per
     /// connection bounded it at before; the after-measurement sets it apart.
     bridge: Arc<Bridge>,
+    /// How many feed rounds may run at once, apart from statements.
+    ///
+    /// A feed polls the log every round whether anything happened or not, and
+    /// rounds bunch: one commit wakes every feed at the same instant. Through the
+    /// statements' bridge four hundred idle feeds kept four hundred blocking
+    /// threads alive (measured). Bounded at the core count, a burst of rounds
+    /// queues behind the cores instead — a round that finds this full waits for
+    /// the next signal rather than being refused, since its subscriber was
+    /// already admitted.
+    rounds: Arc<Bridge>,
     /// What this node knows about the copies it does not hold, if anything.
     ///
     /// Held as the trait and not as the directory behind it: a node serving
@@ -129,6 +137,9 @@ impl Node {
             stopping: Stopping::new(),
             door: Admitting::to(MAX_CONNECTIONS),
             bridge: Arc::new(Bridge::new(MAX_CONNECTIONS)),
+            rounds: Arc::new(Bridge::new(
+                std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
+            )),
             elsewhere: None,
         })
     }
@@ -262,6 +273,7 @@ impl Node {
                 committed: Arc::clone(&self.committed),
                 stopping: Arc::clone(&self.stopping),
                 bridge: Arc::clone(&self.bridge),
+                rounds: Arc::clone(&self.rounds),
             };
             let busy = self.stopping.busy();
             conversations.spawn(async move {
@@ -328,95 +340,6 @@ pub(crate) fn forward(db: &Db, request: &Request) -> Result<(frame::Kind, Vec<u8
     };
     let mut peer = client::Client::connect(peer_row.endpoint)?;
     peer.relay(request)
-}
-
-/// Push changes down this connection until it ends.
-///
-/// # It reads records, so it answers to the same identity a read does
-///
-/// A subscription takes records from the log directly and never reaches the
-/// executor, so nothing about running a statement applies to it automatically.
-/// Two things therefore have to be asked here, and both are asked by the
-/// session rather than decided again:
-///
-/// - **May this caller read at all.** [`tessaridb::Session::may_read`] — on a
-///   closed store an anonymous connection is refused, exactly as a `SELECT`
-///   would be. A client signs in by running a request with credentials first;
-///   the session is the connection's, so it is still signed in here.
-/// - **Whose changes.** The log is global — every namespace and every database
-///   in the store is in it — so a subscription that did not confine itself would
-///   hand a caller every write in the store regardless of the tenancy they are
-///   in. It is confined to the namespace and database the session selected, and
-///   selecting one already went through the tenancy check. That is also what
-///   makes "watch everything" mean *everything in this database*, which is what
-///   a caller who said `USE` means by it.
-///
-/// # What it refuses, and why refusing is the point
-///
-/// A table nobody has defined is refused rather than watched, because a
-/// subscription to a name that does not exist looks exactly like a subscription
-/// to a quiet table: it delivers nothing, forever, and says nothing about why.
-pub(crate) fn follow(
-    db: &Db,
-    committed: &Commits,
-    stopping: &Stopping,
-    session: &mut tessaridb::Session<'_>,
-    writer: &mut BufWriter<TcpStream>,
-    asked: &Follow,
-) -> Result<()> {
-    // The socket, not a buffer here, is what a slow subscriber pushes back on —
-    // and a client that never reads at all ends its own connection rather than
-    // holding this thread until the process stops.
-    writer.get_ref().set_write_timeout(Some(READING))?;
-    // The same socket, asked once a round whether the client is still there: a
-    // feed that only writes learns of a hang-up at its next write, and a quiet
-    // table has none (F-S1).
-    let peer = writer.get_ref().try_clone()?;
-
-    // Everything between the request and the bytes — the grant, the tenancy,
-    // the table, the field visibility, the polling — belongs to `tessaridb::feed`
-    // and is shared with the socket surface, so the two cannot disagree about
-    // who may see what. What is left here is this protocol's two ends.
-    let following = Following {
-        from: Sequence::new(asked.from),
-        table: asked.table.as_deref(),
-        cursor: asked.cursor.as_deref(),
-    };
-    let mut failure = None;
-    let outcome = feed::follow(
-        db,
-        session,
-        &following,
-        committed,
-        &|| stopping.asked() || tessari_serve::hung_up(&peer),
-        &mut |change, name, allowed, cursor| {
-            let Some(named) = push::named(change, name.map(str::to_owned), cursor) else {
-                // A change whose table has been dropped has no name to give.
-                return true;
-            };
-            match frame::write(writer, frame::Kind::Change, &named.hiding(allowed).encode()) {
-                Ok(()) => true,
-                Err(why) => {
-                    // The connection is gone. Keep the reason so it reaches the
-                    // caller rather than being reported as a clean end.
-                    failure = Some(why);
-                    false
-                }
-            }
-        },
-    );
-    if let Some(why) = failure {
-        return Err(why);
-    }
-    match outcome {
-        Ok(()) => Ok(()),
-        Err(refusal) => refuse(writer, &refusal.to_string()),
-    }
-}
-
-/// The store's own words, travelling as a refusal.
-fn refuse(writer: &mut BufWriter<TcpStream>, message: &str) -> Result<()> {
-    frame::write(writer, frame::Kind::Refusal, message.as_bytes())
 }
 
 #[cfg(test)]
