@@ -36,6 +36,7 @@ mod delete;
 mod fused;
 mod graph;
 mod join;
+mod lent;
 mod ordered;
 mod produce;
 mod projection;
@@ -207,6 +208,11 @@ impl Session<'_> {
                             })
                             .collect(),
                     ));
+                }
+                if let Some(distance) =
+                    self.distance_between(transaction, *function, arguments, scope)?
+                {
+                    return Ok(distance);
                 }
                 let arguments = self.values(transaction, arguments, scope)?;
                 call(*function, &arguments, *span)
