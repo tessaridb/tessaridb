@@ -437,6 +437,52 @@ fn following_before_a_database_is_selected_says_so_even_watching_everything() {
 }
 
 #[test]
+fn a_subscriber_that_hangs_up_on_a_quiet_feed_gives_its_place_back() {
+    // A feed learns its client has gone only when a write fails — so on a quiet
+    // table it never learned at all. Four hundred clients that subscribed and
+    // hung up held every place at the door, and the node refused everybody else
+    // until somebody, anybody, wrote a change (measured on 0.10.0-beta).
+    // Nothing is written here after the subscribe: the node has to notice the
+    // hang-up by itself.
+    let db = Arc::new(Db::in_memory().unwrap());
+    let (node, address) = serving(Arc::clone(&db));
+    let mut writer = Client::connect(&address).unwrap();
+    writer.run(READY, None).unwrap();
+    drop(writer);
+
+    let feed = selected(&address)
+        .follow(&Follow {
+            from: 0,
+            table: None,
+            cursor: None,
+        })
+        .unwrap();
+    let stopping = node.stopping();
+    let door = node.door();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while stopping.feeds() == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the subscription never became a feed"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    drop(feed);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while stopping.feeds() != 0 || door.open() != 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a hung-up subscriber still holds {} feed(s) and {} place(s) at the door",
+            stopping.feeds(),
+            door.open()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
 #[ignore = "waits out the node's write timeout, which is 30 seconds by design"]
 fn a_subscriber_that_stops_reading_is_cut_off_rather_than_buffered_and_loses_nothing() {
     // The backpressure story, observed rather than claimed, in both halves.

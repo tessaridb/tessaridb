@@ -533,6 +533,10 @@ fn follow(
     // and a client that never reads at all ends its own connection rather than
     // holding this thread until the process stops.
     writer.get_ref().set_write_timeout(Some(READING))?;
+    // The same socket, asked once a round whether the client is still there: a
+    // feed that only writes learns of a hang-up at its next write, and a quiet
+    // table has none (F-S1).
+    let peer = writer.get_ref().try_clone()?;
 
     // Everything between the request and the bytes — the grant, the tenancy,
     // the table, the field visibility, the polling — belongs to `tessaridb::feed`
@@ -549,7 +553,7 @@ fn follow(
         session,
         &following,
         committed,
-        &|| stopping.asked(),
+        &|| stopping.asked() || tessari_serve::hung_up(&peer),
         &mut |change, name, allowed, cursor| {
             let Some(named) = push::named(change, name.map(str::to_owned), cursor) else {
                 // A change whose table has been dropped has no name to give.
