@@ -10,10 +10,9 @@
 use std::net::{TcpListener, ToSocketAddrs};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 
 use tessari_constants::{MAX_CONNECTIONS, MAX_STORE_CALLS};
-use tessari_serve::{Admitting, Bridge, Stopping};
+use tessari_serve::{ACCEPT_PAUSE, Admitting, Bridge, Stopping, passes};
 use tessaridb::Db;
 use tessaridb::feed::Commits;
 use tokio::sync::Semaphore;
@@ -24,13 +23,6 @@ use crate::conversation::{self, Conversation};
 use crate::error::{Error, Result};
 use crate::message::Request;
 use crate::{client, frame, frame_async};
-
-/// How long the accept loop rests after a failure it expects to pass.
-///
-/// Out of file descriptors, a connection reset before it was accepted: each
-/// clears on its own, and retrying at once turns one into a spinning core
-/// (Q-834). Short, because while it rests nobody new is admitted.
-pub(crate) const ACCEPT_PAUSE: Duration = Duration::from_millis(100);
 
 /// Names one connection across every line it produces.
 ///
@@ -66,23 +58,6 @@ fn from_where(stream: &tokio::net::TcpStream) -> String {
         |_| "an address the socket would not give".to_owned(),
         |at| at.to_string(),
     )
-}
-
-/// Whether an accept failure is one that passes on its own.
-///
-/// Everything else — the listener itself gone bad — ends the node rather than
-/// being retried forever, which is what Q-834 found the old loop doing.
-pub(crate) fn passes(failure: &std::io::Error) -> bool {
-    use std::io::ErrorKind::{ConnectionAborted, ConnectionReset, Interrupted, WouldBlock};
-    // EMFILE and ENFILE: this process, or the whole system, is out of file
-    // descriptors until a connection closes.
-    const OUT_OF_DESCRIPTORS: [i32; 2] = [24, 23];
-    matches!(
-        failure.kind(),
-        ConnectionAborted | ConnectionReset | Interrupted | WouldBlock
-    ) || failure
-        .raw_os_error()
-        .is_some_and(|code| OUT_OF_DESCRIPTORS.contains(&code))
 }
 
 /// A node listening for connections.

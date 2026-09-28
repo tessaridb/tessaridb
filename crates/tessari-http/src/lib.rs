@@ -46,6 +46,7 @@ mod console {
 }
 mod incoming;
 mod json;
+mod listening;
 mod object;
 mod request;
 mod respond;
@@ -53,12 +54,13 @@ mod tokens;
 mod websocket;
 
 use std::net::{SocketAddr, TcpListener};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, PoisonError};
 
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use axum::serve::ListenerExt;
 use tessari_constants::{MAX_CONNECTIONS, MAX_STORE_CALLS};
 use tessari_serve::{Admitting, Bridge, Bridged, Census, Stopping};
 use tessaridb::Db;
@@ -161,12 +163,27 @@ impl Node {
             rounds: Arc::clone(&self.rounds),
         });
         let app = axum::Router::new().fallback(handle).with_state(shared);
+        let listening = listening::Listening::new(listener);
+        let (ended, failure) = (listening.ended(), listening.failure());
         axum::serve(
-            listener,
+            // Tapped for the address alone: axum hands a peer's address to
+            // `ConnectInfo` only through its own listener or a tapped one.
+            listening.tap_io(|_| {}),
             app.into_make_service_with_connect_info::<SocketAddr>(),
         )
-        .with_graceful_shutdown(stop.cancelled_owned())
-        .await
+        .with_graceful_shutdown(async move {
+            tokio::select! {
+                () = stop.cancelled() => {}
+                () = ended.cancelled() => {}
+            }
+        })
+        .await?;
+        // Taken into its own binding so the guard is gone before the return.
+        let failed = failure
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        failed.map_or(Ok(()), Err)
     }
 }
 

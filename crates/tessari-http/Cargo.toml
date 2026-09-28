@@ -34,7 +34,7 @@ tungstenite.workspace = true
 
 [dev-dependencies]
 # The tests serve a node, and a node is served on a runtime the caller owns.
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 tessari-backup.workspace = true
 tessari-kv.workspace = true
 # The status table is asserted per error variant, and building one needs the

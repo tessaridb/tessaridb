@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use tessari_constants::{GREETING_SECONDS, PEER_CONNECTIONS};
 use tessari_encoding::NODE_ID_LEN;
-use tessari_serve::{Bridge, Bridged};
+use tessari_serve::{ACCEPT_PAUSE, Bridge, Bridged, passes};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
@@ -44,7 +44,6 @@ use crate::error::{Error, Result};
 use crate::frame_async;
 use crate::grant::Deciding;
 use crate::link::{Met, Peers, answering, greeting};
-use crate::node::{ACCEPT_PAUSE, passes};
 use crate::peer::{Hello, PeerFrame, admit};
 
 /// What the door needs from the node it belongs to.
