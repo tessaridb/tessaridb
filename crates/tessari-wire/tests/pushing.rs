@@ -178,6 +178,57 @@ fn a_change_committed_past_the_node_reaches_its_feeds() {
 }
 
 #[test]
+fn dropping_the_subscriber_ends_its_running_feed_with_nothing_else_written() {
+    // A feed re-asks who may read on every round, and runs a round only when the
+    // store lands something. The revocation is itself a landing, so it must end
+    // the feed alone — with no later write to wake it (Q-838).
+    let db = Arc::new(Db::in_memory().unwrap());
+    let (_node, address) = serving(Arc::clone(&db));
+    let mut open = Client::connect(&address).unwrap();
+    open.run(READY, None).unwrap();
+    open.run(
+        "DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
+        None,
+    )
+    .unwrap();
+    let owner = Some(("root", "correct horse battery"));
+    let mut root = Client::connect(&address).unwrap();
+    root.run(
+        "DEFINE USER ada ON prod.orders ROLE viewer PASSWORD 'correct horse battery';",
+        owner,
+    )
+    .unwrap();
+
+    let mut ada = Client::connect(&address).unwrap();
+    ada.run(
+        "USE NAMESPACE prod; USE DATABASE orders;",
+        Some(("ada", "correct horse battery")),
+    )
+    .unwrap();
+    let mut feed = ada
+        .follow(&Follow {
+            from: db
+                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .unwrap()
+                .get()
+                + 1,
+            table: None,
+            cursor: None,
+        })
+        .unwrap();
+    let (ended, ending) = mpsc::channel();
+    drop(std::thread::spawn(move || {
+        drop(ended.send(feed.wait().map(|change| change.map(|_| ()))));
+    }));
+
+    root.run("DROP USER ada;", owner).unwrap();
+    let Ok(Err(refused)) = ending.recv_timeout(Duration::from_secs(5)) else {
+        panic!("the feed of a dropped user was not ended by a refusal");
+    };
+    assert!(!refused.to_string().is_empty(), "the refusal said nothing");
+}
+
+#[test]
 fn a_subscription_from_an_earlier_position_replays_what_it_missed() {
     // The whole reason a position is a number the client keeps: a subscriber
     // that was away comes back to what happened while it was.
