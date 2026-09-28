@@ -2264,4 +2264,72 @@ mod tests {
             "a short answer is the peer saying it had no more"
         );
     }
+
+    /// The door the node actually runs — `Peers::serve`, on a runtime — over
+    /// the same store; the tests above drive the synchronous door that shares
+    /// its answering with it.
+    struct OnTheRuntime {
+        db: Arc<Db>,
+    }
+
+    impl super::Origin for OnTheRuntime {
+        fn collected(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
+            Serving::declared(self.db.store()).collected(follower, asked)
+        }
+
+        fn gathered(
+            &self,
+            asker: [u8; NODE_ID_LEN],
+            asked: &crate::gathering::Gather,
+        ) -> Result<crate::gathering::Page> {
+            Serving::declared(self.db.store()).gathered(asker, asked)
+        }
+    }
+
+    impl crate::door::Holding for OnTheRuntime {
+        fn hello(&self) -> Result<crate::peer::Hello> {
+            Ok(hello(LEADER))
+        }
+
+        fn met(&self, _: &crate::link::Met) {}
+    }
+
+    #[test]
+    fn a_peer_nobody_subscribed_is_refused_by_name_by_the_door_on_the_runtime() {
+        let authority = Authority::new();
+        let leader = granting("");
+        let peers = Peers::bind(
+            "127.0.0.1:0",
+            authority.issue(LEADER, Purpose::Peer),
+            &authority.der(),
+        )
+        .expect("a peer door on loopback");
+        let address = peers.address().expect("the door's address");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("a runtime for the door");
+        let stop = tokio_util::sync::CancellationToken::new();
+        let serving = stop.clone();
+        let holding = Arc::new(OnTheRuntime { db: leader });
+        drop(runtime.spawn(async move {
+            peers
+                .serve(
+                    serving,
+                    LEADER,
+                    Arc::new(Deciding::holding(settled())),
+                    holding,
+                )
+                .await
+        }));
+
+        let refused = collect(&authority, address, 1, 64)
+            .expect_err("a peer nobody subscribed may not take the log");
+        stop.cancel();
+        assert!(
+            matches!(refused, Error::Unsubscribed),
+            "the runtime door answered otherwise: {refused}"
+        );
+    }
 }
