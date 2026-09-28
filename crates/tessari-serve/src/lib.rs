@@ -161,22 +161,22 @@ impl Stopping {
     /// told to stop simply stops, so there is no per-refusal event to count, and
     /// building one to feed a metric would be the metric wagging the mechanism.
     pub fn answered(&self, refused: bool) {
-        self.answers.fetch_add(1, Ordering::AcqRel);
+        self.answers.fetch_add(1, Ordering::Relaxed);
         if refused {
-            self.refusals.fetch_add(1, Ordering::AcqRel);
+            self.refusals.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     /// Answers written since this surface started, refusals included.
     #[must_use]
     pub fn answers(&self) -> u64 {
-        self.answers.load(Ordering::Acquire)
+        self.answers.load(Ordering::Relaxed)
     }
 
     /// How many of those answers were refusals.
     #[must_use]
     pub fn refusals(&self) -> u64 {
-        self.refusals.load(Ordering::Acquire)
+        self.refusals.load(Ordering::Relaxed)
     }
 
     /// Stage 2 — wait for in-flight requests, and say whether they finished.
