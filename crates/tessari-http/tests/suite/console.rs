@@ -31,7 +31,7 @@ pub(crate) fn node() -> (Arc<Node>, String) {
     let node = Arc::new(Node::bind(db, "127.0.0.1:0").unwrap());
     let address = node.address();
     let serving = Arc::clone(&node);
-    std::thread::spawn(move || serving.serve());
+    std::thread::spawn(move || crate::serve_until_the_test_ends(&serving));
     (node, address)
 }
 

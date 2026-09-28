@@ -18,7 +18,6 @@
 //! only because this store already states it has no TLS and belongs on a network
 //! the operator protects.
 
-use tessaridb::feed::Delivered;
 use tessaridb::{Change, ChangeKind, Value, Visible, seen};
 
 use crate::json::{self, Names};
@@ -165,9 +164,6 @@ pub(crate) fn refusal(reason: &str) -> String {
     out.push('}');
     out
 }
-
-/// A sink that could not write is a connection that has gone.
-pub(crate) const GONE: Delivered = false;
 
 #[cfg(test)]
 mod tests {

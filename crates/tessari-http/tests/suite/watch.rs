@@ -31,7 +31,7 @@ fn node() -> (Arc<Node>, String) {
     let node = Arc::new(Node::bind(db, "127.0.0.1:0").unwrap());
     let address = node.address();
     let serving = Arc::clone(&node);
-    std::thread::spawn(move || serving.serve());
+    std::thread::spawn(move || crate::serve_until_the_test_ends(&serving));
     (node, address)
 }
 
@@ -298,6 +298,42 @@ fn an_upgraded_socket_is_counted_as_a_feed_and_not_as_a_request() {
         (0, 1),
         "an upgraded socket must move to the feed count; left among the requests \
          it is something a drain waits for and never gets"
+    );
+}
+
+#[test]
+fn a_subscriber_that_hangs_up_on_a_quiet_feed_gives_its_place_back() {
+    // Parity row H16, the WebSocket twin of the wire's F-S1: a feed learns of a
+    // hang-up at its next write, and a quiet table has none. Asserted on the
+    // node's own feed count, which is what a shutdown waits on and what the
+    // door's place is released with.
+    let (node, address) = node();
+    let stopping = node.stopping();
+    assert_eq!(script(&address, READY), 200, "the fixture did not build");
+
+    let (mut stream, status, _) = upgrade(&address);
+    assert_eq!(status, 101);
+    send(
+        &mut stream,
+        true,
+        1,
+        br#"{"namespace":"prod","database":"library","from":0,"table":"users"}"#,
+    );
+    // A ping after the request is answered only once the feed is waiting, so
+    // the pong says the subscription is open rather than merely asked for.
+    send(&mut stream, true, 9, b"open?");
+    assert_eq!(receive(&mut stream).1, 10, "the feed never started waiting");
+    assert_eq!(stopping.feeds(), 1, "the subscription was not counted");
+
+    drop(stream);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while stopping.feeds() > 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        stopping.feeds(),
+        0,
+        "a subscriber that hung up on a quiet table still holds its feed"
     );
 }
 

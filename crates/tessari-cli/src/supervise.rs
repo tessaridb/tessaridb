@@ -110,6 +110,23 @@ pub fn wire(
     });
 }
 
+/// Serve the HTTP surface on the runtime until `stop` is cancelled.
+///
+/// Ends the process on a panic that reaches the listener and on a listener
+/// failure, as [`wire`] does and for its reason.
+pub fn http(
+    runtime: &tokio::runtime::Runtime,
+    node: &tessari_http::Node,
+    stop: &tokio_util::sync::CancellationToken,
+) {
+    or_the_node_ends("http", || {
+        if let Err(why) = runtime.block_on(node.serve(stop.clone())) {
+            log::error!("the http listener failed ({why}); the node ends here");
+            std::process::abort();
+        }
+    });
+}
+
 /// Send every panic to the log, with the thread and the place it came from.
 ///
 /// The default hook writes to standard error in its own shape; a node that

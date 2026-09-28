@@ -22,7 +22,7 @@ fn node() -> (Arc<Node>, String) {
     let node = Arc::new(Node::bind(db, "127.0.0.1:0").unwrap());
     let address = node.address();
     let serving = Arc::clone(&node);
-    std::thread::spawn(move || serving.serve());
+    std::thread::spawn(move || crate::serve_until_the_test_ends(&serving));
     (node, address)
 }
 
@@ -220,7 +220,7 @@ fn the_wire_and_the_library_answer_the_same_script() {
     let node = Arc::new(Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap());
     let address = node.address();
     let serving = Arc::clone(&node);
-    std::thread::spawn(move || serving.serve());
+    std::thread::spawn(move || crate::serve_until_the_test_ends(&serving));
 
     let script = "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
                   USE DATABASE orders; DEFINE COLLECTION users; \
@@ -640,7 +640,7 @@ fn a_store_with_a_background_failure_is_taken_out_of_rotation() {
     let node = Arc::new(Node::bind(db, "127.0.0.1:0").unwrap());
     let address = node.address();
     let serving = Arc::clone(&node);
-    std::thread::spawn(move || serving.serve());
+    std::thread::spawn(move || crate::serve_until_the_test_ends(&serving));
 
     let (status, _, body) = send(&address, "GET", "/health", "", None);
     assert_eq!(status, 503, "{body}");

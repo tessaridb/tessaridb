@@ -16,3 +16,12 @@ mod routes;
 mod sessions;
 mod vault_responses;
 mod watch;
+
+/// Serve `node` on a runtime of this test's own: the node creates none.
+fn serve_until_the_test_ends(node: &tessari_http::Node) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    drop(runtime.block_on(node.serve(tokio_util::sync::CancellationToken::new())));
+}

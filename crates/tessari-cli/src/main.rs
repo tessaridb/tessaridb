@@ -443,13 +443,16 @@ fn serve(
             wake: Box::new(move || stop.cancel()),
         });
     }
+    // The same shape as the wire surface's: accepting stops when the stage that
+    // refuses new connections cancels this.
+    let http_stops = tokio_util::sync::CancellationToken::new();
     if let Some(node) = &http {
-        let halt = node.halt();
         census.counting("http", node.stopping());
+        let stop = http_stops.clone();
         surfaces.push(shutdown::Surface {
             name: "http",
             stopping: node.stopping(),
-            wake: Box::new(move || halt.wake()),
+            wake: Box::new(move || stop.cancel()),
         });
     }
     // The peer door's own flag, made here rather than owned by the door,
@@ -637,7 +640,7 @@ fn serve(
         // third, and it is what turns the stop token into the stages.
         (Some(wire), Some(http)) => std::thread::scope(|scope| {
             scope.spawn(|| shutdown::watch(&runtime, &asked, &surfaces, quiet.as_ref()));
-            scope.spawn(|| supervise::or_the_node_ends("http", || http.serve()));
+            scope.spawn(|| supervise::http(&runtime, &http, &http_stops));
             supervise::wire(&runtime, &wire, &wire_stops);
         }),
         (Some(wire), None) => std::thread::scope(|scope| {
@@ -646,7 +649,7 @@ fn serve(
         }),
         (None, Some(http)) => std::thread::scope(|scope| {
             scope.spawn(|| shutdown::watch(&runtime, &asked, &surfaces, quiet.as_ref()));
-            supervise::or_the_node_ends("http", || http.serve());
+            supervise::http(&runtime, &http, &http_stops);
         }),
         // Unreachable through the parser, which sets `Source::Serve` only when
         // an address was given — said here rather than assumed, because the two
