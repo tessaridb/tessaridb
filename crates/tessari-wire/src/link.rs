@@ -408,7 +408,7 @@ pub fn call(
     let mut session = ClientConnection::new(Arc::new(settings), name)
         .map_err(|why| Error::Transport(why.to_string()))?;
 
-    let mut socket = TcpStream::connect(address)?;
+    let mut socket = connect(address, Duration::from_secs(GREETING_SECONDS))?;
     let bound = Some(Duration::from_secs(GREETING_SECONDS));
     socket.set_read_timeout(bound)?;
     socket.set_write_timeout(bound)?;
@@ -421,6 +421,30 @@ pub fn call(
     session.send_close_notify();
     drop(session.write_tls(&mut socket));
     exchanged
+}
+
+/// Open the connection a call rides, giving up after `bound` per address.
+///
+/// The reads and writes were always bounded and the connect was not, so a peer
+/// whose host drops SYNs held the calling round for the kernel's own connect
+/// limit — and the rounds dial their peers one after another (Q-836). Each
+/// resolved address is tried in turn, as `TcpStream::connect` does.
+fn connect(address: impl ToSocketAddrs, bound: Duration) -> Result<TcpStream> {
+    let mut failed = None;
+    for at in address.to_socket_addrs()? {
+        match TcpStream::connect_timeout(&at, bound) {
+            Ok(socket) => return Ok(socket),
+            Err(why) => failed = Some(why),
+        }
+    }
+    Err(failed
+        .unwrap_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the peer's address resolved to nothing",
+            )
+        })
+        .into())
 }
 
 /// The greeting and the one follow-up, on a session that is already open.
@@ -1415,5 +1439,44 @@ pub(crate) mod tests {
             "the voter never stood for shard 3"
         );
         drop(answering.join().expect("the door's thread"));
+    }
+
+    /// Fill the queue of a listener that never accepts, so the next connect
+    /// gets no answer at all — the black-holed peer, without leaving loopback.
+    ///
+    /// A full accept queue drops a SYN rather than refusing it (measured on
+    /// macOS: the 129th connect to a never-accepting listener times out).
+    fn a_peer_that_answers_no_syn() -> (std::net::TcpListener, Vec<TcpStream>, SocketAddr) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        let address = listener.local_addr().expect("its address");
+        let mut held = Vec::new();
+        while held.len() < 1024 {
+            match TcpStream::connect_timeout(&address, Duration::from_millis(200)) {
+                Ok(stream) => held.push(stream),
+                Err(_) => break,
+            }
+        }
+        assert!(
+            held.len() < 1024,
+            "a thousand connects to a listener that never accepts all completed"
+        );
+        (listener, held, address)
+    }
+
+    #[test]
+    fn a_peer_that_never_answers_the_connect_costs_the_deadline_and_no_more() {
+        let (_listener, _held, address) = a_peer_that_answers_no_syn();
+        // A deadline shorter than the operating system's own: this loopback
+        // gives up on its own after about eight seconds, a remote black hole
+        // only after the kernel's connect limit (`keepinit`, 75 s here).
+        let bound = Duration::from_secs(1);
+        let began = std::time::Instant::now();
+        let failed = super::connect(address, bound);
+        let waited = began.elapsed();
+        assert!(failed.is_err(), "nobody answered, so nothing connected");
+        assert!(
+            waited < bound.saturating_mul(3),
+            "a black-holed peer held the connect for {waited:?}; the deadline is {bound:?}"
+        );
     }
 }
