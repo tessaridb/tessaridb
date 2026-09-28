@@ -231,6 +231,16 @@ impl Seed {
     }
 }
 
+/// One credential file handed to [`Joining::parse`]: its bytes, and the path
+/// they came from, which is used only to name the file in a refusal.
+#[derive(Debug, Clone, Copy)]
+pub struct CredentialFile<'a> {
+    /// The file's contents.
+    pub bytes: &'a [u8],
+    /// Where the contents came from.
+    pub path: &'a Path,
+}
+
 /// A cluster configuration, read.
 #[derive(Debug)]
 pub struct Joining {
@@ -267,12 +277,18 @@ impl Joining {
         let key = slurp(&told.key, KEY)?;
         let authority = slurp(&told.authority, AUTHORITY)?;
         Self::parse(
-            &chain,
-            &told.chain,
-            &key,
-            &told.key,
-            &authority,
-            &told.authority,
+            CredentialFile {
+                bytes: &chain,
+                path: &told.chain,
+            },
+            CredentialFile {
+                bytes: &key,
+                path: &told.key,
+            },
+            CredentialFile {
+                bytes: &authority,
+                path: &told.authority,
+            },
             told.door.clone(),
             told.seeds.clone(),
         )
@@ -287,17 +303,25 @@ impl Joining {
     /// # Errors
     ///
     /// As [`Self::read`].
-    #[allow(clippy::too_many_arguments)]
     pub fn parse(
-        chain: &[u8],
-        chain_at: &Path,
-        key: &[u8],
-        key_at: &Path,
-        authority: &[u8],
-        authority_at: &Path,
+        chain: CredentialFile<'_>,
+        key: CredentialFile<'_>,
+        authority: CredentialFile<'_>,
         door: String,
         seeds: Vec<String>,
     ) -> Result<Self> {
+        let CredentialFile {
+            bytes: chain,
+            path: chain_at,
+        } = chain;
+        let CredentialFile {
+            bytes: key,
+            path: key_at,
+        } = key;
+        let CredentialFile {
+            bytes: authority,
+            path: authority_at,
+        } = authority;
         let chain = certificates(chain, CHAIN, chain_at)?;
         if chain.is_empty() {
             return Err(Error::CredentialEmpty {
@@ -421,12 +445,18 @@ mod tests {
 
     fn parsed(pem: &Pem) -> Result<Joining> {
         Joining::parse(
-            pem.leaf.as_bytes(),
-            &at("leaf.pem"),
-            pem.key.as_bytes(),
-            &at("key.pem"),
-            pem.authority.as_bytes(),
-            &at("ca.pem"),
+            CredentialFile {
+                bytes: pem.leaf.as_bytes(),
+                path: &at("leaf.pem"),
+            },
+            CredentialFile {
+                bytes: pem.key.as_bytes(),
+                path: &at("key.pem"),
+            },
+            CredentialFile {
+                bytes: pem.authority.as_bytes(),
+                path: &at("ca.pem"),
+            },
             DOOR.to_owned(),
             vec![ONE_SEED.to_owned()],
         )
@@ -564,12 +594,18 @@ mod tests {
     fn a_credential_file_holding_no_certificate_is_refused_by_content_not_by_path() {
         let pem = minted();
         let failure = Joining::parse(
-            b"this file exists and is not a certificate\n",
-            &at("leaf.pem"),
-            pem.key.as_bytes(),
-            &at("key.pem"),
-            pem.authority.as_bytes(),
-            &at("ca.pem"),
+            CredentialFile {
+                bytes: b"this file exists and is not a certificate\n",
+                path: &at("leaf.pem"),
+            },
+            CredentialFile {
+                bytes: pem.key.as_bytes(),
+                path: &at("key.pem"),
+            },
+            CredentialFile {
+                bytes: pem.authority.as_bytes(),
+                path: &at("ca.pem"),
+            },
             DOOR.to_owned(),
             vec![ONE_SEED.to_owned()],
         )
@@ -589,12 +625,18 @@ mod tests {
         // takes the `CredentialUnreadable` branch and never reaches it.
         let pem = minted();
         let failure = Joining::parse(
-            pem.leaf.as_bytes(),
-            &at("leaf.pem"),
-            pem.authority.as_bytes(),
-            &at("key.pem"),
-            pem.authority.as_bytes(),
-            &at("ca.pem"),
+            CredentialFile {
+                bytes: pem.leaf.as_bytes(),
+                path: &at("leaf.pem"),
+            },
+            CredentialFile {
+                bytes: pem.authority.as_bytes(),
+                path: &at("key.pem"),
+            },
+            CredentialFile {
+                bytes: pem.authority.as_bytes(),
+                path: &at("ca.pem"),
+            },
             DOOR.to_owned(),
             vec![ONE_SEED.to_owned()],
         )
@@ -617,12 +659,18 @@ mod tests {
         // is unreadable, not absent.
         let pem = minted();
         let failure = Joining::parse(
-            b"-----BEGIN CERTIFICATE-----\n@@@@@@@@\n-----END CERTIFICATE-----\n",
-            &at("leaf.pem"),
-            pem.key.as_bytes(),
-            &at("key.pem"),
-            pem.authority.as_bytes(),
-            &at("ca.pem"),
+            CredentialFile {
+                bytes: b"-----BEGIN CERTIFICATE-----\n@@@@@@@@\n-----END CERTIFICATE-----\n",
+                path: &at("leaf.pem"),
+            },
+            CredentialFile {
+                bytes: pem.key.as_bytes(),
+                path: &at("key.pem"),
+            },
+            CredentialFile {
+                bytes: pem.authority.as_bytes(),
+                path: &at("ca.pem"),
+            },
             DOOR.to_owned(),
             vec![ONE_SEED.to_owned()],
         )
@@ -653,12 +701,18 @@ mod tests {
         // true of the parser this wave removed.
         let pem = minted();
         let failure = Joining::parse(
-            pem.leaf.as_bytes(),
-            &at("leaf.pem"),
-            b"-----BEGIN PRIVATE KEY-----\n@@@@@@@@\n-----END PRIVATE KEY-----\n",
-            &at("key.pem"),
-            pem.authority.as_bytes(),
-            &at("ca.pem"),
+            CredentialFile {
+                bytes: pem.leaf.as_bytes(),
+                path: &at("leaf.pem"),
+            },
+            CredentialFile {
+                bytes: b"-----BEGIN PRIVATE KEY-----\n@@@@@@@@\n-----END PRIVATE KEY-----\n",
+                path: &at("key.pem"),
+            },
+            CredentialFile {
+                bytes: pem.authority.as_bytes(),
+                path: &at("ca.pem"),
+            },
             DOOR.to_owned(),
             vec![ONE_SEED.to_owned()],
         )
@@ -680,12 +734,18 @@ mod tests {
         let pem = minted();
         let two = format!("{}{}", pem.authority, pem.authority);
         let failure = Joining::parse(
-            pem.leaf.as_bytes(),
-            &at("leaf.pem"),
-            pem.key.as_bytes(),
-            &at("key.pem"),
-            two.as_bytes(),
-            &at("ca.pem"),
+            CredentialFile {
+                bytes: pem.leaf.as_bytes(),
+                path: &at("leaf.pem"),
+            },
+            CredentialFile {
+                bytes: pem.key.as_bytes(),
+                path: &at("key.pem"),
+            },
+            CredentialFile {
+                bytes: two.as_bytes(),
+                path: &at("ca.pem"),
+            },
             DOOR.to_owned(),
             vec![ONE_SEED.to_owned()],
         )

@@ -6,6 +6,8 @@
 //! link once rather than once per case.
 
 #![allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![allow(clippy::expect_used, clippy::as_conversions)]
 
 mod catalog;
 mod counted_reads;

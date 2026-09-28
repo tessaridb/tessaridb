@@ -52,6 +52,8 @@
 //! whoever reads this next.
 
 #![forbid(unsafe_code)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 #[cfg(feature = "server")]
 mod campaign;
@@ -112,7 +114,7 @@ pub use crate::gathering::{Gather, Page, Ungathered};
 #[cfg(feature = "server")]
 pub use crate::grant::{Ballot, Deciding, Leadership, Reached, Refused, Round, Vote, Voter};
 #[cfg(feature = "server")]
-pub use crate::joining::{Joining, Seed, Told};
+pub use crate::joining::{CredentialFile, Joining, Seed, Told};
 #[cfg(feature = "server")]
 pub use crate::link::{Answered, Ask, Credential, Met, Peers, call};
 #[cfg(feature = "server")]

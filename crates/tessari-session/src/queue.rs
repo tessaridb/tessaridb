@@ -109,6 +109,8 @@ impl Session<'_> {
         // Cloned out before the walk: the closure borrows the transaction, so
         // it cannot also borrow the session.
         let claimant = self.consumer.clone();
+        // A count wider than `usize` can never be reached by a vector, so it saturates.
+        let limit = usize::try_from(count).unwrap_or(usize::MAX);
 
         let mut taken: Vec<(RecordId, Value)> = Vec::new();
         let mut writes: Vec<(RecordId, Value)> = Vec::new();
@@ -117,7 +119,7 @@ impl Session<'_> {
             context.database,
             id,
             |_, record, bytes| -> Result<ControlFlow<()>> {
-                if taken.len() as u64 >= count {
+                if taken.len() >= limit {
                     return Ok(ControlFlow::Break(()));
                 }
                 let Value::Object(mut fields) = decode_payload(&bytes)? else {

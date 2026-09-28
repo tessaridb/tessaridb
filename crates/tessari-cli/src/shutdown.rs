@@ -90,7 +90,10 @@ pub fn listen() {
     // SAFETY: `signal` is called once, before any surface is serving, with a
     // handler that only increments an atomic or calls `_exit`. The cast is the
     // signature this interface requires; there is no safe spelling of it.
-    #[allow(clippy::as_conversions)]
+    #[expect(
+        clippy::as_conversions,
+        reason = "the signal interface takes the handler as an address; there is no safe spelling"
+    )]
     unsafe {
         libc::signal(libc::SIGTERM, asked as *const () as libc::sighandler_t);
         libc::signal(libc::SIGINT, asked as *const () as libc::sighandler_t);

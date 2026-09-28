@@ -32,6 +32,9 @@
 //! taken as a dependency: `line.rs` says why, and `raw.rs` says what it costs.
 //! Nothing is written to disk, because statements carry passwords.
 
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
+
 mod arguments;
 mod bootstrap;
 mod consumers;

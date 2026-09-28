@@ -98,7 +98,7 @@ fn jitter() -> u64 {
         let mut held = state.get();
         if held == 0 {
             let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
-            hasher.write_usize(std::ptr::from_ref(state) as usize);
+            hasher.write_usize(std::ptr::from_ref(state).addr());
             // Zero is the "not yet seeded" mark and is also the one value
             // xorshift cannot leave, so it is replaced rather than accepted.
             held = hasher.finish() | 1;

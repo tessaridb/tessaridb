@@ -39,7 +39,7 @@ impl CaseResult {
 /// exercises.
 #[must_use]
 pub fn run(corpus: &Corpus) -> Vec<CaseResult> {
-    run_on(corpus, Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
+    run_on(corpus, Arc::new(MemoryBackend::new()))
 }
 
 /// Run every case of a corpus against one fresh store on `backend`.

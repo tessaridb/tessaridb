@@ -20,6 +20,8 @@
 //! the same bytes on disk.
 
 #![forbid(unsafe_code)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 mod adjacency;
 mod audit;

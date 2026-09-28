@@ -20,6 +20,8 @@
 //! produces it — the enum is `#[non_exhaustive]` so that a *future* store can.
 
 #![allow(clippy::panic, clippy::unwrap_used)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::io::Cursor;
 use std::sync::Arc;

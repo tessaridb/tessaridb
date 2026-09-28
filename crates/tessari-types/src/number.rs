@@ -171,6 +171,7 @@ impl Number {
                 }
                 #[expect(
                     clippy::cast_precision_loss,
+                    clippy::as_conversions,
                     reason = "the bound above is what makes this conversion exact"
                 )]
                 Some(*value as f64)

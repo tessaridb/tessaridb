@@ -11,6 +11,9 @@
 //! the two ways this code could be correct and still leak: a plaintext left in
 //! the output buffer, and key material rendered by a `Debug` somebody derived.
 
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![allow(clippy::expect_used, clippy::as_conversions)]
+
 use tessari_vault::envelope::{self, ALGORITHM_CHACHA20_POLY1305, HEADER_BYTES};
 use tessari_vault::{Binding, Error, Keyring, Level, Root, SecretBytes, keys};
 

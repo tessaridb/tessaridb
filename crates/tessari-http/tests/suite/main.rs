@@ -5,6 +5,9 @@
 //! target instead, so the cases sit beside this file and the crate pays that
 //! link once rather than once per case.
 
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![allow(clippy::expect_used, clippy::as_conversions)]
+
 mod console;
 mod console_tokens;
 mod crossing;

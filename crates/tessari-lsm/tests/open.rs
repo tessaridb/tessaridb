@@ -6,6 +6,8 @@
 //! because the operator does something different about each.
 
 #![allow(clippy::panic, clippy::unwrap_used)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![allow(clippy::expect_used, clippy::as_conversions)]
 
 use tessari_kv::{ErrorCategory, Key, Keyspace, KvBackend, Value, WriteBatch};
 use tessari_lsm::{Durability, LsmBackend, StoreConfig, effective_options_files};

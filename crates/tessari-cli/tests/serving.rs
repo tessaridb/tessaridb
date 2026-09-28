@@ -16,6 +16,8 @@
 //! the other two.
 
 #![allow(clippy::panic, clippy::unwrap_used)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::collections::BTreeMap;
 use std::net::TcpStream;
@@ -644,12 +646,18 @@ fn a_node_told_about_a_cluster_opens_its_peer_door_and_still_serves_clients() {
     // Read through the same parser the binary uses, so the test cannot pass on
     // a credential the node itself would have refused to load.
     let ours = tessari_wire::Joining::parse(
-        their_leaf.as_bytes(),
-        std::path::Path::new("leaf.pem"),
-        their_key.as_bytes(),
-        std::path::Path::new("key.pem"),
-        minted.authority.pem().as_bytes(),
-        std::path::Path::new("ca.pem"),
+        tessari_wire::CredentialFile {
+            bytes: their_leaf.as_bytes(),
+            path: std::path::Path::new("leaf.pem"),
+        },
+        tessari_wire::CredentialFile {
+            bytes: their_key.as_bytes(),
+            path: std::path::Path::new("key.pem"),
+        },
+        tessari_wire::CredentialFile {
+            bytes: minted.authority.pem().as_bytes(),
+            path: std::path::Path::new("ca.pem"),
+        },
         PEERS.to_owned(),
         vec![A_SEED.to_owned()],
     )

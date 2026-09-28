@@ -184,6 +184,7 @@ impl Welford {
         // so refusing the cast would buy nothing and there is no wider float.
         #[expect(
             clippy::cast_precision_loss,
+            clippy::as_conversions,
             reason = "a count past 2^53 has already made every other number here meaningless"
         )]
         let counted = self.counted as f64;
@@ -204,6 +205,7 @@ impl Welford {
         }
         #[expect(
             clippy::cast_precision_loss,
+            clippy::as_conversions,
             reason = "as above — the divisor is a count, and it is at least one here"
         )]
         let degrees = self.counted.saturating_sub(1) as f64;

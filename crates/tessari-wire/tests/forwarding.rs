@@ -9,6 +9,8 @@
 //! that cannot be answered without a second node on the other end of a socket.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::sync::Arc;
 

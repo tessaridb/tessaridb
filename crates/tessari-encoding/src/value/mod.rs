@@ -290,7 +290,9 @@ fn split_stamp(bytes: &[u8]) -> Result<(CausalStamp, u8, &[u8])> {
             len: bytes.len(),
             needed: HEADER_LEN.saturating_add(STAMP_COUNT_LEN),
         })?;
-    let count = u32::from_be_bytes(raw) as usize;
+    // A count wider than this target's `usize` cannot describe bytes that are
+    // here, so it saturates and the length check below reports it truncated.
+    let count = usize::try_from(u32::from_be_bytes(raw)).unwrap_or(usize::MAX);
     let span = count.saturating_mul(STAMP_ENTRY_LEN);
     let body = payload
         .get(STAMP_COUNT_LEN..STAMP_COUNT_LEN.saturating_add(span))

@@ -40,6 +40,8 @@
 //! store and come back with. See [`Db::changes_since`].
 
 #![forbid(unsafe_code)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -159,7 +161,7 @@ impl Db {
     ///
     /// Returns an error when the store cannot be initialised.
     pub fn in_memory() -> Result<Self> {
-        let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+        let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
         Ok(Self {
             store: Store::open(backend)?,
             gather: std::sync::OnceLock::new(),
@@ -187,7 +189,7 @@ impl Db {
     /// cannot be initialised on it.
     pub fn open_with(path: impl AsRef<Path>, config: StoreConfig) -> Result<Self> {
         let backend = LsmBackend::open(path, config).map_err(tessari_storage::Error::from)?;
-        let backend = Arc::new(backend) as Arc<dyn KvBackend>;
+        let backend: Arc<dyn KvBackend> = Arc::new(backend);
         Ok(Self {
             store: Store::open(backend)?,
             gather: std::sync::OnceLock::new(),

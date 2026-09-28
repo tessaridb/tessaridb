@@ -5,6 +5,8 @@
 //! never carries a bare numeric literal.
 
 #![forbid(unsafe_code)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 /// How many times a commit re-attempts after losing the race for the committed
 /// tail, before reporting contention to the caller.

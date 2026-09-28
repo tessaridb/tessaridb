@@ -8,6 +8,8 @@
 //! triple for transitivity, so nothing in the corpus escapes.
 
 #![allow(clippy::panic, clippy::unwrap_used)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;

@@ -9,6 +9,8 @@
 //! single layer owns stays in that layer.
 
 #![forbid(unsafe_code)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 mod analyzer;
 mod assertion;

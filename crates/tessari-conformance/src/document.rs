@@ -21,6 +21,10 @@ const SPECIFICATION: &str = "../../docs/tessariql.md";
 ///
 /// When the document is missing. It is checked in beside the code, so its
 /// absence is a broken checkout rather than a condition to handle.
+#[expect(
+    clippy::expect_used,
+    reason = "the document is checked in beside the code, so its absence is a broken checkout"
+)]
 #[must_use]
 pub fn specification_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -34,6 +38,10 @@ pub fn specification_path() -> PathBuf {
 /// # Panics
 ///
 /// When the document is missing or unreadable.
+#[expect(
+    clippy::expect_used,
+    reason = "the document is checked in beside the code, so its absence is a broken checkout"
+)]
 #[must_use]
 pub fn specification() -> String {
     fs::read_to_string(specification_path()).expect("docs/tessariql.md is unreadable")

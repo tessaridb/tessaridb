@@ -1,0 +1,3 @@
+# `expect_used` is denied for production code (workspace lints); a test states
+# its own expectation, so tests may use it.
+allow-expect-in-tests = true

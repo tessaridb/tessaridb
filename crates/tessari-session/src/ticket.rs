@@ -186,10 +186,10 @@ fn token() -> String {
 /// The range on each arm is what makes the addition sound — the caller only
 /// ever passes a nibble — and the saturating form says so to the compiler as
 /// well as to a reader, the same way `basic::sextet` does on the way back.
-const fn nibble(value: u8) -> char {
+fn nibble(value: u8) -> char {
     match value {
-        0..=9 => b'0'.saturating_add(value) as char,
-        _ => b'a'.saturating_add(value.saturating_sub(10)) as char,
+        0..=9 => char::from(b'0'.saturating_add(value)),
+        _ => char::from(b'a'.saturating_add(value.saturating_sub(10))),
     }
 }
 

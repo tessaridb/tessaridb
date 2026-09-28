@@ -70,6 +70,9 @@
 //!
 //! [`Value::Bytes`]: https://docs.rs/tessari-types
 
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
+
 pub mod envelope;
 pub mod error;
 pub mod keys;

@@ -28,6 +28,9 @@
 //! So the runner consumes [`Source`]. The Kafka client is one implementation of
 //! it (behind the `kafka` feature, ADR-0024), and the tests use another.
 
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
+
 mod apply;
 mod json;
 #[cfg(feature = "kafka")]

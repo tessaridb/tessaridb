@@ -20,7 +20,12 @@
 //! lives in the parser crate's test support and does not touch the production
 //! `PartialEq` — see `ADR-0022`.
 
-#![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::as_conversions
+)]
 
 use tessari_ql::test_support::erase_spans;
 use tessari_ql::{BinaryOp, parse, render};
