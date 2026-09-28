@@ -35,14 +35,13 @@ impl LsmBackend {
             }
             landed = landed.saturating_add(1);
         }
-        if landed > 0 {
-            if let Err(failure) = self
+        if landed > 0
+            && let Err(failure) = self
                 .database
                 .write_opt(engine_batch, &self.durability.write_options())
                 .map_err(|error| from_engine(&error))
-            {
-                return (0, Err(failure));
-            }
+        {
+            return (0, Err(failure));
         }
         (landed, stopped)
     }

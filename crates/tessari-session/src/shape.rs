@@ -417,12 +417,16 @@ mod tests {
                 let key = match pick % 7 {
                     0 => Value::None,
                     1 => Value::Null,
-                    2 => Value::Bool(pick % 2 == 0),
+                    2 => Value::Bool(pick.is_multiple_of(2)),
                     3 => Value::Number(Number::from(small)),
                     4 => Value::Number(Number::float(
                         f64::from(u32::try_from(small).unwrap_or(0)) / 2.0,
                     )),
-                    5 => Value::from(if pick % 2 == 0 { "alpha" } else { "beta" }),
+                    5 => Value::from(if pick.is_multiple_of(2) {
+                        "alpha"
+                    } else {
+                        "beta"
+                    }),
                     _ => Value::Array(vec![Value::Number(Number::from(small))]),
                 };
                 (

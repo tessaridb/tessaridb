@@ -1701,10 +1701,10 @@ fn nothing_invisible_rides_along_in_a_delivered_asset() {
             "{path} came back empty, so this scan would pass by reading nothing"
         );
         for (point, name) in INVISIBLE {
-            if let Some(found) = char::from_u32(*point) {
-                if served.contains(found) {
-                    carried.push(format!("{path} carries {name} (U+{point:04X})"));
-                }
+            if let Some(found) = char::from_u32(*point)
+                && served.contains(found)
+            {
+                carried.push(format!("{path} carries {name} (U+{point:04X})"));
             }
         }
         // Unicode tag characters smuggle arbitrary ASCII and have no legitimate

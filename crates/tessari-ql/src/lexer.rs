@@ -253,7 +253,7 @@ impl<'a> Lexer<'a> {
         }
         let digits = self.slice(digits_from, self.position);
         let span = Span::new(start, self.position);
-        if digits.is_empty() || digits.len() % 2 != 0 {
+        if digits.is_empty() || !digits.len().is_multiple_of(2) {
             return Err(Error::InvalidBytes {
                 reason: "an odd number of digits",
                 span,
@@ -261,7 +261,7 @@ impl<'a> Lexer<'a> {
         }
         let mut bytes = Vec::with_capacity(digits.len() / 2);
         let raw = digits.as_bytes();
-        for pair in raw.chunks_exact(2) {
+        for pair in raw.as_chunks::<2>().0 {
             let high = hex_value(pair.first().copied().unwrap_or(0));
             let low = hex_value(pair.get(1).copied().unwrap_or(0));
             match (high, low) {

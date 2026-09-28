@@ -380,13 +380,13 @@ impl Parser<'_> {
                 span: self.end_of_source(),
             };
         };
-        if let Token::Ident(word) = &spanned.token {
-            if let Some(feature) = absent_feature(word) {
-                return Error::Unsupported {
-                    feature,
-                    span: spanned.span,
-                };
-            }
+        if let Token::Ident(word) = &spanned.token
+            && let Some(feature) = absent_feature(word)
+        {
+            return Error::Unsupported {
+                feature,
+                span: spanned.span,
+            };
         }
         Error::UnexpectedToken {
             found: describe(&spanned.token),

@@ -50,10 +50,10 @@ impl DecodedTables {
     /// A poisoned lock is read past rather than refused: every change under it
     /// is one map operation, and the answer is decoded directly either way.
     pub(crate) fn definition(&self, stored: &[u8]) -> Result<TableDefinition> {
-        if let Ok(held) = self.held.read() {
-            if let Some(found) = held.get(stored) {
-                return Ok(found.clone());
-            }
+        if let Ok(held) = self.held.read()
+            && let Some(found) = held.get(stored)
+        {
+            return Ok(found.clone());
         }
         let decoded = TableDefinition::from_value(&decode_payload(stored)?)?;
         if let Ok(mut held) = self.held.write() {

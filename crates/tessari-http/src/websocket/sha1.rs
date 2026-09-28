@@ -28,24 +28,21 @@ const ROUND: [u32; 4] = [0x5a82_7999, 0x6ed9_eba1, 0x8f1b_bcdc, 0xca62_c1d6];
 /// The SHA-1 digest of `message`.
 pub(crate) fn digest(message: &[u8]) -> [u8; 20] {
     let mut state = START;
-    let mut block = [0u8; 64];
-    let mut chunks = message.chunks_exact(64);
-    for chunk in chunks.by_ref() {
-        block.copy_from_slice(chunk);
-        compress(&mut state, &block);
+    let (whole, rest) = message.as_chunks::<64>();
+    for chunk in whole {
+        compress(&mut state, chunk);
     }
 
     // The tail: what is left, a single `0x80`, zeroes, and the message length in
     // **bits** as a big-endian u64. That length is where a hand-written SHA-1
     // usually goes wrong, so it is the thing the vector test is pointed at.
-    let rest = chunks.remainder();
     // The fallback is unreachable where `usize` is 64 bits or fewer, which is
     // every platform this builds for; it is written rather than unwrapped
     // because the workspace refuses both a panic and a lossy cast.
     let bits = u64::try_from(message.len())
         .unwrap_or(u64::MAX)
         .wrapping_mul(8);
-    block = [0; 64];
+    let mut block = [0u8; 64];
     block[..rest.len()].copy_from_slice(rest);
     block[rest.len()] = 0x80;
     if rest.len() >= 56 {
@@ -57,7 +54,7 @@ pub(crate) fn digest(message: &[u8]) -> [u8; 20] {
     compress(&mut state, &block);
 
     let mut out = [0u8; 20];
-    for (word, slot) in state.iter().zip(out.chunks_exact_mut(4)) {
+    for (word, slot) in state.iter().zip(out.as_chunks_mut::<4>().0) {
         slot.copy_from_slice(&word.to_be_bytes());
     }
     out
@@ -66,9 +63,8 @@ pub(crate) fn digest(message: &[u8]) -> [u8; 20] {
 /// Fold one 64-byte block into the state.
 fn compress(state: &mut [u32; 5], block: &[u8; 64]) {
     let mut schedule = [0u32; 80];
-    for (word, bytes) in schedule.iter_mut().zip(block.chunks_exact(4)) {
-        // Four bytes, and `chunks_exact(4)` promises exactly four.
-        *word = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    for (word, bytes) in schedule.iter_mut().zip(block.as_chunks::<4>().0) {
+        *word = u32::from_be_bytes(*bytes);
     }
     for index in 16..80usize {
         // The range is what makes these subtractions sound — `index` is never

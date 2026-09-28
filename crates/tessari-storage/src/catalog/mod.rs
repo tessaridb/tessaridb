@@ -891,12 +891,12 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             rows::Lookup::Missing(fill) => fill,
         };
         let row = self.transaction.get(address)?;
-        if let Some(generation) = fill {
-            if !store.write_gate().holding() {
-                store
-                    .catalog_rows()
-                    .fill(address.clone(), generation, row.clone());
-            }
+        if let Some(generation) = fill
+            && !store.write_gate().holding()
+        {
+            store
+                .catalog_rows()
+                .fill(address.clone(), generation, row.clone());
         }
         Ok(row)
     }

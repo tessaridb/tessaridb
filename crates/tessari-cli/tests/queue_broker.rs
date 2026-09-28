@@ -234,11 +234,11 @@ fn claim_and_hang() {
             began.elapsed() < CHILD_GIVES_UP,
             "nothing was ever claimable"
         );
-        if let Ok(answers) = client.run("CLAIM FROM jobs;", None) {
-            if let Some(id) = handed_out(&answers).first() {
-                announce(&format!("claimed {id}"));
-                break;
-            }
+        if let Ok(answers) = client.run("CLAIM FROM jobs;", None)
+            && let Some(id) = handed_out(&answers).first()
+        {
+            announce(&format!("claimed {id}"));
+            break;
         }
         std::thread::yield_now();
     }

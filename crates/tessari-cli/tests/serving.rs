@@ -1853,18 +1853,17 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
             if index == leader {
                 continue;
             }
-            if let Ok(mut client) = Client::connect(surface) {
-                if client
+            if let Ok(mut client) = Client::connect(surface)
+                && client
                     .run(
                         "USE NAMESPACE prod; USE DATABASE orders; \
                          CREATE item:2 = { n: 2 };",
                         None,
                     )
                     .is_ok()
-                {
-                    successor = Some(index);
-                    break;
-                }
+            {
+                successor = Some(index);
+                break;
             }
         }
         std::thread::sleep(POLL);

@@ -12,7 +12,7 @@ written in Rust, for AI applications and the products built around them.
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
 [![version](https://img.shields.io/badge/version-0.10.0--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
-[![rust](https://img.shields.io/badge/rust-1.85%2B-6B5FD1?style=flat-square)](Cargo.toml)
+[![rust](https://img.shields.io/badge/rust-1.98%2B-6B5FD1?style=flat-square)](Cargo.toml)
 [![conformance](https://img.shields.io/badge/conformance-1420%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
@@ -484,7 +484,7 @@ are cached and rebuilds are ordinary.
 
 | | |
 |---|---|
-| Rust | 1.85 or newer (`rust-version` in `Cargo.toml`); the toolchain file asks for `stable` |
+| Rust | 1.98 or newer (`rust-version` in `Cargo.toml`); the toolchain file asks for `stable` |
 | macOS | `xcode-select --install` — the Command Line Tools carry both |
 | Debian · Ubuntu | `apt install build-essential clang libclang-dev` |
 | Fedora · RHEL | `dnf install gcc-c++ clang clang-devel` |

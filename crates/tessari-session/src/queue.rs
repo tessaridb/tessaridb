@@ -536,10 +536,10 @@ fn deadline(now: Datetime, declared: QueueDeclaration, span: Span) -> Result<Dat
 /// attempts are spent is never claimable however long ago its hold lapsed, and a
 /// record still held is not claimable however few attempts it has had.
 fn claimable(fields: &BTreeMap<String, Value>, now: Datetime, declared: QueueDeclaration) -> bool {
-    if let Some(ceiling) = declared.attempts {
-        if attempts_of(fields) >= i64::from(ceiling) {
-            return false;
-        }
+    if let Some(ceiling) = declared.attempts
+        && attempts_of(fields) >= i64::from(ceiling)
+    {
+        return false;
     }
     match fields.get(QUEUE_CLAIMED_UNTIL) {
         // Nothing holds it.

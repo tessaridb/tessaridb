@@ -235,7 +235,7 @@ mod tests {
                     i64::try_from(draw >> 44).unwrap_or(0) - 500_000,
                     4,
                 ))),
-                2 if draw % 7 == 0 => Value::from("x"),
+                2 if draw.is_multiple_of(7) => Value::from("x"),
                 _ => Value::Number(Number::float(magnitude)),
             }
         };

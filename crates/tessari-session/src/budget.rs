@@ -315,10 +315,10 @@ impl Budget {
     pub(crate) fn spend(&mut self) -> Result<()> {
         self.produced = self.produced.saturating_add(1);
         self.held = self.held.saturating_add(1);
-        if let Some(ceiling) = self.holding {
-            if self.held > ceiling.most {
-                return Err(ceiling.reached());
-            }
+        if let Some(ceiling) = self.holding
+            && self.held > ceiling.most
+        {
+            return Err(ceiling.reached());
         }
         let Some(deadline) = self.within else {
             return Ok(());

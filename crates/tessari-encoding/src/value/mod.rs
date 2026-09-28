@@ -303,7 +303,7 @@ fn split_stamp(bytes: &[u8]) -> Result<(CausalStamp, u8, &[u8])> {
                 .saturating_add(span),
         })?;
     let mut entries = Vec::with_capacity(count);
-    for entry in body.chunks_exact(STAMP_ENTRY_LEN) {
+    for entry in body.as_chunks::<STAMP_ENTRY_LEN>().0 {
         let node: [u8; NODE_ID_LEN] = entry
             .get(..NODE_ID_LEN)
             .and_then(|head| head.try_into().ok())

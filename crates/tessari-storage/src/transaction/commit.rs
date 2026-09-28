@@ -353,10 +353,8 @@ impl Transaction<'_> {
         placed: &BTreeSet<Reach>,
         ranges: &BTreeSet<Reach>,
     ) -> Result<()> {
-        if store_line {
-            if let Some(for_the_last) = self.store.lease_spent() {
-                return Err(Error::LeaseSpent { for_the_last });
-            }
+        if store_line && let Some(for_the_last) = self.store.lease_spent() {
+            return Err(Error::LeaseSpent { for_the_last });
         }
         for range in ranges {
             let line = crate::catalog::governing(placed, *range);
@@ -469,10 +467,8 @@ impl Transaction<'_> {
         // and not the ones a live line of their own does, so the question waits
         // below until the ranges are known.
         let held_lines = self.store.holds_lines();
-        if !held_lines {
-            if let Some(for_the_last) = self.store.lease_spent() {
-                return Err(Error::LeaseSpent { for_the_last });
-            }
+        if !held_lines && let Some(for_the_last) = self.store.lease_spent() {
+            return Err(Error::LeaseSpent { for_the_last });
         }
         // And before the store-wide question, because the store-wide question
         // returns early on a live lease and would therefore never reach a leader
