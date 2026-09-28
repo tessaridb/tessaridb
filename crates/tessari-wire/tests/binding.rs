@@ -24,7 +24,7 @@ fn serving(db: Db) -> (Arc<Node>, String) {
     let node = Arc::new(Node::bind(Arc::new(db), "127.0.0.1:0").unwrap());
     let address = node.address().unwrap();
     let held = Arc::clone(&node);
-    drop(std::thread::spawn(move || held.serve()));
+    drop(std::thread::spawn(move || serve_until_the_test_ends(&held)));
     (node, address)
 }
 
@@ -166,4 +166,13 @@ fn a_request_with_no_parameters_is_what_it_always_was() {
 
     let answers = client.run("SELECT * FROM users;", None).unwrap();
     assert_eq!(records(&answers).len(), 2);
+}
+
+/// Serve `node` on a runtime of this test's own: the node creates none.
+fn serve_until_the_test_ends(node: &Node) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    drop(runtime.block_on(node.serve(tokio_util::sync::CancellationToken::new())));
 }

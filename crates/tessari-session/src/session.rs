@@ -50,8 +50,10 @@ pub(crate) const ABSENT_USER_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$2vm2xo
 pub struct Session<'a> {
     /// Visible to the crate for the same reason `identity` is.
     pub(crate) store: &'a Store,
-    namespace: Option<String>,
-    database: Option<String>,
+    /// Visible to the crate because `detached.rs` carries it across a hop.
+    pub(crate) namespace: Option<String>,
+    /// Visible to the crate for the same reason as `namespace`.
+    pub(crate) database: Option<String>,
     /// Visible to the crate because `authorize.rs` asks it three questions.
     pub(crate) identity: Identity,
     /// Who this session is when it claims, once `USE CONSUMER` has said.

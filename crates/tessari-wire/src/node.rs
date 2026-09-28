@@ -2,22 +2,36 @@
 //!
 //! Everything about being the server end of this protocol. The client end is
 //! `client.rs`, and the two share only the frames.
+//!
+//! A connection is a task on the process's runtime, not a thread; the store it
+//! talks to stays synchronous behind the node's bridge (ADR-0085). The
+//! conversation itself is `conversation.rs`.
 
-use std::io::{BufReader, BufWriter};
+use std::io::BufWriter;
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use tessari_constants::{GREETING_SECONDS, MAX_CONNECTIONS};
-use tessari_serve::{Admitting, Busy, Stopping};
+use tessari_constants::MAX_CONNECTIONS;
+use tessari_serve::{Admitting, Bridge, Stopping};
 use tessaridb::feed::{self, Commits, Following};
 use tessaridb::{Db, Sequence};
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 
+use crate::conversation::{self, Conversation};
 use crate::error::{Error, Result};
 use crate::message::Request;
 use crate::push::Follow;
-use crate::{READING, client, frame, message, push, redirect};
+use crate::{READING, client, frame, frame_async, push};
+
+/// How long the accept loop rests after a failure it expects to pass.
+///
+/// Out of file descriptors, a connection reset before it was accepted: each
+/// clears on its own, and retrying at once turns one into a spinning core
+/// (Q-834). Short, because while it rests nobody new is admitted.
+const ACCEPT_PAUSE: Duration = Duration::from_millis(100);
 
 /// Names one connection across every line it produces.
 ///
@@ -35,22 +49,41 @@ fn next_connection() -> u64 {
 ///
 /// Best effort by construction: the client may already be gone, and a node that
 /// is refusing because it is full has no capacity to spend caring. What matters
-/// is that the socket closes here rather than being parked on a thread.
-fn turn_away(stream: TcpStream) {
-    let mut writer = BufWriter::new(stream);
-    drop(frame::write(
-        &mut writer,
-        frame::Kind::Refusal,
-        b"this node is serving as many connections as it will",
-    ));
+/// is that the socket closes here rather than being held.
+async fn turn_away(mut stream: tokio::net::TcpStream) {
+    drop(
+        frame_async::write(
+            &mut stream,
+            frame::Kind::Refusal,
+            b"this node is serving as many connections as it will",
+        )
+        .await,
+    );
 }
 
 /// Where a connection came from, for the line that says it arrived.
-fn from_where(stream: &TcpStream) -> String {
+fn from_where(stream: &tokio::net::TcpStream) -> String {
     stream.peer_addr().map_or_else(
         |_| "an address the socket would not give".to_owned(),
         |at| at.to_string(),
     )
+}
+
+/// Whether an accept failure is one that passes on its own.
+///
+/// Everything else — the listener itself gone bad — ends the node rather than
+/// being retried forever, which is what Q-834 found the old loop doing.
+fn passes(failure: &std::io::Error) -> bool {
+    use std::io::ErrorKind::{ConnectionAborted, ConnectionReset, Interrupted, WouldBlock};
+    // EMFILE and ENFILE: this process, or the whole system, is out of file
+    // descriptors until a connection closes.
+    const OUT_OF_DESCRIPTORS: [i32; 2] = [24, 23];
+    matches!(
+        failure.kind(),
+        ConnectionAborted | ConnectionReset | Interrupted | WouldBlock
+    ) || failure
+        .raw_os_error()
+        .is_some_and(|code| OUT_OF_DESCRIPTORS.contains(&code))
 }
 
 /// A node listening for connections.
@@ -60,6 +93,11 @@ pub struct Node {
     committed: Arc<Commits>,
     stopping: Arc<Stopping>,
     door: Arc<Admitting>,
+    /// How many store calls this node's connections may have running at once.
+    ///
+    /// Sized at the door's ceiling for now, which is what one thread per
+    /// connection bounded it at before; the after-measurement sets it apart.
+    bridge: Arc<Bridge>,
     /// What this node knows about the copies it does not hold, if anything.
     ///
     /// Held as the trait and not as the directory behind it: a node serving
@@ -73,16 +111,24 @@ pub struct Node {
 impl Node {
     /// Listen on `address`.
     ///
+    /// Bound here, synchronously, so a process learns whether it has its
+    /// address before it builds anything else; served by [`Node::serve`] on the
+    /// runtime.
+    ///
     /// # Errors
     ///
     /// Returns the operating system's failure when the address cannot be bound.
     pub fn bind(db: Arc<Db>, address: impl ToSocketAddrs) -> Result<Self> {
+        let listener = TcpListener::bind(address)?;
+        // The runtime's listener requires it, and nothing here reads it blocking.
+        listener.set_nonblocking(true)?;
         Ok(Self {
-            listener: TcpListener::bind(address)?,
+            listener,
             db,
             committed: Arc::new(Commits::default()),
             stopping: Stopping::new(),
             door: Admitting::to(MAX_CONNECTIONS),
+            bridge: Arc::new(Bridge::new(MAX_CONNECTIONS)),
             elsewhere: None,
         })
     }
@@ -124,6 +170,12 @@ impl Node {
         Arc::clone(&self.door)
     }
 
+    /// The bound on store calls in flight, for the process to report.
+    #[must_use]
+    pub fn bridge(&self) -> Arc<Bridge> {
+        Arc::clone(&self.bridge)
+    }
+
     /// What this node counts as in flight, and how it is told to stop.
     ///
     /// Taken **before** [`Node::serve`], which consumes the node's borrow for
@@ -134,313 +186,96 @@ impl Node {
         Arc::clone(&self.stopping)
     }
 
-    /// Serve until the listener fails, or until stopping is asked for.
+    /// Accept connections until `stop` is cancelled.
     ///
-    /// One thread per connection — see the module documentation for why that is
-    /// the decision rather than the shortfall.
+    /// Must be awaited inside a Tokio runtime; the node creates none of its own.
     ///
-    /// # Ending it
+    /// # What stopping leaves running
     ///
-    /// `accept` blocks, and setting the flag does not wake it. A `TcpListener`
-    /// has no equivalent of an unblock, so whoever asks this node to stop makes
-    /// one throwaway connection to the address it printed — that connection is
-    /// accepted, the loop checks the flag before serving it, and both end. The
-    /// flag is set **first** or the loop can check it and block again, which is
-    /// the race this ordering exists to avoid.
-    pub fn serve(&self) {
-        for stream in self.listener.incoming() {
+    /// Only the accepting stops. Conversations already admitted go on — a
+    /// statement in flight finishes, a feed runs until the process's stage that
+    /// ends feeds — because that is what the stages wait on: the drain counts
+    /// them through [`Stopping`], and aborting them here would answer the drain
+    /// by killing what it was waiting for. They are detached, not leaked: their
+    /// lifetime ends with the runtime's own bounded shutdown.
+    ///
+    /// # Errors
+    ///
+    /// Returns the listener's failure when accepting fails in a way that does
+    /// not pass on its own, which ends the node rather than spinning (Q-834).
+    pub async fn serve(&self, stop: CancellationToken) -> Result<()> {
+        let listener = tokio::net::TcpListener::from_std(self.listener.try_clone()?)?;
+        let mut conversations = JoinSet::new();
+        loop {
+            let accepted = tokio::select! {
+                biased;
+                () = stop.cancelled() => break,
+                Some(joined) = conversations.join_next(), if !conversations.is_empty() => {
+                    // A connection that panics takes its own task down and
+                    // nothing else: a node that one client's malformed frame
+                    // could stop would be a node anybody can stop.
+                    if let Err(why) = joined
+                        && why.is_panic()
+                    {
+                        log::warn!("a connection ended in a panic: {why}");
+                    }
+                    continue;
+                }
+                accepted = listener.accept() => accepted,
+            };
             if self.stopping.asked() {
                 break;
             }
-            let Ok(stream) = stream else { continue };
+            let stream = match accepted {
+                Ok((stream, _)) => stream,
+                Err(why) if passes(&why) => {
+                    log::warn!("accepting a connection failed ({why}); resting before the next");
+                    tokio::time::sleep(ACCEPT_PAUSE).await;
+                    continue;
+                }
+                Err(why) => return Err(why.into()),
+            };
             let id = next_connection();
-            // Before the thread, because the thread is the resource being
-            // bounded. A refusal costs one frame and a close; admitting first
-            // and checking afterwards would spend exactly what the ceiling
-            // exists to protect.
+            // Before the task, because the connection is the resource being
+            // bounded. A refusal costs one frame and a close.
             let Some(place) = self.door.admit() else {
                 log::warn!(
                     "connection {id} refused from {}: {} already open",
                     from_where(&stream),
                     self.door.limit()
                 );
-                turn_away(stream);
+                conversations.spawn(turn_away(stream));
                 continue;
             };
-            let db = Arc::clone(&self.db);
-            let committed = Arc::clone(&self.committed);
-            let stopping = Arc::clone(&self.stopping);
-            let busy = self.stopping.busy();
-            let elsewhere = self.elsewhere.clone();
             log::info!("connection {id} accepted from {}", from_where(&stream));
-            // A connection that goes wrong takes its own thread down and nothing
-            // else: a node that could be stopped by one client's malformed frame
-            // would be a node anybody can stop.
-            drop(std::thread::spawn(move || {
-                let mut busy = busy;
-                // Held for the conversation's whole life and released on drop,
-                // panic included.
-                let _place = place;
-                match converse(
-                    id,
-                    &db,
-                    &committed,
-                    &stopping,
-                    elsewhere.as_ref(),
-                    &mut busy,
-                    stream,
-                ) {
+            // Given the cluster's answer once, at the session, rather than at
+            // each statement: what this node knows about its peers is a fact
+            // about the process and not about the request.
+            let session = match &self.elsewhere {
+                Some(known) => self.db.session().among(Arc::clone(known)),
+                None => self.db.session(),
+            }
+            .detach();
+            let talk = Conversation {
+                id,
+                db: Arc::clone(&self.db),
+                committed: Arc::clone(&self.committed),
+                stopping: Arc::clone(&self.stopping),
+                bridge: Arc::clone(&self.bridge),
+            };
+            let busy = self.stopping.busy();
+            conversations.spawn(async move {
+                match conversation::converse(talk, busy, place, session, stream).await {
                     Ok(()) => log::info!("connection {id} closed"),
                     // Not a warning. A client hanging up mid-frame is the
-                    // ordinary end of a conversation, and reporting it as a
-                    // problem would make the level useless for finding one.
+                    // ordinary end of a conversation.
                     Err(why) => log::info!("connection {id} ended: {why}"),
                 }
-            }));
+            });
         }
+        conversations.detach_all();
+        Ok(())
     }
-
-    /// Serve exactly one connection, for a caller driving the loop itself.
-    ///
-    /// # Errors
-    ///
-    /// Returns the failure that ended the conversation.
-    pub fn serve_one(&self) -> Result<()> {
-        let (stream, _) = self.listener.accept()?;
-        let mut busy = self.stopping.busy();
-        let id = next_connection();
-        let Some(_place) = self.door.admit() else {
-            log::warn!(
-                "connection {id} refused: {} already open",
-                self.door.limit()
-            );
-            turn_away(stream);
-            return Ok(());
-        };
-        log::info!("connection {id} accepted from {}", from_where(&stream));
-        converse(
-            id,
-            &self.db,
-            &self.committed,
-            &self.stopping,
-            self.elsewhere.as_ref(),
-            &mut busy,
-            stream,
-        )
-    }
-}
-
-/// One connection, from hello to hang-up.
-///
-/// # One session, not one per statement
-///
-/// The session is opened once and lives as long as the connection, because that
-/// is what a connection *is*: `USE NAMESPACE prod;` selects something, and a
-/// selection that does not survive to the next statement is not a selection. A
-/// session per request would make a prompt over this protocol a sequence of
-/// unrelated sessions that happen to share a socket, and every statement would
-/// have to re-say where it was.
-///
-/// It also gives the thread-per-connection cost something to buy. A thread here
-/// holds state a request cannot carry, which is the difference between a
-/// connection and a datagram.
-/// Write one answer to a request, and count it.
-///
-/// This surface has **three** places that answer a request — an answer, a
-/// refused sign-in and a refused statement — where the HTTP surface has one. So
-/// the mapping from this protocol's vocabulary onto the single word *refusal*
-/// lives here rather than at each of the three, which is what stops the fourth
-/// one from being written without it.
-///
-/// Only replies to requests pass through here. The greeting and a pushed frame
-/// are not answers to anything and are not counted.
-fn reply(
-    writer: &mut impl std::io::Write,
-    counting: &Stopping,
-    kind: frame::Kind,
-    body: &[u8],
-) -> Result<()> {
-    counting.answered(kind == frame::Kind::Refusal);
-    frame::write(writer, kind, body)
-}
-
-fn converse(
-    id: u64,
-    db: &Db,
-    committed: &Commits,
-    stopping: &Stopping,
-    elsewhere: Option<&Arc<dyn tessari_session::Elsewhere>>,
-    busy: &mut Busy,
-    stream: TcpStream,
-) -> Result<()> {
-    // A client that connects and sends nothing would otherwise hold this thread
-    // for the life of the process, at a cost to it of one socket. The deadline
-    // is cleared below once the greeting has arrived — see `GREETING_SECONDS`
-    // for why it covers the greeting and not the statements after it.
-    stream.set_read_timeout(Some(Duration::from_secs(GREETING_SECONDS)))?;
-    let mut reader = BufReader::new(stream.try_clone()?);
-    let mut writer = BufWriter::new(stream);
-    // Kept, not discarded. The peer's minor decides exactly one thing — what
-    // this side may *send* to an older client — and until this build had
-    // something to withhold there was nothing for it to decide.
-    let theirs = {
-        // The greeting needs both directions on one object; after it they are
-        // used independently, which is what lets a push frame be written while a
-        // read is waiting.
-        let mut both = frame::Duplex {
-            reader: &mut reader,
-            writer: &mut writer,
-        };
-        frame::greet(&mut both)?
-    };
-    // Greeted, so this is a session rather than a stranger. An idle prompt
-    // between two statements is the ordinary case and must not be disconnected;
-    // what bounds it now is the door, not a clock.
-    reader.get_ref().set_read_timeout(None)?;
-
-    // Given the cluster's answer once, at the session, rather than at each
-    // statement: what this node knows about its peers is a fact about the
-    // process and not about the request, and re-attaching it per statement would
-    // be a second place for the attachment to be forgotten.
-    let mut session = match elsewhere {
-        Some(known) => db.session().among(Arc::clone(known)),
-        None => db.session(),
-    };
-    while let Some((kind, body)) = frame::read(&mut reader)? {
-        if kind == frame::Kind::Subscribe {
-            // The connection stops being a conversation and becomes a feed. See
-            // `push.rs` for why one connection does one job.
-            // No longer a request. A subscription never ends on its own, so a
-            // shutdown that waited for it would always time out — moving it to
-            // the feed count is what lets the drain finish and the stage after
-            // it end the feeds deliberately.
-            busy.became_a_feed();
-            log::info!("connection {id} became a subscription");
-            return follow(
-                db,
-                committed,
-                stopping,
-                &mut session,
-                &mut writer,
-                &Follow::decode(&body)?,
-            );
-        }
-        if kind != frame::Kind::Request {
-            // A client sending an answer is a client this build does not
-            // understand, and continuing would be guessing at what it meant.
-            return Err(Error::UnknownFrame { tag: kind.tag() });
-        }
-        let request = Request::decode(&body)?;
-        if let Some((name, password)) = &request.credentials
-            && let Err(refusal) = session.sign_in(name, password)
-        {
-            // The session's own refusal, travelling as one. A second rule here
-            // would be a second place for "who may do this" to be decided.
-            log::warn!("connection {id} refused: {refusal}");
-            reply(
-                &mut writer,
-                stopping,
-                frame::Kind::Refusal,
-                refusal.to_string().as_bytes(),
-            )?;
-            continue;
-        }
-        let ran = session.run_with(&request.script, &request.parameters);
-        // A write that arrived at a node which may not take it is routed, not
-        // refused (ADR-0019 §2, case *forward*). Matched on the **variant**, not
-        // on the message text: a routing decision taken by string comparison
-        // changes meaning the day somebody rewords an error.
-        if matches!(ran, Err(tessaridb::Error::NotWritable { .. })) {
-            match forward(db, &request) {
-                Ok((kind, body)) => reply(&mut writer, stopping, kind, &body)?,
-                // The hop failed, and the client is told that rather than being
-                // told the statement was wrong. It was not.
-                Err(why) => reply(
-                    &mut writer,
-                    stopping,
-                    frame::Kind::Refusal,
-                    why.to_string().as_bytes(),
-                )?,
-            }
-            continue;
-        }
-        // A redirect is an **instruction**, and it leaves as its own frame
-        // rather than as a refusal carrying a hint. `redirect.rs` states the
-        // reason: a client that handles failures correctly — logs them, retries
-        // a bounded number of times, gives up — handles an instruction encoded
-        // as one incorrectly, every time, by construction. Until this arm
-        // existed, that is exactly what every client did with it.
-        //
-        // Matched on the **variant**, for the reason the forward above is: a
-        // routing decision taken by string comparison changes meaning the day
-        // somebody rewords an error.
-        //
-        // Gated on what the client said at the greeting. A client built before
-        // tag 13 was assigned cannot name the frame, and the refusal it has
-        // always received is a worse answer than the redirect and a better one
-        // than a frame it would have to treat as corruption.
-        if let Err(tessaridb::Error::ReadIsElsewhere {
-            endpoint,
-            node,
-            epoch,
-            ..
-        }) = &ran
-            && theirs >= frame::REDIRECTS
-        {
-            let sent = redirect::Elsewhere {
-                endpoint: endpoint.clone(),
-                node: *node,
-                epoch: *epoch,
-                // This read, and not this arrangement. The bound that sent the
-                // client away is a bound on *currency*, so this node's own copy
-                // may satisfy the very same bound at the next request — a client
-                // that remembered the answer would pin its map to a freshness
-                // accident. `Settled` belongs to a decision about where data
-                // lives, which is not a decision this path takes.
-                settlement: redirect::Settlement::Transient,
-            };
-            reply(
-                &mut writer,
-                stopping,
-                frame::Kind::Elsewhere,
-                &sent.encode(),
-            )?;
-            continue;
-        }
-        match ran {
-            Ok(outcomes) => {
-                let mut answer = Vec::new();
-                frame::put_u32(
-                    &mut answer,
-                    u32::try_from(outcomes.len()).unwrap_or(u32::MAX),
-                );
-                for outcome in &outcomes {
-                    // Resolved here because the catalog is here. `names_in`
-                    // walks the answer first and touches nothing when it holds
-                    // no reference, which is most answers.
-                    let names = message::names_for(db, outcome);
-                    answer.extend_from_slice(&message::encode_outcome(outcome, &names));
-                }
-                reply(&mut writer, stopping, frame::Kind::Answer, &answer)?;
-                // Every commit against this store arrives through some
-                // connection of this node, so this is where a pusher learns
-                // there is something to look at. A statement that wrote nothing
-                // signals too: a pusher woken for nothing polls, finds nothing
-                // and waits again, which is cheaper than reading the tail here
-                // to find out.
-                committed.signal();
-            }
-            // A refusal does not close the connection: a client that mistyped a
-            // statement has not stopped being a client.
-            Err(refusal) => reply(
-                &mut writer,
-                stopping,
-                frame::Kind::Refusal,
-                refusal.to_string().as_bytes(),
-            )?,
-        }
-    }
-    Ok(())
 }
 
 /// Send a write to the peer that may take it, and bring back what it said.
@@ -481,7 +316,7 @@ fn converse(
 /// Until then this is an operational constraint and is written down as one: a
 /// node being drained has its replica row corrected first, or it is drained
 /// while nothing writes to it.
-fn forward(db: &Db, request: &Request) -> Result<(frame::Kind, Vec<u8>)> {
+pub(crate) fn forward(db: &Db, request: &Request) -> Result<(frame::Kind, Vec<u8>)> {
     // The store's own words travel verbatim, as `Refused` documents — reading
     // the peer list can fail by naming two writable peers, and "two leaders are
     // declared" is precisely what the operator needs to be told.
@@ -521,7 +356,7 @@ fn forward(db: &Db, request: &Request) -> Result<(frame::Kind, Vec<u8>)> {
 /// A table nobody has defined is refused rather than watched, because a
 /// subscription to a name that does not exist looks exactly like a subscription
 /// to a quiet table: it delivers nothing, forever, and says nothing about why.
-fn follow(
+pub(crate) fn follow(
     db: &Db,
     committed: &Commits,
     stopping: &Stopping,
@@ -664,7 +499,11 @@ mod tests {
             .among(Arc::new(Published::holding(directory)));
         let address = node.address().expect("the port it took");
         drop(std::thread::spawn(move || {
-            drop(node.serve_one());
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime");
+            drop(runtime.block_on(node.serve(tokio_util::sync::CancellationToken::new())));
         }));
         address
     }
@@ -720,6 +559,95 @@ mod tests {
         let mut header = [0_u8; 5];
         stream.read_exact(&mut header).expect("an answer");
         header[0]
+    }
+
+    /// Send `script` on an open connection and answer with the frame that came back.
+    fn ask(stream: &mut TcpStream, script: &str) -> (u8, Vec<u8>) {
+        let body = Request {
+            script: script.to_owned(),
+            credentials: None,
+            parameters: Parameters::new(),
+        }
+        .encode();
+        let length = u32::try_from(body.len()).expect("a short script");
+        stream
+            .write_all(&[frame::Kind::Request.tag()])
+            .expect("the tag");
+        stream.write_all(&length.to_be_bytes()).expect("the length");
+        stream.write_all(&body).expect("the request");
+        stream.flush().expect("the request to leave");
+        let mut header = [0_u8; 5];
+        stream.read_exact(&mut header).expect("an answer");
+        let told = u32::from_be_bytes([header[1], header[2], header[3], header[4]]);
+        let mut answer = vec![0_u8; usize::try_from(told).expect("a length that fits")];
+        stream.read_exact(&mut answer).expect("the answer's body");
+        (header[0], answer)
+    }
+
+    #[test]
+    fn a_statement_refused_as_busy_keeps_the_session_it_arrived_in() {
+        let db = Arc::new(Db::in_memory().expect("an in-memory store"));
+        let mut node = Node::bind(db, "127.0.0.1:0").expect("a loopback port");
+        // One slot, so the test can take the whole bridge by holding it — the
+        // resource is taken, not raced for.
+        node.bridge = Arc::new(tessari_serve::Bridge::new(1));
+        let bridge = node.bridge();
+        let address = node.address().expect("the port it took");
+        let runtime = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime"),
+        );
+        let serving = Arc::clone(&runtime);
+        drop(std::thread::spawn(move || {
+            drop(serving.block_on(node.serve(tokio_util::sync::CancellationToken::new())));
+        }));
+
+        let mut stream = TcpStream::connect(&address).expect("the node this test started");
+        greet_as(&mut stream, frame::MINOR);
+        let (tag, body) = ask(
+            &mut stream,
+            "DEFINE NAMESPACE shop; USE NAMESPACE shop; DEFINE DATABASE orders; \
+             USE DATABASE orders; DEFINE COLLECTION items;",
+        );
+        assert_eq!(
+            tag,
+            frame::Kind::Answer.tag(),
+            "the setup was refused: {}",
+            String::from_utf8_lossy(&body)
+        );
+
+        // Hold the only slot with a call that waits for the test to let go.
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let (taken, slot_is_held) = std::sync::mpsc::channel::<()>();
+        let holding = runtime.spawn(async move {
+            bridge
+                .call((), move |()| {
+                    taken.send(()).expect("the test waiting for the slot");
+                    held.recv().expect("the test letting go");
+                })
+                .await
+        });
+        slot_is_held.recv().expect("the slot taken");
+
+        let (tag, body) = ask(&mut stream, "SELECT * FROM items;");
+        assert_eq!(tag, frame::Kind::Refusal.tag(), "a full bridge answered");
+        assert_eq!(
+            String::from_utf8(body).expect("text"),
+            super::conversation::BUSY,
+            "refused, but not for being busy"
+        );
+
+        release.send(()).expect("the held call");
+        drop(runtime.block_on(holding));
+        let (tag, body) = ask(&mut stream, "SELECT * FROM items;");
+        assert_eq!(
+            tag,
+            frame::Kind::Answer.tag(),
+            "the refused statement lost the session: {}",
+            String::from_utf8_lossy(&body)
+        );
     }
 
     #[test]

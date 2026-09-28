@@ -22,7 +22,7 @@ fn serving(db: &Arc<Db>) -> (Arc<Node>, String) {
     let node = Arc::new(Node::bind(Arc::clone(db), "127.0.0.1:0").unwrap());
     let address = node.address().unwrap();
     let held = Arc::clone(&node);
-    drop(std::thread::spawn(move || held.serve()));
+    drop(std::thread::spawn(move || serve_until_the_test_ends(&held)));
     (node, address)
 }
 
@@ -301,4 +301,13 @@ fn a_forwarded_write_does_not_carry_the_session_that_sent_it() {
             None,
         )
         .unwrap();
+}
+
+/// Serve `node` on a runtime of this test's own: the node creates none.
+fn serve_until_the_test_ends(node: &Node) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    drop(runtime.block_on(node.serve(tokio_util::sync::CancellationToken::new())));
 }

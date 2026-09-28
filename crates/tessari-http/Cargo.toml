@@ -17,6 +17,7 @@ default = ["console"]
 console = []
 
 [dependencies]
+dashmap.workspace = true
 tessaridb.workspace = true
 tessari-constants.workspace = true
 tessari-serve.workspace = true

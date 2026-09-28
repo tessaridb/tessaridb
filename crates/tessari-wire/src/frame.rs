@@ -174,15 +174,43 @@ pub(crate) fn write(out: &mut impl Write, kind: Kind, body: &[u8]) -> Result<()>
 /// same header, so it shares the ceiling rather than carrying a second copy of
 /// it — a second copy is how two limits come to disagree.
 pub(crate) fn write_tagged(out: &mut impl Write, tag: u8, body: &[u8]) -> Result<()> {
+    out.write_all(&header(tag, body)?)?;
+    out.write_all(body)?;
+    out.flush()?;
+    Ok(())
+}
+
+/// The five bytes in front of `body`: its tag and its length.
+///
+/// One encoder for both the blocking and the async writers, so the ceiling is
+/// refused on the way out by one piece of code whichever one is sending.
+///
+/// # Errors
+///
+/// Returns [`Error::TooLarge`] when the body is above the ceiling.
+pub(crate) fn header(tag: u8, body: &[u8]) -> Result<[u8; 5]> {
     let length = u32::try_from(body.len()).unwrap_or(u32::MAX);
     if length > CEILING {
         return Err(Error::TooLarge { length });
     }
-    out.write_all(&[tag])?;
-    out.write_all(&length.to_be_bytes())?;
-    out.write_all(body)?;
-    out.flush()?;
-    Ok(())
+    let [a, b, c, d] = length.to_be_bytes();
+    Ok([tag, a, b, c, d])
+}
+
+/// How long the body a header announces is, refused above the ceiling.
+///
+/// Shared by both readers for the reason [`header`] is shared by both writers,
+/// and called **before** the body is allocated, which is the ceiling's purpose.
+///
+/// # Errors
+///
+/// Returns [`Error::TooLarge`] when the declared length is above the ceiling.
+pub(crate) fn announced(header: &[u8; 5]) -> Result<usize> {
+    let length = u32::from_be_bytes([header[1], header[2], header[3], header[4]]);
+    if length > CEILING {
+        return Err(Error::TooLarge { length });
+    }
+    Ok(usize::try_from(length).unwrap_or(0))
 }
 
 /// Read one frame, or `None` when the peer hung up cleanly between frames.
@@ -226,12 +254,8 @@ pub(crate) fn read_tagged(input: &mut impl Read) -> Result<Option<(u8, Vec<u8>)>
         held = held.saturating_add(read);
     }
 
-    let length = u32::from_be_bytes([header[1], header[2], header[3], header[4]]);
     // Checked before the allocation, which is the whole point of the ceiling.
-    if length > CEILING {
-        return Err(Error::TooLarge { length });
-    }
-    let mut body = vec![0_u8; usize::try_from(length).unwrap_or(0)];
+    let mut body = vec![0_u8; announced(&header)?];
     input.read_exact(&mut body).map_err(|_| Error::Truncated)?;
     Ok(Some((header[0], body)))
 }

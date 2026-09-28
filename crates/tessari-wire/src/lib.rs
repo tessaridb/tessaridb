@@ -61,6 +61,8 @@ mod client;
 #[cfg(feature = "server")]
 mod collection;
 #[cfg(feature = "server")]
+mod conversation;
+#[cfg(feature = "server")]
 mod credential;
 #[cfg(feature = "server")]
 mod directory;
@@ -68,6 +70,8 @@ mod directory;
 mod driver;
 mod error;
 mod frame;
+#[cfg(feature = "server")]
+mod frame_async;
 #[cfg(feature = "server")]
 mod gatherer;
 #[cfg(feature = "server")]

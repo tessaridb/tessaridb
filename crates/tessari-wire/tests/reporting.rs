@@ -96,7 +96,7 @@ fn serving(db: Db) -> (Arc<Node>, String) {
     let node = Arc::new(Node::bind(Arc::new(db), "127.0.0.1:0").unwrap());
     let address = node.address().unwrap();
     let held = Arc::clone(&node);
-    drop(std::thread::spawn(move || held.serve()));
+    drop(std::thread::spawn(move || serve_until_the_test_ends(&held)));
     (node, address)
 }
 
@@ -217,7 +217,7 @@ fn a_place_at_the_door_is_taken_for_a_connection_and_given_back_after_it() {
     let address = node.address().unwrap();
     let door = node.door();
     let held = Arc::clone(&node);
-    drop(std::thread::spawn(move || held.serve()));
+    drop(std::thread::spawn(move || serve_until_the_test_ends(&held)));
 
     assert_eq!(door.open(), 0, "an idle node holds no places");
     assert_eq!(door.limit(), tessari_constants::MAX_CONNECTIONS);
@@ -242,4 +242,13 @@ fn a_place_at_the_door_is_taken_for_a_connection_and_given_back_after_it() {
     // re-prove an invariant a unit test already holds. What this test adds is
     // the part those cannot see — that the node actually takes a place, and
     // actually gives it back.
+}
+
+/// Serve `node` on a runtime of this test's own: the node creates none.
+fn serve_until_the_test_ends(node: &Node) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    drop(runtime.block_on(node.serve(tokio_util::sync::CancellationToken::new())));
 }

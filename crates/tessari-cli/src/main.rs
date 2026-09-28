@@ -430,17 +430,17 @@ fn serve(
     // — where somebody is reading both.
     let mut census = tessari_serve::Census::since(started);
     let mut surfaces = Vec::new();
+    // The wire surface accepts on the runtime until this is cancelled, which is
+    // the stage that refuses new connections — not the first signal, which
+    // only starts the window a load balancer is given to notice.
+    let wire_stops = tokio_util::sync::CancellationToken::new();
     if let Some(node) = &wire {
-        let bound = node.address().map_err(|failure| failure.to_string())?;
         census.counting("wire", node.stopping());
+        let stop = wire_stops.clone();
         surfaces.push(shutdown::Surface {
             name: "the wire protocol",
             stopping: node.stopping(),
-            // A `TcpListener` has no unblock. One throwaway connection is
-            // accepted, the loop checks the flag before serving it, and both
-            // end. Its failure is ignored on purpose: a listener that has
-            // already stopped is the outcome this was asking for.
-            wake: Box::new(move || drop(std::net::TcpStream::connect(&bound))),
+            wake: Box::new(move || stop.cancel()),
         });
     }
     if let Some(node) = &http {
@@ -638,11 +638,11 @@ fn serve(
         (Some(wire), Some(http)) => std::thread::scope(|scope| {
             scope.spawn(|| shutdown::watch(&runtime, &asked, &surfaces, quiet.as_ref()));
             scope.spawn(|| supervise::or_the_node_ends("http", || http.serve()));
-            supervise::or_the_node_ends("wire", || wire.serve());
+            supervise::wire(&runtime, &wire, &wire_stops);
         }),
         (Some(wire), None) => std::thread::scope(|scope| {
             scope.spawn(|| shutdown::watch(&runtime, &asked, &surfaces, quiet.as_ref()));
-            supervise::or_the_node_ends("wire", || wire.serve());
+            supervise::wire(&runtime, &wire, &wire_stops);
         }),
         (None, Some(http)) => std::thread::scope(|scope| {
             scope.spawn(|| shutdown::watch(&runtime, &asked, &surfaces, quiet.as_ref()));

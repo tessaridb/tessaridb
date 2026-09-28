@@ -37,6 +37,10 @@ thiserror = "2"
 tokio = { version = "1", default-features = false }
 # `CancellationToken`, the one signal every stage of a shutdown waits on.
 tokio-util = { version = "0.7", default-features = false }
+# The shared concurrent maps: `DashMap` where nothing needs order,
+# `scc::TreeIndex` where a reader needs the keys in order.
+dashmap = { version = "6", default-features = false }
+scc = { version = "3", default-features = false }
 serde = { version = "1", features = ["derive"] }
 rust_decimal = { version = "1", default-features = false, features = ["std"] }
 argon2 = { version = "0.5", features = ["std"] }

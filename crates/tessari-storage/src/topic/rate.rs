@@ -27,9 +27,9 @@
 //! length `per` holds more than twice that. A statement carrying more messages
 //! than `rate` can never be admitted, and is refused rather than trimmed.
 
-use std::collections::HashMap;
-use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
+
+use dashmap::DashMap;
 
 use tessari_types::TableId;
 
@@ -38,7 +38,9 @@ use crate::catalog::PublicAppend;
 /// When each public topic's allowance is next fully earned, on this node.
 #[derive(Debug, Default)]
 pub(crate) struct PublicRates {
-    earned: Mutex<HashMap<TableId, Instant>>,
+    /// One entry per public topic, each updated under its own shard's lock
+    /// — two topics being appended to never wait on each other.
+    earned: DashMap<TableId, Instant>,
 }
 
 impl PublicRates {
@@ -57,17 +59,17 @@ impl PublicRates {
         let Some(cost) = cost(window, rule.rate, count) else {
             return false;
         };
-        // A poisoned lock still holds a coherent map — every write below is one
-        // insert — so the count carries on rather than failing every caller.
-        let mut earned = self.earned.lock().unwrap_or_else(PoisonError::into_inner);
-        let from = earned.get(&topic).copied().map_or(now, |at| at.max(now));
+        // The entry is held for the read, the check and the write, so two
+        // appenders to one topic cannot both spend the same allowance.
+        let mut earned = self.earned.entry(topic).or_insert(now);
+        let from = (*earned).max(now);
         let Some(next) = from.checked_add(cost) else {
             return false;
         };
         if next.saturating_duration_since(now) > window {
             return false;
         }
-        earned.insert(topic, next);
+        *earned = next;
         true
     }
 }

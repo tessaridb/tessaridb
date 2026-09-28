@@ -91,6 +91,25 @@ pub fn or_the_node_ends(name: &str, work: impl FnOnce()) {
     }
 }
 
+/// Serve the wire surface on the runtime until `stop` is cancelled.
+///
+/// Ends the process on a panic, as every listener does, and on an accept
+/// failure that does not pass on its own: a listener that has gone bad is the
+/// same defect as one that panicked, and retrying it forever is how the old loop
+/// spun a core while admitting nobody (Q-834).
+pub fn wire(
+    runtime: &tokio::runtime::Runtime,
+    node: &tessari_wire::Node,
+    stop: &tokio_util::sync::CancellationToken,
+) {
+    or_the_node_ends("wire", || {
+        if let Err(why) = runtime.block_on(node.serve(stop.clone())) {
+            log::error!("the wire listener failed ({why}); the node ends here");
+            std::process::abort();
+        }
+    });
+}
+
 /// Send every panic to the log, with the thread and the place it came from.
 ///
 /// The default hook writes to standard error in its own shape; a node that

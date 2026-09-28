@@ -12,8 +12,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Semaphore;
 
 /// What a bridged call came back with.
+///
+/// `S` is the state the work was given, handed back when it was refused: a
+/// connection's session travels into the work and out again, and a refusal
+/// that dropped it would lose the session along with the call.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Bridged<T> {
+pub enum Bridged<T, S> {
     /// The work ran and this is what it returned, untouched.
     Answered(T),
     /// Every slot was taken, so the work was refused without running.
@@ -21,7 +25,7 @@ pub enum Bridged<T> {
     /// Refused rather than queued: a caller told *busy* can answer its client
     /// now, while one left waiting holds a connection and adds to the load that
     /// made it wait.
-    Busy,
+    Busy(S),
     /// The work panicked. Its slot has been given back.
     Panicked,
 }
@@ -57,17 +61,18 @@ impl Bridge {
     /// own duration: a store call runs under the statement's own limits.
     ///
     /// Must be awaited inside a Tokio runtime.
-    pub async fn call<T, F>(&self, work: F) -> Bridged<T>
+    pub async fn call<S, T, F>(&self, state: S, work: F) -> Bridged<T, S>
     where
-        F: FnOnce() -> T + Send + 'static,
+        F: FnOnce(S) -> T + Send + 'static,
+        S: Send + 'static,
         T: Send + 'static,
     {
         let Ok(slot) = Arc::clone(&self.slots).try_acquire_owned() else {
             self.refused.fetch_add(1, Ordering::Relaxed);
-            return Bridged::Busy;
+            return Bridged::Busy(state);
         };
         let ran = tokio::task::spawn_blocking(move || {
-            let answer = work();
+            let answer = work(state);
             drop(slot);
             answer
         })
@@ -87,6 +92,8 @@ impl Bridge {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::panic)]
+
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -102,8 +109,8 @@ mod tests {
     #[test]
     fn the_answer_comes_back_untouched() {
         let bridge = Bridge::new(1);
-        let answer = runtime().block_on(bridge.call(|| Ok::<_, String>(41 + 1)));
-        assert_eq!(answer, Bridged::Answered(Ok(42)));
+        let answer = runtime().block_on(bridge.call((), |()| Ok::<_, String>(41 + 1)));
+        assert!(matches!(answer, Bridged::Answered(Ok(42))));
     }
 
     #[test]
@@ -115,12 +122,21 @@ mod tests {
             .expect("the only slot");
         let runtime = runtime();
         let refused = runtime.block_on(async {
-            tokio::time::timeout(Duration::from_secs(2), bridge.call(|| 1)).await
+            tokio::time::timeout(Duration::from_secs(2), bridge.call(1_u8, |state| state)).await
         });
-        assert_eq!(refused, Ok(Bridged::Busy), "refused, not queued");
+        let Ok(Bridged::Busy(state)) = refused else {
+            panic!("queued, or answered past a full bridge");
+        };
+        assert_eq!(
+            state, 1,
+            "the refused call's state comes back to its caller whole"
+        );
         assert_eq!(bridge.refused(), 1);
         drop(held);
-        assert_eq!(runtime.block_on(bridge.call(|| 2)), Bridged::Answered(2));
+        assert!(matches!(
+            runtime.block_on(bridge.call((), |()| 2)),
+            Bridged::Answered(2)
+        ));
     }
 
     #[test]
@@ -128,9 +144,13 @@ mod tests {
         let bridge = Bridge::new(1);
         let runtime = runtime();
         // `resume_unwind` unwinds exactly as a panic does, without the hook's noise.
-        let panicked = runtime
-            .block_on(bridge.call(|| -> u8 { std::panic::resume_unwind(Box::new("failed")) }));
-        assert_eq!(panicked, Bridged::Panicked);
-        assert_eq!(runtime.block_on(bridge.call(|| 3)), Bridged::Answered(3));
+        let panicked = runtime.block_on(bridge.call((), |()| -> u8 {
+            std::panic::resume_unwind(Box::new("failed"))
+        }));
+        assert!(matches!(panicked, Bridged::Panicked));
+        assert!(matches!(
+            runtime.block_on(bridge.call((), |()| 3)),
+            Bridged::Answered(3)
+        ));
     }
 }

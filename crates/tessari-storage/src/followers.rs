@@ -34,10 +34,9 @@
 //! is the case an operator most needs to see. The last thing a follower said
 //! about itself is the current answer.
 
-use std::collections::BTreeMap;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use scc::{Guard, TreeIndex};
 use tessari_encoding::NODE_ID_LEN;
 use tessari_types::{Reach, Sequence};
 
@@ -114,7 +113,10 @@ pub struct FollowerLag {
 /// them is a follower the other cannot report.
 #[derive(Debug, Default)]
 pub struct Followers {
-    seen: Mutex<BTreeMap<[u8; NODE_ID_LEN], Served>>,
+    /// An `scc::TreeIndex`: every pull a follower makes records
+    /// here, and reads — the lag report, in id order — take no lock at all. A
+    /// record is replaced whole, which is the one kind of write it takes.
+    seen: TreeIndex<[u8; NODE_ID_LEN], Served>,
 }
 
 impl Followers {
@@ -125,16 +127,14 @@ impl Followers {
     /// diagnostic, which is the wrong way round: a lost lag row is a gap in a
     /// report, a refused pull is a follower that stops advancing.
     pub fn served(&self, node: [u8; NODE_ID_LEN], home: Reach, sequence: Sequence) {
-        if let Ok(mut seen) = self.seen.lock() {
-            seen.insert(
-                node,
-                Served {
-                    home,
-                    sequence,
-                    at: Instant::now(),
-                },
-            );
-        }
+        self.seen.upsert_sync(
+            node,
+            Served {
+                home,
+                sequence,
+                at: Instant::now(),
+            },
+        );
     }
 
     /// Every follower this process has served, in id order.
@@ -145,9 +145,10 @@ impl Followers {
     /// different answers, and a zero row would spell them the same way.
     #[must_use]
     pub fn seen(&self) -> Vec<([u8; NODE_ID_LEN], Served)> {
-        self.seen.lock().map_or_else(
-            |_| Vec::new(),
-            |seen| seen.iter().map(|(node, held)| (*node, *held)).collect(),
-        )
+        let guard = Guard::new();
+        self.seen
+            .iter(&guard)
+            .map(|(node, held)| (*node, *held))
+            .collect()
     }
 }

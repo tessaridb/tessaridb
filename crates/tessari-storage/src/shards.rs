@@ -19,9 +19,9 @@
 //! registry has to be told by the statement that moves the map; that is written
 //! here so it is not discovered from a record filed in a retired shard.
 
-use std::collections::BTreeMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
+use dashmap::DashMap;
 use tessari_types::TableId;
 
 use crate::catalog::ShardMap;
@@ -29,27 +29,21 @@ use crate::catalog::ShardMap;
 /// The shard map each table carries, as far as this process has learned.
 #[derive(Debug, Default)]
 pub(crate) struct ShardRegistry {
-    /// A `RwLock`: every statement over a table asks `known`, and `learn`
-    /// changes it only when a table is first seen or split again.
-    known: RwLock<BTreeMap<TableId, Option<Arc<ShardMap>>>>,
+    /// A `DashMap`: every statement over a table asks `known` from
+    /// every thread, and `learn` changes it only when a table is first seen or
+    /// split again.
+    known: DashMap<TableId, Option<Arc<ShardMap>>>,
 }
 
 impl ShardRegistry {
     /// What this process knows about `table`: the outer `Option` is whether it
     /// has been learned, the inner whether the table is split.
     pub(crate) fn known(&self, table: TableId) -> Option<Option<Arc<ShardMap>>> {
-        // A poisoned lock sends the caller to the catalog, which is correct and
-        // slow rather than wrong and fast.
-        self.known
-            .read()
-            .ok()
-            .and_then(|held| held.get(&table).cloned())
+        self.known.get(&table).map(|held| held.clone())
     }
 
     /// Record a table's map, learned from its declaration or from a read.
     pub(crate) fn learn(&self, table: TableId, shards: Option<&ShardMap>) {
-        if let Ok(mut held) = self.known.write() {
-            held.insert(table, shards.cloned().map(Arc::new));
-        }
+        self.known.insert(table, shards.cloned().map(Arc::new));
     }
 }
