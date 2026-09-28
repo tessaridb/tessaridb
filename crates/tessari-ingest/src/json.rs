@@ -59,6 +59,8 @@ impl std::fmt::Display for Malformed {
     }
 }
 
+impl std::error::Error for Malformed {}
+
 /// Read a whole payload as one JSON value.
 ///
 /// # Errors

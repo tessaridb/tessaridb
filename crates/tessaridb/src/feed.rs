@@ -36,7 +36,10 @@ use tessari_types::TableId;
 use crate::{Db, Sequence, Session};
 
 mod cursor;
+mod refused;
 mod source;
+
+pub use refused::FeedRefused;
 
 /// How long a pusher blocks before looking at the world again.
 ///
@@ -138,21 +141,19 @@ pub fn follow(
     committed: &Commits,
     stop: &dyn Fn() -> bool,
     deliver: &mut Deliver<'_>,
-) -> Result<(), String> {
+) -> Result<(), FeedRefused> {
     if let Err(refusal) = session.may_read(db.store()) {
-        return Err(refusal.to_string());
+        return Err(refusal.into());
     }
     // The *table* question, which `may_read` does not answer. A grant-governed
     // subscriber sees what they were granted and nothing else — the same answer
     // their `SELECT` per table would give.
-    let mut readable = session
-        .readable(db.store())
-        .map_err(|failure| failure.to_string())?;
+    let mut readable = session.readable(db.store())?;
     let (Some(namespace), Some(database)) = (session.namespace(), session.database()) else {
-        return Err("no database is selected to follow the changes to".to_owned());
+        return Err(FeedRefused::NoDatabaseSelected);
     };
     let Some(tenancy) = db.tenancy_in(namespace, database).ok().flatten() else {
-        return Err("that namespace and database are not both there".to_owned());
+        return Err(FeedRefused::TenancyGone);
     };
     let watch = match asked.table {
         None => Watch::default(),
@@ -163,14 +164,18 @@ pub fn follow(
                 // filters instead — a different answer on purpose, because
                 // "everything I was granted" is what the same user's reads say.
                 if readable.as_ref().is_some_and(|held| !held.contains(&table)) {
-                    return Err(format!(
-                        "{name:?} is not a table this session has been granted to read"
-                    ));
+                    return Err(FeedRefused::TableNotGranted {
+                        table: name.to_owned(),
+                    });
                 }
                 Watch::table(table)
             }
-            Ok(None) => return Err(format!("no table named {name:?} to watch")),
-            Err(failure) => return Err(failure.to_string()),
+            Ok(None) => {
+                return Err(FeedRefused::NoSuchTable {
+                    table: name.to_owned(),
+                });
+            }
+            Err(failure) => return Err(failure.into()),
         },
     };
 
@@ -184,10 +189,7 @@ pub fn follow(
             .filter(|(name, _, _)| asked.table.is_none_or(|asked| asked == name))
             .collect()
     };
-    let split = in_scope(
-        db.split_tables_in(tenancy.0, tenancy.1)
-            .map_err(|failure| failure.to_string())?,
-    );
+    let split = in_scope(db.split_tables_in(tenancy.0, tenancy.1)?);
     let mut source = source::Source::open(db, tenancy, &split, asked.from, asked.cursor, watch)?;
 
     // What a subscriber may see of each table, resolved once per table rather
@@ -213,28 +215,18 @@ pub fn follow(
         // The cost is three catalog reads per round against a loop that spends
         // its life blocked for `PATIENCE`, so the bound this buys is one round.
         if let Err(refusal) = session.may_read(db.store()) {
-            return Err(refusal.to_string());
+            return Err(refusal.into());
         }
-        readable = session
-            .readable(db.store())
-            .map_err(|failure| failure.to_string())?;
+        readable = session.readable(db.store())?;
         // The field grant too: it is cached per table for the round, and a round
         // is now what the cache lives for. A revocation that reached the table
         // list but not the field list would keep pushing a column nobody grants.
         visible.clear();
         // And the logs: a table split, or split again, after this feed began
         // writes into logs it is not reading, with nothing in an error state.
-        let now = in_scope(
-            db.split_tables_in(tenancy.0, tenancy.1)
-                .map_err(|failure| failure.to_string())?,
-        );
+        let now = in_scope(db.split_tables_in(tenancy.0, tenancy.1)?);
         if now != split {
-            return Err(
-                "a table this feed follows was split after it began, so its writes \
-                        moved to logs the feed is not reading — subscribe again from the \
-                        last change handled"
-                    .to_owned(),
-            );
+            return Err(FeedRefused::SplitAfterStart);
         }
         let changes = source.next(db, MOUTHFUL)?;
         for (change, resume) in &changes {

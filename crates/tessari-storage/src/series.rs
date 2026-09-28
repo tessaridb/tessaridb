@@ -34,6 +34,8 @@ use crate::catalog::definition::TableKind;
 /// The retention each table carries, as far as this process has learned.
 #[derive(Debug, Default)]
 pub(crate) struct SeriesRegistry {
+    /// A `RwLock`: every write to a table asks `known`, and `learn`/`forget`
+    /// change it only when a table's definition does.
     known: RwLock<BTreeMap<TableId, Option<Duration>>>,
 }
 

@@ -150,7 +150,10 @@ impl Runner {
     /// # Errors
     ///
     /// Returns the store's failure when the catalog cannot be read at all.
-    pub fn start(store: &Store, broker: &Arc<dyn Broker>) -> Result<Started, String> {
+    pub fn start(
+        store: &Store,
+        broker: &Arc<dyn Broker>,
+    ) -> Result<Started, tessari_storage::Error> {
         let declared = declarations(store)?;
         let stopping = Arc::new(AtomicBool::new(false));
         let mut threads = Vec::new();
@@ -200,11 +203,11 @@ impl Runner {
 /// The destination is resolved to **names** here, once, rather than per batch:
 /// the runner writes through the language, and the only text it composes comes
 /// from the catalog. No byte of any message ever reaches a statement.
-fn declarations(store: &Store) -> Result<Vec<(ConsumerDefinition, Destination)>, String> {
-    let mut transaction = store.begin().map_err(|failure| failure.to_string())?;
-    let declared = Catalog::new(&mut transaction)
-        .consumers()
-        .map_err(|failure| failure.to_string())?;
+fn declarations(
+    store: &Store,
+) -> Result<Vec<(ConsumerDefinition, Destination)>, tessari_storage::Error> {
+    let mut transaction = store.begin()?;
+    let declared = Catalog::new(&mut transaction).consumers()?;
     let mut found = Vec::new();
     for definition in declared {
         match destination_of(&mut transaction, &definition) {

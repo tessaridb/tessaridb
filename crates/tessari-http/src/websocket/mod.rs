@@ -287,7 +287,7 @@ fn feed(
         return;
     }
     if let Err(reason) = outcome {
-        return refuse_on(socket, &reason);
+        return refuse_on(socket, &reason.to_string());
     }
     // The node is stopping. A subscriber loses nothing: the cursor is a position
     // it holds, so it resumes exactly where it stopped.

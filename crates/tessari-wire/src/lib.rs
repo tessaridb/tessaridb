@@ -108,7 +108,7 @@ pub use crate::driver::{
 };
 pub use crate::error::{Error, Result};
 #[cfg(feature = "server")]
-pub use crate::gatherer::{Gathering, Greeting};
+pub use crate::gatherer::{Gathering, Greeting, GreetingUnavailable};
 #[cfg(feature = "server")]
 pub use crate::gathering::{Gather, Page, Ungathered};
 #[cfg(feature = "server")]

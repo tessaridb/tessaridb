@@ -19,7 +19,7 @@
 
 use std::cell::Cell;
 
-use tessaridb::feed::{Commits, Following, follow};
+use tessaridb::feed::{Commits, FeedRefused, Following, follow};
 use tessaridb::{Db, Sequence};
 
 const PASSWORD: &str = "correct horse battery";
@@ -94,7 +94,13 @@ fn revoking_the_read_ends_a_subscription_that_is_already_running() {
 
     assert!(delivered.get() >= 1, "the feed pushed nothing to revoke");
     let refusal = outcome.expect_err("the revocation did not reach the running feed");
-    assert!(refusal.contains("read"), "{refusal}");
+    assert!(
+        matches!(
+            refusal,
+            FeedRefused::Store(tessaridb::Error::RoleForbids { .. })
+        ),
+        "{refusal:?}"
+    );
     assert!(
         rounds.get() <= ROUNDS_ALLOWED,
         "the feed ended because the test gave up, not because the read was revoked"
@@ -206,7 +212,7 @@ fn fed(
     from: u64,
     cursor: Option<&str>,
     table: Option<&str>,
-) -> Result<Vec<(String, String, Option<String>)>, String> {
+) -> Result<Vec<(String, String, Option<String>)>, FeedRefused> {
     let rounds = Cell::new(0_u32);
     let mut given = Vec::new();
     follow(
@@ -305,7 +311,10 @@ fn a_feed_over_a_split_table_merges_its_logs_in_commit_order_and_resumes_from_it
 
     // A cursor this feed never carried is refused by name, not resumed from.
     let refusal = fed(&db, &mut session, 0, Some("d=x"), Some("orders")).unwrap_err();
-    assert!(refusal.contains("is not a cursor"), "{refusal}");
+    assert!(
+        matches!(&refusal, FeedRefused::CursorUnreadable { cursor } if cursor == "d=x"),
+        "{refusal:?}"
+    );
 
     // A feed over the unsplit table is the single-log feed it always was: no
     // cursor on its changes.
@@ -320,13 +329,13 @@ fn a_feed_over_a_split_table_merges_its_logs_in_commit_order_and_resumes_from_it
         .unwrap();
     let refusal = fed(&db, &mut session, 0, Some(&after), Some("lines")).unwrap_err();
     assert!(
-        refusal.contains("counts a log this feed does not follow"),
-        "{refusal}"
+        matches!(refusal, FeedRefused::StrayLog { .. }),
+        "{refusal:?}"
     );
     let refusal = fed(&db, &mut session, 0, Some(&after), Some("notes")).unwrap_err();
     assert!(
-        refusal.contains("this feed follows no split table"),
-        "{refusal}"
+        matches!(refusal, FeedRefused::CursorWithoutSplit { .. }),
+        "{refusal:?}"
     );
 }
 
@@ -359,8 +368,8 @@ fn a_split_feed_over_another_writers_log_is_refused_by_name() {
         .unwrap();
     let refusal = fed(&db, &mut session, 0, None, Some("orders")).unwrap_err();
     assert!(
-        refusal.contains("shard 2 of `orders` holds another node's writes"),
-        "{refusal}"
+        matches!(&refusal, FeedRefused::AnotherWriter { what } if what == "shard 2 of `orders`"),
+        "{refusal:?}"
     );
 }
 
@@ -410,5 +419,8 @@ fn a_feed_ends_when_a_split_table_appears_in_its_scope() {
         "the feed delivered nothing, so it proves nothing"
     );
     let refusal = ended.unwrap_err();
-    assert!(refusal.contains("was split after it began"), "{refusal}");
+    assert!(
+        matches!(refusal, FeedRefused::SplitAfterStart),
+        "{refusal:?}"
+    );
 }

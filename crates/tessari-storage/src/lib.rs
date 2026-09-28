@@ -86,7 +86,9 @@ pub use lapse::Lapsed;
 pub use topic::{Message, Messages};
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
 // the field but cannot name its type has a public API it cannot use.
-pub use audit::{AuditDevice, AuditTrail, VaultRead, entries as audit_entries, reads_by};
+pub use audit::{
+    AuditDevice, AuditTrail, DeviceRefused, VaultRead, entries as audit_entries, reads_by,
+};
 pub use error::{Error, Result};
 pub use failover::Failover;
 pub use feed::{Change, ChangeKind, Changes, History, Merged, Subject, Subscription, Watch};

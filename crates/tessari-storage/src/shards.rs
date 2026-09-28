@@ -29,6 +29,8 @@ use crate::catalog::ShardMap;
 /// The shard map each table carries, as far as this process has learned.
 #[derive(Debug, Default)]
 pub(crate) struct ShardRegistry {
+    /// A `RwLock`: every statement over a table asks `known`, and `learn`
+    /// changes it only when a table is first seen or split again.
     known: RwLock<BTreeMap<TableId, Option<Arc<ShardMap>>>>,
 }
 

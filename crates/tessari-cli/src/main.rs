@@ -348,8 +348,8 @@ fn serve(
             Box::new(move || {
                 speaking
                     .upgrade()
-                    .ok_or_else(|| "this node is stopping".to_owned())
-                    .and_then(|db| greeting(&db))
+                    .ok_or(tessari_wire::GreetingUnavailable::Stopping)
+                    .and_then(|db| greeting(&db).map_err(tessari_wire::GreetingUnavailable::Store))
             }),
         );
         db.gather_through(std::sync::Arc::new(gathering));
@@ -865,7 +865,7 @@ fn dial_peers(
                         mine.duplicate(),
                         authority,
                         node,
-                        &greeting(db)?,
+                        &greeting(db).map_err(|why| why.to_string())?,
                         tessari_wire::Ask::Nothing,
                     )
                     .map(|(said, _)| said)
@@ -1543,7 +1543,8 @@ fn greet_peers(
         // proved who it is — not here, before the wait. A door idle for an hour
         // used to greet with hour-old epoch, tail and copy age, which are
         // exactly the fields a router reads.
-        let mine = || greeting(db).map_err(tessari_wire::Error::NothingToSay);
+        let mine =
+            || greeting(db).map_err(|why| tessari_wire::Error::NothingToSay(why.to_string()));
         // The door serves the log at last, and serves it to exactly the peers
         // this store's own catalog subscribed — `NoLog` was the honest answer
         // only while nothing could ask the catalog that question.
@@ -1632,14 +1633,12 @@ fn bind_the_greeter(db: &Db, node: [u8; tessari_storage::NODE_ID_LEN]) {
 /// Built through [`tessari_wire::Hello::about`] rather than field by field, so
 /// that a node cannot greet under an id, a role set or a build that disagree
 /// with what its own store holds.
-fn greeting(db: &Db) -> Result<tessari_wire::Hello, String> {
+fn greeting(db: &Db) -> Result<tessari_wire::Hello, tessari_storage::Error> {
     let store = db.store();
-    let identity = store.node_identity().map_err(|why| why.to_string())?;
-    let own = store
-        .own_log(tessari_types::Reach::Store)
-        .map_err(|why| why.to_string())?;
-    let tail = store.committed_tail(own).map_err(|why| why.to_string())?;
-    let current_as_of = store.current_as_of().map_err(|why| why.to_string())?;
+    let identity = store.node_identity()?;
+    let own = store.own_log(tessari_types::Reach::Store)?;
+    let tail = store.committed_tail(own)?;
+    let current_as_of = store.current_as_of()?;
     // The leadership this node is actually writing under — and the trigger the
     // previous version of this line named has now fired.
     //
@@ -1663,7 +1662,7 @@ fn greeting(db: &Db) -> Result<tessari_wire::Hello, String> {
     // what this node holds, rather than the one it holds a lease under. A voter
     // ranks candidates on this pair, and ranking on `leading` instead would put
     // a follower carrying the newest records below an ex-leader carrying fewer.
-    let tail_leadership = store.tail_leadership(own).map_err(|why| why.to_string())?;
+    let tail_leadership = store.tail_leadership(own)?;
     // Which failover policy this node is running under, read from its own
     // catalog rather than assembled from the constants it currently times by.
     // The two are not the same claim: the constants are what this build compiled
@@ -1673,13 +1672,10 @@ fn greeting(db: &Db) -> Result<tessari_wire::Hello, String> {
     // make visible.
     //
     // `None` is the ordinary state today, because nothing sets the row yet.
-    let (policy, declared) = store
-        .begin()
-        .and_then(|mut transaction| {
-            let catalog = tessari_storage::Catalog::new(&mut transaction);
-            Ok((catalog.failover()?, catalog.replicas()?))
-        })
-        .map_err(|why| why.to_string())?;
+    let (policy, declared) = store.begin().and_then(|mut transaction| {
+        let catalog = tessari_storage::Catalog::new(&mut transaction);
+        Ok((catalog.failover()?, catalog.replicas()?))
+    })?;
     let policy = policy.map(|definition| definition.stamp());
     let mut said = tessari_wire::Hello::about(
         &identity,
@@ -1694,14 +1690,14 @@ fn greeting(db: &Db) -> Result<tessari_wire::Hello, String> {
     // hears a live leader of the range by it. Read in the same transaction as
     // the policy, so a greeting is one reading of the catalog.
     if let Some(range) = tessari_wire::stands_for(&declared, &identity.id) {
-        let log = store.own_log(range).map_err(|why| why.to_string())?;
+        let log = store.own_log(range)?;
         said.line = Some(tessari_wire::Line {
             range,
             leading: store
                 .leading_of(range)
                 .unwrap_or(tessari_types::Epoch::ZERO),
-            tail: store.committed_tail(log).map_err(|why| why.to_string())?,
-            tail_leadership: store.tail_leadership(log).map_err(|why| why.to_string())?,
+            tail: store.committed_tail(log)?,
+            tail_leadership: store.tail_leadership(log)?,
         });
     }
     Ok(said)

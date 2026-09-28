@@ -39,6 +39,8 @@ const HELD: usize = 1024;
 /// Decoded table definitions, keyed by their stored bytes.
 #[derive(Debug, Default)]
 pub(crate) struct DecodedTables {
+    /// A `RwLock`: every statement reads a decoded definition, and a write
+    /// happens only the first time a definition's bytes are seen (G040 M1).
     held: RwLock<HashMap<Vec<u8>, TableDefinition>>,
 }
 

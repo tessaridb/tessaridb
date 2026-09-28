@@ -571,7 +571,7 @@ fn follow(
     }
     match outcome {
         Ok(()) => Ok(()),
-        Err(refusal) => refuse(writer, &refusal),
+        Err(refusal) => refuse(writer, &refusal.to_string()),
     }
 }
 

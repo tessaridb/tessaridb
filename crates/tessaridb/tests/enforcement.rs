@@ -940,7 +940,7 @@ const CLASSIFIED: &[(&str, &str)] = &[
     // above (Q-621, Q-641).
     (
         "tessari-cli/src/main.rs",
-        "let tail = store.committed_tail(own).map_err(|why| why.to_string())?;",
+        "let tail = store.committed_tail(own)?;",
     ),
     (
         "tessari-cli/src/main.rs",
@@ -948,7 +948,7 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ),
     (
         "tessari-cli/src/main.rs",
-        "tail: store.committed_tail(log).map_err(|why| why.to_string())?,",
+        "tail: store.committed_tail(log)?,",
     ),
     (
         "tessari-wire/src/collection.rs",

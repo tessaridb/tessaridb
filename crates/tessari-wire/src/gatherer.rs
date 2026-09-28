@@ -33,7 +33,34 @@ use crate::link::{Answered, Ask, Credential, call};
 use crate::peer::Hello;
 
 /// What this node would tell a peer about itself, read when it is asked.
-pub type Greeting = Box<dyn Fn() -> Result<Hello, String> + Send + Sync>;
+pub type Greeting = Box<dyn Fn() -> Result<Hello, GreetingUnavailable> + Send + Sync>;
+
+/// Why this node could not say what it would tell a peer.
+#[derive(Debug)]
+pub enum GreetingUnavailable {
+    /// The node is stopping, so there is no store left to read.
+    Stopping,
+    /// The store could not be read.
+    Store(tessari_storage::Error),
+}
+
+impl core::fmt::Display for GreetingUnavailable {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Stopping => formatter.write_str("this node is stopping"),
+            Self::Store(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for GreetingUnavailable {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Stopping => None,
+            Self::Store(error) => Some(error),
+        }
+    }
+}
 
 /// Fetches the shards of a split table this node lacks from their leaders.
 pub struct Gathering {
@@ -117,7 +144,7 @@ impl Gathers for Gathering {
                 "the leader's endpoint is not an address: {endpoint}"
             ))
         })?;
-        let said = (self.greeting)().map_err(Unanswered::Refused)?;
+        let said = (self.greeting)().map_err(|why| Unanswered::Refused(why.to_string()))?;
         let mut page = Gather {
             namespace: asked.namespace,
             database: asked.database,

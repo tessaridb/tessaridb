@@ -41,6 +41,8 @@ use sha1::Sha1;
 use sha2::{Digest as _, Sha256, Sha512};
 use tessari_types::Value;
 
+use crate::encoding::hex;
+
 /// The SHA-256 digest of this text's UTF-8 bytes, as lowercase hex.
 ///
 /// Infallible, and no span: the one thing that can go wrong with a call to
@@ -73,34 +75,6 @@ pub(crate) fn sha1(text: &str) -> Value {
 /// The SHA-512 digest of this text's UTF-8 bytes, as lowercase hex.
 pub(crate) fn sha512(text: &str) -> Value {
     hex(&Sha512::digest(text.as_bytes()))
-}
-
-/// Bytes as lowercase hexadecimal text.
-///
-/// Written out rather than reached for in a crate: it is one loop, and the
-/// formatting width is the only thing that can be wrong with it — which is
-/// exactly what the tests below pin, because `{:x}` on a byte under sixteen
-/// drops the leading zero and shortens the digest without failing.
-fn hex(bytes: &[u8]) -> Value {
-    let mut text = String::with_capacity(bytes.len().saturating_mul(2));
-    for byte in bytes {
-        text.push(nibble(byte >> 4));
-        text.push(nibble(byte & 0x0f));
-    }
-    Value::from(text.as_str())
-}
-
-/// One half-byte as its hexadecimal digit.
-///
-/// Saturating rather than bare arithmetic, which the workspace denies: the
-/// caller only ever passes a masked four-bit value, so no addition here can
-/// reach a `u8`'s limit, and the saturating form says that without asking the
-/// reader to go and check the caller.
-fn nibble(half: u8) -> char {
-    match half {
-        0..=9 => char::from(b'0'.saturating_add(half)),
-        _ => char::from(b'a'.saturating_add(half.saturating_sub(10))),
-    }
 }
 
 #[cfg(test)]

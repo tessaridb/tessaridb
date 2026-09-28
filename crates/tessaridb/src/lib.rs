@@ -72,9 +72,11 @@ use tessari_types::ShardId;
 ///
 /// # Errors
 ///
-/// Returns a sentence naming what the text is instead of a value.
-pub fn value_of(written: &str) -> core::result::Result<tessari_types::Value, String> {
-    let refusal = || format!("{written:?} is not a value TessariQL can read on its own");
+/// Returns [`NotAValue`], naming the text that is not a value.
+pub fn value_of(written: &str) -> core::result::Result<tessari_types::Value, NotAValue> {
+    let refusal = || NotAValue {
+        written: written.to_owned(),
+    };
     match tessari_ql::parse_expression(written)
         .map_err(|_| refusal())?
         .kind
@@ -83,6 +85,32 @@ pub fn value_of(written: &str) -> core::result::Result<tessari_types::Value, Str
         _ => Err(refusal()),
     }
 }
+
+/// Text [`value_of`] could not read as a value on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotAValue {
+    written: String,
+}
+
+impl NotAValue {
+    /// The text that was refused.
+    #[must_use]
+    pub fn written(&self) -> &str {
+        &self.written
+    }
+}
+
+impl core::fmt::Display for NotAValue {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            formatter,
+            "{:?} is not a value TessariQL can read on its own",
+            self.written
+        )
+    }
+}
+
+impl std::error::Error for NotAValue {}
 
 pub mod feed;
 

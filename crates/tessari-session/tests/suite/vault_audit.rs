@@ -31,7 +31,7 @@ use std::time::Instant;
 
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::Session;
-use tessari_storage::{AuditDevice, Store, VaultRead};
+use tessari_storage::{AuditDevice, DeviceRefused, Store, VaultRead};
 use tessari_types::Value;
 
 const PLANTED: &str = "correct-horse-battery-staple-9f2b";
@@ -48,8 +48,8 @@ const USING: &str = "USE NAMESPACE prod; USE DATABASE work;";
 struct Broken;
 
 impl AuditDevice for Broken {
-    fn record(&self, _event: &VaultRead<'_>) -> Result<(), String> {
-        Err("this device is deliberately broken".to_owned())
+    fn record(&self, _event: &VaultRead<'_>) -> Result<(), DeviceRefused> {
+        Err(DeviceRefused::new("this device is deliberately broken"))
     }
 }
 
@@ -60,7 +60,7 @@ struct Watching {
 }
 
 impl AuditDevice for Watching {
-    fn record(&self, event: &VaultRead<'_>) -> Result<(), String> {
+    fn record(&self, event: &VaultRead<'_>) -> Result<(), DeviceRefused> {
         self.seen.lock().unwrap().push((
             event.actor.to_owned(),
             event.record.to_owned(),
@@ -157,6 +157,10 @@ fn a_read_that_cannot_be_recorded_is_refused() {
         .expect_err("the read was served with a broken trail");
     let message = refused.to_string();
     assert!(message.contains("recorded"), "{message}");
+    assert!(
+        message.contains("this device is deliberately broken"),
+        "the device's own reason did not reach the refusal: {message}"
+    );
 
     // And the refusal is not a quiet downgrade: nothing came back at all.
     assert!(

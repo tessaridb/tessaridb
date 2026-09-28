@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use tessari_types::{DatabaseId, NamespaceId, Reach, Sequence, ShardId, TableId};
 
 use super::{read, spell};
+use crate::feed::FeedRefused;
 
 const NS: NamespaceId = NamespaceId::new(3);
 const DB: DatabaseId = DatabaseId::new(4);
@@ -40,7 +41,10 @@ fn a_cursor_this_build_cannot_read_is_refused_by_name() {
         "3.4:d=1,d=2",
     ] {
         let why = read(text, NS, DB).expect_err(text);
-        assert!(why.contains("is not a cursor"), "{text}: {why}");
+        assert!(
+            matches!(&why, FeedRefused::CursorUnreadable { cursor } if cursor == text),
+            "{text}: {why:?}"
+        );
     }
 }
 
@@ -49,8 +53,8 @@ fn a_cursor_from_another_database_is_refused_rather_than_resumed_from() {
     for text in ["3.5:d=7", "2.4:d=7"] {
         let why = read(text, NS, DB).expect_err(text);
         assert!(
-            why.contains("a feed over another database"),
-            "{text}: {why}"
+            matches!(&why, FeedRefused::CursorFromAnotherDatabase { cursor } if cursor == text),
+            "{text}: {why:?}"
         );
     }
 }
