@@ -31,8 +31,8 @@
   function setValue(id, text) {
     control(id).value = text;
   }
-  function write(id, words3) {
-    at(id).textContent = words3;
+  function write(id, words4) {
+    at(id).textContent = words4;
   }
   function clear(id) {
     at(id).textContent = "";
@@ -48,9 +48,9 @@
     }
     throw new Error(`#${id} cannot be disabled`);
   }
-  function say(id, words3, failed) {
+  function say(id, words4, failed) {
     const line = at(id);
-    line.textContent = words3;
+    line.textContent = words4;
     line.classList.toggle("failed", failed === true);
     line.setAttribute("aria-live", failed === true ? "assertive" : "polite");
   }
@@ -61,9 +61,9 @@
     }
     return element;
   }
-  function trailer(words3) {
+  function trailer(words4) {
     const line = made("p", "trailer");
-    line.textContent = words3;
+    line.textContent = words4;
     return line;
   }
   function shown(value2) {
@@ -417,8 +417,8 @@
     try {
       body = JSON.parse(text);
     } catch {
-      const words3 = text.trim();
-      return { said: words3 === "" ? `${status}` : words3, failed: status >= 400 };
+      const words4 = text.trim();
+      return { said: words4 === "" ? `${status}` : words4, failed: status >= 400 };
     }
     if (typeof body.error === "string") {
       return { said: body.error, failed: true };
@@ -492,8 +492,44 @@
     }
     return answered2.value;
   }
-  async function scrape(route) {
-    const reply = await fetch(route, { credentials: "omit" });
+  async function route(method, path, screen) {
+    const started = performance.now();
+    const headers = {};
+    const offered = credential();
+    if (offered !== null) {
+      headers["Authorization"] = offered;
+    }
+    let reply;
+    try {
+      reply = await fetch(path, { method, headers, credentials: "omit" });
+    } catch {
+      record({
+        what: `${method} ${path}`,
+        said: "the node did not answer",
+        failed: true,
+        ms: Math.round(performance.now() - started),
+        screen
+      });
+      throw new Unreachable("it may be stopped, or unreachable from this browser");
+    }
+    if (reply.status === 401 && token() !== null) {
+      ended();
+    }
+    const text = await reply.text();
+    record({
+      what: `${method} ${path}`,
+      ...said(text, reply.status),
+      ms: Math.round(performance.now() - started),
+      screen
+    });
+    try {
+      return { status: reply.status, body: JSON.parse(text) };
+    } catch {
+      return { status: reply.status, body: text };
+    }
+  }
+  async function scrape(route2) {
+    const reply = await fetch(route2, { credentials: "omit" });
     const text = await reply.text();
     try {
       return { status: reply.status, body: JSON.parse(text) };
@@ -507,15 +543,15 @@
   var following = null;
   var toldWhy = false;
   var isFollowing = () => following !== null;
-  function stop(words3) {
+  function stop(words4) {
     if (following !== null) {
       following.close();
       following = null;
     }
     disable("follow", false);
     disable("stop", true);
-    if (words3 !== void 0) {
-      say("watch-status", words3);
+    if (words4 !== void 0) {
+      say("watch-status", words4);
     }
   }
   function change(what) {
@@ -1718,9 +1754,9 @@
   //! one a thing you have to type on purpose. `say` keeps its two-state job for
   //! the many places that genuinely have two — this is not a rewrite of all
   //! sixty-six of its call sites, and it must not become one.
-  function state(id, kind2, words3) {
+  function state(id, kind2, words4) {
     const line = at(id);
-    line.textContent = words3;
+    line.textContent = words4;
     for (const other of ["waiting", "empty", "partial", "wrong"]) {
       line.classList.toggle(`is-${other}`, other === kind2);
     }
@@ -1759,8 +1795,8 @@
   }
   function answer(scraped) {
     const body = scraped.body;
-    const words3 = typeof body === "object" && body !== null ? Object.entries(body).map(([name, value2]) => name + " " + String(value2)).join(", ") : String(body).trim();
-    return scraped.status + " " + words3;
+    const words4 = typeof body === "object" && body !== null ? Object.entries(body).map(([name, value2]) => name + " " + String(value2)).join(", ") : String(body).trim();
+    return scraped.status + " " + words4;
   }
   async function readNode() {
     say("node-status", "asking…");
@@ -2495,9 +2531,9 @@
       todo();
     }
   }
-  function note(words3) {
+  function note(words4) {
     const line = made("p", "empty");
-    line.textContent = words3;
+    line.textContent = words4;
     return line;
   }
   async function browse() {
@@ -2698,8 +2734,8 @@
       }
       await readTopics();
     } catch (failure) {
-      const words3 = told(failure);
-      say(form.status, failure instanceof Unreachable ? "the node did not answer — " + words3 : words3, true);
+      const words4 = told(failure);
+      say(form.status, failure instanceof Unreachable ? "the node did not answer — " + words4 : words4, true);
     }
     shape3(form);
   }
@@ -2721,14 +2757,184 @@
     at("topics-database").addEventListener("change", () => FORMS.forEach(shape3));
   }
 
+  // src/spaces-list.ts
+  //! The Spaces pane's reading: which tables of a database are spaces, their keys by
+  //! prefix, and one key's value.
+  //!
+  //! The spaces are found as Series finds series — each table's `INFO FOR TABLE`
+  //! writes back the statement that made it. The keys and the value come from the
+  //! `/kv` routes, so what the pane shows is what any HTTP caller of those routes
+  //! would be answered.
+  var SCREEN3 = "Run";
+  var TABLES_ASKED = 200;
+  var KEYS_SHOWN = 100;
+  var words2 = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
+  function strings2(answered2, field) {
+    const list = held2(answered2)?.[field];
+    return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
+  }
+  function isSpace(result) {
+    const fields = fieldsOf(result.value);
+    const name = fields?.["table"];
+    const definition2 = fields?.["definition"];
+    return typeof name === "string" && typeof definition2 === "string" && definition2.startsWith("DEFINE SPACE ") ? name : null;
+  }
+  async function readNamespaces2() {
+    state("kv-status", "waiting", "asking…");
+    try {
+      offer("kv-namespace", strings2(await valueOf("INFO FOR STORE;", SCREEN3), "namespaces"));
+    } catch (failure) {
+      state("kv-status", "wrong", words2(failure));
+      return;
+    }
+    await readDatabases2();
+  }
+  async function readDatabases2() {
+    const namespace = aName(value("kv-namespace"));
+    if (namespace === null) {
+      offer("kv-database", []);
+      offer("kv-space", []);
+      state("kv-status", "empty", "No namespace here — declare one with DEFINE NAMESPACE.");
+      return;
+    }
+    try {
+      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN3);
+      offer("kv-database", strings2(answered2, "databases"));
+    } catch (failure) {
+      state("kv-status", "wrong", words2(failure));
+      return;
+    }
+    await readSpaces();
+  }
+  async function readSpaces() {
+    const namespace = aName(value("kv-namespace"));
+    const database = aName(value("kv-database"));
+    clear("kv-list");
+    clear("kv-value");
+    if (namespace === null || database === null) {
+      offer("kv-space", []);
+      state("kv-status", "empty", "Choose a namespace and a database that exist.");
+      return;
+    }
+    const start = tenancy(namespace, database);
+    state("kv-status", "waiting", "asking…");
+    try {
+      const tables = strings2(await valueOf(start + "INFO FOR DATABASE;", SCREEN3), "tables").filter((name) => aName(name) !== null).slice(0, TABLES_ASKED);
+      let answered2 = [];
+      if (tables.length > 0) {
+        const { text } = await ask(start + tables.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN3);
+        const body = JSON.parse(text);
+        if (!Array.isArray(body.results)) {
+          throw new Error(typeof body.error === "string" ? body.error : text);
+        }
+        answered2 = body.results;
+      }
+      const spaces = answered2.map(isSpace).filter((name) => name !== null);
+      offer("kv-space", spaces);
+      if (spaces.length === 0) {
+        state("kv-status", "empty", `${namespace}.${database} holds no space — DEFINE SPACE declares one.`);
+        return;
+      }
+    } catch (failure) {
+      state("kv-status", "wrong", words2(failure));
+      return;
+    }
+    await listKeys();
+  }
+  function base() {
+    const namespace = aName(value("kv-namespace"));
+    const database = aName(value("kv-database"));
+    const space = aName(value("kv-space"));
+    return namespace === null || database === null || space === null ? null : `/kv/${namespace}/${database}/${space}`;
+  }
+  var listing = 0;
+  async function listKeys() {
+    const mine = ++listing;
+    const where3 = base();
+    clear("kv-list");
+    clear("kv-value");
+    if (where3 === null) {
+      state("kv-status", "empty", "Choose a space.");
+      return;
+    }
+    const prefix = value("kv-prefix");
+    const query = `?limit=${KEYS_SHOWN}` + (prefix === "" ? "" : `&prefix=${encodeURIComponent(prefix)}`);
+    state("kv-status", "waiting", "asking…");
+    try {
+      const { status, body } = await route("GET", where3 + query, SCREEN3);
+      if (mine !== listing) {
+        return;
+      }
+      clear("kv-list");
+      const keys = body.keys;
+      if (status !== 200 || !Array.isArray(keys)) {
+        const refused = body.error;
+        throw new Error(typeof refused === "string" ? refused : `the node answered ${status}`);
+      }
+      drawKeys(keys.filter((each) => typeof each === "string"));
+      if (keys.length === 0) {
+        state("kv-status", "empty", prefix === "" ? "The space holds no key." : `No key starts with ${prefix}.`);
+      } else if (keys.length >= KEYS_SHOWN) {
+        state("kv-status", "partial", `the first ${KEYS_SHOWN} keys`);
+      } else {
+        settled("kv-status");
+      }
+    } catch (failure) {
+      state("kv-status", "wrong", words2(failure));
+    }
+  }
+  function drawKeys(keys) {
+    const list = made("ul");
+    for (const key of keys) {
+      const item = made("li");
+      const open2 = made("button");
+      open2.className = "quiet";
+      open2.textContent = key;
+      open2.addEventListener("click", () => void readKey(key));
+      item.appendChild(open2);
+      list.appendChild(item);
+    }
+    at("kv-list").appendChild(list);
+  }
+  async function readKey(key) {
+    const where3 = base();
+    clear("kv-value");
+    if (where3 === null) {
+      return;
+    }
+    try {
+      const { status, body } = await route("GET", `${where3}/key/${encodeURIComponent(key)}`, SCREEN3);
+      const shown2 = made("pre");
+      if (status === 404) {
+        shown2.textContent = `${key}: no such key — it may have expired`;
+      } else {
+        const { value: held5, ttl } = body;
+        const left = typeof ttl === "string" ? `expires in ${ttl}` : "never expires";
+        shown2.textContent = `${key} — ${left}
+${JSON.stringify(held5, null, 2)}`;
+      }
+      at("kv-value").appendChild(shown2);
+    } catch (failure) {
+      state("kv-status", "wrong", words2(failure));
+    }
+  }
+  function wire18() {
+    at("kv-namespace").addEventListener("change", () => void readDatabases2());
+    at("kv-database").addEventListener("change", () => void readSpaces());
+    at("kv-space").addEventListener("change", () => void listKeys());
+    at("kv-list-them").addEventListener("click", () => void listKeys());
+    at("kv-refresh").addEventListener("click", () => void readNamespaces2());
+    onArrival(["run"], () => void readNamespaces2());
+  }
+
   // src/series-list.ts
   //! The Series pane's reading: where, and which tables there are series.
   //!
   //! Everything here reads. A table's kind is not a field of `INFO FOR DATABASE`,
   //! so each table is asked for `INFO FOR TABLE`: a series writes back the
   //! `DEFINE SERIES` statement that made it, and a rollup says it is one.
-  var SCREEN3 = "Run";
-  var TABLES_ASKED = 200;
+  var SCREEN4 = "Run";
+  var TABLES_ASKED2 = 200;
   var DECLARED = /^DEFINE SERIES \S+ RETAIN (\S+?)(?: TIME (\S+?))?;/;
   function kind(value2) {
     const fields = fieldsOf(value2);
@@ -2747,22 +2953,22 @@
     }
     return { name, rollup: false, time: declared[2] ?? null, retain: declared[1] ?? "" };
   }
-  var words2 = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
-  function strings2(answered2, field) {
+  var words3 = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
+  function strings3(answered2, field) {
     const list = held2(answered2)?.[field];
     return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
   }
-  async function readNamespaces2() {
+  async function readNamespaces3() {
     state("series-status", "waiting", "asking…");
     try {
-      offer("series-namespace", strings2(await valueOf("INFO FOR STORE;", SCREEN3), "namespaces"));
+      offer("series-namespace", strings3(await valueOf("INFO FOR STORE;", SCREEN4), "namespaces"));
     } catch (failure) {
-      state("series-status", "wrong", words2(failure));
+      state("series-status", "wrong", words3(failure));
       return;
     }
-    await readDatabases2();
+    await readDatabases3();
   }
-  async function readDatabases2() {
+  async function readDatabases3() {
     const namespace = aName(value("series-namespace"));
     if (namespace === null) {
       offer("series-database", []);
@@ -2771,10 +2977,10 @@
       return;
     }
     try {
-      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN3);
-      offer("series-database", strings2(answered2, "databases"));
+      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN4);
+      offer("series-database", strings3(answered2, "databases"));
     } catch (failure) {
-      state("series-status", "wrong", words2(failure));
+      state("series-status", "wrong", words3(failure));
       return;
     }
     await readSeries();
@@ -2790,11 +2996,11 @@
     const start = tenancy(namespace, database);
     state("series-status", "waiting", "asking…");
     try {
-      const tables = strings2(await valueOf(start + "INFO FOR DATABASE;", SCREEN3), "tables").filter((name) => aName(name) !== null);
-      const asked2 = tables.slice(0, TABLES_ASKED);
+      const tables = strings3(await valueOf(start + "INFO FOR DATABASE;", SCREEN4), "tables").filter((name) => aName(name) !== null);
+      const asked2 = tables.slice(0, TABLES_ASKED2);
       let answered2 = [];
       if (asked2.length > 0) {
-        const { text } = await ask(start + asked2.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN3);
+        const { text } = await ask(start + asked2.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN4);
         const body = JSON.parse(text);
         if (!Array.isArray(body.results)) {
           throw new Error(typeof body.error === "string" ? body.error : text);
@@ -2812,7 +3018,7 @@
       }
     } catch (failure) {
       draw5([]);
-      state("series-status", "wrong", words2(failure));
+      state("series-status", "wrong", words3(failure));
     }
   }
   function draw5(found) {
@@ -2837,11 +3043,11 @@
     }
     at("series-list").appendChild(table);
   }
-  function wire18() {
-    at("series-namespace").addEventListener("change", () => void readDatabases2());
+  function wire19() {
+    at("series-namespace").addEventListener("change", () => void readDatabases3());
     at("series-database").addEventListener("change", () => void readSeries());
-    at("series-refresh").addEventListener("click", () => void readNamespaces2());
-    onArrival(["run"], () => void readNamespaces2());
+    at("series-refresh").addEventListener("click", () => void readNamespaces3());
+    onArrival(["run"], () => void readNamespaces3());
   }
 
   // src/users.ts
@@ -2892,7 +3098,7 @@
     }
     return `showing ${SHOWN} of ${matched.length}${filtered ? "" : ` — type a name to narrow`}`;
   }
-  function listing(rows) {
+  function listing2(rows) {
     const table = made("table");
     const head = table.createTHead().insertRow();
     for (const column of ["user", "role", "reach"]) {
@@ -2952,14 +3158,14 @@
         "partial",
         `Showing ${SHOWN} of ${matched.length} — type part of a name to narrow it.`
       );
-      at("user-list").appendChild(listing(matched.slice(0, SHOWN)));
+      at("user-list").appendChild(listing2(matched.slice(0, SHOWN)));
     } else {
       settled("user-status");
-      at("user-list").appendChild(listing(matched));
+      at("user-list").appendChild(listing2(matched));
     }
     write("user-count", tally(matched));
   }
-  function wire19() {
+  function wire20() {
     at("list").addEventListener("click", listUsers);
     at("user-filter").addEventListener("input", redraw);
     onArrival(["access"], () => void listUsers());
@@ -3080,10 +3286,11 @@
   wire5();
   wire4();
   wire8();
-  wire19();
+  wire20();
   wire11();
   wire12();
   wire16();
   wire17();
+  wire19();
   wire18();
 })();
