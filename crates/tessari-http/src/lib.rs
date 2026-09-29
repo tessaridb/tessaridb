@@ -319,8 +319,9 @@ fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
         // Also without a credential, and for the third time the same reason: a
         // scraper that needs one is a scraper nobody configures. What it carries
         // is operational — an uptime, a sequence, some counts — with no user
-        // data and no schema in it.
-        (Method::GET, "/metrics") => respond::metrics(db, census, stopping, tokens),
+        // data and no schema in it. A scraper that does present one is also
+        // given each topic it may read, by name (G042).
+        (Method::GET, "/metrics") => respond::metrics(db, census, stopping, tokens, &presented),
         // Split on `?` here rather than reaching for a URL parser: this route
         // takes one optional parameter and a dependency to read it would be a
         // poor trade.

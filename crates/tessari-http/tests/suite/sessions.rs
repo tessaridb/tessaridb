@@ -417,3 +417,85 @@ fn the_scrape_says_how_many_sessions_are_held() {
     // ceiling refuses sign-ins while every other counter still reads healthy.
     assert!(body.contains("tessari_sessions 1"), "{body}");
 }
+
+#[test]
+fn a_signed_in_scrape_is_given_each_topic_it_may_read_and_an_anonymous_one_none() {
+    let (_node, address) = peopled();
+    let root = basic("root", PASSWORD);
+    let (status, body) = send(
+        &address,
+        "POST",
+        "/script",
+        "USE NAMESPACE prod; USE DATABASE shop; DEFINE TOPIC events; \
+         CREATE events:'a' = { n: 1 }; CREATE events:'b' = { n: 2 }; CREATE events:'c' = { n: 3 }; \
+         DEFINE GROUP 'billing' ON TOPIC events ACK DEADLINE 30s IN FLIGHT 2; \
+         READ FROM events FOR CONSUMER 'billing' LIMIT 10; \
+         READ FROM events FOR CONSUMER 'audit' LIMIT 1;",
+        Some(&root),
+    );
+    assert_eq!(status, 200, "{body}");
+
+    // No credential, no schema: the topic's name appears nowhere.
+    let (status, anonymous) = send(&address, "GET", "/metrics", "", None);
+    assert_eq!(status, 200);
+    assert!(!anonymous.contains("tessari_topic_"), "{anonymous}");
+
+    // A credential that is refused is told so rather than given fewer series.
+    let (status, _) = send(
+        &address,
+        "GET",
+        "/metrics",
+        "",
+        Some(&basic("root", "not the password")),
+    );
+    assert_eq!(status, 401);
+
+    // Signed in: the same numbers INFO FOR TOPIC reports at the same moment.
+    let (status, report) = send(
+        &address,
+        "POST",
+        "/script",
+        "USE NAMESPACE prod; USE DATABASE shop; INFO FOR TOPIC events;",
+        Some(&root),
+    );
+    assert_eq!(status, 200, "{report}");
+    let (status, scraped) = send(&address, "GET", "/metrics", "", Some(&root));
+    assert_eq!(status, 200, "{scraped}");
+    let base = r#"namespace="prod",database="shop",topic="events""#;
+    for (series, field) in [
+        (
+            format!("tessari_topic_last_position{{{base}}} 3"),
+            r#""last":3"#,
+        ),
+        (
+            format!("tessari_topic_messages{{{base}}} 3"),
+            r#""first":1"#,
+        ),
+        (
+            format!("tessari_topic_consumer_lag{{{base},consumer=\"audit\"}} 2"),
+            r#""audit":{"lag":2"#,
+        ),
+        (
+            format!("tessari_topic_group_lag{{{base},group=\"billing\"}} 3"),
+            r#""lag":3"#,
+        ),
+        (
+            format!("tessari_topic_group_in_flight{{{base},group=\"billing\"}} 2"),
+            r#""in_flight":2"#,
+        ),
+        (
+            format!("tessari_topic_group_redelivered_total{{{base},group=\"billing\"}} 0"),
+            r#""redelivered":0"#,
+        ),
+        (
+            format!("tessari_topic_group_dead_lettered_total{{{base},group=\"billing\"}} 0"),
+            r#""dead_lettered":0"#,
+        ),
+    ] {
+        assert!(
+            scraped.contains(&series),
+            "{series} missing from:\n{scraped}"
+        );
+        assert!(report.contains(field), "{field} missing from:\n{report}");
+    }
+}

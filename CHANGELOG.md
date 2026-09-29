@@ -26,6 +26,15 @@ position, committed position, lag, messages in flight, redeliveries and dead
 letters. A reader under a name with no group keeps exactly what it had: its
 position moves with its own transaction (ADR-0086).
 
+**`/metrics` reports topics to a scraper that signs in.** Given a credential,
+the scrape adds, for every topic that caller may read, how many messages it
+holds, its last position, each reader's lag, and each group's lag, messages in
+flight, redeliveries and dead letters — read through the caller's own session,
+so grants decide which topics appear. Without a credential the scrape is what it
+was: no topic or group is named, because a name is schema. A credential that is
+refused is answered `401`. `INFO FOR DATABASE` now lists its `topics` beside its
+`tables`.
+
 **1433 conformance cases** define the language and run in the build.
 
 ## 0.11.0-beta — 2026-09-29
