@@ -21,6 +21,15 @@ export interface Group {
   readonly width: number;
 }
 
+/** A topic consumer reading this topic into a table (ADR-0087). */
+export interface Ingest {
+  readonly group: string;
+  /** The table, or `hidden` when the caller may not read it. */
+  readonly into: string;
+  /** Running on the node that answered. */
+  readonly running: boolean;
+}
+
 export interface Topic {
   readonly name: string;
   /** Absent while the topic holds nothing. */
@@ -30,6 +39,7 @@ export interface Topic {
   readonly maxBytes: number | null;
   readonly readers: ReadonlyMap<string, Reader>;
   readonly groups: ReadonlyMap<string, Group>;
+  readonly ingestedBy: ReadonlyMap<string, Ingest>;
 }
 
 const whole = (value: unknown): number | null =>
@@ -71,6 +81,16 @@ function group(value: unknown): Group | null {
   };
 }
 
+function ingest(value: unknown): Ingest | null {
+  const fields = fieldsOf(value);
+  const group = fields?.["group"];
+  const into = fields?.["into"];
+  const running = fields?.["running"];
+  return typeof group === "string" && typeof into === "string" && typeof running === "boolean"
+    ? { group, into, running }
+    : null;
+}
+
 /** Each entry of a name-keyed object that narrows, in the node's order. */
 function entries<T>(value: unknown, narrow: (each: unknown) => T | null): Map<string, T> {
   const found = new Map<string, T>();
@@ -100,6 +120,7 @@ export function topic(value: unknown): Topic | null {
     maxBytes: whole(fields["max_bytes"]),
     readers: entries(fields["consumers"], reader),
     groups: entries(fields["groups"], group),
+    ingestedBy: entries(fields["ingested_by"], ingest),
   };
 }
 

@@ -194,7 +194,7 @@ function choose(name: string): void {
 function drawChosen(): void {
   const found = chosen();
   at("topic-chosen").textContent = found?.name ?? "none chosen";
-  for (const id of ["topic-facts", "topic-readers", "topic-groups"]) {
+  for (const id of ["topic-facts", "topic-readers", "topic-groups", "topic-ingested"]) {
     clear(id);
   }
   disable("browse-read", found === null);
@@ -234,6 +234,17 @@ function drawChosen(): void {
       row.insertCell().textContent = each.deadline;
     }
     at("topic-groups").appendChild(found.groups.size > 0 ? groups : note("no group settles this topic"));
+    const ingested = headed(["consumer", "group", "into", "here"]);
+    const ingestedRows = ingested.createTBody();
+    for (const [name, each] of found.ingestedBy) {
+      const row = ingestedRows.insertRow();
+      for (const cell of [name, each.group, each.into, each.running ? "running" : "not running"]) {
+        row.insertCell().textContent = cell;
+      }
+    }
+    at("topic-ingested").appendChild(
+      found.ingestedBy.size > 0 ? ingested : note("no topic consumer reads this topic"),
+    );
   }
   for (const todo of listeners) {
     todo();

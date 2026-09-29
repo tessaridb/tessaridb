@@ -2205,6 +2205,13 @@
       width
     };
   }
+  function ingest(value2) {
+    const fields = fieldsOf(value2);
+    const group2 = fields?.["group"];
+    const into = fields?.["into"];
+    const running = fields?.["running"];
+    return typeof group2 === "string" && typeof into === "string" && typeof running === "boolean" ? { group: group2, into, running } : null;
+  }
   function entries(value2, narrow) {
     const found = /* @__PURE__ */ new Map();
     for (const [name, each] of Object.entries(fieldsOf(value2) ?? {})) {
@@ -2230,7 +2237,8 @@
       retain: typeof retain === "string" ? retain : null,
       maxBytes: whole(fields["max_bytes"]),
       readers: entries(fields["consumers"], reader),
-      groups: entries(fields["groups"], group)
+      groups: entries(fields["groups"], group),
+      ingestedBy: entries(fields["ingested_by"], ingest)
     };
   }
   var held4 = (topic2) => topic2.first === null || topic2.last < topic2.first ? 0 : topic2.last - topic2.first + 1;
@@ -2419,7 +2427,7 @@
   function drawChosen() {
     const found = chosen();
     at("topic-chosen").textContent = found?.name ?? "none chosen";
-    for (const id of ["topic-facts", "topic-readers", "topic-groups"]) {
+    for (const id of ["topic-facts", "topic-readers", "topic-groups", "topic-ingested"]) {
       clear(id);
     }
     disable("browse-read", found === null);
@@ -2471,6 +2479,17 @@
         row.insertCell().textContent = each.deadline;
       }
       at("topic-groups").appendChild(found.groups.size > 0 ? groups : note("no group settles this topic"));
+      const ingested = headed(["consumer", "group", "into", "here"]);
+      const ingestedRows = ingested.createTBody();
+      for (const [name, each] of found.ingestedBy) {
+        const row = ingestedRows.insertRow();
+        for (const cell2 of [name, each.group, each.into, each.running ? "running" : "not running"]) {
+          row.insertCell().textContent = cell2;
+        }
+      }
+      at("topic-ingested").appendChild(
+        found.ingestedBy.size > 0 ? ingested : note("no topic consumer reads this topic")
+      );
     }
     for (const todo of listeners) {
       todo();
