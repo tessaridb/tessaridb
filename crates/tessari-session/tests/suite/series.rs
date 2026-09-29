@@ -202,6 +202,25 @@ fn late_events_land_in_event_order_whatever_order_they_arrive_in() {
     }
 }
 
+/// G044 C10: an event identity keeps fourteen random bits, so two thousand
+/// events at one instant collide by the hundred — and each is still its own
+/// record, because a held identity is drawn again rather than refused.
+#[test]
+fn thousands_of_events_at_one_instant_are_each_kept() {
+    let store = store();
+    let mut session = opened(&store);
+    run(
+        &mut session,
+        "DEFINE SERIES readings RETAIN 36500d TIME at;",
+    );
+    let script: String = (0..2_000)
+        .map(|n| format!("CREATE readings = {{ at: datetime '2026-09-29T10:00:00Z', n: {n} }};\n"))
+        .collect();
+    session.run(&script).unwrap();
+    let answered = instants(run(&mut session, "SELECT * FROM readings;"));
+    assert_eq!(answered.len(), 2_000);
+}
+
 /// An instant `back` seconds before now, as a literal.
 fn ago(back: u64) -> String {
     let now = std::time::SystemTime::now()

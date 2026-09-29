@@ -16,6 +16,10 @@ use crate::session::Session;
 
 use super::PartialSeal;
 
+/// How many times an event-time identity is drawn before a full instant is
+/// reported: 64 draws of fourteen random bits.
+const EVENT_IDENTITY_DRAWS: u32 = 64;
+
 impl Session<'_> {
     /// Write a record, after every shape in it has crossed the geometry boundary.
     ///
@@ -250,18 +254,24 @@ impl Session<'_> {
         // field, so a late event lands in its place (ADR-0088 §1). Checked for
         // being free like any minted UUID, and for the same reason not drawn
         // again when it is not.
-        if let Some(identity) =
+        // Its random bits are few (fourteen), so an identity already held at
+        // that instant is drawn again rather than refused.
+        let mut attempts = 0_u32;
+        while let Some(identity) =
             crate::series::event_identity(transaction, context.namespace, table, payload, span)?
         {
             let address =
                 RecordAddress::new(context.namespace, context.database, table, identity.clone());
-            if transaction.get(&address)?.is_some() {
+            if transaction.get(&address)?.is_none() {
+                return Ok(identity);
+            }
+            attempts = attempts.saturating_add(1);
+            if attempts >= EVENT_IDENTITY_DRAWS {
                 return Err(Error::RecordExists {
                     id: identity.to_string(),
                     span,
                 });
             }
-            return Ok(identity);
         }
         let kind = Catalog::new(transaction)
             .table(table)?

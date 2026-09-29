@@ -142,8 +142,8 @@ pub(crate) fn uuid_v7(span: Span) -> Result<[u8; UUID_LEN]> {
 /// A UUID version 7 minted **at** an instant rather than now: `millis` in the
 /// leading six bytes and `fraction` — the sub-millisecond part in 4096ths — in
 /// the twelve bits after the version (RFC 9562 §6.2, method 3), so identities
-/// minted at one instant sort by the finer time too. The remaining 62 bits are
-/// random, so two events at one instant are two identities (ADR-0088 §1).
+/// minted at one instant sort by the finer time too. Fourteen bits below that
+/// are random, so two events at one instant are two identities (ADR-0088 §1).
 ///
 /// # Errors
 ///
@@ -156,6 +156,14 @@ pub(crate) fn uuid_v7_at(millis: u64, fraction: u16, span: Span) -> Result<[u8; 
         span,
     })?;
     stamp(&mut bytes, millis);
+    // Fourteen random bits below the time rather than sixty-two: the instant is
+    // already exact to ~244 ns, so the rest only separates events at one
+    // instant — and random bytes are the one part of a key no compression
+    // removes, stored twice per record (G044 C10: 62 → 50 B/point). A collision
+    // is redrawn by the caller, which checks the identity is free.
+    for byte in bytes.iter_mut().skip(10) {
+        *byte = 0;
+    }
     let [high, low] = (fraction & 0x0fff).to_be_bytes();
     bytes[6] = 0x70 | high;
     bytes[7] = low;
