@@ -22,7 +22,7 @@ fn node() -> (Arc<Node>, String) {
     let node = Arc::new(Node::bind(db, "127.0.0.1:0").unwrap());
     let address = node.address();
     let serving = Arc::clone(&node);
-    std::thread::spawn(move || serving.serve());
+    std::thread::spawn(move || crate::serve_until_the_test_ends(&serving));
     (node, address)
 }
 
@@ -220,7 +220,7 @@ fn the_wire_and_the_library_answer_the_same_script() {
     let node = Arc::new(Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap());
     let address = node.address();
     let serving = Arc::clone(&node);
-    std::thread::spawn(move || serving.serve());
+    std::thread::spawn(move || crate::serve_until_the_test_ends(&serving));
 
     let script = "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
                   USE DATABASE orders; DEFINE COLLECTION users; \
@@ -499,6 +499,73 @@ impl KvBackend for Ailing {
     }
 }
 
+/// A backend whose first health question panics, and which answers after it.
+#[derive(Debug)]
+struct PanicsOnce {
+    held: MemoryBackend,
+    panicked: std::sync::atomic::AtomicBool,
+}
+
+impl KvBackend for PanicsOnce {
+    fn name(&self) -> &'static str {
+        "panics-once"
+    }
+
+    fn background_errors(&self) -> tessari_kv::Result<u64> {
+        if !self
+            .panicked
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            // `resume_unwind` unwinds exactly as a panic does, without the hook's noise.
+            std::panic::resume_unwind(Box::new("a request that fails inside the node"));
+        }
+        Ok(0)
+    }
+
+    fn get(
+        &self,
+        keyspace: tessari_kv::Keyspace,
+        key: &tessari_kv::Key,
+    ) -> tessari_kv::Result<Option<tessari_kv::Value>> {
+        self.held.get(keyspace, key)
+    }
+
+    fn scan(
+        &self,
+        request: &tessari_kv::ScanRequest,
+    ) -> tessari_kv::Result<Vec<(tessari_kv::Key, tessari_kv::Value)>> {
+        self.held.scan(request)
+    }
+
+    fn apply(&self, batch: tessari_kv::WriteBatch) -> tessari_kv::Result<()> {
+        self.held.apply(batch)
+    }
+}
+
+#[test]
+fn a_request_that_panics_is_answered_and_the_node_answers_the_next_one() {
+    // One request's panic takes that request down and nothing else: it is told
+    // so in the node's words, and the listener goes on answering (H15).
+    let backend = Arc::new(PanicsOnce {
+        held: MemoryBackend::new(),
+        panicked: std::sync::atomic::AtomicBool::new(false),
+    }) as Arc<dyn KvBackend>;
+    let db = Arc::new(Db::from_store(Store::open(backend).unwrap()));
+    let node = Arc::new(Node::bind(db, "127.0.0.1:0").unwrap());
+    let address = node.address();
+    let serving = Arc::clone(&node);
+    std::thread::spawn(move || crate::serve_until_the_test_ends(&serving));
+
+    let (status, _, body) = send(&address, "GET", "/health", "", None);
+    assert_eq!(status, 500, "{body}");
+    assert!(body.contains("failed inside the node"), "{body}");
+    let (status, _, body) = send(&address, "GET", "/health", "", None);
+    assert_eq!(
+        status, 200,
+        "the node stopped answering after one panic: {body}"
+    );
+}
+
 #[test]
 fn a_healthy_store_answers_health_with_two_hundred() {
     let (_node, address) = node();
@@ -640,7 +707,7 @@ fn a_store_with_a_background_failure_is_taken_out_of_rotation() {
     let node = Arc::new(Node::bind(db, "127.0.0.1:0").unwrap());
     let address = node.address();
     let serving = Arc::clone(&node);
-    std::thread::spawn(move || serving.serve());
+    std::thread::spawn(move || crate::serve_until_the_test_ends(&serving));
 
     let (status, _, body) = send(&address, "GET", "/health", "", None);
     assert_eq!(status, 503, "{body}");

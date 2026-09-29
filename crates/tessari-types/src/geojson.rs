@@ -272,6 +272,7 @@ fn coordinate(value: &Value) -> Result<f64, Malformed> {
         {
             #[expect(
                 clippy::cast_precision_loss,
+                clippy::as_conversions,
                 reason = "a coordinate outside 2^53 is outside the sphere and is refused downstream"
             )]
             Ok(*whole as f64)

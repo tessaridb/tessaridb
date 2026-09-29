@@ -28,15 +28,14 @@
 //! you" against "I know you and no". A client that cannot tell them apart
 //! retries a signin that will never help, or gives up on one that would.
 
-use std::collections::BTreeMap;
-
 use tessari_constants::SESSION_TOKEN_SECONDS;
-use tessari_serve::{Census, Stopping};
 use tessaridb::{AccessPath, Db, Error, Outcome};
 
 use crate::basic::Presented;
 use crate::json;
 use crate::tokens::{Refused, Tokens};
+pub(crate) use metrics::metrics;
+pub(crate) use scripts::{listing, script};
 
 /// One answer: a status and a JSON body.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,151 +180,6 @@ pub(crate) fn ready(db: &Db, willing: bool) -> Answer {
     } else {
         Answer::new(503, r#"{"status":"leaving"}"#.to_owned())
     }
-}
-
-/// `GET /metrics` — the numbers, in the exposition format every scraper reads.
-///
-/// Plain text with a documented grammar, so it costs a function rather than a
-/// dependency — which is the same trade the rest of this program makes and the
-/// reason this format was chosen over any that needs a library to emit.
-///
-/// `# HELP` and `# TYPE` on every metric, because a scrape that describes itself
-/// is the difference between a dashboard somebody can write and one that sends
-/// them to read this file.
-///
-/// # What is absent, and why absent beats wrong
-///
-/// Without a [`Census`] — a node bound in-process, with no surrounding process
-/// enumerating its surfaces — there is **no uptime line at all**, and the only
-/// counters reported are this surface's own. The alternative would be to time
-/// from this listener's own creation and call it uptime, which makes one metric
-/// name mean two different things depending on how the node was started. A
-/// scraper copes with a series that is missing; it cannot cope with one that
-/// silently changes what it measures.
-pub(crate) fn metrics(
-    db: &Db,
-    census: Option<&Census>,
-    mine: &Stopping,
-    tokens: &Tokens,
-) -> Answer {
-    let mut out = String::new();
-
-    if let Some(census) = census {
-        out.push_str("# HELP tessari_uptime_seconds How long this process has been running.\n");
-        out.push_str("# TYPE tessari_uptime_seconds gauge\n");
-        out.push_str(&format!(
-            "tessari_uptime_seconds {:.3}\n",
-            census.uptime().as_secs_f64()
-        ));
-    }
-
-    // The store's own numbers, from the same call `/health` makes. A second way
-    // to ask would be a second answer to drift from.
-    if let Ok(held) = db.store().health() {
-        out.push_str(
-            "# HELP tessari_committed_sequence The last sequence the log has committed.\n",
-        );
-        out.push_str("# TYPE tessari_committed_sequence counter\n");
-        out.push_str(&format!(
-            "tessari_committed_sequence {}\n",
-            held.committed.get()
-        ));
-        out.push_str("# HELP tessari_background_errors Failures in the engine's own threads.\n");
-        out.push_str("# TYPE tessari_background_errors counter\n");
-        out.push_str(&format!(
-            "tessari_background_errors {}\n",
-            held.background_errors
-        ));
-        // Any value above zero means this node was offered a record from a
-        // leadership other than the one it applied at that position, and refused
-        // it. It does not fall back to zero: the divergence an operator most
-        // needs to see is the one that stopped happening on its own.
-        out.push_str(
-            "# HELP tessari_log_divergences Log positions another leadership tried to rewrite.\n",
-        );
-        out.push_str("# TYPE tessari_log_divergences counter\n");
-        out.push_str(&format!(
-            "tessari_log_divergences {}\n",
-            held.log_divergences
-        ));
-
-        out.push_str("# HELP tessari_campaigns Leadership rounds this node has stood in.\n");
-        out.push_str("# TYPE tessari_campaigns counter\n");
-        out.push_str(&format!("tessari_campaigns {}\n", held.campaigns));
-        // Absent rather than zero on a node holding no lease, because a series
-        // that is always zero on every standalone store would train whoever
-        // watches it to ignore the one reading that matters. When it is here it
-        // is the split-brain signal: it heads toward zero, and zero while the
-        // node is still accepting writes is the state the lease exists to
-        // prevent.
-        if let Some(left) = held.lease_remaining {
-            out.push_str(
-                "# HELP tessari_lease_remaining_seconds Writable time left under this node's lease.\n",
-            );
-            out.push_str("# TYPE tessari_lease_remaining_seconds gauge\n");
-            out.push_str(&format!(
-                "tessari_lease_remaining_seconds {}\n",
-                left.as_secs_f64()
-            ));
-        }
-    }
-
-    // Worth a line of its own because it is the one number that says whether
-    // the token bound is close: a node at `MAX_SESSION_TOKENS` starts refusing
-    // sign-ins while every other counter here still reads healthy.
-    out.push_str("# HELP tessari_sessions Session tokens this node is holding.\n");
-    out.push_str("# TYPE tessari_sessions gauge\n");
-    out.push_str(&format!("tessari_sessions {}\n", tokens.held()));
-
-    out.push_str("# HELP tessari_connections Requests in flight, by surface.\n");
-    out.push_str("# TYPE tessari_connections gauge\n");
-    out.push_str("# HELP tessari_subscriptions Feeds open, by surface.\n");
-    out.push_str("# TYPE tessari_subscriptions gauge\n");
-    out.push_str("# HELP tessari_answers_total Answers written, refusals included.\n");
-    out.push_str("# TYPE tessari_answers_total counter\n");
-    out.push_str(
-        "# HELP tessari_refusals_total Answers that were a failure rather than a result.\n",
-    );
-    out.push_str("# TYPE tessari_refusals_total counter\n");
-    out.push_str("# HELP tessari_ready Whether the surface will take new work.\n");
-    out.push_str("# TYPE tessari_ready gauge\n");
-
-    match census {
-        Some(census) => {
-            for (name, stopping) in census.surfaces() {
-                surface(&mut out, name, stopping);
-            }
-        }
-        None => surface(&mut out, "http", mine),
-    }
-
-    Answer::text(200, out, EXPOSITION)
-}
-
-/// One surface's five numbers, labelled by which surface it is.
-fn surface(out: &mut String, name: &str, stopping: &Stopping) {
-    // A label value is quoted and the names here are ours rather than a caller's,
-    // so there is nothing to escape and no escaping written that would never run.
-    out.push_str(&format!(
-        "tessari_connections{{surface=\"{name}\"}} {}\n",
-        stopping.requests()
-    ));
-    out.push_str(&format!(
-        "tessari_subscriptions{{surface=\"{name}\"}} {}\n",
-        stopping.feeds()
-    ));
-    out.push_str(&format!(
-        "tessari_answers_total{{surface=\"{name}\"}} {}\n",
-        stopping.answers()
-    ));
-    out.push_str(&format!(
-        "tessari_refusals_total{{surface=\"{name}\"}} {}\n",
-        stopping.refusals()
-    ));
-    out.push_str(&format!(
-        "tessari_ready{{surface=\"{name}\"}} {}\n",
-        u8::from(stopping.ready())
-    ));
 }
 
 /// `POST /script` — run it, and answer with one object per statement.
@@ -517,239 +371,6 @@ pub(crate) fn backup(
     }
 }
 
-/// A bucket's listing: what the files are, and nothing about how they were
-/// found.
-///
-/// This used to hand back the raw statement result wrapped in a key, which
-/// published `plan.access`, `plan.table`, `kind` and `path` — planner internals
-/// — plus `chunks`, a storage detail (Q-260). A public route's body is a
-/// contract in every language a client is written in, so changing the planner
-/// would then have broken clients that never asked about it.
-///
-/// A file listing wants a name, a size and a modification time, and the records
-/// already carry exactly those three. A record missing one of them contributes
-/// the keys it has rather than a null: the caller asked what is in the bucket,
-/// and a key that is absent says the store never recorded it.
-pub(crate) fn listing(outcomes: &[Outcome]) -> Answer {
-    let records = outcomes
-        .last()
-        .and_then(Outcome::records)
-        .unwrap_or_default();
-    let names = json::Names::new();
-    let mut body = String::from(r#"{"files":["#);
-    for (position, (id, held)) in records.iter().enumerate() {
-        if position > 0 {
-            body.push(',');
-        }
-        body.push_str(r#"{"path":"#);
-        json::string(&mut body, &id.to_string());
-        if let tessaridb::Value::Object(fields) = held {
-            for key in ["size", "updated"] {
-                if let Some(value) = fields.get(key).filter(|value| value.is_present()) {
-                    body.push(',');
-                    json::string(&mut body, key);
-                    body.push(':');
-                    json::write(&mut body, value, &names);
-                }
-            }
-        }
-        body.push('}');
-    }
-    body.push_str("]}");
-    Answer::new(200, body)
-}
-
-/// `POST /script` — run a script, with the values its parameters bind to.
-///
-/// Each value arrives **written in TessariQL** and is read by the language, which is
-/// what keeps a supplied value from ever being read as grammar (SGA.T2): binding
-/// happens after parsing and before the first statement, so `'; DROP TABLE
-/// users; --` is a string that says something alarming rather than a statement.
-/// A value that would not stand alone in a script is refused here, before
-/// anything runs.
-pub(crate) fn script(
-    db: &Db,
-    source: &str,
-    written: &BTreeMap<String, String>,
-    tokens: &Tokens,
-    presented: &Presented,
-) -> Answer {
-    let mut session = match session_for(db, tokens, presented) {
-        Ok(session) => session,
-        Err(answer) => return answer,
-    };
-    let mut given = tessaridb::Parameters::new();
-    for (name, value) in written {
-        match tessaridb::value_of(value) {
-            Ok(held) => {
-                given.insert(name.clone(), held);
-            }
-            Err(reason) => {
-                return Answer::bad_request(&format!("parameter {name}: {reason}"));
-            }
-        }
-    }
-    match session.run_with(source, &given) {
-        Ok(outcomes) => {
-            // Resolved once for the whole answer rather than per outcome, and
-            // only when something in it holds a reference: a record reference
-            // carries a table id, and a client receiving `"1:2"` cannot follow
-            // it. See `Db::names_in`.
-            let referenced: Vec<(tessaridb::RecordId, tessaridb::Value)> = outcomes
-                .iter()
-                .flat_map(|outcome| match outcome {
-                    Outcome::Records { records, .. } => records.clone(),
-                    Outcome::Value(held) => {
-                        vec![(tessaridb::RecordId::Int(0), held.clone())]
-                    }
-                    _ => Vec::new(),
-                })
-                .collect();
-            let names = db.names_in(&referenced).unwrap_or_default();
-
-            let mut body = String::from(r#"{"results":["#);
-            for (position, outcome) in outcomes.iter().enumerate() {
-                if position > 0 {
-                    body.push(',');
-                }
-                encode(&mut body, outcome, &names);
-            }
-            body.push_str("]}");
-            Answer::new(200, body)
-        }
-        Err(error) => failure(&error),
-    }
-}
-
-/// One outcome, as the object a caller parses.
-fn encode(body: &mut String, outcome: &Outcome, names: &json::Names) {
-    match outcome {
-        Outcome::Done => body.push_str(r#"{"kind":"done"}"#),
-        Outcome::Value(value) => {
-            body.push_str(r#"{"kind":"value""#);
-            // A `value` key that is absent means `none`, and one holding `null`
-            // means `null`. JSON has one word for both, so the distinction is
-            // carried by the key — see `json`.
-            if value.is_present() {
-                body.push_str(r#","value":"#);
-                json::write(body, value, names);
-            }
-            body.push('}');
-        }
-        Outcome::Keys(keys) => {
-            body.push_str(r#"{"kind":"keys","keys":["#);
-            for (position, key) in keys.iter().enumerate() {
-                if position > 0 {
-                    body.push(',');
-                }
-                json::string(body, &key.to_string());
-            }
-            body.push_str("]}");
-        }
-        Outcome::Records {
-            records,
-            plan,
-            notes,
-            suggestion,
-            only,
-        } => {
-            body.push_str(r#"{"kind":"records","path":"#);
-            json::string(body, name_of(plan.access));
-            // The whole plan beside the one word, because the word alone cannot
-            // say which index served the read. `path` stays: it is what every
-            // client already reads, the two are rendered from the same field so
-            // they cannot disagree, and removing it would break readers for
-            // nothing.
-            body.push_str(r#","plan":"#);
-            json::write(body, &plan.to_value(), names);
-            // Written only when there is something to say, so every response
-            // that had nothing to report is byte-identical to what it was before
-            // notes existed. A reader that wants them handles an absent key,
-            // which every JSON reader already does.
-            if !notes.is_empty() {
-                body.push_str(r#","notes":["#);
-                for (position, note) in notes.iter().enumerate() {
-                    if position > 0 {
-                        body.push(',');
-                    }
-                    body.push_str(r#"{"kind":"#);
-                    json::string(body, note.kind());
-                    body.push_str(r#","message":"#);
-                    json::string(body, &note.message());
-                    body.push('}');
-                }
-                body.push(']');
-            }
-            // Three states in two JSON facts, which is what lets this key stay
-            // absent from the responses that never asked the question — every
-            // read without a `MATCHES` over an indexed field, which is nearly
-            // all of them.
-            //
-            // Absent means no term dictionary was consulted, and that is not a
-            // claim about the collection: nothing was looked for. PRESENT AND
-            // EMPTY is the claim — a dictionary was asked and holds every term
-            // the query named. The two must not collapse, because a client that
-            // reads an absent key as "nothing is near" is reporting a negative
-            // the server never checked.
-            if let Some(suggestion) = suggestion {
-                body.push_str(r#","suggestion":{"corrections":["#);
-                for (position, correction) in suggestion.corrections().iter().enumerate() {
-                    if position > 0 {
-                        body.push(',');
-                    }
-                    body.push_str(r#"{"typed":"#);
-                    json::string(body, &correction.typed);
-                    body.push_str(r#","instead":"#);
-                    json::string(body, &correction.instead);
-                    body.push('}');
-                }
-                body.push_str("]}");
-            }
-            // Written only when true, for the same reason the notes are written
-            // only when there are some: every response from a read that did not
-            // say `ONLY` stays byte-identical to what it was before the clause
-            // existed. `records` stays an array holding at most one, because
-            // changing a key's *type* would break every reader, and the flag is
-            // what lets a reader that wants the record take it.
-            if *only {
-                body.push_str(r#","only":true"#);
-            }
-            body.push_str(r#","records":["#);
-            for (position, (id, record)) in records.iter().enumerate() {
-                if position > 0 {
-                    body.push(',');
-                }
-                body.push_str(r#"{"id":"#);
-                json::string(body, &id.to_string());
-                body.push_str(r#","value":"#);
-                json::write(body, record, names);
-                body.push('}');
-            }
-            body.push_str("]}");
-        }
-        // How many records a conditional delete removed, which is the whole
-        // point of a retention statement — `done` would make the operator run a
-        // count before and after to learn it.
-        Outcome::Removed { count } => {
-            body.push_str(r#"{"kind":"removed","count":"#);
-            body.push_str(&count.to_string());
-            body.push('}');
-        }
-        // `Outcome` is `#[non_exhaustive]`, so a shape this binary does not know
-        // is possible in principle. Answering with its absence is honest;
-        // guessing at its content would not be.
-        //
-        // This arm is correct and it is also where `Removed` hid: it answered
-        // `unknown` for a known outcome, and §3.5 defines `unknown` as *a kind
-        // this client has never seen*, so a conforming client reported version
-        // skew that did not exist. Nothing distinguishes a correct wildcard from
-        // one absorbing a known case except enumerating the variants against the
-        // arms — which is what `every_outcome_this_build_knows_has_its_own_kind`
-        // below does, and why it must gain a case whenever `Outcome` does.
-        _ => body.push_str(r#"{"kind":"unknown"}"#),
-    }
-}
-
 /// The access path, reported because a scan should be visible rather than
 /// folklore — the same reason the embedded surface carries it.
 const fn name_of(path: AccessPath) -> &'static str {
@@ -861,12 +482,15 @@ pub(crate) fn failure(error: &Error) -> Answer {
 
 #[cfg(test)]
 mod corpus;
+mod metrics;
+mod scripts;
 
 #[cfg(test)]
 mod tests {
     use tessaridb::{Error, Outcome, Value};
 
-    use super::{encode, failure, json};
+    use super::scripts::encode;
+    use super::{failure, json};
 
     fn rendered(outcome: &Outcome) -> String {
         let mut body = String::new();

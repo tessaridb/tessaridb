@@ -40,7 +40,8 @@ use std::path::PathBuf;
 use tessari_session::Plan;
 use tessaridb::{AccessPath, Nearest, Note, Number, Outcome, RecordId, Suggestion, Value};
 
-use super::{encode, json};
+use super::json;
+use super::scripts::encode;
 
 /// A JSON value, read back so the comparison is structural.
 ///

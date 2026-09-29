@@ -116,7 +116,7 @@ pub(crate) fn hex_decode(text: &str) -> Option<Vec<u8>> {
 /// glance and cannot be off by one, where the arithmetic form has two ranges
 /// and an offset between them — which is exactly the shape of the bug the
 /// existing hex writer in `crate::digest` documents itself against.
-const fn nibble(held: u8) -> char {
+pub(crate) const fn nibble(held: u8) -> char {
     match held {
         0 => '0',
         1 => '1',

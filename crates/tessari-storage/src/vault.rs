@@ -35,6 +35,8 @@ use crate::error::{Error, Result};
 /// somewhere by default cannot accidentally be an unsealed one.
 #[derive(Default, Debug)]
 pub struct OpenVault {
+    /// A `RwLock`: sealing and revealing read the keyring on every use; it is
+    /// written only by `unseal`, `adopt` and `seal`.
     keyring: RwLock<Keyring>,
 }
 

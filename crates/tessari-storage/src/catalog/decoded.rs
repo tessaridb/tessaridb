@@ -21,12 +21,13 @@
 //!
 //! # Bound
 //!
-//! At most [`HELD`] definitions. Past it the whole set is dropped and refilled
-//! by what is being read now, which is simpler than an eviction order and costs
-//! one decode per table in use.
+//! [`HELD`] definitions, plus at most one per statement missing at the same
+//! moment: the size is read and the set cleared shard by shard, so two misses
+//! racing past the bound both insert. Past it the whole set is dropped and
+//! refilled by what is being read now, which is simpler than an eviction order
+//! and costs one decode per table in use.
 
-use std::collections::HashMap;
-use std::sync::RwLock;
+use dashmap::DashMap;
 
 use tessari_encoding::decode_payload;
 
@@ -39,33 +40,29 @@ const HELD: usize = 1024;
 /// Decoded table definitions, keyed by their stored bytes.
 #[derive(Debug, Default)]
 pub(crate) struct DecodedTables {
-    held: RwLock<HashMap<Vec<u8>, TableDefinition>>,
+    /// A `DashMap`: every statement reads a decoded definition from
+    /// every thread, and a sharded map lets those reads take different locks
+    /// where one `RwLock` had every reader bounce the same counter.
+    held: DashMap<Vec<u8>, TableDefinition>,
 }
 
 impl DecodedTables {
     /// The definition these stored bytes hold.
-    ///
-    /// A poisoned lock is read past rather than refused: every change under it
-    /// is one map operation, and the answer is decoded directly either way.
     pub(crate) fn definition(&self, stored: &[u8]) -> Result<TableDefinition> {
-        if let Ok(held) = self.held.read() {
-            if let Some(found) = held.get(stored) {
-                return Ok(found.clone());
-            }
+        if let Some(found) = self.held.get(stored) {
+            return Ok(found.clone());
         }
         let decoded = TableDefinition::from_value(&decode_payload(stored)?)?;
-        if let Ok(mut held) = self.held.write() {
-            if held.len() >= HELD {
-                held.clear();
-            }
-            held.insert(stored.to_vec(), decoded.clone());
+        if self.held.len() >= HELD {
+            self.held.clear();
         }
+        self.held.insert(stored.to_vec(), decoded.clone());
         Ok(decoded)
     }
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.held.read().map_or(0, |held| held.len())
+        self.held.len()
     }
 }
 
@@ -151,12 +148,11 @@ mod tests {
         let row = stored_rows(1).remove(0);
         let decoded = DecodedTables::default();
         let definition = decoded.definition(&row).unwrap();
-        {
-            let mut held = decoded.held.write().unwrap();
-            held.clear();
-            for n in 0..HELD {
-                held.insert(n.to_le_bytes().to_vec(), definition.clone());
-            }
+        decoded.held.clear();
+        for n in 0..HELD {
+            decoded
+                .held
+                .insert(n.to_le_bytes().to_vec(), definition.clone());
         }
         assert_eq!(decoded.len(), HELD);
         // A miss on a full set: the set is dropped and refilled from this read.

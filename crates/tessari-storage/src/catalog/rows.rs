@@ -47,6 +47,8 @@ const HELD: usize = 1024;
 /// Name and table rows, valid for readers at or above the last change.
 #[derive(Debug, Default)]
 pub(crate) struct CatalogRows {
+    /// A `RwLock`: every catalog lookup reads, and `fill`/`changed` write only on
+    /// a miss or a catalog change (G040 M4).
     held: RwLock<Held>,
 }
 

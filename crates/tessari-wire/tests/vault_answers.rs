@@ -19,6 +19,8 @@
 //! that reaches a log.
 
 #![allow(clippy::panic, clippy::unwrap_used)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::sync::Arc;
 
@@ -33,7 +35,7 @@ fn serving(db: Db) -> (Arc<Node>, String) {
     let node = Arc::new(Node::bind(Arc::new(db), "127.0.0.1:0").unwrap());
     let address = node.address().unwrap();
     let held = Arc::clone(&node);
-    drop(std::thread::spawn(move || held.serve()));
+    drop(std::thread::spawn(move || serve_until_the_test_ends(&held)));
     (node, address)
 }
 
@@ -124,4 +126,13 @@ fn only_a_reveal_puts_a_secret_on_the_wire() {
         !said.contains(PASSPHRASE),
         "the refusal carried the passphrase it was given: {said}"
     );
+}
+
+/// Serve `node` on a runtime of this test's own: the node creates none.
+fn serve_until_the_test_ends(node: &Node) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    drop(runtime.block_on(node.serve(tokio_util::sync::CancellationToken::new())));
 }

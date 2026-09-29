@@ -14,7 +14,7 @@
 //! `POST /script` and `GET /watch`, which is what keeps a console feature from
 //! becoming a capability only the console has.
 
-use tiny_http::Method;
+use axum::http::Method;
 
 use crate::respond::Answer;
 
@@ -61,7 +61,7 @@ const ASSETS: &[Asset] = &[
 /// and a method that is not `GET` falls through to the same "no such route" a
 /// misspelt path gets.
 pub(crate) fn asset(method: &Method, path: &str) -> Option<Answer> {
-    if *method != Method::Get {
+    if *method != Method::GET {
         return None;
     }
     // Split on `?` for the same reason `/backup` does: a query string is not

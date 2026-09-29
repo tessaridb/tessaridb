@@ -19,7 +19,8 @@
 //! against the broker's, not a number to resume from.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+
+use dashmap::DashMap;
 
 /// How one consumer of a declaration is doing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -44,7 +45,10 @@ pub struct Progress {
 /// CONSUMER` sees what the runner's threads are doing rather than a copy of it.
 #[derive(Debug, Default)]
 pub struct Running {
-    live: Mutex<BTreeMap<String, Progress>>,
+    /// A `DashMap`: every consumer thread records each batch here,
+    /// and each one takes only its own entry's shard. Not an ordered map,
+    /// because a batch mutates its entry in place; [`Running::names`] sorts.
+    live: DashMap<String, Progress>,
 }
 
 impl Running {
@@ -54,16 +58,12 @@ impl Running {
     /// whose previous run has ended, and carrying the old counters forward
     /// would report work this run did not do.
     pub fn started(&self, name: &str) {
-        if let Ok(mut live) = self.live.lock() {
-            live.insert(name.to_owned(), Progress::default());
-        }
+        self.live.insert(name.to_owned(), Progress::default());
     }
 
     /// Forget a consumer, because it has stopped.
     pub fn stopped(&self, name: &str) {
-        if let Ok(mut live) = self.live.lock() {
-            live.remove(name);
-        }
+        self.live.remove(name);
     }
 
     /// Record what one batch did.
@@ -72,26 +72,23 @@ impl Running {
     /// update arriving after `stopped` is a thread finishing its last batch, and
     /// resurrecting the entry would report it as running.
     pub fn advanced(&self, name: &str, change: impl FnOnce(&mut Progress)) {
-        if let Ok(mut live) = self.live.lock()
-            && let Some(progress) = live.get_mut(name)
-        {
-            change(progress);
+        if let Some(mut progress) = self.live.get_mut(name) {
+            change(&mut progress);
         }
     }
 
     /// How one consumer is doing, if this process is running it.
     #[must_use]
     pub fn progress(&self, name: &str) -> Option<Progress> {
-        self.live.lock().ok()?.get(name).cloned()
+        self.live.get(name).map(|progress| progress.clone())
     }
 
-    /// Every consumer this process is running.
+    /// Every consumer this process is running, in name order.
     #[must_use]
     pub fn names(&self) -> Vec<String> {
-        self.live
-            .lock()
-            .map(|live| live.keys().cloned().collect())
-            .unwrap_or_default()
+        let mut names: Vec<String> = self.live.iter().map(|entry| entry.key().clone()).collect();
+        names.sort_unstable();
+        names
     }
 }
 

@@ -8,10 +8,18 @@
 //! there. A message saying only "wrong type" makes the author guess which of
 //! three arguments it meant.
 
+mod arguments;
+mod numbers;
+mod time;
 use tessari_ql::{Aggregate, Function, Span};
-use tessari_types::{Datetime, Number, Value};
+use tessari_types::{Number, Value};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
+pub(crate) use arguments::{
+    array_at, bytes_at, datetime_at, duration_at, number_at, object_at, text_at, whole, wrong_type,
+};
+pub(crate) use numbers::{count, folded, power, reshape, truncated};
+pub(crate) use time::{bucket, from_unix, instant, reading};
 
 /// Evaluate a call, with its arguments already values.
 ///
@@ -129,26 +137,8 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         )),
         // Two numbers, in the value system's own order, so `math::min` and the
         // `min` aggregate cannot disagree about which of two values is smaller.
-        Function::MathMin | Function::MathMax => {
-            let first = number_at(function, arguments, 0, span)?;
-            let second = number_at(function, arguments, 1, span)?;
-            let smaller = function == Function::MathMin;
-            let held = if (first <= second) == smaller {
-                first
-            } else {
-                second
-            };
-            Ok(Value::Number(held.clone()))
-        }
-        Function::MathSign => {
-            let number = number_at(function, arguments, 0, span)?;
-            let zero = Number::Integer(0);
-            Ok(Value::Number(Number::Integer(match number.cmp(&zero) {
-                core::cmp::Ordering::Less => -1,
-                core::cmp::Ordering::Equal => 0,
-                core::cmp::Ordering::Greater => 1,
-            })))
-        }
+        Function::MathMin | Function::MathMax => numbers::extreme(function, arguments, span),
+        Function::MathSign => numbers::sign(function, arguments, span),
         Function::MathTrunc => Ok(Value::Number(truncated(number_at(
             function, arguments, 0, span,
         )?))),
@@ -156,29 +146,7 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         // `math::sqrt`'s reading: a NaN or an infinity compares false against
         // everything including itself, so it travels through a filter and an
         // ordering without ever saying it is not a number.
-        Function::MathLn | Function::MathExp => {
-            let number = number_at(function, arguments, 0, span)?;
-            let Some(held) = number.as_float() else {
-                return Err(Error::CallFailed {
-                    function,
-                    reason: "that number is outside the range a float holds",
-                    span,
-                });
-            };
-            let answer = if function == Function::MathLn {
-                if held <= 0.0_f64 {
-                    return Ok(Value::None);
-                }
-                held.ln()
-            } else {
-                held.exp()
-            };
-            if answer.is_finite() {
-                Ok(Value::Number(Number::float(answer)))
-            } else {
-                Ok(Value::None)
-            }
-        }
+        Function::MathLn | Function::MathExp => numbers::logarithm(function, arguments, span),
         Function::ArrayConcat => {
             let first = array_at(function, arguments, 0, span)?.to_vec();
             let second = array_at(function, arguments, 1, span)?;
@@ -310,28 +278,7 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         // exact in any of the three numeric kinds — so keeping the argument's
         // kind, which `math::abs` and its neighbours do, would mean rounding
         // `math::sqrt(2)` to `1` and calling it an integer.
-        Function::MathSqrt => {
-            let number = number_at(function, arguments, 0, span)?;
-            let Some(held) = number.as_float() else {
-                return Err(Error::CallFailed {
-                    function,
-                    reason: "that number is outside the range a float holds",
-                    span,
-                });
-            };
-            // A negative root is refused rather than answered with a NaN. A NaN
-            // compares false against everything including itself, so it would
-            // travel through a filter and an ordering silently; `math::abs`
-            // says what a caller who meant the magnitude should write.
-            if held < 0.0 {
-                return Err(Error::CallFailed {
-                    function,
-                    reason: "a square root of a negative number is not a number; math::abs says the magnitude",
-                    span,
-                });
-            }
-            Ok(Value::Number(Number::float(held.sqrt())))
-        }
+        Function::MathSqrt => numbers::square_root(function, arguments, span),
         Function::MathPow => power(function, arguments, span),
         Function::MathAbs | Function::MathFloor | Function::MathCeil | Function::MathRound => {
             let number = number_at(function, arguments, 0, span)?;
@@ -435,329 +382,6 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
             };
             crate::cast::read(function, value, span)
         }
-    }
-}
-
-/// The instant this statement is being evaluated at.
-///
-/// Read once, in the session, so the value that reaches the log is a value like
-/// any other — a replica applies what was written rather than asking its own
-/// clock and reaching a different answer. A clock before the epoch is refused
-/// rather than folded to zero: a machine whose time is wrong should say so.
-/// The start of the window `instant` falls in.
-///
-/// Windows are anchored at the **epoch**, not at the first record, so the same
-/// instant lands in the same window in every query, every process and every
-/// replica. A window anchored at whatever data happened to arrive first would
-/// give two callers different answers to the same question, and neither would
-/// notice.
-///
-/// Truncation is toward negative infinity — `div_euclid` and not division — so
-/// an instant before the epoch lands in the window that *contains* it rather
-/// than the one after it. That is the difference between a window boundary and
-/// an off-by-one nobody sees until they query a date in 1969.
-fn bucket(
-    function: Function,
-    instant: &tessari_types::Datetime,
-    width: &tessari_types::Duration,
-    span: Span,
-) -> Result<Value> {
-    let seconds = width.seconds();
-    if seconds <= 0 && width.nanos() == 0 {
-        return Err(Error::CallFailed {
-            function,
-            reason: "a window has to be longer than nothing",
-            span,
-        });
-    }
-    // Whole seconds only: a sub-second window is a real thing and needs the
-    // nanosecond remainder in the arithmetic, which is a different function from
-    // the one anybody asks for. Refused rather than rounded, because rounding
-    // here would silently answer a question nobody asked.
-    if width.nanos() != 0 {
-        return Err(Error::CallFailed {
-            function,
-            reason: "a window is a whole number of seconds",
-            span,
-        });
-    }
-    let start = instant
-        .seconds()
-        .div_euclid(seconds)
-        .saturating_mul(seconds);
-    tessari_types::Datetime::new(start, 0).map_or_else(
-        || {
-            Err(Error::CallFailed {
-                function,
-                reason: "that window does not start at an instant this type holds",
-                span,
-            })
-        },
-        |held| Ok(Value::Datetime(held)),
-    )
-}
-
-/// One field of the date an instant falls on.
-///
-/// The date is read by [`Datetime::civil`], which is the store's single answer
-/// to how a second count becomes a calendar date. Deriving it here as well would
-/// be a second copy of the era arithmetic, and the way two copies fail is that
-/// they disagree on one day in four hundred years while both keep answering.
-fn reading(
-    function: Function,
-    arguments: &[Value],
-    span: Span,
-    take: impl Fn(tessari_types::Civil) -> i64,
-) -> Result<Value> {
-    let instant = datetime_at(function, arguments, 0, span)?;
-    Ok(Value::Number(Number::Integer(take(instant.civil()))))
-}
-
-/// The instant a second count names.
-///
-/// A fraction is refused rather than truncated, on the rule the casts follow:
-/// `math::round` already says which whole number was meant, so choosing one here
-/// would answer a question the caller did not ask. A count no instant holds is
-/// refused for the same reason it is never clamped — a clamped instant is a
-/// moment the author did not write, sitting in a record that will be read back.
-fn from_unix(function: Function, arguments: &[Value], span: Span) -> Result<Value> {
-    let number = number_at(function, arguments, 0, span)?;
-    let Some(seconds) = number.as_exact_integer() else {
-        return Err(Error::CallFailed {
-            function,
-            reason: "a unix time is a whole number of seconds an instant holds; \
-                     math::round says which whole one was meant",
-            span,
-        });
-    };
-    Ok(Value::Datetime(Datetime::from_seconds(seconds)))
-}
-
-/// The instant this process's clock reads.
-///
-/// Shared with the queue engine, which needs the same instant for the same
-/// reason `time::now()` gives it to a statement: a claim's deadline is computed
-/// once here and **written**, so the value that reaches the log is one every
-/// node agrees about rather than a computation each of them repeats against its
-/// own clock.
-///
-/// It reports through [`Function::TimeNow`] whoever asks, because there is one
-/// clock and a caller reading a failure wants to know which one could not be
-/// read — not which internal path asked it.
-pub(crate) fn instant(span: Span) -> Result<Datetime> {
-    let failed = |reason: &'static str| Error::CallFailed {
-        function: Function::TimeNow,
-        reason,
-        span,
-    };
-    let since = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| failed("the clock is before the epoch"))?;
-    let seconds = i64::try_from(since.as_secs()).map_err(|_| failed("the clock is unreadable"))?;
-    Datetime::new(seconds, since.subsec_nanos()).ok_or_else(|| failed("the clock is unreadable"))
-}
-
-/// An element count as a value, refusing one no integer can hold.
-fn count(size: usize, function: Function, span: Span) -> Result<Value> {
-    let Ok(size) = i64::try_from(size) else {
-        return Err(Error::CallFailed {
-            function,
-            reason: "the count is outside the integer range",
-            span,
-        });
-    };
-    Ok(Value::Number(Number::Integer(size)))
-}
-
-/// The four shapes `math::*` gives a number, each keeping its kind.
-fn reshape(function: Function, number: &Number) -> Number {
-    match (function, number) {
-        (Function::MathAbs, Number::Integer(held)) => Number::Integer(held.saturating_abs()),
-        (Function::MathAbs, Number::Decimal(held)) => Number::Decimal(held.abs()),
-        (Function::MathAbs, Number::Float(held)) => Number::float(held.abs()),
-        (Function::MathFloor, Number::Decimal(held)) => Number::Decimal(held.floor()),
-        (Function::MathFloor, Number::Float(held)) => Number::float(held.floor()),
-        (Function::MathCeil, Number::Decimal(held)) => Number::Decimal(held.ceil()),
-        (Function::MathCeil, Number::Float(held)) => Number::float(held.ceil()),
-        (Function::MathRound, Number::Decimal(held)) => Number::Decimal(
-            held.round_dp_with_strategy(0, rust_decimal::RoundingStrategy::MidpointAwayFromZero),
-        ),
-        (Function::MathRound, Number::Float(held)) => Number::float(held.round()),
-        // An integer is already whole, so flooring, ceiling and rounding one is
-        // the number itself rather than a conversion nobody asked for.
-        (_, held) => held.clone(),
-    }
-}
-
-fn text_at(function: Function, arguments: &[Value], at: usize, span: Span) -> Result<&str> {
-    match arguments.get(at) {
-        Some(Value::String(text)) => Ok(text),
-        other => Err(wrong_type(function, at, "a string", named(other), span)),
-    }
-}
-
-/// One array folded by the accumulator the aggregates use.
-///
-/// The array is the group. Every value in it is offered in order, exactly as a
-/// record's value is offered when the fold is over rows, so the promotion
-/// rules, the treatment of an absence and the answer over nothing are not
-/// restated here — they are the ones already written down and already tested.
-fn folded(
-    aggregate: Aggregate,
-    function: Function,
-    arguments: &[Value],
-    span: Span,
-) -> Result<Value> {
-    let items = array_at(function, arguments, 0, span)?;
-    let mut running = crate::accumulate::Accumulator::for_aggregate(aggregate, span);
-    for value in items {
-        running.offer(value)?;
-    }
-    running.finish()
-}
-
-fn bytes_at(function: Function, arguments: &[Value], at: usize, span: Span) -> Result<&[u8]> {
-    match arguments.get(at) {
-        Some(Value::Bytes(held)) => Ok(held),
-        other => Err(wrong_type(function, at, "bytes", named(other), span)),
-    }
-}
-
-/// A number's whole part, toward zero, keeping its kind.
-///
-/// Its own function rather than an arm of [`reshape`]: that one is the four
-/// shapes `math::abs` and its neighbours give a number and its match is written
-/// per kind, and adding a fifth there would grow a table whose whole point is
-/// to be read at a glance.
-fn truncated(number: &Number) -> Number {
-    match number {
-        Number::Integer(held) => Number::Integer(*held),
-        Number::Decimal(held) => Number::Decimal(held.trunc()),
-        Number::Float(held) => Number::float(held.trunc()),
-    }
-}
-
-fn array_at(function: Function, arguments: &[Value], at: usize, span: Span) -> Result<&[Value]> {
-    match arguments.get(at) {
-        Some(Value::Array(items)) => Ok(items),
-        other => Err(wrong_type(function, at, "an array", named(other), span)),
-    }
-}
-
-/// A base raised to an exponent.
-///
-/// **Two whole numbers answer a whole number**, which is the rule `math::abs`
-/// and its neighbours already follow — a kind is kept where keeping it is
-/// exact. `math::pow(2, 10)` is therefore `1024` and not `1024.0`. Anything
-/// else — a fractional base, a fractional or negative exponent — answers a
-/// float, since that is the only kind that holds the answer.
-///
-/// An integer result too large to hold is **refused rather than saturated**. A
-/// saturated power is a wrong number that looks like a right one, and it would
-/// be the largest number in the store, which is exactly the value most likely
-/// to pass a sanity check unnoticed.
-fn power(function: Function, arguments: &[Value], span: Span) -> Result<Value> {
-    let base = number_at(function, arguments, 0, span)?;
-    let exponent = number_at(function, arguments, 1, span)?;
-    let failed = |reason: &'static str| Error::CallFailed {
-        function,
-        reason,
-        span,
-    };
-    if let (Some(base), Some(exponent)) = (base.as_exact_integer(), exponent.as_exact_integer())
-        && exponent >= 0
-    {
-        let Ok(exponent) = u32::try_from(exponent) else {
-            return Err(failed("that exponent is larger than any integer answer"));
-        };
-        return base
-            .checked_pow(exponent)
-            .map(|held| Value::Number(Number::Integer(held)))
-            .ok_or_else(|| failed("that power is outside the integer range"));
-    }
-    let (Some(base), Some(exponent)) = (base.as_float(), exponent.as_float()) else {
-        return Err(failed("that number is outside the range a float holds"));
-    };
-    let held = base.powf(exponent);
-    if held.is_nan() || held.is_infinite() {
-        return Err(failed("that power is not a number a float holds"));
-    }
-    Ok(Value::Number(Number::float(held)))
-}
-
-fn object_at(
-    function: Function,
-    arguments: &[Value],
-    at: usize,
-    span: Span,
-) -> Result<&std::collections::BTreeMap<String, Value>> {
-    match arguments.get(at) {
-        Some(Value::Object(fields)) => Ok(fields),
-        other => Err(wrong_type(function, at, "an object", named(other), span)),
-    }
-}
-
-/// An argument that has to be a whole number, for a position or a count.
-///
-/// A fraction is refused rather than truncated, on the rule the casts follow:
-/// `math::round` already says which whole number was meant.
-fn whole(function: Function, arguments: &[Value], at: usize, span: Span) -> Result<i64> {
-    let number = number_at(function, arguments, at, span)?;
-    number.as_exact_integer().ok_or(Error::CallFailed {
-        function,
-        reason: "a position is a whole number; math::round says which one was meant",
-        span,
-    })
-}
-
-fn datetime_at(
-    function: Function,
-    arguments: &[Value],
-    at: usize,
-    span: Span,
-) -> Result<&tessari_types::Datetime> {
-    match arguments.get(at) {
-        Some(Value::Datetime(held)) => Ok(held),
-        other => Err(wrong_type(function, at, "a datetime", named(other), span)),
-    }
-}
-
-fn duration_at(
-    function: Function,
-    arguments: &[Value],
-    at: usize,
-    span: Span,
-) -> Result<&tessari_types::Duration> {
-    match arguments.get(at) {
-        Some(Value::Duration(held)) => Ok(held),
-        other => Err(wrong_type(function, at, "a duration", named(other), span)),
-    }
-}
-
-fn number_at(function: Function, arguments: &[Value], at: usize, span: Span) -> Result<&Number> {
-    match arguments.get(at) {
-        Some(Value::Number(number)) => Ok(number),
-        other => Err(wrong_type(function, at, "a number", named(other), span)),
-    }
-}
-
-fn named(value: Option<&Value>) -> &'static str {
-    value.map_or("nothing", Value::type_name)
-}
-
-fn wrong_type(
-    function: Function,
-    at: usize,
-    expected: &'static str,
-    found: &'static str,
-    span: Span,
-) -> Error {
-    Error::WrongArgument {
-        function,
-        at: at.saturating_add(1),
-        expected,
-        found,
-        span,
     }
 }
 

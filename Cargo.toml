@@ -3,34 +3,51 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.10.0-beta"
+version = "0.11.0-beta"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.98"
 license = "BUSL-1.1"
 authors = ["boogvar"]
 repository = "https://github.com/tessaridb/tessaridb"
 publish = false
 
 [workspace.dependencies]
-tessari-types = { path = "crates/tessari-types", version = "0.10.0-beta" }
-tessari-constants = { path = "crates/tessari-constants", version = "0.10.0-beta" }
-tessari-kv = { path = "crates/tessari-kv", version = "0.10.0-beta" }
-tessari-encoding = { path = "crates/tessari-encoding", version = "0.10.0-beta" }
-tessari-geo = { path = "crates/tessari-geo", version = "0.10.0-beta" }
-tessari-storage = { path = "crates/tessari-storage", version = "0.10.0-beta" }
-tessari-lsm = { path = "crates/tessari-lsm", version = "0.10.0-beta" }
-tessari-ql = { path = "crates/tessari-ql", version = "0.10.0-beta" }
-tessari-session = { path = "crates/tessari-session", version = "0.10.0-beta" }
-tessari-conformance = { path = "crates/tessari-conformance", version = "0.10.0-beta" }
-tessaridb = { path = "crates/tessaridb", version = "0.10.0-beta" }
-tessari-backup = { path = "crates/tessari-backup", version = "0.10.0-beta" }
-tessari-wire = { path = "crates/tessari-wire", version = "0.10.0-beta" }
-tessari-http = { path = "crates/tessari-http", version = "0.10.0-beta" }
-tessari-ingest = { path = "crates/tessari-ingest", version = "0.10.0-beta" }
-tessari-serve = { path = "crates/tessari-serve", version = "0.10.0-beta" }
-tessari-vault = { path = "crates/tessari-vault", version = "0.10.0-beta" }
+tessari-types = { path = "crates/tessari-types", version = "0.11.0-beta" }
+tessari-constants = { path = "crates/tessari-constants", version = "0.11.0-beta" }
+tessari-kv = { path = "crates/tessari-kv", version = "0.11.0-beta" }
+tessari-encoding = { path = "crates/tessari-encoding", version = "0.11.0-beta" }
+tessari-geo = { path = "crates/tessari-geo", version = "0.11.0-beta" }
+tessari-storage = { path = "crates/tessari-storage", version = "0.11.0-beta" }
+tessari-lsm = { path = "crates/tessari-lsm", version = "0.11.0-beta" }
+tessari-ql = { path = "crates/tessari-ql", version = "0.11.0-beta" }
+tessari-session = { path = "crates/tessari-session", version = "0.11.0-beta" }
+tessari-conformance = { path = "crates/tessari-conformance", version = "0.11.0-beta" }
+tessaridb = { path = "crates/tessaridb", version = "0.11.0-beta" }
+tessari-backup = { path = "crates/tessari-backup", version = "0.11.0-beta" }
+tessari-wire = { path = "crates/tessari-wire", version = "0.11.0-beta" }
+tessari-http = { path = "crates/tessari-http", version = "0.11.0-beta" }
+tessari-ingest = { path = "crates/tessari-ingest", version = "0.11.0-beta" }
+tessari-serve = { path = "crates/tessari-serve", version = "0.11.0-beta" }
+tessari-vault = { path = "crates/tessari-vault", version = "0.11.0-beta" }
 
 thiserror = "2"
+# The serving runtime (ADR-0085). Default features off here, so every crate names
+# only what it uses: a library takes `rt` and `sync`, and only the binary asks for
+# the multi-threaded scheduler, the signal driver and the macros.
+tokio = { version = "1", default-features = false }
+# `CancellationToken`, the one signal every stage of a shutdown waits on.
+tokio-util = { version = "0.7", default-features = false }
+# The shared concurrent maps: `DashMap` where nothing needs order,
+# `scc::TreeIndex` where a reader needs the keys in order.
+dashmap = { version = "6", default-features = false }
+scc = { version = "3", default-features = false }
+# The HTTP and WebSocket surface (ADR-0085 §6): HTTP/1.1 and the upgrade only.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws"] }
+# `StreamExt` for reading a request body under a ceiling without buffering past it.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# Already in the tree under axum's `ws`; named so a websocket error can be told
+# apart by its type rather than by its wording.
+tungstenite = { version = "0.29", default-features = false }
 serde = { version = "1", features = ["derive"] }
 rust_decimal = { version = "1", default-features = false, features = ["std"] }
 argon2 = { version = "0.5", features = ["std"] }
@@ -74,6 +91,11 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # directly: it is what lets a credential be ASKED whether it is valid for a name
 # instead of being parsed for one. Naming it costs no crate and makes the
 # dependency visible where it is used.
+# The peer door's TLS on the runtime (ADR-0085 §7): the same `rustls` 0.23 and
+# the same `ring` provider, so the configuration the synchronous link builds is
+# the one the door accepts with. Default features off, because the default is
+# the other provider.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["std", "ring"] }
 # The only way a chain reaches the process. `Credential.chain` is a chain, and
 # DER has no container for one — a DER-only reader would force one file per
@@ -99,10 +121,17 @@ cast_possible_wrap = "deny"
 cast_sign_loss = "deny"
 cast_precision_loss = "deny"
 unwrap_used = "deny"
+expect_used = "deny"
+as_conversions = "deny"
 panic = "deny"
 arithmetic_side_effects = "warn"
 todo = "warn"
 unimplemented = "warn"
+# A std lock guard or a `RefCell` borrow alive across an `.await` stalls every
+# task that needs it on that worker; denied outright rather than left to the
+# default warning.
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"
 
 [profile.release]
 lto = "fat"

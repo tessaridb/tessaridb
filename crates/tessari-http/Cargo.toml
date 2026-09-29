@@ -17,15 +17,24 @@ default = ["console"]
 console = []
 
 [dependencies]
+dashmap.workspace = true
 tessaridb.workspace = true
 tessari-constants.workspace = true
 tessari-serve.workspace = true
 tessari-types.workspace = true
 log.workspace = true
 thiserror.workspace = true
-tiny_http = "0.12"
+axum.workspace = true
+futures-util.workspace = true
+# Requests are tasks on the process's runtime, which the binary builds; this
+# crate creates none (ADR-0085).
+tokio = { workspace = true, features = ["net", "rt", "sync", "time", "macros"] }
+tokio-util.workspace = true
+tungstenite.workspace = true
 
 [dev-dependencies]
+# The tests serve a node, and a node is served on a runtime the caller owns.
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 tessari-backup.workspace = true
 tessari-kv.workspace = true
 # The status table is asserted per error variant, and building one needs the

@@ -200,7 +200,7 @@ impl Store {
         if crate::catalog::CatalogRows::changes(record) {
             self.catalog_rows.changed(version);
         }
-        self.backend.apply(batch)?;
+        self.writing.apply(batch, self.backend.as_ref())?;
         Ok(())
     }
 

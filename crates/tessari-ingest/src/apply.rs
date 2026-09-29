@@ -23,6 +23,7 @@ use tessari_storage::ConsumerDefinition;
 use tessari_types::{Number, Path, RecordId, Value};
 
 use crate::json;
+use crate::refused::ShapeRefused;
 
 /// A message, ready to be written.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,44 +38,36 @@ pub struct Shaped {
 ///
 /// # Errors
 ///
-/// Returns the reason as text, which is what goes to the operator — either in a
-/// quarantine record beside the payload, or as the reason a `stop` consumer
-/// halted. It is prose rather than a type because the operator is the only
-/// consumer of it and every branch below is a different sentence.
-pub fn shape(payload: &[u8], definition: &ConsumerDefinition) -> Result<Shaped, String> {
-    let message =
-        json::read(payload).map_err(|failure| format!("the payload is not JSON: {failure}"))?;
+/// Returns a [`ShapeRefused`] naming why. Its `Display` is the sentence the
+/// operator reads — in a quarantine record beside the payload, or as the reason a
+/// `stop` consumer halted.
+pub fn shape(payload: &[u8], definition: &ConsumerDefinition) -> Result<Shaped, ShapeRefused> {
+    let message = json::read(payload).map_err(ShapeRefused::NotJson)?;
 
     let Some(route) = Path::parse(&definition.identity) else {
-        return Err(format!(
-            "the identity field {:?} is not a route this store can follow",
-            definition.identity
-        ));
+        return Err(ShapeRefused::IdentityRouteInvalid {
+            identity: definition.identity.clone(),
+        });
     };
     let Some(found) = route.resolve(&message) else {
         // Not an optional field. A message with no identity cannot be applied
         // idempotently, so applying it anyway would silently give up the one
         // property the delivery guarantee rests on.
-        return Err(format!(
-            "the message has no {:?}, which is the field the identity is taken from",
-            definition.identity
-        ));
+        return Err(ShapeRefused::IdentityMissing {
+            identity: definition.identity.clone(),
+        });
     };
-    let id = identity(found).ok_or_else(|| {
-        format!(
-            "{:?} holds {}, and a record identity is a whole number or a string",
-            definition.identity,
-            found.type_name()
-        )
+    let id = identity(found).ok_or_else(|| ShapeRefused::IdentityNotAnId {
+        identity: definition.identity.clone(),
+        found: found.type_name(),
     })?;
 
     let mut fields = std::collections::BTreeMap::new();
     for pair in &definition.mapping {
         let Some(route) = Path::parse(&pair.from) else {
-            return Err(format!(
-                "{:?} is not a route this store can follow",
-                pair.from
-            ));
+            return Err(ShapeRefused::MappingRouteInvalid {
+                from: pair.from.clone(),
+            });
         };
         // A mapped field the message does not carry is left **absent** rather
         // than written as null. The two are different values in this store, and
@@ -202,8 +195,10 @@ mod tests {
         // one property the delivery guarantee rests on.
         let definition = declared("order_id", &[("amount", "total")]);
         let failure = shape(br#"{"amount":5}"#, &definition).expect_err("shaped anyway");
-        assert!(failure.contains("order_id"), "{failure}");
-        assert!(failure.contains("identity"), "{failure}");
+        assert!(
+            matches!(&failure, ShapeRefused::IdentityMissing { identity } if identity == "order_id"),
+            "{failure:?}"
+        );
     }
 
     #[test]
@@ -212,7 +207,16 @@ mod tests {
         // two different orders would collide under an id nobody wrote.
         let definition = declared("order_id", &[("amount", "total")]);
         let failure = shape(br#"{"order_id":1.5,"amount":5}"#, &definition).expect_err("shaped");
-        assert!(failure.contains("whole number or a string"), "{failure}");
+        assert!(
+            matches!(
+                &failure,
+                ShapeRefused::IdentityNotAnId {
+                    found: "number",
+                    ..
+                }
+            ),
+            "{failure:?}"
+        );
     }
 
     #[test]
@@ -220,16 +224,26 @@ mod tests {
         // A record whose id is the empty string is one every message with a
         // missing field would converge onto — the opposite of idempotent.
         let definition = declared("order_id", &[("amount", "total")]);
-        assert!(shape(br#"{"order_id":"","amount":5}"#, &definition).is_err());
+        let failure = shape(br#"{"order_id":"","amount":5}"#, &definition).expect_err("shaped");
+        assert!(
+            matches!(
+                &failure,
+                ShapeRefused::IdentityNotAnId {
+                    found: "string",
+                    ..
+                }
+            ),
+            "{failure:?}"
+        );
     }
 
     #[test]
     fn a_payload_that_is_not_json_says_so_and_says_where() {
         let definition = declared("order_id", &[("amount", "total")]);
         let failure = shape(b"{not json", &definition).expect_err("shaped");
-        assert!(failure.contains("not JSON"), "{failure}");
+        assert!(matches!(failure, ShapeRefused::NotJson(_)), "{failure:?}");
         assert!(
-            failure.contains("byte"),
+            failure.to_string().contains("byte"),
             "the reason does not say where: {failure}"
         );
     }

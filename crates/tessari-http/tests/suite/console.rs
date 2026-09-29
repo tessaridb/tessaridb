@@ -31,7 +31,7 @@ pub(crate) fn node() -> (Arc<Node>, String) {
     let node = Arc::new(Node::bind(db, "127.0.0.1:0").unwrap());
     let address = node.address();
     let serving = Arc::clone(&node);
-    std::thread::spawn(move || serving.serve());
+    std::thread::spawn(move || crate::serve_until_the_test_ends(&serving));
     (node, address)
 }
 
@@ -1701,10 +1701,10 @@ fn nothing_invisible_rides_along_in_a_delivered_asset() {
             "{path} came back empty, so this scan would pass by reading nothing"
         );
         for (point, name) in INVISIBLE {
-            if let Some(found) = char::from_u32(*point) {
-                if served.contains(found) {
-                    carried.push(format!("{path} carries {name} (U+{point:04X})"));
-                }
+            if let Some(found) = char::from_u32(*point)
+                && served.contains(found)
+            {
+                carried.push(format!("{path} carries {name} (U+{point:04X})"));
             }
         }
         // Unicode tag characters smuggle arbitrary ASCII and have no legitimate

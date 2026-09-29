@@ -6,6 +6,8 @@
 //! its interface.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![allow(clippy::expect_used, clippy::as_conversions)]
 
 use tessaridb::{
     AccessPath, Change, ChangeKind, Db, Exactness, Reach, RecordId, Sequence, Value, Watch,
@@ -179,4 +181,18 @@ fn a_subscription_is_a_value_the_caller_keeps() {
     assert!(db.poll(&mut watching, 1024).unwrap().is_empty());
     assert_eq!(watching.delivered(), 1);
     assert_eq!(watching.dropped(), 1);
+}
+
+#[test]
+fn text_that_is_not_a_value_is_refused_as_a_typed_error_that_names_it() {
+    let refusal: tessaridb::NotAValue =
+        tessaridb::value_of("1; DROP TABLE users").expect_err("a statement is not a value");
+    assert_eq!(refusal.written(), "1; DROP TABLE users");
+    assert_eq!(
+        refusal.to_string(),
+        "\"1; DROP TABLE users\" is not a value TessariQL can read on its own"
+    );
+    let error: &dyn std::error::Error = &refusal;
+    assert!(error.source().is_none());
+    assert_eq!(tessaridb::value_of("42").ok(), Some(Value::from(42_i64)));
 }

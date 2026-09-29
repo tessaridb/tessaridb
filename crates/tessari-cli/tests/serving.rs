@@ -16,6 +16,8 @@
 //! the other two.
 
 #![allow(clippy::panic, clippy::unwrap_used)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::collections::BTreeMap;
 use std::net::TcpStream;
@@ -238,6 +240,53 @@ fn a_node_says_it_is_not_ready_while_it_is_still_answering() {
     assert!(alive.starts_with("HTTP/1.1 200"), "{alive}");
 
     drop(node);
+}
+
+#[test]
+fn a_second_stop_signal_ends_the_node_without_waiting_out_the_window() {
+    // The first signal buys the load balancer five seconds; an operator who
+    // sends another is saying they will not wait for them.
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let http = "127.0.0.1:47904";
+    let mut node = serving_both(&path, "127.0.0.1:47903", http);
+    let pid = node.0.id().to_string();
+    let terminate = || {
+        let sent = Command::new("kill").args(["-TERM", &pid]).status().unwrap();
+        assert!(sent.success(), "the signal was not delivered");
+    };
+
+    terminate();
+    // The second is sent only once the first has been acted on: two signals
+    // sent back to back may arrive as one, and that would test nothing.
+    let began = Instant::now();
+    while !probing(http, "/ready").is_ok_and(|answer| answer.starts_with("HTTP/1.1 503")) {
+        assert!(
+            began.elapsed() < Duration::from_secs(4),
+            "the node never started leaving"
+        );
+        std::thread::yield_now();
+    }
+    let second = Instant::now();
+    terminate();
+
+    // Well inside the five-second window, so a node that ignored the second
+    // signal and stopped on schedule cannot pass.
+    let ended = loop {
+        if let Some(status) = node.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            second.elapsed() < Duration::from_secs(3),
+            "the node was still running after a second stop signal"
+        );
+        std::thread::yield_now();
+    };
+    assert_eq!(
+        ended.code(),
+        Some(1),
+        "a stop cut short is not a clean stop"
+    );
 }
 
 #[test]
@@ -644,12 +693,18 @@ fn a_node_told_about_a_cluster_opens_its_peer_door_and_still_serves_clients() {
     // Read through the same parser the binary uses, so the test cannot pass on
     // a credential the node itself would have refused to load.
     let ours = tessari_wire::Joining::parse(
-        their_leaf.as_bytes(),
-        std::path::Path::new("leaf.pem"),
-        their_key.as_bytes(),
-        std::path::Path::new("key.pem"),
-        minted.authority.pem().as_bytes(),
-        std::path::Path::new("ca.pem"),
+        tessari_wire::CredentialFile {
+            bytes: their_leaf.as_bytes(),
+            path: std::path::Path::new("leaf.pem"),
+        },
+        tessari_wire::CredentialFile {
+            bytes: their_key.as_bytes(),
+            path: std::path::Path::new("key.pem"),
+        },
+        tessari_wire::CredentialFile {
+            bytes: minted.authority.pem().as_bytes(),
+            path: std::path::Path::new("ca.pem"),
+        },
         PEERS.to_owned(),
         vec![A_SEED.to_owned()],
     )
@@ -1798,18 +1853,17 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
             if index == leader {
                 continue;
             }
-            if let Ok(mut client) = Client::connect(surface) {
-                if client
+            if let Ok(mut client) = Client::connect(surface)
+                && client
                     .run(
                         "USE NAMESPACE prod; USE DATABASE orders; \
                          CREATE item:2 = { n: 2 };",
                         None,
                     )
                     .is_ok()
-                {
-                    successor = Some(index);
-                    break;
-                }
+            {
+                successor = Some(index);
+                break;
             }
         }
         std::thread::sleep(POLL);

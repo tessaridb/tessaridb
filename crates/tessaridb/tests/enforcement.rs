@@ -136,6 +136,8 @@
 //! a subscription would stream records past every grant in the store.
 
 #![allow(clippy::panic, clippy::unwrap_used)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -159,6 +161,33 @@ fn read(relative: &str) -> String {
 /// report a method moved into a child as a method that no longer exists.
 fn read_module(relative: &str) -> String {
     let mut text = read(relative);
+    // A crate root or a `mod.rs` keeps its children beside it, one file per
+    // `mod name;` it declares, rather than in a directory named after it.
+    let beside = ["lib.rs", "main.rs", "mod.rs"]
+        .iter()
+        .any(|root| relative.ends_with(&format!("/{root}")));
+    if beside {
+        let directory = repo().join(relative).parent().map(Path::to_path_buf);
+        let declared: Vec<String> = text
+            .lines()
+            .filter_map(|line| {
+                line.trim_start_matches("pub(crate) ")
+                    .trim_start_matches("pub ")
+                    .strip_prefix("mod ")
+                    .and_then(|rest| rest.strip_suffix(';'))
+                    .map(str::to_owned)
+            })
+            .collect();
+        for name in declared {
+            if let Some(file) = directory.as_ref().map(|at| at.join(format!("{name}.rs")))
+                && let Ok(child) = fs::read_to_string(&file)
+            {
+                text.push('\n');
+                text.push_str(&child);
+            }
+        }
+        return text;
+    }
     let children = repo().join(relative.trim_end_matches(".rs"));
     if let Ok(entries) = fs::read_dir(&children) {
         let mut files: Vec<_> = entries
@@ -348,7 +377,16 @@ const TABLES: &[Table] = &[
         // can install a gatherer — a statement, a route, a frame — a read could
         // be answered by records from a source nobody authenticated, and the
         // session's redaction would be redacting forgeries.
-        expected: 22,
+        //
+        // 23 since feeds wake on landings (G041 W13b, Q-838): `Db::commits`.
+        // Classified **not a data path**: it hands out a count that moves when
+        // the store lands a log record, and carries no record, catalog entry,
+        // grant or even a table name. A feed woken by it still reads what landed
+        // through its own session's round, authorized per round as before.
+        //
+        // Re-classification trigger: the day the announcement carries WHAT
+        // landed, it discloses writes to anyone holding a `Db`, grant or no.
+        expected: 23,
         count: |text| public_functions(&block(text, "impl Db")),
     },
     Table {
@@ -709,7 +747,13 @@ const TABLES: &[Table] = &[
         //
         // Its re-classification trigger: a `true` from it treated as permission
         // to write by anything but that door.
-        expected: 43,
+        //
+        // 44 since feeds wake on landings (G041 W13b, Q-838): `Store::when_landed`.
+        // Classified **not a data path** on `Db::commits`'s ground: the hook is
+        // called with nothing and learns only that a log record landed.
+        //
+        // Its re-classification trigger: a hook that is handed the batch.
+        expected: 44,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -792,7 +836,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 97 since topics: `Store::admit_public_append`, classified not a data path
     // in the block above (G037).
-    assert_eq!(total, 97, "the counted tables no longer sum to 97");
+    //
+    // 99 since feeds wake on landings: `Db::commits` and `Store::when_landed`,
+    // both classified not a data path above (G041 W13b, Q-838).
+    assert_eq!(total, 99, "the counted tables no longer sum to 99");
 }
 
 /// Every `.rs` file under a directory.
@@ -937,16 +984,16 @@ const CLASSIFIED: &[(&str, &str)] = &[
     // which is a fact about the read and changes none of the classifications
     // above (Q-621, Q-641).
     (
-        "tessari-cli/src/main.rs",
-        "let tail = store.committed_tail(own).map_err(|why| why.to_string())?;",
+        "tessari-cli/src/greeting_round.rs",
+        "let tail = store.committed_tail(own)?;",
     ),
     (
-        "tessari-cli/src/main.rs",
+        "tessari-cli/src/collection_round.rs",
         "let seed = match store.committed_tail(log) {",
     ),
     (
-        "tessari-cli/src/main.rs",
-        "tail: store.committed_tail(log).map_err(|why| why.to_string())?,",
+        "tessari-cli/src/greeting_round.rs",
+        "tail: store.committed_tail(log)?,",
     ),
     (
         "tessari-wire/src/collection.rs",
@@ -1012,7 +1059,7 @@ const DECODERS: [&str; 3] = ["decode", "from_value", "split_epoch"];
 /// this pair are asserted: that nothing else creates one, and that this still
 /// does — a ratchet whose subject has been renamed away passes by finding
 /// nothing, which is the failure mode of every allow-list nobody re-reads.
-const PRODUCER: (&str, &str) = ("tessari-wire/src/driver.rs", "once");
+const PRODUCER: (&str, &str) = ("tessari-wire/src/driver/leadership.rs", "once");
 
 #[test]
 fn the_campaign_is_the_only_place_an_epoch_is_created() {

@@ -6,6 +6,8 @@
 //! than as silence.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::io::Write;
 use std::net::TcpStream;
@@ -32,7 +34,7 @@ fn started(node: Node) -> (Arc<Node>, String) {
     let node = Arc::new(node);
     let address = node.address().unwrap();
     let held = Arc::clone(&node);
-    drop(std::thread::spawn(move || held.serve()));
+    drop(std::thread::spawn(move || serve_until_the_test_ends(&held)));
     (node, address)
 }
 
@@ -450,4 +452,13 @@ fn a_bounded_read_this_node_cannot_answer_is_redirected_over_the_wire() {
         )
         .unwrap();
     assert_eq!(answers.len(), 3);
+}
+
+/// Serve `node` on a runtime of this test's own: the node creates none.
+fn serve_until_the_test_ends(node: &Node) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    drop(runtime.block_on(node.serve(tokio_util::sync::CancellationToken::new())));
 }

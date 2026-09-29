@@ -14,10 +14,12 @@
 //! would pass with the defect present.
 
 #![allow(clippy::panic, clippy::unwrap_used)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::cell::Cell;
 
-use tessaridb::feed::{Commits, Following, follow};
+use tessaridb::feed::{Commits, FeedRefused, Following, follow};
 use tessaridb::{Db, Sequence};
 
 const PASSWORD: &str = "correct horse battery";
@@ -92,7 +94,13 @@ fn revoking_the_read_ends_a_subscription_that_is_already_running() {
 
     assert!(delivered.get() >= 1, "the feed pushed nothing to revoke");
     let refusal = outcome.expect_err("the revocation did not reach the running feed");
-    assert!(refusal.contains("read"), "{refusal}");
+    assert!(
+        matches!(
+            refusal,
+            FeedRefused::Store(tessaridb::Error::RoleForbids { .. })
+        ),
+        "{refusal:?}"
+    );
     assert!(
         rounds.get() <= ROUNDS_ALLOWED,
         "the feed ended because the test gave up, not because the read was revoked"
@@ -204,7 +212,7 @@ fn fed(
     from: u64,
     cursor: Option<&str>,
     table: Option<&str>,
-) -> Result<Vec<(String, String, Option<String>)>, String> {
+) -> Result<Vec<(String, String, Option<String>)>, FeedRefused> {
     let rounds = Cell::new(0_u32);
     let mut given = Vec::new();
     follow(
@@ -303,7 +311,10 @@ fn a_feed_over_a_split_table_merges_its_logs_in_commit_order_and_resumes_from_it
 
     // A cursor this feed never carried is refused by name, not resumed from.
     let refusal = fed(&db, &mut session, 0, Some("d=x"), Some("orders")).unwrap_err();
-    assert!(refusal.contains("is not a cursor"), "{refusal}");
+    assert!(
+        matches!(&refusal, FeedRefused::CursorUnreadable { cursor } if cursor == "d=x"),
+        "{refusal:?}"
+    );
 
     // A feed over the unsplit table is the single-log feed it always was: no
     // cursor on its changes.
@@ -318,19 +329,61 @@ fn a_feed_over_a_split_table_merges_its_logs_in_commit_order_and_resumes_from_it
         .unwrap();
     let refusal = fed(&db, &mut session, 0, Some(&after), Some("lines")).unwrap_err();
     assert!(
-        refusal.contains("counts a log this feed does not follow"),
-        "{refusal}"
+        matches!(refusal, FeedRefused::StrayLog { .. }),
+        "{refusal:?}"
     );
     let refusal = fed(&db, &mut session, 0, Some(&after), Some("notes")).unwrap_err();
     assert!(
-        refusal.contains("this feed follows no split table"),
-        "{refusal}"
+        matches!(refusal, FeedRefused::CursorWithoutSplit { .. }),
+        "{refusal:?}"
     );
 }
 
 /// A split table's log holding another node's writes is refused by name: one
 /// writer's order is the only order there is to merge by, and a shard led
 /// elsewhere is not in this node's logs at all.
+#[test]
+fn every_landing_is_announced_to_the_database_and_a_read_is_not() {
+    // A feed wakes on what the store landed, whichever way it arrived: a commit
+    // made on a session, and a record applied from another writer's stream,
+    // which no surface of this node ever saw. A read lands nothing.
+    let db = Db::in_memory().unwrap();
+    let mut landed = db.commits().watching();
+    let mut session = db.session();
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE COLLECTION orders;",
+        )
+        .unwrap();
+    assert!(landed.has_changed().unwrap(), "a commit was not announced");
+    landed.borrow_and_update();
+
+    session.run("SELECT * FROM orders;").unwrap();
+    assert!(
+        !landed.has_changed().unwrap(),
+        "a read was announced as a landing"
+    );
+
+    let (namespace, database) = db.tenancy_in("prod", "shop").unwrap().unwrap();
+    let elsewhere = tessaridb::LogId::new(
+        tessaridb::Reach::Database(namespace, database),
+        tessaridb::Writer::new([7; 16]),
+    );
+    db.store()
+        .apply_from_stream(
+            elsewhere,
+            Sequence::new(1),
+            tessari_types::Epoch::ZERO,
+            &tessari_encoding::LogRecord::at(tessari_types::Epoch::new(1), Vec::new()),
+        )
+        .unwrap();
+    assert!(
+        landed.has_changed().unwrap(),
+        "a record applied from another writer was not announced"
+    );
+}
+
 #[test]
 fn a_split_feed_over_another_writers_log_is_refused_by_name() {
     let db = Db::in_memory().unwrap();
@@ -357,8 +410,8 @@ fn a_split_feed_over_another_writers_log_is_refused_by_name() {
         .unwrap();
     let refusal = fed(&db, &mut session, 0, None, Some("orders")).unwrap_err();
     assert!(
-        refusal.contains("shard 2 of `orders` holds another node's writes"),
-        "{refusal}"
+        matches!(&refusal, FeedRefused::AnotherWriter { what } if what == "shard 2 of `orders`"),
+        "{refusal:?}"
     );
 }
 
@@ -408,5 +461,8 @@ fn a_feed_ends_when_a_split_table_appears_in_its_scope() {
         "the feed delivered nothing, so it proves nothing"
     );
     let refusal = ended.unwrap_err();
-    assert!(refusal.contains("was split after it began"), "{refusal}");
+    assert!(
+        matches!(refusal, FeedRefused::SplitAfterStart),
+        "{refusal:?}"
+    );
 }

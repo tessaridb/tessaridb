@@ -262,7 +262,7 @@ pub struct Store {
 /// A free function rather than a method because it runs before the store
 /// exists: `open` settles the format before it resolves the node identity, and
 /// the identity is one of the store's own fields.
-fn read_format_version(backend: &Arc<dyn KvBackend>) -> Result<Option<FormatVersion>> {
+fn read_format_version(backend: Arc<dyn KvBackend>) -> Result<Option<FormatVersion>> {
     let key = FormatVersionKey.encode();
     let stored = backend.get(FormatVersionKey::keyspace(), &key)?;
     match stored {
@@ -275,7 +275,7 @@ fn read_format_version(backend: &Arc<dyn KvBackend>) -> Result<Option<FormatVers
 ///
 /// The `Absent` precondition is what makes two processes opening the same
 /// new store safe: exactly one of them writes the metadata.
-fn write_initial_metadata(backend: &Arc<dyn KvBackend>) -> Result<()> {
+fn write_initial_metadata(backend: Arc<dyn KvBackend>) -> Result<()> {
     let format_key = FormatVersionKey.encode();
     let batch = WriteBatch::new()
         .expect_absent(FormatVersionKey::keyspace(), format_key.clone())
@@ -305,7 +305,7 @@ fn write_initial_metadata(backend: &Arc<dyn KvBackend>) -> Result<()> {
 ///
 /// Returns the substrate's failure, and a decoding failure when a log key of
 /// the expected old shape does not hold a sequence.
-fn give_an_older_log_its_home(backend: &Arc<dyn KvBackend>, found: FormatVersion) -> Result<()> {
+fn give_an_older_log_its_home(backend: Arc<dyn KvBackend>, found: FormatVersion) -> Result<()> {
     if found >= FormatVersion::HOMED_LOG {
         return Ok(());
     }
@@ -379,7 +379,7 @@ fn give_an_older_log_its_home(backend: &Arc<dyn KvBackend>, found: FormatVersion
 ///
 /// Returns the substrate's failure, and a decoding failure when a log key of
 /// the expected old shape does not hold a sequence.
-fn give_an_older_log_its_writer(backend: &Arc<dyn KvBackend>, found: FormatVersion) -> Result<()> {
+fn give_an_older_log_its_writer(backend: Arc<dyn KvBackend>, found: FormatVersion) -> Result<()> {
     if found >= FormatVersion::WRITER_QUALIFIED_LOG {
         return Ok(());
     }
@@ -519,7 +519,7 @@ fn sequence_in_a_homeless_log_key(key: &[u8]) -> Option<Sequence> {
 /// The `Absent` precondition makes a race between two openers harmless: one
 /// writes, the other is refused and finds the value already there. A refusal is
 /// therefore success, not an error to report.
-fn seed_version_position(backend: &Arc<dyn KvBackend>) -> Result<()> {
+fn seed_version_position(backend: Arc<dyn KvBackend>) -> Result<()> {
     let version_key = VersionPositionKey.encode();
     if backend
         .get(VersionPositionKey::keyspace(), &version_key)?
@@ -573,7 +573,7 @@ mod tests {
         );
         assert!(store.logs().unwrap().is_empty(), "nothing written yet");
         assert_eq!(
-            read_format_version(store.backend()).unwrap(),
+            read_format_version(Arc::clone(store.backend())).unwrap(),
             Some(FormatVersion::CURRENT)
         );
     }
@@ -620,7 +620,7 @@ mod tests {
         drop(first);
         let second = Store::open(shared).unwrap();
         assert_eq!(
-            read_format_version(second.backend()).unwrap(),
+            read_format_version(Arc::clone(second.backend())).unwrap(),
             Some(FormatVersion::CURRENT)
         );
     }
@@ -644,7 +644,7 @@ mod tests {
 
         let store = Store::open(Arc::clone(&shared)).unwrap();
         assert_eq!(
-            read_format_version(store.backend()).unwrap(),
+            read_format_version(Arc::clone(store.backend())).unwrap(),
             Some(FormatVersion::CURRENT),
             "an older log is given its home at open, and the version says so"
         );
@@ -740,7 +740,7 @@ mod tests {
         drop(store);
         let reopened = Store::open(shared).unwrap();
         assert_eq!(
-            read_format_version(reopened.backend()).unwrap(),
+            read_format_version(Arc::clone(reopened.backend())).unwrap(),
             Some(FormatVersion::CURRENT)
         );
         assert_eq!(reopened.logs().unwrap(), vec![migrated]);

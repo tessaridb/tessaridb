@@ -37,6 +37,8 @@ use crate::store::Store;
 /// The in-memory copy, loaded when the store opens.
 #[derive(Debug, Default)]
 pub(crate) struct Served {
+    /// A `RwLock`: `served` is read on every ask, and `record_served` changes it
+    /// only when what this node serves changes.
     held: RwLock<Option<Reach>>,
 }
 

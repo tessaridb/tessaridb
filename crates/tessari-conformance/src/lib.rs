@@ -21,6 +21,8 @@
 //!   the document names every kind, function and form the engine has.
 
 #![forbid(unsafe_code)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 pub mod case;
 pub mod coverage;

@@ -4,29 +4,23 @@
 //! What lives here is the **sequencing**, because it belongs to whatever holds
 //! every surface, and that is this binary.
 //!
-//! # Why there is `unsafe` here
+//! # How a stop arrives
 //!
-//! Installing a signal handler is not expressible in safe Rust. `std` has no
-//! signal API at all, so the choice was between one audited call into `libc` and
-//! a dependency whose entire purpose is to wrap that same call. The dependency
-//! lost: it is a larger surface, it is not more correct, and this crate's
-//! neighbours took no dependency they could spell either.
+//! A task on the serving runtime waits for `SIGTERM` or `SIGINT` and cancels one
+//! [`CancellationToken`] on the first. Everything that stops waits on that token
+//! rather than on a flag of its own, so there is one answer to *has a stop been
+//! asked for* and nothing to keep in agreement with it (ADR-0085 §3).
 //!
-//! What the handler does is the part that has to be right, because almost
-//! nothing is legal inside one. It **increments an atomic and returns**, or on
-//! the second signal calls `_exit`, which is async-signal-safe. It allocates
-//! nothing, locks nothing, and formats nothing. Everything that reads that
-//! counter runs on an ordinary thread.
-//!
-//! It is the first `unsafe` in code that **ships**. The bench crate's counting
-//! allocator has carried one for longer, but that is an instrument rather than
-//! a surface a user reaches.
+//! The second signal ends the process from that same task, because that is the
+//! case where waiting is exactly what the operator is trying to stop.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tessari_serve::{Drained, Stopping};
+use tokio::runtime::Runtime;
+use tokio::signal::unix::{SignalKind, signal};
+use tokio_util::sync::CancellationToken;
 
 /// How long in-flight requests are given to finish.
 ///
@@ -55,51 +49,53 @@ const PATIENCE: Duration = Duration::from_secs(20);
 /// The cost is real and is paid by every shutdown. A second signal skips it.
 const LAME_DUCK: Duration = Duration::from_secs(5);
 
-/// How often the watcher looks at the counter.
+/// How often a waiting stage looks again.
 ///
-/// Parked rather than spun: a process spends its whole life waiting here.
+/// Slept on the runtime's timer rather than spun: most of a stop is waiting.
 const GLANCE: Duration = Duration::from_millis(100);
-
-/// How many stop signals have arrived.
-///
-/// A counter rather than a flag, because the second one means something
-/// different from the first and the handler must be able to tell without
-/// reading anything else.
-static ASKED: AtomicUsize = AtomicUsize::new(0);
-
-/// What a signal handler is allowed to do.
-///
-/// The second signal exits **here**, inside the handler, because that is the
-/// case where waiting is exactly what the operator is trying to stop. `_exit`
-/// is async-signal-safe; anything that flushes or unwinds is not.
-extern "C" fn asked(_signal: libc::c_int) {
-    if ASKED.fetch_add(1, Ordering::AcqRel) >= 1 {
-        // SAFETY: `_exit` is async-signal-safe by specification and is the one
-        // way out of a handler that is guaranteed not to touch the allocator or
-        // any lock this process might already hold.
-        unsafe { libc::_exit(1) }
-    }
-}
 
 /// Ask to be told when the operating system wants this process to stop.
 ///
 /// `SIGTERM` is what a supervisor sends and `SIGINT` is what a terminal sends,
 /// and a database should treat them the same: both mean *stop*, and only the
-/// sender differs.
-pub fn listen() {
-    // SAFETY: `signal` is called once, before any surface is serving, with a
-    // handler that only increments an atomic or calls `_exit`. The cast is the
-    // signature this interface requires; there is no safe spelling of it.
-    #[allow(clippy::as_conversions)]
-    unsafe {
-        libc::signal(libc::SIGTERM, asked as *const () as libc::sighandler_t);
-        libc::signal(libc::SIGINT, asked as *const () as libc::sighandler_t);
-    }
+/// sender differs. Called before anything serves, so a signal arriving during
+/// startup is counted rather than killing the process where it stands.
+pub fn listen(runtime: &Runtime) -> std::io::Result<CancellationToken> {
+    // Registered here rather than inside the task, so a refusal to register is
+    // an error at startup and not a node that silently ignores its supervisor.
+    let (mut terminate, mut interrupt) = {
+        let _inside = runtime.enter();
+        (
+            signal(SignalKind::terminate())?,
+            signal(SignalKind::interrupt())?,
+        )
+    };
+    let asked = CancellationToken::new();
+    let first = asked.clone();
+    runtime.spawn(async move {
+        tokio::select! {
+            _ = terminate.recv() => {}
+            _ = interrupt.recv() => {}
+        }
+        first.cancel();
+        tokio::select! {
+            _ = terminate.recv() => {}
+            _ = interrupt.recv() => {}
+        }
+        leave_now();
+    });
+    Ok(asked)
 }
 
-/// Whether a stop has been asked for.
-fn wanted() -> bool {
-    ASKED.load(Ordering::Acquire) > 0
+/// End the process at once, as the second signal asks.
+///
+/// `_exit` rather than `std::process::exit`, because `exit` runs the C++ static
+/// destructors the storage engine registered while its own background threads
+/// are still using what they destroy — which turns *leave now* into a crash.
+fn leave_now() -> ! {
+    // SAFETY: `_exit` takes no pointers, touches no Rust state and cannot return;
+    // skipping every destructor is the purpose.
+    unsafe { libc::_exit(1) }
 }
 
 /// Wait for a stop to be asked for, then run the stages in order.
@@ -122,10 +118,15 @@ fn wanted() -> bool {
 /// is not punished for a deployment. Subscriptions come **after** the drain
 /// because they never end on their own, and waiting for one in stage 2 would
 /// mean the drain never completes.
-pub fn watch(surfaces: &[Surface], quiet: &(dyn Fn() + Send + Sync)) {
-    while !wanted() {
-        std::thread::park_timeout(GLANCE);
-    }
+///
+/// Awaited on the runtime beside the listeners it stops; every wait in it is a
+/// timer, so it holds no thread while it waits.
+pub async fn watch(
+    asked: &CancellationToken,
+    surfaces: &[Surface],
+    quiet: &(dyn Fn() + Send + Sync),
+) {
+    asked.cancelled().await;
     eprintln!("tessaridb — stopping; a second signal exits immediately");
 
     // Stage 0. Say *not ready* and keep serving, so whatever is routing traffic
@@ -138,13 +139,10 @@ pub fn watch(surfaces: &[Surface], quiet: &(dyn Fn() + Send + Sync)) {
         "tessaridb — not ready; still serving for {}s so a load balancer can notice",
         LAME_DUCK.as_secs()
     );
-    // No check for a second signal here: the handler exits the process itself on
-    // the second one, so an operator who does not want to wait out this window
-    // is already gone before this loop could look.
-    let began = std::time::Instant::now();
-    while began.elapsed() < LAME_DUCK {
-        std::thread::park_timeout(GLANCE);
-    }
+    // No check for a second signal here: the listener exits the process itself
+    // on the second one, so an operator who does not want to wait out this
+    // window is already gone before this loop could look.
+    tokio::time::sleep(LAME_DUCK).await;
 
     // Stage 1. The intent is set on every surface first, then each is woken —
     // in that order, or a listener can find nothing set and block again.
@@ -169,8 +167,23 @@ pub fn watch(surfaces: &[Surface], quiet: &(dyn Fn() + Send + Sync)) {
 
     // Stage 2. Requests only. Feeds are stage 3 and were moved off this count
     // when they became feeds, which is what lets this finish at all.
-    for surface in surfaces {
-        match surface.stopping.drain(PATIENCE) {
+    drain_requests(surfaces).await;
+
+    // Stage 3. A feed notices the same flag stage 1 set, within the interval it
+    // already wakes on. Nothing is lost: a subscriber's cursor is a position it
+    // holds, so it resumes exactly where it stopped.
+    end_feeds(surfaces).await;
+}
+
+/// Stage 2 on every surface at once.
+///
+/// Together rather than one after another: each surface is given [`PATIENCE`],
+/// and waiting on them in turn would give a stop with work stuck on three
+/// surfaces three times that — past a supervisor's own patience, which is the
+/// deadline this one was chosen to stay inside.
+async fn drain_requests(surfaces: &[Surface]) {
+    futures_util::future::join_all(surfaces.iter().map(|surface| async move {
+        match surface.stopping.drain(PATIENCE).await {
             Drained::Finished => {}
             Drained::Deadline { left } => {
                 eprintln!(
@@ -180,17 +193,19 @@ pub fn watch(surfaces: &[Surface], quiet: &(dyn Fn() + Send + Sync)) {
                 );
             }
         }
-    }
+    }))
+    .await;
+}
 
-    // Stage 3. A feed notices the same flag stage 1 set, within the interval it
-    // already wakes on. Nothing is lost: a subscriber's cursor is a position it
-    // holds, so it resumes exactly where it stopped.
-    for surface in surfaces {
-        let began = std::time::Instant::now();
+/// Stage 3 on every surface at once, for the reason stage 2 is.
+async fn end_feeds(surfaces: &[Surface]) {
+    futures_util::future::join_all(surfaces.iter().map(|surface| async move {
+        let began = tokio::time::Instant::now();
         while surface.stopping.feeds() > 0 && began.elapsed() < PATIENCE {
-            std::thread::park_timeout(GLANCE);
+            tokio::time::sleep(GLANCE).await;
         }
-    }
+    }))
+    .await;
 }
 
 /// One serving surface, as the stages see it.
@@ -205,7 +220,47 @@ pub struct Surface {
     /// generalises: an HTTP server here has a call for it, and a plain
     /// `TcpListener` is woken by connecting to it.
     ///
-    /// `Sync` as well as `Send` because the watcher reads this from a thread
+    /// `Sync` as well as `Send` because the watcher reads this from one task
     /// while the surfaces are serving on others — the list is shared, not moved.
     pub wake: Box<dyn Fn() + Send + Sync>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn surface(name: &'static str) -> Surface {
+        Surface {
+            name,
+            stopping: Stopping::new(),
+            wake: Box::new(|| {}),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn surfaces_with_stuck_work_are_waited_on_together_not_in_turn() {
+        let surfaces = [surface("one"), surface("two"), surface("three")];
+        // A request on every surface that never finishes, and a feed that never ends.
+        let stuck: Vec<_> = surfaces.iter().map(|each| each.stopping.busy()).collect();
+        let mut feeding: Vec<_> = surfaces.iter().map(|each| each.stopping.busy()).collect();
+        for feed in &mut feeding {
+            feed.became_a_feed();
+        }
+
+        let began = tokio::time::Instant::now();
+        drain_requests(&surfaces).await;
+        let drained = began.elapsed();
+        end_feeds(&surfaces).await;
+        let ended = began.elapsed().saturating_sub(drained);
+
+        assert!(
+            drained < PATIENCE.saturating_mul(2) && drained >= PATIENCE,
+            "three stuck surfaces took {drained:?} to drain"
+        );
+        assert!(
+            ended < PATIENCE.saturating_mul(2) && ended >= PATIENCE,
+            "three open feeds took {ended:?} to be given up on"
+        );
+        drop((stuck, feeding));
+    }
 }

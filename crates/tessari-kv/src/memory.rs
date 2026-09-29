@@ -30,6 +30,8 @@ type Tree = BTreeMap<Key, Value>;
 /// A non-durable, ordered, in-memory store.
 #[derive(Debug, Default)]
 pub struct MemoryBackend {
+    /// A `RwLock`: many sessions read at once, while writes already arrive one
+    /// at a time behind the store's write gate.
     keyspaces: RwLock<BTreeMap<Keyspace, Tree>>,
 }
 

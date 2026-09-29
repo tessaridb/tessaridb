@@ -121,12 +121,12 @@ const fn sextet(character: u8) -> Option<u8> {
 /// Decode standard base64, strictly.
 fn decode(text: &str) -> Option<Vec<u8>> {
     let bytes = text.as_bytes();
-    if bytes.is_empty() || bytes.len() % 4 != 0 {
+    if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
         return None;
     }
     let quads = bytes.len() / 4;
     let mut out = Vec::with_capacity(quads.saturating_mul(3));
-    for (index, quad) in bytes.chunks_exact(4).enumerate() {
+    for (index, quad) in bytes.as_chunks::<4>().0.iter().enumerate() {
         // Padding is only ever the last one or two characters of the last group.
         // Anywhere else it is a malformed document rather than a short one, and
         // the two must not be confused.

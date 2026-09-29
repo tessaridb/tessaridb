@@ -52,6 +52,8 @@
 //! whoever reads this next.
 
 #![forbid(unsafe_code)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 #[cfg(feature = "server")]
 mod campaign;
@@ -59,19 +61,27 @@ mod client;
 #[cfg(feature = "server")]
 mod collection;
 #[cfg(feature = "server")]
+mod conversation;
+#[cfg(feature = "server")]
 mod credential;
 #[cfg(feature = "server")]
 mod directory;
 #[cfg(feature = "server")]
+mod door;
+#[cfg(feature = "server")]
 mod driver;
 mod error;
 mod frame;
+#[cfg(feature = "server")]
+mod frame_async;
 #[cfg(feature = "server")]
 mod gatherer;
 #[cfg(feature = "server")]
 mod gathering;
 #[cfg(feature = "server")]
 mod grant;
+#[cfg(feature = "server")]
+mod hot;
 #[cfg(feature = "server")]
 mod joining;
 #[cfg(feature = "server")]
@@ -99,6 +109,8 @@ pub use crate::credential::{fingerprint, names, presented};
 #[cfg(feature = "server")]
 pub use crate::directory::{Destination, Directory, Heard};
 #[cfg(feature = "server")]
+pub use crate::door::Holding;
+#[cfg(feature = "server")]
 pub use crate::driver::{
     Collecting, Published, Renewing, bootstrap_from, due_in, every, heard_a_leader,
     heard_a_leader_on, heard_a_newer_policy, leader_of_range, names_a_peer, stands, stands_for,
@@ -106,13 +118,13 @@ pub use crate::driver::{
 };
 pub use crate::error::{Error, Result};
 #[cfg(feature = "server")]
-pub use crate::gatherer::{Gathering, Greeting};
+pub use crate::gatherer::{Gathering, Greeting, GreetingUnavailable};
 #[cfg(feature = "server")]
 pub use crate::gathering::{Gather, Page, Ungathered};
 #[cfg(feature = "server")]
 pub use crate::grant::{Ballot, Deciding, Leadership, Reached, Refused, Round, Vote, Voter};
 #[cfg(feature = "server")]
-pub use crate::joining::{Joining, Seed, Told};
+pub use crate::joining::{CredentialFile, Joining, Seed, Told};
 #[cfg(feature = "server")]
 pub use crate::link::{Answered, Ask, Credential, Met, Peers, call};
 #[cfg(feature = "server")]

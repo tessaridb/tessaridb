@@ -104,10 +104,10 @@ impl KvBackend for Overlaid {
     }
 
     fn get(&self, keyspace: Keyspace, key: &Key) -> Result<Option<Value>> {
-        if let Some(state) = self.pending() {
-            if let Some(pending) = state.lookup(keyspace, key.as_slice()) {
-                return Ok(pending);
-            }
+        if let Some(state) = self.pending()
+            && let Some(pending) = state.lookup(keyspace, key.as_slice())
+        {
+            return Ok(pending);
         }
         self.engine.get(keyspace, key)
     }
@@ -187,10 +187,10 @@ impl KvBackend for Overlaid {
     }
 
     fn contains(&self, keyspace: Keyspace, key: &Key) -> Result<bool> {
-        if let Some(state) = self.pending() {
-            if let Some(pending) = state.lookup(keyspace, key.as_slice()) {
-                return Ok(pending.is_some());
-            }
+        if let Some(state) = self.pending()
+            && let Some(pending) = state.lookup(keyspace, key.as_slice())
+        {
+            return Ok(pending.is_some());
         }
         self.engine.contains(keyspace, key)
     }
@@ -206,10 +206,10 @@ fn walkable(range: &KeyRange) -> Option<Bounds<'_>> {
     if range.is_provably_empty() {
         return None;
     }
-    if let (Bound::Excluded(low), Bound::Excluded(high)) = (range.start(), range.end()) {
-        if low == high {
-            return None;
-        }
+    if let (Bound::Excluded(low), Bound::Excluded(high)) = (range.start(), range.end())
+        && low == high
+    {
+        return None;
     }
     Some((side(range.start()), side(range.end())))
 }

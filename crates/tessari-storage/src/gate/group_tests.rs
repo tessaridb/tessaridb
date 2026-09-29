@@ -104,6 +104,13 @@ fn commits_arriving_while_one_lands_land_together() {
     let store = Store::open(Arc::clone(&backend) as Arc<dyn KvBackend>).unwrap();
     // Opening the store writes; only the commits below are counted.
     backend.writes.store(0, Ordering::SeqCst);
+    // And each commit that landed in a group is announced to whatever follows
+    // the log, not only the one that wrote the group (Q-838).
+    let announced = Arc::new(AtomicUsize::new(0));
+    let counting = Arc::clone(&announced);
+    store.when_landed(move || {
+        counting.fetch_add(1, Ordering::SeqCst);
+    });
 
     std::thread::scope(|scope| {
         let first = scope.spawn(|| write(&store, 0));
@@ -136,6 +143,11 @@ fn commits_arriving_while_one_lands_land_together() {
         backend.writes.load(Ordering::SeqCst),
         2,
         "nine commits should land in two engine writes"
+    );
+    assert_eq!(
+        announced.load(Ordering::SeqCst),
+        BEHIND + 1,
+        "a commit that landed in a group was not announced"
     );
     let transaction = store.begin().unwrap();
     for id in 0..=BEHIND {

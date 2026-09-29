@@ -24,9 +24,7 @@
 //! tables some earlier process created still find their floors, without every
 //! read paying for the ones that have none.
 
-use std::collections::BTreeMap;
-use std::sync::RwLock;
-
+use dashmap::DashMap;
 use tessari_types::{Duration, TableId};
 
 use crate::catalog::definition::TableKind;
@@ -34,7 +32,9 @@ use crate::catalog::definition::TableKind;
 /// The retention each table carries, as far as this process has learned.
 #[derive(Debug, Default)]
 pub(crate) struct SeriesRegistry {
-    known: RwLock<BTreeMap<TableId, Option<Duration>>>,
+    /// A `DashMap`: every write to a table asks `known` from every
+    /// thread, and `learn`/`forget` change it only when a table's definition does.
+    known: DashMap<TableId, Option<Duration>>,
 }
 
 impl SeriesRegistry {
@@ -43,13 +43,7 @@ impl SeriesRegistry {
     /// The outer `Option` is whether it has been learned; the inner is whether
     /// the table is a series.
     pub(crate) fn known(&self, table: TableId) -> Option<Option<Duration>> {
-        // A poisoned lock means a thread panicked while holding it. Answering
-        // "not learned" sends the caller to the catalog, which is correct and
-        // slow rather than wrong and fast.
-        self.known
-            .read()
-            .ok()
-            .and_then(|held| held.get(&table).copied())
+        self.known.get(&table).map(|held| *held)
     }
 
     /// Record what a table's kind says, learned from a declaration or a read.
@@ -58,9 +52,7 @@ impl SeriesRegistry {
             TableKind::Series(declared) => Some(declared.retain),
             _ => None,
         };
-        if let Ok(mut held) = self.known.write() {
-            held.insert(table, retain);
-        }
+        self.known.insert(table, retain);
     }
 
     /// Forget a table that has been dropped.
@@ -68,8 +60,6 @@ impl SeriesRegistry {
     /// Ids are allocated and never reused, so this is hygiene rather than
     /// correctness: nothing can address the table again.
     pub(crate) fn forget(&self, table: TableId) {
-        if let Ok(mut held) = self.known.write() {
-            held.remove(&table);
-        }
+        self.known.remove(&table);
     }
 }

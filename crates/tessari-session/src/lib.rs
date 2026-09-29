@@ -18,6 +18,8 @@
 //! reading the wrong table raises nothing.
 
 #![forbid(unsafe_code)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 mod accumulate;
 mod aggregate;
@@ -31,6 +33,7 @@ mod condition;
 mod consume;
 mod context;
 mod describe;
+mod detached;
 mod digest;
 mod effect;
 mod elsewhere;
@@ -65,6 +68,7 @@ mod topic;
 mod vector;
 mod view;
 
+pub use detached::Detached;
 pub use effect::{Effect, admits};
 pub use elsewhere::{Elsewhere, Peer};
 pub use error::{Depended, Error, Result};

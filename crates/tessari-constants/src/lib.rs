@@ -5,6 +5,8 @@
 //! never carries a bare numeric literal.
 
 #![forbid(unsafe_code)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 /// How many times a commit re-attempts after losing the race for the committed
 /// tail, before reporting contention to the caller.
@@ -306,38 +308,60 @@ pub const ORDERED_FILTER_REACH: usize = 32;
 /// close rather than an allocation.
 pub const SOCKET_MAX_FRAME_BYTES: usize = 64 * 1024;
 
+/// How many store calls one serving surface runs at once.
+///
+/// Unit: calls in flight.
+///
+/// Every statement, commit, feed round and catalog read made from the runtime
+/// crosses a bridge of this many slots onto the blocking pool, and a caller
+/// that finds it full is refused rather than queued (ADR-0085 §2). It is the
+/// number the synchronous node held as its connection ceiling, because each of
+/// those connections was a thread that could be inside the store at once: the
+/// port changed how the store is waited on, not how many may wait.
+pub const MAX_STORE_CALLS: usize = 400;
+
 /// How many connections one serving surface holds open at once.
 ///
 /// Unit: connections.
 ///
 /// # Why a ceiling exists at all
 ///
-/// A thread per connection is this node's deliberate model, and the paragraph
-/// that justifies it does not bound it. Without a ceiling the node has no point
-/// at which it refuses: it degrades, and then fails to spawn a thread, and the
+/// Without one the node has no point at which it refuses: it degrades until
+/// something it cannot do without — memory, descriptors — runs out, and the
 /// failure arrives at whichever connection happened to be next rather than at
 /// the one that caused it. A number here turns that into an answer a client can
 /// read.
 ///
-/// # Why this number
+/// # Why this number, and why it is not [`MAX_STORE_CALLS`]
 ///
-/// Each connection costs one operating-system thread, which reserves stack
-/// address space — eight megabytes by default on Linux and macOS — plus a
-/// scheduler slot and whatever the session holds. Four hundred is comfortably
-/// inside what a modest machine runs without the scheduler becoming the cost,
-/// and comfortably above what an embedded caller or a small deployment reaches.
-/// The crate documentation for the wire protocol names the trigger for changing
-/// the *model* — idle subscribers in the tens of thousands — and this constant
-/// is what makes reaching that trigger visible rather than fatal.
+/// A held connection used to be an operating-system thread, so the connections
+/// a surface held and the store calls it could run were one number. On the
+/// runtime a held connection is a task and a few kilobytes of buffers, and a
+/// subscriber waiting for a change holds its connection for hours while making
+/// no store call at all (ADR-0085 §3). So the two are bounded separately: this
+/// many conversations held, of which at most [`MAX_STORE_CALLS`] are inside the
+/// store at once.
 ///
-/// It is per **surface** rather than per process: the wire protocol and the HTTP
+/// Sixteen thousand three hundred and eighty-four holds the ten thousand idle
+/// subscribers the port was measured against, with room for the request
+/// traffic beside them. It is per **surface**: the wire protocol and the HTTP
 /// endpoint each hold their own door, so a flood of one cannot starve the other
-/// of the places it needs to answer a health check.
+/// of the places it needs to answer a health check. A process serving it needs
+/// its descriptor limit above it.
+pub const MAX_CONNECTIONS: usize = 16_384;
+
+/// How many peer connections the peer door serves at once.
 ///
-/// Provisional in the same sense as [`MAX_COMMIT_ATTEMPTS`] — chosen to be
-/// obviously safe rather than measured, and the refusal count is what a
-/// deployment tunes it from.
-pub const MAX_CONNECTIONS: usize = 400;
+/// The door used to serve one: a peer that connected and then said nothing
+/// held it for a whole [`GREETING_SECONDS`] per read, and every ballot,
+/// greeting and collection from every other peer waited behind it. Each
+/// connection is now its own task, so the bound is what keeps a stranger who
+/// opens sockets from turning that into memory instead. A peer holds at most a
+/// few connections at once — a greeting, a collection, a ballot, a gather — so
+/// sixty-four is a cluster of a dozen nodes all calling at the same moment,
+/// with room. A connection beyond it is closed unanswered and the peer's next
+/// round tries again.
+pub const PEER_CONNECTIONS: usize = 64;
 
 /// The largest request body the HTTP surface reads.
 ///
@@ -673,7 +697,8 @@ pub const SESSION_TOKEN_SECONDS: u64 = 12 * 60 * 60;
 /// failing is — so nothing else stands between one account and an unbounded
 /// table.
 ///
-/// Ten per connection slot ([`MAX_CONNECTIONS`]), because a client that
+/// Ten per store-call slot ([`MAX_STORE_CALLS`]) — the connection bound this
+/// was sized against before the two were separated — because a client that
 /// reconnects gets a new connection and may reasonably still hold its old
 /// token. At roughly two hundred bytes an entry the whole table is under a
 /// mebibyte, which is the point: it is cheap enough that the bound can be
@@ -681,7 +706,7 @@ pub const SESSION_TOKEN_SECONDS: u64 = 12 * 60 * 60;
 ///
 /// Reaching it **refuses to issue** rather than evicting somebody else's live
 /// token. Eviction would make minting tokens a way to sign other people out.
-pub const MAX_SESSION_TOKENS: usize = MAX_CONNECTIONS * 10;
+pub const MAX_SESSION_TOKENS: usize = MAX_STORE_CALLS * 10;
 
 /// How many times one identity may fail to sign in before it is made to wait.
 ///

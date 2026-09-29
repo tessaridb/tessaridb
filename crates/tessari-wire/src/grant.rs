@@ -75,6 +75,8 @@
 //! leadership — and the refusal names the voter's own position, so a candidate
 //! can tell *catch up* from *you lost*.
 
+mod deciding;
+mod round;
 use std::time::{Duration, Instant};
 
 use tessari_encoding::NODE_ID_LEN;
@@ -83,6 +85,9 @@ use tessari_types::{Epoch, Reach, Sequence};
 
 use crate::error::{Error, Result};
 use crate::frame;
+pub use deciding::Deciding;
+pub use round::Round;
+pub(crate) use round::free_at;
 
 /// What a candidate asks each voting member for.
 ///
@@ -558,113 +563,6 @@ impl Voter {
     }
 }
 
-/// One node's voting memory, reachable from every thread that can need it.
-///
-/// # Why the memory is shared rather than owned by the door
-///
-/// A node votes in two places. A peer's ballot arrives at the door; this node's
-/// own ballot, when it stands for an epoch of its own, is decided at home. Both
-/// are votes, and a voter grants an epoch **at most once** — which is the whole
-/// safety argument [`Voter`] rests on and it is a statement about the node, not
-/// about a variable.
-///
-/// A campaign that counted its own vote without recording it here would leave
-/// this node free to grant the same epoch to somebody else a moment later. Two
-/// candidates would then hold one epoch, each with an honest majority, and
-/// nothing anywhere would be in an error state. That is the split-brain this
-/// module opens by declaring impossible, arriving through the one voter the
-/// design forgot was also a candidate.
-///
-/// # The lock is taken to decide a vote, never to wait for one
-///
-/// [`crate::Peers::greet`] waits inside `accept`, so a door holding this lock
-/// across a whole call would block a campaign for as long as no peer happened to
-/// ring. It takes the lock where the vote is actually decided instead, which is
-/// a few comparisons long.
-#[derive(Debug)]
-pub struct Deciding {
-    voter: std::sync::Mutex<Voter>,
-    /// One memory per placed range's line (ADR-0082), each started at the
-    /// store line's start instant: a process that restarted cannot remember a
-    /// grant on ANY line, so the restart guard covers every one of them.
-    lines: std::sync::Mutex<std::collections::BTreeMap<Reach, Voter>>,
-}
-
-impl Deciding {
-    /// A voting memory that started now.
-    #[must_use]
-    pub fn started() -> Self {
-        Self::holding(Voter::started())
-    }
-
-    /// A voting memory around a voter whose start instant the caller stated.
-    #[must_use]
-    pub fn holding(voter: Voter) -> Self {
-        Self {
-            voter: std::sync::Mutex::new(voter),
-            lines: std::sync::Mutex::new(std::collections::BTreeMap::new()),
-        }
-    }
-
-    /// Answer one ballot, from wherever it came.
-    ///
-    /// # A poisoned lock recovers rather than refusing
-    ///
-    /// The same decision [`crate::Published`] takes and for the same reason: what
-    /// the lock protects is one `Option` assigned whole, so a thread that
-    /// panicked mid-call left a complete memory behind and never half of one.
-    /// Refusing to read it would take this node out of every round for the rest
-    /// of the process's life over a panic elsewhere — a permanent availability
-    /// loss bought with no safety, because the value being guarded is sound.
-    pub fn asked(&self, ballot: &Ballot, now: Instant, mine: Reached, candidate: Reached) -> Vote {
-        if ballot.range == Reach::Store {
-            return self.held().asked(ballot, now, mine, candidate);
-        }
-        let started = self.held().started;
-        let mut lines = self
-            .lines
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        lines
-            .entry(ballot.range)
-            .or_insert_with(|| Voter::started_at(started))
-            .asked(ballot, now, mine, candidate)
-    }
-
-    /// When this node last granted a ballot to somebody else — see
-    /// [`Voter::granted_elsewhere_at`].
-    #[must_use]
-    pub fn granted_elsewhere_at(&self, me: [u8; NODE_ID_LEN]) -> Option<Instant> {
-        self.held().granted_elsewhere_at(me)
-    }
-
-    /// The same question on one placed range's line (ADR-0082) — `None` for a
-    /// line this node has never been asked about.
-    #[must_use]
-    pub fn granted_elsewhere_on(&self, range: Reach, me: [u8; NODE_ID_LEN]) -> Option<Instant> {
-        if range == Reach::Store {
-            return self.granted_elsewhere_at(me);
-        }
-        self.lines
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&range)
-            .and_then(|voter| voter.granted_elsewhere_at(me))
-    }
-
-    /// The highest epoch this node has granted, if any.
-    #[must_use]
-    pub fn decided(&self) -> Option<Epoch> {
-        self.held().decided()
-    }
-
-    fn held(&self) -> std::sync::MutexGuard<'_, Voter> {
-        self.voter
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-}
-
 /// Leadership a majority agreed to.
 ///
 /// Named for the thing rather than for the holding, because the storage engine
@@ -691,115 +589,10 @@ impl Leadership {
     }
 }
 
-/// A candidate's round: one epoch, asked of a known set of voters.
-#[derive(Debug)]
-pub struct Round {
-    ballot: Ballot,
-    voters: usize,
-    opened: Instant,
-    granted: Vec<[u8; NODE_ID_LEN]>,
-}
-
-impl Round {
-    /// Open a round now.
-    ///
-    /// `voters` is the size of the configured voting set, which is what a
-    /// majority is a majority *of*. A round opened against a set of zero can
-    /// never conclude, which is the right answer rather than a special case.
-    #[must_use]
-    pub fn opened(epoch: Epoch, candidate: [u8; NODE_ID_LEN], voters: usize) -> Self {
-        Self::opened_at(epoch, candidate, voters, Instant::now())
-    }
-
-    /// Open a round at a stated instant.
-    #[must_use]
-    pub fn opened_at(
-        epoch: Epoch,
-        candidate: [u8; NODE_ID_LEN],
-        voters: usize,
-        opened: Instant,
-    ) -> Self {
-        Self {
-            ballot: Ballot {
-                epoch,
-                candidate,
-                range: Reach::Store,
-            },
-            voters,
-            opened,
-            granted: Vec::new(),
-        }
-    }
-
-    /// The same round, on a placed range's own line (ADR-0082).
-    #[must_use]
-    pub const fn over(mut self, range: Reach) -> Self {
-        self.ballot.range = range;
-        self
-    }
-
-    /// The ballot to put to every voter.
-    #[must_use]
-    pub const fn ballot(&self) -> Ballot {
-        self.ballot
-    }
-
-    /// Record one voter's answer, and say whether that answer carried the round.
-    ///
-    /// A voter is counted once however many times it answers: a majority is a
-    /// majority of *members*, and a transport that retried would otherwise be
-    /// able to elect a leader on its own.
-    pub fn counts(&mut self, voter: [u8; NODE_ID_LEN], vote: Vote) -> Option<Leadership> {
-        if vote == Vote::Granted && !self.granted.contains(&voter) {
-            self.granted.push(voter);
-        }
-        self.held()
-    }
-
-    /// How many more grants this round still needs.
-    ///
-    /// Zero when it is already carried. It exists so a candidate can tell
-    /// whether its own ballot would decide anything before casting it — see
-    /// [`crate::Standing::renew`], where casting it too early was a permanent
-    /// outage rather than an inefficiency (ADR-0066).
-    #[must_use]
-    pub fn needs(&self) -> usize {
-        majority(self.voters).saturating_sub(self.granted.len())
-    }
-
-    /// The grant this round has won, if it has won one.
-    #[must_use]
-    pub fn held(&self) -> Option<Leadership> {
-        (self.granted.len() >= majority(self.voters)).then_some(Leadership {
-            epoch: self.ballot.epoch,
-            from: self.opened,
-        })
-    }
-}
-
-/// How many of `voters` it takes to carry a round.
-///
-/// Strictly more than half. Half exactly would let two disjoint halves of an
-/// even set each carry a round of their own, which is the split-brain written as
-/// an off-by-one.
-#[must_use]
-pub const fn majority(voters: usize) -> usize {
-    voters.div_euclid(2).saturating_add(1)
-}
-
-/// One TTL after `at`, which is when a grant made then is certainly dead.
-///
-/// Saturating rather than wrapping for the reason [`Lease::taken_at`] floors its
-/// own: an instant so far out that the addition cannot be represented is not a
-/// reason to hand back an earlier one, and an earlier one here would free a
-/// voter that is not free.
-fn free_at(at: Instant) -> Instant {
-    at.checked_add(LEASE_TTL).unwrap_or(at)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Ballot, Deciding, Leadership, Reached, Refused, Round, Vote, Voter, majority};
+    use super::round::majority;
+    use super::{Ballot, Deciding, Leadership, Reached, Refused, Round, Vote, Voter};
     use std::time::{Duration, Instant};
     use tessari_encoding::NODE_ID_LEN;
     use tessari_storage::{LEASE_GUARD, LEASE_TTL};

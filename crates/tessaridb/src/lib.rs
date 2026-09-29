@@ -40,6 +40,8 @@
 //! store and come back with. See [`Db::changes_since`].
 
 #![forbid(unsafe_code)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -70,9 +72,11 @@ use tessari_types::ShardId;
 ///
 /// # Errors
 ///
-/// Returns a sentence naming what the text is instead of a value.
-pub fn value_of(written: &str) -> core::result::Result<tessari_types::Value, String> {
-    let refusal = || format!("{written:?} is not a value TessariQL can read on its own");
+/// Returns [`NotAValue`], naming the text that is not a value.
+pub fn value_of(written: &str) -> core::result::Result<tessari_types::Value, NotAValue> {
+    let refusal = || NotAValue {
+        written: written.to_owned(),
+    };
     match tessari_ql::parse_expression(written)
         .map_err(|_| refusal())?
         .kind
@@ -82,13 +86,39 @@ pub fn value_of(written: &str) -> core::result::Result<tessari_types::Value, Str
     }
 }
 
+/// Text [`value_of`] could not read as a value on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotAValue {
+    written: String,
+}
+
+impl NotAValue {
+    /// The text that was refused.
+    #[must_use]
+    pub fn written(&self) -> &str {
+        &self.written
+    }
+}
+
+impl core::fmt::Display for NotAValue {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            formatter,
+            "{:?} is not a value TessariQL can read on its own",
+            self.written
+        )
+    }
+}
+
+impl std::error::Error for NotAValue {}
+
 pub mod feed;
 
 pub use tessari_lsm::{Durability, StoreConfig};
 pub use tessari_session::redact::{Visible, seen};
 pub use tessari_session::{
-    AccessPath, Error, Exactness, Nearest, Note, Outcome, Parameters, Result, Session, Suggestion,
-    Ticket,
+    AccessPath, Detached, Error, Exactness, Nearest, Note, Outcome, Parameters, Result, Session,
+    Suggestion, Ticket,
 };
 pub use tessari_storage::{
     BUILD_VERSION, Change, ChangeKind, Changes, LeadershipDefinition, Lease, LogId, Reach,
@@ -145,6 +175,9 @@ pub struct Db {
     /// by the process that knows its peers and handed to every session opened
     /// here — so every surface that serves a read, whichever it is, gathers.
     gather: std::sync::OnceLock<Arc<dyn tessari_session::Gather>>,
+    /// What this store has landed, for whatever follows it — made on first
+    /// asking, so a database nobody follows pays nothing on its commits.
+    commits: std::sync::OnceLock<Arc<feed::Commits>>,
 }
 
 impl Db {
@@ -159,10 +192,11 @@ impl Db {
     ///
     /// Returns an error when the store cannot be initialised.
     pub fn in_memory() -> Result<Self> {
-        let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+        let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
         Ok(Self {
             store: Store::open(backend)?,
             gather: std::sync::OnceLock::new(),
+            commits: std::sync::OnceLock::new(),
         })
     }
 
@@ -187,10 +221,11 @@ impl Db {
     /// cannot be initialised on it.
     pub fn open_with(path: impl AsRef<Path>, config: StoreConfig) -> Result<Self> {
         let backend = LsmBackend::open(path, config).map_err(tessari_storage::Error::from)?;
-        let backend = Arc::new(backend) as Arc<dyn KvBackend>;
+        let backend: Arc<dyn KvBackend> = Arc::new(backend);
         Ok(Self {
             store: Store::open(backend)?,
             gather: std::sync::OnceLock::new(),
+            commits: std::sync::OnceLock::new(),
         })
     }
 
@@ -206,6 +241,22 @@ impl Db {
             Some(gather) => session.gathering(Arc::clone(gather)),
             None => session,
         }
+    }
+
+    /// Every landing in this store, announced: a commit through any session or
+    /// surface, and a record applied from another writer's stream.
+    ///
+    /// One per database, so every feed on every surface of a process waits on
+    /// the same announcement, and a change none of them caused still wakes
+    /// them.
+    #[must_use]
+    pub fn commits(&self) -> &Arc<feed::Commits> {
+        self.commits.get_or_init(|| {
+            let commits = Arc::new(feed::Commits::default());
+            let announced = Arc::clone(&commits);
+            self.store.when_landed(move || announced.signal());
+            commits
+        })
     }
 
     /// Gather the shards of a split table this node lacks through `gather`
@@ -360,6 +411,7 @@ impl Db {
         Self {
             store,
             gather: std::sync::OnceLock::new(),
+            commits: std::sync::OnceLock::new(),
         }
     }
 

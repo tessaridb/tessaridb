@@ -59,6 +59,8 @@ impl std::fmt::Display for Malformed {
     }
 }
 
+impl std::error::Error for Malformed {}
+
 /// Read a whole payload as one JSON value.
 ///
 /// # Errors
@@ -310,7 +312,7 @@ impl Reader<'_> {
         };
         let mut held: u16 = 0;
         for digit in digits {
-            let Some(value) = (*digit as char).to_digit(16) else {
+            let Some(value) = char::from(*digit).to_digit(16) else {
                 return Err(self.wrong("not four hex digits"));
             };
             // Four hex digits cannot exceed `u16`, so neither of these can wrap;

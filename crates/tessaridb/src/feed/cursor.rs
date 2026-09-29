@@ -19,6 +19,8 @@ use std::collections::BTreeMap;
 
 use tessari_types::{DatabaseId, NamespaceId, Reach, Sequence, ShardId, TableId};
 
+use super::FeedRefused;
+
 /// The cursor `positions` in `namespace`/`database` spell, one entry per home.
 pub(super) fn spell(
     namespace: NamespaceId,
@@ -51,14 +53,15 @@ pub(super) fn read(
     text: &str,
     namespace: NamespaceId,
     database: DatabaseId,
-) -> Result<BTreeMap<Reach, Sequence>, String> {
-    let wrong = || format!("{text:?} is not a cursor a change of this feed carried");
+) -> Result<BTreeMap<Reach, Sequence>, FeedRefused> {
+    let wrong = || FeedRefused::CursorUnreadable {
+        cursor: text.to_owned(),
+    };
     let (given_in, entries) = text.split_once(':').ok_or_else(wrong)?;
     if given_in != format!("{namespace}.{database}") {
-        return Err(format!(
-            "{text:?} was given by a feed over another database, and its positions mean \
-             nothing in this one"
-        ));
+        return Err(FeedRefused::CursorFromAnotherDatabase {
+            cursor: text.to_owned(),
+        });
     }
     let mut positions = BTreeMap::new();
     for entry in entries.split(',') {

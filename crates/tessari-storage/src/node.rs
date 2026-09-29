@@ -44,8 +44,8 @@ const ENTROPY_SOURCE: &str = "/dev/urandom";
 /// Returns [`Error::NoEntropy`] when the randomness source cannot be read, the
 /// substrate's failure when the write is refused, and a decoding failure when
 /// the stored identity was written by a build this one cannot read.
-pub(crate) fn ensure(backend: &Arc<dyn KvBackend>) -> Result<NodeIdentity> {
-    if let Some(mut found) = read(backend)? {
+pub(crate) fn ensure(backend: Arc<dyn KvBackend>) -> Result<NodeIdentity> {
+    if let Some(mut found) = read(Arc::clone(&backend))? {
         let running = NodeVersion::current();
         if found.version != running {
             // **This is the upgrade, and this is where it is visible.** The id
@@ -95,11 +95,11 @@ pub(crate) fn ensure(backend: &Arc<dyn KvBackend>) -> Result<NodeIdentity> {
 /// Returns [`Error::NoIdentity`] when the store has none, and the substrate's
 /// failure when the read or the write is refused.
 pub(crate) fn configure(
-    backend: &Arc<dyn KvBackend>,
+    backend: Arc<dyn KvBackend>,
     roles: Option<Roles>,
     endpoints: Option<Vec<String>>,
 ) -> Result<NodeIdentity> {
-    let Some(mut identity) = read(backend)? else {
+    let Some(mut identity) = read(Arc::clone(&backend))? else {
         // Unreachable through an open store, which resolves the identity before
         // it hands one out. Said rather than unwrapped, because "the open path
         // guarantees it" is a claim about another function that a later edit can
@@ -120,7 +120,7 @@ pub(crate) fn configure(
 ///
 /// No `Absent` precondition here, because this one is an overwrite by
 /// definition: the identity exists and one of its fields has moved.
-fn write(backend: &Arc<dyn KvBackend>, identity: &NodeIdentity) -> Result<()> {
+fn write(backend: Arc<dyn KvBackend>, identity: &NodeIdentity) -> Result<()> {
     let batch = WriteBatch::new().put(
         NodeIdentityKey::keyspace(),
         NodeIdentityKey.encode(),
@@ -136,7 +136,7 @@ fn write(backend: &Arc<dyn KvBackend>, identity: &NodeIdentity) -> Result<()> {
 ///
 /// Returns the substrate's failure, or a decoding failure when the stored bytes
 /// carry a revision, role or membership this build does not know.
-pub(crate) fn read(backend: &Arc<dyn KvBackend>) -> Result<Option<NodeIdentity>> {
+pub(crate) fn read(backend: Arc<dyn KvBackend>) -> Result<Option<NodeIdentity>> {
     let key = NodeIdentityKey.encode();
     match backend.get(NodeIdentityKey::keyspace(), &key)? {
         Some(value) => Ok(Some(NodeIdentity::decode(value.as_slice())?)),
@@ -178,16 +178,16 @@ mod tests {
     #[test]
     fn a_store_with_no_identity_is_given_one() {
         let held = backend();
-        assert!(read(&held).unwrap().is_none());
-        let made = ensure(&held).unwrap();
-        assert_eq!(read(&held).unwrap(), Some(made));
+        assert!(read(Arc::clone(&held)).unwrap().is_none());
+        let made = ensure(Arc::clone(&held)).unwrap();
+        assert_eq!(read(Arc::clone(&held)).unwrap(), Some(made));
     }
 
     #[test]
     fn a_second_ensure_returns_the_first_identity_rather_than_a_new_one() {
         let held = backend();
-        let first = ensure(&held).unwrap();
-        let second = ensure(&held).unwrap();
+        let first = ensure(Arc::clone(&held)).unwrap();
+        let second = ensure(Arc::clone(&held)).unwrap();
         assert_eq!(first.id, second.id);
     }
 
@@ -206,7 +206,7 @@ mod tests {
         // a hand-written "older" version would silently equal the current one and
         // the test would pass without the branch ever being taken.
         let held = backend();
-        let first = ensure(&held).unwrap();
+        let first = ensure(Arc::clone(&held)).unwrap();
         let running = NodeVersion::current();
         let other = NodeVersion {
             major: running.major.saturating_add(1),
@@ -214,7 +214,7 @@ mod tests {
         };
         assert_ne!(other, running, "the fixture must differ to test anything");
         write(
-            &held,
+            Arc::clone(&held),
             &NodeIdentity {
                 version: other,
                 ..first.clone()
@@ -222,7 +222,7 @@ mod tests {
         )
         .unwrap();
 
-        let after = ensure(&held).unwrap();
+        let after = ensure(Arc::clone(&held)).unwrap();
         assert_eq!(after.version, running);
         assert_eq!(after.id, first.id, "an upgrade is not a new identity");
     }
@@ -230,9 +230,9 @@ mod tests {
     #[test]
     fn configuring_a_node_moves_what_it_names_and_nothing_else() {
         let held = backend();
-        let before = ensure(&held).unwrap();
+        let before = ensure(Arc::clone(&held)).unwrap();
         let after = configure(
-            &held,
+            Arc::clone(&held),
             Some(Roles::COORDINATING),
             Some(vec!["here:9000".to_owned()]),
         )
@@ -246,15 +246,15 @@ mod tests {
         // `ensure` fire for reasons unrelated to an upgrade.
         assert_eq!(after.id, before.id);
         assert_eq!(after.version, before.version);
-        assert_eq!(read(&held).unwrap(), Some(after));
+        assert_eq!(read(Arc::clone(&held)).unwrap(), Some(after));
     }
 
     #[test]
     fn an_absent_clause_leaves_its_field_where_it_was() {
         let held = backend();
-        ensure(&held).unwrap();
-        configure(&held, Some(Roles::COORDINATING), None).unwrap();
-        let after = configure(&held, None, Some(vec!["here:9000".to_owned()])).unwrap();
+        ensure(Arc::clone(&held)).unwrap();
+        configure(Arc::clone(&held), Some(Roles::COORDINATING), None).unwrap();
+        let after = configure(Arc::clone(&held), None, Some(vec!["here:9000".to_owned()])).unwrap();
 
         assert_eq!(
             after.roles,
@@ -268,7 +268,7 @@ mod tests {
         // Unreachable through an open store. Asserted anyway, because the arm
         // that says so is a claim about a guarantee living in another function.
         assert!(matches!(
-            configure(&backend(), Some(Roles::SERVING), None),
+            configure(backend(), Some(Roles::SERVING), None),
             Err(Error::NoIdentity)
         ));
     }

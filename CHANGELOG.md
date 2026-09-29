@@ -12,6 +12,64 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.11.0-beta — 2026-09-29
+
+**One runtime serves every surface.** The node used to give every held
+connection its own operating-system thread; the wire protocol, HTTP with its
+watch socket, the peer door, the cluster rounds and the housekeeping now run as
+tasks on one multi-threaded runtime, and store calls cross to it through a
+bounded bridge. What a client can do and what it is answered are unchanged —
+every serving surface was checked against 0.10 on a running node — and what
+changed is what a node can hold.
+
+### Serving
+
+- **Held connections are bounded apart from work in flight.** Each surface now
+  holds up to 16 384 connections (it was 400, one thread each), of which at most
+  400 are inside the store at once. A statement that finds every one of those
+  places taken is refused as busy, and its connection stays open, instead of the
+  connection being turned away at the door.
+- **An idle subscriber costs a task, not a thread.** Measured on one node:
+  10 000 subscribers held on 14 threads, a new client accepted in under 3 ms and
+  answered in under 0.2 ms while they are held. Before, 400 subscribers filled the
+  node on 409 threads and every other client — query or feed — was refused.
+- **A feed wakes when something lands**, whichever surface, peer or background
+  round wrote it, rather than checking the store on a timer.
+- **Throughput is unchanged.** Request traffic at 1, 8, 64 and 400 connections
+  answers as fast as 0.10 did; a client sending one statement at a time on one
+  connection is served on one thread while it stays busy, as the old node served
+  every connection.
+- **The peer door serves each peer on its own task**, up to 64 at once — one
+  peer that connected and said nothing used to hold the door for everyone.
+- **Stopping drains every surface at once** rather than one after another, so
+  the worst case for three surfaces with stuck work is 20 s rather than 60.
+- **A listener that fails ends its surface** with a logged reason instead of
+  retrying the same failing accept in a loop.
+- **A large backup declares its length.** `GET /backup` answered a store of
+  more than about 38 kB chunked, which the protocol forbids on every route; it
+  now sends `Content-Length` at every size. The body is the same bytes.
+
+### Performance
+
+- **Vector distances are about two-thirds faster.** Ordering numbers that are
+  far apart no longer converts them to decimals, and a distance borrows its
+  operands instead of copying them: an exact nearest-neighbour scan went from
+  3.0 to 1.8 ms at p50 (330 → 556 reads a second on the bench's 2 000 vectors).
+  Every other in-process workload measured the same as 0.10.
+
+### Compatibility
+
+- The on-disk, backup and wire formats are unchanged: a store and a backup
+  written by 0.10 open under this version, and every 0.10 client works against
+  it.
+- Building from source needs **Rust 1.98**.
+- For code that embeds the `tessaridb` library: its public functions now return
+  typed errors rather than strings, so a caller matching on message text needs
+  to match on the error instead.
+
+**1420 conformance cases** define the language and run in the build, unchanged
+from 0.10.0-beta.
+
 ## 0.10.0-beta — 2026-09-28
 
 **Faster where it was measured to be slow.** Every change below answers a cost a

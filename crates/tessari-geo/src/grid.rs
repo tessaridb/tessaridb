@@ -250,6 +250,7 @@ impl Snapped {
 /// all grid points — near enough for arithmetic and not near enough for equality.
 #[expect(
     clippy::cast_precision_loss,
+    clippy::as_conversions,
     reason = "every grid point is below 2^53, so the cast is exact"
 )]
 pub(crate) fn units_to_degrees(units: i64) -> f64 {
@@ -280,6 +281,7 @@ fn snap(value: f64, axis: Axis, limit: i64, spelling: &'static str) -> Result<i6
 /// hoped for.
 #[expect(
     clippy::cast_possible_truncation,
+    clippy::as_conversions,
     reason = "bounded by the range check every caller performs first"
 )]
 fn degrees_to_units(degrees: f64) -> i64 {

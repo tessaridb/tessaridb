@@ -31,7 +31,7 @@ fn node() -> (Arc<Node>, String) {
     let node = Arc::new(Node::bind(db, "127.0.0.1:0").unwrap());
     let address = node.address();
     let serving = Arc::clone(&node);
-    std::thread::spawn(move || serving.serve());
+    std::thread::spawn(move || crate::serve_until_the_test_ends(&serving));
     (node, address)
 }
 
@@ -302,6 +302,42 @@ fn an_upgraded_socket_is_counted_as_a_feed_and_not_as_a_request() {
 }
 
 #[test]
+fn a_subscriber_that_hangs_up_on_a_quiet_feed_gives_its_place_back() {
+    // Parity row H16, the WebSocket twin of the wire's F-S1: a feed learns of a
+    // hang-up at its next write, and a quiet table has none. Asserted on the
+    // node's own feed count, which is what a shutdown waits on and what the
+    // door's place is released with.
+    let (node, address) = node();
+    let stopping = node.stopping();
+    assert_eq!(script(&address, READY), 200, "the fixture did not build");
+
+    let (mut stream, status, _) = upgrade(&address);
+    assert_eq!(status, 101);
+    send(
+        &mut stream,
+        true,
+        1,
+        br#"{"namespace":"prod","database":"library","from":0,"table":"users"}"#,
+    );
+    // A ping after the request is answered only once the feed is waiting, so
+    // the pong says the subscription is open rather than merely asked for.
+    send(&mut stream, true, 9, b"open?");
+    assert_eq!(receive(&mut stream).1, 10, "the feed never started waiting");
+    assert_eq!(stopping.feeds(), 1, "the subscription was not counted");
+
+    drop(stream);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while stopping.feeds() > 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        stopping.feeds(),
+        0,
+        "a subscriber that hung up on a quiet table still holds its feed"
+    );
+}
+
+#[test]
 fn an_ordinary_request_to_the_route_is_told_what_it_speaks() {
     let (_node, address) = node();
     let mut stream = TcpStream::connect(&address).unwrap();
@@ -415,6 +451,37 @@ fn a_change_committed_on_another_connection_arrives_as_a_frame_on_this_one() {
         text.contains("ada"),
         "the change arrived without the value that was written: {text}"
     );
+}
+
+#[test]
+fn a_change_committed_past_the_node_arrives_on_its_feed() {
+    // Committed on the database itself, through no request to this node — what
+    // a replica's apply, the wire surface or a cadence does. A feed runs a round
+    // only when the store announces a landing, so a landing it did not announce
+    // would never arrive (Q-838).
+    let db = Arc::new(Db::in_memory().unwrap());
+    let node = Arc::new(Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap());
+    let address = node.address();
+    let serving = Arc::clone(&node);
+    std::thread::spawn(move || crate::serve_until_the_test_ends(&serving));
+    assert_eq!(script(&address, READY), 200, "the fixture did not build");
+
+    let (mut stream, status, _) = upgrade(&address);
+    assert_eq!(status, 101);
+    send(
+        &mut stream,
+        true,
+        1,
+        br#"{"namespace":"prod","database":"library","from":0,"table":"users"}"#,
+    );
+    db.session()
+        .run("USE NAMESPACE prod; USE DATABASE library; CREATE users:1 = { name: 'ada' };")
+        .unwrap();
+
+    let (_, opcode, payload) = receive(&mut stream);
+    assert_eq!(opcode, 1, "a change must arrive as a text frame");
+    let text = String::from_utf8(payload).expect("a text frame carries text");
+    assert!(text.contains("ada"), "not the change that was made: {text}");
 }
 
 #[test]

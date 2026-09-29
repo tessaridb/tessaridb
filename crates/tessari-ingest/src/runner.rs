@@ -1,11 +1,15 @@
 //! Starting what the catalog declares, and stopping it cleanly.
 //!
-//! # One OS thread per consumer, and no runtime
+//! # One OS thread per consumer, beside the runtime
 //!
-//! This node carries no async runtime, deliberately (G007): the store below is
-//! synchronous, and an async server over a synchronous store is a thread pool
-//! wearing a runtime's clothes. A consumer is a loop that blocks on a broker and
-//! then blocks on a commit, which is the shape a thread is for.
+//! The node serves from one async runtime (ADR-0085), and a consumer is the one
+//! thing it runs that is not a task on it. A consumer holds a broker client
+//! that is a blocking C library, and waits in it for as long as a quiet topic
+//! is quiet; on the runtime's blocking pool that wait would hold one of the
+//! threads the store calls are bounded to, for the life of the process. A
+//! long-lived blocking client on a thread of its own is the shape a thread is
+//! for, and what the runtime shares with it is only the moment it is told to
+//! stop.
 //!
 //! ADR-0024 measured that the chosen client has a synchronous surface, so this
 //! is a decision supported by evidence rather than a preference held despite it.
@@ -32,17 +36,19 @@
 //! again to the same identities. Atomicity would buy nothing that idempotence
 //! does not already give.
 
+mod declared;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use tessari_session::Session;
-use tessari_storage::{Catalog, ConsumerDefinition, OnFailure, Store};
+use tessari_storage::{ConsumerDefinition, OnFailure, Store};
 use tessari_types::{RecordId, Value};
 
 use crate::apply::shape;
 use crate::source::{Source, SourceError};
+pub(crate) use declared::declarations;
 
 /// How long one poll waits for a message before the loop checks whether it has
 /// been told to stop.
@@ -150,7 +156,10 @@ impl Runner {
     /// # Errors
     ///
     /// Returns the store's failure when the catalog cannot be read at all.
-    pub fn start(store: &Store, broker: &Arc<dyn Broker>) -> Result<Started, String> {
+    pub fn start(
+        store: &Store,
+        broker: Arc<dyn Broker>,
+    ) -> Result<Started, tessari_storage::Error> {
         let declared = declarations(store)?;
         let stopping = Arc::new(AtomicBool::new(false));
         let mut threads = Vec::new();
@@ -195,73 +204,12 @@ impl Runner {
     }
 }
 
-/// Every declaration, with the statement text its destination is written as.
-///
-/// The destination is resolved to **names** here, once, rather than per batch:
-/// the runner writes through the language, and the only text it composes comes
-/// from the catalog. No byte of any message ever reaches a statement.
-fn declarations(store: &Store) -> Result<Vec<(ConsumerDefinition, Destination)>, String> {
-    let mut transaction = store.begin().map_err(|failure| failure.to_string())?;
-    let declared = Catalog::new(&mut transaction)
-        .consumers()
-        .map_err(|failure| failure.to_string())?;
-    let mut found = Vec::new();
-    for definition in declared {
-        match destination_of(&mut transaction, &definition) {
-            Some(table) => found.push((definition, table)),
-            None => log::warn!(
-                "consumer {} has no destination any more, so it is not started",
-                definition.name
-            ),
-        }
-    }
-    transaction.rollback();
-    Ok(found)
-}
-
 /// Where a consumer's records go, named as a statement would name it.
 #[derive(Debug, Clone)]
-struct Destination {
+pub(crate) struct Destination {
     namespace: String,
     database: String,
     table: String,
-}
-
-/// Resolve a declaration's ids back to the names a statement uses.
-fn destination_of(
-    transaction: &mut tessari_storage::Transaction<'_>,
-    definition: &ConsumerDefinition,
-) -> Option<Destination> {
-    let catalog = Catalog::new(transaction);
-    let namespace = catalog
-        .namespaces()
-        .ok()?
-        .into_iter()
-        .find(|held| held.id == definition.namespace)?
-        .name;
-    let database = catalog
-        .databases_in(definition.namespace)
-        .ok()?
-        .into_iter()
-        .find(|held| held.id == definition.database)?
-        .name;
-    let table = catalog
-        .tables_in(definition.namespace, definition.database)
-        .ok()?
-        .into_iter()
-        .find(|held| held.id == definition.destination)?
-        .name;
-    // Every one of these came from a `DEFINE` statement, so it is already an
-    // identifier — but it is checked rather than trusted, because this is the
-    // only text this crate composes and the check costs nothing.
-    if !plain(&namespace) || !plain(&database) || !plain(&table) {
-        return None;
-    }
-    Some(Destination {
-        namespace,
-        database,
-        table,
-    })
 }
 
 /// Whether a name can stand unquoted in a statement.

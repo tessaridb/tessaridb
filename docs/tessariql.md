@@ -717,9 +717,10 @@ how one stored before this rule existed gets cleaned up.
 **Taking authority away reaches a connection that is already open.** A session
 re-reads its own user from the catalog on every statement, so `ALTER USER`,
 `DROP USER` and `REVOKE` take effect on that session's **next statement**; a
-running subscription re-asks on every poll round, so it ends within **one round,
-at most 250 ms**. Neither waits for the connection to close, which is the wait a
-revocation is least able to afford.
+running subscription re-asks on every round it runs, and the revocation is itself
+a write the subscription is woken by, so it ends **at the revocation**. Neither
+waits for the connection to close, which is the wait a revocation is least able
+to afford.
 
 To see what one user reaches, ask `INFO FOR USER`. To see who reaches one table,
 ask `INFO FOR ACCESS TO TABLE` (§7c) — both answer from the same check the
@@ -7670,7 +7671,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.10.0", "build": "0.10.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.11.0", "build": "0.11.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],

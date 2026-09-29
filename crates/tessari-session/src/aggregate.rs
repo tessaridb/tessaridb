@@ -524,10 +524,9 @@ fn sum(values: &[Value], span: Span) -> Result<Value> {
     if numbers
         .iter()
         .all(|number| matches!(number, Number::Integer(_)))
+        && let Ok(whole) = i64::try_from(total)
     {
-        if let Ok(whole) = i64::try_from(total) {
-            return Ok(Value::Number(Number::Integer(whole)));
-        }
+        return Ok(Value::Number(Number::Integer(whole)));
     }
     Ok(Value::Number(Number::Decimal(total)))
 }

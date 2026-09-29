@@ -1,0 +1,171 @@
+//! Settling the term and count deltas a batch of index changes leaves.
+
+use super::Pending;
+use crate::error::Result;
+use crate::store::Store;
+use tessari_encoding::{
+    SearchStatistics, SearchStatisticsKey, SearchTermKey, StoreKey, StoreValue, TermStatistics,
+};
+use tessari_kv::WriteBatch;
+
+/// How one log record moves an index's collection statistics.
+///
+/// Signed, and accumulated rather than written per mutation: a batch touching
+/// one index a thousand times moves two counters a thousand times and writes
+/// them once.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Delta {
+    pub(crate) documents: i64,
+    pub(crate) tokens: i64,
+}
+
+impl Delta {
+    /// Record a document leaving the index at this length.
+    pub(crate) fn removed(&mut self, tokens: u64) {
+        if tokens == 0 {
+            return;
+        }
+        self.documents = self.documents.saturating_sub(1);
+        self.tokens = self
+            .tokens
+            .saturating_sub(i64::try_from(tokens).unwrap_or(i64::MAX));
+    }
+
+    /// Record a document entering the index at this length.
+    pub(crate) fn added(&mut self, tokens: u64) {
+        if tokens == 0 {
+            return;
+        }
+        self.documents = self.documents.saturating_add(1);
+        self.tokens = self
+            .tokens
+            .saturating_add(i64::try_from(tokens).unwrap_or(i64::MAX));
+    }
+
+    /// Whether anything moved.
+    pub(crate) const fn is_zero(self) -> bool {
+        self.documents == 0 && self.tokens == 0
+    }
+}
+
+/// Fold the accumulated deltas into the stored statistics, one write per index.
+///
+/// The current values are read from **committed** state, which is the state this
+/// log record is about to be applied on top of — the same state the previous
+/// record values above were read at, so the two cannot describe different
+/// moments. A store with one writer (ADR-0007) makes that read-modify-write safe
+/// without a counter primitive.
+pub(crate) fn settle(
+    store: &Store,
+    mut batch: WriteBatch,
+    pending: &Pending,
+) -> Result<WriteBatch> {
+    let (moved, built) = (&pending.moved, &pending.built);
+    let keyspace = SearchStatisticsKey::keyspace();
+    for (address, delta) in moved {
+        if delta.is_zero() {
+            continue;
+        }
+        let key = SearchStatisticsKey::new(*address).encode();
+        // An index this record **built** was counted whole, so its figure is a
+        // total and starts from nothing. One that was merely updated carries a
+        // movement, and starts from what is stored. Reading the stored figure
+        // for a build would count every document twice — silently, since a
+        // collection statistic has no reader who would notice it drifting.
+        let held = if built.contains(address) {
+            SearchStatistics::default()
+        } else {
+            match store.backend().get(keyspace, &key)? {
+                Some(bytes) => SearchStatistics::decode(bytes.as_slice())?,
+                None => SearchStatistics::default(),
+            }
+        };
+        let updated = SearchStatistics::new(
+            shift(held.documents, delta.documents),
+            shift(held.terms, delta.tokens),
+        );
+        batch = batch.put(keyspace, key, updated.encode());
+    }
+    settle_terms(store, batch, pending)
+}
+
+/// Fold the accumulated per-term deltas into the dictionary, one write per term
+/// that moved.
+///
+/// # A term that reaches zero is deleted, not written as zero
+///
+/// The dictionary's whole purpose is that walking it enumerates the words the
+/// index actually holds. An entry left behind at zero is a word a prefix walk
+/// would return and whose posting list is empty — a suggestion nothing can
+/// answer, offered by the structure built to stop exactly that. It also grows
+/// without bound: every word ever written to the table stays in the dictionary
+/// for the life of the store.
+///
+/// The read of the stored figure is skipped for an index this record **built**,
+/// on the same reasoning [`settle`] gives for the collection statistics: a build
+/// counted every row the index has, so its figure is a total and starting from
+/// the stored one would count each document twice.
+pub(crate) fn settle_terms(
+    store: &Store,
+    mut batch: WriteBatch,
+    pending: &Pending,
+) -> Result<WriteBatch> {
+    let keyspace = SearchTermKey::keyspace();
+    for (address, moved) in &pending.terms {
+        let rebuilt = pending.built.contains(address);
+        for (term, moved) in moved {
+            // A rewrite that keeps a word nets a delta of zero and is still not
+            // nothing: the word may now occur more often, or in a shorter
+            // record, and the bound has to rise to cover it. Skipping on the
+            // delta alone — which is what a count-only dictionary could do —
+            // would leave a bound below a posting that exists, which is the one
+            // direction ADR-0050 forbids.
+            if moved.delta == 0 && moved.length.is_none() {
+                continue;
+            }
+            let key = SearchTermKey::new(*address, term.clone()).encode();
+            let held = if rebuilt {
+                TermStatistics::default()
+            } else {
+                match store.backend().get(keyspace, &key)? {
+                    Some(bytes) => TermStatistics::decode(bytes.as_slice())?,
+                    None => TermStatistics::default(),
+                }
+            };
+            let documents = shift(held.documents, moved.delta);
+            batch = if documents == 0 {
+                // The extremes leave with the entry, which is the one place they
+                // are allowed to move inward. A term no record holds has no
+                // postings to bound, so the next arrival starts from what it
+                // actually writes rather than inheriting a ceiling from a record
+                // that is gone.
+                batch.delete(keyspace, key)
+            } else {
+                let frequency = held.max_frequency.max(moved.frequency);
+                // `min` is not enough on its own, because zero is this field's
+                // "never recorded" and would win every comparison — the sound
+                // direction for a maximum and exactly backwards for a minimum.
+                let length = match (held.min_length, moved.length) {
+                    (0, arrived) => arrived.unwrap_or(0),
+                    (held, Some(arrived)) => held.min(arrived),
+                    (held, None) => held,
+                };
+                batch.put(
+                    keyspace,
+                    key,
+                    TermStatistics::bounded(documents, frequency, length).encode(),
+                )
+            };
+        }
+    }
+    Ok(batch)
+}
+
+/// A count moved by a signed amount, without wrapping below zero.
+pub(crate) fn shift(count: u64, delta: i64) -> u64 {
+    if delta.is_negative() {
+        count.saturating_sub(delta.unsigned_abs())
+    } else {
+        count.saturating_add(delta.unsigned_abs())
+    }
+}

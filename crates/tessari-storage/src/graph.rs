@@ -257,10 +257,11 @@ impl Graph {
             };
             // Stop when nothing in hand can improve on what is already held:
             // the classic greedy cut-off, and what keeps the walk sub-linear.
-            if let Some((furthest, _)) = best.last() {
-                if best.len() >= effort && self.at(current.clone(), query) > *furthest {
-                    break;
-                }
+            if let Some((furthest, _)) = best.last()
+                && best.len() >= effort
+                && self.at(current.clone(), query) > *furthest
+            {
+                break;
             }
             for neighbour in &node.neighbours {
                 if !seen.insert(neighbour.clone()) {

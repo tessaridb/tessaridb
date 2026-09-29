@@ -51,20 +51,23 @@
 //! bytes here. Ordering the payload bytes as well would be a second ordering
 //! authority disagreeing with the first.
 
+mod scalars;
+mod shapes;
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Bound;
 
-use rust_decimal::Decimal;
 use tessari_kv::Value as StoredBytes;
 use tessari_types::{
-    Datetime, Duration, Geometry, MAX_NESTING, Number, Polygon, Position, RecordId, RecordRef,
-    Ring, TableId, Value, ValueRange,
+    Datetime, Duration, MAX_NESTING, RecordId, RecordRef, TableId, Value, ValueRange,
 };
 
 use crate::error::{Error, Result};
 use crate::kind::KeyKind;
 use crate::order::{KeyReader, KeyWriter};
 use crate::record_id;
+pub(crate) use scalars::{
+    count_of, put_bound, put_bytes, put_number, take_bound, take_bytes, take_number, take_time,
+};
+pub(crate) use shapes::{put_geometry, take_geometry};
 
 mod tag {
     pub(super) const NONE: u8 = 0x01;
@@ -217,141 +220,6 @@ fn put_value(writer: &mut KeyWriter, value: &Value) {
     }
 }
 
-/// A position: two floats, as their bits.
-///
-/// Bits rather than an order-preserving form, and that is right here: a payload
-/// is read, never compared byte by byte. The index has its own encoding, and
-/// keeping the two apart is what stops a payload from becoming a second
-/// ordering authority.
-fn put_position(writer: &mut KeyWriter, position: &Position) {
-    writer
-        .put_fixed(&position.longitude.to_bits().to_be_bytes())
-        .put_fixed(&position.latitude.to_bits().to_be_bytes());
-}
-
-fn take_position(reader: &mut KeyReader<'_>) -> Result<Position> {
-    let longitude = f64::from_bits(u64::from_be_bytes(reader.take_fixed::<8>()?));
-    let latitude = f64::from_bits(u64::from_be_bytes(reader.take_fixed::<8>()?));
-    Ok(Position::new(longitude, latitude))
-}
-
-fn put_positions(writer: &mut KeyWriter, positions: &[Position]) {
-    writer.put_u32(count_of(positions.len()));
-    for position in positions {
-        put_position(writer, position);
-    }
-}
-
-fn take_positions(reader: &mut KeyReader<'_>) -> Result<Vec<Position>> {
-    let count = reader.take_u32()?;
-    let mut out = Vec::new();
-    for _ in 0..count {
-        out.push(take_position(reader)?);
-    }
-    Ok(out)
-}
-
-fn put_polygon(writer: &mut KeyWriter, polygon: &Polygon) {
-    put_positions(writer, &polygon.exterior.0);
-    writer.put_u32(count_of(polygon.interiors.len()));
-    for interior in &polygon.interiors {
-        put_positions(writer, &interior.0);
-    }
-}
-
-fn take_polygon(reader: &mut KeyReader<'_>) -> Result<Polygon> {
-    let exterior = Ring(take_positions(reader)?);
-    let count = reader.take_u32()?;
-    let mut interiors = Vec::new();
-    for _ in 0..count {
-        interiors.push(Ring(take_positions(reader)?));
-    }
-    Ok(Polygon {
-        exterior,
-        interiors,
-    })
-}
-
-fn put_geometry(writer: &mut KeyWriter, held: &Geometry) {
-    match held {
-        Geometry::Point(position) => {
-            writer.put_u8(shape::POINT);
-            put_position(writer, position);
-        }
-        Geometry::Line(positions) => {
-            writer.put_u8(shape::LINE);
-            put_positions(writer, positions);
-        }
-        Geometry::Polygon(polygon) => {
-            writer.put_u8(shape::POLYGON);
-            put_polygon(writer, polygon);
-        }
-        Geometry::MultiPoint(positions) => {
-            writer.put_u8(shape::MULTI_POINT);
-            put_positions(writer, positions);
-        }
-        Geometry::MultiLine(lines) => {
-            writer
-                .put_u8(shape::MULTI_LINE)
-                .put_u32(count_of(lines.len()));
-            for line in lines {
-                put_positions(writer, line);
-            }
-        }
-        Geometry::MultiPolygon(polygons) => {
-            writer
-                .put_u8(shape::MULTI_POLYGON)
-                .put_u32(count_of(polygons.len()));
-            for polygon in polygons {
-                put_polygon(writer, polygon);
-            }
-        }
-        Geometry::Collection(shapes) => {
-            writer
-                .put_u8(shape::COLLECTION)
-                .put_u32(count_of(shapes.len()));
-            for held in shapes {
-                put_geometry(writer, held);
-            }
-        }
-    }
-}
-
-fn take_geometry(reader: &mut KeyReader<'_>, depth: usize) -> Result<Geometry> {
-    match reader.take_u8()? {
-        shape::POINT => Ok(Geometry::Point(take_position(reader)?)),
-        shape::LINE => Ok(Geometry::Line(take_positions(reader)?)),
-        shape::POLYGON => Ok(Geometry::Polygon(take_polygon(reader)?)),
-        shape::MULTI_POINT => Ok(Geometry::MultiPoint(take_positions(reader)?)),
-        shape::MULTI_LINE => {
-            let count = reader.take_u32()?;
-            let mut lines = Vec::new();
-            for _ in 0..count {
-                lines.push(take_positions(reader)?);
-            }
-            Ok(Geometry::MultiLine(lines))
-        }
-        shape::MULTI_POLYGON => {
-            let count = reader.take_u32()?;
-            let mut polygons = Vec::new();
-            for _ in 0..count {
-                polygons.push(take_polygon(reader)?);
-            }
-            Ok(Geometry::MultiPolygon(polygons))
-        }
-        shape::COLLECTION => {
-            let inside = deeper(depth)?;
-            let count = reader.take_u32()?;
-            let mut shapes = Vec::new();
-            for _ in 0..count {
-                shapes.push(Box::new(take_geometry(reader, inside)?));
-            }
-            Ok(Geometry::Collection(shapes))
-        }
-        unknown => Err(Error::UnknownValueTag { tag: unknown }),
-    }
-}
-
 /// One value, inside `depth` containers.
 ///
 /// The depth travels down so a payload nested past [`MAX_NESTING`] is refused
@@ -451,90 +319,4 @@ fn deeper(depth: usize) -> Result<usize> {
         return Err(Error::NestedTooDeep { limit: MAX_NESTING });
     }
     Ok(inside)
-}
-
-fn put_number(writer: &mut KeyWriter, number: &Number) {
-    match number {
-        Number::Integer(value) => {
-            writer.put_u8(number_kind::INTEGER).put_i64(*value);
-        }
-        Number::Float(value) => {
-            writer
-                .put_u8(number_kind::FLOAT)
-                .put_fixed(&value.to_bits().to_be_bytes());
-        }
-        Number::Decimal(value) => {
-            writer
-                .put_u8(number_kind::DECIMAL)
-                .put_fixed(&value.mantissa().to_be_bytes())
-                .put_u32(value.scale());
-        }
-    }
-}
-
-fn take_number(reader: &mut KeyReader<'_>) -> Result<Number> {
-    match reader.take_u8()? {
-        number_kind::INTEGER => Ok(Number::Integer(reader.take_i64()?)),
-        number_kind::FLOAT => {
-            let bits = u64::from_be_bytes(reader.take_fixed::<8>()?);
-            Ok(Number::float(f64::from_bits(bits)))
-        }
-        number_kind::DECIMAL => {
-            let mantissa = i128::from_be_bytes(reader.take_fixed::<16>()?);
-            let scale = reader.take_u32()?;
-            Decimal::try_from_i128_with_scale(mantissa, scale)
-                .map(Number::Decimal)
-                .map_err(|_| Error::InvalidDecimal { mantissa, scale })
-        }
-        unknown => Err(Error::UnknownValueTag { tag: unknown }),
-    }
-}
-
-fn put_bound(writer: &mut KeyWriter, bound: &Bound<Value>) {
-    match bound {
-        Bound::Unbounded => {
-            writer.put_u8(bound_kind::UNBOUNDED);
-        }
-        Bound::Included(value) => {
-            writer.put_u8(bound_kind::INCLUDED);
-            put_value(writer, value);
-        }
-        Bound::Excluded(value) => {
-            writer.put_u8(bound_kind::EXCLUDED);
-            put_value(writer, value);
-        }
-    }
-}
-
-fn take_bound(reader: &mut KeyReader<'_>, depth: usize) -> Result<Bound<Value>> {
-    match reader.take_u8()? {
-        bound_kind::UNBOUNDED => Ok(Bound::Unbounded),
-        bound_kind::INCLUDED => Ok(Bound::Included(take_value(reader, depth)?)),
-        bound_kind::EXCLUDED => Ok(Bound::Excluded(take_value(reader, depth)?)),
-        unknown => Err(Error::UnknownValueTag { tag: unknown }),
-    }
-}
-
-fn take_time(reader: &mut KeyReader<'_>) -> Result<(i64, u32)> {
-    Ok((reader.take_i64()?, reader.take_u32()?))
-}
-
-fn put_bytes(writer: &mut KeyWriter, bytes: &[u8]) {
-    writer.put_u32(count_of(bytes.len())).put_fixed(bytes);
-}
-
-fn take_bytes(reader: &mut KeyReader<'_>) -> Result<Vec<u8>> {
-    let len = reader.take_u32()?;
-    reader.take_exact(usize::try_from(len).unwrap_or(usize::MAX))
-}
-
-/// A length or item count as it is written.
-///
-/// A collection with more members than a `u32` counts is not something this
-/// store can hold — it would have exhausted memory long before the codec sees
-/// it — and saturating keeps the encoder total instead of making every caller
-/// handle a case that cannot arise. The decoder rejects the result as truncated,
-/// so the failure is loud either way.
-fn count_of(len: usize) -> u32 {
-    u32::try_from(len).unwrap_or(u32::MAX)
 }

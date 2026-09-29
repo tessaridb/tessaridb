@@ -11,6 +11,8 @@
 //! would have each test racing every other for the same three variables.
 
 #![allow(clippy::panic, clippy::unwrap_used)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;

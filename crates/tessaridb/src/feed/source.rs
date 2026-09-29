@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use tessari_storage::{Change, LogId, Merged, Subscription, Watch};
 use tessari_types::{DatabaseId, NamespaceId, Reach, Sequence, ShardId, TableId};
 
-use super::cursor;
+use super::{FeedRefused, cursor};
 use crate::Db;
 
 /// A split table in the feed's scope: its name, its id and its shards.
@@ -45,19 +45,18 @@ impl Source {
         from: Sequence,
         resume: Option<&str>,
         watch: Watch,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, FeedRefused> {
         let store = db.store();
-        let own = store.writer().map_err(|failure| failure.to_string())?;
+        let own = store.writer()?;
         let whole = Reach::Database(namespace, database);
         if split.is_empty() {
             // One log, whose sequence is its position: a cursor here was carried
             // from some other feed, and ignoring it would resume from `from`
             // while the subscriber believes it resumed from the cursor.
             if let Some(text) = resume {
-                return Err(format!(
-                    "{text:?} is a cursor, and this feed follows no split table — resume it \
-                     from the sequence of the last change handled"
-                ));
+                return Err(FeedRefused::CursorWithoutSplit {
+                    cursor: text.to_owned(),
+                });
             }
             let log = LogId::new(whole, own);
             return Ok(Self::One(Db::subscribe(log, from, watch)));
@@ -72,18 +71,13 @@ impl Source {
             }
         }
         for (home, named) in &homes {
-            let logs = store
-                .logs_of(*home)
-                .map_err(|failure| failure.to_string())?;
+            let logs = store.logs_of(*home)?;
             if logs.iter().any(|log| log.writer != own) {
                 let what = named.map_or_else(
                     || "this database's log".to_owned(),
                     |(name, shard)| format!("shard {shard} of `{name}`"),
                 );
-                return Err(format!(
-                    "{what} holds another node's writes, and a change feed over a split \
-                     table follows one writer's logs — follow it on the node that writes them"
-                ));
+                return Err(FeedRefused::AnotherWriter { what });
             }
         }
         let held = match resume {
@@ -96,10 +90,9 @@ impl Source {
             .keys()
             .any(|home| !homes.iter().any(|(own, _)| own == home));
         if let (Some(text), true) = (resume, stray) {
-            return Err(format!(
-                "{text:?} counts a log this feed does not follow — send the cursor this \
-                 feed's own last change carried"
-            ));
+            return Err(FeedRefused::StrayLog {
+                cursor: text.to_owned(),
+            });
         }
         // A home the cursor does not name is read from its beginning: its
         // changes were never given, so nothing is repeated and nothing lost.
@@ -128,11 +121,10 @@ impl Source {
         &mut self,
         db: &Db,
         limit: usize,
-    ) -> Result<Vec<(Change, Option<String>)>, String> {
+    ) -> Result<Vec<(Change, Option<String>)>, FeedRefused> {
         match self {
             Self::One(subscription) => Ok(db
-                .poll(subscription, limit)
-                .map_err(|failure| failure.to_string())?
+                .poll(subscription, limit)?
                 .into_iter()
                 .map(|change| (change, None))
                 .collect()),
@@ -141,9 +133,7 @@ impl Source {
                 tenancy: (namespace, database),
                 at,
             } => {
-                let found = merged
-                    .poll(db.store(), limit)
-                    .map_err(|failure| failure.to_string())?;
+                let found = merged.poll(db.store(), limit)?;
                 Ok(found
                     .into_iter()
                     .map(|(log, change)| {

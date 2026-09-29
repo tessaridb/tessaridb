@@ -20,6 +20,8 @@
 //! produces it — the enum is `#[non_exhaustive]` so that a *future* store can.
 
 #![allow(clippy::panic, clippy::unwrap_used)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::io::Cursor;
 use std::sync::Arc;
@@ -35,6 +37,8 @@ use crate::store::{Embedded, Remote, Store};
 // `roundtrip.rs` already includes the renderer.
 #[path = "../src/render.rs"]
 mod render;
+#[path = "../src/scanner.rs"]
+mod scanner;
 #[path = "../src/session.rs"]
 mod session;
 #[path = "../src/store.rs"]
@@ -118,7 +122,9 @@ fn every_answer_shape_reads_the_same_from_a_socket_as_from_this_process() {
     let node = Arc::new(Node::bind(Arc::clone(&there), "127.0.0.1:0").unwrap());
     let address = node.address().unwrap();
     let serving = Arc::clone(&node);
-    drop(std::thread::spawn(move || serving.serve()));
+    drop(std::thread::spawn(move || {
+        serve_until_the_test_ends(&serving)
+    }));
 
     for (what, script) in scripts() {
         let near = embedded(&here, script);
@@ -147,7 +153,9 @@ fn a_parameterised_script_reads_the_same_from_a_socket_as_from_this_process() {
     let node = Arc::new(Node::bind(Arc::clone(&there), "127.0.0.1:0").unwrap());
     let address = node.address().unwrap();
     let serving = Arc::clone(&node);
-    drop(std::thread::spawn(move || serving.serve()));
+    drop(std::thread::spawn(move || {
+        serve_until_the_test_ends(&serving)
+    }));
 
     let mut given = Parameters::new();
     given.insert("who".to_owned(), Value::String("ada".to_owned()));
@@ -176,7 +184,9 @@ fn a_reference_renders_as_a_name_over_the_wire_and_not_as_an_id() {
     let node = Arc::new(Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap());
     let address = node.address().unwrap();
     let serving = Arc::clone(&node);
-    drop(std::thread::spawn(move || serving.serve()));
+    drop(std::thread::spawn(move || {
+        serve_until_the_test_ends(&serving)
+    }));
 
     let said = remote(&address, "GET sessions:'abc';");
     assert!(said.contains("user: users:1"), "{said}");
@@ -190,7 +200,9 @@ fn a_refusal_from_a_node_reads_like_a_refusal_from_a_store() {
     let node = Arc::new(Node::bind(Arc::clone(&there), "127.0.0.1:0").unwrap());
     let address = node.address().unwrap();
     let serving = Arc::clone(&node);
-    drop(std::thread::spawn(move || serving.serve()));
+    drop(std::thread::spawn(move || {
+        serve_until_the_test_ends(&serving)
+    }));
 
     // Not identical text — the store's message travels, the socket's framing
     // does not — but both must be reported as a refusal rather than as silence.
@@ -199,4 +211,13 @@ fn a_refusal_from_a_node_reads_like_a_refusal_from_a_store() {
     assert!(near.contains("error:"), "{near}");
     assert!(far.contains("error:"), "{far}");
     assert!(far.contains("expected"), "{far}");
+}
+
+/// Serve `node` on a runtime of this test's own: the node creates none.
+fn serve_until_the_test_ends(node: &Node) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    drop(runtime.block_on(node.serve(tokio_util::sync::CancellationToken::new())));
 }

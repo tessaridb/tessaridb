@@ -6,19 +6,13 @@
 //! language, expressed in URLs, that can say less than the one this store
 //! already has. **The language is the API.**
 //!
-//! # Synchronous, deliberately
+//! # On the runtime, with the store behind a bridge
 //!
-//! A listener and a thread per request, with no async runtime. That matches
-//! every layer below: a commit is a compare-and-set against a substrate, and it
-//! is synchronous by design. A runtime here would not stay here — the facade
-//! would grow async constructors, the session async methods, and the store would
-//! end up behind `spawn_blocking` at every call — which is a large,
-//! hard-to-reverse decision to take as a side effect of wanting an endpoint.
-//!
-//! The cost is stated: a thread per concurrent request. That is right for an
-//! embedded store and a single node, and wrong for ten thousand idle
-//! connections. When that is the problem it belongs to the wire protocol, which
-//! will take the async decision deliberately because it will need to.
+//! Requests are served by axum on the process's runtime (ADR-0085): a waiting
+//! connection costs a task, not a thread. The routes themselves are unchanged
+//! and synchronous — a commit is a compare-and-set against a substrate — so each
+//! request's route runs on the blocking pool through the node's bridge, which
+//! refuses rather than queues when every slot is taken.
 //!
 //! # How a request says who it is
 //!
@@ -33,17 +27,16 @@
 //! README says so rather than leaving it to be discovered.
 
 #![forbid(unsafe_code)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 mod basic;
 mod body;
 #[cfg(feature = "console")]
 mod console;
-/// Without the `console` feature the binary carries none of the console's bytes,
-/// so every path it would have served falls through to the ordinary 404 — which
-/// is exactly how a build that does not want a console is meant to answer.
 #[cfg(not(feature = "console"))]
 mod console {
-    use tiny_http::Method;
+    use axum::http::Method;
 
     use crate::respond::Answer;
 
@@ -51,226 +44,143 @@ mod console {
         None
     }
 }
+mod incoming;
 mod json;
+mod listening;
 mod object;
 mod request;
 mod respond;
 mod tokens;
 mod websocket;
 
+use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use tessari_constants::MAX_CONNECTIONS;
-use tessari_serve::{Admitting, Busy, Census, Stopping};
+use axum::extract::{ConnectInfo, State};
+use axum::http::{HeaderValue, Method, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use axum::serve::ListenerExt;
+use tessari_constants::{MAX_CONNECTIONS, MAX_STORE_CALLS};
+use tessari_serve::{Admitting, Bridge, Bridged, Census, Stopping};
 use tessaridb::Db;
 use tessaridb::feed::Commits;
-use tiny_http::{Method, Request, Response, Server};
+use tokio_util::sync::CancellationToken;
 
+use crate::incoming::Incoming;
 pub use respond::Answer;
 
-/// A node listening for HTTP requests.
+/// An HTTP listener bound to one address, serving one store.
 pub struct Node {
     db: Arc<Db>,
-    server: Arc<Server>,
+    listener: TcpListener,
     stopping: Arc<Stopping>,
     census: Option<Arc<Census>>,
-    /// The wake-up subscribers on this node wait on.
-    ///
-    /// Per node rather than per store: a commit that arrived through a different
-    /// surface does not signal this one, and that costs a subscriber up to one
-    /// wait rather than costing it the change (`tessaridb::feed::Commits`).
     committed: Arc<Commits>,
     door: Arc<Admitting>,
-    /// The sessions this node has handed out.
-    ///
-    /// Per node, so a token issued at one surface does not open another, and in
-    /// memory, so a restart invalidates every one of them (`tokens`).
     tokens: Arc<tokens::Tokens>,
-}
-
-/// What ends a node's accept loop from another thread.
-///
-/// Separate from [`Stopping`] because the two answer different questions:
-/// `Stopping` is the shared *intent* every surface reads, and this is the one
-/// mechanical act only this surface can perform. It also keeps `tiny_http` out
-/// of the caller's vocabulary — a caller holding the server directly would be
-/// holding this crate's dependency.
-pub struct Halt {
-    server: Arc<Server>,
-}
-
-impl Halt {
-    /// Wake the accept loop so it can see that stopping was asked for.
-    ///
-    /// Ordering matters and belongs to the caller: set the intent **first**,
-    /// then call this, or the loop can find nothing set and block again.
-    pub fn wake(&self) {
-        self.server.unblock();
-    }
+    /// How many requests' routes may run on the blocking pool at once.
+    bridge: Arc<Bridge>,
+    /// How many watch rounds may run at once, apart from requests — the
+    /// wire node's reason, and measured there: rounds bunch on one commit.
+    rounds: Arc<Bridge>,
 }
 
 impl Node {
-    /// Listen on `address`, serving `db`.
+    /// Bind `address`.
+    ///
+    /// Bound here, synchronously, so a process learns whether it has its
+    /// address before it builds anything else; served by [`Node::serve`] on the
+    /// runtime.
     ///
     /// # Errors
     ///
-    /// Returns an error when the address cannot be bound.
+    /// Returns the operating system's failure when the address cannot be bound.
     pub fn bind(
         db: Arc<Db>,
         address: &str,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let listener = TcpListener::bind(address)?;
+        // The runtime's listener requires it, and nothing here reads it blocking.
+        listener.set_nonblocking(true)?;
+        let committed = Arc::clone(db.commits());
         Ok(Self {
             db,
-            server: Arc::new(Server::http(address)?),
+            listener,
             stopping: Stopping::new(),
             census: None,
-            committed: Arc::new(Commits::default()),
+            committed,
             door: Admitting::to(MAX_CONNECTIONS),
             tokens: Arc::new(tokens::Tokens::default()),
+            bridge: Arc::new(Bridge::new(MAX_STORE_CALLS)),
+            rounds: Arc::new(Bridge::new(
+                std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
+            )),
         })
     }
 
-    /// Report on every surface in `census`, not only on this one.
+    /// Report every surface of this process on `/metrics`, not only this one.
     ///
     /// Set after binding rather than taken by [`Node::bind`], because the census
-    /// names surfaces and one of them is this node — a process cannot hand over
-    /// a list it can only finish building once every listener exists. Nothing
-    /// observes the gap: the node is not serving yet.
+    /// names this node among the others and so is only complete once it exists.
     pub fn watching(&mut self, census: Arc<Census>) {
         self.census = Some(census);
     }
 
-    /// The address actually bound, which is what a caller needs when it asked
-    /// for port zero.
+    /// The address actually bound, which a caller needs when it asked for port zero.
     #[must_use]
     pub fn address(&self) -> String {
-        self.server
-            .server_addr()
-            .to_ip()
-            .map_or_else(|| "unknown".to_owned(), |found| found.to_string())
+        self.listener
+            .local_addr()
+            .map_or_else(|_| "unknown".to_owned(), |found| found.to_string())
     }
 
     /// What this node counts as in flight, and how it is told to stop.
-    ///
-    /// Taken **before** [`Node::serve`], which borrows the node for as long as
-    /// it runs.
     #[must_use]
     pub fn stopping(&self) -> Arc<Stopping> {
         Arc::clone(&self.stopping)
     }
 
-    /// The handle that ends this node's accept loop.
-    #[must_use]
-    pub fn halt(&self) -> Halt {
-        Halt {
-            server: Arc::clone(&self.server),
-        }
-    }
-
-    /// Serve requests until the process ends.
+    /// Serve until `stop` is cancelled.
     ///
-    /// Each request is handled on its own thread and in its own session: no
-    /// cookies, no connection state, no `USE` that outlives a request. A script
-    /// says what it operates on, and session state across requests is
-    /// authentication's problem rather than something to invent half of here.
-    pub fn serve(&self) {
-        for request in self.server.incoming_requests() {
-            if self.stopping.asked() {
-                break;
-            }
-            let db = Arc::clone(&self.db);
-            let stopping = Arc::clone(&self.stopping);
-            let census = self.census.clone();
-            let committed = Arc::clone(&self.committed);
-            let tokens = Arc::clone(&self.tokens);
-            // Counted before the thread starts, not inside it: a shutdown that
-            // began between the accept and the spawn would otherwise drain to
-            // zero while this request had not started.
-            let mut busy = self.stopping.busy();
-            let id = next_request();
-            // Before the thread, for the reason the wire node gives: the thread
-            // is the resource. A refused request is answered — 503 with a
-            // `Retry-After`, which is what a load balancer acts on — and that
-            // answer costs no thread.
-            let Some(place) = self.door.admit() else {
-                log::warn!(
-                    "request {id} refused: {} already in flight",
-                    self.door.limit()
-                );
-                stopping.answered(true);
-                drop(
-                    request.respond(
-                        Response::from_string(
-                            r#"{"error":"this node is answering as many requests as it will"}"#,
-                        )
-                        .with_status_code(503)
-                        .with_header(
-                            "Retry-After: 1"
-                                .parse::<tiny_http::Header>()
-                                .unwrap_or_else(|()| {
-                                    tiny_http::Header::from_bytes(&b"Retry-After"[..], &b"1"[..])
-                                        .unwrap_or_else(|()| {
-                                            unreachable!("a constant header parses")
-                                        })
-                                }),
-                        ),
-                    ),
-                );
-                continue;
-            };
-            log::info!(
-                "request {id} {} {} from {}",
-                request.method(),
-                request.url(),
-                request.remote_addr().map_or_else(
-                    || "an address tiny_http would not give".to_owned(),
-                    std::string::ToString::to_string
-                )
-            );
-            // A panic in one request must not take the listener with it, and a
-            // thread is what gives that for free.
-            std::thread::spawn(move || {
-                // Released on drop, panic included.
-                let _place = place;
-                answer(
-                    id,
-                    &Serving {
-                        db: &db,
-                        tokens: &tokens,
-                        stopping: &stopping,
-                        census: census.as_deref(),
-                        committed: &committed,
-                    },
-                    &mut busy,
-                    request,
-                );
-            });
-        }
-    }
-
-    /// Handle exactly one request, for a caller driving the loop itself.
+    /// Must be awaited inside a Tokio runtime; the node creates none of its own.
+    /// Cancelling stops accepting and lets requests in flight finish; a watch
+    /// ends at the stage that ends feeds, when [`Stopping`] says so.
     ///
     /// # Errors
     ///
-    /// Returns an error when the listener fails.
-    pub fn serve_one(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let request = self.server.recv()?;
-        let mut busy = self.stopping.busy();
-        let id = next_request();
-        answer(
-            id,
-            &Serving {
-                db: &self.db,
-                tokens: &self.tokens,
-                stopping: &self.stopping,
-                census: self.census.as_deref(),
-                committed: &self.committed,
-            },
-            &mut busy,
-            request,
-        );
-        Ok(())
+    /// Returns the listener's failure.
+    pub async fn serve(&self, stop: CancellationToken) -> std::io::Result<()> {
+        let listener = tokio::net::TcpListener::from_std(self.listener.try_clone()?)?;
+        let shared = Arc::new(Shared {
+            db: Arc::clone(&self.db),
+            tokens: Arc::clone(&self.tokens),
+            stopping: Arc::clone(&self.stopping),
+            census: self.census.clone(),
+            committed: Arc::clone(&self.committed),
+            door: Arc::clone(&self.door),
+            bridge: Arc::clone(&self.bridge),
+            rounds: Arc::clone(&self.rounds),
+        });
+        let app = axum::Router::new().fallback(handle).with_state(shared);
+        let mut listening = listening::Listening::new(listener);
+        let (ended, failure) = (listening.ended(), listening.failure());
+        axum::serve(
+            // Tapped for the address alone: axum hands a peer's address to
+            // `ConnectInfo` only through its own listener or a tapped one.
+            listening.tap_io(|_| {}),
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(async move {
+            tokio::select! {
+                () = stop.cancelled() => {}
+                () = ended.cancelled() => {}
+            }
+        })
+        .await?;
+        failure
+            .and_then(|mut failed| failed.try_recv().ok())
+            .map_or(Ok(()), Err)
     }
 }
 
@@ -287,67 +197,134 @@ fn next_request() -> u64 {
     REQUESTS.fetch_add(1, Ordering::Relaxed)
 }
 
-/// What every request on this node shares.
-///
-/// Gathered into one borrow rather than passed as five, because they are one
-/// thing — the node — and threading them individually is how a sixth gets added
-/// to some call sites and not others.
-struct Serving<'a> {
-    db: &'a Db,
-    tokens: &'a tokens::Tokens,
-    stopping: &'a Stopping,
-    census: Option<&'a Census>,
-    committed: &'a Commits,
+/// What every request on this node shares, owned so a task can hold it.
+pub(crate) struct Shared {
+    pub(crate) db: Arc<Db>,
+    pub(crate) tokens: Arc<tokens::Tokens>,
+    pub(crate) stopping: Arc<Stopping>,
+    census: Option<Arc<Census>>,
+    pub(crate) committed: Arc<Commits>,
+    door: Arc<Admitting>,
+    bridge: Arc<Bridge>,
+    pub(crate) rounds: Arc<Bridge>,
 }
 
-/// Route one request and write its answer.
-fn answer(id: u64, node: &Serving<'_>, busy: &mut Busy, mut request: Request) {
-    let Serving {
-        db,
-        tokens,
-        stopping,
-        census,
-        committed,
-    } = *node;
-    let route = (request.method().clone(), request.url().to_owned());
+/// Admit one request, read its body if its route takes one, and answer it.
+async fn handle(
+    State(node): State<Arc<Shared>>,
+    ConnectInfo(from): ConnectInfo<SocketAddr>,
+    request: axum::extract::Request,
+) -> Response {
+    // Counted before anything else, not after: a shutdown that began between
+    // the accept and here would otherwise drain to zero while this request had
+    // not started.
+    let busy = node.stopping.busy();
+    let id = next_request();
+    // Before the route, for the reason the wire node gives: the route's slot is
+    // the resource. A refused request is answered — 503 with a `Retry-After`,
+    // which is what a load balancer acts on.
+    let Some(place) = node.door.admit() else {
+        log::warn!(
+            "request {id} refused: {} already in flight",
+            node.door.limit()
+        );
+        node.stopping.answered(true);
+        return refused_at_the_door();
+    };
+    let (mut parts, body) = request.into_parts();
+    let url = parts
+        .uri
+        .path_and_query()
+        .map_or_else(|| parts.uri.path().to_owned(), ToString::to_string);
+    log::info!("request {id} {} {url} from {from}", parts.method);
     // Taken before the shared reply path because an upgrade consumes the
-    // request: the socket outlives this function and there is no `Answer` to
-    // hand back. Counted here for the same reason — a route that returns early
-    // past the one place every answer is counted is a route the scrape silently
-    // forgets.
-    if route.0 == Method::Get && route.1 == "/watch" {
-        let refused = websocket::watch(db, stopping, committed, tokens, request, busy);
-        stopping.answered(refused);
-        return;
+    // request: the socket outlives this function. Counted inside, for the same
+    // reason every other answer is counted once.
+    if parts.method == Method::GET && url == "/watch" {
+        return websocket::watch(node, &mut parts, busy, place).await;
     }
-    // Read before the body, because `as_reader` borrows the request mutably and
-    // the headers are wanted either way.
-    let presented = basic::presented(
-        request
-            .headers()
-            .iter()
-            .find(|header| header.field.equiv("Authorization"))
-            .map(|header| header.value.as_str()),
+    let read = if incoming::takes_body(&parts.method, &url) {
+        Some(incoming::read(&parts.headers, body).await)
+    } else {
+        None
+    };
+    let incoming = Incoming {
+        method: parts.method,
+        url,
+        headers: parts.headers,
+        body: read,
+    };
+    let routing = Arc::clone(&node);
+    let bridged = node
+        .bridge
+        .call(incoming, move |incoming| answer(id, &routing, incoming))
+        .await;
+    drop(place);
+    drop(busy);
+    match bridged {
+        Bridged::Answered(reply) => to_response(reply),
+        Bridged::Busy(_) => {
+            node.stopping.answered(true);
+            refused_at_the_door()
+        }
+        // A panic in one request takes that request down and nothing else: the
+        // listener goes on answering everybody after it.
+        Bridged::Panicked => {
+            log::error!("request {id} panicked");
+            node.stopping.answered(true);
+            to_response(Answer::new(
+                500,
+                r#"{"error":"the request failed inside the node"}"#.to_owned(),
+            ))
+        }
+    }
+}
+
+/// The admission refusal, as it has always read.
+fn refused_at_the_door() -> Response {
+    let mut response = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        r#"{"error":"this node is answering as many requests as it will"}"#,
+    )
+        .into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; charset=UTF-8"),
     );
-    let reply = match (&route.0, route.1.as_str()) {
+    response
+}
+
+/// Route one request and say what to answer.
+///
+/// Runs on the blocking pool: every route here is synchronous.
+fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
+    let db = node.db.as_ref();
+    let tokens = node.tokens.as_ref();
+    let stopping = node.stopping.as_ref();
+    let census = node.census.as_deref();
+    let route = (request.method.clone(), request.url.clone());
+    let presented = basic::presented(request.header("Authorization"));
+    let reply = match (route.0.clone(), route.1.as_str()) {
         // Health carries no data, so it answers a listening socket the same way
         // for everyone: a load balancer must not need a credential to tell a
         // live node from a dead one.
-        (Method::Get, "/health") => respond::health(db),
+        (Method::GET, "/health") => respond::health(db),
         // A different question, and a supervisor acts on the two in opposite
         // ways — a readiness failure means stop sending traffic, a liveness
         // failure means restart. No credential, for the same reason health
         // needs none.
-        (Method::Get, "/ready") => respond::ready(db, stopping.ready()),
+        (Method::GET, "/ready") => respond::ready(db, stopping.ready()),
         // Also without a credential, and for the third time the same reason: a
         // scraper that needs one is a scraper nobody configures. What it carries
         // is operational — an uptime, a sequence, some counts — with no user
         // data and no schema in it.
-        (Method::Get, "/metrics") => respond::metrics(db, census, stopping, tokens),
+        (Method::GET, "/metrics") => respond::metrics(db, census, stopping, tokens),
         // Split on `?` here rather than reaching for a URL parser: this route
         // takes one optional parameter and a dependency to read it would be a
         // poor trade.
-        (Method::Get, url) if url == "/backup" || url.starts_with("/backup?") => respond::backup(
+        (Method::GET, url) if url == "/backup" || url.starts_with("/backup?") => respond::backup(
             db,
             url.split_once('?').map(|(_, query)| query),
             tokens,
@@ -356,27 +333,22 @@ fn answer(id: u64, node: &Serving<'_>, busy: &mut Busy, mut request: Request) {
         // Where a password is spent, once, for a token that stands in for it
         // afterwards. Both halves are here rather than only the first: a
         // credential a client cannot hand back is one it holds until it exits.
-        (Method::Post, "/session") => respond::open_session(db, &presented, tokens),
-        (Method::Delete, "/session") => respond::close_session(&presented, tokens),
+        (Method::POST, "/session") => respond::open_session(db, &presented, tokens),
+        (Method::DELETE, "/session") => respond::close_session(&presented, tokens),
         // Basic only, deliberately: the second proof is the whole route, and a
         // token is not proof of a password.
-        (Method::Post, "/password") => match body::text(&mut request) {
+        (Method::POST, "/password") => match body::text(&mut request) {
             Ok(body) => respond::change_password(db, &presented, body.trim_end_matches('\n')),
             Err(refused) => refused,
         },
-        (Method::Post, "/script") => {
+        (Method::POST, "/script") => {
             // The body's shape is decided by what the caller says it is, not by
             // sniffing a leading brace: HTTP has a field for this, and a rule
             // nobody can look up is a rule nobody can rely on. A plain body is
             // the script, which is what it has always been.
-            let json = request.headers().iter().any(|header| {
-                header.field.equiv("Content-Type")
-                    && header
-                        .value
-                        .as_str()
-                        .to_ascii_lowercase()
-                        .contains("application/json")
-            });
+            let json = request
+                .header("Content-Type")
+                .is_some_and(|kind| kind.to_ascii_lowercase().contains("application/json"));
             match body::text(&mut request) {
                 Err(refused) => refused,
                 Ok(body) if !json => {
@@ -401,12 +373,12 @@ fn answer(id: u64, node: &Serving<'_>, busy: &mut Busy, mut request: Request) {
         ),
         (method, url) => match object::target(url) {
             Some(aimed) => match method {
-                Method::Put | Method::Post => match body::bytes(&mut request) {
+                Method::PUT | Method::POST => match body::bytes(&mut request) {
                     Ok(body) => object::put(db, &aimed, body, tokens, &presented),
                     Err(refused) => refused,
                 },
-                Method::Get | Method::Head => object::get(db, &aimed, tokens, &presented),
-                Method::Delete => object::delete(db, &aimed, tokens, &presented),
+                Method::GET | Method::HEAD => object::get(db, &aimed, tokens, &presented),
+                Method::DELETE => object::delete(db, &aimed, tokens, &presented),
                 _ => Answer::new(
                     405,
                     r#"{"error":"that route takes another method"}"#.to_owned(),
@@ -415,7 +387,7 @@ fn answer(id: u64, node: &Serving<'_>, busy: &mut Busy, mut request: Request) {
             // Last, and deliberately so: the console never shadows a route, it
             // only fills paths nothing else claimed. With the feature off there
             // is nothing to fill them with and this is the ordinary 404.
-            None => console::asset(method, url)
+            None => console::asset(&method, url)
                 .unwrap_or_else(|| Answer::new(404, r#"{"error":"no such route"}"#.to_owned())),
         },
     };
@@ -436,41 +408,35 @@ fn answer(id: u64, node: &Serving<'_>, busy: &mut Busy, mut request: Request) {
         log::info!("request {id} answered {}", reply.status);
     }
 
-    // A statement that succeeded may have committed something, so wake this
-    // node's subscribers rather than leaving them to notice on their next
-    // timeout. Not required for correctness — `Commits::wait` returns anyway —
-    // and the signal is deliberately coarse: it says "look", never what changed,
-    // so it cannot disagree with the log about what actually happened.
-    if route.0 == Method::Post && route.1 == "/script" && reply.status < 400 {
-        committed.signal();
-    }
+    reply
+}
 
-    let mut response = Response::from_data(reply.body).with_status_code(reply.status);
+/// An answer as axum sends it, with the headers its status obliges.
+fn to_response(reply: Answer) -> Response {
+    let status = StatusCode::from_u16(reply.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let mut response = (status, reply.body).into_response();
+    let headers = response.headers_mut();
     // A `401` without a challenge is not a `401` a client can act on — RFC 9110
     // requires the header, so it follows from the status rather than from a
     // separate decision at each place that produces one.
-    if reply.status == 401
-        && let Ok(header) =
-            r#"WWW-Authenticate: Basic realm="TessariDB""#.parse::<tiny_http::Header>()
-    {
-        response = response.with_header(header);
+    if reply.status == 401 {
+        headers.insert(
+            header::WWW_AUTHENTICATE,
+            HeaderValue::from_static(r#"Basic realm="TessariDB""#),
+        );
     }
-    // A `307` without a `Location` is not a redirect a client can act on, which
-    // is the `401` rule above applied to the other status that carries an
-    // obligation. The difference is that the challenge is a constant and the
-    // address is not, so this one follows from the answer rather than from the
-    // status — see `Answer::location`.
+    // A `307` without a `Location` is not a redirect a client can act on — the
+    // `401` rule applied to the other status that carries an obligation, except
+    // that the address follows from the answer rather than from the status.
     if let Some(where_to) = &reply.location
-        && let Ok(header) = format!("Location: {where_to}").parse::<tiny_http::Header>()
+        && let Ok(value) = HeaderValue::from_str(where_to)
     {
-        response = response.with_header(header);
+        headers.insert(header::LOCATION, value);
     }
-    // The answer says what it is. A constant either way, so it parses — and if it
-    // somehow did not, an answer without a content type still beats no answer.
-    if let Ok(header) = format!("Content-Type: {}", reply.kind).parse::<tiny_http::Header>() {
-        response = response.with_header(header);
+    // The answer says what it is; an answer without a content type still beats
+    // no answer if a kind ever failed to be a header.
+    if let Ok(value) = HeaderValue::from_str(reply.kind) {
+        headers.insert(header::CONTENT_TYPE, value);
     }
-    // A client that hung up mid-answer is not this node's problem, and there is
-    // nobody left to tell.
-    drop(request.respond(response));
+    response
 }

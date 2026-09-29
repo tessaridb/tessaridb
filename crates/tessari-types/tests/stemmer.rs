@@ -7,6 +7,9 @@
 //! owed and is not in this repository yet — so a case not listed here is not a
 //! case this file has verified.
 
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![allow(clippy::expect_used, clippy::as_conversions)]
+
 use tessari_types::stem;
 
 /// Assert a whole table at once, so a failure names the word rather than a line.

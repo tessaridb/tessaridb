@@ -117,10 +117,10 @@ fn body(n: u32, filler: usize) -> String {
     for _ in 0..=(n % 4) {
         words.push("lock".to_owned());
     }
-    if n % 3 == 0 {
+    if n.is_multiple_of(3) {
         words.push("contention".to_owned());
     }
-    if n % 5 == 0 {
+    if n.is_multiple_of(5) {
         words.push("vector".to_owned());
         words.push("vector".to_owned());
     }

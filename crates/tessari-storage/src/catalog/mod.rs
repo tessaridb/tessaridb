@@ -27,13 +27,17 @@ mod consumer;
 // `pub(crate)` for the counter helpers: `crate::cardinality` stores a record
 // count with the same `count`/`count_of` pair the record sequence uses, so the
 // two per-table numbers are written and read one way rather than two.
+mod allocation;
+mod creating;
 mod decoded;
 pub(crate) mod definition;
+mod dropping;
 mod edge_kind;
 mod failover;
 mod field;
 mod grant;
 mod graph;
+mod indexes;
 mod leadership;
 mod position;
 mod replica;
@@ -46,10 +50,7 @@ mod user;
 mod vault;
 
 use tessari_encoding::{decode_payload, encode_payload};
-use tessari_types::{
-    DatabaseId, FieldKind, IndexId, NamespaceId, Path, RecordId, Replication, ReplicationClass,
-    TableId, Value,
-};
+use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId, Value};
 
 pub use analyzer::AnalyzerDefinition;
 pub use authority::{Authority, Held, Kind, Reach};
@@ -83,7 +84,7 @@ pub use topic::{PublicAppend, TopicDeclaration};
 pub use user::{Role, UserDefinition, Verb};
 pub use vault::VaultRoot;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::transaction::{RecordAddress, Transaction};
 use system::Level;
 
@@ -103,397 +104,6 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// Work on the catalog inside `transaction`.
     pub fn new(transaction: &'a mut Transaction<'txn>) -> Self {
         Self { transaction }
-    }
-
-    /// Create a namespace.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::NameTaken`] when the name is already in use, and a
-    /// substrate or decoding failure otherwise.
-    pub fn create_namespace(&mut self, name: &str) -> Result<NamespaceDefinition> {
-        let qualified = qualify(Level::Namespace, &[], name);
-        self.reserve_name(&qualified)?;
-        let id = NamespaceId::new(self.allocate(Level::Namespace)?);
-        let definition = NamespaceDefinition {
-            id,
-            name: name.to_owned(),
-            // A namespace is created having said nothing about replication, and
-            // the clause is applied by [`Self::set_replication`] whether it
-            // arrived with the `DEFINE` or with a later `ALTER`. One write path
-            // rather than two: the two statements set the same field, and a
-            // second route for the creating case is a route that can disagree
-            // with the altering one. Both run inside the caller's transaction,
-            // whose pending writes are keyed by address, so a definition
-            // written and then amended still reaches the log as one mutation.
-            replication: None,
-            // The same, for the same reason: applied by
-            // [`Self::set_replication_class`] whichever statement carried it.
-            class: None,
-        };
-        self.write(system::NAMESPACES, id.get(), &definition.to_value());
-        self.claim_name(&qualified, id.get());
-        Ok(definition)
-    }
-
-    /// Set how many copies of a namespace the cluster is asked to keep.
-    ///
-    /// Moves between **stated** values in both directions (owner requirement
-    /// D12) and never back to never-stated: a namespace that was once asked has
-    /// been asked, and silence is a fact about its history rather than a
-    /// setting to restore.
-    ///
-    /// Nothing is redistributed here, and nothing needs to be. The log already
-    /// holds every write the namespace ever took, so a follower that begins
-    /// subscribing replays it, and this statement has nothing to do but record
-    /// the policy. See `Session::alter_namespace` for why that is a property of
-    /// the design rather than a step left out.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::NoSuchParent`] when the namespace does not exist, and a
-    /// substrate or decoding failure otherwise.
-    pub fn set_replication(
-        &mut self,
-        namespace: NamespaceId,
-        replication: Replication,
-    ) -> Result<NamespaceDefinition> {
-        let Some(mut definition) = self.namespace(namespace)? else {
-            return Err(Error::NoSuchParent {
-                entity: "namespace",
-                id: namespace.get(),
-            });
-        };
-        definition.replication = Some(replication);
-        self.write(system::NAMESPACES, namespace.get(), &definition.to_value());
-        Ok(definition)
-    }
-
-    /// Set how many writers a namespace admits (G027 S2.1).
-    ///
-    /// The sibling of [`Self::set_replication`] and deliberately the same shape,
-    /// so the class cannot acquire a second write path the count does not have.
-    /// It moves between **stated** values and never back to never-stated, for
-    /// that method's reason: a namespace that was once asked has been asked.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::NoSuchParent`] when the namespace does not exist, and
-    /// the substrate or decoding failure otherwise.
-    pub fn set_replication_class(
-        &mut self,
-        namespace: NamespaceId,
-        class: ReplicationClass,
-    ) -> Result<NamespaceDefinition> {
-        let Some(mut definition) = self.namespace(namespace)? else {
-            return Err(Error::NoSuchParent {
-                entity: "namespace",
-                id: namespace.get(),
-            });
-        };
-        definition.class = Some(class);
-        self.write(system::NAMESPACES, namespace.get(), &definition.to_value());
-        Ok(definition)
-    }
-
-    /// Create a database inside an existing namespace.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::NoSuchParent`] when the namespace does not exist,
-    /// [`Error::NameTaken`] when the name is in use within it.
-    pub fn create_database(
-        &mut self,
-        namespace: NamespaceId,
-        name: &str,
-    ) -> Result<DatabaseDefinition> {
-        if self.namespace(namespace)?.is_none() {
-            return Err(Error::NoSuchParent {
-                entity: "namespace",
-                id: namespace.get(),
-            });
-        }
-        let qualified = qualify(Level::Database, &[namespace.get()], name);
-        self.reserve_name(&qualified)?;
-        let id = DatabaseId::new(self.allocate(Level::Database)?);
-        let definition = DatabaseDefinition {
-            id,
-            namespace,
-            name: name.to_owned(),
-        };
-        self.write(system::DATABASES, id.get(), &definition.to_value());
-        self.claim_name(&qualified, id.get());
-        Ok(definition)
-    }
-
-    /// Create a table inside an existing database.
-    ///
-    /// The shape is fixed at creation except for `schemafull`, which
-    /// [`Self::set_schemafull`] rewrites in place. That one moves because a
-    /// schema is a rule about what may be *written*, so changing it binds the
-    /// writes that follow and leaves the stored rows alone; the `kind` does not
-    /// move, because it describes what the records already **are**.
-    ///
-    /// An edge table additionally gets an index on `out` and one on `in`, in
-    /// this same commit, so that traversal is an index read without the caller
-    /// having had to know to declare them.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::NoSuchParent`] when the database does not exist or does
-    /// not belong to `namespace`, and [`Error::NameTaken`] when the name is in
-    /// use within it.
-    pub fn create_table(
-        &mut self,
-        namespace: NamespaceId,
-        database: DatabaseId,
-        name: &str,
-        shape: TableShape,
-    ) -> Result<TableDefinition> {
-        let parent = self.database(database)?;
-        if parent.is_none_or(|found| found.namespace != namespace) {
-            return Err(Error::NoSuchParent {
-                entity: "database",
-                id: database.get(),
-            });
-        }
-        let shards = shard::declared_for(name, &shape)?;
-        let qualified = qualify(Level::Table, &[namespace.get(), database.get()], name);
-        self.reserve_name(&qualified)?;
-        let id = TableId::new(self.allocate(Level::Table)?);
-        let definition = TableDefinition {
-            id,
-            namespace,
-            database,
-            name: name.to_owned(),
-            schemafull: shape.schemafull,
-            kind: shape.kind,
-            identity: shape.identity,
-            graph: shape.graph,
-            conflict: shape.conflict,
-            shards,
-        };
-        self.write(system::TABLES, id.get(), &definition.to_value());
-        self.claim_name(&qualified, id.get());
-        // Learned here rather than on the first read, so a table declared in
-        // this process never costs a catalog round trip to recognise. Recorded
-        // before the commit, which is deliberate and harmless: a rolled-back
-        // creation leaves an entry for a table id nothing can address, and ids
-        // are never reused.
-        self.transaction
-            .store()
-            .series()
-            .learn(id, &definition.kind);
-        // Learned here for the same reason, and because the commit that writes
-        // this table's first records may be this very transaction: the map it
-        // stamps them with must not have to come from a catalog read that cannot
-        // yet see the declaration.
-        self.transaction
-            .store()
-            .shards()
-            .learn(id, definition.shards.as_ref());
-        if matches!(definition.kind, TableKind::Edge(_)) {
-            // Every edge table gets the endpoint machinery, declared pair or
-            // not: what the pair adds is a refusal at the write and an order on
-            // the key, not a different way of being reachable.
-            //
-            // Each endpoint gets both an index and a declaration. The index is
-            // what makes traversal a range read; the declaration is what lets an
-            // edge table also be `SCHEMAFULL`, since nobody writes `out` and `in`
-            // by hand and a caller should not have to declare fields the store
-            // itself fills in.
-            for endpoint in [EDGE_OUT, EDGE_IN] {
-                self.create_index(
-                    id,
-                    &format!("{endpoint}_edges"),
-                    vec![Path::field(endpoint)],
-                    IndexShape::default(),
-                )?;
-                self.create_field(id, endpoint, FieldKind::Record, FieldShape::default())?;
-            }
-        }
-        if matches!(definition.kind, TableKind::Bucket(_)) {
-            // The companion table the bytes live in. Its name carries a byte an
-            // identifier cannot hold, so no statement can name it — the same
-            // mechanism the catalog itself uses to be unreachable rather than
-            // merely undocumented, and the reason `SELECT * FROM media` answers
-            // with files and never with chunks (ADR-0011 §2).
-            self.create_table(
-                namespace,
-                database,
-                &Self::chunks_named(name),
-                TableShape::default(),
-            )?;
-        }
-        Ok(definition)
-    }
-
-    /// The name of the table a bucket's chunks live in.
-    ///
-    /// Derived rather than stored: the name carries the fact, so a second field
-    /// in the catalog holding the same id would be a fact that can disagree with
-    /// itself. The `\u{1}` is what makes it unnameable — an identifier is
-    /// letters, digits and underscores, so nothing a caller can write reaches it.
-    #[must_use]
-    pub fn chunks_named(bucket: &str) -> String {
-        format!("{bucket}\u{1}chunks")
-    }
-
-    /// The name of the table an edge kind's edges live in.
-    ///
-    /// Derived rather than stored, and unnameable for the same reason a bucket's
-    /// chunk table is: an identifier is letters, digits and underscores, so the
-    /// `\u{1}` puts it out of reach of anything a caller can write. An edge kind
-    /// is not a table in the language, and this is what keeps that true while
-    /// still letting an edge be an ordinary record mutation — which is what
-    /// carries it, and the adjacency derived from it, to every replica.
-    #[must_use]
-    pub fn edges_named(kind: &str) -> String {
-        format!("{kind}\u{1}edges")
-    }
-
-    /// Create an index on an existing table.
-    ///
-    /// The projection list is the index's identity as much as its name is: an
-    /// index on `(a, b)` answers a query about `a` and one on `(b, a)` does not,
-    /// so the order given here is the order values are encoded in. Each entry is
-    /// a path, so an index may project a value nested inside the record.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::NoSuchParent`] when the table does not exist,
-    /// [`Error::EmptyIndex`] when no field is named, and [`Error::NameTaken`]
-    /// when the name is in use on that table.
-    pub fn create_index(
-        &mut self,
-        table: TableId,
-        name: &str,
-        fields: Vec<Path>,
-        shape: IndexShape,
-    ) -> Result<IndexDefinition> {
-        if fields.is_empty() {
-            return Err(Error::EmptyIndex {
-                name: name.to_owned(),
-            });
-        }
-        let Some(parent) = self.table(table)? else {
-            return Err(Error::NoSuchParent {
-                entity: "table",
-                id: table.get(),
-            });
-        };
-        let qualified = qualify(
-            Level::Index,
-            &[
-                parent.namespace.get(),
-                parent.database.get(),
-                parent.id.get(),
-            ],
-            name,
-        );
-        self.reserve_name(&qualified)?;
-        let id = IndexId::new(self.allocate(Level::Index)?);
-        let definition = IndexDefinition {
-            id,
-            namespace: parent.namespace,
-            database: parent.database,
-            table,
-            name: name.to_owned(),
-            fields,
-            unique: shape.unique,
-            search: shape.search,
-            vector: shape.vector,
-            spatial: shape.spatial,
-        };
-        self.write(system::INDEXES, id.get(), &definition.to_value());
-        self.claim_name(&qualified, id.get());
-        Ok(definition)
-    }
-
-    /// Look an index up by id.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stored definition cannot be read.
-    pub fn index(&self, id: IndexId) -> Result<Option<IndexDefinition>> {
-        self.read(system::INDEXES, id.get())?
-            .as_ref()
-            .map(IndexDefinition::from_value)
-            .transpose()
-    }
-
-    /// Every index on one table.
-    ///
-    /// This is what a write path consults, so it reads the whole index catalog
-    /// and filters. That is honest at catalog scale and would not be at table
-    /// scale; when the write path is called hot, the answer is a cache keyed by
-    /// the catalog's own version, not a cleverer scan.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a stored definition cannot be read.
-    pub fn indexes_on(&self, table: TableId) -> Result<Vec<IndexDefinition>> {
-        let mut found = Vec::new();
-        for (_, bytes) in self.transaction.scan_table(
-            system::SYSTEM_NAMESPACE,
-            system::SYSTEM_DATABASE,
-            system::INDEXES,
-        )? {
-            let definition = IndexDefinition::from_value(&decode_payload(&bytes)?)?;
-            if definition.table == table {
-                found.push(definition);
-            }
-        }
-        Ok(found)
-    }
-
-    /// Write an index's definition again, unchanged, so its entries are built
-    /// from the table's rows as they now stand.
-    ///
-    /// The whole of `REBUILD INDEX`. A catalog entry is an ordinary record
-    /// (ADR-0009), so writing this one puts a mutation in the log that index
-    /// maintenance already knows how to answer — by building every entry the
-    /// definition implies. Nothing about the definition changes, and nothing
-    /// needs to: the *rows* changed, and the entries are a function of them.
-    ///
-    /// Two properties come from doing it this way rather than with a command of
-    /// its own. Every replica rebuilds at the same sequence, because each one
-    /// applies the same record. And the rebuild is atomic with whatever else the
-    /// transaction does, because it is the same batch.
-    ///
-    pub fn rebuild_index(&mut self, definition: &IndexDefinition) {
-        self.write(system::INDEXES, definition.id.get(), &definition.to_value());
-    }
-
-    /// Drop an index's definition and release its name.
-    ///
-    /// The entries themselves are **not** removed here, for the same reason a
-    /// dropped table keeps its records: it is bulk work whose cost belongs at
-    /// the call site rather than hidden inside a catalog call.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stored definition cannot be read.
-    pub fn drop_index(&mut self, id: IndexId) -> Result<bool> {
-        let Some(definition) = self.index(id)? else {
-            return Ok(false);
-        };
-        let qualified = qualify(
-            Level::Index,
-            &[
-                definition.namespace.get(),
-                definition.database.get(),
-                definition.table.get(),
-            ],
-            &definition.name,
-        );
-        self.transaction.delete(system::address(
-            system::INDEXES,
-            RecordId::Int(id_key(id.get())),
-        ));
-        self.transaction
-            .delete(system::address(system::NAMES, RecordId::from(qualified)));
-        Ok(true)
     }
 
     /// Look a namespace up by id.
@@ -649,94 +259,6 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             .map(TableId::new))
     }
 
-    /// Drop a table's definition and release its name.
-    ///
-    /// The table's records are **not** removed here — that is a bulk operation
-    /// with its own cost and its own decisions, and doing it silently inside a
-    /// catalog call would hide it. [`Self::drop_database`] and
-    /// [`Self::drop_namespace`] take the same stance one and two levels up:
-    /// each removes its own definition and nothing beneath it, and whether
-    /// anything is still down there is a question the statement asks, where the
-    /// span to refuse with lives.
-    ///
-    /// The id is not released. A reused id would let a stale key or an in-flight
-    /// reference resolve against a different table, and nothing in the store
-    /// could detect it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stored definition cannot be read.
-    pub fn drop_table(&mut self, id: TableId) -> Result<bool> {
-        let Some(definition) = self.table(id)? else {
-            return Ok(false);
-        };
-        self.transaction.store().series().forget(id);
-        let qualified = qualify(
-            Level::Table,
-            &[definition.namespace.get(), definition.database.get()],
-            &definition.name,
-        );
-        self.transaction.delete(system::address(
-            system::TABLES,
-            RecordId::Int(id_key(id.get())),
-        ));
-        self.transaction
-            .delete(system::address(system::NAMES, RecordId::from(qualified)));
-        Ok(true)
-    }
-
-    /// Remove a database's definition and release its name.
-    ///
-    /// Answers `false` when there was nothing under that id.
-    ///
-    /// Nothing inside is touched, for the reason [`Self::drop_table`] leaves the
-    /// records: cascading here would be unbounded work hidden inside a catalog
-    /// call. Whether the database still holds anything is asked by the
-    /// statement, which has the span to say so with.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stored definition cannot be read.
-    pub fn drop_database(&mut self, id: DatabaseId) -> Result<bool> {
-        let Some(definition) = self.database(id)? else {
-            return Ok(false);
-        };
-        let qualified = qualify(
-            Level::Database,
-            &[definition.namespace.get()],
-            &definition.name,
-        );
-        self.transaction.delete(system::address(
-            system::DATABASES,
-            RecordId::Int(id_key(id.get())),
-        ));
-        self.transaction
-            .delete(system::address(system::NAMES, RecordId::from(qualified)));
-        Ok(true)
-    }
-
-    /// Remove a namespace's definition and release its name.
-    ///
-    /// Answers `false` when there was nothing under that id. Nothing inside is
-    /// touched — see [`Self::drop_database`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the stored definition cannot be read.
-    pub fn drop_namespace(&mut self, id: NamespaceId) -> Result<bool> {
-        let Some(definition) = self.namespace(id)? else {
-            return Ok(false);
-        };
-        let qualified = qualify(Level::Namespace, &[], &definition.name);
-        self.transaction.delete(system::address(
-            system::NAMESPACES,
-            RecordId::Int(id_key(id.get())),
-        ));
-        self.transaction
-            .delete(system::address(system::NAMES, RecordId::from(qualified)));
-        Ok(true)
-    }
-
     /// Rewrite a table's `schemafull` flag, leaving everything else as it is.
     ///
     /// Answers `false` when there was nothing under that id.
@@ -758,124 +280,6 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         Ok(true)
     }
 
-    /// Hand out the next id at `level`, and record that it was handed out.
-    ///
-    /// The counter is written in this transaction, so two concurrent creations
-    /// write the same record and one of them loses — the same mechanism that
-    /// keeps names unique, and no second lock.
-    fn allocate(&mut self, level: Level) -> Result<u32> {
-        let address = system::address(system::ALLOCATORS, RecordId::from(level.counter()));
-        let next = match self.transaction.get(&address)? {
-            Some(bytes) => definition::id_of(&decode_payload(&bytes)?, "allocator", "next")?,
-            None => system::FIRST_ID,
-        };
-        let following = next.checked_add(1).ok_or(Error::IdSpaceExhausted {
-            level: level.counter(),
-        })?;
-        self.transaction.put(
-            address,
-            encode_payload(&definition::number(following)).into_bytes(),
-        );
-        Ok(next)
-    }
-
-    /// Hand out the next identity for a record in `table`, and record that it
-    /// was handed out.
-    ///
-    /// Written in the caller's transaction for the reason [`Self::allocate`]
-    /// gives: two writers that each read the same counter also both write it,
-    /// and that shared key is what makes one of them lose. So no number reaches
-    /// two records, and no second lock is needed to say so.
-    ///
-    /// The counter is a catalog record like every other, so it rides the log,
-    /// takes the snapshot and reaches a replica — which is the whole point. A
-    /// counter a replica derived for itself, or one restored from a backup taken
-    /// before the writes it counts, would re-issue an identity that already
-    /// names a record, and the next write under it would replace that record
-    /// rather than add one, with nothing anywhere in an error state.
-    ///
-    /// The number answered always fits an `i64`, so the caller can build a
-    /// [`RecordId::Int`] from it without a second refusal to invent.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::IdSpaceExhausted`] when the table has spent every
-    /// identity the key grammar can express, and a substrate or decoding
-    /// failure otherwise.
-    pub fn next_record_number(&mut self, table: TableId) -> Result<u64> {
-        let address = system::address(system::RECORD_SEQUENCES, RecordId::Int(id_key(table.get())));
-        let next = match self.transaction.get(&address)? {
-            Some(bytes) => {
-                definition::count_of(&decode_payload(&bytes)?, "record sequence", "next")?
-            }
-            None => system::FIRST_RECORD_NUMBER,
-        };
-        let following = next.checked_add(1).ok_or(Error::IdSpaceExhausted {
-            level: definition::RECORD_LEVEL,
-        })?;
-        // Stored before it is answered, so a count this store could hold but
-        // could never spend is refused while the caller still has no identity to
-        // do anything with.
-        let held = definition::count(following)?;
-        self.transaction
-            .put(address, encode_payload(&held).into_bytes());
-        Ok(next)
-    }
-
-    /// How many records a table holds, when the store has a count for it.
-    ///
-    /// `None` means no estimate rather than an empty table: the counter is
-    /// written by [`crate::cardinality`] when a record arrives or leaves, so a
-    /// table nothing has written since the store was created has no record
-    /// here. The two are worth telling apart because a planner told "no
-    /// estimate" must fall back to the behaviour it had before counts existed,
-    /// while a planner told "zero" would conclude that every index beats a scan
-    /// of nothing.
-    ///
-    /// It is an **estimate for choosing an access path** and never an answer.
-    /// Nothing that decides which records a statement returns may read it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the store cannot be read or the stored count
-    /// cannot be decoded.
-    pub fn record_count(&mut self, table: TableId) -> Result<Option<u64>> {
-        let address = system::address(system::RECORD_COUNTS, RecordId::Int(id_key(table.get())));
-        let Some(bytes) = self.transaction.get(&address)? else {
-            return Ok(None);
-        };
-        Ok(Some(definition::count_of(
-            &decode_payload(&bytes)?,
-            "record count",
-            "held",
-        )?))
-    }
-
-    /// Refuse early if the name is already resolvable.
-    fn reserve_name(&self, qualified: &str) -> Result<()> {
-        if self.resolve(qualified)?.is_some() {
-            return Err(Error::NameTaken {
-                qualified: qualified.to_owned(),
-            });
-        }
-        Ok(())
-    }
-
-    fn claim_name(&mut self, qualified: &str, id: u32) {
-        let address = system::address(system::NAMES, RecordId::from(qualified));
-        let value = definition::number(id);
-        self.transaction
-            .put(address, encode_payload(&value).into_bytes());
-    }
-
-    fn resolve(&self, qualified: &str) -> Result<Option<u32>> {
-        let address = system::address(system::NAMES, RecordId::from(qualified));
-        let Some(bytes) = self.row(&address)? else {
-            return Ok(None);
-        };
-        definition::id_of(&decode_payload(&bytes)?, "name", "id").map(Some)
-    }
-
     /// A name or table row at this transaction's snapshot, from the rows held
     /// between statements when the snapshot allows it (`rows`).
     fn row(&self, address: &RecordAddress) -> Result<Option<Vec<u8>>> {
@@ -891,12 +295,12 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             rows::Lookup::Missing(fill) => fill,
         };
         let row = self.transaction.get(address)?;
-        if let Some(generation) = fill {
-            if !store.write_gate().holding() {
-                store
-                    .catalog_rows()
-                    .fill(address.clone(), generation, row.clone());
-            }
+        if let Some(generation) = fill
+            && !store.write_gate().holding()
+        {
+            store
+                .catalog_rows()
+                .fill(address.clone(), generation, row.clone());
         }
         Ok(row)
     }

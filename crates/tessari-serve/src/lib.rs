@@ -37,6 +37,14 @@
 //! keeps serving for a window, and stage 1 sets the refusal.
 
 #![forbid(unsafe_code)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
+
+mod accepting;
+mod bridge;
+
+pub use crate::accepting::{ACCEPT_PAUSE, passes};
+pub use crate::bridge::{Bridge, Bridged};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -45,9 +53,9 @@ use std::time::{Duration, Instant};
 /// How long to wait between checks while draining.
 ///
 /// Short enough that a shutdown of an idle node is not perceptibly delayed, long
-/// enough that draining is not a spin. This parks the thread rather than
-/// yielding: a drain waits far longer than a scheduler quantum, and yielding for
-/// that long burns a core to no purpose.
+/// enough that draining is not a spin. The drain sleeps on the runtime's timer
+/// rather than yielding: it waits far longer than a scheduler quantum, and
+/// yielding for that long burns a core to no purpose.
 const GLANCE: Duration = Duration::from_millis(10);
 
 /// The state a stopping process shares with its surfaces.
@@ -153,38 +161,39 @@ impl Stopping {
     /// told to stop simply stops, so there is no per-refusal event to count, and
     /// building one to feed a metric would be the metric wagging the mechanism.
     pub fn answered(&self, refused: bool) {
-        self.answers.fetch_add(1, Ordering::AcqRel);
+        self.answers.fetch_add(1, Ordering::Relaxed);
         if refused {
-            self.refusals.fetch_add(1, Ordering::AcqRel);
+            self.refusals.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     /// Answers written since this surface started, refusals included.
     #[must_use]
     pub fn answers(&self) -> u64 {
-        self.answers.load(Ordering::Acquire)
+        self.answers.load(Ordering::Relaxed)
     }
 
     /// How many of those answers were refusals.
     #[must_use]
     pub fn refusals(&self) -> u64 {
-        self.refusals.load(Ordering::Acquire)
+        self.refusals.load(Ordering::Relaxed)
     }
 
     /// Stage 2 — wait for in-flight requests, and say whether they finished.
     ///
     /// Waits on requests **only**. Feeds are stage 3 and waiting for them here
     /// is the mistake this type exists to make impossible.
-    #[must_use]
-    pub fn drain(&self, patience: Duration) -> Drained {
-        let began = Instant::now();
+    ///
+    /// Must be awaited inside a Tokio runtime with its timer enabled.
+    pub async fn drain(&self, patience: Duration) -> Drained {
+        let began = tokio::time::Instant::now();
         while self.requests() > 0 {
             if began.elapsed() >= patience {
                 return Drained::Deadline {
                     left: self.requests(),
                 };
             }
-            std::thread::park_timeout(GLANCE);
+            tokio::time::sleep(GLANCE).await;
         }
         Drained::Finished
     }
@@ -499,15 +508,15 @@ mod tests {
         assert_eq!((stopping.requests(), stopping.feeds()), (0, 0));
     }
 
-    #[test]
-    fn a_drain_waits_for_a_request_and_not_for_a_feed() {
+    #[tokio::test(start_paused = true)]
+    async fn a_drain_waits_for_a_request_and_not_for_a_feed() {
         let stopping = Stopping::new();
         let mut feed = stopping.busy();
         feed.became_a_feed();
         // A feed is open, and the drain still finishes — which is the whole
         // reason the two counts are apart. Waiting on both, this would time out.
         assert_eq!(
-            stopping.drain(Duration::from_secs(5)),
+            stopping.drain(Duration::from_secs(5)).await,
             Drained::Finished,
             "the drain waited for a subscription, which never ends on its own"
         );
@@ -515,12 +524,12 @@ mod tests {
         let working = stopping.busy();
         let patience = Duration::from_millis(30);
         assert_eq!(
-            stopping.drain(patience),
+            stopping.drain(patience).await,
             Drained::Deadline { left: 1 },
             "the drain did not wait for a request that never finished"
         );
         drop(working);
-        assert_eq!(stopping.drain(patience), Drained::Finished);
+        assert_eq!(stopping.drain(patience).await, Drained::Finished);
     }
 
     #[test]

@@ -108,9 +108,9 @@ pub fn parse_uuid(text: &str) -> Option<[u8; 16]> {
     }
 
     let mut bytes = [0_u8; 16];
-    for (index, pair) in plain.as_bytes().chunks_exact(2).enumerate() {
-        let high = hex_value(*pair.first()?)?;
-        let low = hex_value(*pair.get(1)?)?;
+    for (index, [high, low]) in plain.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+        let high = hex_value(*high)?;
+        let low = hex_value(*low)?;
         *bytes.get_mut(index)? = high.checked_mul(16)?.checked_add(low)?;
     }
     Some(bytes)

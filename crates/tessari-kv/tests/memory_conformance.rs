@@ -4,6 +4,9 @@
 //! is what makes "the trait is swappable" a checked claim rather than an
 //! intention.
 
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![allow(clippy::expect_used, clippy::as_conversions)]
+
 use tessari_kv::{MemoryBackend, conformance};
 
 #[test]

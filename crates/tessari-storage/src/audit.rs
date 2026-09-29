@@ -95,9 +95,41 @@ pub trait AuditDevice: Send + Sync + std::fmt::Debug {
     ///
     /// # Errors
     ///
-    /// Returns the reason the event could not be recorded.
-    fn record(&self, event: &VaultRead<'_>) -> std::result::Result<(), String>;
+    /// Returns [`DeviceRefused`] naming why the event could not be recorded.
+    fn record(&self, event: &VaultRead<'_>) -> std::result::Result<(), DeviceRefused>;
 }
+
+/// Why an [`AuditDevice`] could not record a read.
+///
+/// Built by the device from its own reason; the store carries that reason into
+/// the refusal of the read, so an operator sees which device failed and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceRefused {
+    reason: String,
+}
+
+impl DeviceRefused {
+    /// A refusal carrying the device's own reason.
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+
+    /// The device's reason.
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+}
+
+impl std::fmt::Display for DeviceRefused {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.reason)
+    }
+}
+
+impl std::error::Error for DeviceRefused {}
 
 /// The devices a store records reads to.
 ///
@@ -107,6 +139,8 @@ pub trait AuditDevice: Send + Sync + std::fmt::Debug {
 /// every dashboard reported health.
 #[derive(Debug, Default)]
 pub struct AuditTrail {
+    /// A `RwLock`: every vault read walks the list, and `install` writes it,
+    /// normally once, at start.
     installed: RwLock<Vec<Arc<dyn AuditDevice>>>,
 }
 
@@ -138,7 +172,9 @@ impl AuditTrail {
         for device in installed {
             device
                 .record(event)
-                .map_err(|reason| Error::AuditUnavailable { reason })?;
+                .map_err(|refused| Error::AuditUnavailable {
+                    reason: refused.reason().to_owned(),
+                })?;
         }
         Ok(())
     }

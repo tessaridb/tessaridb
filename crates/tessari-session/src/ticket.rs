@@ -58,6 +58,7 @@
 use argon2::password_hash::rand_core::{OsRng, RngCore};
 use tessari_storage::{Catalog, UserDefinition};
 
+use crate::encoding::nibble;
 use crate::error::{Error, Result};
 use crate::identity::Identity;
 use crate::session::Session;
@@ -179,18 +180,6 @@ fn token() -> String {
         text.push(nibble(byte & 0x0f));
     }
     text
-}
-
-/// One hexadecimal digit.
-///
-/// The range on each arm is what makes the addition sound — the caller only
-/// ever passes a nibble — and the saturating form says so to the compiler as
-/// well as to a reader, the same way `basic::sextet` does on the way back.
-const fn nibble(value: u8) -> char {
-    match value {
-        0..=9 => b'0'.saturating_add(value) as char,
-        _ => b'a'.saturating_add(value.saturating_sub(10)) as char,
-    }
 }
 
 #[cfg(test)]

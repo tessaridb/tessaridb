@@ -7,6 +7,8 @@
 //! than the node's memory.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -20,7 +22,7 @@ fn serving(db: Arc<Db>) -> (Arc<Node>, String) {
     let node = Arc::new(Node::bind(db, "127.0.0.1:0").unwrap());
     let address = node.address().unwrap();
     let held = Arc::clone(&node);
-    drop(std::thread::spawn(move || held.serve()));
+    drop(std::thread::spawn(move || serve_until_the_test_ends(&held)));
     (node, address)
 }
 
@@ -106,6 +108,124 @@ fn a_change_written_after_a_subscribe_arrives() {
         }
         other => panic!("not a write: {other:?}"),
     }
+}
+
+#[test]
+fn a_connection_that_subscribes_close_behind_its_statements_is_fed() {
+    // Statements close behind one another are answered on a store thread
+    // (`hot.rs`), which reads the subscription itself and must hand it back to
+    // the runtime with the session that selected the database.
+    let db = Arc::new(Db::in_memory().unwrap());
+    let (_node, address) = serving(Arc::clone(&db));
+    let mut writer = Client::connect(&address).unwrap();
+    writer.run(READY, None).unwrap();
+
+    let mut busy = Client::connect(&address).unwrap();
+    for script in [
+        "USE NAMESPACE prod;",
+        "USE DATABASE orders;",
+        "SELECT * FROM users;",
+    ] {
+        busy.run(script, None).unwrap();
+    }
+    let feed = feeding(
+        busy,
+        &Follow {
+            from: db
+                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .unwrap()
+                .get()
+                + 1,
+            table: None,
+            cursor: None,
+        },
+    );
+
+    writer
+        .run("CREATE users:1 = { name: 'ada' };", None)
+        .unwrap();
+    assert_eq!(within(&feed, "a change").id, "1");
+}
+
+#[test]
+fn a_change_committed_past_the_node_reaches_its_feeds() {
+    // Committed on the database itself, through no connection of this node —
+    // what a replica's apply, the other surface or a cadence does. A feed runs a
+    // round only when the store announces a landing, so a landing it did not
+    // announce would never arrive (Q-838).
+    let db = Arc::new(Db::in_memory().unwrap());
+    let (_node, address) = serving(Arc::clone(&db));
+    let mut writer = Client::connect(&address).unwrap();
+    writer.run(READY, None).unwrap();
+    let feed = feeding(
+        selected(&address),
+        &Follow {
+            from: db
+                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .unwrap()
+                .get()
+                + 1,
+            table: None,
+            cursor: None,
+        },
+    );
+
+    let mut elsewhere = db.session();
+    elsewhere
+        .run("USE NAMESPACE prod; USE DATABASE orders; CREATE users:7 = { name: 'bo' };")
+        .unwrap();
+    assert_eq!(within(&feed, "a change nobody on this node made").id, "7");
+}
+
+#[test]
+fn dropping_the_subscriber_ends_its_running_feed_with_nothing_else_written() {
+    // A feed re-asks who may read on every round, and runs a round only when the
+    // store lands something. The revocation is itself a landing, so it must end
+    // the feed alone — with no later write to wake it (Q-838).
+    let db = Arc::new(Db::in_memory().unwrap());
+    let (_node, address) = serving(Arc::clone(&db));
+    let mut open = Client::connect(&address).unwrap();
+    open.run(READY, None).unwrap();
+    open.run(
+        "DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
+        None,
+    )
+    .unwrap();
+    let owner = Some(("root", "correct horse battery"));
+    let mut root = Client::connect(&address).unwrap();
+    root.run(
+        "DEFINE USER ada ON prod.orders ROLE viewer PASSWORD 'correct horse battery';",
+        owner,
+    )
+    .unwrap();
+
+    let mut ada = Client::connect(&address).unwrap();
+    ada.run(
+        "USE NAMESPACE prod; USE DATABASE orders;",
+        Some(("ada", "correct horse battery")),
+    )
+    .unwrap();
+    let mut feed = ada
+        .follow(&Follow {
+            from: db
+                .committed_tail(db.store().own_log(FIXTURE_HOME).unwrap())
+                .unwrap()
+                .get()
+                + 1,
+            table: None,
+            cursor: None,
+        })
+        .unwrap();
+    let (ended, ending) = mpsc::channel();
+    drop(std::thread::spawn(move || {
+        drop(ended.send(feed.wait().map(|change| change.map(|_| ()))));
+    }));
+
+    root.run("DROP USER ada;", owner).unwrap();
+    let Ok(Err(refused)) = ending.recv_timeout(Duration::from_secs(5)) else {
+        panic!("the feed of a dropped user was not ended by a refusal");
+    };
+    assert!(!refused.to_string().is_empty(), "the refusal said nothing");
 }
 
 #[test]
@@ -435,6 +555,97 @@ fn following_before_a_database_is_selected_says_so_even_watching_everything() {
 }
 
 #[test]
+fn a_subscriber_that_hangs_up_on_a_quiet_feed_gives_its_place_back() {
+    // A feed learns its client has gone only when a write fails — so on a quiet
+    // table it never learned at all. Four hundred clients that subscribed and
+    // hung up held every place at the door, and the node refused everybody else
+    // until somebody, anybody, wrote a change (measured on 0.10.0-beta).
+    // Nothing is written here after the subscribe: the node has to notice the
+    // hang-up by itself.
+    let db = Arc::new(Db::in_memory().unwrap());
+    let (node, address) = serving(Arc::clone(&db));
+    let mut writer = Client::connect(&address).unwrap();
+    writer.run(READY, None).unwrap();
+    drop(writer);
+
+    let feed = selected(&address)
+        .follow(&Follow {
+            from: 0,
+            table: None,
+            cursor: None,
+        })
+        .unwrap();
+    let stopping = node.stopping();
+    let door = node.door();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while stopping.feeds() == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the subscription never became a feed"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    drop(feed);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while stopping.feeds() != 0 || door.open() != 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "a hung-up subscriber still holds {} feed(s) and {} place(s) at the door",
+            stopping.feeds(),
+            door.open()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_node_holds_more_idle_feeds_than_store_calls_and_still_answers() {
+    // After the port a held feed costs a task and no store call, so the number
+    // of conversations a surface holds is no longer the number of store calls
+    // in flight (ADR-0085 §3). One feed past the store-call bound is held, and
+    // a statement is still answered beside all of them.
+    let db = Arc::new(Db::in_memory().unwrap());
+    let (node, address) = serving(Arc::clone(&db));
+    let mut writer = Client::connect(&address).unwrap();
+    writer.run(READY, None).unwrap();
+    drop(writer);
+
+    let wanted = tessari_constants::MAX_STORE_CALLS + 1;
+    let feeds: Vec<_> = (0..wanted)
+        .map(|_| {
+            selected(&address)
+                .follow(&Follow {
+                    from: 0,
+                    table: None,
+                    cursor: None,
+                })
+                .unwrap()
+        })
+        .collect();
+    let stopping = node.stopping();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while stopping.feeds() < wanted {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "only {} of {wanted} feeds were admitted",
+            stopping.feeds()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let mut reader = selected(&address);
+    let answered = reader.run("SELECT * FROM users;", None).unwrap();
+    assert_eq!(
+        answered.len(),
+        1,
+        "one statement, one answer, beside {wanted} feeds"
+    );
+    drop(feeds);
+}
+
+#[test]
 #[ignore = "waits out the node's write timeout, which is 30 seconds by design"]
 fn a_subscriber_that_stops_reading_is_cut_off_rather_than_buffered_and_loses_nothing() {
     // The backpressure story, observed rather than claimed, in both halves.
@@ -642,4 +853,13 @@ fn a_field_grant_reaches_the_feed_too() {
     };
     assert!(held.contains_key("name"), "{held:?}");
     assert!(!held.contains_key("salary"), "{held:?}");
+}
+
+/// Serve `node` on a runtime of this test's own: the node creates none.
+fn serve_until_the_test_ends(node: &Node) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    drop(runtime.block_on(node.serve(tokio_util::sync::CancellationToken::new())));
 }

@@ -26,6 +26,8 @@
 //! the JSON surface, and by hand for the console.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
+// `expect_used` and `as_conversions` govern production code; a test states its own expectations.
+#![allow(clippy::expect_used, clippy::as_conversions)]
 
 use std::sync::Arc;
 

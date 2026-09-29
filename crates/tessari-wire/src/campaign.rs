@@ -230,10 +230,10 @@ impl Standing<'_> {
 /// learned the same fact from the same kind of answer, and reading it twice in
 /// two places is how the two come to disagree.
 fn note(highest: &mut Epoch, vote: Vote) {
-    if let Vote::Refused(Refused::EpochAlreadyDecided { granted }) = vote {
-        if granted > *highest {
-            *highest = granted;
-        }
+    if let Vote::Refused(Refused::EpochAlreadyDecided { granted }) = vote
+        && granted > *highest
+    {
+        *highest = granted;
     }
 }
 

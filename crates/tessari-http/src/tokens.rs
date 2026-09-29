@@ -54,9 +54,10 @@
 //! that has been *read* — off a plaintext connection, out of a log — and against
 //! that, expiry and revocation are the defences, not comparison timing.
 
-use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+use dashmap::DashMap;
 
 use tessari_constants::{MAX_SESSION_TOKENS, SESSION_TOKEN_SECONDS};
 use tessaridb::Ticket;
@@ -74,11 +75,15 @@ struct Live {
 pub(crate) struct Tokens {
     /// Keyed by the token text itself.
     ///
-    /// A `RwLock` rather than a `Mutex` because presenting a token is the common
-    /// path and issuing one is not: a read lock lets every request in flight
-    /// look its holder up at once, and only the two paths that change the table
-    /// — issuing and forgetting — exclude anybody.
-    live: RwLock<HashMap<String, Live>>,
+    /// A `DashMap`: presenting a token is the common path, and a
+    /// sharded map lets every request in flight look its holder up without all
+    /// of them touching one lock.
+    live: DashMap<String, Live>,
+    /// Held by [`Tokens::issue`] alone, across its sweep, its count and its
+    /// insert. Issuing is the only path that adds a row, so while this is held
+    /// the table can only shrink — which is what keeps the ceiling exact when
+    /// two sign-ins race, now that the rows themselves are not under one lock.
+    issuing: Mutex<()>,
 }
 
 /// Why a token could not be issued.
@@ -100,22 +105,22 @@ impl Tokens {
     /// aim at every other.
     pub(crate) fn issue(&self, ticket: Ticket) -> Result<String, Refused> {
         let bearer = ticket.bearer().to_owned();
-        let Ok(mut live) = self.live.write() else {
-            // A poisoned lock means a request thread panicked while holding it.
-            // The table's contents are still structurally sound — nothing here
-            // is a half-written invariant — but refusing is the honest answer
-            // rather than reaching past a panic nobody has looked at.
+        let Ok(_issuing) = self.issuing.lock() else {
+            // A poisoned gate means a thread panicked while issuing. The table's
+            // contents are still structurally sound — nothing here is a
+            // half-written invariant — but refusing is the honest answer rather
+            // than reaching past a panic nobody has looked at.
             return Err(Refused::Full);
         };
         // Swept here rather than on a timer, because a node with no traffic has
         // nothing to sweep and a node with traffic sweeps often enough.
         let now = Instant::now();
-        live.retain(|_, held| held.expires > now);
-        if live.len() >= MAX_SESSION_TOKENS {
+        self.live.retain(|_, held| held.expires > now);
+        if self.live.len() >= MAX_SESSION_TOKENS {
             log::warn!("a token was refused: this node is holding {MAX_SESSION_TOKENS} already");
             return Err(Refused::Full);
         }
-        live.insert(
+        self.live.insert(
             bearer.clone(),
             Live {
                 ticket,
@@ -129,14 +134,13 @@ impl Tokens {
 
     /// What `bearer` stands for, if this node issued it and it is still good.
     ///
-    /// The common path is a read, which is the whole point of the `RwLock`: every
-    /// request in flight looks its holder up at once. Finding an **expired** row
-    /// is the uncommon path, and that one takes the write lock to drop it rather
-    /// than leaving it to be refused again on the next request.
+    /// The common path is a read of one shard. Finding an **expired** row is the
+    /// uncommon path, and that one drops it — after the read guard is gone, since
+    /// removing under it would wait on itself — rather than leaving it to be
+    /// refused again on the next request.
     pub(crate) fn holder(&self, bearer: &str) -> Option<Ticket> {
         {
-            let live = self.live.read().ok()?;
-            let held = live.get(bearer)?;
+            let held = self.live.get(bearer)?;
             if held.expires > Instant::now() {
                 return Some(held.ticket.clone());
             }
@@ -153,9 +157,7 @@ impl Tokens {
     /// *existed* is not something a caller presenting it should be able to
     /// learn.
     pub(crate) fn forget(&self, bearer: &str) {
-        if let Ok(mut live) = self.live.write() {
-            live.remove(bearer);
-        }
+        self.live.remove(bearer);
     }
 
     /// How many **live** tokens are held. For the metrics scrape.
@@ -166,9 +168,7 @@ impl Tokens {
     /// opposite of what an operator watching this number needs to know.
     pub(crate) fn held(&self) -> usize {
         let now = Instant::now();
-        self.live.read().map_or(0, |live| {
-            live.values().filter(|held| held.expires > now).count()
-        })
+        self.live.iter().filter(|held| held.expires > now).count()
     }
 }
 
@@ -222,7 +222,7 @@ mod tests {
     fn plant_expired(tokens: &Tokens, session: &Session<'_>) -> String {
         let ticket = ticket(session);
         let bearer = ticket.bearer().to_owned();
-        tokens.live.write().unwrap().insert(
+        tokens.live.insert(
             bearer.clone(),
             Live {
                 ticket,
@@ -282,7 +282,7 @@ mod tests {
 
         assert!(tokens.holder(&bearer).is_none());
         assert_eq!(
-            tokens.live.read().unwrap().len(),
+            tokens.live.len(),
             0,
             "presenting a dead token is when it is known to be dead — it should \
              not survive to be refused a second time"
@@ -301,7 +301,7 @@ mod tests {
 
         // Two rows, one live. A gauge reporting rows would show a node filling
         // up while half of it was already dead.
-        assert_eq!(tokens.live.read().unwrap().len(), 2);
+        assert_eq!(tokens.live.len(), 2);
         assert_eq!(tokens.held(), 1);
     }
 
@@ -313,12 +313,12 @@ mod tests {
         for _ in 0..3 {
             plant_expired(&tokens, &session);
         }
-        assert_eq!(tokens.live.read().unwrap().len(), 3);
+        assert_eq!(tokens.live.len(), 3);
 
         // The sweep runs before the ceiling is checked, so a table full of dead
         // tokens refuses nobody.
         tokens.issue(ticket(&session)).unwrap();
-        assert_eq!(tokens.live.read().unwrap().len(), 1);
+        assert_eq!(tokens.live.len(), 1);
     }
 
     #[test]

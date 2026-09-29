@@ -40,7 +40,7 @@ impl Store {
     /// gone, or a decoding failure when the stored bytes carry a revision, role
     /// or membership this build does not know.
     pub fn node_identity(&self) -> Result<NodeIdentity> {
-        crate::node::read(&self.backend)?.ok_or(Error::NoIdentity)
+        crate::node::read(Arc::clone(&self.backend))?.ok_or(Error::NoIdentity)
     }
 
     /// What this process is doing with the consumers the catalog declares.
@@ -142,7 +142,7 @@ impl Store {
         if let Some(keep) = retain {
             self.set_log_retention(keep)?;
         }
-        crate::node::configure(&self.backend, roles, endpoints)
+        crate::node::configure(Arc::clone(&self.backend), roles, endpoints)
     }
 
     /// Begin a transaction at the newest version this store has written.
@@ -308,5 +308,16 @@ impl Store {
     /// The turn a writer of a log record takes (`crate::gate`).
     pub(crate) fn write_gate(&self) -> &crate::gate::WriteGate {
         &self.writing
+    }
+
+    /// Call `hook` after every write that files a log record lands — a commit,
+    /// or a record applied from another writer's stream — whichever surface,
+    /// cadence or peer it came from.
+    ///
+    /// For whatever follows the log: it is how a follower learns there is
+    /// something new without looking. The hook runs on the writer's thread
+    /// after the write is readable, so it must be short and must not block.
+    pub fn when_landed(&self, hook: impl Fn() + Send + Sync + 'static) {
+        self.writing.when_landed(Box::new(hook));
     }
 }
