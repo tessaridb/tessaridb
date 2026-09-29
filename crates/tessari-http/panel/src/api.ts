@@ -198,6 +198,52 @@ export function held(answered: Result | null): Record<string, unknown> | null {
   return answered.value as Record<string, unknown>;
 }
 
+/**
+ * One key-value route (`/kv/…`, ADR-0090), signed in as the console is, parsed as
+ * JSON. Recorded in the statement log as `METHOD path`, because a request this
+ * session sent is accounted for whether or not it carried a script.
+ */
+export async function route(
+  method: "GET",
+  path: string,
+  screen: string,
+): Promise<{ status: number; body: unknown }> {
+  const started = performance.now();
+  const headers: Record<string, string> = {};
+  const offered = credential();
+  if (offered !== null) {
+    headers["Authorization"] = offered;
+  }
+  let reply: Response;
+  try {
+    reply = await fetch(path, { method, headers, credentials: "omit" });
+  } catch {
+    record({
+      what: `${method} ${path}`,
+      said: "the node did not answer",
+      failed: true,
+      ms: Math.round(performance.now() - started),
+      screen,
+    });
+    throw new Unreachable("it may be stopped, or unreachable from this browser");
+  }
+  if (reply.status === 401 && token() !== null) {
+    ended();
+  }
+  const text = await reply.text();
+  record({
+    what: `${method} ${path}`,
+    ...said(text, reply.status),
+    ms: Math.round(performance.now() - started),
+    screen,
+  });
+  try {
+    return { status: reply.status, body: JSON.parse(text) as unknown };
+  } catch {
+    return { status: reply.status, body: text };
+  }
+}
+
 /** One operational route, parsed as JSON, or a reason it could not be. */
 export async function scrape(route: string): Promise<{ status: number; body: unknown }> {
   // Same reason as `ask`: no browser-managed credential, no native dialog.

@@ -397,7 +397,13 @@ const TABLES: &[Table] = &[
         // Re-classification trigger: a caller that asks before, or without, a
         // session that selected the database — it then tells anyone holding a
         // `Db` which series exist in a tenancy they cannot reach.
-        expected: 24,
+        //
+        // 25 since the key-value routes (G046 C3, ADR-0090): `Db::is_space`.
+        // Classified **exempt on exactly `is_series`' ground**: it answers
+        // whether a catalog name is a space — a kind, never a key or a value —
+        // and its one caller, `/kv/…`, asks only after the caller's own session
+        // has taken the `USE`. Same re-classification trigger as `is_series`.
+        expected: 25,
         count: |text| public_functions(&block(text, "impl Db")),
     },
     Table {
@@ -788,6 +794,14 @@ const TABLES: &[Table] = &[
         // the series' own checks are the script route's; the names are checked
         // to be identifiers before they are interpolated and the events are
         // bound, as on the object routes.
+        //
+        // Not counted, and named so the count's scope is not narrowed in
+        // silence: the `/kv/…` arm (G046 C3, ADR-0090) is matched as
+        // `(method, url)`, one arm dispatching ten operations, so it adds no
+        // `(Method::` line. Classified **enforced** on the series route's ground:
+        // every operation runs one space statement through `session_for`, the
+        // three names are checked before interpolation, and the key, values,
+        // durations and holders are bound.
         expected: 9,
         count: |text| lines_beginning(text, "(Method::"),
     },
@@ -859,7 +873,11 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 101 since series ingestion over HTTP: `Db::is_series`, exempt, and the
     // `POST /series/…` route, enforced — both classified above (G044 C12).
-    assert_eq!(total, 101, "the counted tables no longer sum to 101");
+    //
+    // 102 since the key-value routes: `Db::is_space`, exempt, classified above
+    // (G046 C3); the `/kv/…` arm itself is enforced and uncounted, named at the
+    // HTTP routes table.
+    assert_eq!(total, 102, "the counted tables no longer sum to 102");
 }
 
 /// Every `.rs` file under a directory.

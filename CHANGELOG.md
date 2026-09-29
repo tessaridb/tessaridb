@@ -12,6 +12,34 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.15.0-beta — 2026-09-30
+
+**A browser speaks the wire protocol.** `GET /wire` on the HTTP port upgrades to
+a WebSocket that carries the wire protocol byte for byte — the greeting, the
+frames and all seventeen value types — so a page gets the store's own values
+rather than JSON's six. The socket is a session of the wire node itself: its
+connection ceiling counts TCP and WebSocket sessions together, and its drain,
+bridge and redirects are the same. Credentials travel in the request frame as
+over TCP; an `Authorization` header or a cookie on the upgrade is ignored, because
+a browser attaches both to a socket any page opens. A node started without a wire
+address answers `/wire` with `404`; a full node answers `503` before upgrading;
+a text message closes the socket with `1003`. Protocol specification §3.13.
+
+**A space over HTTP.** `/kv/{ns}/{db}/{space}/{op}/{key…}` reads and writes a
+space as a cache, a counter and a lock: `GET`/`PUT`/`DELETE` a key (with an
+expiry and an `if=absent|present` condition), `swap`, `incr`, `expire`,
+`persist`, `lock` and `unlock`, and `GET /kv/{ns}/{db}/{space}?prefix=…` lists
+keys. Each is one space statement through the caller's session; a condition that
+does not hold answers `false` rather than an error; `unlock` is an expiring
+conditional write, never a delete. A table that is not a space answers `404`.
+Protocol specification §5.10.
+
+**The console lists a space.** A Spaces pane on Run finds the spaces of a
+database, lists keys by prefix and shows one key's value and how long it has
+left, through the `/kv` routes.
+
+Nothing in this release changes the storage format.
+
 ## 0.14.0-beta — 2026-09-30
 
 **A series can be ordered by when its events happened.** `DEFINE SERIES

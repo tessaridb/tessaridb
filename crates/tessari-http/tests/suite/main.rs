@@ -11,12 +11,14 @@
 mod console;
 mod console_tokens;
 mod crossing;
+mod kv;
 mod objects;
 mod routes;
 mod series;
 mod sessions;
 mod vault_responses;
 mod watch;
+mod wire_socket;
 
 /// Serve `node` on a runtime of this test's own: the node creates none.
 fn serve_until_the_test_ends(node: &tessari_http::Node) {

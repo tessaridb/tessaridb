@@ -25,6 +25,9 @@
 
 mod follow;
 mod handshake;
+mod wire;
+
+pub(crate) use wire::wire;
 
 use std::sync::Arc;
 

@@ -57,6 +57,8 @@
 
 #[cfg(feature = "server")]
 mod campaign;
+#[cfg(feature = "server")]
+mod carrier;
 mod client;
 #[cfg(feature = "server")]
 mod collection;
@@ -99,6 +101,8 @@ use std::time::Duration;
 
 #[cfg(feature = "server")]
 pub use crate::campaign::{Standing, Stood};
+#[cfg(feature = "server")]
+pub use crate::carrier::{Admission, Carrier};
 pub use crate::client::{Client, Feed, Served};
 #[cfg(feature = "server")]
 pub use crate::collection::{

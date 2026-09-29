@@ -161,6 +161,11 @@ pub(crate) fn serve(
         ),
         None => None,
     };
+    // `GET /wire` carries the wire protocol over a WebSocket (ADR-0089), so it is
+    // handed the wire node's door; a process serving HTTP alone answers it 404.
+    if let (Some(node), Some(http)) = (&wire, &mut http) {
+        http.carrying(wire_door(node.carrier()));
+    }
 
     // On the error stream, so a node whose output is being piped somewhere still
     // tells a person at the terminal that it came up and where. What was *bound*
@@ -369,4 +374,21 @@ pub(crate) fn serve(
     runtime.shutdown_timeout(runtime::LEAVING);
     eprintln!("tessaridb — stopped");
     Ok(Ended::Fine)
+}
+
+/// The wire node's door in the shape the HTTP node takes it (ADR-0089).
+///
+/// Built here because this is the one place that holds both surfaces: neither
+/// crate depends on the other, and a WebSocket is only ever the carrier.
+fn wire_door(carrier: tessari_wire::Carrier) -> tessari_http::WireDoor {
+    std::sync::Arc::new(move || {
+        carrier.admit().map(|admitted| {
+            let session: tessari_http::WireSession = Box::new(
+                move |stream| -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+                    Box::pin(admitted.converse(stream))
+                },
+            );
+            session
+        })
+    })
 }

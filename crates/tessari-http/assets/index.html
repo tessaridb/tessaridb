@@ -112,6 +112,36 @@
           </div>
           <div id="series-list" class="answer small" aria-live="polite"></div>
         </div>
+        <div class="pane">
+          <div class="pane-head">
+            <h2>Spaces</h2>
+            <div class="row tight">
+              <span id="kv-status" class="status" role="status"></span>
+              <button id="kv-refresh" type="button" class="quiet">Refresh</button>
+            </div>
+          </div>
+          <p class="note">A space keeps one value per key. A plain write clears the key's expiry; a lock's value names its holder until its lease runs out.</p>
+          <div class="row">
+            <label>
+              Namespace 
+              <select id="kv-namespace"></select>
+            </label>
+            <label>
+              Database 
+              <select id="kv-database"></select>
+            </label>
+            <label>
+              Space 
+              <select id="kv-space"></select>
+            </label>
+          </div>
+          <div class="row">
+            <label>Prefix <input id="kv-prefix" type="text" placeholder="every key" /></label>
+            <button id="kv-list-them" type="button" class="quiet">List</button>
+          </div>
+          <div id="kv-list" class="answer small" aria-live="polite"></div>
+          <div id="kv-value" class="answer small" aria-live="polite"></div>
+        </div>
       </section>
       <section id="panel-topics" role="tabpanel" aria-labelledby="tab-topics" tabindex="0" hidden>
         <div class="pane-head">
