@@ -102,7 +102,7 @@ impl Parser<'_> {
         Ok(count)
     }
 
-    fn positive_duration(&mut self, expected: &'static str) -> Result<Duration> {
+    pub(super) fn positive_duration(&mut self, expected: &'static str) -> Result<Duration> {
         let Some(Token::Duration(written)) = self.peek() else {
             return Err(self.error_here(expected));
         };

@@ -12,6 +12,40 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.12.0-beta — 2026-09-29
+
+**A topic can be shared by a group of workers who acknowledge each message.**
+`DEFINE GROUP 'billing' ON TOPIC events ACK DEADLINE 30s` makes the readers
+under that name a group: a read hands messages out and holds each in flight
+until `ACK` says it is done; `NACK` hands it out again now or after a delay; a
+deadline that passes hands it out again on its own; and past `DELIVERIES n` it
+is given up on and appended to the group's `DEAD LETTER TO` topic. `IN FLIGHT n`
+(default 1, which keeps the order) says how many a group may hold at once, and
+`ALTER GROUP … START AT n` moves it. `INFO FOR TOPIC` reports each group's
+position, committed position, lag, messages in flight, redeliveries and dead
+letters. A reader under a name with no group keeps exactly what it had: its
+position moves with its own transaction (ADR-0086).
+
+**`/metrics` reports topics to a scraper that signs in.** Given a credential,
+the scrape adds, for every topic that caller may read, how many messages it
+holds, its last position, each reader's lag, and each group's lag, messages in
+flight, redeliveries and dead letters — read through the caller's own session,
+so grants decide which topics appear. Without a credential the scrape is what it
+was: no topic or group is named, because a name is schema. A credential that is
+refused is answered `401`. `INFO FOR DATABASE` now lists its `topics` beside its
+`tables`.
+
+**The console has a Topics tab.** It lists the topics of a chosen namespace
+and database with how many messages each holds, its retention, its readers and
+groups and how far behind the furthest one is; shows a topic's readers and
+groups in full; pages through its messages without moving anybody's position;
+and creates and removes topics and groups and moves a group to another
+position. The three that lose something ask for the name to be typed again and
+say beforehand what they will cost. Topics is the second destination, so the
+keys are now ⌘1 Run, ⌘2 Topics, ⌘3 Cluster, ⌘4 Access and ⌘5 This node.
+
+**1433 conformance cases** define the language and run in the build.
+
 ## 0.11.0-beta — 2026-09-29
 
 **One runtime serves every surface.** The node used to give every held

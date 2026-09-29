@@ -31,8 +31,8 @@
   function setValue(id, text) {
     control(id).value = text;
   }
-  function write(id, words) {
-    at(id).textContent = words;
+  function write(id, words2) {
+    at(id).textContent = words2;
   }
   function clear(id) {
     at(id).textContent = "";
@@ -48,9 +48,9 @@
     }
     throw new Error(`#${id} cannot be disabled`);
   }
-  function say(id, words, failed) {
+  function say(id, words2, failed) {
     const line = at(id);
-    line.textContent = words;
+    line.textContent = words2;
     line.classList.toggle("failed", failed === true);
     line.setAttribute("aria-live", failed === true ? "assertive" : "polite");
   }
@@ -61,9 +61,9 @@
     }
     return element;
   }
-  function trailer(words) {
+  function trailer(words2) {
     const line = made("p", "trailer");
-    line.textContent = words;
+    line.textContent = words2;
     return line;
   }
   function shown(value2) {
@@ -80,8 +80,8 @@
   //! each other in words.
   var tabs = () => all('[role="tab"]');
   function here() {
-    const chosen = tabs().find((tab) => tab.getAttribute("aria-selected") === "true");
-    return chosen === void 0 ? "" : chosen.id.replace("tab-", "");
+    const chosen2 = tabs().find((tab) => tab.getAttribute("aria-selected") === "true");
+    return chosen2 === void 0 ? "" : chosen2.id.replace("tab-", "");
   }
   var arrivals = [];
   function onArrival(names, todo) {
@@ -107,10 +107,10 @@
   function show(name) {
     const wanted2 = tabs().some((tab) => tab.id === "tab-" + name) ? name : "run";
     for (const tab of tabs()) {
-      const chosen = tab.id === "tab-" + wanted2;
-      tab.setAttribute("aria-selected", String(chosen));
-      tab.tabIndex = chosen ? 0 : -1;
-      pane(tab).hidden = !chosen;
+      const chosen2 = tab.id === "tab-" + wanted2;
+      tab.setAttribute("aria-selected", String(chosen2));
+      tab.tabIndex = chosen2 ? 0 : -1;
+      pane(tab).hidden = !chosen2;
     }
     if (window.location.hash !== "#" + wanted2) {
       window.location.hash = wanted2;
@@ -178,11 +178,11 @@
     show("run");
     at("script").focus();
   }
-  function copy(what, where2, said3) {
+  function copy(what, where3, said3) {
     const clipboard = navigator.clipboard;
     if (clipboard === void 0) {
       const range = document.createRange();
-      range.selectNodeContents(where2);
+      range.selectNodeContents(where3);
       const selection = window.getSelection();
       selection?.removeAllRanges();
       selection?.addRange(range);
@@ -308,9 +308,9 @@
     try {
       const body = JSON.parse(text);
       if (typeof body === "object" && body !== null && "error" in body) {
-        const held4 = body.error;
-        if (typeof held4 === "string") {
-          return held4;
+        const held5 = body.error;
+        if (typeof held5 === "string") {
+          return held5;
         }
       }
       return text;
@@ -417,8 +417,8 @@
     try {
       body = JSON.parse(text);
     } catch {
-      const words = text.trim();
-      return { said: words === "" ? `${status}` : words, failed: status >= 400 };
+      const words2 = text.trim();
+      return { said: words2 === "" ? `${status}` : words2, failed: status >= 400 };
     }
     if (typeof body.error === "string") {
       return { said: body.error, failed: true };
@@ -507,15 +507,15 @@
   var following = null;
   var toldWhy = false;
   var isFollowing = () => following !== null;
-  function stop(words) {
+  function stop(words2) {
     if (following !== null) {
       following.close();
       following = null;
     }
     disable("follow", false);
     disable("stop", true);
-    if (words !== void 0) {
-      say("watch-status", words);
+    if (words2 !== void 0) {
+      say("watch-status", words2);
     }
   }
   function change(what) {
@@ -764,15 +764,15 @@
     });
     return table;
   }
-  function put(where2, value2) {
-    clear(where2);
-    at(where2).appendChild(shown(value2));
+  function put(where3, value2) {
+    clear(where3);
+    at(where3).appendChild(shown(value2));
   }
-  function facts(where2, held4) {
-    clear(where2);
+  function facts(where3, held5) {
+    clear(where3);
     const table = made("table");
     const body = table.createTBody();
-    for (const [name, value2] of Object.entries(held4)) {
+    for (const [name, value2] of Object.entries(held5)) {
       const row = body.insertRow();
       const label = made("th");
       label.textContent = name;
@@ -783,13 +783,13 @@
         box.classList.add("number");
       }
     }
-    at(where2).appendChild(table);
+    at(where3).appendChild(table);
   }
 
   // src/detail.ts
   //! One thing, looked at.
   //!
-  //! A sheet over whatever you were doing, not a destination. The cap is four
+  //! A sheet over whatever you were doing, not a destination. The cap is five
   //! destinations and a detail view is not a place you go — it is a thing you
   //! open, look at, and close, and it has to leave you where you were.
   //!
@@ -1005,9 +1005,9 @@
     }
     hide("drawer-apply", !subject.self);
     if (!subject.self) {
-      const note = made("p", "faint");
-      note.textContent = `${subject.name} answers on ${subject.endpoint ?? "an address this node did not record"}.`;
-      at("drawer-missing").appendChild(note);
+      const note2 = made("p", "faint");
+      note2.textContent = `${subject.name} answers on ${subject.endpoint ?? "an address this node did not record"}.`;
+      at("drawer-missing").appendChild(note2);
     }
     say("drawer-status", "");
     preview();
@@ -1152,8 +1152,8 @@
     return space === "" ? null : space;
   }
   function role() {
-    const chosen = value("new-role");
-    return chosen === "other" ? trimmed("new-role-other") : chosen;
+    const chosen2 = value("new-role");
+    return chosen2 === "other" ? trimmed("new-role-other") : chosen2;
   }
   function definition() {
     const name = trimmed("new-name");
@@ -1188,8 +1188,8 @@
     preview2();
   }
   function changedRole() {
-    const chosen = value("change-role");
-    return chosen === "other" ? trimmed("change-role-other") : chosen;
+    const chosen2 = value("change-role");
+    return chosen2 === "other" ? trimmed("change-role-other") : chosen2;
   }
   function alteration() {
     const name = trimmed("change-name");
@@ -1486,8 +1486,8 @@
     if (table) {
       return `Takes ${what} on ${trimmed("grant-name")} away from ${who}. If it is their LAST table grant the node will refuse it — going from one grant to none widens them back to their whole role, which is the opposite of a revoke.` + standing;
     }
-    const where2 = reachOf() === "store" ? "the whole store" : trimmed("grant-name");
-    return giving ? `Gives ${who} ${what} over ${where2}.${standing}` : `Takes ${what} over ${where2} away from ${who}. An authority going to none leaves them holding nothing there, which the node allows.${standing}`;
+    const where3 = reachOf() === "store" ? "the whole store" : trimmed("grant-name");
+    return giving ? `Gives ${who} ${what} over ${where3}.${standing}` : `Takes ${what} over ${where3} away from ${who}. An authority going to none leaves them holding nothing there, which the node allows.${standing}`;
   }
   function shape2() {
     hide("grant-name-field", reachOf() === "store");
@@ -1582,9 +1582,9 @@
   function lamps(has, wanted2) {
     const row = made("div", "lamps");
     for (const bit of BITS2) {
-      const held4 = has.includes(bit.name);
+      const held5 = has.includes(bit.name);
       const asked2 = wanted2 !== null && wanted2.includes(bit.name);
-      row.appendChild(lamp(bit.letter, held4 ? "held" : asked2 ? "wanted" : "off", bit.means));
+      row.appendChild(lamp(bit.letter, held5 ? "held" : asked2 ? "wanted" : "off", bit.means));
     }
     return row;
   }
@@ -1601,13 +1601,13 @@
     return line;
   }
   var told2 = (value2) => value2 === void 0 || value2 === null ? null : String(value2);
-  function lease(held4) {
-    if (held4 === void 0 || held4 === null) {
+  function lease(held5) {
+    if (held5 === void 0 || held5 === null) {
       return null;
     }
     const badge = made("div", "lease");
-    const held_ = held4;
-    const until = told2(held_.until ?? held_.expires ?? held4);
+    const held_ = held5;
+    const until = told2(held_.until ?? held_.expires ?? held5);
     badge.textContent = until === null ? "holds the lease" : `holds the lease until ${until}`;
     return badge;
   }
@@ -1630,14 +1630,14 @@
     head.append(name, lamps(has, wanted2));
     box.appendChild(head);
     if (drained(has)) {
-      const note = made("p", "note warn");
-      note.textContent = kind === "self" ? "Drained — it holds its data and answers nothing." : "Declared with no roles — drained.";
-      box.appendChild(note);
+      const note2 = made("p", "note warn");
+      note2.textContent = kind === "self" ? "Drained — it holds its data and answers nothing." : "Declared with no roles — drained.";
+      box.appendChild(note2);
     }
     if (kind === "peer") {
-      const note = made("p", "faint");
-      note.textContent = "lamps as declared here; this node has not asked it";
-      box.appendChild(note);
+      const note2 = made("p", "faint");
+      note2.textContent = "lamps as declared here; this node has not asked it";
+      box.appendChild(note2);
     }
     for (const one2 of facts2) {
       if (one2 !== null) {
@@ -1718,9 +1718,9 @@
   //! one a thing you have to type on purpose. `say` keeps its two-state job for
   //! the many places that genuinely have two — this is not a rewrite of all
   //! sixty-six of its call sites, and it must not become one.
-  function state(id, kind, words) {
+  function state(id, kind, words2) {
     const line = at(id);
-    line.textContent = words;
+    line.textContent = words2;
     for (const other of ["waiting", "empty", "partial", "wrong"]) {
       line.classList.toggle(`is-${other}`, other === kind);
     }
@@ -1759,8 +1759,8 @@
   }
   function answer(scraped) {
     const body = scraped.body;
-    const words = typeof body === "object" && body !== null ? Object.entries(body).map(([name, value2]) => name + " " + String(value2)).join(", ") : String(body).trim();
-    return scraped.status + " " + words;
+    const words2 = typeof body === "object" && body !== null ? Object.entries(body).map(([name, value2]) => name + " " + String(value2)).join(", ") : String(body).trim();
+    return scraped.status + " " + words2;
   }
   async function readNode() {
     say("node-status", "asking…");
@@ -1882,8 +1882,8 @@
       pane2.appendChild(
         trailer("(" + records.length + " record(s), via " + String(result.path) + ")")
       );
-      for (const note of result.notes ?? []) {
-        pane2.appendChild(trailer("note " + note.kind + ": " + note.message));
+      for (const note2 of result.notes ?? []) {
+        pane2.appendChild(trailer("note " + note2.kind + ": " + note2.message));
       }
       return;
     }
@@ -2114,7 +2114,7 @@
   var KEYS = [
     { press: "/", does: "find an account, a table, a namespace or a record" },
     { press: "⌘K  ·  Ctrl-K", does: "the same, from inside a field" },
-    { press: "⌘1 … ⌘4", does: "Run, Cluster, Access, This node" },
+    { press: "⌘1 … ⌘5", does: "Run, Topics, Cluster, Access, This node" },
     { press: "⌘↵  ·  Ctrl-↵", does: "run what is in the script box" },
     { press: "?", does: "this list" },
     { press: "Esc", does: "close the log, the drawer, or this list" }
@@ -2138,7 +2138,7 @@
   function closeIt4() {
     at("keys-sheet").hidden = true;
   }
-  var DESTINATIONS = ["run", "cluster", "access", "this-node"];
+  var DESTINATIONS = ["run", "topics", "cluster", "access", "this-node"];
   function wire15() {
     draw3();
     document.addEventListener("keydown", (event) => {
@@ -2165,6 +2165,541 @@
     at("keys-open").addEventListener("click", () => {
       at("keys-sheet").hidden = !at("keys-sheet").hidden;
     });
+  }
+
+  // src/topic-info.ts
+  //! What the node says about a topic, checked before anything draws it.
+  //!
+  //! `INFO FOR TOPIC` is a body this page did not construct, so each field is
+  //! narrowed here once and the screens after this point trust the shape.
+  var whole = (value2) => typeof value2 === "number" && Number.isInteger(value2) && value2 >= 0 ? value2 : null;
+  var fieldsOf = (value2) => typeof value2 === "object" && value2 !== null && !Array.isArray(value2) ? value2 : null;
+  function reader(value2) {
+    const fields = fieldsOf(value2);
+    const position = whole(fields?.["position"]);
+    const lag = whole(fields?.["lag"]);
+    return position === null || lag === null ? null : { position, lag };
+  }
+  function group(value2) {
+    const fields = fieldsOf(value2);
+    const at2 = (name) => whole(fields?.[name]);
+    const position = at2("position");
+    const committed = at2("committed");
+    const lag = at2("lag");
+    const inFlight = at2("in_flight");
+    const redelivered = at2("redelivered");
+    const deadLettered = at2("dead_lettered");
+    const width = at2("width");
+    const deadline = fields?.["deadline"];
+    if (position === null || committed === null || lag === null || inFlight === null || redelivered === null || deadLettered === null || width === null || typeof deadline !== "string") {
+      return null;
+    }
+    return {
+      position,
+      committed,
+      lag,
+      in_flight: inFlight,
+      redelivered,
+      dead_lettered: deadLettered,
+      deadline,
+      width
+    };
+  }
+  function entries(value2, narrow) {
+    const found = /* @__PURE__ */ new Map();
+    for (const [name, each] of Object.entries(fieldsOf(value2) ?? {})) {
+      const narrowed = narrow(each);
+      if (narrowed !== null) {
+        found.set(name, narrowed);
+      }
+    }
+    return found;
+  }
+  function topic(value2) {
+    const fields = fieldsOf(value2);
+    const name = fields?.["name"];
+    const last = whole(fields?.["last"]);
+    if (fields === null || typeof name !== "string" || last === null) {
+      return null;
+    }
+    const retain = fields["retain"];
+    return {
+      name,
+      first: whole(fields["first"]),
+      last,
+      retain: typeof retain === "string" ? retain : null,
+      maxBytes: whole(fields["max_bytes"]),
+      readers: entries(fields["consumers"], reader),
+      groups: entries(fields["groups"], group)
+    };
+  }
+  var held4 = (topic2) => topic2.first === null || topic2.last < topic2.first ? 0 : topic2.last - topic2.first + 1;
+  function behind(topic2) {
+    const lags = [...topic2.readers.values(), ...topic2.groups.values()].map((each) => each.lag);
+    return lags.length === 0 ? 0 : Math.max(...lags);
+  }
+
+  // src/topic-names.ts
+  //! What the Topics screen may write into a statement.
+  //!
+  //! A topic, a group, a namespace and a database are grammar: the node cannot take
+  //! them as parameters, so this screen writes them into the text. That is safe
+  //! only behind a check narrower than the node's own lexer, and these are the same
+  //! two patterns every client applies (consumer contract 1.0, section 3). A name
+  //! that fails is refused here, before anything is sent, rather than quoted.
+  //!
+  //! Numbers and durations are grammar too — `AFTER 40`, `ACK DEADLINE 30s` — and
+  //! are checked for the same reason.
+  var NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  var GROUP = /^[A-Za-z0-9_.:-]{1,128}$/;
+  var DURATION = /^[0-9]{1,9}(ms|s|m|h|d|w)$/;
+  var WHOLE = /^[0-9]{1,15}$/;
+  var aName = (text) => NAME.test(text) ? text : null;
+  var aGroup = (text) => GROUP.test(text) ? text : null;
+  var aDuration = (text) => DURATION.test(text) ? text : null;
+  function aWhole(text) {
+    return WHOLE.test(text) ? Number(text) : null;
+  }
+  var tenancy = (namespace, database) => `USE NAMESPACE ${namespace}; USE DATABASE ${database}; `;
+
+  // src/topic-list.ts
+  //! The Topics screen's reading: where, which topics, the chosen one, its messages.
+  //!
+  //! Everything here reads. Nothing moves a position — the message browser uses
+  //! `READ FROM … AFTER n` with no consumer, which is a look and nothing more.
+  var SCREEN = "Topics";
+  var TOPICS_SHOWN = 200;
+  function where2() {
+    const namespace = aName(value("topics-namespace"));
+    const database = aName(value("topics-database"));
+    return namespace === null || database === null ? null : { namespace, database };
+  }
+  var topics = [];
+  var chosenName = null;
+  var listeners = [];
+  var chosen = () => topics.find((each) => each.name === chosenName) ?? null;
+  function whenChosen(todo) {
+    listeners.push(todo);
+  }
+  var words = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
+  async function results(source) {
+    const { text } = await ask(source, SCREEN);
+    const body = JSON.parse(text);
+    if (!Array.isArray(body.results)) {
+      throw new Error(typeof body.error === "string" ? body.error : text);
+    }
+    return body.results;
+  }
+  function strings(answered2, field) {
+    const list = held2(answered2)?.[field];
+    return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
+  }
+  function offer(id, names) {
+    const select = at(id);
+    const kept2 = value(id);
+    clear(id);
+    for (const name of names) {
+      const option = made("option");
+      option.value = name;
+      option.textContent = name;
+      select.appendChild(option);
+    }
+    if (names.includes(kept2)) {
+      setValue(id, kept2);
+    }
+  }
+  async function readNamespaces() {
+    state("topics-status", "waiting", "asking…");
+    try {
+      offer("topics-namespace", strings(await valueOf("INFO FOR STORE;", SCREEN), "namespaces"));
+    } catch (failure) {
+      state("topics-status", "wrong", words(failure));
+      return;
+    }
+    await readDatabases();
+  }
+  async function readDatabases() {
+    const namespace = aName(value("topics-namespace"));
+    if (namespace === null) {
+      offer("topics-database", []);
+      draw4([]);
+      state("topics-status", "empty", "No namespace here — declare one on Run with DEFINE NAMESPACE.");
+      return;
+    }
+    try {
+      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN);
+      offer("topics-database", strings(answered2, "databases"));
+    } catch (failure) {
+      state("topics-status", "wrong", words(failure));
+      return;
+    }
+    await readTopics();
+  }
+  async function readTopics() {
+    const place = where2();
+    if (place === null) {
+      draw4([]);
+      state("topics-status", "empty", "Choose a namespace and a database that exist.");
+      return;
+    }
+    const start = tenancy(place.namespace, place.database);
+    state("topics-status", "waiting", "asking…");
+    try {
+      const listed = strings(await valueOf(start + "INFO FOR DATABASE;", SCREEN), "topics");
+      const names = listed.filter((name) => aName(name) !== null);
+      const shown2 = names.slice(0, TOPICS_SHOWN);
+      const asked2 = shown2.map((name) => `INFO FOR TOPIC ${name};`).join(" ");
+      const answered2 = shown2.length === 0 ? [] : await results(start + asked2);
+      const read = answered2.map((each) => topic(each.value)).filter((each) => each !== null);
+      draw4(read);
+      if (names.length === 0) {
+        const here2 = `${place.namespace}.${place.database}`;
+        state("topics-status", "empty", `${here2} holds no topics — create one below.`);
+      } else if (names.length > shown2.length) {
+        state("topics-status", "partial", `showing ${shown2.length} of ${names.length} topics`);
+      } else {
+        settled("topics-status");
+      }
+    } catch (failure) {
+      draw4([]);
+      state("topics-status", "wrong", words(failure));
+    }
+  }
+  function numberCell(row, figure2) {
+    const box = row.insertCell();
+    box.textContent = String(figure2);
+    box.classList.add("number");
+  }
+  function headed(names) {
+    const table = made("table");
+    const head = table.createTHead().insertRow();
+    for (const name of names) {
+      const column = made("th");
+      column.textContent = name;
+      head.appendChild(column);
+    }
+    return table;
+  }
+  function draw4(read) {
+    topics = read;
+    if (chosen() === null) {
+      chosenName = null;
+    }
+    clear("topics-list");
+    if (read.length > 0) {
+      const table = headed(["topic", "held", "last", "keeps", "readers", "groups", "most behind"]);
+      const body = table.createTBody();
+      for (const each of read) {
+        const row = body.insertRow();
+        const pick2 = made("button", each.name === chosenName ? "quiet chosen" : "quiet");
+        pick2.type = "button";
+        pick2.textContent = each.name;
+        pick2.setAttribute("aria-pressed", String(each.name === chosenName));
+        pick2.addEventListener("click", () => choose(each.name));
+        row.insertCell().appendChild(pick2);
+        numberCell(row, held4(each));
+        numberCell(row, each.last);
+        row.insertCell().textContent = each.retain ?? "everything";
+        numberCell(row, each.readers.size);
+        numberCell(row, each.groups.size);
+        numberCell(row, behind(each));
+      }
+      at("topics-list").appendChild(table);
+    }
+    drawChosen();
+  }
+  function choose(name) {
+    chosenName = name;
+    const found = chosen();
+    setValue("browse-after", String(found === null || found.first === null ? 0 : found.first - 1));
+    clear("browse-list");
+    settled("browse-status");
+    draw4(topics);
+  }
+  function drawChosen() {
+    const found = chosen();
+    at("topic-chosen").textContent = found?.name ?? "none chosen";
+    for (const id of ["topic-facts", "topic-readers", "topic-groups"]) {
+      clear(id);
+    }
+    disable("browse-read", found === null);
+    disable("browse-next", found === null);
+    if (found !== null) {
+      facts("topic-facts", {
+        held: held4(found),
+        first: found.first ?? "none held",
+        last: found.last,
+        keeps: found.retain ?? "everything",
+        "largest message": found.maxBytes === null ? "any size" : `${found.maxBytes} bytes`
+      });
+      const readers = headed(["reader", "position", "lag"]);
+      const readerRows = readers.createTBody();
+      for (const [name, each] of found.readers) {
+        const row = readerRows.insertRow();
+        row.insertCell().textContent = name;
+        numberCell(row, each.position);
+        numberCell(row, each.lag);
+      }
+      at("topic-readers").appendChild(found.readers.size > 0 ? readers : note("nobody reads under a name"));
+      const groups = headed([
+        "group",
+        "handed out",
+        "committed",
+        "lag",
+        "in flight",
+        "width",
+        "redelivered",
+        "dead letters",
+        "deadline"
+      ]);
+      const groupRows = groups.createTBody();
+      for (const [name, each] of found.groups) {
+        const row = groupRows.insertRow();
+        row.insertCell().textContent = name;
+        const figures = [
+          each.position,
+          each.committed,
+          each.lag,
+          each.in_flight,
+          each.width,
+          each.redelivered,
+          each.dead_lettered
+        ];
+        for (const figure2 of figures) {
+          numberCell(row, figure2);
+        }
+        row.insertCell().textContent = each.deadline;
+      }
+      at("topic-groups").appendChild(found.groups.size > 0 ? groups : note("no group settles this topic"));
+    }
+    for (const todo of listeners) {
+      todo();
+    }
+  }
+  function note(words2) {
+    const line = made("p", "empty");
+    line.textContent = words2;
+    return line;
+  }
+  async function browse() {
+    const place = where2();
+    const found = chosen();
+    const after = aWhole(trimmed("browse-after"));
+    const count = aWhole(trimmed("browse-count"));
+    if (place === null || found === null || after === null || count === null || count < 1 || count > 100) {
+      say("browse-status", "a position from 0 and a count from 1 to 100", true);
+      return;
+    }
+    state("browse-status", "waiting", "reading…");
+    try {
+      const answered2 = await valueOf(
+        tenancy(place.namespace, place.database) + `READ FROM ${found.name} AFTER ${after} LIMIT ${count};`,
+        SCREEN
+      );
+      const records = answered2?.records ?? [];
+      clear("browse-list");
+      const table = headed(["position", "message"]);
+      const body = table.createTBody();
+      let last = after;
+      for (const record2 of records) {
+        const inside = fieldsOf(record2.value) ?? {};
+        const position = typeof inside["position"] === "number" ? inside["position"] : last;
+        last = Math.max(last, position);
+        const row = body.insertRow();
+        numberCell(row, position);
+        row.insertCell().textContent = JSON.stringify(inside["value"] ?? null);
+      }
+      at("browse-list").appendChild(table);
+      at("browse-next").dataset["after"] = String(last);
+      const said3 = (answered2?.notes ?? []).map((each) => each.message).join(" · ");
+      const also = said3 === "" ? "" : ` — ${said3}`;
+      if (records.length === 0) {
+        state("browse-status", "empty", `nothing after position ${after}${also}`);
+      } else {
+        say("browse-status", `${records.length} from position ${after + 1}${also}`);
+      }
+    } catch (failure) {
+      state("browse-status", "wrong", words(failure));
+    }
+  }
+  function wire16() {
+    at("topics-namespace").addEventListener("change", () => void readDatabases());
+    at("topics-database").addEventListener("change", () => void readTopics());
+    at("topics-refresh").addEventListener("click", () => void readNamespaces());
+    at("browse-read").addEventListener("click", () => void browse());
+    at("browse-next").addEventListener("click", () => {
+      setValue("browse-after", at("browse-next").dataset["after"] ?? trimmed("browse-after"));
+      void browse();
+    });
+    onArrival(["topics"], () => void readNamespaces());
+  }
+
+  // src/topic-forms.ts
+  //! The Topics screen's changes: a topic made or removed, a group made, moved or removed.
+  //!
+  //! Each form composes its statement from checked parts and says, in prose, what
+  //! pressing the button will do — the numbers in that sentence come from the
+  //! node's last answer about the chosen topic, so the reader sees the blast
+  //! radius before the button is live. The three that lose something (removing a
+  //! topic, removing a group, moving a group) ask for the name to be typed again.
+  var SCREEN2 = "Topics";
+  var MAX_IN_FLIGHT = 1e4;
+  var PLACE = "choose a namespace and a database first";
+  var TOPIC = "choose a topic in the list first";
+  var DURATION2 = "a number and a unit: 500ms, 30s, 15m, 12h, 7d";
+  var PLURAL = new Intl.PluralRules("en");
+  var counted = (count, one2, many) => `${count} ${PLURAL.select(count) === "one" ? one2 : many}`;
+  function optional(id, check) {
+    const text = trimmed(id);
+    return text === "" ? void 0 : check(text);
+  }
+  function newTopic() {
+    const place = where2();
+    const name = aName(trimmed("new-topic-name"));
+    const retain = optional("new-topic-retain", aDuration);
+    const bytes = optional("new-topic-bytes", aWhole);
+    if (place === null) return { missing: PLACE };
+    if (name === null) return { missing: "a name: a letter or _, then letters, digits or _" };
+    if (retain === null) return { missing: "keep for is " + DURATION2 };
+    if (bytes === null || bytes === 0) return { missing: "the largest message is a whole number of bytes" };
+    return {
+      statement: `DEFINE TOPIC ${name}` + (retain === void 0 ? "" : ` RETAIN ${retain}`) + (bytes === void 0 ? "" : ` MAX BYTES ${bytes}`) + ";",
+      says: `Creates ${name} in ${place.namespace}.${place.database}, keeping ` + (retain === void 0 ? "every message" : `each message for ${retain}`) + (bytes === void 0 ? "." : ` and refusing a message over ${bytes} bytes.`)
+    };
+  }
+  function dropTopic() {
+    const topic2 = chosen();
+    if (where2() === null) return { missing: PLACE };
+    if (topic2 === null) return { missing: TOPIC };
+    if (trimmed("drop-topic-confirm") !== topic2.name) return { missing: `type ${topic2.name} to confirm` };
+    return {
+      statement: `DROP TOPIC ${topic2.name};`,
+      says: `Removes ${topic2.name} with ${counted(held4(topic2), "message", "messages")} it holds, ${counted(topic2.readers.size, "reader position", "reader positions")} and ${counted(topic2.groups.size, "group", "groups")}. Those messages are gone for every reader.`
+    };
+  }
+  function newGroup() {
+    const topic2 = chosen();
+    const group2 = aGroup(trimmed("new-group-name"));
+    const deadline = aDuration(trimmed("new-group-deadline"));
+    const width = optional("new-group-width", aWhole);
+    const deliveries = optional("new-group-deliveries", aWhole);
+    const dead = optional("new-group-dead", aName);
+    if (where2() === null) return { missing: PLACE };
+    if (topic2 === null) return { missing: TOPIC };
+    if (group2 === null) return { missing: "a group name: letters, digits and _ . : -" };
+    if (deadline === null) return { missing: "acknowledge within is " + DURATION2 };
+    if (width === null || width === 0 || (width ?? 1) > MAX_IN_FLIGHT) {
+      return { missing: `in flight is a whole number from 1 to ${MAX_IN_FLIGHT}` };
+    }
+    if (deliveries === null || deliveries === 0) return { missing: "give up after is a whole number of deliveries" };
+    if (dead === null || dead === topic2.name) return { missing: "dead letters go to another topic, by name" };
+    if (dead !== void 0 && deliveries === void 0) {
+      return { missing: "dead letters need give up after: how many deliveries before a message goes there" };
+    }
+    return {
+      statement: `DEFINE GROUP '${group2}' ON TOPIC ${topic2.name} ACK DEADLINE ${deadline}` + (deliveries === void 0 ? "" : ` DELIVERIES ${deliveries}`) + (width === void 0 ? "" : ` IN FLIGHT ${width}`) + (dead === void 0 ? "" : ` DEAD LETTER TO ${dead}`) + ";",
+      says: `Creates group '${group2}' on ${topic2.name}. Each message goes to one member and comes back if it is left unacknowledged for ${deadline}; ${width ?? 1} at a time` + (deliveries === void 0 ? "" : `, given up after ${counted(deliveries, "delivery", "deliveries")}`) + (dead === void 0 ? "" : ` and then appended to ${dead}`) + "."
+    };
+  }
+  function changeGroup() {
+    const topic2 = chosen();
+    const name = value("group-which");
+    const group2 = topic2?.groups.get(name);
+    const start = aWhole(trimmed("group-start"));
+    if (where2() === null) return { missing: PLACE };
+    if (topic2 === null) return { missing: TOPIC };
+    if (group2 === void 0 || aGroup(name) === null) return { missing: "the topic has no group to change" };
+    if (trimmed("group-confirm") !== name) return { missing: `type ${name} to confirm` };
+    if (value("group-action") === "drop") {
+      return {
+        statement: `DROP GROUP '${name}' ON TOPIC ${topic2.name};`,
+        says: `Removes group '${name}' and forgets its position and ${counted(group2.in_flight, "message", "messages")} it holds in flight.`
+      };
+    }
+    if (start === null) return { missing: "a position from 0" };
+    const moved = start < group2.position ? `It hands out again ${counted(group2.position - start, "message", "messages")} it already handed out.` : start > group2.position ? `It skips ${counted(start - group2.position, "message", "messages")}.` : "Its position stays where it is.";
+    return {
+      statement: `ALTER GROUP '${name}' ON TOPIC ${topic2.name} START AT ${start};`,
+      says: `Group '${name}' next hands out position ${start + 1} and forgets ${counted(group2.in_flight, "message", "messages")} it holds in flight. ${moved}`
+    };
+  }
+  var FORMS = [
+    {
+      button: "new-topic",
+      says: "new-topic-says",
+      status: "new-topic-status",
+      compose: newTopic,
+      fields: ["new-topic-name", "new-topic-retain", "new-topic-bytes"]
+    },
+    {
+      button: "drop-topic",
+      says: "drop-topic-says",
+      status: "drop-topic-status",
+      compose: dropTopic,
+      fields: ["drop-topic-confirm", "drop-topic-why"],
+      why: "drop-topic-why"
+    },
+    {
+      button: "new-group",
+      says: "new-group-says",
+      status: "new-group-status",
+      compose: newGroup,
+      fields: ["new-group-name", "new-group-deadline", "new-group-width", "new-group-deliveries", "new-group-dead"]
+    },
+    {
+      button: "group-apply",
+      says: "group-says",
+      status: "group-status",
+      compose: changeGroup,
+      fields: ["group-which", "group-action", "group-start", "group-confirm", "group-why"],
+      why: "group-why"
+    }
+  ];
+  function shape3(form) {
+    const composed = form.compose();
+    disable(form.button, !("statement" in composed));
+    write(form.says, "statement" in composed ? composed.says : composed.missing);
+  }
+  async function send(form) {
+    const composed = form.compose();
+    const place = where2();
+    if (!("statement" in composed) || place === null) {
+      return;
+    }
+    disable(form.button, true);
+    say(form.status, "sending…");
+    try {
+      const why = form.why === void 0 ? void 0 : trimmed(form.why) || void 0;
+      await valueOf(tenancy(place.namespace, place.database) + composed.statement, SCREEN2, why);
+      say(form.status, "done");
+      for (const field of form.fields) {
+        if (at(field) instanceof HTMLInputElement) {
+          setValue(field, field === "group-start" ? "0" : "");
+        }
+      }
+      await readTopics();
+    } catch (failure) {
+      const words2 = told(failure);
+      say(form.status, failure instanceof Unreachable ? "the node did not answer — " + words2 : words2, true);
+    }
+    shape3(form);
+  }
+  function wire17() {
+    for (const form of FORMS) {
+      for (const field of form.fields) {
+        at(field).addEventListener("input", () => shape3(form));
+        at(field).addEventListener("change", () => shape3(form));
+      }
+      at(form.button).addEventListener("click", () => void send(form));
+    }
+    whenChosen(() => {
+      offer("group-which", [...chosen()?.groups.keys() ?? []].filter((name) => aGroup(name) !== null));
+      for (const form of FORMS) {
+        shape3(form);
+      }
+    });
+    at("topics-namespace").addEventListener("change", () => FORMS.forEach(shape3));
+    at("topics-database").addEventListener("change", () => FORMS.forEach(shape3));
   }
 
   // src/users.ts
@@ -2208,10 +2743,10 @@
     return everybody.filter((one2) => (one2.user ?? "").toLowerCase().includes(needle));
   }
   function tally(matched) {
-    const held4 = everybody.length;
+    const held5 = everybody.length;
     const filtered = wanted() !== "";
     if (matched.length <= SHOWN) {
-      return filtered ? `${matched.length} of ${held4}` : `${held4}`;
+      return filtered ? `${matched.length} of ${held5}` : `${held5}`;
     }
     return `showing ${SHOWN} of ${matched.length}${filtered ? "" : ` — type a name to narrow`}`;
   }
@@ -2282,7 +2817,7 @@
     }
     write("user-count", tally(matched));
   }
-  function wire16() {
+  function wire18() {
     at("list").addEventListener("click", listUsers);
     at("user-filter").addEventListener("input", redraw);
     onArrival(["access"], () => void listUsers());
@@ -2403,7 +2938,9 @@
   wire5();
   wire4();
   wire8();
-  wire16();
+  wire18();
   wire11();
   wire12();
+  wire16();
+  wire17();
 })();

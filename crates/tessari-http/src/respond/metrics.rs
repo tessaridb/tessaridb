@@ -1,6 +1,7 @@
 //! The metrics route: every surface's counts, and the process around them.
 
 use super::{Answer, EXPOSITION};
+use crate::basic::Presented;
 use crate::tokens::Tokens;
 use tessari_serve::{Census, Stopping};
 use tessaridb::Db;
@@ -29,7 +30,13 @@ pub(crate) fn metrics(
     census: Option<&Census>,
     mine: &Stopping,
     tokens: &Tokens,
+    presented: &Presented,
 ) -> Answer {
+    // First, so a refused credential is answered before anything is written.
+    let topics = match super::topics::topic_series(db, tokens, presented) {
+        Ok(series) => series,
+        Err(refused) => return refused,
+    };
     let mut out = String::new();
 
     if let Some(census) = census {
@@ -121,6 +128,7 @@ pub(crate) fn metrics(
         None => surface(&mut out, "http", mine),
     }
 
+    out.push_str(&topics);
     Answer::text(200, out, EXPOSITION)
 }
 

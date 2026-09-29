@@ -12,7 +12,7 @@ impl Parser<'_> {
     ///
     /// A literal rather than an identifier: it is the client's own string, not a
     /// catalog object, and nothing declares it first.
-    pub(super) fn consumer_name(&mut self) -> Result<String> {
+    pub(in crate::parser) fn consumer_name(&mut self) -> Result<String> {
         let Some(Token::Str(name)) = self.peek() else {
             return Err(self.error_here("a quoted consumer name"));
         };

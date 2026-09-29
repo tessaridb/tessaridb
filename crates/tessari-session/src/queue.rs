@@ -72,7 +72,7 @@ use crate::outcome::{AccessPath, Outcome};
 use crate::plan::Plan;
 use crate::session::Session;
 pub(crate) use claims::{
-    claimable, claimant_of, deadline, hold_engine_fields, mark_claimant, nothing_claimed,
+    claimable, claimant_of, deadline, hold_engine_fields, later, mark_claimant, nothing_claimed,
     queue_declaration,
 };
 

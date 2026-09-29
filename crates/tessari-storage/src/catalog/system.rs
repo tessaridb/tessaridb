@@ -167,6 +167,14 @@ pub const FAILOVER: TableId = TableId::new(20);
 /// same row, which is what makes them take turns.
 pub const TOPIC_POSITIONS: TableId = TableId::new(21);
 
+/// Each topic consumer group: its declaration, the last position it has handed
+/// out, and what it holds in flight (G042, ADR-0086).
+///
+/// One row per topic and group name. Every read, acknowledgement and refusal of
+/// a group rewrites that row, so the group's members take turns on it — the
+/// cost ADR-0086 accepts for keeping the in-flight set in one bounded record.
+pub const TOPIC_GROUPS: TableId = TableId::new(22);
+
 /// The one record [`VAULT_ROOT`] holds.
 pub const VAULT_ROOT_ID: u32 = 1;
 
@@ -319,6 +327,9 @@ mod tests {
             VAULT_AUDIT,
             RECORD_COUNTS,
             LEADERSHIPS,
+            FAILOVER,
+            TOPIC_POSITIONS,
+            TOPIC_GROUPS,
         ];
         for (index, table) in ids.iter().enumerate() {
             assert!(

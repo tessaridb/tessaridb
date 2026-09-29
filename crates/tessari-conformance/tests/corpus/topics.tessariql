@@ -68,3 +68,62 @@ DEFINE TOPIC open PUBLIC RATE 10 PER 1m;
 --- case: a topic may not keep messages for no time
 DEFINE TOPIC none RETAIN 0s;
 --- expect: error UnexpectedToken
+
+--- case: a group shares a topic's messages and acknowledges each one
+DEFINE TOPIC jobs;
+CREATE jobs:'j1' = { n: 1 };
+CREATE jobs:'j2' = { n: 2 };
+CREATE jobs:'j3' = { n: 3 };
+DEFINE GROUP 'workers' ON TOPIC jobs ACK DEADLINE 30s IN FLIGHT 2;
+READ FROM jobs FOR CONSUMER 'workers' LIMIT 10;
+--- expect: rows 2
+
+--- case: a group holds no more than it may have in flight
+READ FROM jobs FOR CONSUMER 'workers' LIMIT 10;
+--- expect: rows 0
+
+--- case: an acknowledgement answers how many messages it settled
+ACK jobs FOR CONSUMER 'workers' AT 1, 2;
+--- expect: value 2
+
+--- case: and the group moves on to the next message
+READ FROM jobs FOR CONSUMER 'workers' LIMIT 10;
+--- expect: rows 1
+
+--- case: a negative acknowledgement hands the message out again
+NACK jobs FOR CONSUMER 'workers' AT 3;
+READ FROM jobs FOR CONSUMER 'workers' LIMIT 10;
+--- expect: rows 1
+
+--- case: a group can be moved back to a position
+ALTER GROUP 'workers' ON TOPIC jobs START AT 0;
+READ FROM jobs FOR CONSUMER 'workers' LIMIT 10;
+--- expect: rows 2
+
+--- case: a group of that name already exists
+DEFINE GROUP 'workers' ON TOPIC jobs ACK DEADLINE 30s;
+--- expect: error GroupExists
+
+--- case: a reader without a group has nothing to acknowledge
+ACK jobs FOR CONSUMER 'nobody' AT 1;
+--- expect: error NotAGroup
+
+--- case: a member cannot skip the group's work
+READ FROM jobs FOR CONSUMER 'workers' AFTER 2;
+--- expect: error AfterOnGroup
+
+--- case: a topic cannot be its own group's dead letter
+DEFINE GROUP 'loop' ON TOPIC jobs ACK DEADLINE 30s DELIVERIES 3 DEAD LETTER TO jobs;
+--- expect: error DeadLetterIsTheTopic
+
+--- case: a group is dropped
+DROP GROUP 'workers' ON TOPIC jobs;
+--- expect: ok
+
+--- case: and a group that is not there cannot be
+DROP GROUP 'workers' ON TOPIC jobs;
+--- expect: error NoSuchGroup
+
+--- case: a group must say how long a reader has
+DEFINE GROUP 'late' ON TOPIC jobs IN FLIGHT 2;
+--- expect: error UnexpectedToken

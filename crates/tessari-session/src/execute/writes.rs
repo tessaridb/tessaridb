@@ -231,7 +231,7 @@ impl Session<'_> {
     /// A repeated **UUID** is not walked past. It cannot happen unless the
     /// machine's randomness is broken, and a store that quietly drew again would
     /// be hiding that rather than reporting it.
-    pub(super) fn free_identity(
+    pub(crate) fn free_identity(
         &self,
         transaction: &mut Transaction<'_>,
         context: &Context,

@@ -1813,6 +1813,75 @@ pub enum Error {
         span: Span,
     },
 
+    /// A group of that name already reads the topic (G042).
+    #[error(
+        "{topic} already has a group named '{group}' (at {span}) — `IF NOT EXISTS` accepts \
+         it as it stands, and `DROP GROUP` removes it"
+    )]
+    GroupExists {
+        /// The group.
+        group: String,
+        /// The topic as written.
+        topic: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// No group of that name reads the topic (G042).
+    #[error("{topic} has no group named '{group}' (at {span}) — declare one with `DEFINE GROUP`")]
+    NoSuchGroup {
+        /// The group.
+        group: String,
+        /// The topic as written.
+        topic: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// `ACK` or `NACK` for a reader that is not a group, so nothing is held to
+    /// settle (G042).
+    ///
+    /// Refused rather than answered with a zero: a reader acknowledging by hand
+    /// under a name that commits its reads would be told its acknowledgements
+    /// work while they do nothing at all.
+    #[error(
+        "'{consumer}' reads {topic} without a group, so nothing is held to acknowledge \
+         (at {span}) — its reads are acknowledged by committing them; `DEFINE GROUP` makes \
+         acknowledgement explicit"
+    )]
+    NotAGroup {
+        /// The reader.
+        consumer: String,
+        /// The topic as written.
+        topic: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// `AFTER` on a read by a group member (G042).
+    #[error(
+        "'{group}' is a group, and a member cannot skip the group's work with `AFTER` \
+         (at {span}) — `ALTER GROUP … START AT n` moves the whole group"
+    )]
+    AfterOnGroup {
+        /// The group.
+        group: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A group whose dead letter is the topic it reads (G042).
+    #[error(
+        "{topic} cannot be its own group's dead letter (at {span}) — a message given up \
+         on would be handed out again"
+    )]
+    DeadLetterIsTheTopic {
+        /// The topic as written.
+        topic: String,
+        /// Where it was written.
+        span: Span,
+    },
+
     /// A position or a count on `READ FROM` that is not a whole number at or
     /// above zero (G037).
     #[error("{reason} (at {span})")]

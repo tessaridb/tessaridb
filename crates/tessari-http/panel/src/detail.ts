@@ -1,6 +1,6 @@
 //! One thing, looked at.
 //!
-//! A sheet over whatever you were doing, not a destination. The cap is four
+//! A sheet over whatever you were doing, not a destination. The cap is five
 //! destinations and a detail view is not a place you go — it is a thing you
 //! open, look at, and close, and it has to leave you where you were.
 //!

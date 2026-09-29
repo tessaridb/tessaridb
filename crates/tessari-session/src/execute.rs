@@ -175,6 +175,31 @@ impl Session<'_> {
                 },
                 span,
             ),
+            StatementKind::DefineGroup {
+                name,
+                topic,
+                if_not_exists,
+                clauses,
+            } => self.define_group(transaction, name, topic, *if_not_exists, clauses, span),
+            StatementKind::DropGroup { name, topic } => {
+                self.drop_group(transaction, name, topic, span)
+            }
+            StatementKind::AlterGroup {
+                name,
+                topic,
+                start_at,
+            } => self.alter_group(transaction, name, topic, start_at, span),
+            StatementKind::AckTopic {
+                topic,
+                consumer,
+                positions,
+            } => self.ack_topic(transaction, topic, consumer, positions, span),
+            StatementKind::NackTopic {
+                topic,
+                consumer,
+                positions,
+                delay,
+            } => self.nack_topic(transaction, topic, consumer, (positions, *delay), span),
             StatementKind::DefineField {
                 name,
                 table,

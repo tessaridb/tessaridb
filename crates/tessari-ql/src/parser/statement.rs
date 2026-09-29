@@ -271,6 +271,8 @@ impl Parser<'_> {
             // tracker's own table has a `claim` on it — so reserving them here
             // would take them away from the schema the word exists to serve.
             _ if self.eat_word("claim") => self.claim_statement(start)?,
+            _ if self.eat_word("ack") => self.ack_statement()?,
+            _ if self.eat_word("nack") => self.nack_statement()?,
             // `expire` and `persist` for the same reason as `claim`: a cache's
             // own tables are where an `expire` column lives (G035).
             _ if self.eat_word("expire") => self.expire_statement()?,

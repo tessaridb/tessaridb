@@ -41,6 +41,7 @@
     <nav class="tabs">
       <div role="tablist" aria-label="Sections">
         <button type="button" role="tab" id="tab-run" aria-controls="panel-run" aria-selected="true">Run</button>
+        <button type="button" role="tab" id="tab-topics" aria-controls="panel-topics" aria-selected="false" tabindex="-1">Topics</button>
         <button type="button" role="tab" id="tab-cluster" aria-controls="panel-cluster" aria-selected="false" tabindex="-1">Cluster</button>
         <button type="button" role="tab" id="tab-access" aria-controls="panel-access" aria-selected="false" tabindex="-1">Access</button>
         <button type="button" role="tab" id="tab-this-node" aria-controls="panel-this-node" aria-selected="false" tabindex="-1">This node</button>
@@ -89,6 +90,138 @@
             <button id="stop" type="button" class="quiet" disabled>Stop</button>
           </div>
           <ol id="changes" class="changes" reversed></ol>
+        </div>
+      </section>
+      <section id="panel-topics" role="tabpanel" aria-labelledby="tab-topics" tabindex="0" hidden>
+        <div class="pane-head">
+          <h2>Topics</h2>
+          <div class="row tight">
+            <span id="topics-status" class="status" role="status"></span>
+            <button id="topics-refresh" type="button" class="quiet">Refresh</button>
+          </div>
+        </div>
+        <div class="row">
+          <label>
+            Namespace 
+            <select id="topics-namespace"></select>
+          </label>
+          <label>
+            Database 
+            <select id="topics-database"></select>
+          </label>
+        </div>
+        <div id="topics-list" class="answer" aria-live="polite"></div>
+        <div class="split">
+          <div class="pane">
+            <div class="pane-head">
+              <h2>Topic</h2>
+              <span id="topic-chosen" class="faint">none chosen</span>
+            </div>
+            <span id="topic-status" class="status" role="status"></span>
+            <div id="topic-facts" class="answer small" aria-live="polite"></div>
+            <h3>Readers</h3>
+            <p class="note">A reader keeps one position; its lag is how many messages it has still to read.</p>
+            <div id="topic-readers" class="answer small" aria-live="polite"></div>
+            <h3>Groups</h3>
+            <p class="note">A group hands each message out and waits for it to be acknowledged. Its <em>committed</em> position is the last one below which everything is settled, and its lag counts from there.</p>
+            <div id="topic-groups" class="answer small" aria-live="polite"></div>
+          </div>
+          <div class="pane">
+            <div class="pane-head">
+              <h2>Messages</h2>
+              <span id="browse-status" class="status" role="status"></span>
+            </div>
+            <p class="note">Reading here moves nobody's position: it is a look, and every reader is left where it was.</p>
+            <div class="row">
+              <label>After position <input id="browse-after" type="number" value="0" min="0" /></label>
+              <label>How many <input id="browse-count" type="number" value="20" min="1" max="100" /></label>
+            </div>
+            <div class="row tight">
+              <button id="browse-read" type="button" disabled>Read</button>
+              <button id="browse-next" type="button" class="quiet" disabled>Next page</button>
+            </div>
+            <div id="browse-list" class="answer" aria-live="polite"></div>
+          </div>
+        </div>
+        <div class="split">
+          <div class="pane">
+            <div class="pane-head">
+              <h2>New group on the chosen topic</h2>
+              <span id="new-group-status" class="status" role="status"></span>
+            </div>
+            <div class="row">
+              <label>Group <input id="new-group-name" type="text" placeholder="billing" /></label>
+              <label>Acknowledge within <input id="new-group-deadline" type="text" placeholder="30s" /></label>
+              <label>In flight <input id="new-group-width" type="text" placeholder="1" /></label>
+            </div>
+            <div class="row">
+              <label>Give up after <input id="new-group-deliveries" type="text" placeholder="deliveries, optional" /></label>
+              <label>Dead letters to <input id="new-group-dead" type="text" placeholder="a topic, optional" /></label>
+            </div>
+            <p id="new-group-says" class="note says"></p>
+            <div class="row">
+              <button id="new-group" type="button" class="primary" disabled>Create group</button>
+            </div>
+          </div>
+          <div class="pane">
+            <div class="pane-head">
+              <h2>Move or remove a group</h2>
+              <span id="group-status" class="status" role="status"></span>
+            </div>
+            <div class="row">
+              <label>
+                Group 
+                <select id="group-which"></select>
+              </label>
+              <label>
+                Do 
+                <select id="group-action">
+                  <option value="move" selected>hand out from a position</option>
+                  <option value="drop">remove the group</option>
+                </select>
+              </label>
+              <label>After position <input id="group-start" type="number" value="0" min="0" /></label>
+            </div>
+            <div class="row">
+              <label>Type the group to confirm <input id="group-confirm" type="text" /></label>
+              <label>Why <input id="group-why" type="text" placeholder="replay after the fix" /></label>
+            </div>
+            <p id="group-says" class="note says"></p>
+            <div class="row">
+              <button id="group-apply" type="button" disabled>Apply</button>
+            </div>
+          </div>
+        </div>
+        <div class="split">
+          <div class="pane">
+            <div class="pane-head">
+              <h2>New topic</h2>
+              <span id="new-topic-status" class="status" role="status"></span>
+            </div>
+            <div class="row">
+              <label>Name <input id="new-topic-name" type="text" placeholder="events" /></label>
+              <label>Keep for <input id="new-topic-retain" type="text" placeholder="7d, or empty to keep all" /></label>
+              <label>Largest message <input id="new-topic-bytes" type="text" placeholder="bytes, optional" /></label>
+            </div>
+            <p id="new-topic-says" class="note says"></p>
+            <div class="row">
+              <button id="new-topic" type="button" class="primary" disabled>Create</button>
+            </div>
+          </div>
+          <div class="pane">
+            <div class="pane-head">
+              <h2>Remove the chosen topic</h2>
+              <span id="drop-topic-status" class="status" role="status"></span>
+            </div>
+            <div class="row">
+              <label>Type its name to confirm <input id="drop-topic-confirm" type="text" /></label>
+              <label>Why <input id="drop-topic-why" type="text" placeholder="replaced by events_v2" /></label>
+            </div>
+            <p id="drop-topic-says" class="note says"></p>
+            <div class="row">
+              <button id="drop-topic" type="button" disabled>Remove</button>
+            </div>
+          </div>
         </div>
       </section>
       <section id="panel-cluster" role="tabpanel" aria-labelledby="tab-cluster" tabindex="0" hidden>

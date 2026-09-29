@@ -237,6 +237,13 @@ impl Effect {
             // Moving a reader's stored position is a write, so a follower sends
             // it to the leader like any other (G037).
             | StatementKind::ReadTopic { consumer: Some(_), .. }
+            // A group's declaration, its cursor and what it holds in flight are
+            // one record, and every one of these rewrites it (G042).
+            | StatementKind::DefineGroup { .. }
+            | StatementKind::DropGroup { .. }
+            | StatementKind::AlterGroup { .. }
+            | StatementKind::AckTopic { .. }
+            | StatementKind::NackTopic { .. }
             | StatementKind::ClaimRecord { .. }
             | StatementKind::Release { .. }
             | StatementKind::ReleaseAll { .. }

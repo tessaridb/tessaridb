@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use tessari_ql::{Expr, Span, TableRef};
-use tessari_storage::{Catalog, TableKind, Transaction};
+use tessari_storage::{Catalog, Messages, TableKind, Transaction};
 use tessari_types::{Number, RecordId, Value};
 
 use crate::AccessPath;
@@ -17,6 +17,20 @@ use crate::session::Session;
 /// A bound rather than everything, because a topic grows without end and a
 /// read with no bound would one day answer all of it at once.
 const DEFAULT_LIMIT: u64 = 100;
+
+/// How many positions after `after` a read passed over because retention had
+/// removed them.
+///
+/// Everything between the position read after and the first message the topic
+/// still holds was removed by retention: positions are dense, and retention is
+/// the only thing that removes a message.
+pub(super) fn missed(found: &Messages, after: u64) -> u64 {
+    let removed = found.first.map_or_else(
+        || found.last.unwrap_or(after).saturating_sub(after),
+        |first| first.saturating_sub(after.saturating_add(1)),
+    );
+    removed.saturating_add(found.lapsed)
+}
 
 /// What a `READ FROM` statement asked for beyond the topic.
 #[derive(Debug, Clone, Copy)]
@@ -54,6 +68,37 @@ impl Session<'_> {
                 span,
             });
         }
+        if let Some(consumer) = reading.consumer
+            && let Some(state) = Catalog::new(transaction).topic_group(
+                context.namespace,
+                context.database,
+                table,
+                consumer,
+            )?
+        {
+            if reading.after.is_some() {
+                return Err(Error::AfterOnGroup {
+                    group: consumer.to_owned(),
+                    span,
+                });
+            }
+            let limit = match reading.limit {
+                Some(limit) => self.whole(
+                    transaction,
+                    limit,
+                    "a limit is a whole number at or above zero",
+                )?,
+                None => DEFAULT_LIMIT,
+            };
+            return self.read_group(
+                transaction,
+                (&context, table),
+                (topic, consumer),
+                state,
+                limit,
+                span,
+            );
+        }
         let named = match reading.after {
             Some(after) => Some(self.whole(
                 transaction,
@@ -87,14 +132,7 @@ impl Session<'_> {
             after,
             usize::try_from(limit).unwrap_or(usize::MAX),
         )?;
-        // Everything between the position read after and the first message the
-        // topic still holds was removed by retention: positions are dense, and
-        // retention is the only thing that removes a message.
-        let removed = found.first.map_or_else(
-            || found.last.unwrap_or(after).saturating_sub(after),
-            |first| first.saturating_sub(after.saturating_add(1)),
-        );
-        let missed = removed.saturating_add(found.lapsed);
+        let missed = missed(&found, after);
         let reached = found.messages.last().map(|message| message.position);
         if let Some(consumer) = reading.consumer {
             let moved = reached
@@ -143,7 +181,7 @@ impl Session<'_> {
     }
 
     /// A whole number at or above zero, from an expression.
-    fn whole(
+    pub(super) fn whole(
         &self,
         transaction: &mut Transaction<'_>,
         expr: &Expr,

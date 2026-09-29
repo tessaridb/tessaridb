@@ -116,6 +116,7 @@ impl Parser<'_> {
             _ if self.eat_word("topic") => Ok(StatementKind::DropTable {
                 table: self.table_ref()?,
             }),
+            _ if self.eat_word("group") => self.drop_group(),
             _ if self.eat_word("series") => Ok(StatementKind::DropSeries { name: self.name()? }),
             _ if self.eat_word("view") => Ok(StatementKind::DropView { name: self.name()? }),
             // Declined rather than missing, and it says so. `DEFINE NODE` writes

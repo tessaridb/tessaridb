@@ -12,6 +12,7 @@
 import { document, el, type Node } from "./html.js";
 import { access } from "./access.js";
 import { cluster } from "./cluster.js";
+import { topics } from "./topics.js";
 import { DESTINATIONS, to } from "./destinations.js";
 import {
   answer, behindDisclosure, button, field, note, number, pane, paneHead, panel,
@@ -199,7 +200,7 @@ const keysSheet = (): Node =>
 /**
  * One thing, looked at — a sheet rather than a destination.
  *
- * The cap is four destinations and a detail view is not a place you go. It also
+ * The cap is five destinations and a detail view is not a place you go. It also
  * carries the sentence that keeps it honest: nothing here is a history, because
  * the store records no events for any of these objects.
  */
@@ -292,7 +293,7 @@ export const index = (): string =>
         tabs(DESTINATIONS),
         // In the tab strip's own order, so the reading order of the page and the
         // order of the controls above it are one thing rather than two.
-        el("main", {}, query(), cluster(), access(), node()),
+        el("main", {}, query(), topics(), cluster(), access(), node()),
         tray(),
         logSheet(),
         keysSheet(),

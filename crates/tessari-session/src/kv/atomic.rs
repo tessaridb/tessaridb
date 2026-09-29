@@ -49,6 +49,11 @@ pub(crate) const fn retried_on_conflict(kind: &StatementKind) -> bool {
                 consumer: Some(_),
                 ..
             }
+            // Members of one group settle messages in one record, so a lone
+            // acknowledgement that meets another is run again the same way
+            // (G042).
+            | StatementKind::AckTopic { .. }
+            | StatementKind::NackTopic { .. }
     )
 }
 

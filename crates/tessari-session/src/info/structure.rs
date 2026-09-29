@@ -101,6 +101,7 @@ impl Session<'_> {
         let context = self.context(transaction, None, span)?;
         let readable = self.readable_in(transaction)?;
         let mut names = Vec::new();
+        let mut topics = Vec::new();
         for table in Catalog::new(transaction).tables_in(context.namespace, context.database)? {
             // A bucket's chunks live in a companion table whose name carries a
             // byte no identifier can hold, so no statement can name it and
@@ -116,9 +117,18 @@ impl Session<'_> {
             {
                 continue;
             }
+            // The topics among them, by name, because a topic is read with its
+            // own statements and a caller listing a database wants to know which
+            // of its tables those are without asking about each one (G042).
+            if matches!(table.kind, TableKind::Topic(_)) {
+                topics.push(table.name.clone());
+            }
             names.push(table.name);
         }
-        Ok(BTreeMap::from([("tables".to_owned(), by_name(names))]))
+        Ok(BTreeMap::from([
+            ("tables".to_owned(), by_name(names)),
+            ("topics".to_owned(), by_name(topics)),
+        ]))
     }
 
     /// One table's shape, its fields and its indexes.
