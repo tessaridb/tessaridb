@@ -5,6 +5,7 @@
 
 mod consumers;
 mod declaring;
+mod groups;
 mod order;
 mod public;
 mod retention;

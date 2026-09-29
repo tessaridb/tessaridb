@@ -12,6 +12,22 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.12.0-beta — 2026-09-29
+
+**A topic can be shared by a group of workers who acknowledge each message.**
+`DEFINE GROUP 'billing' ON TOPIC events ACK DEADLINE 30s` makes the readers
+under that name a group: a read hands messages out and holds each in flight
+until `ACK` says it is done; `NACK` hands it out again now or after a delay; a
+deadline that passes hands it out again on its own; and past `DELIVERIES n` it
+is given up on and appended to the group's `DEAD LETTER TO` topic. `IN FLIGHT n`
+(default 1, which keeps the order) says how many a group may hold at once, and
+`ALTER GROUP … START AT n` moves it. `INFO FOR TOPIC` reports each group's
+position, committed position, lag, messages in flight, redeliveries and dead
+letters. A reader under a name with no group keeps exactly what it had: its
+position moves with its own transaction (ADR-0086).
+
+**1433 conformance cases** define the language and run in the build.
+
 ## 0.11.0-beta — 2026-09-29
 
 **One runtime serves every surface.** The node used to give every held

@@ -2,9 +2,9 @@
 
 use super::{
     Answer, ColumnDeclaration, ConsumerSource, CreateTarget, DeleteBound, EdgeClause, Edit, Expr,
-    FieldMapping, FieldPath, Identity, InfoSubject, Name, OnFailure, Password, RangeExpr, ReachRef,
-    RecordTarget, Select, SetCondition, SpaceBound, TableChange, TableRef, TopicClauses,
-    UserChange, UserGrant, Written,
+    FieldMapping, FieldPath, GroupClauses, Identity, InfoSubject, Name, OnFailure, Password,
+    RangeExpr, ReachRef, RecordTarget, Select, SetCondition, SpaceBound, TableChange, TableRef,
+    TopicClauses, UserChange, UserGrant, Written,
 };
 use crate::token::Span;
 use tessari_types::{
@@ -203,6 +203,59 @@ pub enum StatementKind {
         after: Option<Expr>,
         /// The most messages to answer.
         limit: Option<Expr>,
+    },
+    /// `DEFINE GROUP 'billing' ON TOPIC events ACK DEADLINE 30s DELIVERIES 5
+    /// IN FLIGHT 10 DEAD LETTER TO events_dead` — readers under one name who
+    /// share a topic's messages and acknowledge each one (G042, ADR-0086).
+    DefineGroup {
+        /// The name its readers read under, as `FOR CONSUMER` spells it.
+        name: String,
+        /// The topic it reads.
+        topic: TableRef,
+        /// Whether re-defining an existing group is accepted.
+        if_not_exists: bool,
+        /// Its deadline, deliveries, width and dead letter.
+        clauses: GroupClauses,
+    },
+    /// `DROP GROUP 'billing' ON TOPIC events` — the group and everything it
+    /// holds in flight are forgotten.
+    DropGroup {
+        /// The group.
+        name: String,
+        /// Its topic.
+        topic: TableRef,
+    },
+    /// `ALTER GROUP 'billing' ON TOPIC events START AT 41` — the group next
+    /// hands out the message after that position, and forgets what it holds in
+    /// flight.
+    AlterGroup {
+        /// The group.
+        name: String,
+        /// Its topic.
+        topic: TableRef,
+        /// The position it is to have been given everything up to.
+        start_at: Expr,
+    },
+    /// `ACK events FOR CONSUMER 'billing' AT 7, 8` — those messages are done.
+    AckTopic {
+        /// The topic.
+        topic: TableRef,
+        /// The group the messages were handed out by.
+        consumer: String,
+        /// The positions acknowledged.
+        positions: Vec<Expr>,
+    },
+    /// `NACK events FOR CONSUMER 'billing' AT 7 DELAY 5s` — those messages are
+    /// to be handed out again, now or after the delay.
+    NackTopic {
+        /// The topic.
+        topic: TableRef,
+        /// The group the messages were handed out by.
+        consumer: String,
+        /// The positions given back.
+        positions: Vec<Expr>,
+        /// How long before they may be handed out again.
+        delay: Option<Duration>,
     },
     /// `DEFINE BUCKET media MAX 5242880` — a table whose records are files.
     ///

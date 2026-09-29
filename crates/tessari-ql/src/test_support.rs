@@ -407,6 +407,30 @@ fn erase_statement(statement: &mut Statement) {
                 erase_expr(bound);
             }
         }
+        StatementKind::DefineGroup { topic, clauses, .. } => {
+            erase_table(topic);
+            if let Some(dead_letter) = clauses.dead_letter.as_mut() {
+                erase_table(dead_letter);
+            }
+        }
+        StatementKind::DropGroup { topic, .. } => erase_table(topic),
+        StatementKind::AlterGroup {
+            topic, start_at, ..
+        } => {
+            erase_table(topic);
+            erase_expr(start_at);
+        }
+        StatementKind::AckTopic {
+            topic, positions, ..
+        }
+        | StatementKind::NackTopic {
+            topic, positions, ..
+        } => {
+            erase_table(topic);
+            for position in positions {
+                erase_expr(position);
+            }
+        }
         StatementKind::Keys {
             space,
             range,

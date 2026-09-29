@@ -48,6 +48,11 @@ forms! {
     DefineSpace => "DEFINE SPACE",
     DefineTopic => "DEFINE TOPIC",
     ReadTopic => "READ FROM",
+    DefineGroup => "DEFINE GROUP",
+    DropGroup => "DROP GROUP",
+    AlterGroup => "ALTER GROUP",
+    AckTopic => "ACK",
+    NackTopic => "NACK",
     DefineBucket => "DEFINE BUCKET",
     DefineCollection => "DEFINE COLLECTION",
     DefineVector => "DEFINE VECTOR",
@@ -226,6 +231,11 @@ mod tests {
              DEFINE SPACE s;\
              DEFINE TOPIC events;\
              READ FROM events FOR CONSUMER 'mail';\
+             DEFINE GROUP 'mail' ON TOPIC events ACK DEADLINE 30s;\
+             ACK events FOR CONSUMER 'mail' AT 1;\
+             NACK events FOR CONSUMER 'mail' AT 1;\
+             ALTER GROUP 'mail' ON TOPIC events START AT 0;\
+             DROP GROUP 'mail' ON TOPIC events;\
              DEFINE BUCKET b;\
              DEFINE COLLECTION c;\
              DEFINE VECTOR v DIMENSION 3 DISTANCE cosine;\

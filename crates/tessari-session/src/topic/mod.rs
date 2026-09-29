@@ -9,6 +9,7 @@
 //! its size bounded and its retention stamped live in the commit
 //! (`tessari_storage`), where every write path passes.
 
+mod group;
 mod info;
 mod public;
 mod read;

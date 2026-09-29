@@ -291,6 +291,13 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
             }
             Ok(())
         }
+        StatementKind::AlterGroup { start_at, .. } => bind_expr(start_at, binding),
+        StatementKind::AckTopic { positions, .. } | StatementKind::NackTopic { positions, .. } => {
+            for position in positions {
+                bind_expr(position, binding)?;
+            }
+            Ok(())
+        }
         StatementKind::Keys {
             range,
             prefix,
@@ -327,6 +334,8 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::DefineTable { .. }
         | StatementKind::DefineSpace { .. }
         | StatementKind::DefineTopic { .. }
+        | StatementKind::DefineGroup { .. }
+        | StatementKind::DropGroup { .. }
         | StatementKind::DefineBucket { .. }
         | StatementKind::DefineCollection { .. }
         | StatementKind::DefineVector { .. }

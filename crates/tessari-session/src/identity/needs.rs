@@ -215,6 +215,9 @@ impl Needs {
             // reader's stored position: that position is the reader's own place
             // in what it may read (G037).
             | StatementKind::ReadTopic { .. }
+            // Settling a message is the rest of reading it (G042).
+            | StatementKind::AckTopic { .. }
+            | StatementKind::NackTopic { .. }
             // Explaining a read is reading: the catalog, about a table. The
             // caller must be allowed both, and `tables_named` says which.
             | StatementKind::Explain(_)
@@ -411,6 +414,11 @@ impl Needs {
             | StatementKind::DropTable { .. }
             | StatementKind::DefineSpace { .. }
             | StatementKind::DefineTopic { .. }
+            // A group shapes how a topic is read, and moving one is reshaping
+            // it, so all three sit with the topic's own declaration (G042).
+            | StatementKind::DefineGroup { .. }
+            | StatementKind::DropGroup { .. }
+            | StatementKind::AlterGroup { .. }
             | StatementKind::DefineBucket { .. }
             | StatementKind::DefineCollection { .. }
             | StatementKind::DefineVector { .. }

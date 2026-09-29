@@ -283,6 +283,23 @@ pub struct TopicClauses {
     pub public: Option<(u64, Duration)>,
 }
 
+/// What `DEFINE GROUP` declares after the topic (G042, ADR-0086).
+///
+/// The deadline is required and has no default, as a queue's `TIMEOUT` has
+/// none: how long a reader has before its message is handed to another is a
+/// choice about the reader's work that the store cannot guess.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupClauses {
+    /// `ACK DEADLINE 30s` — how long a reader has to acknowledge a message.
+    pub deadline: Duration,
+    /// `DELIVERIES n` — after this many deliveries a message is dead-lettered.
+    pub deliveries: Option<u64>,
+    /// `IN FLIGHT n` — the most messages the group holds unacknowledged.
+    pub in_flight: Option<u64>,
+    /// `DEAD LETTER TO <topic>` — where a dead-lettered message is appended.
+    pub dead_letter: Option<TableRef>,
+}
+
 /// `MAX n [EVICT NONE]` on `DEFINE SPACE` (G036).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpaceBound {

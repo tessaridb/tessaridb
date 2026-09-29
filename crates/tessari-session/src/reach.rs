@@ -342,6 +342,16 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // reader's position: the position is the reader's own bookkeeping about
         // that topic and is governed by the same grant (G037).
         StatementKind::ReadTopic { topic, .. } => vec![topic],
+        // A group is its readers' bookkeeping about a topic, and settling a
+        // message is reading it, so each is governed by the topic's grant; a
+        // dead letter is appended to, so its topic is asked about too (G042).
+        StatementKind::DefineGroup { topic, clauses, .. } => {
+            std::iter::once(topic).chain(clauses.dead_letter.as_ref()).collect()
+        }
+        StatementKind::DropGroup { topic, .. }
+        | StatementKind::AlterGroup { topic, .. }
+        | StatementKind::AckTopic { topic, .. }
+        | StatementKind::NackTopic { topic, .. } => vec![topic],
 
         // Releasing many reaches the one queue it names — which is the whole
         // reason it names one: a sweep over every queue would ask a permission

@@ -27,8 +27,8 @@ use tessari_types::{Assertion, FieldKind, Path};
 
 use crate::token::Span;
 pub use expr::{
-    Aggregate, ArithmeticOp, Expr, ExprKind, Field, Identity, RangeExpr, Retention, SetCondition,
-    SpaceBound, TopicClauses, Written,
+    Aggregate, ArithmeticOp, Expr, ExprKind, Field, GroupClauses, Identity, RangeExpr, Retention,
+    SetCondition, SpaceBound, TopicClauses, Written,
 };
 pub use select::{
     Admitted, AnsweredBy, Approximation, Fusion, Hop, JoinSide, Ordering, Projected, Projection,

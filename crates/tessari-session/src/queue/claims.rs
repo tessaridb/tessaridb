@@ -12,7 +12,7 @@ use tessari_storage::{
     CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, Catalog, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY,
     QUEUE_CLAIMED_UNTIL, QueueDeclaration, RecordAddress, TableDefinition, TableKind, Transaction,
 };
-use tessari_types::{Datetime, Value};
+use tessari_types::{Datetime, Duration, Value};
 
 /// The claimant a record carries, when it carries one.
 ///
@@ -88,11 +88,16 @@ pub(crate) fn queue_declaration(
 
 /// When a claim taken at `now` lapses.
 pub(crate) fn deadline(now: Datetime, declared: QueueDeclaration, span: Span) -> Result<Datetime> {
+    later(now, declared.timeout, span)
+}
+
+/// `now` moved on by `by`, refused when that is past what a datetime can hold.
+pub(crate) fn later(now: Datetime, by: Duration, span: Span) -> Result<Datetime> {
     let seconds = now
         .seconds()
-        .checked_add(declared.timeout.seconds())
+        .checked_add(by.seconds())
         .ok_or(Error::ClaimDeadlineUnreachable { span })?;
-    let nanos = now.nanos().saturating_add(declared.timeout.nanos());
+    let nanos = now.nanos().saturating_add(by.nanos());
     let (seconds, nanos) = if nanos >= 1_000_000_000 {
         (
             seconds

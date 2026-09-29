@@ -6207,6 +6207,62 @@ messages.
 
 Each message answers under its own identity as `{ position, value }`.
 
+### Consumer groups: acknowledge each message
+
+A reader that commits its position can only say *everything up to here is
+done*. A **group** lets several workers share one topic and acknowledge each
+message on its own:
+
+```tessariql
+DEFINE GROUP 'billing' ON TOPIC events ACK DEADLINE 30s;
+DEFINE GROUP 'mailer' ON TOPIC events ACK DEADLINE 1m DELIVERIES 5 IN FLIGHT 100 DEAD LETTER TO events_dead;
+READ FROM events FOR CONSUMER 'billing' LIMIT 10;
+ACK events FOR CONSUMER 'billing' AT 41, 42;
+NACK events FOR CONSUMER 'billing' AT 43 DELAY 10s;
+ALTER GROUP 'billing' ON TOPIC events START AT 40;
+DROP GROUP 'billing' ON TOPIC events;
+```
+
+Once a group is declared under a name, `READ FROM … FOR CONSUMER` that name
+**hands the messages out** instead of moving a position: each one is held in
+flight for the group with a deadline, and answers as `{ position, value,
+deliveries }`. Then:
+
+- `ACK … AT p, …` — those messages are done and are never handed out to the
+  group again. It answers how many were in flight; acknowledging one that is
+  not counts nothing and refuses nothing, so an acknowledgement retried after a
+  lost answer is harmless.
+- `NACK … AT p, … [DELAY d]` — hand them out again now, or after the delay.
+- No answer at all — when `ACK DEADLINE` passes, the next read hands the message
+  out again. Nothing sweeps: the deadline is written in the group's record and
+  the next read compares it with the clock, as a queue's hold is.
+- `DELIVERIES n` — a message due to be handed out an `n+1`th time is given up
+  on instead, and appended to the `DEAD LETTER TO` topic as `{ topic, group,
+  position, deliveries, value }` when the group names one.
+- `IN FLIGHT n` (default **1**, at most 10 000) — how many messages the group
+  holds unacknowledged. One keeps the topic's order: the next message waits
+  until the previous is acknowledged. More lets several workers go at once, and
+  a message handed out again may then arrive after later ones.
+- `ALTER GROUP … START AT n` — the group next hands out position `n + 1`, and
+  forgets what it held in flight.
+
+`ACK DEADLINE` is required and has no default, for the reason a queue's
+`TIMEOUT` has none. A group declared under a name that already has a stored
+position takes it over. `AFTER` on a group read is refused (`AfterOnGroup`) —
+a member cannot skip the group's work; `ACK` under a name with no group is
+refused (`NotAGroup`), because nothing is held to settle; a topic cannot be its
+own group's dead letter (`DeadLetterIsTheTopic`). The members of a group take
+turns on its record, as readers under one name take turns on a position, so a
+read or an acknowledgement that meets another is run again.
+
+What each form promises:
+
+| reading | delivery | order |
+|---|---|---|
+| `FOR CONSUMER` with no group, inside the transaction that acts | exactly once for effects in this store | strict |
+| a group, `IN FLIGHT 1` | at least once | strict |
+| a group, `IN FLIGHT n` | at least once | first delivery in order |
+
 ### Retention, and a reader it left behind
 
 `RETAIN 7d` keeps a message for seven days after it was appended; the node's
@@ -6257,8 +6313,14 @@ what it counted. A signed-in caller is never rated.
 
 ```text
 { name: 'events', first: 18, last: 240, retain: 168h,
-  consumers: { billing: { position: 236, lag: 4 }, audit: { position: 90, lag: 150 } } }
+  consumers: { audit: { position: 90, lag: 150 } },
+  groups: { billing: { position: 238, committed: 236, lag: 4, in_flight: 2,
+                       redelivered: 3, dead_lettered: 0, deadline: 30s, width: 10 } } }
 ```
+
+A group's `position` is the last message it has handed out, `committed` the
+last one below which everything is acknowledged, and its `lag` counts from
+`committed`.
 
 `first` is the first position still held, `last` the last one given — held or
 not. **Watch `lag`.** A reader whose lag keeps growing will one day be passed by
@@ -7671,7 +7733,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.11.0", "build": "0.11.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.12.0", "build": "0.12.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],

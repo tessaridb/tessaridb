@@ -50,6 +50,9 @@ impl Parser<'_> {
     /// have made that reading wrong everywhere it was already written.
     pub(super) fn alter_statement(&mut self) -> Result<StatementKind> {
         self.advance();
+        if self.eat_word("group") {
+            return self.alter_group();
+        }
         if self.eat_keyword(Keyword::Table) {
             let table = self.table_ref()?;
             // The columnar spellings first, because `SET` is the one that reads

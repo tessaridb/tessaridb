@@ -249,6 +249,7 @@ impl Parser<'_> {
             // existed keeps it.
             _ if self.eat_word("queue") => self.define_queue(),
             _ if self.eat_word("topic") => self.define_topic(),
+            _ if self.eat_word("group") => self.define_group(),
             _ if self.eat_word("series") => self.define_series(),
             // Contextual for the same reason as the rest of this run: `view` is
             // an ordinary table name, and a store that had one before this word
