@@ -369,3 +369,131 @@ fn an_aged_records_index_entries_go_with_it() {
     assert_eq!(indexed(), entries - 1_000, "one entry per aged record gone");
     assert_eq!(format!("{:?}", run(&mut session, read)), before);
 }
+
+/// G044 C10: a series on disk, driven through the compaction that compresses it,
+/// reads back every value and every instant it was given — floats at their
+/// edges (not-a-number, both zeroes, both infinities, the subnormal and the
+/// extremes) and random bit patterns, at intervals that are irregular and
+/// sometimes zero. A float is compared by its bits after the one normalisation
+/// the value model makes on the way in, so a codec that rounded, or a zero
+/// that came back with the wrong sign, fails here rather than in a chart.
+#[test]
+fn a_compacted_series_reads_back_every_value_and_instant_bit_for_bit() {
+    use std::collections::BTreeMap;
+
+    use tessari_session::Parameters;
+    use tessari_types::{Datetime, Number, Value};
+
+    const EVENTS: u64 = 6_000;
+    const PER_BATCH: u64 = 500;
+    let edges = [
+        f64::NAN,
+        -0.0,
+        0.0,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::MIN_POSITIVE,
+        f64::from_bits(1),
+        f64::MAX,
+        f64::MIN,
+        1.0,
+    ];
+    // xorshift64: deterministic, so a failure names the same event every run.
+    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let mut written = BTreeMap::new();
+    let (mut seconds, mut nanos) = (1_790_000_000_i64, 0_u32);
+    for n in 0..EVENTS {
+        let roll = next();
+        let float = match usize::try_from(n).ok().and_then(|at| edges.get(at)) {
+            Some(edge) => *edge,
+            None => f64::from_bits(roll),
+        };
+        // Up to three seconds on, at any nanosecond — and one step in eight
+        // not at all, so instants repeat.
+        if roll % 8 != 0 {
+            seconds += i64::try_from(roll % 3).unwrap();
+            nanos = u32::try_from((roll >> 8) % 1_000_000_000).unwrap();
+        }
+        written.insert(
+            n,
+            (Number::float(float), Datetime::new(seconds, nanos).unwrap()),
+        );
+    }
+
+    let directory = tempfile::tempdir().unwrap();
+    let open = || {
+        Arc::new(
+            tessari_lsm::LsmBackend::open(
+                directory.path(),
+                tessari_lsm::StoreConfig::new(tessari_lsm::Durability::ProcessCrashSafe),
+            )
+            .unwrap(),
+        )
+    };
+    {
+        let store = Store::open(open() as Arc<dyn KvBackend>).unwrap();
+        let mut session = opened(&store);
+        run(
+            &mut session,
+            "DEFINE SERIES readings RETAIN 36500d TIME at;",
+        );
+        let events: Vec<_> = written.iter().collect();
+        for batch in events.chunks(usize::try_from(PER_BATCH).unwrap()) {
+            let mut parameters = Parameters::new();
+            let mut script = String::from("BEGIN;");
+            for (slot, (n, (float, at))) in batch.iter().enumerate() {
+                let fields = BTreeMap::from([
+                    (
+                        "n".to_owned(),
+                        Value::Number(Number::Integer(i64::try_from(**n).unwrap())),
+                    ),
+                    ("v".to_owned(), Value::Number(float.clone())),
+                    ("at".to_owned(), Value::Datetime(*at)),
+                ]);
+                parameters.insert(format!("e{slot}"), Value::Object(fields));
+                script.push_str(&format!(" CREATE readings = $e{slot};"));
+            }
+            script.push_str(" COMMIT;");
+            session.run_with(&script, &parameters).unwrap();
+        }
+    }
+    // Every region flushed and compacted to the bottom, where the codec and
+    // the trained dictionary do their work.
+    open().compact().unwrap();
+
+    let store = Store::open(open() as Arc<dyn KvBackend>).unwrap();
+    let mut session = Session::new(&store);
+    session
+        .run("USE NAMESPACE prod; USE DATABASE metrics;")
+        .unwrap();
+    let Outcome::Records { records, .. } = run(&mut session, "SELECT n, v, at FROM readings;")
+    else {
+        panic!("a read answers with records");
+    };
+    assert_eq!(records.len(), written.len());
+    for (_, record) in records {
+        let Value::Object(fields) = record else {
+            panic!("a record is an object");
+        };
+        let Some(Value::Number(Number::Integer(n))) = fields.get("n") else {
+            panic!("every event carries its number: {fields:?}");
+        };
+        let (float, at) = &written[&u64::try_from(*n).unwrap()];
+        assert_eq!(fields.get("at"), Some(&Value::Datetime(*at)), "event {n}");
+        let (Some(Value::Number(Number::Float(read))), Number::Float(sent)) =
+            (fields.get("v"), float)
+        else {
+            panic!("event {n}: {fields:?}");
+        };
+        assert!(
+            read.to_bits() == sent.to_bits() || (read.is_nan() && sent.is_nan()),
+            "event {n}: sent {sent:e}, read {read:e}"
+        );
+    }
+}
