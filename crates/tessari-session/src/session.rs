@@ -8,7 +8,10 @@
 //! error anywhere. The lookup is one catalog read per statement, and the store
 //! is the only thing entitled to say what a name currently means.
 
+mod atomic;
 mod step;
+
+pub use atomic::Atomic;
 use std::sync::Arc;
 
 use tessari_ql::{Parameters, StatementKind, parse};
@@ -197,15 +200,36 @@ impl<'a> Session<'a> {
             admits(store.node_identity()?.roles, &script)?;
         }
 
-        let mut outcomes = Vec::with_capacity(script.statements.len());
         let mut open: Option<(Transaction<'a>, tessari_ql::Span)> = None;
+        let outcomes = self.run_statements(store, &mut open, &mut script)?;
+
+        if let Some((transaction, span)) = open {
+            transaction.rollback();
+            return Err(Error::UnclosedTransaction { span });
+        }
+        Ok(outcomes)
+    }
+
+    /// Run a parsed, bound script's statements against `open`, which is the
+    /// transaction they join when one is open.
+    ///
+    /// Shared by [`Session::run_with`], where `open` starts empty and the script
+    /// opens and closes its own, and [`Session::atomically`], where the caller
+    /// holds it across several scripts.
+    fn run_statements(
+        &mut self,
+        store: &'a Store,
+        open: &mut Option<(Transaction<'a>, tessari_ql::Span)>,
+        script: &mut tessari_ql::Script,
+    ) -> Result<Vec<Outcome>> {
+        let mut outcomes = Vec::with_capacity(script.statements.len());
 
         // By index rather than by iterator, because a `LET` reaches forward: the
         // value it produces is substituted into the statements that have not run
         // yet, so the loop holds `&mut script` across the step.
         let mut at = 0usize;
         while at < script.statements.len() {
-            let outcome = self.step(store, &mut open, &script.statements[at])?;
+            let outcome = self.step(store, open, &script.statements[at])?;
             let outcome = match &script.statements[at].kind {
                 StatementKind::Let { name, .. } => {
                     // Substitution, not a lookup table — the same walk the
@@ -235,11 +259,6 @@ impl<'a> Session<'a> {
             };
             outcomes.push(outcome);
             at = at.saturating_add(1);
-        }
-
-        if let Some((transaction, span)) = open {
-            transaction.rollback();
-            return Err(Error::UnclosedTransaction { span });
         }
         Ok(outcomes)
     }

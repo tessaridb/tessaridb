@@ -125,6 +125,9 @@
             <h3>Groups</h3>
             <p class="note">A group hands each message out and waits for it to be acknowledged. Its <em>committed</em> position is the last one below which everything is settled, and its lag counts from there.</p>
             <div id="topic-groups" class="answer small" aria-live="polite"></div>
+            <h3>Into tables</h3>
+            <p class="note">A topic consumer reads this topic as a group member and writes each message into a table in the transaction that acknowledges it, so each message lands once. Declare one on Run; the documentation's topics page has the statement.</p>
+            <div id="topic-ingested" class="answer small" aria-live="polite"></div>
           </div>
           <div class="pane">
             <div class="pane-head">

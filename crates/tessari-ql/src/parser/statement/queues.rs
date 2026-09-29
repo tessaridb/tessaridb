@@ -299,6 +299,25 @@ impl Parser<'_> {
             mapping.push(self.field_mapping()?);
         }
 
+        let (on_failure, parallelism) = self.failure_and_parallelism()?;
+
+        Ok(StatementKind::DefineConsumer {
+            name,
+            source: ConsumerSource { brokers, topic },
+            group,
+            format,
+            identity,
+            mapping,
+            destination,
+            on_failure,
+            parallelism,
+            if_not_exists,
+        })
+    }
+
+    /// `ON FAILURE stop|quarantine [PARALLELISM n]` — how a declared consumer of
+    /// either kind treats a message it cannot apply, and how many members it runs.
+    pub(super) fn failure_and_parallelism(&mut self) -> Result<(OnFailure, Option<u32>)> {
         self.expect_keyword(
             Keyword::On,
             "`ON FAILURE` and what to do with a message that cannot be applied",
@@ -321,19 +340,7 @@ impl Parser<'_> {
         } else {
             None
         };
-
-        Ok(StatementKind::DefineConsumer {
-            name,
-            source: ConsumerSource { brokers, topic },
-            group,
-            format,
-            identity,
-            mapping,
-            destination,
-            on_failure,
-            parallelism,
-            if_not_exists,
-        })
+        Ok((on_failure, parallelism))
     }
 
     /// `amount AS total` — one message field and what the record calls it.

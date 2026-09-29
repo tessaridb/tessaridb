@@ -432,6 +432,17 @@ pub enum Error {
         span: Span,
     },
 
+    /// A transaction verb in a script run through [`crate::Atomic`], whose
+    /// transaction the caller commits (ADR-0087).
+    #[error(
+        "this script runs inside a transaction its caller commits (at {span}) — it may not \
+         contain `BEGIN`, `COMMIT`, `CANCEL` or `VERIFY`"
+    )]
+    TransactionVerbInAtomic {
+        /// Where the verb is.
+        span: Span,
+    },
+
     /// `COMMIT` or `CANCEL` with nothing open.
     #[error("no transaction is open (at {span})")]
     NoOpenTransaction {
@@ -1878,6 +1889,57 @@ pub enum Error {
     DeadLetterIsTheTopic {
         /// The topic as written.
         topic: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A topic consumer whose topic and destination are in two databases
+    /// (ADR-0087).
+    ///
+    /// Refused because the guarantee is the transaction: the group read, the
+    /// writes and the acknowledgement commit together, and a transaction is one
+    /// database's.
+    #[error(
+        "{topic} and {destination} are in different databases (at {span}) — a topic consumer \
+         reads and writes in one transaction, and a transaction is one database's"
+    )]
+    TopicConsumerSpansDatabases {
+        /// The topic as written.
+        topic: String,
+        /// The destination as written.
+        destination: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// `ON FAILURE quarantine` over a group that cannot park a message
+    /// (ADR-0087).
+    ///
+    /// Quarantine hands a message back to the group, and only a group with a
+    /// delivery limit and a dead letter ever stops handing it out again.
+    #[error(
+        "'{group}' has no {missing}, so a message handed back would be handed out forever \
+         (at {span}) — declare the group with `DELIVERIES n DEAD LETTER TO <topic>`, or use \
+         `ON FAILURE stop`"
+    )]
+    QuarantineNeedsDeadLetter {
+        /// The group.
+        group: String,
+        /// Which clause it lacks.
+        missing: &'static str,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A consumer named with the other kind's statement (ADR-0087).
+    #[error("`{name}` is a {kind} consumer (at {span}) — use `{instead}`")]
+    WrongConsumerKind {
+        /// The consumer.
+        name: String,
+        /// What it is: `kafka` or `topic`.
+        kind: &'static str,
+        /// The statement that names it.
+        instead: String,
         /// Where it was written.
         span: Span,
     },

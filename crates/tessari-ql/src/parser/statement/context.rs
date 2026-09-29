@@ -93,7 +93,14 @@ impl Parser<'_> {
             _ if self.eat_word("vector") => InfoSubject::Vector(self.name()?),
             _ if self.eat_word("geo") => InfoSubject::Geo(self.name()?),
             _ if self.eat_word("vault") => InfoSubject::Vault(self.name()?),
-            _ if self.eat_word("topic") => InfoSubject::Topic(self.table_ref()?),
+            _ if self.eat_word("topic") => {
+                if self.topic_consumer_follows(false) {
+                    self.eat_word("consumer");
+                    InfoSubject::TopicConsumer(self.name()?)
+                } else {
+                    InfoSubject::Topic(self.table_ref()?)
+                }
+            }
             _ if self.eat_word("recipients") => {
                 self.expect_word("of", "`OF` and the record")?;
                 InfoSubject::Recipients(self.record_target()?)

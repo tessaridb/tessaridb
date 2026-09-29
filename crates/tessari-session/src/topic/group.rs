@@ -44,7 +44,7 @@ fn handed(position: u64, value: Value, deliveries: u64) -> Value {
 
 impl Session<'_> {
     /// The table a group statement names, refused when it is not a topic.
-    fn group_topic(
+    pub(crate) fn group_topic(
         &self,
         transaction: &mut Transaction<'_>,
         topic: &TableRef,
@@ -64,7 +64,7 @@ impl Session<'_> {
     }
 
     /// The group `name` on this topic, refused when there is none.
-    fn existing_group(
+    pub(crate) fn existing_group(
         transaction: &mut Transaction<'_>,
         context: &Context,
         table: TableId,

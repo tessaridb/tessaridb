@@ -2,7 +2,7 @@
 
 use tessari_encoding::Roles;
 use tessari_ql::{Name, Span};
-use tessari_storage::{Catalog, ConsumerDefinition, Mapped, OnFailure, Transaction};
+use tessari_storage::{Catalog, ConsumerDefinition, Feed, Mapped, OnFailure, Transaction};
 
 use crate::error::{Error, Result};
 use crate::outcome::Outcome;
@@ -224,41 +224,25 @@ impl Session<'_> {
         // discovering it later, with messages already read.
         let (context, destination) = self.resolve_table(transaction, declared.destination)?;
 
-        let mut mapping = Vec::with_capacity(declared.mapping.len());
-        for pair in declared.mapping {
-            // Two message fields landing on one record field is a mapping whose
-            // result depends on which one is applied last. Refused rather than
-            // ordered, because there is no ordering that is not arbitrary.
-            if mapping.iter().any(|held: &Mapped| held.to == pair.to.text) {
-                return Err(Error::DuplicateMapping {
-                    field: pair.to.text.clone(),
-                    span: pair.to.span,
-                });
-            }
-            mapping.push(Mapped {
-                from: pair.from.path.to_string(),
-                to: pair.to.text.clone(),
-            });
-        }
+        let mapping = mapped(declared.mapping)?;
 
         let definition = ConsumerDefinition {
             // Replaced by the catalog when the record is written; the field
             // exists on the way in only because the definition is one type.
             id: 0,
             name: declared.name.text.clone(),
-            brokers: declared.source.brokers.clone(),
-            topic: declared.source.topic.clone(),
+            feed: Feed::Kafka {
+                brokers: declared.source.brokers.clone(),
+                topic: declared.source.topic.clone(),
+                format: declared.format.text.clone(),
+            },
             group: declared.group.to_owned(),
-            format: declared.format.text.clone(),
             identity: declared.identity.path.to_string(),
             mapping,
             namespace: context.namespace,
             database: context.database,
             destination,
-            on_failure: match declared.on_failure {
-                tessari_ql::OnFailure::Stop => OnFailure::Stop,
-                tessari_ql::OnFailure::Quarantine => OnFailure::Quarantine,
-            },
+            on_failure: failure_policy(declared.on_failure),
             // `None` reads as one, not as "decide for me". The parser has
             // already refused a zero, so this cannot be a consumer that runs
             // nothing.
@@ -297,7 +281,43 @@ impl Session<'_> {
                 span,
             });
         };
+        if matches!(consumer.feed, Feed::Topic { .. }) {
+            return Err(Error::WrongConsumerKind {
+                name: name.text.clone(),
+                kind: "topic",
+                instead: format!("DROP TOPIC CONSUMER {}", name.text),
+                span,
+            });
+        }
         Catalog::new(transaction).drop_consumer(&consumer)?;
         Ok(Outcome::Done)
+    }
+}
+
+/// A consumer's mapping, refused when two message fields land on one record
+/// field — a result that would depend on which is applied last, and there is
+/// no ordering that is not arbitrary.
+pub(super) fn mapped(pairs: &[tessari_ql::FieldMapping]) -> Result<Vec<Mapped>> {
+    let mut mapping = Vec::with_capacity(pairs.len());
+    for pair in pairs {
+        if mapping.iter().any(|held: &Mapped| held.to == pair.to.text) {
+            return Err(Error::DuplicateMapping {
+                field: pair.to.text.clone(),
+                span: pair.to.span,
+            });
+        }
+        mapping.push(Mapped {
+            from: pair.from.path.to_string(),
+            to: pair.to.text.clone(),
+        });
+    }
+    Ok(mapping)
+}
+
+/// The stored failure policy for the one a statement wrote.
+pub(super) const fn failure_policy(written: tessari_ql::OnFailure) -> OnFailure {
+    match written {
+        tessari_ql::OnFailure::Stop => OnFailure::Stop,
+        tessari_ql::OnFailure::Quarantine => OnFailure::Quarantine,
     }
 }

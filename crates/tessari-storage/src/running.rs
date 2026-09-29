@@ -37,6 +37,9 @@ pub struct Progress {
     pub last_error: Option<String>,
     /// Where this process had reached, by partition, when it last committed.
     pub positions: BTreeMap<i32, i64>,
+    /// Stopped here by its own failure policy and kept, so the reason in
+    /// `last_error` stays readable until the declaration changes (ADR-0087).
+    pub halted: bool,
 }
 
 /// The consumers this process is running, by declared name.

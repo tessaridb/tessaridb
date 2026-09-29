@@ -33,6 +33,13 @@ const chosen = (): Node =>
         "counts from there.",
     ),
     answer("topic-groups", "small"),
+    el("h3", {}, "Into tables"),
+    note(
+      "A topic consumer reads this topic as a group member and writes each message into a " +
+        "table in the transaction that acknowledges it, so each message lands once. Declare " +
+        "one on Run; the documentation's topics page has the statement.",
+    ),
+    answer("topic-ingested", "small"),
   );
 
 const messages = (): Node =>

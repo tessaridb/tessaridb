@@ -123,6 +123,12 @@ impl Needs {
         kinds: &[Kind::Manage, Kind::Write],
         at: At::Reached,
     };
+    /// Declaring a thing that will later read a topic and write on the
+    /// declarer's behalf — a topic consumer (ADR-0087).
+    const MANAGE_READ_WRITE: Self = Self {
+        kinds: &[Kind::Manage, Kind::Read, Kind::Write],
+        at: At::Reached,
+    };
 
     /// The kinds demanded.
     pub(crate) const fn kinds(self) -> &'static [Kind] {
@@ -348,6 +354,11 @@ impl Needs {
             StatementKind::DefineConsumer { .. } | StatementKind::DropConsumer { .. } => {
                 Self::MANAGE_WRITE
             }
+            // The same rule one step further: a topic consumer will also READ a
+            // topic through its group, so declaring one demands that too.
+            StatementKind::DefineTopicConsumer { .. } | StatementKind::DropTopicConsumer { .. } => {
+                Self::MANAGE_READ_WRITE
+            }
             // Asking about a consumer is asking for a broker address, a group
             // name and a running position. It **refuses rather than filters**,
             // for `INFO FOR USER`'s reason: there is no smaller truthful answer
@@ -360,7 +371,8 @@ impl Needs {
             // that protects every other statement does not protect this one. A
             // subject added and forgotten would be answered to a `viewer`.
             StatementKind::Info {
-                subject: InfoSubject::Consumer(_) | InfoSubject::Consumers,
+                subject:
+                    InfoSubject::Consumer(_) | InfoSubject::Consumers | InfoSubject::TopicConsumer(_),
             } => Self::MANAGE,
             // The audit trail, and it must be named here rather than left to
             // the arm below. That arm is a catch-all over `Info` alone, so a new

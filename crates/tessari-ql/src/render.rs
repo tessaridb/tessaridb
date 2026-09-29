@@ -114,6 +114,10 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::DefineReplica { .. } => Err(unrenderable("DEFINE REPLICA", span)),
         StatementKind::DefineConsumer { .. } => Err(unrenderable("DEFINE KAFKA CONSUMER", span)),
         StatementKind::DropConsumer { .. } => Err(unrenderable("DROP KAFKA CONSUMER", span)),
+        StatementKind::DefineTopicConsumer { .. } => {
+            Err(unrenderable("DEFINE TOPIC CONSUMER", span))
+        }
+        StatementKind::DropTopicConsumer { .. } => Err(unrenderable("DROP TOPIC CONSUMER", span)),
         StatementKind::Explain(_) => Err(unrenderable("EXPLAIN", span)),
         StatementKind::Info { .. } => Err(unrenderable("INFO", span)),
         StatementKind::Backup { .. } => Err(unrenderable("BACKUP", span)),

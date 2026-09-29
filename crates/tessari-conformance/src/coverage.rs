@@ -94,6 +94,8 @@ forms! {
     DefineReplica => "DEFINE REPLICA",
     DefineConsumer => "DEFINE KAFKA CONSUMER",
     DropConsumer => "DROP KAFKA CONSUMER",
+    DefineTopicConsumer => "DEFINE TOPIC CONSUMER",
+    DropTopicConsumer => "DROP TOPIC CONSUMER",
     DropUser => "DROP USER",
     Grant => "GRANT",
     Revoke => "REVOKE",
@@ -274,6 +276,9 @@ mod tests {
              DEFINE KAFKA CONSUMER c FROM 'b:9092' TOPIC 't' GROUP 'g' FORMAT json \
              INTO t IDENTITY k MAP a AS b ON FAILURE stop;\
              DROP KAFKA CONSUMER c;\
+             DEFINE TOPIC CONSUMER tc FROM events GROUP 'mail' INTO t IDENTITY k \
+             MAP a AS b ON FAILURE quarantine;\
+             DROP TOPIC CONSUMER tc;\
              DROP USER u;\
              GRANT read ON t TO u;\
              REVOKE read ON t FROM u;\

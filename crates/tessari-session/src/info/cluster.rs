@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use tessari_ql::{Name, Span};
-use tessari_storage::{BUILD_VERSION, Catalog, Transaction};
+use tessari_storage::{BUILD_VERSION, Catalog, Feed, Transaction};
 use tessari_types::Value;
 
 use crate::error::{Error, Result};
@@ -246,11 +246,24 @@ impl Session<'_> {
                 span,
             });
         };
+        let Feed::Kafka {
+            brokers,
+            topic,
+            format,
+        } = &consumer.feed
+        else {
+            return Err(Error::WrongConsumerKind {
+                name: name.text.clone(),
+                kind: "topic",
+                instead: format!("INFO FOR TOPIC CONSUMER {}", name.text),
+                span,
+            });
+        };
         let destination = self.named_table(transaction, &consumer)?;
         Ok(BTreeMap::from([
             (
                 "declared".to_owned(),
-                described_consumer(&consumer, &destination),
+                described_consumer(&consumer, (brokers, topic, format), &destination),
             ),
             (
                 "running".to_owned(),
@@ -272,10 +285,15 @@ impl Session<'_> {
         let declared = Catalog::new(transaction).consumers()?;
         let mut described = Vec::with_capacity(declared.len());
         for consumer in declared {
+            // Kafka consumers only: a topic consumer is listed by the topic it
+            // reads, in `INFO FOR TOPIC` (ADR-0087).
+            let Feed::Kafka { topic, .. } = &consumer.feed else {
+                continue;
+            };
             let running = self.store.running().progress(&consumer.name).is_some();
             described.push(Value::Object(BTreeMap::from([
                 ("name".to_owned(), Value::from(consumer.name.as_str())),
-                ("topic".to_owned(), Value::from(consumer.topic.as_str())),
+                ("topic".to_owned(), Value::from(topic.as_str())),
                 ("group".to_owned(), Value::from(consumer.group.as_str())),
                 ("running".to_owned(), Value::Bool(running)),
             ])));

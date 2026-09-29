@@ -196,7 +196,10 @@ pub(crate) fn serve(
     // store is dropped — see `consumers.rs` for why a `Drop` at the end of this
     // function is neither of those moments.
     let running = consumers::start(std::sync::Arc::clone(&db));
-    let quiet = consumers::halting(&running);
+    // The topic consumers (ADR-0087) run in every build, as a task on the
+    // runtime; stage 1 stops them with the Kafka consumers.
+    let (topics_stop, topics_stopped) = tokio::sync::watch::channel(false);
+    let quiet = consumers::halting(&running, topics_stop);
 
     // What the stages will act on, taken before either surface starts serving:
     // `serve` borrows its node for as long as it runs, so a caller that asked
@@ -313,6 +316,13 @@ pub(crate) fn serve(
                 move || keep_house(std::sync::Arc::clone(&db), stop.clone()),
             ));
         }
+
+        // The declared topic consumers, joined with the rest of the node's own
+        // work before the store is dropped.
+        hosting.spawn(tessari_ingest::run_topic_consumers(
+            db.store().clone(),
+            topics_stopped,
+        ));
 
         if let Some(surface) = peers {
             crate::peers::host(

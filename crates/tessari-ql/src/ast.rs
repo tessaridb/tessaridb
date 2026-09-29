@@ -264,6 +264,9 @@ pub enum InfoSubject {
     Consumer(Name),
     /// `INFO FOR KAFKA CONSUMERS` — every declared consumer, and whether it is running.
     Consumers,
+    /// `INFO FOR TOPIC CONSUMER orders_in` — one topic consumer's declaration,
+    /// its running state on **this** node, and what it guarantees (ADR-0087).
+    TopicConsumer(Name),
 }
 
 /// Where a consumer's messages come from.

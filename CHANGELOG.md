@@ -12,6 +12,33 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.13.0-beta — 2026-09-29
+
+**A topic can be read into a table by a declaration.** `DEFINE TOPIC CONSUMER
+events_in FROM events GROUP 'into-rows' INTO event_rows IDENTITY event_id MAP
+amount AS total ON FAILURE quarantine` makes the node read the topic as a member
+of that group and write each message as a record — and because the read, the
+writes and the acknowledgement commit in one transaction, each message is applied
+to the store **exactly once**. `ON FAILURE stop` halts at a message that cannot
+be applied; `quarantine` hands it back so the group's dead letter keeps it. It
+runs in every build, on the node's runtime, starts and stops within a second of
+`DEFINE` or `DROP TOPIC CONSUMER`, and writes with its declarer's authority.
+`INFO FOR TOPIC CONSUMER` describes one; `INFO FOR TOPIC` lists them under
+`ingested_by` (ADR-0087).
+
+**The console shows which topic consumers read a topic.** The Topics screen
+lists, for the chosen topic, each topic consumer reading it — its group, the
+table it writes and whether it runs on the node that answered.
+
+**Breaking, for programs that embed the engine.** A stored consumer's
+`ConsumerDefinition` carries its source as `feed: Feed` (`Kafka { brokers,
+topic, format }` or `Topic { table }`) instead of the three fields. Nothing
+changes for a statement or for a store: a Kafka consumer is written exactly as
+before and every existing one reads back unchanged. `Session::atomically` is
+new — several scripts in one transaction its caller commits.
+
+**1438 conformance cases** define the language and run in the build.
+
 ## 0.12.0-beta — 2026-09-29
 
 **A topic can be shared by a group of workers who acknowledge each message.**

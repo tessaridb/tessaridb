@@ -116,6 +116,7 @@ mod tickets;
 mod tightening;
 mod timeout;
 mod topic;
+mod topic_consumers;
 mod traversal;
 mod trusted_index;
 mod unique_within_a_transaction;

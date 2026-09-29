@@ -430,3 +430,118 @@ fn a_release_that_says_for_and_stops_names_what_it_wanted() {
     let failure = refusal("RELEASE jobs:1 FOR;");
     assert!(failure.contains("CONSUMER"), "{failure}");
 }
+
+// ---------------------------------------------------------- topic consumers (ADR-0087)
+
+const TOPIC_CONSUMER: &str = "DEFINE TOPIC CONSUMER orders_in FROM orders GROUP 'rows' \
+     INTO order_rows IDENTITY order_id MAP amount AS total, placed.at AS placed_at \
+     ON FAILURE quarantine PARALLELISM 2;";
+
+#[test]
+fn a_topic_consumer_arrives_with_every_clause_where_it_was_written() {
+    let StatementKind::DefineTopicConsumer {
+        name,
+        topic,
+        group,
+        identity,
+        mapping,
+        destination,
+        on_failure,
+        parallelism,
+        if_not_exists,
+    } = only(TOPIC_CONSUMER)
+    else {
+        panic!("not a topic consumer");
+    };
+    assert_eq!(name.text, "orders_in");
+    assert_eq!(topic.name.text, "orders");
+    assert_eq!(group, "rows");
+    assert_eq!(destination.name.text, "order_rows");
+    assert_eq!(identity.path.to_string(), "order_id");
+    let pairs: Vec<(String, String)> = mapping
+        .iter()
+        .map(|pair| (pair.from.path.to_string(), pair.to.text.clone()))
+        .collect();
+    assert_eq!(
+        pairs,
+        [
+            ("amount".to_owned(), "total".to_owned()),
+            ("placed.at".to_owned(), "placed_at".to_owned())
+        ]
+    );
+    assert_eq!(on_failure, OnFailure::Quarantine);
+    assert_eq!(parallelism, Some(2));
+    assert!(!if_not_exists);
+
+    let StatementKind::DefineTopicConsumer { if_not_exists, .. } = only(
+        "DEFINE TOPIC CONSUMER IF NOT EXISTS c FROM t GROUP 'g' INTO r IDENTITY k MAP a AS b \
+         ON FAILURE stop;",
+    ) else {
+        panic!("not a topic consumer");
+    };
+    assert!(if_not_exists);
+}
+
+#[test]
+fn a_topic_named_consumer_is_still_a_topic_in_every_statement() {
+    let StatementKind::DefineTopic { name, .. } = only("DEFINE TOPIC consumer RETAIN 7d;") else {
+        panic!("`DEFINE TOPIC consumer` must stay a topic");
+    };
+    assert_eq!(name.text, "consumer");
+    assert!(matches!(
+        only("DEFINE TOPIC consumer;"),
+        StatementKind::DefineTopic { .. }
+    ));
+    assert!(matches!(
+        only("DROP TOPIC consumer;"),
+        StatementKind::DropTable { .. }
+    ));
+    assert!(matches!(
+        only("INFO FOR TOPIC consumer;"),
+        StatementKind::Info {
+            subject: InfoSubject::Topic(_)
+        }
+    ));
+}
+
+#[test]
+fn a_topic_consumer_is_dropped_and_described_by_its_own_words() {
+    let StatementKind::DropTopicConsumer { name } = only("DROP TOPIC CONSUMER orders_in;") else {
+        panic!("not a topic consumer drop");
+    };
+    assert_eq!(name.text, "orders_in");
+    let StatementKind::Info {
+        subject: InfoSubject::TopicConsumer(name),
+    } = only("INFO FOR TOPIC CONSUMER orders_in;")
+    else {
+        panic!("not a topic consumer info");
+    };
+    assert_eq!(name.text, "orders_in");
+}
+
+#[test]
+fn a_topic_consumer_has_no_format_and_says_why() {
+    let failure = refusal(
+        "DEFINE TOPIC CONSUMER c FROM t GROUP 'g' FORMAT json INTO r IDENTITY k MAP a AS b \
+         ON FAILURE stop;",
+    );
+    assert!(failure.contains("already a value"), "{failure}");
+}
+
+#[test]
+fn a_topic_consumer_missing_a_clause_is_refused_naming_it() {
+    for (cut, wanted) in [
+        ("GROUP 'rows' ", "GROUP"),
+        ("INTO order_rows ", "INTO"),
+        ("IDENTITY order_id ", "IDENTITY"),
+        ("MAP amount AS total, placed.at AS placed_at ", "MAP"),
+        ("ON FAILURE quarantine ", "ON FAILURE"),
+    ] {
+        assert!(
+            TOPIC_CONSUMER.contains(cut),
+            "{cut:?} is not in the declaration"
+        );
+        let failure = refusal(&TOPIC_CONSUMER.replace(cut, ""));
+        assert!(failure.contains(wanted), "without {cut:?}: {failure}");
+    }
+}

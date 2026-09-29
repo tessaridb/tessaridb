@@ -40,13 +40,29 @@ pub(crate) fn guarantees() -> Value {
     ]))
 }
 
-/// One consumer's declaration, as an object.
-pub(crate) fn described_consumer(consumer: &ConsumerDefinition, destination: &str) -> Value {
-    let brokers = consumer
-        .brokers
+/// One Kafka consumer's declaration, as an object; `source` is its brokers,
+/// topic and format, taken out of its feed by the caller.
+pub(crate) fn described_consumer(
+    consumer: &ConsumerDefinition,
+    (brokers, topic, format): (&[String], &str, &str),
+    destination: &str,
+) -> Value {
+    let brokers = brokers
         .iter()
         .map(|broker| Value::from(broker.as_str()))
         .collect();
+    let Value::Object(mut described) = described_common(consumer, destination) else {
+        return Value::None;
+    };
+    described.insert("brokers".to_owned(), Value::Array(brokers));
+    described.insert("topic".to_owned(), Value::from(topic));
+    described.insert("format".to_owned(), Value::from(format));
+    Value::Object(described)
+}
+
+/// What both kinds of consumer declare: its name, group, mapping, destination,
+/// failure policy, parallelism and declarer.
+pub(crate) fn described_common(consumer: &ConsumerDefinition, destination: &str) -> Value {
     let mapping = consumer
         .mapping
         .iter()
@@ -59,10 +75,7 @@ pub(crate) fn described_consumer(consumer: &ConsumerDefinition, destination: &st
         .collect();
     Value::Object(BTreeMap::from([
         ("name".to_owned(), Value::from(consumer.name.as_str())),
-        ("brokers".to_owned(), Value::Array(brokers)),
-        ("topic".to_owned(), Value::from(consumer.topic.as_str())),
         ("group".to_owned(), Value::from(consumer.group.as_str())),
-        ("format".to_owned(), Value::from(consumer.format.as_str())),
         (
             "identity".to_owned(),
             Value::from(consumer.identity.as_str()),
@@ -121,6 +134,7 @@ pub(crate) fn running_state(progress: Option<&Progress>) -> Value {
         .collect();
     Value::Object(BTreeMap::from([
         ("here".to_owned(), Value::Bool(true)),
+        ("halted".to_owned(), Value::Bool(progress.halted)),
         (
             "applied".to_owned(),
             Value::Number(tessari_types::Number::Integer(

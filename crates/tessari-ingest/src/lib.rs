@@ -39,12 +39,14 @@ mod kafka;
 mod refused;
 mod runner;
 mod source;
+mod topic;
 
-pub use apply::{Shaped, shape};
+pub use apply::{Shaped, shape, shape_value};
 pub use json::{Malformed, read};
 pub use refused::ShapeRefused;
 pub use runner::{Broker, Runner, Started};
 pub use source::{Message, Source, SourceError};
+pub use topic::run_topic_consumers;
 
 #[cfg(feature = "kafka")]
 pub use kafka::Kafka;

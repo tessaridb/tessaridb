@@ -68,6 +68,7 @@ mod records;
 mod replicas;
 mod shapes;
 mod structure;
+mod topic_consumers;
 mod users;
 mod vaults;
 
@@ -100,6 +101,9 @@ impl Session<'_> {
             InfoSubject::Node => self.info_node(transaction)?,
             InfoSubject::Consumer(name) => self.info_consumer(transaction, name, span)?,
             InfoSubject::Consumers => self.info_consumers(transaction)?,
+            InfoSubject::TopicConsumer(name) => {
+                self.info_topic_consumer(transaction, name, span)?
+            }
         };
         Ok(Outcome::Value(Value::Object(report)))
     }

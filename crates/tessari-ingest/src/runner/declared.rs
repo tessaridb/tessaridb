@@ -1,7 +1,7 @@
 //! The consumers the catalog declares, and where each writes.
 
 use super::{Destination, plain};
-use tessari_storage::{Catalog, ConsumerDefinition, Store};
+use tessari_storage::{Catalog, ConsumerDefinition, Feed, Store};
 
 /// Every declaration, with the statement text its destination is written as.
 ///
@@ -14,7 +14,13 @@ pub(crate) fn declarations(
     let mut transaction = store.begin()?;
     let declared = Catalog::new(&mut transaction).consumers()?;
     let mut found = Vec::new();
-    for definition in declared {
+    // Kafka declarations only: a topic consumer is run by the topic runner, and
+    // opening one here would fail against a broker and mark it stopped in the
+    // registry both runners share (ADR-0087).
+    for definition in declared
+        .into_iter()
+        .filter(|definition| matches!(definition.feed, Feed::Kafka { .. }))
+    {
         match destination_of(&mut transaction, &definition) {
             Some(table) => found.push((definition, table)),
             None => log::warn!(

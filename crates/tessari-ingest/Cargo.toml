@@ -21,6 +21,9 @@ tessari-types = { workspace = true }
 tessari-storage = { workspace = true }
 tessari-session = { workspace = true }
 log = { workspace = true }
+# The topic runner (ADR-0087): members are tasks on the node's runtime, and each
+# batch crosses to the synchronous store through `spawn_blocking`.
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 # No default features: they pull an async runtime this node deliberately does not
 # have, and the synchronous `BaseConsumer` is what ADR-0024 measured and chose.
 rdkafka = { version = "0.39", default-features = false, optional = true }
@@ -29,4 +32,5 @@ rdkafka = { version = "0.39", default-features = false, optional = true }
 workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros", "test-util"] }
 tessari-kv = { workspace = true }

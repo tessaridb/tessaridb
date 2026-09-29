@@ -25,7 +25,7 @@ use std::time::Duration;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer as _};
 use rdkafka::message::Message as _;
-use tessari_storage::ConsumerDefinition;
+use tessari_storage::{ConsumerDefinition, Feed};
 
 use crate::runner::Broker;
 use crate::source::{Message, Source, SourceError};
@@ -36,8 +36,16 @@ pub struct Kafka;
 
 impl Broker for Kafka {
     fn open(&self, definition: &ConsumerDefinition) -> Result<Box<dyn Source>, SourceError> {
+        // The runner hands this only Kafka declarations; a topic consumer has no
+        // broker to dial, and saying so beats dialling nothing.
+        let Feed::Kafka { brokers, topic, .. } = &definition.feed else {
+            return Err(SourceError(format!(
+                "{} is not a Kafka consumer",
+                definition.name
+            )));
+        };
         let consumer: BaseConsumer = ClientConfig::new()
-            .set("bootstrap.servers", definition.brokers.join(","))
+            .set("bootstrap.servers", brokers.join(","))
             // Declared, never derived. Deriving it from the node id would be a
             // bug that appears only in a cluster, where every node would form
             // its own group and every node would consume every message.
@@ -47,7 +55,7 @@ impl Broker for Kafka {
             .create()
             .map_err(|failure| SourceError(failure.to_string()))?;
         consumer
-            .subscribe(&[definition.topic.as_str()])
+            .subscribe(&[topic.as_str()])
             .map_err(|failure| SourceError(failure.to_string()))?;
         Ok(Box::new(Connected { consumer }))
     }

@@ -43,13 +43,25 @@ pub struct Shaped {
 /// `stop` consumer halted.
 pub fn shape(payload: &[u8], definition: &ConsumerDefinition) -> Result<Shaped, ShapeRefused> {
     let message = json::read(payload).map_err(ShapeRefused::NotJson)?;
+    shape_value(&message, definition)
+}
 
+/// Shape a message that is already a value — a topic's message (ADR-0087), or
+/// a broker payload once read.
+///
+/// # Errors
+///
+/// As [`shape`], less the parse.
+pub fn shape_value(
+    message: &Value,
+    definition: &ConsumerDefinition,
+) -> Result<Shaped, ShapeRefused> {
     let Some(route) = Path::parse(&definition.identity) else {
         return Err(ShapeRefused::IdentityRouteInvalid {
             identity: definition.identity.clone(),
         });
     };
-    let Some(found) = route.resolve(&message) else {
+    let Some(found) = route.resolve(message) else {
         // Not an optional field. A message with no identity cannot be applied
         // idempotently, so applying it anyway would silently give up the one
         // property the delivery guarantee rests on.
@@ -72,7 +84,7 @@ pub fn shape(payload: &[u8], definition: &ConsumerDefinition) -> Result<Shaped, 
         // A mapped field the message does not carry is left **absent** rather
         // than written as null. The two are different values in this store, and
         // absent is the true one: the producer did not send it.
-        if let Some(held) = route.resolve(&message) {
+        if let Some(held) = route.resolve(message) {
             fields.insert(pair.to.clone(), held.clone());
         }
     }
@@ -101,17 +113,19 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::*;
-    use tessari_storage::{Mapped, OnFailure};
+    use tessari_storage::{Feed, Mapped, OnFailure};
     use tessari_types::{DatabaseId, NamespaceId, TableId};
 
     fn declared(identity: &str, mapping: &[(&str, &str)]) -> ConsumerDefinition {
         ConsumerDefinition {
             id: 1,
             name: "orders_in".to_owned(),
-            brokers: vec!["b:9092".to_owned()],
-            topic: "orders".to_owned(),
+            feed: Feed::Kafka {
+                brokers: vec!["b:9092".to_owned()],
+                topic: "orders".to_owned(),
+                format: "json".to_owned(),
+            },
             group: "g".to_owned(),
-            format: "json".to_owned(),
             identity: identity.to_owned(),
             mapping: mapping
                 .iter()
