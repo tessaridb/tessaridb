@@ -35,6 +35,7 @@ mod composite_range;
 mod conditionals;
 mod configuration;
 mod consumers;
+mod counters;
 mod descending;
 mod describing_kinds;
 mod differential;

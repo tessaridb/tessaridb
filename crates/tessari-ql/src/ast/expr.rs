@@ -174,6 +174,10 @@ pub enum ExprKind {
         /// What it folds over — absent for `count(*)`, which folds over the
         /// records themselves rather than over a value in them.
         over: Option<Box<Expr>>,
+        /// The instant each value was observed at, for the counter folds —
+        /// `increase(v, at)` orders its values by it (ADR-0088 §5). `None` for
+        /// every other fold.
+        at: Option<Box<Expr>>,
         /// Where it was written.
         span: Span,
     },
@@ -419,6 +423,14 @@ pub enum Aggregate {
     /// same rule over a `datetime` or a `uuid` column would have to construct a
     /// value of a kind that has no arithmetic.
     Median,
+    /// `increase(<value>, <instant>)` — the sum of the rises between samples
+    /// ordered by the instant, a fall counting as a counter reset.
+    Increase,
+    /// `rate(<value>, <instant>)` — [`Self::Increase`] per second between the
+    /// first and last sample.
+    Rate,
+    /// `delta(<value>, <instant>)` — last minus first, with no reset handling.
+    Delta,
     /// `collect(<expr>)` — every present value, in the order the records arrived.
     ///
     /// Over nothing, `[]` and not `NONE`, by `sum`'s rule: an answer every
@@ -460,6 +472,9 @@ impl Aggregate {
         Self::Variance,
         Self::Stddev,
         Self::Median,
+        Self::Increase,
+        Self::Rate,
+        Self::Delta,
         Self::Collect,
     ];
 
@@ -475,6 +490,9 @@ impl Aggregate {
             Self::Variance => "variance",
             Self::Stddev => "stddev",
             Self::Median => "median",
+            Self::Increase => "increase",
+            Self::Rate => "rate",
+            Self::Delta => "delta",
             Self::Collect => "collect",
         }
     }
@@ -495,8 +513,16 @@ impl Aggregate {
             | Self::Max
             | Self::Variance
             | Self::Stddev => Retention::Constant,
-            Self::Median | Self::Collect => Retention::WholeGroup,
+            Self::Median | Self::Increase | Self::Rate | Self::Delta | Self::Collect => {
+                Retention::WholeGroup
+            }
         }
+    }
+
+    /// Whether the fold orders its values by an instant, and so takes one.
+    #[must_use]
+    pub const fn takes_an_instant(self) -> bool {
+        matches!(self, Self::Increase | Self::Rate | Self::Delta)
     }
 
     /// The fold a word spells, if it spells one.

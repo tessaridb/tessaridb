@@ -145,10 +145,15 @@ pub(crate) fn bind_expr(expr: &mut Expr, binding: &Binding<'_>) -> Result<()> {
         // What a fold folds over is an ordinary per-record expression, so a
         // parameter inside it binds like any other. `count(*)` folds over the
         // records themselves and has nothing to bind.
-        ExprKind::Fold { over, .. } => match over {
-            Some(over) => bind_expr(over, binding),
-            None => Ok(()),
-        },
+        ExprKind::Fold { over, at, .. } => {
+            if let Some(over) = over {
+                bind_expr(over, binding)?;
+            }
+            match at {
+                Some(at) => bind_expr(at, binding),
+                None => Ok(()),
+            }
+        }
         ExprKind::Call { arguments, .. } => {
             for argument in arguments {
                 bind_expr(argument, binding)?;

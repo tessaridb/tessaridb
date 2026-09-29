@@ -236,7 +236,7 @@ impl Session<'_> {
                 .or_insert_with(|| (id.clone(), holding(&occurrences)));
             for (position, held) in occurrences.iter().enumerate() {
                 for (which, fold) in held.iter().enumerate() {
-                    let ExprKind::Fold { over, .. } = &fold.kind else {
+                    let ExprKind::Fold { over, at, .. } = &fold.kind else {
                         continue;
                     };
                     let value = match over {
@@ -245,6 +245,15 @@ impl Session<'_> {
                         // than a value read out of one.
                         None => Value::Bool(true),
                         Some(expr) => self.evaluate_in(transaction, expr, Scope::of(&record))?,
+                    };
+                    // A counter fold is offered the value with the instant it
+                    // was observed at, so it can order its samples itself.
+                    let value = match at {
+                        Some(at) => Value::Array(vec![
+                            value,
+                            self.evaluate_in(transaction, at, Scope::of(&record))?,
+                        ]),
+                        None => value,
                     };
                     if let Some(accumulator) = entry
                         .1
@@ -341,6 +350,15 @@ pub(crate) fn fold(aggregate: Aggregate, values: &[Value], span: Span) -> Result
         Aggregate::Stddev => spread(values, true, span),
         Aggregate::Median => median(values, span),
         Aggregate::Collect => Ok(collect(values)),
+        // No batch twin: the counter folds are checked against a hand oracle
+        // in the suite (`counters::`) rather than against a second copy.
+        Aggregate::Increase | Aggregate::Rate | Aggregate::Delta => {
+            let mut running = crate::accumulate::Accumulator::for_aggregate(aggregate, span);
+            for value in values {
+                running.offer(value)?;
+            }
+            running.finish()
+        }
     }
 }
 

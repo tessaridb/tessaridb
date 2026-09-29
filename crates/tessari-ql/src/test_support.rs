@@ -643,10 +643,13 @@ fn erase_expr(expr: &mut Expr) {
             erase_expr(right);
         }
         // The first of the two sites a search for `pub span: Span` cannot see.
-        ExprKind::Fold { over, span, .. } => {
+        ExprKind::Fold { over, at, span, .. } => {
             *span = CANONICAL;
             if let Some(over) = over {
                 erase_expr(over);
+            }
+            if let Some(at) = at {
+                erase_expr(at);
             }
         }
         // The second.
