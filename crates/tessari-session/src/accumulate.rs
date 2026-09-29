@@ -474,6 +474,9 @@ mod tests {
         Aggregate::Variance,
         Aggregate::Stddev,
         Aggregate::Median,
+        Aggregate::Increase,
+        Aggregate::Rate,
+        Aggregate::Delta,
         Aggregate::Collect,
     ];
 
@@ -832,7 +835,16 @@ mod tests {
         {
             let mut accumulator = Accumulator::for_aggregate(*aggregate, span());
             for held in 0..OFFERED {
-                accumulator.offer(&integer(held)).unwrap();
+                // A counter fold is offered each value with its instant.
+                let offered = if aggregate.takes_an_instant() {
+                    Value::Array(vec![
+                        integer(held),
+                        Value::Datetime(tessari_types::Datetime::from_seconds(held)),
+                    ])
+                } else {
+                    integer(held)
+                };
+                accumulator.offer(&offered).unwrap();
             }
             assert_eq!(
                 accumulator.held(),
