@@ -173,6 +173,20 @@ pub(crate) fn hold_event_time(
     Ok(())
 }
 
+/// The greatest identity an event-time series can hold for a record at or
+/// before `at`: its time bits, then every bit below set. `None` for an instant
+/// a series cannot hold.
+pub(crate) fn last_identity_at(at: Datetime) -> Option<RecordId> {
+    let stamp = Stamp::of(at)?;
+    let [_, _, t0, t1, t2, t3, t4, t5] = stamp.millis.to_be_bytes();
+    let [high, low] = stamp.fraction.to_be_bytes();
+    let mut bytes = [0xff_u8; 16];
+    bytes[..6].copy_from_slice(&[t0, t1, t2, t3, t4, t5]);
+    bytes[6] = 0x70 | high;
+    bytes[7] = low;
+    Some(RecordId::Uuid(bytes))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

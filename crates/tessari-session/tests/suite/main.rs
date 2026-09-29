@@ -17,6 +17,7 @@ mod analyzer_named_by_a_field;
 mod analyzer_redefinition;
 mod answered_by;
 mod ascending_order;
+mod asof;
 mod assertions;
 mod assertions_over_dropped_declarations;
 mod audit;

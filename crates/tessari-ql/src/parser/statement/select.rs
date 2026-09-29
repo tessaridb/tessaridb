@@ -68,8 +68,13 @@ impl Parser<'_> {
             });
         }
         let alias = self.alias()?;
+        // `ASOF` is contextual: it only means something directly before `JOIN`.
+        let asof = self.eat_word("asof");
+        if asof && self.peek_keyword() != Some(Keyword::Join) {
+            return Err(self.error_here("`JOIN` after `ASOF`"));
+        }
         if self.eat_keyword(Keyword::Join) {
-            return self.join(JoinSide::Table { table, alias });
+            return self.join(JoinSide::Table { table, alias }, asof);
         }
         if alias.is_some() {
             return Err(self.aliased_without_a_join());
@@ -128,10 +133,13 @@ impl Parser<'_> {
         if !self.eat_keyword(Keyword::Join) {
             return Err(self.aliased_without_a_join());
         }
-        self.join(JoinSide::Read {
-            read: Box::new(read),
-            alias,
-        })
+        self.join(
+            JoinSide::Read {
+                read: Box::new(read),
+                alias,
+            },
+            false,
+        )
     }
 
     /// `WHERE …` after a materialised source, consumed if it is there.
@@ -339,7 +347,7 @@ impl Parser<'_> {
     /// The root is then stripped, so what the executor holds is a route into a
     /// *record* on each side. That is what lets the right side be probed through
     /// an index, which reads records and knows nothing about a composite.
-    pub(super) fn join(&mut self, left: JoinSide) -> Result<Source> {
+    pub(super) fn join(&mut self, left: JoinSide, asof: bool) -> Result<Source> {
         let right = self.join_side()?;
         let on = self.span_here();
         self.expect_keyword(Keyword::On, "`ON` and the two fields to match")?;
@@ -380,6 +388,7 @@ impl Parser<'_> {
             right: Box::new(right),
             left_key,
             right_key,
+            asof,
             condition,
         })
     }

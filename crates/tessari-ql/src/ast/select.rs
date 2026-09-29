@@ -636,6 +636,9 @@ pub enum Source {
         left_key: FieldPath,
         /// The route into a right record it is matched against.
         right_key: FieldPath,
+        /// `ASOF JOIN`: each left record is paired with the newest right record
+        /// at or before its time, and kept when there is none (ADR-0088 §4).
+        asof: bool,
         /// What each joined row must satisfy, when a `WHERE` was written.
         ///
         /// Over the **composite**, so it reads `users.name` and `orders.total`

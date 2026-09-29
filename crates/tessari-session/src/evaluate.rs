@@ -29,6 +29,7 @@ pub(crate) use stages::{
     Answered, Approximated, Asked, Candidates, Hopped, Joined, Prepared, Reached, Walked,
 };
 
+mod asof;
 mod candidates;
 mod delete;
 mod fused;

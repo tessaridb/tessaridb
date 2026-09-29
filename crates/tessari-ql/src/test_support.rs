@@ -583,6 +583,7 @@ fn erase_source(source: &mut Source) {
             right,
             left_key,
             right_key,
+            asof: _,
             condition,
         } => {
             erase_join_side(left);

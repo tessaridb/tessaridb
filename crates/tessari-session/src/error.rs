@@ -665,6 +665,18 @@ pub enum Error {
         span: Span,
     },
 
+    /// `ASOF JOIN` with a side that is not a series ordered by event time:
+    /// "at or before" needs both sides to carry the moment in their key.
+    #[error(
+        "`ASOF JOIN` pairs records by time, and `{side}` is not a series declared with `TIME` (at {span})"
+    )]
+    AsofNeedsTime {
+        /// The side's name.
+        side: String,
+        /// Where the read was written.
+        span: Span,
+    },
+
     /// A recipient name that did not evaluate to text.
     ///
     /// Reports the **type** and never the value. Every neighbouring variant

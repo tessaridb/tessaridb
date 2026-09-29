@@ -37,6 +37,7 @@ pub(crate) fn kind_name(error: &Error) -> &'static str {
         Error::FillTooWide { .. } => "FillTooWide",
         Error::LatestNeedsSeries { .. } => "LatestNeedsSeries",
         Error::LatestBesideGroup { .. } => "LatestBesideGroup",
+        Error::AsofNeedsTime { .. } => "AsofNeedsTime",
         Error::NoSuchRecord { .. } => "NoSuchRecord",
         Error::ConditionNotMet { .. } => "ConditionNotMet",
         Error::InvalidKeyBound { .. } => "InvalidKeyBound",

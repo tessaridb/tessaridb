@@ -271,6 +271,25 @@ impl Session<'_> {
                 right,
                 left_key,
                 right_key,
+                asof: true,
+                condition,
+            } => {
+                let (found, plan, searched) = self.asof_join(
+                    transaction,
+                    select,
+                    (left, right),
+                    (left_key, right_key),
+                    condition.as_deref(),
+                    reporting,
+                )?;
+                Ok((Prepared::Held(found, plan), searched))
+            }
+            Source::Join {
+                left,
+                right,
+                left_key,
+                right_key,
+                asof: false,
                 condition,
             } => {
                 let (found, plan, searched) = self.join(
