@@ -195,6 +195,7 @@ fn reading(table: &TableRef) -> StatementKind {
         fetch: Vec::new(),
         split: None,
         group: Vec::new(),
+        fill: None,
         order: Vec::new(),
         fusion: None,
         after: None,

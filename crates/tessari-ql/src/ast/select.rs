@@ -104,6 +104,9 @@ pub struct Select {
     /// the record — the same reading `WHERE` and `ORDER BY` give it — so
     /// `GROUP BY city` means what it always did.
     pub group: Vec<Expr>,
+    /// `FILL <mode> FROM <start> TO <end>` after a windowed `GROUP BY` — one row
+    /// per window of the stated range (ADR-0088 §2).
+    pub fill: Option<Fill>,
     /// The keys the answer is sorted by, in order of significance.
     ///
     /// Under [`Select::fusion`] these are the fused read's branches rather than
@@ -713,4 +716,34 @@ impl JoinSide {
             Self::Table { table, alias: None } => &table.name.text,
         }
     }
+}
+
+/// `FILL <mode> FROM <start> TO <end>`: the windows of a range a windowed
+/// grouping answers with even where nothing was written (ADR-0088 §2).
+///
+/// The range is part of the clause and not optional: a window with no records
+/// has no row because the statement did not say which windows it meant, and
+/// this is where it says so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fill {
+    /// What an empty window answers with.
+    pub mode: FillMode,
+    /// The first instant of the range, inclusive.
+    pub from: Expr,
+    /// The end of the range, exclusive.
+    pub to: Expr,
+    /// Where the clause was written.
+    pub span: Span,
+}
+
+/// What a filled window's folds answer with. `count` answers `0` whatever the
+/// mode, so a filled row can always be told from a written one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FillMode {
+    /// `PREVIOUS` — the nearest written window before it, per group.
+    Previous,
+    /// `LINEAR` — interpolated between the nearest written windows either side.
+    Linear,
+    /// A value — `NULL`, `0`, anything an expression answers.
+    Value(Expr),
 }

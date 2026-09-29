@@ -186,6 +186,9 @@ impl Parser<'_> {
         // where it is applied: the split is what decides how many there are.
         let split = self.split_path()?;
         let group = self.group_by()?;
+        // Straight after the grouping it completes: the windows it adds are
+        // groups, and everything after this clause treats them as groups.
+        let fill = self.fill()?;
         let (order, fusion) = self.order_by()?;
         // After the order, because the order is what it resumes: the anchor is
         // the last record of the page before, and "after" is a position in the
@@ -302,6 +305,7 @@ impl Parser<'_> {
             fetch,
             split,
             group,
+            fill,
             order,
             fusion,
             after,

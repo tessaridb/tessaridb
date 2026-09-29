@@ -620,6 +620,35 @@ pub enum Error {
         span: Span,
     },
 
+    /// `FILL` without exactly one `time::bucket` key of a constant width.
+    #[error(
+        "`FILL` completes one window key — `GROUP BY time::bucket(<instant>, <width>)` with a written width (at {span})"
+    )]
+    FillNeedsWindow {
+        /// Where the clause was written.
+        span: Span,
+    },
+
+    /// `FILL` whose range does not evaluate to two instants.
+    #[error("`FILL … FROM <instant> TO <instant>` needs both ends to be datetimes (at {span})")]
+    FillNeedsRange {
+        /// Where the clause was written.
+        span: Span,
+    },
+
+    /// A fill that would answer more windows than one read may.
+    #[error(
+        "this `FILL` would answer {windows} windows, and a read fills at most {most} — narrow the range or widen the window (at {span})"
+    )]
+    FillTooWide {
+        /// How many windows it would answer.
+        windows: u64,
+        /// The most one read may.
+        most: u64,
+        /// Where the clause was written.
+        span: Span,
+    },
+
     /// A recipient name that did not evaluate to text.
     ///
     /// Reports the **type** and never the value. Every neighbouring variant

@@ -270,12 +270,17 @@ impl Session<'_> {
             // the group rather than about a record — so the star has nothing to
             // contribute here and the grammar has already refused one written
             // beside a fold.
-            self.grouped(
+            let (rows, filled) = self.grouped(
                 transaction,
                 records,
                 select.projection.written(),
                 &select.group,
-            )?
+                select.fill.as_ref(),
+            )?;
+            if filled > 0 {
+                notes.push(Note::Filled { windows: filled });
+            }
+            rows
         } else if let Some(wanted) = self.shaped(transaction, select)? {
             let mut projected = Vec::with_capacity(records.len());
             for (id, record) in records {

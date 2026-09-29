@@ -31,8 +31,8 @@ pub use expr::{
     SetCondition, SpaceBound, TopicClauses, Written,
 };
 pub use select::{
-    Admitted, AnsweredBy, Approximation, Fusion, Hop, JoinSide, Ordering, Projected, Projection,
-    Select, Source, Staleness, Timeout, Using, Version,
+    Admitted, AnsweredBy, Approximation, Fill, FillMode, Fusion, Hop, JoinSide, Ordering,
+    Projected, Projection, Select, Source, Staleness, Timeout, Using, Version,
 };
 pub use statement::StatementKind;
 
