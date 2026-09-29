@@ -386,7 +386,18 @@ const TABLES: &[Table] = &[
         //
         // Re-classification trigger: the day the announcement carries WHAT
         // landed, it discloses writes to anyone holding a `Db`, grant or no.
-        expected: 23,
+        //
+        // 24 since series ingestion over HTTP (G044 C12): `Db::is_series`.
+        // Classified **exempt, and it reaches no data**: it answers whether a
+        // name in the catalog is a series — a kind, never a record. Its one
+        // caller, `POST /series/…`, asks only after the caller's own session has
+        // taken the `USE` for that database, so the answer reaches only a caller
+        // who may already select it; the batch then writes through that session.
+        //
+        // Re-classification trigger: a caller that asks before, or without, a
+        // session that selected the database — it then tells anyone holding a
+        // `Db` which series exist in a tenancy they cannot reach.
+        expected: 24,
         count: |text| public_functions(&block(text, "impl Db")),
     },
     Table {
@@ -771,7 +782,13 @@ const TABLES: &[Table] = &[
     Table {
         file: "crates/tessari-http/src/lib.rs",
         what: "routes matched by method and path",
-        expected: 8,
+        // 9 since `POST /series/{namespace}/{database}/{series}` (G044 C12).
+        // Classified **enforced**: the batch runs as `CREATE` statements through
+        // `session_for`, the caller's own session, so the grant, the tenancy and
+        // the series' own checks are the script route's; the names are checked
+        // to be identifiers before they are interpolated and the events are
+        // bound, as on the object routes.
+        expected: 9,
         count: |text| lines_beginning(text, "(Method::"),
     },
     Table {
@@ -839,7 +856,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 99 since feeds wake on landings: `Db::commits` and `Store::when_landed`,
     // both classified not a data path above (G041 W13b, Q-838).
-    assert_eq!(total, 99, "the counted tables no longer sum to 99");
+    //
+    // 101 since series ingestion over HTTP: `Db::is_series`, exempt, and the
+    // `POST /series/…` route, enforced — both classified above (G044 C12).
+    assert_eq!(total, 101, "the counted tables no longer sum to 101");
 }
 
 /// Every `.rs` file under a directory.

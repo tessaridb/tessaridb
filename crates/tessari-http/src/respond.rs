@@ -484,6 +484,7 @@ pub(crate) fn failure(error: &Error) -> Answer {
 mod corpus;
 mod metrics;
 mod scripts;
+pub(crate) mod series;
 mod topics;
 
 #[cfg(test)]
