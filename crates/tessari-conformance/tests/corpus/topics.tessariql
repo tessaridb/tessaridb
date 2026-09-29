@@ -127,3 +127,28 @@ DROP GROUP 'workers' ON TOPIC jobs;
 --- case: a group must say how long a reader has
 DEFINE GROUP 'late' ON TOPIC jobs IN FLIGHT 2;
 --- expect: error UnexpectedToken
+
+--- case: a topic consumer reads a topic into a table through a group
+DEFINE TOPIC feed;
+DEFINE TOPIC feed_dead;
+DEFINE COLLECTION feed_rows;
+DEFINE GROUP 'rows' ON TOPIC feed ACK DEADLINE 30s DELIVERIES 3 DEAD LETTER TO feed_dead;
+DEFINE TOPIC CONSUMER feed_in FROM feed GROUP 'rows' INTO feed_rows IDENTITY order_id MAP amount AS total ON FAILURE quarantine;
+--- expect: ok
+
+--- case: quarantine hands a message back, so the group must be able to park it
+DEFINE GROUP 'plain' ON TOPIC feed ACK DEADLINE 30s;
+DEFINE TOPIC CONSUMER parked_nowhere FROM feed GROUP 'plain' INTO feed_rows IDENTITY order_id MAP amount AS total ON FAILURE quarantine;
+--- expect: error QuarantineNeedsDeadLetter
+
+--- case: a topic consumer is not a Kafka consumer
+DROP KAFKA CONSUMER feed_in;
+--- expect: error WrongConsumerKind
+
+--- case: a topic consumer is dropped by its own words
+DROP TOPIC CONSUMER feed_in;
+--- expect: ok
+
+--- case: and one that is not there cannot be
+DROP TOPIC CONSUMER feed_in;
+--- expect: error Unknown

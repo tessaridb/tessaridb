@@ -57,6 +57,12 @@ const FIELD_TABLE: &str = "table";
 const FIELD_ON_FAILURE: &str = "on_failure";
 const FIELD_PARALLELISM: &str = "parallelism";
 const FIELD_DECLARER: &str = "declarer";
+const FIELD_SOURCE: &str = "source";
+const FIELD_TOPIC_TABLE: &str = "topic_table";
+
+/// The `source` a topic consumer is stored with; a record without the field is a
+/// Kafka consumer, which is every record written before topic consumers existed.
+const SOURCE_TOPIC: &str = "topic";
 
 const ENTITY: &str = "consumer";
 
@@ -103,30 +109,47 @@ pub struct Mapped {
     pub to: String,
 }
 
+/// Where a consumer's messages come from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Feed {
+    /// A broker topic (`DEFINE KAFKA CONSUMER`).
+    Kafka {
+        /// The brokers to reach, as written.
+        ///
+        /// Stored as written for the reason a replica's endpoint is: whether an
+        /// address resolves is a question for whoever dials it, and refusing an
+        /// unreachable one at declaration time would make the statement's
+        /// success depend on the network being up at the moment it ran.
+        brokers: Vec<String>,
+        /// The topic to read.
+        topic: String,
+        /// How a message becomes fields, as the word that was written.
+        format: String,
+    },
+    /// A topic of this store, in the destination's database
+    /// (`DEFINE TOPIC CONSUMER`, ADR-0087): read through the definition's
+    /// group, applied in the transaction that settles it.
+    Topic {
+        /// The topic's table.
+        table: TableId,
+    },
+}
+
 /// A declared consumer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsumerDefinition {
     /// Its id.
     pub id: u32,
-    /// The name it is known by, unique across the store.
+    /// The name it is known by, unique across the store and both kinds.
     pub name: String,
-    /// The brokers to reach, as written.
-    ///
-    /// Stored as written for the reason a replica's endpoint is: whether an
-    /// address resolves is a question for whoever dials it, and refusing an
-    /// unreachable one at declaration time would make the statement's success
-    /// depend on the network being up at the moment it ran.
-    pub brokers: Vec<String>,
-    /// The topic to read.
-    pub topic: String,
+    /// Where its messages come from.
+    pub feed: Feed,
     /// The consumer group, as declared.
     ///
     /// Never derived from the node id. Deriving it would be a bug that appears
     /// only in a cluster: every node would form its own group, and every node
     /// would then consume every message.
     pub group: String,
-    /// How a message becomes fields, as the word that was written.
-    pub format: String,
     /// Which message field carries the record's identity.
     ///
     /// This is what makes a replayed message converge to one record instead of
@@ -173,11 +196,6 @@ impl ConsumerDefinition {
     /// The value written to the catalog.
     #[must_use]
     pub fn to_value(&self) -> Value {
-        let brokers = self
-            .brokers
-            .iter()
-            .map(|broker| Value::from(broker.as_str()))
-            .collect();
         let mapping = self
             .mapping
             .iter()
@@ -191,10 +209,7 @@ impl ConsumerDefinition {
         let mut fields = BTreeMap::from([
             (FIELD_ID.to_owned(), number(self.id)),
             (FIELD_NAME.to_owned(), Value::from(self.name.as_str())),
-            (FIELD_BROKERS.to_owned(), Value::Array(brokers)),
-            (FIELD_TOPIC.to_owned(), Value::from(self.topic.as_str())),
             (FIELD_GROUP.to_owned(), Value::from(self.group.as_str())),
-            (FIELD_FORMAT.to_owned(), Value::from(self.format.as_str())),
             (
                 FIELD_IDENTITY.to_owned(),
                 Value::from(self.identity.as_str()),
@@ -209,6 +224,27 @@ impl ConsumerDefinition {
             ),
             (FIELD_PARALLELISM.to_owned(), number(self.parallelism)),
         ]);
+        // A Kafka consumer is written exactly as it was before topic consumers
+        // existed, so every stored record and every one written now read alike.
+        match &self.feed {
+            Feed::Kafka {
+                brokers,
+                topic,
+                format,
+            } => {
+                let brokers = brokers
+                    .iter()
+                    .map(|broker| Value::from(broker.as_str()))
+                    .collect();
+                fields.insert(FIELD_BROKERS.to_owned(), Value::Array(brokers));
+                fields.insert(FIELD_TOPIC.to_owned(), Value::from(topic.as_str()));
+                fields.insert(FIELD_FORMAT.to_owned(), Value::from(format.as_str()));
+            }
+            Feed::Topic { table } => {
+                fields.insert(FIELD_SOURCE.to_owned(), Value::from(SOURCE_TOPIC));
+                fields.insert(FIELD_TOPIC_TABLE.to_owned(), number(table.get()));
+            }
+        }
         // Written only when there is one, so a record predating the field and a
         // record whose declarer is unknown are the same shape rather than two
         // that a reader has to tell apart.
@@ -252,10 +288,8 @@ impl ConsumerDefinition {
         Ok(Self {
             id: field_id(fields, FIELD_ID, ENTITY)?,
             name: field_name(fields, ENTITY)?,
-            brokers: strings(fields, FIELD_BROKERS)?,
-            topic: text(fields, FIELD_TOPIC)?,
+            feed: feed_in(fields)?,
             group: text(fields, FIELD_GROUP)?,
-            format: text(fields, FIELD_FORMAT)?,
             identity: text(fields, FIELD_IDENTITY)?,
             mapping: mapping_in(fields)?,
             namespace: NamespaceId::new(field_id(fields, FIELD_NAMESPACE, ENTITY)?),
@@ -273,6 +307,30 @@ impl ConsumerDefinition {
                 Some(_) => Some(field_id(fields, FIELD_DECLARER, ENTITY)?),
             },
         })
+    }
+}
+
+/// Where a stored definition's messages come from.
+///
+/// No `source` is a Kafka consumer — every record written before topic
+/// consumers existed — and its three fields stay required. Any other word is
+/// refused rather than read as Kafka, so a record from a newer binary is not
+/// started as something it is not.
+fn feed_in(fields: &BTreeMap<String, Value>) -> Result<Feed> {
+    match fields.get(FIELD_SOURCE) {
+        None => Ok(Feed::Kafka {
+            brokers: strings(fields, FIELD_BROKERS)?,
+            topic: text(fields, FIELD_TOPIC)?,
+            format: text(fields, FIELD_FORMAT)?,
+        }),
+        Some(Value::String(source)) if source == SOURCE_TOPIC => Ok(Feed::Topic {
+            table: TableId::new(field_id(fields, FIELD_TOPIC_TABLE, ENTITY)?),
+        }),
+        Some(other) => Err(Error::CatalogMalformed {
+            entity: ENTITY,
+            field: FIELD_SOURCE,
+            found: other.type_name(),
+        }),
     }
 }
 

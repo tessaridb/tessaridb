@@ -57,7 +57,7 @@ pub use analyzer::AnalyzerDefinition;
 pub use authority::{Authority, Held, Kind, Reach};
 pub(crate) use carried::{carried_to, home_of};
 pub(crate) use change::{CatalogChange, catalog_change, defined_index};
-pub use consumer::{ConsumerDefinition, Mapped, OnFailure};
+pub use consumer::{ConsumerDefinition, Feed, Mapped, OnFailure};
 pub(crate) use decoded::DecodedTables;
 pub use definition::{
     CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, DatabaseDefinition, EdgeDeclaration, EdgeOrder,

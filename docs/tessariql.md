@@ -435,6 +435,16 @@ DEFINE KAFKA CONSUMER orders_in
     PARALLELISM 2;
 
 DROP KAFKA CONSUMER orders_in;
+
+DEFINE TOPIC CONSUMER events_in
+    FROM events
+    GROUP 'into-rows'
+    INTO event_rows
+    IDENTITY event_id
+    MAP amount AS total
+    ON FAILURE quarantine;
+
+DROP TOPIC CONSUMER events_in;
 ```
 
 **`ALTER USER` is how a user changes after it exists**, and it changes one thing
@@ -513,7 +523,8 @@ what happens `ON FAILURE`, and how many workers run it. The destination is
 resolved **when the declaration is made**, so there is no window in which a
 consumer is consuming into a table that does not exist. `DROP KAFKA CONSUMER` stops it
 and removes the declaration; the records it already wrote stay, because they are
-records like any others.
+records like any others. `DEFINE TOPIC CONSUMER` is the same declaration with a
+topic of this store as the source — see [Reading a topic into a table](#reading-a-topic-into-a-table).
 
 **A store with no users is open**, and declaring the first one closes it —
 requiring a signin against an empty store locks everybody out of it with no way
@@ -1812,6 +1823,7 @@ Every catalog object this language can declare can be undeclared, except one:
 | `DEFINE USER` | `DROP USER` |
 | `DEFINE REPLICA` | `DROP REPLICA` |
 | `DEFINE KAFKA CONSUMER` | `DROP KAFKA CONSUMER` |
+| `DEFINE TOPIC CONSUMER` | `DROP TOPIC CONSUMER` |
 | `DEFINE QUEUE` | `DROP QUEUE` |
 | `DEFINE NODE` | **nothing — see below** |
 
@@ -6309,6 +6321,48 @@ node, in memory" and are worth sizing for: a cluster of three nodes that all
 accept writes admits three times the rate, and a restarted node has forgotten
 what it counted. A signed-in caller is never rated.
 
+### Reading a topic into a table
+
+```tessariql
+DEFINE TOPIC CONSUMER events_in
+    FROM events
+    GROUP 'into-rows'
+    INTO event_rows
+    IDENTITY event_id
+    MAP amount AS total, placed.at AS placed_at
+    ON FAILURE quarantine
+    PARALLELISM 2;
+```
+
+The node reads `events` as a member of the group `'into-rows'` and writes each
+message into `event_rows` as the record whose id is the message's `event_id`,
+holding only the fields `MAP` names. **The group read, the record writes and the
+acknowledgement commit in one transaction**, so each message is applied to the
+store **exactly once**: a commit that is refused or lost leaves the message
+unread and nothing written, and it is read again. That is also why the topic and
+the table must be in the same database — a transaction is one database's.
+
+The group is declared first, with `DEFINE GROUP`, and its deadline, width and
+dead letter are what the consumer reads under. `ON FAILURE` is required:
+`stop` halts the consumer at a message it cannot apply and keeps the reason in
+`INFO FOR TOPIC CONSUMER`; `quarantine` hands the message back to the group in the
+same transaction while the rest of the batch lands, so the group's `DELIVERIES`
+moves it to its `DEAD LETTER TO` topic — which is why `quarantine` is refused on
+a group without both.
+
+It runs on every node that holds the declaration, as tasks on the node's
+runtime, in every build; a node that cannot write the table waits and tries
+again, so the node that can makes progress. `DEFINE` and `DROP TOPIC CONSUMER`
+take effect within a second, without a restart. Each batch runs with the
+authority of the user who declared it, checked again every batch.
+`INFO FOR TOPIC CONSUMER events_in` answers what it declares, what this node is
+doing with it and what it guarantees; `INFO FOR TOPIC events` lists the topic
+consumers reading it under `ingested_by`.
+
+A topic named `consumer` is still a topic: `DEFINE TOPIC consumer`, `DROP TOPIC
+consumer` and `INFO FOR TOPIC consumer` mean it, because what follows the word
+tells the two apart.
+
 ### What `INFO FOR TOPIC` reports
 
 ```text
@@ -7733,7 +7787,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.12.0", "build": "0.12.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.13.0", "build": "0.13.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],

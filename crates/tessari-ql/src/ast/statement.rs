@@ -712,6 +712,40 @@ pub enum StatementKind {
         /// The name to remove.
         name: Name,
     },
+    /// `DEFINE TOPIC CONSUMER orders_in FROM orders GROUP 'rows' INTO order_rows …`
+    ///
+    /// The same declared ingestion as [`StatementKind::DefineConsumer`], with a
+    /// topic of this store as the source (ADR-0087). The group read, the record
+    /// writes and the acknowledgement commit in one transaction, so each message
+    /// is applied to this store once — which is why there is no `FORMAT` (a
+    /// message is already a value) and no brokers.
+    DefineTopicConsumer {
+        /// The consumer's catalog identity, unique across both kinds.
+        name: Name,
+        /// The topic to read, in the destination's database.
+        topic: TableRef,
+        /// The group it reads as, already declared on the topic.
+        group: String,
+        /// Which message field carries the record's identity.
+        identity: FieldPath,
+        /// Which message fields become which record fields; a field nobody
+        /// named does not land.
+        mapping: Vec<FieldMapping>,
+        /// The table the records land in.
+        destination: TableRef,
+        /// What happens to a message that cannot be applied: halt, or hand it
+        /// back to the group, whose dead letter keeps it.
+        on_failure: OnFailure,
+        /// How many members this declaration runs on each node; `None` is one.
+        parallelism: Option<u32>,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DROP TOPIC CONSUMER orders_in` — stops it and forgets the declaration.
+    DropTopicConsumer {
+        /// The name to remove.
+        name: Name,
+    },
     /// `DROP USER ada`
     DropUser {
         /// The name to remove.

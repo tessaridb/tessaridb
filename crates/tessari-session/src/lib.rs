@@ -75,6 +75,6 @@ pub use error::{Depended, Error, Result};
 pub use gather::{Asked, Gather, Gathered, Unanswered};
 pub use outcome::{AccessPath, Exactness, Nearest, Note, Outcome, Suggestion};
 pub use plan::Plan;
-pub use session::Session;
+pub use session::{Atomic, Session};
 pub use tessari_ql::Parameters;
 pub use ticket::Ticket;

@@ -216,9 +216,10 @@ impl Effect {
             // and a follower that received one starts its own consumer in the
             // same group — which is the behaviour wanted, because the broker then
             // spreads the partitions across them.
-            StatementKind::DefineConsumer { .. } | StatementKind::DropConsumer { .. } => {
-                Self::Write
-            }
+            StatementKind::DefineConsumer { .. }
+            | StatementKind::DropConsumer { .. }
+            | StatementKind::DefineTopicConsumer { .. }
+            | StatementKind::DropTopicConsumer { .. } => Self::Write,
 
             // Records and files. `UPDATE` and `DELETE … WHERE` read to find
             // their targets and then change them, which is exactly the shape a

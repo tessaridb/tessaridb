@@ -25,6 +25,7 @@ mod editing;
 mod fields;
 mod relations;
 mod tables;
+mod topic_consumer;
 mod vaults;
 mod writes;
 
@@ -309,6 +310,34 @@ impl Session<'_> {
                 *if_not_exists,
             ),
             StatementKind::DropConsumer { name } => self.drop_consumer(transaction, name, span),
+            StatementKind::DefineTopicConsumer {
+                name,
+                topic,
+                group,
+                identity,
+                mapping,
+                destination,
+                on_failure,
+                parallelism,
+                if_not_exists,
+            } => self.define_topic_consumer(
+                transaction,
+                &topic_consumer::TopicDeclared {
+                    name,
+                    topic,
+                    group,
+                    identity,
+                    mapping,
+                    destination,
+                    on_failure: *on_failure,
+                    parallelism: *parallelism,
+                },
+                *if_not_exists,
+                span,
+            ),
+            StatementKind::DropTopicConsumer { name } => {
+                self.drop_topic_consumer(transaction, name, span)
+            }
             StatementKind::AlterUser { name, change } => {
                 self.alter_user(transaction, name, change, span)
             }

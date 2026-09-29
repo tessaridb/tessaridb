@@ -15,6 +15,7 @@ mod fields;
 mod queues;
 mod relations;
 mod select;
+mod topic_consumer;
 mod vaults;
 mod writes;
 

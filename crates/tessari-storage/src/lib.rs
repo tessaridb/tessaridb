@@ -66,8 +66,8 @@ mod vault;
 pub use catalog::{
     AnalyzerDefinition, Authority, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, Catalog,
     ConsumerDefinition, DatabaseDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeKindDefinition,
-    EdgeOrder, Eviction, FailoverDefinition, FailoverStamp, FieldDefinition, FieldShape, GEO_FIELD,
-    GrantDefinition, GraphDefinition, GroupDeclaration, GroupState, Held, InFlight,
+    EdgeOrder, Eviction, FailoverDefinition, FailoverStamp, Feed, FieldDefinition, FieldShape,
+    GEO_FIELD, GrantDefinition, GraphDefinition, GroupDeclaration, GroupState, Held, InFlight,
     IndexDefinition, IndexShape, Kind, LeadershipDefinition, Mapped, NamespaceDefinition,
     OnFailure, PublicAppend, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL,
     QueueDeclaration, RECORD_LEVEL, Reach, ReplicaDefinition, Role, SYSTEM_DATABASE,

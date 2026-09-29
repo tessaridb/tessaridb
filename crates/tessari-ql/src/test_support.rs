@@ -184,6 +184,7 @@ fn erase_statement(statement: &mut Statement) {
             }
             InfoSubject::User(name)
             | InfoSubject::Consumer(name)
+            | InfoSubject::TopicConsumer(name)
             | InfoSubject::Graph(name)
             | InfoSubject::Vector(name)
             | InfoSubject::Geo(name)
@@ -264,7 +265,26 @@ fn erase_statement(statement: &mut Statement) {
             }
             erase_table(destination);
         }
-        StatementKind::DropConsumer { name } => erase_name(name),
+        StatementKind::DropConsumer { name } | StatementKind::DropTopicConsumer { name } => {
+            erase_name(name);
+        }
+        StatementKind::DefineTopicConsumer {
+            name,
+            topic,
+            identity,
+            mapping,
+            destination,
+            ..
+        } => {
+            erase_name(name);
+            erase_table(topic);
+            erase_path(identity);
+            for pair in mapping {
+                erase_path(&mut pair.from);
+                erase_name(&mut pair.to);
+            }
+            erase_table(destination);
+        }
         StatementKind::Grant {
             verbs,
             table,

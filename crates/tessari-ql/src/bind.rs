@@ -390,6 +390,8 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // unlike a node's configuration it keeps running afterwards.
         | StatementKind::DefineConsumer { .. }
         | StatementKind::DropConsumer { .. }
+        | StatementKind::DefineTopicConsumer { .. }
+        | StatementKind::DropTopicConsumer { .. }
         | StatementKind::DropUser { .. }
         | StatementKind::Grant { .. }
         | StatementKind::Revoke { .. }

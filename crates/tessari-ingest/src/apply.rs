@@ -101,17 +101,19 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::*;
-    use tessari_storage::{Mapped, OnFailure};
+    use tessari_storage::{Feed, Mapped, OnFailure};
     use tessari_types::{DatabaseId, NamespaceId, TableId};
 
     fn declared(identity: &str, mapping: &[(&str, &str)]) -> ConsumerDefinition {
         ConsumerDefinition {
             id: 1,
             name: "orders_in".to_owned(),
-            brokers: vec!["b:9092".to_owned()],
-            topic: "orders".to_owned(),
+            feed: Feed::Kafka {
+                brokers: vec!["b:9092".to_owned()],
+                topic: "orders".to_owned(),
+                format: "json".to_owned(),
+            },
             group: "g".to_owned(),
-            format: "json".to_owned(),
             identity: identity.to_owned(),
             mapping: mapping
                 .iter()

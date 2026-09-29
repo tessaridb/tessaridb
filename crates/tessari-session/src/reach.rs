@@ -115,6 +115,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // listed below rather than here — see the arm that returns its
         // destination.
         | StatementKind::DropConsumer { .. }
+        | StatementKind::DropTopicConsumer { .. }
         | StatementKind::Begin
         | StatementKind::Commit
         | StatementKind::Cancel
@@ -187,6 +188,11 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // It is the destination and not the brokers because a broker is not a
         // table; what this store must check is where the records land.
         StatementKind::DefineConsumer { destination, .. } => vec![destination],
+        // A topic consumer reads one table and writes another, and both are
+        // where its authority is exercised (ADR-0087).
+        StatementKind::DefineTopicConsumer {
+            topic, destination, ..
+        } => vec![topic, destination],
 
         // The remaining subjects name **no** table, and that emptiness is the
         // `BACKUP` shape — a loop reading "every table it names is granted"

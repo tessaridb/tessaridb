@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use tessari_ql::{Span, TableRef};
-use tessari_storage::{Catalog, TableKind, Transaction};
+use tessari_storage::{Catalog, Feed, TableKind, Transaction};
 use tessari_types::{Number, Value};
 
 use crate::error::{Error, Result};
@@ -84,7 +84,41 @@ impl Session<'_> {
                 (name, Value::Object(group))
             })
             .collect();
+        // The topic consumers reading this topic (ADR-0087). A destination the
+        // caller may not read is named `hidden` rather than left out: the
+        // consumer is still there, and its absence would read as none.
+        let readable = self.readable_in(transaction)?;
+        let tables = Catalog::new(transaction).tables_in(context.namespace, context.database)?;
+        let ingested_by = Catalog::new(transaction)
+            .consumers()?
+            .into_iter()
+            .filter(
+                |consumer| matches!(consumer.feed, Feed::Topic { table: read } if read == table),
+            )
+            .map(|consumer| {
+                let visible = readable
+                    .as_ref()
+                    .is_none_or(|granted| granted.contains(&consumer.destination));
+                let into = tables
+                    .iter()
+                    .find(|held| held.id == consumer.destination)
+                    .map_or("<dropped>", |held| held.name.as_str());
+                let running = self.store.running().progress(&consumer.name).is_some();
+                (
+                    consumer.name.clone(),
+                    Value::Object(BTreeMap::from([
+                        ("group".to_owned(), Value::from(consumer.group.as_str())),
+                        (
+                            "into".to_owned(),
+                            Value::from(if visible { into } else { "hidden" }),
+                        ),
+                        ("running".to_owned(), Value::Bool(running)),
+                    ])),
+                )
+            })
+            .collect();
         let mut report = BTreeMap::from([
+            ("ingested_by".to_owned(), Value::Object(ingested_by)),
             ("name".to_owned(), Value::from(topic.name.text.as_str())),
             ("last".to_owned(), whole(last)),
             ("consumers".to_owned(), Value::Object(readers)),

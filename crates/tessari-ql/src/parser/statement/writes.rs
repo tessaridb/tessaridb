@@ -113,9 +113,16 @@ impl Parser<'_> {
             _ if self.eat_word("queue") => Ok(StatementKind::DropQueue { name: self.name()? }),
             // A topic is a table carrying its declaration, as a space is, so the
             // word undefines the same catalog entry (G037).
-            _ if self.eat_word("topic") => Ok(StatementKind::DropTable {
-                table: self.table_ref()?,
-            }),
+            _ if self.eat_word("topic") => {
+                if self.topic_consumer_follows(false) {
+                    self.eat_word("consumer");
+                    Ok(StatementKind::DropTopicConsumer { name: self.name()? })
+                } else {
+                    Ok(StatementKind::DropTable {
+                        table: self.table_ref()?,
+                    })
+                }
+            }
             _ if self.eat_word("group") => self.drop_group(),
             _ if self.eat_word("series") => Ok(StatementKind::DropSeries { name: self.name()? }),
             _ if self.eat_word("view") => Ok(StatementKind::DropView { name: self.name()? }),
