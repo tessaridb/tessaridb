@@ -12,6 +12,18 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.13.1-beta — 2026-09-29
+
+**A new Kafka consumer takes the messages already on its topic.** A group the
+broker has never seen used to start at the end of the topic — the client's
+default — so everything published before `DEFINE KAFKA CONSUMER` was silently
+never ingested. It now starts at the oldest message still on the topic. A group
+that has already committed an offset resumes from it, exactly as before, so a
+running consumer is not replayed by the upgrade. A topic consumer already began
+at the oldest message; a test now holds both to it.
+
+No change to the language, the wire format or the on-disk format.
+
 ## 0.13.0-beta — 2026-09-29
 
 **A topic can be read into a table by a declaration.** `DEFINE TOPIC CONSUMER
