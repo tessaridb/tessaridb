@@ -677,6 +677,72 @@ pub enum Error {
         span: Span,
     },
 
+    /// `DEFINE ROLLUP` over something that is not an event-time series.
+    #[error("a rollup folds a series declared with `TIME`, and `{name}` is not one (at {span})")]
+    RollupNeedsSeries {
+        /// The name written.
+        name: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A `COMPUTE` a rollup cannot keep exactly from its row alone.
+    #[error(
+        "a rollup keeps `count`, `sum`, `min` and `max`, each once and under its own name — `{fold}` is not one; for a mean keep `sum` and `count` and divide (at {span})"
+    )]
+    RollupFold {
+        /// What was written.
+        fold: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A rollup window that is not a whole number of seconds.
+    #[error("a rollup's window is a whole number of seconds, longer than nothing (at {span})")]
+    RollupWindow {
+        /// Where the statement was written.
+        span: Span,
+    },
+
+    /// A caller's write or delete on a rollup's own table.
+    #[error(
+        "`{table}` is a rollup, kept by the writes to its series — write the series instead (at {span})"
+    )]
+    RollupIsDerived {
+        /// The rollup.
+        table: String,
+        /// Where the write was written.
+        span: Span,
+    },
+
+    /// `DEFINE ROLLUP` inside `BEGIN … COMMIT`: its backfill commits after the
+    /// declaration, which an enclosing transaction would hold back.
+    #[error(
+        "`DEFINE ROLLUP` commits its declaration and then fills the rollup in, so it runs outside `BEGIN … COMMIT` (at {span})"
+    )]
+    RollupInTransaction {
+        /// Where the statement was written.
+        span: Span,
+    },
+
+    /// Two keys of one window whose rows would share an identity.
+    #[error(
+        "two keys of one rollup window share a row identity; the write is refused rather than merged (at {span})"
+    )]
+    RollupKeyCollision {
+        /// Where the write was written.
+        span: Span,
+    },
+
+    /// `DROP SERIES` while rollups are kept of it.
+    #[error("rollups are kept of series `{series}` — drop them first (at {span})")]
+    RollupsDependOn {
+        /// The series.
+        series: String,
+        /// Where the statement was written.
+        span: Span,
+    },
+
     /// A recipient name that did not evaluate to text.
     ///
     /// Reports the **type** and never the value. Every neighbouring variant

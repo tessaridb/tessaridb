@@ -14,6 +14,7 @@ mod declarations;
 mod indexes;
 mod kinds;
 mod reading;
+mod rollups;
 mod tables;
 use std::collections::BTreeMap;
 
@@ -30,6 +31,7 @@ pub use kinds::{StoredKind, TableKind};
 pub(crate) use reading::{
     ceiling, count_of, field_id, field_name, flag, id_of, identity_kind, object,
 };
+pub use rollups::{RollupCompute, RollupDeclaration, RollupFold};
 pub use tables::{TableDefinition, TableShape};
 
 const FIELD_ID: &str = "id";

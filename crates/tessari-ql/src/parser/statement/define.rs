@@ -260,6 +260,7 @@ impl Parser<'_> {
             }
             _ if self.eat_word("group") => self.define_group(),
             _ if self.eat_word("series") => self.define_series(),
+            _ if self.eat_word("rollup") => self.define_rollup(),
             // Contextual for the same reason as the rest of this run: `view` is
             // an ordinary table name, and a store that had one before this word
             // existed keeps it.

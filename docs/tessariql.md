@@ -3935,6 +3935,32 @@ them.
 past the floor that reads had stopped answering with**. They were records the
 store still held; what the floor governed was the answer.
 
+### A rollup kept by the writes
+
+```
+DEFINE SERIES readings RETAIN 30d TIME at;
+DEFINE ROLLUP hourly FROM readings WINDOW 1h BY sensor
+    COMPUTE count(*) AS n, sum(v) AS total, min(v) AS low, max(v) AS high
+    RETAIN 365d;
+DROP ROLLUP hourly;
+```
+
+A rollup is a table of per-window aggregates **kept by the transaction that
+writes the raw record**, so the two never disagree. It folds a series declared
+with `TIME`, and it is itself such a series — ordered by `window` — so it has a
+floor of its own (`RETAIN`), and `LATEST BY`, `ASOF JOIN` and `FILL` read it like
+any other. A late reading lands in the window it belongs to; an update or a
+delete recomputes its window from the raw records.
+
+It keeps `count`, `sum`, `min` and `max` — the folds that merge exactly from the
+row alone. A `mean` is refused: keep `sum` and `count` and divide, which is
+exact. Declaring a rollup fills it from the series already written, in a second
+commit after the declaration's, which is why `DEFINE ROLLUP` runs outside
+`BEGIN … COMMIT`. A write to the series that was already under way when the
+rollup was declared is refused with `Conflict` and succeeds on retry, folded in.
+The raw series ageing past its floor does not change a rollup, which may keep
+windows for longer than the raw records last.
+
 ### Counting per window
 
 `GROUP BY` takes an **expression**, so a window is a key like any other:
@@ -7793,7 +7819,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.13.1", "build": "0.13.1-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.14.0", "build": "0.14.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],

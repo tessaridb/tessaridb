@@ -131,6 +131,8 @@ impl Effect {
             | StatementKind::DropQueue { .. }
             | StatementKind::DefineSeries { .. }
             | StatementKind::DropSeries { .. }
+            | StatementKind::DefineRollup { .. }
+            | StatementKind::DropRollup { .. }
             | StatementKind::DefineView { .. }
             | StatementKind::DropView { .. }
             | StatementKind::DefineGraph { .. }

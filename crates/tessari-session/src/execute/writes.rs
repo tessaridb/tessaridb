@@ -88,7 +88,13 @@ impl Session<'_> {
         let mut payload = payload;
         crate::queue::hold_engine_fields(transaction, &address, &mut payload, span)?;
         crate::series::hold_event_time(transaction, &address, &payload, span)?;
-        self.write_record(transaction, address, payload, partial, span)
+        // A series with rollups keeps them in this same transaction (ADR-0088
+        // §6); every other table pays one registry lookup for asking.
+        let Some(held) = self.rollups_before(transaction, &address, span)? else {
+            return self.write_record(transaction, address, payload, partial, span);
+        };
+        self.write_record(transaction, address.clone(), payload.clone(), partial, span)?;
+        self.rollups_after(transaction, &address, held, Some(&payload), span)
     }
 
     /// The write itself, with no question asked about who is making it.

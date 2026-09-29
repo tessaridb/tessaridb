@@ -97,6 +97,7 @@ mod rebuild_index;
 mod refusal;
 mod resumed;
 mod revocation;
+mod rollups;
 mod scan_wins;
 mod scoring_source;
 mod scripts;

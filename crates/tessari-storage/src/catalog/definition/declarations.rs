@@ -10,6 +10,11 @@ use std::collections::BTreeMap;
 use tessari_types::{Duration, TableId, Value};
 use tessari_vault::{KeyId, Wrapped};
 
+/// Where a series' rollups are listed in its catalog entry.
+const FIELD_ROLLUPS: &str = "rollups";
+/// Where a rollup's table names the series it is derived from.
+const FIELD_ROLLUP_OF: &str = "rollup_of";
+
 /// How long a series table answers with a record.
 ///
 /// One field, and it is the whole capability, so it has no default for the
@@ -31,6 +36,14 @@ pub struct SeriesDeclaration {
     /// Absent from a declaration written before the clause existed, which then
     /// reads back as arrival time — what that declaration meant.
     pub time: Option<String>,
+    /// The rollups kept of this series (ADR-0088 §6).
+    ///
+    /// **Read it from the catalog, never from the series registry**: the list
+    /// changes with `DEFINE`/`DROP ROLLUP`, and the registry holds the
+    /// declaration as it was when it was first learned.
+    pub rollups: Vec<super::RollupDeclaration>,
+    /// For a rollup's own table, the series it is derived from.
+    pub rollup_of: Option<TableId>,
 }
 
 impl SeriesDeclaration {
@@ -40,6 +53,20 @@ impl SeriesDeclaration {
         let mut fields = BTreeMap::from([(FIELD_RETAIN.to_owned(), Value::Duration(self.retain))]);
         if let Some(time) = &self.time {
             fields.insert(FIELD_EVENT_TIME.to_owned(), Value::String(time.clone()));
+        }
+        if !self.rollups.is_empty() {
+            fields.insert(
+                FIELD_ROLLUPS.to_owned(),
+                Value::Array(
+                    self.rollups
+                        .iter()
+                        .map(super::RollupDeclaration::to_value)
+                        .collect(),
+                ),
+            );
+        }
+        if let Some(source) = self.rollup_of {
+            fields.insert(FIELD_ROLLUP_OF.to_owned(), number(source.get()));
         }
         Value::Object(fields)
     }
@@ -73,9 +100,29 @@ impl SeriesDeclaration {
                 });
             }
         };
+        let rollups = match fields.get(FIELD_ROLLUPS) {
+            None => Vec::new(),
+            Some(Value::Array(held)) => held
+                .iter()
+                .map(super::RollupDeclaration::from_value)
+                .collect::<Result<_>>()?,
+            Some(other) => {
+                return Err(Error::CatalogMalformed {
+                    entity: ENTITY,
+                    field: FIELD_ROLLUPS,
+                    found: other.type_name(),
+                });
+            }
+        };
+        let rollup_of = match fields.get(FIELD_ROLLUP_OF) {
+            None => None,
+            Some(_) => Some(TableId::new(field_id(fields, FIELD_ROLLUP_OF, ENTITY)?)),
+        };
         Ok(Self {
             retain: *retain,
             time,
+            rollups,
+            rollup_of,
         })
     }
 }

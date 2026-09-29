@@ -447,6 +447,8 @@ impl Needs {
             | StatementKind::DropQueue { .. }
             | StatementKind::DefineSeries { .. }
             | StatementKind::DropSeries { .. }
+            | StatementKind::DefineRollup { .. }
+            | StatementKind::DropRollup { .. }
             // Declaring a view is declaring a table — it takes a name in the
             // table namespace and writes a catalog entry — so it sits with the
             // structure statements even though nothing is stored under it.

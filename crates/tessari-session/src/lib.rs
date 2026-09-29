@@ -59,6 +59,7 @@ mod rank;
 mod reach;
 pub mod redact;
 mod reference;
+mod rollup;
 mod search;
 mod series;
 mod session;

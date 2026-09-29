@@ -95,6 +95,18 @@ impl Transaction<'_> {
             .and_then(|declared| declared.time))
     }
 
+    /// Hold a table's catalog entry to this transaction's snapshot: the commit
+    /// is refused with [`crate::Error::Conflict`] — retriable — if the entry
+    /// changed after the snapshot (ADR-0088 §6 amendment).
+    ///
+    /// A write to an event-time series guards its table so that a `DEFINE` or
+    /// `DROP ROLLUP` committing between its snapshot and its commit makes it
+    /// retry and see the current rollups, rather than miss one silently.
+    pub fn guard_table_entry(&self, table: TableId) {
+        let entry = system::address(system::TABLES, RecordId::Int(i64::from(table.get())));
+        self.guarded.borrow_mut().insert(entry);
+    }
+
     /// Whether `address` names a record below its series table's floor.
     ///
     /// # Errors

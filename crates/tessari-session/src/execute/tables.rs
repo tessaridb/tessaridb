@@ -13,7 +13,7 @@ use crate::outcome::Outcome;
 use crate::session::Session;
 
 impl Session<'_> {
-    pub(super) fn define_table(
+    pub(crate) fn define_table(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
@@ -285,11 +285,15 @@ impl Session<'_> {
         let id = Catalog::new(transaction)
             .table_id(context.namespace, context.database, &name.text)?
             .ok_or_else(unknown)?;
-        let is_series = Catalog::new(transaction)
-            .table(id)?
-            .is_some_and(|definition| matches!(definition.kind, TableKind::Series(_)));
-        if !is_series {
-            return Err(unknown());
+        let series = match Catalog::new(transaction).table(id)?.map(|found| found.kind) {
+            Some(TableKind::Series(series)) => series,
+            _ => return Err(unknown()),
+        };
+        if !series.rollups.is_empty() {
+            return Err(Error::RollupsDependOn {
+                series: name.text.clone(),
+                span,
+            });
         }
         Catalog::new(transaction).drop_table(id)?;
         Ok(Outcome::Done)

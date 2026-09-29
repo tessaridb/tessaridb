@@ -44,7 +44,7 @@ pub use search::Expansion;
 pub use spatial::{Nearby, Region};
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tessari_encoding::RecordValue;
@@ -82,6 +82,10 @@ pub struct Transaction<'a> {
     reading_at: Cell<Option<u64>>,
     /// The floor per series table, derived once each.
     floors: RefCell<BTreeMap<TableId, Option<RecordId>>>,
+    /// Records read, not written, that must still be at or below the snapshot
+    /// when this transaction commits (ADR-0088 §6 amendment). Owned by this one
+    /// transaction on one thread, so an ordinary set.
+    guarded: RefCell<BTreeSet<RecordAddress>>,
 }
 
 impl Transaction<'_> {

@@ -652,7 +652,10 @@ impl Transaction<'_> {
     /// commit batch asserts the tail has not moved either — together they turn
     /// check-then-write into a compare-and-set over the whole commit.
     fn check_for_conflicts(&self) -> Result<()> {
-        for address in self.writes.keys() {
+        // A guarded read is held to the same rule as a write: whatever decided
+        // this transaction's writes must not have changed under it.
+        let guarded = self.guarded.borrow();
+        for address in self.writes.keys().chain(guarded.iter()) {
             let Some((version, _)) = self.read_newest(address)? else {
                 continue;
             };

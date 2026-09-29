@@ -12,6 +12,20 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.14.0-beta — 2026-09-29
+
+**A series can be ordered by when its events happened.** `DEFINE SERIES
+readings RETAIN 30d TIME at` names each record from its own `at`, so a late or
+backfilled reading lands in its place and the retention is about the event. A
+windowed grouping can be filled over a stated range (`FILL NULL | PREVIOUS |
+LINEAR | <value> FROM … TO …`); `LATEST BY <field>` answers the newest record per
+key, one index seek per key; `ASOF JOIN` pairs each record with the newest one of
+another series at or before it; `increase`, `rate` and `delta` fold counters by
+the instant, a fall counting as a reset; and `DEFINE ROLLUP` keeps per-window
+`count`, `sum`, `min` and `max` in the transaction that writes the series.
+
+**1444 conformance cases** define the language and run in the build.
+
 ## 0.13.1-beta — 2026-09-29
 
 **A new Kafka consumer takes the messages already on its topic.** A group the

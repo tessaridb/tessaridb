@@ -107,6 +107,7 @@ fn erase_statement(statement: &mut Statement) {
         // A series joins it for the same reason: its retention is a literal.
         | StatementKind::DefineSeries { name, .. }
         | StatementKind::DropSeries { name }
+        | StatementKind::DropRollup { name }
         // A view joins the name-only list because its read is stored as text
         // rather than as a tree, so it carries no span to erase either.
         | StatementKind::DefineView { name, .. }
@@ -267,6 +268,26 @@ fn erase_statement(statement: &mut Statement) {
         }
         StatementKind::DropConsumer { name } | StatementKind::DropTopicConsumer { name } => {
             erase_name(name);
+        }
+        StatementKind::DefineRollup {
+            name,
+            source,
+            by,
+            computes,
+            ..
+        } => {
+            erase_name(name);
+            erase_name(source);
+            if let Some(by) = by {
+                erase_name(by);
+            }
+            for (fold, of, alias) in computes {
+                erase_name(fold);
+                if let Some(of) = of {
+                    erase_name(of);
+                }
+                erase_name(alias);
+            }
         }
         StatementKind::DefineTopicConsumer {
             name,

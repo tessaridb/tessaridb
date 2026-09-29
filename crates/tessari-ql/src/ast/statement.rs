@@ -1031,6 +1031,31 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
+    /// `DEFINE ROLLUP hourly FROM readings WINDOW 1h [BY sensor] COMPUTE
+    /// count(*) AS n, sum(v) AS total RETAIN 365d` — per-window aggregates of an
+    /// event-time series, kept in the writing transaction (ADR-0088 §6).
+    DefineRollup {
+        /// The rollup's own name — an event-time series ordered by `window`.
+        name: Name,
+        /// The series it folds.
+        source: Name,
+        /// The window width.
+        window: Duration,
+        /// The raw field a row is kept per.
+        by: Option<Name>,
+        /// What each row computes: the fold word, its field (`None` for
+        /// `count(*)`) and the name it answers under.
+        computes: Vec<(Name, Option<Name>, Name)>,
+        /// How far back the rollup answers — required, like a series'.
+        retain: Duration,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DROP ROLLUP hourly`
+    DropRollup {
+        /// The name to remove.
+        name: Name,
+    },
     /// `DROP SERIES readings`
     ///
     /// Removes the table and everything in it, including the records past the

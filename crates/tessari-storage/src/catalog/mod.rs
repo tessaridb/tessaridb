@@ -62,9 +62,9 @@ pub(crate) use decoded::DecodedTables;
 pub use definition::{
     CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, DatabaseDefinition, EdgeDeclaration, EdgeOrder,
     GEO_FIELD, IndexDefinition, IndexShape, NamespaceDefinition, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY,
-    QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, SeriesDeclaration, StoredKind,
-    TableDefinition, TableKind, TableShape, VECTOR_FIELD, VaultDeclaration, VectorDeclaration,
-    VectorDistance, ViewDeclaration,
+    QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, RollupCompute, RollupDeclaration,
+    RollupFold, SeriesDeclaration, StoredKind, TableDefinition, TableKind, TableShape,
+    VECTOR_FIELD, VaultDeclaration, VectorDeclaration, VectorDistance, ViewDeclaration,
 };
 pub use edge_kind::EdgeKindDefinition;
 pub use failover::{FailoverDefinition, FailoverStamp};
@@ -278,6 +278,25 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             return Ok(false);
         };
         definition.schemafull = schemafull;
+        self.write(system::TABLES, id.get(), &definition.to_value());
+        Ok(true)
+    }
+
+    /// Replace a series' declaration — its rollup list — keeping everything
+    /// else about the table (ADR-0088 §6).
+    ///
+    /// Answers `false` when there is no table under that id. The per-process
+    /// series registry is deliberately not told: it answers floors and time
+    /// fields, which this cannot change, and a rollup list is read from here.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored definition cannot be read.
+    pub fn set_series(&mut self, id: TableId, declared: SeriesDeclaration) -> Result<bool> {
+        let Some(mut definition) = self.table(id)? else {
+            return Ok(false);
+        };
+        definition.kind = TableKind::Series(declared);
         self.write(system::TABLES, id.get(), &definition.to_value());
         Ok(true)
     }

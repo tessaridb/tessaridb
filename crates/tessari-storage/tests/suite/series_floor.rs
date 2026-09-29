@@ -185,6 +185,8 @@ fn a_series_table_does_not_answer_with_a_record_past_its_floor() {
         TableKind::Series(SeriesDeclaration {
             retain: RETAIN,
             time: None,
+            rollups: Vec::new(),
+            rollup_of: None,
         }),
         IdentityKind::Uuid,
     );
@@ -204,6 +206,8 @@ fn a_point_read_below_the_floor_answers_nothing() {
         TableKind::Series(SeriesDeclaration {
             retain: RETAIN,
             time: None,
+            rollups: Vec::new(),
+            rollup_of: None,
         }),
         IdentityKind::Uuid,
     );
@@ -231,6 +235,8 @@ fn a_batched_read_below_the_floor_answers_nothing() {
         TableKind::Series(SeriesDeclaration {
             retain: RETAIN,
             time: None,
+            rollups: Vec::new(),
+            rollup_of: None,
         }),
         IdentityKind::Uuid,
     );
@@ -254,6 +260,8 @@ fn a_record_written_below_the_floor_in_this_transaction_is_not_answered_either()
         TableKind::Series(SeriesDeclaration {
             retain: RETAIN,
             time: None,
+            rollups: Vec::new(),
+            rollup_of: None,
         }),
         IdentityKind::Uuid,
     );
@@ -294,6 +302,8 @@ fn the_pass_removes_what_the_floor_had_already_hidden_and_changes_no_answer() {
         TableKind::Series(SeriesDeclaration {
             retain: RETAIN,
             time: None,
+            rollups: Vec::new(),
+            rollup_of: None,
         }),
         IdentityKind::Uuid,
     );
@@ -327,6 +337,8 @@ fn a_second_pass_removes_nothing() {
         TableKind::Series(SeriesDeclaration {
             retain: RETAIN,
             time: None,
+            rollups: Vec::new(),
+            rollup_of: None,
         }),
         IdentityKind::Uuid,
     );

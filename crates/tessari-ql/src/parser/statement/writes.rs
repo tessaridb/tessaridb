@@ -125,6 +125,7 @@ impl Parser<'_> {
             }
             _ if self.eat_word("group") => self.drop_group(),
             _ if self.eat_word("series") => Ok(StatementKind::DropSeries { name: self.name()? }),
+            _ if self.eat_word("rollup") => Ok(StatementKind::DropRollup { name: self.name()? }),
             _ if self.eat_word("view") => Ok(StatementKind::DropView { name: self.name()? }),
             // Declined rather than missing, and it says so. `DEFINE NODE` writes
             // this process's own configuration outside the transaction, so its
