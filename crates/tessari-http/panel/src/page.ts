@@ -12,6 +12,7 @@
 import { document, el, type Node } from "./html.js";
 import { access } from "./access.js";
 import { cluster } from "./cluster.js";
+import { series } from "./series.js";
 import { topics } from "./topics.js";
 import { DESTINATIONS, to } from "./destinations.js";
 import {
@@ -147,6 +148,7 @@ const query = (): Node =>
       ),
       el("ol", { id: "changes", class: "changes", reversed: true }),
     ),
+    series(),
   );
 
 

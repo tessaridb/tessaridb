@@ -36,7 +36,7 @@ impl Parser<'_> {
         })
     }
 
-    /// `DEFINE SERIES readings RETAIN 30d`
+    /// `DEFINE SERIES readings RETAIN 30d [TIME at]`
     ///
     /// The retention is a literal duration rather than an expression, on
     /// [`Self::define_queue`]'s rule and for its reason: a floor a bound value
@@ -64,8 +64,82 @@ impl Parser<'_> {
                 span: at,
             });
         }
+        // `TIME at` names the field the identity is minted from; the field's
+        // kind is checked where a record is written, because a series declares
+        // no columns for a type to be checked against here.
+        let time = if self.eat_word("time") {
+            Some(self.name()?)
+        } else {
+            None
+        };
         Ok(StatementKind::DefineSeries {
             name,
+            retain,
+            time,
+            if_not_exists,
+        })
+    }
+
+    /// `DEFINE ROLLUP hourly FROM readings WINDOW 1h [BY sensor] COMPUTE
+    /// count(*) AS n, sum(v) AS total RETAIN 365d`
+    ///
+    /// Read in a fixed order, as `DEFINE VECTOR`'s clauses are. Which folds a
+    /// rollup keeps is the session's to judge, where the refusal can say why.
+    pub(crate) fn define_rollup(&mut self) -> Result<StatementKind> {
+        let if_not_exists = self.eat_if_not_exists()?;
+        let name = self.name()?;
+        if !self.eat_keyword(Keyword::From) {
+            return Err(self.error_here("`FROM` and the series it folds"));
+        }
+        let source = self.name()?;
+        if !self.eat_word("window") {
+            return Err(self.error_here("`WINDOW` and how wide each window is"));
+        }
+        let Some(Token::Duration(window)) = self.peek() else {
+            return Err(self.error_here("a duration, like `1h`"));
+        };
+        let window = *window;
+        self.advance();
+        let by = if self.eat_word("by") {
+            Some(self.name()?)
+        } else {
+            None
+        };
+        if !self.eat_word("compute") {
+            return Err(self.error_here("`COMPUTE` and what each window keeps"));
+        }
+        let mut computes = Vec::new();
+        loop {
+            let fold = self.name()?;
+            self.expect_punct(Punct::ParenOpen, "`(` after the fold")?;
+            let of = if self.eat_punct(Punct::Star) {
+                None
+            } else {
+                Some(self.name()?)
+            };
+            self.expect_punct(Punct::ParenClose, "`)` after what is folded")?;
+            if !self.eat_keyword(Keyword::As) {
+                return Err(self.error_here("`AS` and the name the value is kept under"));
+            }
+            computes.push((fold, of, self.name()?));
+            if !self.eat_punct(Punct::Comma) {
+                break;
+            }
+        }
+        if !self.eat_word("retain") {
+            return Err(self.error_here("`RETAIN` and how far back the rollup answers"));
+        }
+        let Some(Token::Duration(retain)) = self.peek() else {
+            return Err(self.error_here("a duration, like `365d`"));
+        };
+        let retain = *retain;
+        self.advance();
+        Ok(StatementKind::DefineRollup {
+            name,
+            source,
+            window,
+            by,
+            computes,
             retain,
             if_not_exists,
         })

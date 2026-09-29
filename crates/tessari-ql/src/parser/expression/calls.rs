@@ -45,6 +45,16 @@ impl Parser<'_> {
         } else {
             Some(Box::new(self.condition()?))
         };
+        // The counter folds order their values by an instant, written second.
+        let at = if fold.takes_an_instant() {
+            self.expect_punct(
+                Punct::Comma,
+                "`,` and the instant each value was observed at",
+            )?;
+            Some(Box::new(self.condition()?))
+        } else {
+            None
+        };
         let end = self.expect_punct(Punct::ParenClose, "`)` after what is folded")?;
         if over.is_none() && fold != Aggregate::Count {
             return Err(Error::StarIsOnlyForCount {
@@ -54,7 +64,12 @@ impl Parser<'_> {
         }
         let span = start.to(end);
         Ok(Some(Expr {
-            kind: ExprKind::Fold { fold, over, span },
+            kind: ExprKind::Fold {
+                fold,
+                over,
+                at,
+                span,
+            },
             span,
         }))
     }

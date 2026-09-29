@@ -117,3 +117,32 @@ DROP SERIES ordinary;
 --- case: and the series itself drops
 DROP SERIES fleeting;
 --- expect: ok
+
+--- case: a series ordered by its event time takes a rollup
+DEFINE SERIES gauges RETAIN 36500d TIME at;
+DEFINE ROLLUP per_hour FROM gauges WINDOW 1h BY sensor COMPUTE count(*) AS n, sum(v) AS total RETAIN 36500d;
+--- expect: ok
+
+--- case: a late reading is folded into the window it belongs to
+CREATE gauges = { sensor: 'a', v: 2, at: datetime '2026-09-29T10:10:00Z' };
+CREATE gauges = { sensor: 'a', v: 3, at: datetime '2026-09-29T10:50:00Z' };
+CREATE gauges = { sensor: 'a', v: 5, at: datetime '2026-09-29T09:59:00Z' };
+SELECT * FROM per_hour;
+--- expect: rows 2
+
+--- case: a rollup keeps only what merges exactly from its row
+DEFINE ROLLUP averages FROM gauges WINDOW 1h COMPUTE mean(v) AS avg RETAIN 1d;
+--- expect: error RollupFold
+
+--- case: a rollup is written by its series and not by hand
+CREATE per_hour = { window: datetime '2026-09-29T10:00:00Z', n: 1 };
+--- expect: error RollupIsDerived
+
+--- case: the series cannot go while a rollup is kept of it, and the rollup can
+DROP SERIES gauges;
+--- expect: error RollupsDependOn
+
+--- case: dropping the rollup first lets the series go
+DROP ROLLUP per_hour;
+DROP SERIES gauges;
+--- expect: ok

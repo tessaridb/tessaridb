@@ -13,6 +13,7 @@ mod console_tokens;
 mod crossing;
 mod objects;
 mod routes;
+mod series;
 mod sessions;
 mod vault_responses;
 mod watch;

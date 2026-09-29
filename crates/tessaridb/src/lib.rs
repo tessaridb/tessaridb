@@ -77,12 +77,26 @@ pub fn value_of(written: &str) -> core::result::Result<tessari_types::Value, Not
     let refusal = || NotAValue {
         written: written.to_owned(),
     };
-    match tessari_ql::parse_expression(written)
-        .map_err(|_| refusal())?
-        .kind
-    {
-        tessari_ql::ExprKind::Literal(value) => Ok(value),
-        _ => Err(refusal()),
+    constant(tessari_ql::parse_expression(written).map_err(|_| refusal())?).ok_or_else(refusal)
+}
+
+/// The value an expression denotes when it is made of literals alone — arrays
+/// and objects of them included, so a batch of events is one value (G044 C12).
+/// Anything that would have to be evaluated is not a value here.
+fn constant(expression: tessari_ql::Expr) -> Option<tessari_types::Value> {
+    match expression.kind {
+        tessari_ql::ExprKind::Literal(value) => Some(value),
+        tessari_ql::ExprKind::Array(items) => items
+            .into_iter()
+            .map(constant)
+            .collect::<Option<Vec<_>>>()
+            .map(tessari_types::Value::Array),
+        tessari_ql::ExprKind::Object(fields) => fields
+            .into_iter()
+            .map(|field| constant(field.value).map(|value| (field.name.text, value)))
+            .collect::<Option<std::collections::BTreeMap<_, _>>>()
+            .map(tessari_types::Value::Object),
+        _ => None,
     }
 }
 
@@ -481,6 +495,31 @@ impl Db {
         Ok(Catalog::new(&mut transaction)
             .table(table)?
             .map(|held| held.name))
+    }
+
+    /// Whether `namespace.database.table` names a series — what the HTTP
+    /// append route asks before it writes a batch (G044 C12), so a batch for a
+    /// table of another kind is refused rather than written.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the catalog cannot be read.
+    pub fn is_series(&self, namespace: &str, database: &str, table: &str) -> Result<bool> {
+        let mut transaction = self.store.begin()?;
+        let catalog = Catalog::new(&mut transaction);
+        let Some(namespace) = catalog.namespace_id(namespace)? else {
+            return Ok(false);
+        };
+        let Some(database) = catalog.database_id(namespace, database)? else {
+            return Ok(false);
+        };
+        let Some(table) = catalog.table_id(namespace, database, table)? else {
+            return Ok(false);
+        };
+        Ok(matches!(
+            catalog.table(table)?.map(|held| held.kind),
+            Some(tessari_storage::TableKind::Series(_))
+        ))
     }
 
     /// Where the peer that takes writes answers, if one is declared.

@@ -31,8 +31,8 @@ pub use expr::{
     SetCondition, SpaceBound, TopicClauses, Written,
 };
 pub use select::{
-    Admitted, AnsweredBy, Approximation, Fusion, Hop, JoinSide, Ordering, Projected, Projection,
-    Select, Source, Staleness, Timeout, Using, Version,
+    Admitted, AnsweredBy, Approximation, Fill, FillMode, Fusion, Hop, JoinSide, Ordering,
+    Projected, Projection, Select, Source, Staleness, Timeout, Using, Version,
 };
 pub use statement::StatementKind;
 
@@ -756,13 +756,15 @@ mod tests {
     /// Adding a member is therefore allowed and cheap; the test exists so that
     /// **failing to** add one cannot happen quietly.
     #[test]
-    fn the_folds_that_hold_their_whole_group_are_exactly_the_two_that_must() {
+    fn the_folds_that_hold_their_whole_group_are_exactly_the_ones_that_must() {
         let holding: Vec<&str> = Aggregate::ALL
             .iter()
             .filter(|fold| fold.retention() == Retention::WholeGroup)
             .map(|fold| fold.spelling())
             .collect();
-        assert_eq!(holding, ["median", "collect"]);
+        // The counter folds order their samples by instant only once the group
+        // has arrived, so they hold it (ADR-0088 §5).
+        assert_eq!(holding, ["median", "increase", "rate", "delta", "collect"]);
     }
 
     /// Every fold is in `ALL`, and every spelling parses back to itself.

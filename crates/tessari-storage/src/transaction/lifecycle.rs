@@ -32,6 +32,7 @@ impl<'a> Transaction<'a> {
             expiring: BTreeMap::new(),
             reading_at: std::cell::Cell::new(None),
             floors: std::cell::RefCell::new(BTreeMap::new()),
+            guarded: std::cell::RefCell::new(std::collections::BTreeSet::new()),
         }
     }
 

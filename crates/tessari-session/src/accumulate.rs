@@ -68,6 +68,7 @@
 //! Both name the same defect in the same statement.
 
 mod arithmetic;
+mod counter;
 use rust_decimal::Decimal;
 #[cfg(test)]
 use tessari_ql::Retention;
@@ -138,6 +139,16 @@ pub(crate) enum Accumulator {
         /// Where to point a failure.
         span: Span,
     },
+    /// The counter folds: every sample and the instant it was observed at,
+    /// ordered by the instant when the group finishes (ADR-0088 §5).
+    Counter {
+        /// Which of the three.
+        fold: Aggregate,
+        /// The samples, in record order.
+        held: Vec<(tessari_types::Datetime, Number)>,
+        /// Where to point a failure.
+        span: Span,
+    },
     /// Every present value, in the order the records arrived.
     Every {
         /// What has been offered so far, which is also the answer.
@@ -200,6 +211,11 @@ impl Accumulator {
                 span,
             },
             Aggregate::Collect => Self::Every { held: Vec::new() },
+            Aggregate::Increase | Aggregate::Rate | Aggregate::Delta => Self::Counter {
+                fold: aggregate,
+                held: Vec::new(),
+                span,
+            },
         }
     }
 
@@ -277,6 +293,27 @@ impl Accumulator {
                 if summable(value, "median", *span)?.is_some() {
                     held.push(value.clone());
                 }
+            }
+            // Offered `[value, instant]`: a sample without a number is not a
+            // sample, and one without an instant has no place in the order.
+            Self::Counter { fold, held, span } => {
+                let Value::Array(pair) = value else {
+                    return Ok(());
+                };
+                let (Some(sample), Some(at)) = (pair.first(), pair.get(1)) else {
+                    return Ok(());
+                };
+                let Some(number) = summable(sample, fold.spelling(), *span)? else {
+                    return Ok(());
+                };
+                let Value::Datetime(at) = at else {
+                    return Err(crate::accumulate::failed(
+                        fold.spelling(),
+                        "an instant that is not a datetime",
+                        *span,
+                    ));
+                };
+                held.push((*at, number.clone()));
             }
             // The one fold that keeps a value of any kind, because it is not
             // computing anything from them — `collect` is the identity fold.
@@ -359,6 +396,7 @@ impl Accumulator {
             // reason `sum` answers zero: an answer every caller has to write
             // `?? []` after is the wrong answer.
             Self::Every { held } => Ok(Value::Array(held.clone())),
+            Self::Counter { fold, held, span } => counter::finish(*fold, held, *span),
         }
     }
 
@@ -379,6 +417,7 @@ impl Accumulator {
             Self::Count { .. } | Self::Sum { .. } | Self::Mean { .. } | Self::Spread { .. } => 0,
             Self::Extreme { held, .. } => usize::from(held.is_some()),
             Self::Middle { held, .. } | Self::Every { held } => held.len(),
+            Self::Counter { held, .. } => held.len(),
         }
     }
 }
@@ -435,6 +474,9 @@ mod tests {
         Aggregate::Variance,
         Aggregate::Stddev,
         Aggregate::Median,
+        Aggregate::Increase,
+        Aggregate::Rate,
+        Aggregate::Delta,
         Aggregate::Collect,
     ];
 
@@ -793,7 +835,16 @@ mod tests {
         {
             let mut accumulator = Accumulator::for_aggregate(*aggregate, span());
             for held in 0..OFFERED {
-                accumulator.offer(&integer(held)).unwrap();
+                // A counter fold is offered each value with its instant.
+                let offered = if aggregate.takes_an_instant() {
+                    Value::Array(vec![
+                        integer(held),
+                        Value::Datetime(tessari_types::Datetime::from_seconds(held)),
+                    ])
+                } else {
+                    integer(held)
+                };
+                accumulator.offer(&offered).unwrap();
             }
             assert_eq!(
                 accumulator.held(),

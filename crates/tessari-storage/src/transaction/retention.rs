@@ -28,7 +28,7 @@ use tessari_encoding::decode_payload;
 use tessari_types::{Duration, NamespaceId, RecordId, TableId};
 
 use super::{RecordAddress, Transaction};
-use crate::catalog::definition::{TableDefinition, TableKind};
+use crate::catalog::definition::{SeriesDeclaration, TableDefinition, TableKind};
 use crate::catalog::system;
 use crate::error::Result;
 
@@ -72,17 +72,69 @@ impl Transaction<'_> {
         // The registry answers without touching the backend for every table
         // this process has declared or already looked up, which is what keeps a
         // point read on an ordinary table at one round trip.
-        let retain = match self.store().series().known(table) {
-            Some(retain) => retain,
-            None => self.learn_kind(table)?,
-        };
-        let floor = retain.and_then(|retain| self.floor_at(retain));
+        let floor = self
+            .series_declaration(namespace, table)?
+            .and_then(|declared| self.floor_at(declared.retain));
         self.floors.borrow_mut().insert(table, floor.clone());
         Ok(floor)
     }
 
+    /// The field a series table mints its identities from, when it is ordered
+    /// by event time (ADR-0088 §1).
+    ///
+    /// `None` for every table that is not such a series — which costs the
+    /// registry lookup [`Self::series_floor`] already pays, and no catalog read
+    /// once this process has seen the table.
+    ///
+    /// # Errors
+    ///
+    /// Whatever reading the table's declaration returns.
+    pub fn series_time(&self, namespace: NamespaceId, table: TableId) -> Result<Option<String>> {
+        Ok(self
+            .series_declaration(namespace, table)?
+            .and_then(|declared| declared.time))
+    }
+
+    /// Hold a table's catalog entry to this transaction's snapshot: the commit
+    /// is refused with [`crate::Error::Conflict`] — retriable — if the entry
+    /// changed after the snapshot (ADR-0088 §6 amendment).
+    ///
+    /// A write to an event-time series guards its table so that a `DEFINE` or
+    /// `DROP ROLLUP` committing between its snapshot and its commit makes it
+    /// retry and see the current rollups, rather than miss one silently.
+    pub fn guard_table_entry(&self, table: TableId) {
+        let entry = system::address(system::TABLES, RecordId::Int(i64::from(table.get())));
+        self.guarded.borrow_mut().insert(entry);
+    }
+
+    /// Whether `address` names a record below its series table's floor.
+    ///
+    /// # Errors
+    ///
+    /// Whatever reading the table's declaration returns.
+    pub fn below_floor(&self, address: &RecordAddress) -> Result<bool> {
+        self.below_series_floor(address)
+    }
+
+    /// The table's series declaration, from the registry or read once.
+    fn series_declaration(
+        &self,
+        namespace: NamespaceId,
+        table: TableId,
+    ) -> Result<Option<SeriesDeclaration>> {
+        // The system namespace is excluded for the reason `series_floor`
+        // excludes it: the read below would ask this question of itself.
+        if namespace == system::SYSTEM_NAMESPACE {
+            return Ok(None);
+        }
+        match self.store().series().known(table) {
+            Some(declared) => Ok(declared),
+            None => self.learn_kind(table),
+        }
+    }
+
     /// Read the table's declaration once, and tell the registry what it says.
-    fn learn_kind(&self, table: TableId) -> Result<Option<Duration>> {
+    fn learn_kind(&self, table: TableId) -> Result<Option<SeriesDeclaration>> {
         let entry = system::address(system::TABLES, RecordId::Int(i64::from(table.get())));
         let Some(bytes) = self.get_uncovered(&entry)? else {
             // Not found is **not** learned: a transaction whose snapshot
@@ -93,25 +145,57 @@ impl Transaction<'_> {
         let definition = TableDefinition::from_value(&decode_payload(&bytes)?)?;
         self.store().series().learn(table, &definition.kind);
         Ok(match definition.kind {
-            TableKind::Series(declared) => Some(declared.retain),
+            TableKind::Series(declared) => Some(declared),
             _ => None,
         })
     }
 
+    /// The floor a series table had at the millisecond `millis`, when it is one.
+    ///
+    /// For the removal pass, which judges at the instant the oldest live reader
+    /// began rather than now: a floor taken now would remove records a reader
+    /// begun earlier still answers with, from under its snapshot (ADR-0088 §7).
+    ///
+    /// # Errors
+    ///
+    /// Whatever reading the table's declaration returns.
+    pub(crate) fn series_floor_at(
+        &self,
+        namespace: NamespaceId,
+        table: TableId,
+        millis: u64,
+    ) -> Result<Option<RecordId>> {
+        Ok(self
+            .series_declaration(namespace, table)?
+            .and_then(|declared| floor_from(millis, declared.retain)))
+    }
+
+    /// Read `table` as though it had no floor, for the rest of this
+    /// transaction's life. Only the series removal pass does this: it has to see
+    /// what it removes.
+    pub(crate) fn lift_floor(&self, table: TableId) {
+        self.floors.borrow_mut().insert(table, None);
+    }
+
     /// Where a retention puts the floor, as an identity.
     fn floor_at(&self, retain: Duration) -> Option<RecordId> {
-        let seconds = retain.seconds();
-        if seconds < 0 {
-            return None;
-        }
-        // Widened rather than cast, and combined with `checked_*` so a
-        // declaration nobody would write cannot wrap into a floor in the past.
-        let retained = u64::try_from(seconds)
-            .ok()
-            .and_then(|seconds| seconds.checked_mul(1_000))
-            .and_then(|millis| millis.checked_add(u64::from(retain.nanos()) / 1_000_000))?;
-        Some(identity_at(self.reading_at().saturating_sub(retained)))
+        floor_from(self.reading_at(), retain)
     }
+}
+
+/// Where a retention puts the floor at the millisecond `now`, as an identity.
+fn floor_from(now: u64, retain: Duration) -> Option<RecordId> {
+    let seconds = retain.seconds();
+    if seconds < 0 {
+        return None;
+    }
+    // Widened rather than cast, and combined with `checked_*` so a
+    // declaration nobody would write cannot wrap into a floor in the past.
+    let retained = u64::try_from(seconds)
+        .ok()
+        .and_then(|seconds| seconds.checked_mul(1_000))
+        .and_then(|millis| millis.checked_add(u64::from(retain.nanos()) / 1_000_000))?;
+    Some(identity_at(now.saturating_sub(retained)))
 }
 
 /// The smallest UUID version 7 minted at or after `millis`.

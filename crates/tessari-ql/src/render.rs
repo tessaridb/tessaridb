@@ -83,6 +83,8 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::DropQueue { .. } => Err(unrenderable("DROP QUEUE", span)),
         StatementKind::DefineSeries { .. } => Err(unrenderable("DEFINE SERIES", span)),
         StatementKind::DropSeries { .. } => Err(unrenderable("DROP SERIES", span)),
+        StatementKind::DefineRollup { .. } => Err(unrenderable("DEFINE ROLLUP", span)),
+        StatementKind::DropRollup { .. } => Err(unrenderable("DROP ROLLUP", span)),
         StatementKind::DefineView { .. } => Err(unrenderable("DEFINE VIEW", span)),
         StatementKind::DropView { .. } => Err(unrenderable("DROP VIEW", span)),
         StatementKind::Claim { .. } | StatementKind::ClaimRecord { .. } => {

@@ -16,6 +16,10 @@ use crate::session::Session;
 
 use super::PartialSeal;
 
+/// How many times an event-time identity is drawn before a full instant is
+/// reported: 64 draws of fourteen random bits.
+const EVENT_IDENTITY_DRAWS: u32 = 64;
+
 impl Session<'_> {
     /// Write a record, after every shape in it has crossed the geometry boundary.
     ///
@@ -87,7 +91,14 @@ impl Session<'_> {
         // simply left out.
         let mut payload = payload;
         crate::queue::hold_engine_fields(transaction, &address, &mut payload, span)?;
-        self.write_record(transaction, address, payload, partial, span)
+        crate::series::hold_event_time(transaction, &address, &payload, span)?;
+        // A series with rollups keeps them in this same transaction (ADR-0088
+        // §6); every other table pays one registry lookup for asking.
+        let Some(held) = self.rollups_before(transaction, &address, span)? else {
+            return self.write_record(transaction, address, payload, partial, span);
+        };
+        self.write_record(transaction, address.clone(), payload.clone(), partial, span)?;
+        self.rollups_after(transaction, &address, held, Some(&payload), span)
     }
 
     /// The write itself, with no question asked about who is making it.
@@ -187,7 +198,7 @@ impl Session<'_> {
         let payload = self.with_defaults(transaction, id, payload)?;
         // Free by construction — `free_identity` does the read that establishes
         // it, so nothing here writes over a record that was already there.
-        let identity = self.free_identity(transaction, &context, id, table.span)?;
+        let identity = self.free_identity(transaction, &context, id, &payload, table.span)?;
         let address = RecordAddress::new(context.namespace, context.database, id, identity.clone());
         self.put_record(transaction, address, payload.clone(), span)?;
         Ok(match answer {
@@ -236,8 +247,32 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         context: &Context,
         table: TableId,
+        payload: &Value,
         span: Span,
     ) -> Result<RecordId> {
+        // A series ordered by event time names the record from its own time
+        // field, so a late event lands in its place (ADR-0088 §1). Checked for
+        // being free like any minted UUID, and for the same reason not drawn
+        // again when it is not.
+        // Its random bits are few (fourteen), so an identity already held at
+        // that instant is drawn again rather than refused.
+        let mut attempts = 0_u32;
+        while let Some(identity) =
+            crate::series::event_identity(transaction, context.namespace, table, payload, span)?
+        {
+            let address =
+                RecordAddress::new(context.namespace, context.database, table, identity.clone());
+            if transaction.get(&address)?.is_none() {
+                return Ok(identity);
+            }
+            attempts = attempts.saturating_add(1);
+            if attempts >= EVENT_IDENTITY_DRAWS {
+                return Err(Error::RecordExists {
+                    id: identity.to_string(),
+                    span,
+                });
+            }
+        }
         let kind = Catalog::new(transaction)
             .table(table)?
             .map_or_else(IdentityKind::default, |found| found.identity);
@@ -330,7 +365,7 @@ impl Session<'_> {
             }
             let payload = self.with_defaults(transaction, id, Value::Object(fields))?;
 
-            let identity = self.free_identity(transaction, &context, id, table.span)?;
+            let identity = self.free_identity(transaction, &context, id, &payload, table.span)?;
             let address =
                 RecordAddress::new(context.namespace, context.database, id, identity.clone());
             self.put_record(transaction, address, payload, span)?;

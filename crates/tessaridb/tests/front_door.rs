@@ -196,3 +196,39 @@ fn text_that_is_not_a_value_is_refused_as_a_typed_error_that_names_it() {
     assert!(error.source().is_none());
     assert_eq!(tessaridb::value_of("42").ok(), Some(Value::from(42_i64)));
 }
+
+/// G044 C12: a batch of events arrives as one value — an array of objects —
+/// and every part of it is still only a value.
+#[test]
+fn an_array_of_objects_of_literals_is_a_value_and_anything_else_inside_is_not() {
+    let held = tessaridb::value_of(
+        "[{ sensor: 's1', v: -2.5, at: datetime '2026-09-29T10:00:00Z' }, { sensor: 's2', tags: ['a'] }]",
+    )
+    .unwrap();
+    let Value::Array(events) = held else {
+        panic!("an array");
+    };
+    assert_eq!(events.len(), 2);
+    let Value::Object(first) = &events[0] else {
+        panic!("an object");
+    };
+    assert_eq!(first["sensor"], Value::from("s1"));
+    assert_eq!(first["v"].to_string(), "-2.5");
+    assert_eq!(type_name(&first["at"]), "datetime");
+    for inside in [
+        "[{ n: $other }]",
+        "[{ n: time::now() }]",
+        "[{ n: other.field }]",
+        "[{ n: (SELECT * FROM users) }]",
+        "[{ n: 1 + 1 }]",
+    ] {
+        assert!(
+            tessaridb::value_of(inside).is_err(),
+            "{inside} is not a value"
+        );
+    }
+}
+
+fn type_name(value: &Value) -> &'static str {
+    value.type_name()
+}

@@ -120,12 +120,11 @@ impl Session<'_> {
             if !boolean(&held, condition.span)? {
                 continue;
             }
-            transaction.delete(RecordAddress::new(
-                context.namespace,
-                context.database,
-                id,
-                record_id,
-            ));
+            self.delete_record(
+                transaction,
+                RecordAddress::new(context.namespace, context.database, id, record_id),
+                condition.span,
+            )?;
             removed = removed.saturating_add(1);
         }
         Ok(crate::outcome::Outcome::Removed { count: removed })
@@ -179,12 +178,11 @@ impl Session<'_> {
             if removed >= ceiling {
                 break;
             }
-            transaction.delete(RecordAddress::new(
-                context.namespace,
-                context.database,
-                id,
-                record_id,
-            ));
+            self.delete_record(
+                transaction,
+                RecordAddress::new(context.namespace, context.database, id, record_id),
+                span.at,
+            )?;
             removed = removed.saturating_add(1);
         }
         Ok(crate::outcome::Outcome::Removed { count: removed })

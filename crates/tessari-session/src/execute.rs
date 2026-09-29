@@ -707,13 +707,13 @@ impl Session<'_> {
                     Some(held) => decode_payload(&held)?,
                     None => Value::None,
                 };
-                transaction.delete(address);
+                self.delete_record(transaction, address, span)?;
                 Ok(answered(*answer, before, Value::None))
             }
             StatementKind::Del { target } => {
                 self.clear_file(transaction, target)?;
                 let (_, address) = self.address(transaction, target)?;
-                transaction.delete(address);
+                self.delete_record(transaction, address, span)?;
                 Ok(Outcome::Done)
             }
             StatementKind::DeleteWhere {
@@ -843,13 +843,19 @@ impl Session<'_> {
             StatementKind::DefineSeries {
                 name,
                 retain,
+                time,
                 if_not_exists,
             } => self.define_table(
                 transaction,
                 name,
                 TableShape {
                     schemafull: false,
-                    kind: TableKind::Series(SeriesDeclaration { retain: *retain }),
+                    kind: TableKind::Series(SeriesDeclaration {
+                        retain: *retain,
+                        time: time.as_ref().map(|field| field.text.clone()),
+                        rollups: Vec::new(),
+                        rollup_of: None,
+                    }),
                     // Fixed by the kind rather than offered as a clause, on the
                     // rule a vector store's width follows: the floor is a
                     // position in the key, and only a time-carrying identity has
@@ -867,6 +873,28 @@ impl Session<'_> {
                 span,
             ),
             StatementKind::DropSeries { name } => self.drop_series(transaction, name, span),
+            StatementKind::DefineRollup {
+                name,
+                source,
+                window,
+                by,
+                computes,
+                retain,
+                if_not_exists,
+            } => self.define_rollup(
+                transaction,
+                &crate::rollup::Declared {
+                    name,
+                    source,
+                    window: *window,
+                    by: by.as_ref(),
+                    computes,
+                    retain: *retain,
+                    if_not_exists: *if_not_exists,
+                },
+                span,
+            ),
+            StatementKind::DropRollup { name } => self.drop_rollup(transaction, name, span),
             StatementKind::DefineView {
                 name,
                 read,

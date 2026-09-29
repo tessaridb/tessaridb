@@ -48,6 +48,8 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::DropQueue { .. }
         | StatementKind::DefineSeries { .. }
         | StatementKind::DropSeries { .. }
+        | StatementKind::DefineRollup { .. }
+        | StatementKind::DropRollup { .. }
         // A view is a table too, and declaring one names no table for a grant
         // to be asked about — not even the tables its read names. That is
         // deliberate and it is the other half of the permission decision: a

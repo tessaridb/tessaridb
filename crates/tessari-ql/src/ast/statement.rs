@@ -1002,7 +1002,7 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
-    /// `DEFINE SERIES readings RETAIN 30d`
+    /// `DEFINE SERIES readings RETAIN 30d [TIME at]`
     ///
     /// A table whose answer has a floor. Past the retention a record is not
     /// returned, whether or not its bytes have been removed — the removal is a
@@ -1023,8 +1023,38 @@ pub enum StatementKind {
         /// is: declaring it is the whole capability, and a retention the store
         /// guessed would drop records at a boundary nobody chose.
         retain: Duration,
+        /// `TIME <field>` — the `datetime` field each record's identity is
+        /// minted from, so the table is ordered and aged by when the event
+        /// happened rather than when it arrived (ADR-0088 §1). `None` keeps
+        /// arrival time.
+        time: Option<Name>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
+    },
+    /// `DEFINE ROLLUP hourly FROM readings WINDOW 1h [BY sensor] COMPUTE
+    /// count(*) AS n, sum(v) AS total RETAIN 365d` — per-window aggregates of an
+    /// event-time series, kept in the writing transaction (ADR-0088 §6).
+    DefineRollup {
+        /// The rollup's own name — an event-time series ordered by `window`.
+        name: Name,
+        /// The series it folds.
+        source: Name,
+        /// The window width.
+        window: Duration,
+        /// The raw field a row is kept per.
+        by: Option<Name>,
+        /// What each row computes: the fold word, its field (`None` for
+        /// `count(*)`) and the name it answers under.
+        computes: Vec<(Name, Option<Name>, Name)>,
+        /// How far back the rollup answers — required, like a series'.
+        retain: Duration,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DROP ROLLUP hourly`
+    DropRollup {
+        /// The name to remove.
+        name: Name,
     },
     /// `DROP SERIES readings`
     ///

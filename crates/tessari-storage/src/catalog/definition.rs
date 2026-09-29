@@ -14,6 +14,7 @@ mod declarations;
 mod indexes;
 mod kinds;
 mod reading;
+mod rollups;
 mod tables;
 use std::collections::BTreeMap;
 
@@ -30,6 +31,7 @@ pub use kinds::{StoredKind, TableKind};
 pub(crate) use reading::{
     ceiling, count_of, field_id, field_name, flag, id_of, identity_kind, object,
 };
+pub use rollups::{RollupCompute, RollupDeclaration, RollupFold};
 pub use tables::{TableDefinition, TableShape};
 
 const FIELD_ID: &str = "id";
@@ -69,6 +71,8 @@ const FIELD_SPACE: &str = "space";
 /// A topic's declaration: present (possibly empty) exactly when the table is one.
 const FIELD_TOPIC: &str = "topic";
 const FIELD_RETAIN: &str = "retain";
+/// The field a series mints its identities from (ADR-0088 §1).
+const FIELD_EVENT_TIME: &str = "time";
 const FIELD_DIMENSION: &str = "dimension";
 const FIELD_DISTANCE: &str = "distance";
 const FIELD_REPLICATION: &str = "replication";

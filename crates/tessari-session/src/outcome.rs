@@ -383,6 +383,12 @@ pub enum Note {
         /// How many positions the read passed over.
         missed: u64,
     },
+    /// Windows a `FILL` answered with although nothing was written in them
+    /// (ADR-0088 §2). Their `count` is `0`, so each row can be told apart too.
+    Filled {
+        /// How many windows were filled.
+        windows: u64,
+    },
 }
 
 impl Note {
@@ -398,6 +404,7 @@ impl Note {
             Self::NearingCeiling { .. } => "nearing-ceiling",
             Self::Gathered { .. } => "gathered",
             Self::Lapsed { .. } => "lapsed",
+            Self::Filled { .. } => "filled",
         }
     }
 
@@ -435,6 +442,13 @@ impl Note {
                 if *missed == 1 { "" } else { "s" },
                 "its",
                 if *missed == 1 { "it" } else { "them" },
+            ),
+            Self::Filled { windows } => format!(
+                "{windows} window{} of this answer held no records and {} filled as the \
+                 statement asked; {} count is 0",
+                if *windows == 1 { "" } else { "s" },
+                if *windows == 1 { "was" } else { "were" },
+                if *windows == 1 { "its" } else { "their" },
             ),
             Self::Gathered { table, shards } => format!(
                 "shard{} {} of `{table}` {} read from {} leader{} on other nodes, each when \

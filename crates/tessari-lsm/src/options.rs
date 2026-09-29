@@ -204,6 +204,16 @@ pub(crate) fn database_options(config: &StoreConfig, create: bool) -> Options {
     options
 }
 
+/// zstd's own defaults for the window, level and strategy — only the
+/// dictionary is chosen here.
+const ZSTD_WINDOW_BITS: i32 = -14;
+const ZSTD_LEVEL: i32 = 3;
+const ZSTD_STRATEGY: i32 = 0;
+/// The dictionary trained per bottom-level compaction.
+const DICTIONARY_BYTES: i32 = 16 * 1024;
+/// How much sample data trains it: a hundred dictionaries' worth.
+const DICTIONARY_TRAINING_BYTES: i32 = 100 * DICTIONARY_BYTES;
+
 /// Options for one region.
 ///
 /// Each region gets a profile matching how it is actually read and written. That
@@ -215,6 +225,16 @@ fn region_options(keyspace: Keyspace, cache: &Cache) -> Options {
     options.set_compression_per_level(&compression_per_level(keyspace));
     if let Some(bottom) = bottommost_compression(keyspace) {
         options.set_bottommost_compression_type(bottom);
+        // A trained dictionary: records are small and alike, so a block alone
+        // gives zstd too little to learn from (G044 C10: 69 → 62 B/point).
+        options.set_bottommost_compression_options(
+            ZSTD_WINDOW_BITS,
+            ZSTD_LEVEL,
+            ZSTD_STRATEGY,
+            DICTIONARY_BYTES,
+            true,
+        );
+        options.set_bottommost_zstd_max_train_bytes(DICTIONARY_TRAINING_BYTES, true);
     }
     options.set_block_based_table_factory(&table_options(keyspace, cache));
 
@@ -230,6 +250,12 @@ fn region_options(keyspace: Keyspace, cache: &Cache) -> Options {
 /// The top levels are left uncompressed because they are rewritten constantly
 /// and hold the least data; the bottom is compressed hardest because it holds
 /// most of the bytes and is rewritten least.
+///
+/// The log is the exception, because its keys only ever grow: a flushed file
+/// overlaps nothing below it, so the engine relinks it level by level to the
+/// bottom without rewriting it, and it stays in whatever codec the flush used.
+/// With an uncompressed top that was a permanent uncompressed copy of every
+/// record (G044 C10: 51.7 → 28.2 B/point once the flush compresses densely).
 fn compression_per_level(keyspace: Keyspace) -> [DBCompressionType; LEVELS] {
     const NONE: DBCompressionType = DBCompressionType::None;
     const FAST: DBCompressionType = DBCompressionType::Lz4;
@@ -240,10 +266,12 @@ fn compression_per_level(keyspace: Keyspace) -> [DBCompressionType; LEVELS] {
         // costs CPU on the hottest read in the store and saves nothing worth
         // measuring.
         Keyspace::META => [NONE; LEVELS],
-        // The log is written once, read sequentially by a follower, and dropped
-        // by retention rather than rewritten. Dense compression at the bottom
-        // would pay to compact bytes that are about to be discarded.
-        Keyspace::LOG => [NONE, NONE, FAST, FAST, FAST, FAST, FAST],
+        // The log is the store and is kept unless a node declares a retained
+        // record count (default off), so its bottom is a permanent second copy
+        // of every record — measured as the larger half of a series' bytes on
+        // disk (G044 C10: 148 → 69 B/point with dense compression here). Dense
+        // from the flush on, because its files reach the bottom unrewritten.
+        Keyspace::LOG => [DENSE; LEVELS],
         _ => [NONE, NONE, FAST, FAST, FAST, DENSE, DENSE],
     }
 }
@@ -251,7 +279,7 @@ fn compression_per_level(keyspace: Keyspace) -> [DBCompressionType; LEVELS] {
 /// The compression the last level settles at, where it differs from the ladder.
 fn bottommost_compression(keyspace: Keyspace) -> Option<DBCompressionType> {
     match keyspace {
-        Keyspace::META | Keyspace::LOG => None,
+        Keyspace::META => None,
         _ => Some(DBCompressionType::Zstd),
     }
 }
@@ -372,6 +400,10 @@ mod tests {
         for keyspace in Keyspace::ALL {
             let ladder = compression_per_level(*keyspace);
             assert_eq!(ladder.len(), LEVELS, "{keyspace}");
+            if *keyspace == Keyspace::LOG {
+                // Its files are relinked to the bottom, not rewritten; see below.
+                continue;
+            }
             assert_eq!(
                 ladder[0],
                 DBCompressionType::None,
@@ -391,13 +423,22 @@ mod tests {
     }
 
     #[test]
-    fn the_log_stays_on_the_cheap_codec_all_the_way_down() {
+    fn the_log_is_compressed_densely_at_the_bottom_because_it_is_kept() {
+        // It used to stay on the cheap codec on the premise that retention
+        // discards it; retention is off by default, so the log is a permanent
+        // second copy, and G044 C10 measured it as the larger half of the bytes.
         let ladder = compression_per_level(Keyspace::LOG);
+        // Every level, the flush included: a log key only grows, so a flushed
+        // file is relinked to the bottom without being rewritten and keeps the
+        // codec it was written with (G044 C10: 51.7 → 28.2 B/point).
         assert!(
-            ladder.iter().all(|level| *level != DBCompressionType::Zstd),
-            "the log is discarded by retention, not compacted for density"
+            ladder.iter().all(|level| *level == DBCompressionType::Zstd),
+            "{ladder:?}"
         );
-        assert_eq!(bottommost_compression(Keyspace::LOG), None);
+        assert_eq!(
+            bottommost_compression(Keyspace::LOG),
+            Some(DBCompressionType::Zstd)
+        );
     }
 
     #[test]

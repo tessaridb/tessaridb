@@ -228,6 +228,14 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
         return Ok(());
     }
     if let TableKind::Series(declared) = &definition.kind {
+        // A rollup is declared from its series by `DEFINE ROLLUP`, which names
+        // the series; this writer sees one table and cannot spell that — and
+        // writing it back as a plain series would restore a table nothing keeps.
+        if declared.rollup_of.is_some() {
+            return Err(Unwritable::at(format!(
+                "`{name}` is a rollup, declared with `DEFINE ROLLUP` on its series"
+            )));
+        }
         if definition.schemafull || definition.is_edge() {
             return Err(Unwritable::at(format!(
                 "series `{name}` carries flags its declaring word cannot say"
@@ -238,9 +246,13 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
                 "series `{name}` names records in a way its declaring word cannot say"
             )));
         }
+        let time = declared
+            .time
+            .as_ref()
+            .map_or_else(String::new, |field| format!(" TIME {field}"));
         let _ = writeln!(
             script,
-            "DEFINE SERIES {name} RETAIN {};",
+            "DEFINE SERIES {name} RETAIN {}{time};",
             declared.retain.to_literal()
         );
         return Ok(());

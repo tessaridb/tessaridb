@@ -60,6 +60,19 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
                 }
                 Err(why) => log::warn!("this node cannot remove expired records: {why}"),
             }
+            // A series' records past its floor, removed as one range per table
+            // (G044 C11). This node's own storage work: every node runs it over
+            // its own copy, leader or not, because the answer already changed
+            // when the floor passed.
+            match db.store().expire_every_series() {
+                Ok(expired) if expired.ranges > 0 => log::info!(
+                    "removed aged series records as {} range(s); {} record(s) unindexed first",
+                    expired.ranges,
+                    expired.indexed
+                ),
+                Ok(_) => {}
+                Err(why) => log::warn!("this node cannot remove aged series records: {why}"),
+            }
         },
     )
     .await;

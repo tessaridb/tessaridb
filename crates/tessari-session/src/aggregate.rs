@@ -202,7 +202,8 @@ impl Session<'_> {
         records: Vec<(RecordId, Value)>,
         wanted: &[Projected],
         group: &[Expr],
-    ) -> Result<Vec<(RecordId, Value)>> {
+        fill: Option<&tessari_ql::Fill>,
+    ) -> Result<(Vec<(RecordId, Value)>, u64)> {
         // Which folds each projection holds, resolved once rather than per
         // record — the tree does not change under a read.
         let occurrences: Vec<Vec<&Expr>> = wanted
@@ -235,7 +236,7 @@ impl Session<'_> {
                 .or_insert_with(|| (id.clone(), holding(&occurrences)));
             for (position, held) in occurrences.iter().enumerate() {
                 for (which, fold) in held.iter().enumerate() {
-                    let ExprKind::Fold { over, .. } = &fold.kind else {
+                    let ExprKind::Fold { over, at, .. } = &fold.kind else {
                         continue;
                     };
                     let value = match over {
@@ -244,6 +245,15 @@ impl Session<'_> {
                         // than a value read out of one.
                         None => Value::Bool(true),
                         Some(expr) => self.evaluate_in(transaction, expr, Scope::of(&record))?,
+                    };
+                    // A counter fold is offered the value with the instant it
+                    // was observed at, so it can order its samples itself.
+                    let value = match at {
+                        Some(at) => Value::Array(vec![
+                            value,
+                            self.evaluate_in(transaction, at, Scope::of(&record))?,
+                        ]),
+                        None => value,
                     };
                     if let Some(accumulator) = entry
                         .1
@@ -256,7 +266,7 @@ impl Session<'_> {
             }
         }
 
-        let mut answered = Vec::with_capacity(groups.len());
+        let mut answered: Vec<crate::fill::Row> = Vec::with_capacity(groups.len());
         for (key, (id, accumulated)) in groups {
             let mut fields = BTreeMap::new();
             for (position, value) in wanted.iter().enumerate() {
@@ -287,9 +297,18 @@ impl Session<'_> {
                     fields.insert(value.name.text.clone(), answer);
                 }
             }
-            answered.push((id, Value::Object(fields)));
+            answered.push((key, id, fields));
         }
-        Ok(answered)
+        match fill {
+            Some(fill) => self.fill_windows(transaction, answered, wanted, group, fill),
+            None => Ok((
+                answered
+                    .into_iter()
+                    .map(|(_, id, fields)| (id, Value::Object(fields)))
+                    .collect(),
+                0,
+            )),
+        }
     }
 }
 
@@ -331,6 +350,15 @@ pub(crate) fn fold(aggregate: Aggregate, values: &[Value], span: Span) -> Result
         Aggregate::Stddev => spread(values, true, span),
         Aggregate::Median => median(values, span),
         Aggregate::Collect => Ok(collect(values)),
+        // No batch twin: the counter folds are checked against a hand oracle
+        // in the suite (`counters::`) rather than against a second copy.
+        Aggregate::Increase | Aggregate::Rate | Aggregate::Delta => {
+            let mut running = crate::accumulate::Accumulator::for_aggregate(aggregate, span);
+            for value in values {
+                running.offer(value)?;
+            }
+            running.finish()
+        }
     }
 }
 

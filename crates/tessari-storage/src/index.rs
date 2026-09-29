@@ -182,12 +182,21 @@ impl Moved {
 ///
 /// Reads the catalog and the records' current values as of the committed state,
 /// which is the state this record is about to be applied on top of.
-pub(crate) fn maintain(
+pub(crate) fn maintain(store: &Store, record: &LogRecord, batch: WriteBatch) -> Result<WriteBatch> {
+    maintain_from(store, store.begin()?, record, batch)
+}
+
+/// [`maintain`], reading the records' current values through `view`.
+///
+/// The series removal pass hands in a view that sees below its table's floor:
+/// through an ordinary one a record past the floor has no current value, so
+/// removing it would take none of its index entries with it.
+pub(crate) fn maintain_from(
     store: &Store,
+    mut view: crate::transaction::Transaction<'_>,
     record: &LogRecord,
     mut batch: WriteBatch,
 ) -> Result<WriteBatch> {
-    let mut view = store.begin()?;
     // Keyed by the WHOLE tenancy and not by the table alone, because a `TableId`
     // is not a key on its own. Ids are handed out store-wide from
     // `system::FIRST_ID`, and the system catalog reserves the first eighteen at

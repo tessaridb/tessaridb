@@ -68,8 +68,13 @@ impl Parser<'_> {
             });
         }
         let alias = self.alias()?;
+        // `ASOF` is contextual: it only means something directly before `JOIN`.
+        let asof = self.eat_word("asof");
+        if asof && self.peek_keyword() != Some(Keyword::Join) {
+            return Err(self.error_here("`JOIN` after `ASOF`"));
+        }
         if self.eat_keyword(Keyword::Join) {
-            return self.join(JoinSide::Table { table, alias });
+            return self.join(JoinSide::Table { table, alias }, asof);
         }
         if alias.is_some() {
             return Err(self.aliased_without_a_join());
@@ -128,10 +133,13 @@ impl Parser<'_> {
         if !self.eat_keyword(Keyword::Join) {
             return Err(self.aliased_without_a_join());
         }
-        self.join(JoinSide::Read {
-            read: Box::new(read),
-            alias,
-        })
+        self.join(
+            JoinSide::Read {
+                read: Box::new(read),
+                alias,
+            },
+            false,
+        )
     }
 
     /// `WHERE …` after a materialised source, consumed if it is there.
@@ -181,11 +189,17 @@ impl Parser<'_> {
         // anything groups, projects or sorts, so the clause sits before them.
         // The grammar keeps clause order and application order the same on
         // purpose — see `START` before `LIMIT` below.
+        // Before everything else that shapes the answer, because it decides
+        // which records there are: the newest per key, after the condition.
+        let latest = self.latest_by()?;
         let fetch = self.fetch_paths()?;
         // After the fetch and before everything that counts records, which is
         // where it is applied: the split is what decides how many there are.
         let split = self.split_path()?;
         let group = self.group_by()?;
+        // Straight after the grouping it completes: the windows it adds are
+        // groups, and everything after this clause treats them as groups.
+        let fill = self.fill()?;
         let (order, fusion) = self.order_by()?;
         // After the order, because the order is what it resumes: the anchor is
         // the last record of the page before, and "after" is a position in the
@@ -302,6 +316,8 @@ impl Parser<'_> {
             fetch,
             split,
             group,
+            fill,
+            latest,
             order,
             fusion,
             after,
@@ -331,7 +347,7 @@ impl Parser<'_> {
     /// The root is then stripped, so what the executor holds is a route into a
     /// *record* on each side. That is what lets the right side be probed through
     /// an index, which reads records and knows nothing about a composite.
-    pub(super) fn join(&mut self, left: JoinSide) -> Result<Source> {
+    pub(super) fn join(&mut self, left: JoinSide, asof: bool) -> Result<Source> {
         let right = self.join_side()?;
         let on = self.span_here();
         self.expect_keyword(Keyword::On, "`ON` and the two fields to match")?;
@@ -372,6 +388,7 @@ impl Parser<'_> {
             right: Box::new(right),
             left_key,
             right_key,
+            asof,
             condition,
         })
     }

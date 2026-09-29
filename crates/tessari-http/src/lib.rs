@@ -363,6 +363,18 @@ fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
                 },
             }
         }
+        // A batch of events for one series, in one transaction (G044 C12).
+        (Method::POST, url) if url.starts_with("/series/") => match respond::series::target(url) {
+            Some(aimed) => match body::text(&mut request) {
+                Ok(body) => respond::series::append(db, &aimed, &body, tokens, &presented),
+                Err(refused) => refused,
+            },
+            None => Answer::new(404, r#"{"error":"no such route"}"#.to_owned()),
+        },
+        (_, url) if url.starts_with("/series/") => Answer::new(
+            405,
+            r#"{"error":"that route takes another method"}"#.to_owned(),
+        ),
         // "No such thing" and "not that way" are different answers, and a caller
         // debugging a client needs to know which one it got.
         (

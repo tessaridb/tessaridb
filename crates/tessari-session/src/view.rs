@@ -172,6 +172,7 @@ impl Session<'_> {
                 mut right,
                 left_key,
                 right_key,
+                asof,
                 mut condition,
             } => {
                 let mut changed = self.expand_join_side(store, &mut left, chain)?;
@@ -185,6 +186,7 @@ impl Session<'_> {
                         right,
                         left_key,
                         right_key,
+                        asof,
                         condition,
                     },
                     changed,

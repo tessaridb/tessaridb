@@ -84,6 +84,11 @@ impl<'a> Session<'a> {
                 transaction.dry_run().map_err(advised)?;
                 Ok(Outcome::Done)
             }
+            // Its backfill is a second commit after the declaration's, which
+            // an enclosing transaction would hold back (ADR-0088 §6).
+            StatementKind::DefineRollup { .. } if open.is_some() => {
+                Err(Error::RollupInTransaction { span })
+            }
             other => match (read_version(other), open.as_mut()) {
                 // A transaction is one point in the store's history — that is
                 // what a snapshot is — so a statement inside one cannot ask for
@@ -126,7 +131,12 @@ impl<'a> Session<'a> {
                         let mut transaction = store.begin()?;
                         let outcome = self.execute(&mut transaction, other, span)?;
                         match settle(transaction) {
-                            Ok(()) => return Ok(outcome),
+                            Ok(()) => {
+                                if let StatementKind::DefineRollup { name, source, .. } = other {
+                                    self.backfilled(store, source, name)?;
+                                }
+                                return Ok(outcome);
+                            }
                             Err(Error::Store(refusal))
                                 if retried
                                     && conflicting(&refusal)
@@ -140,6 +150,31 @@ impl<'a> Session<'a> {
                     }
                 }
             },
+        }
+    }
+
+    /// `DEFINE ROLLUP`'s second commit, retried while a concurrent raw write
+    /// lands on a row it also writes (ADR-0088 §6).
+    fn backfilled(
+        &mut self,
+        store: &'a Store,
+        source: &tessari_ql::Name,
+        name: &tessari_ql::Name,
+    ) -> Result<()> {
+        let started = std::time::Instant::now();
+        loop {
+            let mut transaction = store.begin()?;
+            self.backfill_rollup(&mut transaction, source, name)?;
+            match settle(transaction) {
+                Ok(()) => return Ok(()),
+                Err(Error::Store(refusal))
+                    if conflicting(&refusal)
+                        && started.elapsed() < crate::kv::CONFLICT_DEADLINE =>
+                {
+                    std::thread::yield_now();
+                }
+                Err(refusal) => return Err(refusal),
+            }
         }
     }
 }

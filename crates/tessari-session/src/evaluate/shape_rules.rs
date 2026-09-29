@@ -263,6 +263,7 @@ pub(crate) fn streams(select: &Select) -> bool {
         && select.split.is_none()
         && !select.order.is_empty()
         && select.fusion.is_none()
+        && select.latest.is_none()
         && !groups(select)
 }
 
@@ -305,6 +306,7 @@ pub(crate) fn held_bound(select: &Select) -> Option<usize> {
         || select.after.is_some()
         || !select.fetch.is_empty()
         || select.split.is_some()
+        || select.latest.is_some()
         || groups(select)
     {
         return None;

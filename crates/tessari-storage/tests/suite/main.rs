@@ -27,6 +27,7 @@ mod replication;
 mod retention;
 mod schema;
 mod sealing;
+mod series_expiry;
 mod series_floor;
 mod sharded_logs;
 mod spatial_nearest;

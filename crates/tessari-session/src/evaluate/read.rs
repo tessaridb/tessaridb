@@ -159,6 +159,9 @@ impl Session<'_> {
         // lifetime rather than the discipline is what stops a note outliving the
         // statement that earned it.
         let noticed = Noticed::default();
+        if let Some(latest) = &select.latest {
+            self.check_latest(transaction, select, latest)?;
+        }
         let (prepared, searched) = self.prepare_source(
             transaction,
             select,
@@ -256,6 +259,11 @@ impl Session<'_> {
         if let Some(route) = &select.split {
             records = opened(records, &route.path, &mut budget)?;
         }
+        // On every path, the index walk's included: over records already one
+        // per key it changes nothing, so the walk can only make it cheaper.
+        if let Some(latest) = &select.latest {
+            records = Self::newest_per_key(records, latest);
+        }
         if select.fusion.is_some() {
             return self.fused_answer(
                 transaction,
@@ -270,12 +278,17 @@ impl Session<'_> {
             // the group rather than about a record — so the star has nothing to
             // contribute here and the grammar has already refused one written
             // beside a fold.
-            self.grouped(
+            let (rows, filled) = self.grouped(
                 transaction,
                 records,
                 select.projection.written(),
                 &select.group,
-            )?
+                select.fill.as_ref(),
+            )?;
+            if filled > 0 {
+                notes.push(Note::Filled { windows: filled });
+            }
+            rows
         } else if let Some(wanted) = self.shaped(transaction, select)? {
             let mut projected = Vec::with_capacity(records.len());
             for (id, record) in records {

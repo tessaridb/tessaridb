@@ -65,6 +65,8 @@ forms! {
     DropQueue => "DROP QUEUE",
     DefineSeries => "DEFINE SERIES",
     DropSeries => "DROP SERIES",
+    DefineRollup => "DEFINE ROLLUP",
+    DropRollup => "DROP ROLLUP",
     DefineView => "DEFINE VIEW",
     DropView => "DROP VIEW",
     Claim => "CLAIM",
@@ -303,6 +305,8 @@ mod tests {
              DROP QUEUE q;\
              DEFINE SERIES s RETAIN 12h;\
              DROP SERIES s;\
+             DEFINE ROLLUP r FROM s WINDOW 1h COMPUTE count(*) AS n RETAIN 1d;\
+             DROP ROLLUP r;\
              DEFINE VIEW v AS SELECT * FROM t;\
              DROP VIEW v;\
              GET s:1;\

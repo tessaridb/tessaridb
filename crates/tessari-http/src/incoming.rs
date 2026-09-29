@@ -46,6 +46,7 @@ impl Incoming {
 pub(crate) fn takes_body(method: &Method, url: &str) -> bool {
     match (method, url) {
         (&Method::POST, "/script" | "/password") => true,
+        (&Method::POST, url) if url.starts_with("/series/") => true,
         (
             _,
             "/script" | "/session" | "/password" | "/health" | "/ready" | "/metrics" | "/watch",

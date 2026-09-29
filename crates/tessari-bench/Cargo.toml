@@ -23,3 +23,7 @@ tessari-types.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tessari-lsm.workspace = true
+tessari-kv.workspace = true

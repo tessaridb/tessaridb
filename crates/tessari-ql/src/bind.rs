@@ -354,6 +354,8 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // reason: a floor a bound value could set is a floor a caller could move.
         | StatementKind::DefineSeries { .. }
         | StatementKind::DropSeries { .. }
+        | StatementKind::DefineRollup { .. }
+        | StatementKind::DropRollup { .. }
         // A view holds a read as text, and a parameter substituted into stored
         // text would be bound once at definition and then frozen — which is a
         // different feature from a view (a parameterised view is a function) and

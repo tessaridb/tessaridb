@@ -40,6 +40,53 @@ impl Parser<'_> {
         Ok(keys)
     }
 
+    /// `FILL PREVIOUS FROM <start> TO <end>`, when it is there.
+    ///
+    /// `PREVIOUS` and `LINEAR` are words; anything else is an expression the
+    /// empty windows answer with, `NULL` included. The range is required here
+    /// rather than defaulted to the data's extent, because the extent is exactly
+    /// what the statement did not say.
+    pub(super) fn fill(&mut self) -> Result<Option<crate::ast::Fill>> {
+        let span = self.span_here();
+        if !self.eat_word("fill") {
+            return Ok(None);
+        }
+        let mode = if self.eat_word("previous") {
+            crate::ast::FillMode::Previous
+        } else if self.eat_word("linear") {
+            crate::ast::FillMode::Linear
+        } else {
+            crate::ast::FillMode::Value(self.condition()?)
+        };
+        if !self.eat_keyword(Keyword::From) {
+            return Err(self.error_here("`FROM` and the first instant the windows cover"));
+        }
+        let from = self.condition()?;
+        if !self.eat_keyword(Keyword::To) {
+            return Err(self.error_here("`TO` and the instant the windows stop before"));
+        }
+        let to = self.condition()?;
+        Ok(Some(crate::ast::Fill {
+            mode,
+            from,
+            to,
+            span,
+        }))
+    }
+
+    /// `LATEST BY sensor`, when it is there.
+    ///
+    /// Contextual, like `FETCH`: a field called `latest` stays a field.
+    pub(super) fn latest_by(&mut self) -> Result<Option<FieldPath>> {
+        if !self.eat_word("latest") {
+            return Ok(None);
+        }
+        if !self.eat_word("by") {
+            return Err(self.error_here("`BY` after `LATEST` and the field one record is kept per"));
+        }
+        Ok(Some(self.field_path()?))
+    }
+
     /// `FETCH author, meta.editor`, when it is there.
     ///
     /// `fetch` is a **contextual** word and not a reserved one, the same

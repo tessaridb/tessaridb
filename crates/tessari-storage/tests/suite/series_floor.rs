@@ -26,10 +26,10 @@ use tessari_storage::{Catalog, RecordAddress, SeriesDeclaration, Store, TableKin
 use tessari_types::{DatabaseId, Duration, IdentityKind, NamespaceId, RecordId, TableId, Value};
 
 /// An hour, as the retention every fixture below declares.
-const RETAIN: Duration = Duration::from_seconds(3_600);
+pub(super) const RETAIN: Duration = Duration::from_seconds(3_600);
 
 /// The millisecond the test is running in.
-fn now_millis() -> u64 {
+pub(super) fn now_millis() -> u64 {
     u64::try_from(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -49,7 +49,7 @@ fn now_millis() -> u64 {
 ///
 /// The bytes below the millisecond are fixed rather than random, so a failure
 /// prints the same identity twice and a reader can tell two fixtures apart.
-fn identity(base: u64, ago: u64, tag: u8) -> RecordId {
+pub(super) fn identity(base: u64, ago: u64, tag: u8) -> RecordId {
     let mut bytes = [tag; 16];
     let [_, _, t0, t1, t2, t3, t4, t5] = base.saturating_sub(ago).to_be_bytes();
     bytes[0] = t0;
@@ -65,14 +65,14 @@ fn identity(base: u64, ago: u64, tag: u8) -> RecordId {
     RecordId::Uuid(bytes)
 }
 
-struct Fixture {
-    backend: Arc<dyn KvBackend>,
-    store: Store,
-    namespace: NamespaceId,
-    database: DatabaseId,
-    table: TableId,
+pub(super) struct Fixture {
+    pub(super) backend: Arc<dyn KvBackend>,
+    pub(super) store: Store,
+    pub(super) namespace: NamespaceId,
+    pub(super) database: DatabaseId,
+    pub(super) table: TableId,
     /// The instant every identity in this fixture is derived from.
-    base: u64,
+    pub(super) base: u64,
     /// The record two hours old, minted once.
     old: RecordId,
     /// The record a second old, minted once.
@@ -81,7 +81,7 @@ struct Fixture {
 
 impl Fixture {
     /// A table of `kind`, holding one record from two hours ago and one from now.
-    fn holding(kind: TableKind, identity_kind: IdentityKind) -> Self {
+    pub(super) fn holding(kind: TableKind, identity_kind: IdentityKind) -> Self {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
         let store = Store::open(Arc::clone(&backend)).unwrap();
 
@@ -126,7 +126,7 @@ impl Fixture {
         RecordAddress::new(self.namespace, self.database, self.table, id)
     }
 
-    fn write(&self, id: RecordId, label: &str) {
+    pub(super) fn write(&self, id: RecordId, label: &str) {
         let mut transaction = self.store.begin().unwrap();
         let fields = BTreeMap::from([("label".to_owned(), Value::from(label))]);
         transaction.put(
@@ -137,7 +137,7 @@ impl Fixture {
     }
 
     /// The labels a plain read of the table answers with, in key order.
-    fn labels(&self) -> Vec<String> {
+    pub(super) fn labels(&self) -> Vec<String> {
         let transaction = self.store.begin().unwrap();
         transaction
             .scan_table(self.namespace, self.database, self.table)
@@ -160,7 +160,7 @@ impl Fixture {
     ///
     /// Read from the backend the store was opened on, so it is the bytes on the
     /// substrate and not another read through the same rules being tested.
-    fn stored_entries(&self) -> usize {
+    pub(super) fn stored_entries(&self) -> usize {
         let prefix = RecordKey::table_prefix(self.namespace, self.database, self.table);
         self.backend
             .scan(&ScanRequest {
@@ -175,14 +175,19 @@ impl Fixture {
 }
 
 /// Two hours, in milliseconds — comfortably past an hour's retention.
-const OLD: u64 = 2 * 60 * 60 * 1_000;
+pub(super) const OLD: u64 = 2 * 60 * 60 * 1_000;
 /// One second, in milliseconds — comfortably inside it.
 const FRESH: u64 = 1_000;
 
 #[test]
 fn a_series_table_does_not_answer_with_a_record_past_its_floor() {
     let fixture = Fixture::holding(
-        TableKind::Series(SeriesDeclaration { retain: RETAIN }),
+        TableKind::Series(SeriesDeclaration {
+            retain: RETAIN,
+            time: None,
+            rollups: Vec::new(),
+            rollup_of: None,
+        }),
         IdentityKind::Uuid,
     );
 
@@ -198,7 +203,12 @@ fn a_series_table_does_not_answer_with_a_record_past_its_floor() {
 #[test]
 fn a_point_read_below_the_floor_answers_nothing() {
     let fixture = Fixture::holding(
-        TableKind::Series(SeriesDeclaration { retain: RETAIN }),
+        TableKind::Series(SeriesDeclaration {
+            retain: RETAIN,
+            time: None,
+            rollups: Vec::new(),
+            rollup_of: None,
+        }),
         IdentityKind::Uuid,
     );
     let transaction = fixture.store.begin().unwrap();
@@ -222,7 +232,12 @@ fn a_point_read_below_the_floor_answers_nothing() {
 #[test]
 fn a_batched_read_below_the_floor_answers_nothing() {
     let fixture = Fixture::holding(
-        TableKind::Series(SeriesDeclaration { retain: RETAIN }),
+        TableKind::Series(SeriesDeclaration {
+            retain: RETAIN,
+            time: None,
+            rollups: Vec::new(),
+            rollup_of: None,
+        }),
         IdentityKind::Uuid,
     );
     let transaction = fixture.store.begin().unwrap();
@@ -242,7 +257,12 @@ fn a_batched_read_below_the_floor_answers_nothing() {
 #[test]
 fn a_record_written_below_the_floor_in_this_transaction_is_not_answered_either() {
     let fixture = Fixture::holding(
-        TableKind::Series(SeriesDeclaration { retain: RETAIN }),
+        TableKind::Series(SeriesDeclaration {
+            retain: RETAIN,
+            time: None,
+            rollups: Vec::new(),
+            rollup_of: None,
+        }),
         IdentityKind::Uuid,
     );
     let mut transaction = fixture.store.begin().unwrap();
@@ -279,7 +299,12 @@ fn the_same_records_in_a_plain_table_are_all_answered() {
 #[test]
 fn the_pass_removes_what_the_floor_had_already_hidden_and_changes_no_answer() {
     let fixture = Fixture::holding(
-        TableKind::Series(SeriesDeclaration { retain: RETAIN }),
+        TableKind::Series(SeriesDeclaration {
+            retain: RETAIN,
+            time: None,
+            rollups: Vec::new(),
+            rollup_of: None,
+        }),
         IdentityKind::Uuid,
     );
     let before = fixture.labels();
@@ -288,28 +313,36 @@ fn the_pass_removes_what_the_floor_had_already_hidden_and_changes_no_answer() {
         .store
         .expire_series(fixture.namespace, fixture.database, fixture.table)
         .unwrap();
-    assert_eq!(expired.records, 1);
-    assert_eq!(expired.batches, 1);
+    assert_eq!(
+        expired,
+        tessari_storage::Expired {
+            ranges: 1,
+            indexed: 0
+        }
+    );
 
     // The point of the separation: the pass is about storage, so the answer it
     // leaves behind is the answer that was already being given.
     assert_eq!(fixture.labels(), before);
 
-    // And it is a removal through the ordinary write path, so it is a tombstone
-    // at a new version rather than bytes vanishing. The space comes back
-    // through the store's ordinary version reclamation, which is the same
-    // sentence the specification already writes about the retention statement.
+    // And it is a range removed below the floor (ADR-0088 §7): the stale
+    // record's bytes are gone, not covered by a tombstone at a new version.
     assert_eq!(
         fixture.stored_entries(),
-        3,
-        "two records and the tombstone the pass wrote over the stale one"
+        1,
+        "only the current record is left"
     );
 }
 
 #[test]
 fn a_second_pass_removes_nothing() {
     let fixture = Fixture::holding(
-        TableKind::Series(SeriesDeclaration { retain: RETAIN }),
+        TableKind::Series(SeriesDeclaration {
+            retain: RETAIN,
+            time: None,
+            rollups: Vec::new(),
+            rollup_of: None,
+        }),
         IdentityKind::Uuid,
     );
     fixture

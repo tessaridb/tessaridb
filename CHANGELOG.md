@@ -12,6 +12,37 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.14.0-beta — 2026-09-30
+
+**A series can be ordered by when its events happened.** `DEFINE SERIES
+readings RETAIN 30d TIME at` names each record from its own `at`, so a late or
+backfilled reading lands in its place and the retention is about the event. A
+windowed grouping can be filled over a stated range (`FILL NULL | PREVIOUS |
+LINEAR | <value> FROM … TO …`); `LATEST BY <field>` answers the newest record per
+key, one index seek per key; `ASOF JOIN` pairs each record with the newest one of
+another series at or before it; `increase`, `rate` and `delta` fold counters by
+the instant, a fall counting as a reset; and `DEFINE ROLLUP` keeps per-window
+`count`, `sum`, `min` and `max` in the transaction that writes the series.
+
+**Aged records go as one range.** The node's housekeeping removes what a series'
+floor has hidden with one range removal per series, index entries first, below
+the oldest open reader's floor. It is each node's own storage work: nothing is
+written to the log or the feed. A million aged points take milliseconds; the
+replaced per-record pass stopped after its first 512.
+
+**A series takes about a fifth of the space.** The log is compressed densely
+from its first flush (its files reach the bottom level without a rewrite, so an
+uncompressed flush stayed uncompressed), the bottom level uses a trained
+dictionary, and event identities carry fewer random bits. A million regular
+readings take 28 bytes per point on disk, where `0.13.1-beta` took 148. Stores
+written by `0.13.1-beta` open unchanged.
+
+**`POST /series/{ns}/{db}/{series}`** appends a batch of events in one
+transaction and answers how many landed; every client (`0.4.0`) has `append`.
+The console lists a database's series and rollups on Run.
+
+**1444 conformance cases** define the language and run in the build.
+
 ## 0.13.1-beta — 2026-09-29
 
 **A new Kafka consumer takes the messages already on its topic.** A group the

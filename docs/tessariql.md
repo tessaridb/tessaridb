@@ -3867,10 +3867,10 @@ the versions.
 The paragraph that used to stand here refused a declared retention outright, on
 the grounds that a background job fires at a different moment on every replica
 while a statement is one log record each of them applies at one sequence. That
-argument is not overturned; the question it protects is **deferred**. A series
-table's removal pass writes through the ordinary write path, so its removals are
-sequenced and carried exactly as any other write is, and **who schedules the pass**
-is settled by the cluster design rather than here.
+argument holds for a statement, and a series does not need it: its floor is a
+function of the clock and the key, so every node reaches the same span by
+itself, and the removal pass is each node's own storage work, like reclaiming
+old versions — nothing needs to be sequenced for it.
 
 ### A table whose answer has a floor
 
@@ -3899,13 +3899,10 @@ ordinary table's counter identity carries no time at all, and a rule over one of
 its `datetime` fields is a predicate re-tested against every record the read
 passes.
 
-**It follows that the floor is about when a record was written, not about what it
-says.** A reading that arrived late carries the identity it was given on arrival,
-so a table of events whose own timestamps run behind their arrival is a table
-whose floor is not the floor its author had in mind. That distinction is the same
-one `SELECT * FROM readings:1..4` and `WHERE at >= …` already draw, and it is
-worth re-reading the two paragraphs above about arrival order before declaring a
-retention over data that arrives out of order.
+**Without `TIME`, the floor is about when a record was written, not about what
+it says.** A reading that arrived late carries the identity it was given on
+arrival. When events can arrive late, declare the series with `TIME` (below), so
+the identity — and with it the floor — is the event's own instant.
 
 **The retention is a literal duration and it has no default.** Declaring it is
 the whole capability, and a retention the store guessed would drop somebody's
@@ -3917,23 +3914,64 @@ the answer.
 always is here — so a table declared `RETAIN 30d` describes itself as
 `RETAIN 720h`, which is the same duration written in the unit the literal keeps.
 
-**The removal itself is an ordinary write.** The pass that removes what the floor
-has hidden writes `DELETE`s through the same path any statement uses, so they are
-sequenced into the commit log, carried over the protocol, and visible on the
-change feed. Two things follow that are worth knowing before subscribing to one.
-A consumer of a series table **sees removals no client issued**. And it sees them
-**after** the records stopped being visible to a reader, because ageing out is
-not an event — nothing happens, time passes — so a consumer mirroring a series
-table holds rows the source no longer shows for as long as the pass lags.
-
-**The pass does not free space by itself**, for the same reason the retention
-statement does not: a removal is a tombstone at a new version, and the bytes come
-back through the store's ordinary version reclamation once no reader still needs
-them.
+**The removal is a reclamation, not a write.** The node's housekeeping removes
+what the floor has hidden as **one range removal per series**, below the floor of
+the oldest reader still open, index entries first. Nothing is written to the log
+and nothing appears on the change feed: the answer changed when the floor passed,
+and ageing out is not an event — nothing happens, time passes. A consumer
+mirroring a series applies the same retention on its side.
 
 `DROP SERIES` removes the table and everything in it, **including the records
 past the floor that reads had stopped answering with**. They were records the
 store still held; what the floor governed was the answer.
+
+### Ordered by when the event happened
+
+```
+DEFINE SERIES readings RETAIN 30d TIME at;
+```
+
+`TIME at` names the field that says when each event happened. The store mints
+each record's identity from its own `at` — a UUID version 7 of that millisecond,
+with its random bits drawn again if one is already held — so the table is in
+event-time order however the events arrive, many events may share one instant,
+and the floor is about the event. Three writes are refused rather than guessed
+at: a record without its `at` or with one that is not a datetime
+(`SeriesTimeMissing`), an instant before 1970 (`SeriesTimeOutOfRange`), and an
+instant already past the floor, which would be written and never read
+(`BelowSeriesFloor`). The identity is the store's: naming one by hand is
+`SeriesIdentityDerived`, and changing a record's `at` is `SeriesTimeFixed` —
+delete it and write it again.
+
+`POST /series/{ns}/{db}/{series}` appends a batch of events over HTTP in one
+transaction, each through the caller's session as a `CREATE`; the protocol
+specification carries the route.
+
+### A rollup kept by the writes
+
+```
+DEFINE SERIES readings RETAIN 30d TIME at;
+DEFINE ROLLUP hourly FROM readings WINDOW 1h BY sensor
+    COMPUTE count(*) AS n, sum(v) AS total, min(v) AS low, max(v) AS high
+    RETAIN 365d;
+DROP ROLLUP hourly;
+```
+
+A rollup is a table of per-window aggregates **kept by the transaction that
+writes the raw record**, so the two never disagree. It folds a series declared
+with `TIME`, and it is itself such a series — ordered by `window` — so it has a
+floor of its own (`RETAIN`), and `LATEST BY`, `ASOF JOIN` and `FILL` read it like
+any other. A late reading lands in the window it belongs to; an update or a
+delete recomputes its window from the raw records.
+
+It keeps `count`, `sum`, `min` and `max` — the folds that merge exactly from the
+row alone. A `mean` is refused: keep `sum` and `count` and divide, which is
+exact. Declaring a rollup fills it from the series already written, in a second
+commit after the declaration's, which is why `DEFINE ROLLUP` runs outside
+`BEGIN … COMMIT`. A write to the series that was already under way when the
+rollup was declared is refused with `Conflict` and succeeds on retry, folded in.
+The raw series ageing past its floor does not change a rollup, which may keep
+windows for longer than the raw records last.
 
 ### Counting per window
 
@@ -3970,6 +4008,61 @@ statement does not say. A row nobody wrote is worse than a row nobody sees.
 remainder in the arithmetic, which is a different function from the one anybody
 asks for; it is refused rather than rounded, because rounding would answer a
 question nobody put.
+
+### Filling the windows of a stated range
+
+```
+SELECT time::bucket(at, 1h) AS hour, count(*) AS n, mean(v) AS v
+  FROM readings
+ GROUP BY time::bucket(at, 1h)
+  FILL LINEAR FROM datetime '2026-09-29T00:00:00Z' TO datetime '2026-09-30T00:00:00Z';
+```
+
+A window with no records has no row unless the statement asks for one. `FILL`
+answers one row per window of the stated range: `NULL` in every aggregate, the
+`PREVIOUS` window's values, a `LINEAR` interpolation between neighbours, or a
+stated value; a count in a filled row is `0`. The answer carries a note saying
+how many windows were filled, because a filled row looks like any other. The
+range is required — only the caller knows where the series should start and
+stop — and a fill needs exactly one `time::bucket` key of a constant width
+(`FillNeedsWindow`), two datetimes (`FillNeedsRange`), and at most a million
+windows (`FillTooWide`).
+
+### The newest record per key
+
+```
+SELECT * FROM readings LATEST BY sensor;
+SELECT * FROM readings WHERE at < datetime '2026-09-29T11:00:00Z' LATEST BY sensor;
+```
+
+`LATEST BY` answers the newest record per key of a series. With an index on the
+key it takes one seek per key from the newest end rather than reading the series.
+It is refused on a table that is not a series (`LatestNeedsSeries`) and beside
+`GROUP BY`, which folds where this keeps (`LatestBesideGroup`).
+
+### An as-of join
+
+```
+SELECT * FROM trades ASOF JOIN quotes ON trades.sym = quotes.sym;
+```
+
+Each left record is paired with the newest right record at or before it with an
+equal key, and keeps its row with no partner when none exists. Both sides must be
+series declared with `TIME` (`AsofNeedsTime`).
+
+### Counters
+
+```
+SELECT increase(n, at) AS up, delta(n, at) AS change, rate(n, at) AS per_second
+  FROM hits;
+```
+
+Three aggregates fold a counter by the instant each value was observed at, so
+the samples are ordered by that instant rather than by storage. `increase` adds
+the rises and counts a fall as a reset — the counter restarted and counted the
+new value; `delta` is last minus first; `rate` is the increase per second between
+the first and last sample, and a single sample has none. Over `10, 15, 3, 8, 20`
+ten seconds apart they answer `25`, `10` and `0.625`.
 
 ### One answer per group
 
@@ -7793,7 +7886,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.13.1", "build": "0.13.1-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.14.0", "build": "0.14.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],

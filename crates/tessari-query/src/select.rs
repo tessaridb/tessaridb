@@ -244,6 +244,8 @@ impl Select<Sourced> {
             // builder assembles.
             split: None,
             group: Vec::new(),
+            fill: None,
+            latest: None,
             order: self.order,
             // Nor a fused order: the builder assembles plain sort keys.
             fusion: None,

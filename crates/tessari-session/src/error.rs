@@ -547,6 +547,202 @@ pub enum Error {
         span: Span,
     },
 
+    /// A record written to an event-time series without its time field, or
+    /// with one that is not a `datetime` (ADR-0088 §1).
+    #[error(
+        "series `{table}` is ordered by `{field}`, and this record's `{field}` is {found} rather than a datetime (at {span})"
+    )]
+    SeriesTimeMissing {
+        /// The series.
+        table: String,
+        /// The declared time field.
+        field: String,
+        /// What the record held instead.
+        found: &'static str,
+        /// Where the write was written.
+        span: Span,
+    },
+
+    /// An event time a UUID version 7 cannot carry: before 1970, or past its
+    /// 48-bit millisecond range.
+    #[error(
+        "series `{table}` cannot order an event at {instant} — a series holds instants from 1970 on (at {span})"
+    )]
+    SeriesTimeOutOfRange {
+        /// The series.
+        table: String,
+        /// The instant, as written back.
+        instant: String,
+        /// Where the write was written.
+        span: Span,
+    },
+
+    /// A write whose event time is already below the series' floor — it would
+    /// be accepted and never answered, which is a loss with nothing in an error
+    /// state.
+    #[error(
+        "series `{table}` no longer answers for {instant}, which is past its retention — the record would be written and never read (at {span})"
+    )]
+    BelowSeriesFloor {
+        /// The series.
+        table: String,
+        /// The instant, as written back.
+        instant: String,
+        /// Where the write was written.
+        span: Span,
+    },
+
+    /// An identity named by hand in an event-time series that does not carry
+    /// the record's own time — the store mints these from the time field.
+    #[error(
+        "series `{table}` names its records from `{field}`; leave the identity out and the store mints it (at {span})"
+    )]
+    SeriesIdentityDerived {
+        /// The series.
+        table: String,
+        /// The declared time field.
+        field: String,
+        /// Where the write was written.
+        span: Span,
+    },
+
+    /// A change to a record's time field in an event-time series: its identity
+    /// is minted from that field and would stop describing it.
+    #[error(
+        "`{field}` fixes where a record of series `{table}` sits, so it cannot change — delete the record and write it again (at {span})"
+    )]
+    SeriesTimeFixed {
+        /// The series.
+        table: String,
+        /// The declared time field.
+        field: String,
+        /// Where the write was written.
+        span: Span,
+    },
+
+    /// `FILL` without exactly one `time::bucket` key of a constant width.
+    #[error(
+        "`FILL` completes one window key — `GROUP BY time::bucket(<instant>, <width>)` with a written width (at {span})"
+    )]
+    FillNeedsWindow {
+        /// Where the clause was written.
+        span: Span,
+    },
+
+    /// `FILL` whose range does not evaluate to two instants.
+    #[error("`FILL … FROM <instant> TO <instant>` needs both ends to be datetimes (at {span})")]
+    FillNeedsRange {
+        /// Where the clause was written.
+        span: Span,
+    },
+
+    /// A fill that would answer more windows than one read may.
+    #[error(
+        "this `FILL` would answer {windows} windows, and a read fills at most {most} — narrow the range or widen the window (at {span})"
+    )]
+    FillTooWide {
+        /// How many windows it would answer.
+        windows: u64,
+        /// The most one read may.
+        most: u64,
+        /// Where the clause was written.
+        span: Span,
+    },
+
+    /// `LATEST BY` over something whose identity is not its time.
+    #[error(
+        "`LATEST BY` keeps the newest record per key, and only a series' identity says which is newest (at {span})"
+    )]
+    LatestNeedsSeries {
+        /// Where the clause was written.
+        span: Span,
+    },
+
+    /// `LATEST BY` beside `GROUP BY`: one keeps records, the other folds them.
+    #[error("`LATEST BY` keeps records and `GROUP BY` folds them — say one (at {span})")]
+    LatestBesideGroup {
+        /// Where `LATEST BY` was written.
+        span: Span,
+    },
+
+    /// `ASOF JOIN` with a side that is not a series ordered by event time:
+    /// "at or before" needs both sides to carry the moment in their key.
+    #[error(
+        "`ASOF JOIN` pairs records by time, and `{side}` is not a series declared with `TIME` (at {span})"
+    )]
+    AsofNeedsTime {
+        /// The side's name.
+        side: String,
+        /// Where the read was written.
+        span: Span,
+    },
+
+    /// `DEFINE ROLLUP` over something that is not an event-time series.
+    #[error("a rollup folds a series declared with `TIME`, and `{name}` is not one (at {span})")]
+    RollupNeedsSeries {
+        /// The name written.
+        name: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A `COMPUTE` a rollup cannot keep exactly from its row alone.
+    #[error(
+        "a rollup keeps `count`, `sum`, `min` and `max`, each once and under its own name — `{fold}` is not one; for a mean keep `sum` and `count` and divide (at {span})"
+    )]
+    RollupFold {
+        /// What was written.
+        fold: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A rollup window that is not a whole number of seconds.
+    #[error("a rollup's window is a whole number of seconds, longer than nothing (at {span})")]
+    RollupWindow {
+        /// Where the statement was written.
+        span: Span,
+    },
+
+    /// A caller's write or delete on a rollup's own table.
+    #[error(
+        "`{table}` is a rollup, kept by the writes to its series — write the series instead (at {span})"
+    )]
+    RollupIsDerived {
+        /// The rollup.
+        table: String,
+        /// Where the write was written.
+        span: Span,
+    },
+
+    /// `DEFINE ROLLUP` inside `BEGIN … COMMIT`: its backfill commits after the
+    /// declaration, which an enclosing transaction would hold back.
+    #[error(
+        "`DEFINE ROLLUP` commits its declaration and then fills the rollup in, so it runs outside `BEGIN … COMMIT` (at {span})"
+    )]
+    RollupInTransaction {
+        /// Where the statement was written.
+        span: Span,
+    },
+
+    /// Two keys of one window whose rows would share an identity.
+    #[error(
+        "two keys of one rollup window share a row identity; the write is refused rather than merged (at {span})"
+    )]
+    RollupKeyCollision {
+        /// Where the write was written.
+        span: Span,
+    },
+
+    /// `DROP SERIES` while rollups are kept of it.
+    #[error("rollups are kept of series `{series}` — drop them first (at {span})")]
+    RollupsDependOn {
+        /// The series.
+        series: String,
+        /// Where the statement was written.
+        span: Span,
+    },
+
     /// A recipient name that did not evaluate to text.
     ///
     /// Reports the **type** and never the value. Every neighbouring variant
