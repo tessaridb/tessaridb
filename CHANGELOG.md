@@ -35,6 +35,15 @@ was: no topic or group is named, because a name is schema. A credential that is
 refused is answered `401`. `INFO FOR DATABASE` now lists its `topics` beside its
 `tables`.
 
+**The console has a Topics tab.** It lists the topics of a chosen namespace
+and database with how many messages each holds, its retention, its readers and
+groups and how far behind the furthest one is; shows a topic's readers and
+groups in full; pages through its messages without moving anybody's position;
+and creates and removes topics and groups and moves a group to another
+position. The three that lose something ask for the name to be typed again and
+say beforehand what they will cost. Topics is the second destination, so the
+keys are now ⌘1 Run, ⌘2 Topics, ⌘3 Cluster, ⌘4 Access and ⌘5 This node.
+
 **1433 conformance cases** define the language and run in the build.
 
 ## 0.11.0-beta — 2026-09-29

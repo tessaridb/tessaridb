@@ -1152,15 +1152,16 @@ fn no_screen_but_run_asks_the_operator_to_read_a_statement() {
 
 #[cfg(feature = "console")]
 #[test]
-fn the_four_destinations_are_named_for_the_jobs_and_there_are_four() {
+fn the_five_destinations_are_named_for_the_jobs_and_there_are_five() {
     // S3.2's own measurement. Renaming the destinations passed every test this
     // suite had, because they all assert that a tab and a pane AGREE — which
     // stays true whatever the tab is called. The labels are the criterion, so
     // the labels are what this asserts, in order.
     //
-    // The cap of four is asserted with them rather than separately: a fifth
-    // destination is a trade to be argued for, and a test that only checked the
-    // names would let one arrive silently beside them.
+    // The cap is asserted with them rather than separately: another destination
+    // is a trade to be argued for, and a test that only checked the names would
+    // let one arrive silently beside them. The fifth, Topics, was that trade —
+    // asked for by the owner for G042 and recorded in `destinations.ts`.
     let (_node, address) = node();
     let (status, _, page) = get(&address, "/");
     assert_eq!(status, 200, "the console's page is not served");
@@ -1177,8 +1178,61 @@ fn the_four_destinations_are_named_for_the_jobs_and_there_are_four() {
 
     assert_eq!(
         labels,
-        vec!["Run", "Cluster", "Access", "This node"],
-        "the destinations no longer name the jobs, or a fifth has arrived"
+        vec!["Run", "Topics", "Cluster", "Access", "This node"],
+        "the destinations no longer name the jobs, or a sixth has arrived"
+    );
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn the_topics_screen_checks_every_name_before_a_statement_carries_it() {
+    // A topic, a group and a tenancy are grammar and cannot be bound, so the
+    // Topics screen writes them into statement text — which is safe only behind
+    // a check narrower than the node's own lexer, the one every client applies
+    // (consumer contract 1.0, section 3). One module holds the two patterns;
+    // every module composing a topic statement must go through it.
+    let sources = panel_sources();
+    let checks = sources
+        .iter()
+        .find(|(name, _)| name == "topic-names.ts")
+        .map(|(_, text)| text.as_str())
+        .expect("topic-names.ts is not among the panel's sources");
+    for pattern in [r"/^[A-Za-z_][A-Za-z0-9_]*$/", r"/^[A-Za-z0-9_.:-]{1,128}$/"] {
+        assert!(
+            checks.contains(pattern),
+            "topic-names.ts no longer carries the pattern {pattern}"
+        );
+    }
+
+    let composing: Vec<&str> = sources
+        .iter()
+        .filter(|(name, text)| {
+            name != "topic-names.ts"
+                && ["TOPIC ", "READ FROM ", "GROUP '"]
+                    .iter()
+                    .any(|statement| text.contains(statement))
+        })
+        .map(|(name, _)| name.as_str())
+        .collect();
+    assert!(
+        composing.len() >= 2,
+        "no module composes a topic statement, so the check below reads nothing: \
+         {composing:?}"
+    );
+    let unchecked: Vec<&&str> = composing
+        .iter()
+        .filter(|name| {
+            let text = &sources
+                .iter()
+                .find(|(each, _)| each == **name)
+                .expect("a module just found")
+                .1;
+            !text.contains("from \"./topic-names.js\"")
+        })
+        .collect();
+    assert!(
+        unchecked.is_empty(),
+        "these modules write a topic statement without the name checks: {unchecked:?}"
     );
 }
 
