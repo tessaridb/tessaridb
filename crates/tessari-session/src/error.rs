@@ -649,6 +649,22 @@ pub enum Error {
         span: Span,
     },
 
+    /// `LATEST BY` over something whose identity is not its time.
+    #[error(
+        "`LATEST BY` keeps the newest record per key, and only a series' identity says which is newest (at {span})"
+    )]
+    LatestNeedsSeries {
+        /// Where the clause was written.
+        span: Span,
+    },
+
+    /// `LATEST BY` beside `GROUP BY`: one keeps records, the other folds them.
+    #[error("`LATEST BY` keeps records and `GROUP BY` folds them — say one (at {span})")]
+    LatestBesideGroup {
+        /// Where `LATEST BY` was written.
+        span: Span,
+    },
+
     /// A recipient name that did not evaluate to text.
     ///
     /// Reports the **type** and never the value. Every neighbouring variant

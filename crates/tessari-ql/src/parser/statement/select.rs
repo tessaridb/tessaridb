@@ -181,6 +181,9 @@ impl Parser<'_> {
         // anything groups, projects or sorts, so the clause sits before them.
         // The grammar keeps clause order and application order the same on
         // purpose — see `START` before `LIMIT` below.
+        // Before everything else that shapes the answer, because it decides
+        // which records there are: the newest per key, after the condition.
+        let latest = self.latest_by()?;
         let fetch = self.fetch_paths()?;
         // After the fetch and before everything that counts records, which is
         // where it is applied: the split is what decides how many there are.
@@ -306,6 +309,7 @@ impl Parser<'_> {
             split,
             group,
             fill,
+            latest,
             order,
             fusion,
             after,

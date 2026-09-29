@@ -35,6 +35,7 @@ mod fused;
 mod graph;
 mod join;
 mod keys;
+mod latest;
 mod lent;
 mod ordered;
 mod produce;

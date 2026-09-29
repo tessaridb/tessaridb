@@ -36,6 +36,11 @@ pub(crate) struct Nearest<'a> {
 
 /// The nearest-neighbour read this statement is, if it is one.
 pub(crate) fn nearest(select: &Select) -> Option<Nearest<'_>> {
+    // A read keeping the newest record per key must see every record before
+    // it keeps any, so no walk that answers early and no bound may serve it.
+    if select.latest.is_some() {
+        return None;
+    }
     let (Some(asked), true, false) = (select.approximate, select.group.is_empty(), resumes(select))
     else {
         return None;
@@ -134,6 +139,11 @@ pub(crate) struct Closest<'a> {
 
 /// The nearest-first read this statement is, if it is one.
 pub(crate) fn closest(select: &Select) -> Option<Closest<'_>> {
+    // A read keeping the newest record per key must see every record before
+    // it keeps any, so no walk that answers early and no bound may serve it.
+    if select.latest.is_some() {
+        return None;
+    }
     if select.approximate.is_some()
         || !select.group.is_empty()
         || !select.fetch.is_empty()
@@ -270,6 +280,11 @@ fn resumes(select: &Select) -> bool {
 
 /// The bounded ordered read this statement is, if it is one.
 pub(crate) fn ordered(select: &Select) -> Option<Bounded<'_>> {
+    // A read keeping the newest record per key must see every record before
+    // it keeps any, so no walk that answers early and no bound may serve it.
+    if select.latest.is_some() {
+        return None;
+    }
     if select.approximate.is_some()
         || !select.group.is_empty()
         || !select.fetch.is_empty()
@@ -384,6 +399,11 @@ fn shadowed(projection: &Projection, root: &str) -> bool {
 
 /// The bounded scored read this statement is, if it is one.
 pub(crate) fn scored(select: &Select) -> Option<Scored<'_>> {
+    // A read keeping the newest record per key must see every record before
+    // it keeps any, so no walk that answers early and no bound may serve it.
+    if select.latest.is_some() {
+        return None;
+    }
     if select.approximate.is_some()
         || !select.group.is_empty()
         || !select.fetch.is_empty()
@@ -462,6 +482,11 @@ pub(crate) fn scored(select: &Select) -> Option<Scored<'_>> {
 ///
 /// `FETCH` is allowed through: it maps one record to one record.
 pub(crate) fn bound(select: &Select) -> Option<usize> {
+    // A read keeping the newest record per key must see every record before
+    // it keeps any, so no walk that answers early and no bound may serve it.
+    if select.latest.is_some() {
+        return None;
+    }
     if !select.group.is_empty() || !select.order.is_empty() {
         return None;
     }

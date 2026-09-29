@@ -29,6 +29,7 @@ mod address;
 mod adjacency;
 mod commit;
 mod index;
+mod latest;
 mod lifecycle;
 mod ordered;
 mod retention;

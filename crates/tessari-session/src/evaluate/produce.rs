@@ -49,6 +49,20 @@ impl Session<'_> {
                 Ok(plan)
             }
             Prepared::Table(context, id) => {
+                // First: an index leading on the key answers one seek per value.
+                // The planner declines every other walk and the bound for such a
+                // read (`plan::bound`), so unserved it falls through to the scan.
+                if let Some(latest) = &select.latest
+                    && let Walked::Served { found, index } =
+                        self.walk_latest(transaction, context, id, latest)?
+                {
+                    hand_over(found, transaction, consumer)?;
+                    return Ok(Plan {
+                        shape: Some("latest"),
+                        index: Some(index),
+                        ..over(AccessPath::Index)
+                    });
+                }
                 // A statement that asked for an approximate ordering, over a
                 // field carrying a graph built for the distance it named, is the
                 // one read in this store an index answers differently from a

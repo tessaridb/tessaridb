@@ -71,6 +71,7 @@ mod join_sources;
 mod joins;
 mod key_value;
 mod kinds;
+mod latest;
 mod management;
 mod migration;
 mod multikey;

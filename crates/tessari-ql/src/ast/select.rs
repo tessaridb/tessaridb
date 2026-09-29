@@ -107,6 +107,9 @@ pub struct Select {
     /// `FILL <mode> FROM <start> TO <end>` after a windowed `GROUP BY` — one row
     /// per window of the stated range (ADR-0088 §2).
     pub fill: Option<Fill>,
+    /// `LATEST BY <field>` — one record per value of the field, the newest,
+    /// on a series (ADR-0088 §3).
+    pub latest: Option<FieldPath>,
     /// The keys the answer is sorted by, in order of significance.
     ///
     /// Under [`Select::fusion`] these are the fused read's branches rather than

@@ -74,6 +74,19 @@ impl Parser<'_> {
         }))
     }
 
+    /// `LATEST BY sensor`, when it is there.
+    ///
+    /// Contextual, like `FETCH`: a field called `latest` stays a field.
+    pub(super) fn latest_by(&mut self) -> Result<Option<FieldPath>> {
+        if !self.eat_word("latest") {
+            return Ok(None);
+        }
+        if !self.eat_word("by") {
+            return Err(self.error_here("`BY` after `LATEST` and the field one record is kept per"));
+        }
+        Ok(Some(self.field_path()?))
+    }
+
     /// `FETCH author, meta.editor`, when it is there.
     ///
     /// `fetch` is a **contextual** word and not a reserved one, the same
