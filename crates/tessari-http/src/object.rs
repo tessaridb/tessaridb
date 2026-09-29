@@ -276,7 +276,7 @@ pub(crate) fn is_identifier(held: &str) -> bool {
 /// text only once the escapes are resolved. An escape that is not two hex digits
 /// is left as written — a caller who meant a literal `%` gets one, which is
 /// friendlier than refusing a name that is perfectly storable.
-fn decoded(held: &str) -> String {
+pub(crate) fn decoded(held: &str) -> String {
     let raw = held.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(raw.len());
     let mut at = 0;

@@ -46,6 +46,7 @@ mod console {
 }
 mod incoming;
 mod json;
+mod kv;
 mod listening;
 mod object;
 mod request;
@@ -397,6 +398,13 @@ fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
         (Method::POST, url) if url.starts_with("/series/") => match respond::series::target(url) {
             Some(aimed) => match body::text(&mut request) {
                 Ok(body) => respond::series::append(db, &aimed, &body, tokens, &presented),
+                Err(refused) => refused,
+            },
+            None => Answer::new(404, r#"{"error":"no such route"}"#.to_owned()),
+        },
+        (method, url) if url.starts_with("/kv/") => match kv::target(url) {
+            Some(aimed) => match body::text(&mut request) {
+                Ok(text) => kv::answer(db, &method, &aimed, &text, tokens, &presented),
                 Err(refused) => refused,
             },
             None => Answer::new(404, r#"{"error":"no such route"}"#.to_owned()),

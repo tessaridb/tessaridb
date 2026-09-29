@@ -522,6 +522,31 @@ impl Db {
         ))
     }
 
+    /// Whether `namespace.database.table` names a space — what the HTTP
+    /// key-value routes ask before they run (ADR-0090), so a route aimed at a
+    /// table of another kind answers `404` rather than reading it as keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the catalog cannot be read.
+    pub fn is_space(&self, namespace: &str, database: &str, table: &str) -> Result<bool> {
+        let mut transaction = self.store.begin()?;
+        let catalog = Catalog::new(&mut transaction);
+        let Some(namespace) = catalog.namespace_id(namespace)? else {
+            return Ok(false);
+        };
+        let Some(database) = catalog.database_id(namespace, database)? else {
+            return Ok(false);
+        };
+        let Some(table) = catalog.table_id(namespace, database, table)? else {
+            return Ok(false);
+        };
+        Ok(matches!(
+            catalog.table(table)?.map(|held| held.kind),
+            Some(tessari_storage::TableKind::Space(_))
+        ))
+    }
+
     /// Where the peer that takes writes answers, if one is declared.
     ///
     /// The forward's target (ADR-0019 §2, case *forward*). At v1 there is one

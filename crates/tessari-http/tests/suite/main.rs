@@ -11,6 +11,7 @@
 mod console;
 mod console_tokens;
 mod crossing;
+mod kv;
 mod objects;
 mod routes;
 mod series;
