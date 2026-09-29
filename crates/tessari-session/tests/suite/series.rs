@@ -295,3 +295,77 @@ fn an_event_time_series_refuses_what_would_misplace_a_record() {
     );
     assert!(moved.contains("cannot change"), "{moved}");
 }
+
+/// G044 C11: the removal pass takes an aged record's index entries with it.
+///
+/// Through an ordinary read a record past the floor has no value, so index
+/// upkeep keyed on the previous value would take nothing — the pass reads below
+/// the floor for exactly this. Without it the entries would outlive their
+/// records for good, since nothing afterwards could say which values they held.
+#[test]
+fn an_aged_records_index_entries_go_with_it() {
+    let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let mut session = opened(&store);
+    run(
+        &mut session,
+        "DEFINE SERIES readings RETAIN 1h; DEFINE INDEX by_sensor ON readings FIELDS sensor;",
+    );
+    let now = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    // A UUID version 7 naming `millis`, `n` below the time.
+    let named = |millis: u64, n: u64| {
+        let stamp = format!("{millis:012x}");
+        format!("{}-{}-7000-8000-{n:012x}", &stamp[..8], &stamp[8..])
+    };
+    let mut script = String::from("BEGIN;");
+    for n in 0..1_000_u64 {
+        script.push_str(&format!(
+            " CREATE readings:uuid '{}' = {{ sensor: 's{}' }};",
+            named(now - 2 * 60 * 60 * 1_000 + n, n),
+            n % 10
+        ));
+    }
+    for n in 0..10_u64 {
+        script.push_str(&format!(
+            " CREATE readings:uuid '{}' = {{ sensor: 's{n}' }};",
+            named(now - 1_000, n)
+        ));
+    }
+    script.push_str(" COMMIT;");
+    session.run(&script).unwrap();
+
+    let indexed = || {
+        backend
+            .scan(&tessari_kv::ScanRequest::new(
+                tessari_kv::Keyspace::INDEX,
+                tessari_kv::KeyRange::all(),
+            ))
+            .unwrap()
+            .len()
+    };
+    let read = "SELECT * FROM readings WHERE sensor = 's3' USING INDEX by_sensor;";
+    let before = format!("{:?}", run(&mut session, read));
+    let entries = indexed();
+
+    let (namespace, database, table) = {
+        let mut transaction = store.begin().unwrap();
+        let catalog = tessari_storage::Catalog::new(&mut transaction);
+        let namespace = catalog.namespace_id("prod").unwrap().unwrap();
+        let database = catalog.database_id(namespace, "metrics").unwrap().unwrap();
+        let table = catalog
+            .table_id(namespace, database, "readings")
+            .unwrap()
+            .unwrap();
+        (namespace, database, table)
+    };
+    let expired = store.expire_series(namespace, database, table).unwrap();
+    assert_eq!(expired.indexed, 1_000);
+    assert_eq!(indexed(), entries - 1_000, "one entry per aged record gone");
+    assert_eq!(format!("{:?}", run(&mut session, read)), before);
+}

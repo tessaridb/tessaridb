@@ -150,20 +150,52 @@ impl Transaction<'_> {
         })
     }
 
+    /// The floor a series table had at the millisecond `millis`, when it is one.
+    ///
+    /// For the removal pass, which judges at the instant the oldest live reader
+    /// began rather than now: a floor taken now would remove records a reader
+    /// begun earlier still answers with, from under its snapshot (ADR-0088 §7).
+    ///
+    /// # Errors
+    ///
+    /// Whatever reading the table's declaration returns.
+    pub(crate) fn series_floor_at(
+        &self,
+        namespace: NamespaceId,
+        table: TableId,
+        millis: u64,
+    ) -> Result<Option<RecordId>> {
+        Ok(self
+            .series_declaration(namespace, table)?
+            .and_then(|declared| floor_from(millis, declared.retain)))
+    }
+
+    /// Read `table` as though it had no floor, for the rest of this
+    /// transaction's life. Only the series removal pass does this: it has to see
+    /// what it removes.
+    pub(crate) fn lift_floor(&self, table: TableId) {
+        self.floors.borrow_mut().insert(table, None);
+    }
+
     /// Where a retention puts the floor, as an identity.
     fn floor_at(&self, retain: Duration) -> Option<RecordId> {
-        let seconds = retain.seconds();
-        if seconds < 0 {
-            return None;
-        }
-        // Widened rather than cast, and combined with `checked_*` so a
-        // declaration nobody would write cannot wrap into a floor in the past.
-        let retained = u64::try_from(seconds)
-            .ok()
-            .and_then(|seconds| seconds.checked_mul(1_000))
-            .and_then(|millis| millis.checked_add(u64::from(retain.nanos()) / 1_000_000))?;
-        Some(identity_at(self.reading_at().saturating_sub(retained)))
+        floor_from(self.reading_at(), retain)
     }
+}
+
+/// Where a retention puts the floor at the millisecond `now`, as an identity.
+fn floor_from(now: u64, retain: Duration) -> Option<RecordId> {
+    let seconds = retain.seconds();
+    if seconds < 0 {
+        return None;
+    }
+    // Widened rather than cast, and combined with `checked_*` so a
+    // declaration nobody would write cannot wrap into a floor in the past.
+    let retained = u64::try_from(seconds)
+        .ok()
+        .and_then(|seconds| seconds.checked_mul(1_000))
+        .and_then(|millis| millis.checked_add(u64::from(retain.nanos()) / 1_000_000))?;
+    Some(identity_at(now.saturating_sub(retained)))
 }
 
 /// The smallest UUID version 7 minted at or after `millis`.

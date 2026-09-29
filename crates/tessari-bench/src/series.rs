@@ -43,11 +43,11 @@
 //!
 //! # What the number is, and what it is not
 //!
-//! It is the cost of the pass, commits included: a removal here is a `DELETE`
-//! like any other, sequenced into the log and carried on the change feed. It is
-//! therefore not a scan figure and must not be read as one. The pass commits
-//! every 512 records, so a thousand-record window is two commits at every table
-//! size — constant across the sizes, which is what the shape question needs.
+//! It is the cost of the pass. Since G044 C11 that pass is one range delete
+//! below the floor (ADR-0088 §7), taken as this node's own storage work rather
+//! than as commits on the log, so the removed window is one write at every
+//! table size — constant across the sizes, which is what the shape question
+//! needs. It is not a scan figure and must not be read as one.
 //!
 //! # What it does not measure
 //!
@@ -178,7 +178,7 @@ fn expire(db: &Db, table: &str) -> Failable<usize> {
             .ok_or("the table this cell just built is missing")?;
         (namespace, database, id)
     };
-    Ok(store.expire_series(namespace, database, id)?.records)
+    Ok(store.expire_series(namespace, database, id)?.ranges)
 }
 
 /// The same window removed by a declared clause and by a condition, at four
