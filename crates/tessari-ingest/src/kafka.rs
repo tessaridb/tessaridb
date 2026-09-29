@@ -4,7 +4,7 @@
 //! librdkafka and therefore needs a C toolchain, which an ordinary build of this
 //! database must not (ADR-0024 §2).
 //!
-//! # The two settings that are not configurable
+//! # The three settings that are not configurable
 //!
 //! **`enable.auto.commit = false`.** Automatic commits move the offset on a
 //! timer, independently of whether the store commit succeeded. That inverts the
@@ -16,6 +16,12 @@
 //! ordinary state of a live consumer, not an event, and surfacing it would make
 //! the runner's `Ok(None)` — *nothing arrived* — indistinguishable from a
 //! failure.
+//!
+//! **`auto.offset.reset = earliest`.** A group with no committed offset — one
+//! declared for the first time — starts at the oldest message still on the
+//! topic, so what was published before the declaration is ingested rather than
+//! silently skipped. The client's own default is the end of the topic. A group
+//! that has committed resumes from its offset either way.
 //!
 //! Everything else is the client's own default, read from the client rather than
 //! restated here.
@@ -29,6 +35,22 @@ use tessari_storage::{ConsumerDefinition, Feed};
 
 use crate::runner::Broker;
 use crate::source::{Message, Source, SourceError};
+
+/// The client's settings for one declaration: where the broker is, which group
+/// it reads as, and the settings described at the top of this module.
+fn client_config(brokers: &[String], group: &str) -> ClientConfig {
+    let mut config = ClientConfig::new();
+    config
+        .set("bootstrap.servers", brokers.join(","))
+        // Declared, never derived. Deriving it from the node id would be a
+        // bug that appears only in a cluster, where every node would form
+        // its own group and every node would consume every message.
+        .set("group.id", group)
+        .set("enable.auto.commit", "false")
+        .set("enable.partition.eof", "false")
+        .set("auto.offset.reset", "earliest");
+    config
+}
 
 /// Opens consumers against a real broker.
 #[derive(Debug, Default, Clone, Copy)]
@@ -44,14 +66,7 @@ impl Broker for Kafka {
                 definition.name
             )));
         };
-        let consumer: BaseConsumer = ClientConfig::new()
-            .set("bootstrap.servers", brokers.join(","))
-            // Declared, never derived. Deriving it from the node id would be a
-            // bug that appears only in a cluster, where every node would form
-            // its own group and every node would consume every message.
-            .set("group.id", &definition.group)
-            .set("enable.auto.commit", "false")
-            .set("enable.partition.eof", "false")
+        let consumer: BaseConsumer = client_config(brokers, &definition.group)
             .create()
             .map_err(|failure| SourceError(failure.to_string()))?;
         consumer
@@ -90,5 +105,18 @@ impl Source for Connected {
         self.consumer
             .commit_consumer_state(CommitMode::Sync)
             .map_err(|failure| SourceError(failure.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::client_config;
+
+    #[test]
+    fn a_new_group_starts_at_the_oldest_message_and_commits_only_what_the_store_kept() {
+        let config = client_config(&["b:9092".to_owned()], "rows");
+        assert_eq!(config.get("auto.offset.reset"), Some("earliest"));
+        assert_eq!(config.get("enable.auto.commit"), Some("false"));
+        assert_eq!(config.get("group.id"), Some("rows"));
     }
 }

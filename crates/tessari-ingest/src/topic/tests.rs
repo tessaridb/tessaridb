@@ -179,6 +179,30 @@ async fn a_dropped_consumer_stops_and_a_halted_one_keeps_its_reason() {
         .unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_consumer_declared_after_the_messages_takes_them_all_from_the_oldest() {
+    let store = store_with(
+        "DEFINE GROUP 'rows' ON TOPIC orders ACK DEADLINE 30s IN FLIGHT 64 \
+         DELIVERIES 3 DEAD LETTER TO orders_dead;",
+    );
+    publish(&store, 20);
+    let (stop, stopped) = watch::channel(false);
+    let runner = tokio::spawn(run_topic_consumers(store.clone(), stopped));
+    run(
+        &store,
+        "DEFINE TOPIC CONSUMER orders_in FROM orders GROUP 'rows' INTO order_rows \
+         IDENTITY order_id MAP amount AS total ON FAILURE quarantine;",
+    );
+    until("the backlog landing", || rows(&store).len() == 20).await;
+    let applied = store.running().progress("orders_in").unwrap().applied;
+    assert_eq!(applied, 20, "the backlog was not taken whole");
+    stop.send_replace(true);
+    tokio::time::timeout(PATIENCE, runner)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
 /// G043 C5: twenty runs of a thousand messages between four members. Ignored in
 /// the suite for its length; run with `--ignored` under deliberate CPU load.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
