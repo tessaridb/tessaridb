@@ -558,6 +558,17 @@ pub const STALENESS_FLOOR_SECONDS: u64 = AWARENESS_SECONDS * 2;
 /// rather than a client's need, and a proxy does not enlarge what it forwards.
 pub const SOCKET_MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
+/// The largest WebSocket message `GET /wire` reads from a client (ADR-0089).
+///
+/// Unit: bytes.
+///
+/// One wire frame at its 16 MiB body ceiling plus its five-byte header. The
+/// socket carries the wire protocol unchanged, so a message smaller than the
+/// largest frame the protocol allows would refuse a statement TCP accepts; and
+/// the wire's own ceiling still checks every frame inside, so nothing larger
+/// is ever needed.
+pub const WIRE_SOCKET_MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024 + 5;
+
 /// How many cells a spatial index writes per record's geometry.
 ///
 /// Unit: cells.

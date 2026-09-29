@@ -25,10 +25,10 @@ tessari-types.workspace = true
 log.workspace = true
 thiserror.workspace = true
 axum.workspace = true
-futures-util.workspace = true
+futures-util = { workspace = true, features = ["sink"] }
 # Requests are tasks on the process's runtime, which the binary builds; this
 # crate creates none (ADR-0085).
-tokio = { workspace = true, features = ["net", "rt", "sync", "time", "macros"] }
+tokio = { workspace = true, features = ["net", "rt", "sync", "time", "macros", "io-util"] }
 tokio-util.workspace = true
 tungstenite.workspace = true
 
@@ -49,6 +49,7 @@ tessari-storage.workspace = true
 # rather than being written as `16` here, which is how a restated number drifts.
 tessari-types.workspace = true
 tessari-encoding.workspace = true
+tessari-wire.workspace = true
 
 [lints]
 workspace = true

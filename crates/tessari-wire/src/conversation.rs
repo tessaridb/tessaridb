@@ -26,6 +26,7 @@
 //! thread keeps it until the client falls quiet (`hot.rs`). The slots and the
 //! refusal are the same on both paths.
 
+mod carried;
 mod feeding;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -36,7 +37,6 @@ use tessari_session::Detached;
 use tessaridb::Db;
 use tessaridb::feed::Commits;
 use tokio::io::{BufReader, BufWriter as AsyncBufWriter};
-use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 
 use crate::error::{Error, Result};
@@ -44,6 +44,7 @@ use crate::hot::{self, Cooled};
 use crate::message::Request;
 use crate::push::Follow;
 use crate::{frame, frame_async, message, node, redirect};
+pub(crate) use carried::Carried;
 use feeding::feed;
 
 /// What a client is told when every store call slot is taken.
@@ -76,14 +77,14 @@ pub(crate) struct Answer {
 /// `place` and `busy` are held for the connection's whole life and released on
 /// drop, panic included — a feed hands them to its own thread's lifetime by
 /// waiting for it here.
-pub(crate) async fn converse(
+pub(crate) async fn converse<C: Carried>(
     talk: Conversation,
     mut busy: Busy,
     place: Admitted,
     session: Detached,
-    stream: TcpStream,
+    stream: C,
 ) -> Result<()> {
-    let (read_half, write_half) = stream.into_split();
+    let (read_half, write_half) = stream.halves();
     let mut reader = BufReader::new(read_half);
     let mut writer = AsyncBufWriter::new(write_half);
     // A client that connects and sends nothing would otherwise hold its place at
@@ -130,13 +131,11 @@ pub(crate) async fn converse(
         // Nothing read ahead, because the thread reads from the socket itself.
         let close_behind =
             answered_at.is_some_and(|at| at.elapsed() < hot::QUIET) && reader.buffer().is_empty();
-        if close_behind && let Ok(held) = Arc::clone(&talk.hot).try_acquire_owned() {
-            let stream = reader
-                .into_inner()
-                .reunite(writer.into_inner())
-                .map_err(|_| Error::Io(std::io::Error::other("a connection's halves parted")))?
-                .into_std()?;
-            stream.set_nonblocking(false)?;
+        if C::THREADED
+            && close_behind
+            && let Ok(held) = Arc::clone(&talk.hot).try_acquire_owned()
+        {
+            let stream = C::to_thread(reader.into_inner(), writer.into_inner())?;
             let spell = talk.clone();
             let cooled = tokio::task::spawn_blocking(move || {
                 let cooled = hot::serve(&spell, session, stream, request, theirs);
@@ -160,8 +159,7 @@ pub(crate) async fn converse(
             };
             session = back;
             answered_at = None;
-            stream.set_nonblocking(true)?;
-            let (read_half, write_half) = TcpStream::from_std(stream)?.into_split();
+            let (read_half, write_half) = C::from_thread(stream)?;
             reader = BufReader::new(read_half);
             writer = AsyncBufWriter::new(write_half);
             continue;

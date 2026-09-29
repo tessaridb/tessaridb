@@ -19,7 +19,8 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::conversation::{self, Conversation};
+use crate::carrier::Carrier;
+use crate::conversation;
 use crate::error::{Error, Result};
 use crate::message::Request;
 use crate::{client, frame, frame_async};
@@ -32,7 +33,7 @@ use crate::{client, frame, frame_async};
 static CONNECTIONS: AtomicU64 = AtomicU64::new(0);
 
 /// The next connection's name.
-fn next_connection() -> u64 {
+pub(crate) fn next_connection() -> u64 {
     CONNECTIONS.fetch_add(1, Ordering::Relaxed)
 }
 
@@ -169,6 +170,24 @@ impl Node {
         Arc::clone(&self.bridge)
     }
 
+    /// What another surface needs to hold wire sessions on this node (ADR-0089).
+    ///
+    /// Shares this node's door, bridges, drain count and peers, so a session
+    /// carried over a WebSocket is counted and bounded exactly as a TCP one is.
+    #[must_use]
+    pub fn carrier(&self) -> Carrier {
+        Carrier {
+            db: Arc::clone(&self.db),
+            committed: Arc::clone(&self.committed),
+            stopping: Arc::clone(&self.stopping),
+            door: Arc::clone(&self.door),
+            bridge: Arc::clone(&self.bridge),
+            rounds: Arc::clone(&self.rounds),
+            hot: Arc::clone(&self.hot),
+            elsewhere: self.elsewhere.clone(),
+        }
+    }
+
     /// What this node counts as in flight, and how it is told to stop.
     ///
     /// Taken **before** [`Node::serve`], which consumes the node's borrow for
@@ -198,6 +217,7 @@ impl Node {
     /// not pass on its own, which ends the node rather than spinning (Q-834).
     pub async fn serve(&self, stop: CancellationToken) -> Result<()> {
         let listener = tokio::net::TcpListener::from_std(self.listener.try_clone()?)?;
+        let carrier = self.carrier();
         let mut conversations = JoinSet::new();
         loop {
             let accepted = tokio::select! {
@@ -241,23 +261,7 @@ impl Node {
                 continue;
             };
             log::info!("connection {id} accepted from {}", from_where(&stream));
-            // Given the cluster's answer once, at the session, rather than at
-            // each statement: what this node knows about its peers is a fact
-            // about the process and not about the request.
-            let session = match &self.elsewhere {
-                Some(known) => self.db.session().among(Arc::clone(known)),
-                None => self.db.session(),
-            }
-            .detach();
-            let talk = Conversation {
-                id,
-                db: Arc::clone(&self.db),
-                committed: Arc::clone(&self.committed),
-                stopping: Arc::clone(&self.stopping),
-                bridge: Arc::clone(&self.bridge),
-                rounds: Arc::clone(&self.rounds),
-                hot: Arc::clone(&self.hot),
-            };
+            let (talk, session) = carrier.opening(id);
             let busy = self.stopping.busy();
             conversations.spawn(async move {
                 match conversation::converse(talk, busy, place, session, stream).await {

@@ -244,6 +244,33 @@ fn a_place_at_the_door_is_taken_for_a_connection_and_given_back_after_it() {
     // actually gives it back.
 }
 
+#[test]
+fn a_session_carried_over_a_websocket_takes_its_place_at_the_same_door() {
+    // ADR-0089: `/wire` sessions and TCP connections share one ceiling. A
+    // second door would let a node hold twice what it was sized for.
+    let node = Node::bind(Arc::new(Db::in_memory().unwrap()), "127.0.0.1:0").unwrap();
+    let door = node.door();
+    let carrier = node.carrier();
+
+    let held: Vec<_> = std::iter::from_fn(|| carrier.admit())
+        .take(door.limit().saturating_add(1))
+        .collect();
+    assert_eq!(
+        held.len(),
+        door.limit(),
+        "the carrier admitted past the node's own ceiling"
+    );
+    assert_eq!(door.open(), door.limit(), "carried sessions held no places");
+    assert!(carrier.admit().is_none(), "a full door admitted one more");
+
+    drop(held);
+    assert_eq!(
+        door.open(),
+        0,
+        "a carried session kept its place after it ended"
+    );
+}
+
 /// Serve `node` on a runtime of this test's own: the node creates none.
 fn serve_until_the_test_ends(node: &Node) {
     let runtime = tokio::runtime::Builder::new_multi_thread()

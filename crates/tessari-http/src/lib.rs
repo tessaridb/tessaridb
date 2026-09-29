@@ -70,6 +70,20 @@ use tokio_util::sync::CancellationToken;
 use crate::incoming::Incoming;
 pub use respond::Answer;
 
+/// One wire session over a byte stream: given the stream, it runs until the
+/// session ends (ADR-0089).
+pub type WireSession = Box<
+    dyn FnOnce(tokio::io::DuplexStream) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>>
+        + Send,
+>;
+
+/// The wire node's door, as `GET /wire` needs it: a place for one session, or
+/// `None` when the wire node is serving as many connections as it will.
+///
+/// Handed in by the process rather than built here, because this crate does not
+/// depend on the wire protocol's crate and a WebSocket is only ever the carrier.
+pub type WireDoor = Arc<dyn Fn() -> Option<WireSession> + Send + Sync>;
+
 /// An HTTP listener bound to one address, serving one store.
 pub struct Node {
     db: Arc<Db>,
@@ -84,6 +98,8 @@ pub struct Node {
     /// How many watch rounds may run at once, apart from requests — the
     /// wire node's reason, and measured there: rounds bunch on one commit.
     rounds: Arc<Bridge>,
+    /// The wire node's door, when this process serves the wire protocol too.
+    wire: Option<WireDoor>,
 }
 
 impl Node {
@@ -116,7 +132,16 @@ impl Node {
             rounds: Arc::new(Bridge::new(
                 std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
             )),
+            wire: None,
         })
+    }
+
+    /// Carry the wire protocol over `GET /wire`, through `door` (ADR-0089).
+    ///
+    /// Without it the route answers `404`: a node started without a wire
+    /// address has no wire sessions to hand out, over any carrier.
+    pub fn carrying(&mut self, door: WireDoor) {
+        self.wire = Some(door);
     }
 
     /// Report every surface of this process on `/metrics`, not only this one.
@@ -161,6 +186,7 @@ impl Node {
             door: Arc::clone(&self.door),
             bridge: Arc::clone(&self.bridge),
             rounds: Arc::clone(&self.rounds),
+            wire: self.wire.clone(),
         });
         let app = axum::Router::new().fallback(handle).with_state(shared);
         let mut listening = listening::Listening::new(listener);
@@ -207,6 +233,7 @@ pub(crate) struct Shared {
     door: Arc<Admitting>,
     bridge: Arc<Bridge>,
     pub(crate) rounds: Arc<Bridge>,
+    pub(crate) wire: Option<WireDoor>,
 }
 
 /// Admit one request, read its body if its route takes one, and answer it.
@@ -242,6 +269,9 @@ async fn handle(
     // reason every other answer is counted once.
     if parts.method == Method::GET && url == "/watch" {
         return websocket::watch(node, &mut parts, busy, place).await;
+    }
+    if parts.method == Method::GET && url == "/wire" {
+        return websocket::wire(node, &mut parts, busy, place).await;
     }
     let read = if incoming::takes_body(&parts.method, &url) {
         Some(incoming::read(&parts.headers, body).await)
@@ -379,7 +409,8 @@ fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
         // debugging a client needs to know which one it got.
         (
             _,
-            "/script" | "/session" | "/password" | "/health" | "/ready" | "/metrics" | "/watch",
+            "/script" | "/session" | "/password" | "/health" | "/ready" | "/metrics" | "/watch"
+            | "/wire",
         ) => Answer::new(
             405,
             r#"{"error":"that route takes another method"}"#.to_owned(),

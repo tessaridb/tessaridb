@@ -9,8 +9,7 @@ use tessari_serve::Bridged;
 use tessari_session::Detached;
 use tessaridb::Sequence;
 use tessaridb::feed::{self, Feed, Following, Round};
-use tokio::io::{AsyncReadExt, BufReader, BufWriter as AsyncBufWriter};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, BufReader, BufWriter as AsyncBufWriter};
 
 /// Push changes down this connection until it ends — as a task, not a thread.
 ///
@@ -21,13 +20,17 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 /// shutdown is seen; a round runs when something landed and at no other time.
 /// The socket is where a subscriber that hung up on a quiet feed is noticed
 /// (F-S1): reading end-of-stream ends the feed, with no write needed to learn it.
-pub(crate) async fn feed(
+pub(crate) async fn feed<R, W>(
     talk: Conversation,
     session: Detached,
-    mut reader: BufReader<OwnedReadHalf>,
-    mut writer: AsyncBufWriter<OwnedWriteHalf>,
+    mut reader: BufReader<R>,
+    mut writer: AsyncBufWriter<W>,
     asked: Follow,
-) -> Result<()> {
+) -> Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let db = Arc::clone(&talk.db);
     let opened = talk
         .bridge
