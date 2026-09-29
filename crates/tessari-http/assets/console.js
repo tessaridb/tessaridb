@@ -31,8 +31,8 @@
   function setValue(id, text) {
     control(id).value = text;
   }
-  function write(id, words2) {
-    at(id).textContent = words2;
+  function write(id, words3) {
+    at(id).textContent = words3;
   }
   function clear(id) {
     at(id).textContent = "";
@@ -48,9 +48,9 @@
     }
     throw new Error(`#${id} cannot be disabled`);
   }
-  function say(id, words2, failed) {
+  function say(id, words3, failed) {
     const line = at(id);
-    line.textContent = words2;
+    line.textContent = words3;
     line.classList.toggle("failed", failed === true);
     line.setAttribute("aria-live", failed === true ? "assertive" : "polite");
   }
@@ -61,9 +61,9 @@
     }
     return element;
   }
-  function trailer(words2) {
+  function trailer(words3) {
     const line = made("p", "trailer");
-    line.textContent = words2;
+    line.textContent = words3;
     return line;
   }
   function shown(value2) {
@@ -417,8 +417,8 @@
     try {
       body = JSON.parse(text);
     } catch {
-      const words2 = text.trim();
-      return { said: words2 === "" ? `${status}` : words2, failed: status >= 400 };
+      const words3 = text.trim();
+      return { said: words3 === "" ? `${status}` : words3, failed: status >= 400 };
     }
     if (typeof body.error === "string") {
       return { said: body.error, failed: true };
@@ -507,15 +507,15 @@
   var following = null;
   var toldWhy = false;
   var isFollowing = () => following !== null;
-  function stop(words2) {
+  function stop(words3) {
     if (following !== null) {
       following.close();
       following = null;
     }
     disable("follow", false);
     disable("stop", true);
-    if (words2 !== void 0) {
-      say("watch-status", words2);
+    if (words3 !== void 0) {
+      say("watch-status", words3);
     }
   }
   function change(what) {
@@ -821,10 +821,10 @@
   //! short at the log's walk budget are three different facts. Rendering any two
   //! of them the same way is the failure this console has refused by name three
   //! times: an absence that looks like a measurement.
-  function timeline(kind, history) {
+  function timeline(kind2, history) {
     clear("detail-history");
     const line = made("p", "note");
-    if (kind !== "record") {
+    if (kind2 !== "record") {
       line.textContent = "Only a record has a history: a catalog row is kept out of the log’s change projection, so there is nothing recorded to draw for this.";
       at("detail-history").appendChild(line);
       return;
@@ -856,8 +856,8 @@
       at("detail-history").appendChild(cut);
     }
   }
-  function show2(kind, name, answered2, history = null) {
-    at("detail-kind").textContent = kind;
+  function show2(kind2, name, answered2, history = null) {
+    at("detail-kind").textContent = kind2;
     at("detail-name").textContent = name;
     clear("detail-facts");
     if (Array.isArray(answered2?.records)) {
@@ -884,7 +884,7 @@
       nothing.textContent = "The node answered, and the answer carries no fields.";
       at("detail-facts").appendChild(nothing);
     }
-    timeline(kind, history);
+    timeline(kind2, history);
     at("detail-sheet").hidden = false;
     at("detail-close").focus();
   }
@@ -1612,8 +1612,8 @@
     return badge;
   }
   var drained = (has) => has.length === 0;
-  function figure(title, has, wanted2, facts2, kind, subject) {
-    const box = made("article", "node " + kind);
+  function figure(title, has, wanted2, facts2, kind2, subject) {
+    const box = made("article", "node " + kind2);
     box.tabIndex = 0;
     box.setAttribute("role", "button");
     box.setAttribute("aria-label", `${title} — open its drawer`);
@@ -1631,10 +1631,10 @@
     box.appendChild(head);
     if (drained(has)) {
       const note2 = made("p", "note warn");
-      note2.textContent = kind === "self" ? "Drained — it holds its data and answers nothing." : "Declared with no roles — drained.";
+      note2.textContent = kind2 === "self" ? "Drained — it holds its data and answers nothing." : "Declared with no roles — drained.";
       box.appendChild(note2);
     }
-    if (kind === "peer") {
+    if (kind2 === "peer") {
       const note2 = made("p", "faint");
       note2.textContent = "lamps as declared here; this node has not asked it";
       box.appendChild(note2);
@@ -1718,14 +1718,14 @@
   //! one a thing you have to type on purpose. `say` keeps its two-state job for
   //! the many places that genuinely have two — this is not a rewrite of all
   //! sixty-six of its call sites, and it must not become one.
-  function state(id, kind, words2) {
+  function state(id, kind2, words3) {
     const line = at(id);
-    line.textContent = words2;
+    line.textContent = words3;
     for (const other of ["waiting", "empty", "partial", "wrong"]) {
-      line.classList.toggle(`is-${other}`, other === kind);
+      line.classList.toggle(`is-${other}`, other === kind2);
     }
-    line.classList.toggle("failed", kind === "wrong");
-    line.setAttribute("aria-live", kind === "wrong" ? "assertive" : "polite");
+    line.classList.toggle("failed", kind2 === "wrong");
+    line.setAttribute("aria-live", kind2 === "wrong" ? "assertive" : "polite");
   }
   function settled(id) {
     const line = at(id);
@@ -1759,8 +1759,8 @@
   }
   function answer(scraped) {
     const body = scraped.body;
-    const words2 = typeof body === "object" && body !== null ? Object.entries(body).map(([name, value2]) => name + " " + String(value2)).join(", ") : String(body).trim();
-    return scraped.status + " " + words2;
+    const words3 = typeof body === "object" && body !== null ? Object.entries(body).map(([name, value2]) => name + " " + String(value2)).join(", ") : String(body).trim();
+    return scraped.status + " " + words3;
   }
   async function readNode() {
     say("node-status", "asking…");
@@ -1978,7 +1978,7 @@
   //! listing that database's tables. A wrong answer, under a name nothing is
   //! called, reported as success. The record key had already been fixed this way
   //! four lines above; the table had not.
-  var inDetail = (kind, name) => (answered2) => show2(kind, name, answered2);
+  var inDetail = (kind2, name) => (answered2) => show2(kind2, name, answered2);
   function splitAt(text, separator) {
     const at2 = text.indexOf(separator);
     return at2 < 0 ? [text, ""] : [text.slice(0, at2), text.slice(at2 + separator.length)];
@@ -2495,9 +2495,9 @@
       todo();
     }
   }
-  function note(words2) {
+  function note(words3) {
     const line = made("p", "empty");
-    line.textContent = words2;
+    line.textContent = words3;
     return line;
   }
   async function browse() {
@@ -2698,8 +2698,8 @@
       }
       await readTopics();
     } catch (failure) {
-      const words2 = told(failure);
-      say(form.status, failure instanceof Unreachable ? "the node did not answer — " + words2 : words2, true);
+      const words3 = told(failure);
+      say(form.status, failure instanceof Unreachable ? "the node did not answer — " + words3 : words3, true);
     }
     shape3(form);
   }
@@ -2719,6 +2719,129 @@
     });
     at("topics-namespace").addEventListener("change", () => FORMS.forEach(shape3));
     at("topics-database").addEventListener("change", () => FORMS.forEach(shape3));
+  }
+
+  // src/series-list.ts
+  //! The Series pane's reading: where, and which tables there are series.
+  //!
+  //! Everything here reads. A table's kind is not a field of `INFO FOR DATABASE`,
+  //! so each table is asked for `INFO FOR TABLE`: a series writes back the
+  //! `DEFINE SERIES` statement that made it, and a rollup says it is one.
+  var SCREEN3 = "Run";
+  var TABLES_ASKED = 200;
+  var DECLARED = /^DEFINE SERIES \S+ RETAIN (\S+?)(?: TIME (\S+?))?;/;
+  function kind(value2) {
+    const fields = fieldsOf(value2);
+    const name = fields?.["table"];
+    if (typeof name !== "string") {
+      return null;
+    }
+    const undefinable = fields?.["undefinable"];
+    if (typeof undefinable === "string" && undefinable.includes("is a rollup")) {
+      return { name, rollup: true, time: "window", retain: "set by its DEFINE ROLLUP" };
+    }
+    const definition2 = fields?.["definition"];
+    const declared = typeof definition2 === "string" ? DECLARED.exec(definition2) : null;
+    if (declared === null) {
+      return null;
+    }
+    return { name, rollup: false, time: declared[2] ?? null, retain: declared[1] ?? "" };
+  }
+  var words2 = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
+  function strings2(answered2, field) {
+    const list = held2(answered2)?.[field];
+    return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
+  }
+  async function readNamespaces2() {
+    state("series-status", "waiting", "asking…");
+    try {
+      offer("series-namespace", strings2(await valueOf("INFO FOR STORE;", SCREEN3), "namespaces"));
+    } catch (failure) {
+      state("series-status", "wrong", words2(failure));
+      return;
+    }
+    await readDatabases2();
+  }
+  async function readDatabases2() {
+    const namespace = aName(value("series-namespace"));
+    if (namespace === null) {
+      offer("series-database", []);
+      draw5([]);
+      state("series-status", "empty", "No namespace here — declare one with DEFINE NAMESPACE.");
+      return;
+    }
+    try {
+      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN3);
+      offer("series-database", strings2(answered2, "databases"));
+    } catch (failure) {
+      state("series-status", "wrong", words2(failure));
+      return;
+    }
+    await readSeries();
+  }
+  async function readSeries() {
+    const namespace = aName(value("series-namespace"));
+    const database = aName(value("series-database"));
+    if (namespace === null || database === null) {
+      draw5([]);
+      state("series-status", "empty", "Choose a namespace and a database that exist.");
+      return;
+    }
+    const start = tenancy(namespace, database);
+    state("series-status", "waiting", "asking…");
+    try {
+      const tables = strings2(await valueOf(start + "INFO FOR DATABASE;", SCREEN3), "tables").filter((name) => aName(name) !== null);
+      const asked2 = tables.slice(0, TABLES_ASKED);
+      let answered2 = [];
+      if (asked2.length > 0) {
+        const { text } = await ask(start + asked2.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN3);
+        const body = JSON.parse(text);
+        if (!Array.isArray(body.results)) {
+          throw new Error(typeof body.error === "string" ? body.error : text);
+        }
+        answered2 = body.results;
+      }
+      const found = answered2.map((each) => kind(each.value)).filter((each) => each !== null);
+      draw5(found);
+      if (found.length === 0) {
+        state("series-status", "empty", `${namespace}.${database} holds no series — DEFINE SERIES declares one.`);
+      } else if (tables.length > asked2.length) {
+        state("series-status", "partial", `asked about ${asked2.length} of ${tables.length} tables`);
+      } else {
+        settled("series-status");
+      }
+    } catch (failure) {
+      draw5([]);
+      state("series-status", "wrong", words2(failure));
+    }
+  }
+  function draw5(found) {
+    clear("series-list");
+    if (found.length === 0) {
+      return;
+    }
+    const table = made("table");
+    const head = table.createTHead().insertRow();
+    for (const name of ["table", "kind", "ordered by", "answers for"]) {
+      const column = made("th");
+      column.textContent = name;
+      head.appendChild(column);
+    }
+    const body = table.createTBody();
+    for (const each of found) {
+      const line = body.insertRow();
+      line.insertCell().textContent = each.name;
+      line.insertCell().textContent = each.rollup ? "rollup" : "series";
+      line.insertCell().textContent = each.time ?? "arrival";
+      line.insertCell().textContent = each.retain;
+    }
+    at("series-list").appendChild(table);
+  }
+  function wire18() {
+    at("series-namespace").addEventListener("change", () => void readDatabases2());
+    at("series-database").addEventListener("change", () => void readSeries());
+    at("series-refresh").addEventListener("click", () => void readNamespaces2());
+    onArrival(["run"], () => void readNamespaces2());
   }
 
   // src/users.ts
@@ -2836,7 +2959,7 @@
     }
     write("user-count", tally(matched));
   }
-  function wire18() {
+  function wire19() {
     at("list").addEventListener("click", listUsers);
     at("user-filter").addEventListener("input", redraw);
     onArrival(["access"], () => void listUsers());
@@ -2957,9 +3080,10 @@
   wire5();
   wire4();
   wire8();
-  wire18();
+  wire19();
   wire11();
   wire12();
   wire16();
   wire17();
+  wire18();
 })();
