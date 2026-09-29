@@ -199,7 +199,7 @@ fn atomically_commits_several_scripts_together_or_none_of_them() {
     let store = shaped();
     let mut session = inside(&store);
     session
-        .atomically(|work| {
+        .atomically(|work| -> tessari_session::Result<()> {
             work.run_with("SET order_rows:1 = { a: 1 };", &Parameters::new())?;
             let mut bound = Parameters::new();
             bound.insert("value".to_owned(), Value::from("two"));

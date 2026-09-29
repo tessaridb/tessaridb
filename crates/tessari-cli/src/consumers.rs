@@ -101,14 +101,25 @@ pub fn start(db: Arc<Db>) -> Running {
 /// node stops accepting rather than when the process finally unwinds. It does
 /// not wait: each consumer finishes the batch it is in — writing it and
 /// committing its offset — which is what [`stop`] then joins.
-pub fn halting(running: &Running) -> Box<dyn Fn() + Send + Sync> {
+///
+/// `topics` is the topic consumers' stop signal (ADR-0087), which every build
+/// carries: those members finish the batch they are in, as the Kafka ones do.
+pub fn halting(
+    running: &Running,
+    topics: tokio::sync::watch::Sender<bool>,
+) -> Box<dyn Fn() + Send + Sync> {
     #[cfg(feature = "kafka")]
     if let Some(started) = running {
         let flag = started.halting();
-        return Box::new(move || flag.store(true, std::sync::atomic::Ordering::Relaxed));
+        return Box::new(move || {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            topics.send_replace(true);
+        });
     }
     let _ = running;
-    Box::new(|| {})
+    Box::new(move || {
+        topics.send_replace(true);
+    })
 }
 
 /// Stop every consumer and wait for the batch each one is in.

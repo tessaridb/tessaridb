@@ -134,6 +134,7 @@ pub(crate) fn running_state(progress: Option<&Progress>) -> Value {
         .collect();
     Value::Object(BTreeMap::from([
         ("here".to_owned(), Value::Bool(true)),
+        ("halted".to_owned(), Value::Bool(progress.halted)),
         (
             "applied".to_owned(),
             Value::Number(tessari_types::Number::Integer(

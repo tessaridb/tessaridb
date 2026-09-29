@@ -213,7 +213,7 @@ pub(crate) struct Destination {
 }
 
 /// Whether a name can stand unquoted in a statement.
-fn plain(name: &str) -> bool {
+pub(crate) fn plain(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with(|first: char| first.is_ascii_digit())
         && name
@@ -420,7 +420,7 @@ impl Consuming {
 }
 
 /// A record identity, as the value a parameter carries.
-fn identity_value(id: &RecordId) -> Value {
+pub(crate) fn identity_value(id: &RecordId) -> Value {
     match id {
         RecordId::Int(held) => Value::Number(tessari_types::Number::Integer(*held)),
         RecordId::Text(held) => Value::from(held.as_str()),

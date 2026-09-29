@@ -1724,6 +1724,7 @@ dependencies = [
  "tessari-session",
  "tessari-storage",
  "tessari-types",
+ "tokio",
 ]
 
 [[package]]

@@ -57,14 +57,17 @@ impl<'a> Session<'a> {
     /// `Ok`, through the commit `COMMIT` uses — so a refusal or contention reads
     /// exactly as it would from a script. On `Err`, nothing is written.
     ///
+    /// The error is the caller's type, so `work` can stop with a reason of its
+    /// own — a message it will not apply — and still have nothing written.
+    ///
     /// # Errors
     ///
     /// Whatever `work` answered, or the commit's refusal.
-    pub fn atomically<T>(
+    pub fn atomically<T, E: From<Error>>(
         &mut self,
-        work: impl FnOnce(&mut Atomic<'_, 'a>) -> Result<T>,
-    ) -> Result<T> {
-        let transaction = self.store.begin()?;
+        work: impl FnOnce(&mut Atomic<'_, 'a>) -> std::result::Result<T, E>,
+    ) -> std::result::Result<T, E> {
+        let transaction = self.store.begin().map_err(Error::from)?;
         let mut held = Atomic {
             session: self,
             open: Some((transaction, Span::new(0, 0))),
@@ -75,7 +78,8 @@ impl<'a> Session<'a> {
             // so that a change there is a refusal rather than a silent success.
             return Err(Error::TransactionVerbInAtomic {
                 span: Span::new(0, 0),
-            });
+            }
+            .into());
         };
         match answered {
             Ok(value) => {

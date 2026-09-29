@@ -103,7 +103,11 @@ impl Session<'_> {
                     .iter()
                     .find(|held| held.id == consumer.destination)
                     .map_or("<dropped>", |held| held.name.as_str());
-                let running = self.store.running().progress(&consumer.name).is_some();
+                let running = self
+                    .store
+                    .running()
+                    .progress(&consumer.name)
+                    .is_some_and(|progress| !progress.halted);
                 (
                     consumer.name.clone(),
                     Value::Object(BTreeMap::from([

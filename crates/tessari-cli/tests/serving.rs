@@ -3277,3 +3277,85 @@ fn a_follower_ends_where_its_leader_ended_after_commits_filed_in_four_logs() {
         }
     }
 }
+
+#[test]
+fn a_node_runs_its_topic_consumers_in_every_build_and_stops_them_with_itself() {
+    // G043 C6: a topic consumer is run by the node itself — no `kafka` feature
+    // is needed, which is the build the published image is — and stage 1 of a
+    // stop takes it down with the listeners rather than leaving it writing.
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let wire = "127.0.0.1:47869";
+    let http = "127.0.0.1:47870";
+    let node = serving_both(&path, wire, http);
+
+    let mut client = Client::connect(wire).unwrap();
+    let mut script = String::from(
+        "DEFINE NAMESPACE shop; USE NAMESPACE shop; DEFINE DATABASE live; USE DATABASE live; \
+         DEFINE TOPIC orders; DEFINE COLLECTION order_rows; \
+         DEFINE GROUP 'rows' ON TOPIC orders ACK DEADLINE 30s IN FLIGHT 16; \
+         DEFINE TOPIC CONSUMER orders_in FROM orders GROUP 'rows' INTO order_rows \
+         IDENTITY order_id MAP amount AS total ON FAILURE stop;",
+    );
+    for at in 1..=20 {
+        script.push_str(&format!(
+            " CREATE orders:{at} = {{ order_id: {at}, amount: {at} }};"
+        ));
+    }
+    client.run(&script, None).unwrap();
+
+    let landed = |client: &mut Client| {
+        let answers = client
+            .run(
+                "USE NAMESPACE shop; USE DATABASE live; SELECT * FROM order_rows;",
+                None,
+            )
+            .unwrap();
+        match &answers[2] {
+            Answer::Records { records, .. } => records.len(),
+            other => panic!("not records: {other:?}"),
+        }
+    };
+    let began = Instant::now();
+    while landed(&mut client) < 20 {
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "the node did not apply the topic's messages"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(client);
+
+    let signalled = Command::new("kill")
+        .args(["-TERM", &node.0.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(signalled.success(), "the signal was not delivered");
+    assert!(
+        stopped(wire, Duration::from_secs(20)),
+        "the wire protocol went on accepting connections after being told to stop"
+    );
+    drop(node);
+
+    // It let go of the store with the records and the declaration in it, and a
+    // node opened again runs the consumer again without anybody asking.
+    let reopened = serving_both(&path, wire, http);
+    let mut client = Client::connect(wire).unwrap();
+    assert_eq!(landed(&mut client), 20);
+    client
+        .run(
+            "USE NAMESPACE shop; USE DATABASE live; \
+             CREATE orders:21 = { order_id: 21, amount: 21 };",
+            None,
+        )
+        .unwrap();
+    let began = Instant::now();
+    while landed(&mut client) < 21 {
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "the reopened node did not start the declared consumer"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(reopened);
+}
