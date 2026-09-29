@@ -86,6 +86,9 @@ function newGroup(): Composed {
   }
   if (deliveries === null || deliveries === 0) return { missing: "give up after is a whole number of deliveries" };
   if (dead === null || dead === topic.name) return { missing: "dead letters go to another topic, by name" };
+  if (dead !== undefined && deliveries === undefined) {
+    return { missing: "dead letters need give up after: how many deliveries before a message goes there" };
+  }
   return {
     statement:
       `DEFINE GROUP '${group}' ON TOPIC ${topic.name} ACK DEADLINE ${deadline}` +

@@ -2593,6 +2593,9 @@
     }
     if (deliveries === null || deliveries === 0) return { missing: "give up after is a whole number of deliveries" };
     if (dead === null || dead === topic2.name) return { missing: "dead letters go to another topic, by name" };
+    if (dead !== void 0 && deliveries === void 0) {
+      return { missing: "dead letters need give up after: how many deliveries before a message goes there" };
+    }
     return {
       statement: `DEFINE GROUP '${group2}' ON TOPIC ${topic2.name} ACK DEADLINE ${deadline}` + (deliveries === void 0 ? "" : ` DELIVERIES ${deliveries}`) + (width === void 0 ? "" : ` IN FLIGHT ${width}`) + (dead === void 0 ? "" : ` DEAD LETTER TO ${dead}`) + ";",
       says: `Creates group '${group2}' on ${topic2.name}. Each message goes to one member and comes back if it is left unacknowledged for ${deadline}; ${width ?? 1} at a time` + (deliveries === void 0 ? "" : `, given up after ${counted(deliveries, "delivery", "deliveries")}`) + (dead === void 0 ? "" : ` and then appended to ${dead}`) + "."
