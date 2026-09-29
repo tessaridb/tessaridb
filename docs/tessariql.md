@@ -521,7 +521,10 @@ remembered to start.** One `DEFINE KAFKA CONSUMER` says what to read (`FROM` bro
 field is the record's `IDENTITY`, how incoming fields `MAP` onto stored ones,
 what happens `ON FAILURE`, and how many workers run it. The destination is
 resolved **when the declaration is made**, so there is no window in which a
-consumer is consuming into a table that does not exist. `DROP KAFKA CONSUMER` stops it
+consumer is consuming into a table that does not exist. A consumer whose group
+has never committed starts at the **oldest** message still on the topic, so what
+was published before the declaration is ingested too; a group that has committed
+resumes where it stopped. `DROP KAFKA CONSUMER` stops it
 and removes the declaration; the records it already wrote stay, because they are
 records like any others. `DEFINE TOPIC CONSUMER` is the same declaration with a
 topic of this store as the source — see [Reading a topic into a table](#reading-a-topic-into-a-table).
@@ -6341,6 +6344,9 @@ acknowledgement commit in one transaction**, so each message is applied to the
 store **exactly once**: a commit that is refused or lost leaves the message
 unread and nothing written, and it is read again. That is also why the topic and
 the table must be in the same database — a transaction is one database's.
+A new group starts at the topic's oldest message (or where a named reader of the
+same name had got to), so a consumer declared after messages were published
+takes them all, in order.
 
 The group is declared first, with `DEFINE GROUP`, and its deadline, width and
 dead letter are what the consumer reads under. `ON FAILURE` is required:
@@ -7787,7 +7793,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.13.0", "build": "0.13.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.13.1", "build": "0.13.1-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],
