@@ -36,7 +36,7 @@ impl Parser<'_> {
         })
     }
 
-    /// `DEFINE SERIES readings RETAIN 30d`
+    /// `DEFINE SERIES readings RETAIN 30d [TIME at]`
     ///
     /// The retention is a literal duration rather than an expression, on
     /// [`Self::define_queue`]'s rule and for its reason: a floor a bound value
@@ -64,9 +64,18 @@ impl Parser<'_> {
                 span: at,
             });
         }
+        // `TIME at` names the field the identity is minted from; the field's
+        // kind is checked where a record is written, because a series declares
+        // no columns for a type to be checked against here.
+        let time = if self.eat_word("time") {
+            Some(self.name()?)
+        } else {
+            None
+        };
         Ok(StatementKind::DefineSeries {
             name,
             retain,
+            time,
             if_not_exists,
         })
     }

@@ -182,7 +182,10 @@ const FRESH: u64 = 1_000;
 #[test]
 fn a_series_table_does_not_answer_with_a_record_past_its_floor() {
     let fixture = Fixture::holding(
-        TableKind::Series(SeriesDeclaration { retain: RETAIN }),
+        TableKind::Series(SeriesDeclaration {
+            retain: RETAIN,
+            time: None,
+        }),
         IdentityKind::Uuid,
     );
 
@@ -198,7 +201,10 @@ fn a_series_table_does_not_answer_with_a_record_past_its_floor() {
 #[test]
 fn a_point_read_below_the_floor_answers_nothing() {
     let fixture = Fixture::holding(
-        TableKind::Series(SeriesDeclaration { retain: RETAIN }),
+        TableKind::Series(SeriesDeclaration {
+            retain: RETAIN,
+            time: None,
+        }),
         IdentityKind::Uuid,
     );
     let transaction = fixture.store.begin().unwrap();
@@ -222,7 +228,10 @@ fn a_point_read_below_the_floor_answers_nothing() {
 #[test]
 fn a_batched_read_below_the_floor_answers_nothing() {
     let fixture = Fixture::holding(
-        TableKind::Series(SeriesDeclaration { retain: RETAIN }),
+        TableKind::Series(SeriesDeclaration {
+            retain: RETAIN,
+            time: None,
+        }),
         IdentityKind::Uuid,
     );
     let transaction = fixture.store.begin().unwrap();
@@ -242,7 +251,10 @@ fn a_batched_read_below_the_floor_answers_nothing() {
 #[test]
 fn a_record_written_below_the_floor_in_this_transaction_is_not_answered_either() {
     let fixture = Fixture::holding(
-        TableKind::Series(SeriesDeclaration { retain: RETAIN }),
+        TableKind::Series(SeriesDeclaration {
+            retain: RETAIN,
+            time: None,
+        }),
         IdentityKind::Uuid,
     );
     let mut transaction = fixture.store.begin().unwrap();
@@ -279,7 +291,10 @@ fn the_same_records_in_a_plain_table_are_all_answered() {
 #[test]
 fn the_pass_removes_what_the_floor_had_already_hidden_and_changes_no_answer() {
     let fixture = Fixture::holding(
-        TableKind::Series(SeriesDeclaration { retain: RETAIN }),
+        TableKind::Series(SeriesDeclaration {
+            retain: RETAIN,
+            time: None,
+        }),
         IdentityKind::Uuid,
     );
     let before = fixture.labels();
@@ -309,7 +324,10 @@ fn the_pass_removes_what_the_floor_had_already_hidden_and_changes_no_answer() {
 #[test]
 fn a_second_pass_removes_nothing() {
     let fixture = Fixture::holding(
-        TableKind::Series(SeriesDeclaration { retain: RETAIN }),
+        TableKind::Series(SeriesDeclaration {
+            retain: RETAIN,
+            time: None,
+        }),
         IdentityKind::Uuid,
     );
     fixture

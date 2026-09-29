@@ -547,6 +547,79 @@ pub enum Error {
         span: Span,
     },
 
+    /// A record written to an event-time series without its time field, or
+    /// with one that is not a `datetime` (ADR-0088 §1).
+    #[error(
+        "series `{table}` is ordered by `{field}`, and this record's `{field}` is {found} rather than a datetime (at {span})"
+    )]
+    SeriesTimeMissing {
+        /// The series.
+        table: String,
+        /// The declared time field.
+        field: String,
+        /// What the record held instead.
+        found: &'static str,
+        /// Where the write was written.
+        span: Span,
+    },
+
+    /// An event time a UUID version 7 cannot carry: before 1970, or past its
+    /// 48-bit millisecond range.
+    #[error(
+        "series `{table}` cannot order an event at {instant} — a series holds instants from 1970 on (at {span})"
+    )]
+    SeriesTimeOutOfRange {
+        /// The series.
+        table: String,
+        /// The instant, as written back.
+        instant: String,
+        /// Where the write was written.
+        span: Span,
+    },
+
+    /// A write whose event time is already below the series' floor — it would
+    /// be accepted and never answered, which is a loss with nothing in an error
+    /// state.
+    #[error(
+        "series `{table}` no longer answers for {instant}, which is past its retention — the record would be written and never read (at {span})"
+    )]
+    BelowSeriesFloor {
+        /// The series.
+        table: String,
+        /// The instant, as written back.
+        instant: String,
+        /// Where the write was written.
+        span: Span,
+    },
+
+    /// An identity named by hand in an event-time series that does not carry
+    /// the record's own time — the store mints these from the time field.
+    #[error(
+        "series `{table}` names its records from `{field}`; leave the identity out and the store mints it (at {span})"
+    )]
+    SeriesIdentityDerived {
+        /// The series.
+        table: String,
+        /// The declared time field.
+        field: String,
+        /// Where the write was written.
+        span: Span,
+    },
+
+    /// A change to a record's time field in an event-time series: its identity
+    /// is minted from that field and would stop describing it.
+    #[error(
+        "`{field}` fixes where a record of series `{table}` sits, so it cannot change — delete the record and write it again (at {span})"
+    )]
+    SeriesTimeFixed {
+        /// The series.
+        table: String,
+        /// The declared time field.
+        field: String,
+        /// Where the write was written.
+        span: Span,
+    },
+
     /// A recipient name that did not evaluate to text.
     ///
     /// Reports the **type** and never the value. Every neighbouring variant

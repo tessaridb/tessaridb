@@ -127,3 +127,152 @@ fn dropping_a_series_that_is_a_plain_table_is_refused() {
     // rather than a message printed after the fact.
     run(&mut session, "SELECT * FROM readings;");
 }
+
+/// The `at` of every record a read answered, in the order it answered them.
+fn instants(outcome: Outcome) -> Vec<String> {
+    let Outcome::Records { records, .. } = outcome else {
+        panic!("a read answers with records");
+    };
+    records
+        .iter()
+        .map(|(_, value)| match value {
+            tessari_types::Value::Object(fields) => fields["at"].to_string(),
+            other => panic!("not a record: {other:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn a_series_ordered_by_event_time_is_written_back_with_its_time_field() {
+    let store = store();
+    let mut session = opened(&store);
+    run(&mut session, "DEFINE SERIES readings RETAIN 12h TIME at;");
+    let described = format!("{:?}", run(&mut session, "INFO FOR TABLE readings;"));
+    assert!(
+        described.contains("DEFINE SERIES readings RETAIN 12h TIME at"),
+        "INFO answered with {described}"
+    );
+}
+
+/// G044 C2: a thousand runs, each writing the same thirty instants in a
+/// different order, and each reading them back in event order — the order the
+/// instants sort in, whatever order they arrived in. Two of the thirty share an
+/// instant, so the answer also proves a tie is two records rather than one.
+#[test]
+fn late_events_land_in_event_order_whatever_order_they_arrive_in() {
+    let written: Vec<String> = (0..30_u32)
+        .map(|n| {
+            // Seconds apart, with sub-millisecond parts, and one repeated.
+            let n = if n == 29 { 7 } else { n };
+            format!("2026-09-29T10:{:02}:{:02}.{:06}Z", n / 60, n % 60, n * 137)
+        })
+        .collect();
+    let mut expected = written.clone();
+    expected.sort();
+    let mut state = 0x9e37_79b9_u64;
+    for _ in 0..1_000 {
+        let store = store();
+        let mut session = opened(&store);
+        run(
+            &mut session,
+            "DEFINE SERIES readings RETAIN 36500d TIME at;",
+        );
+        let mut order = written.clone();
+        for index in (1..order.len()).rev() {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let pick = usize::try_from(state >> 33).unwrap() % (index + 1);
+            order.swap(index, pick);
+        }
+        for at in &order {
+            run(
+                &mut session,
+                &format!("CREATE readings = {{ at: datetime '{at}' }};"),
+            );
+        }
+        let answered = instants(run(&mut session, "SELECT * FROM readings;"));
+        // Every instant is back, the repeated one twice, and in time order.
+        let mut sorted = answered.clone();
+        sorted.sort();
+        assert_eq!(answered, sorted, "arrival order {order:?}");
+        assert_eq!(answered.len(), expected.len());
+        sorted.dedup();
+        assert_eq!(sorted.len(), expected.len() - 1, "the tie was merged");
+    }
+}
+
+/// An instant `back` seconds before now, as a literal.
+fn ago(back: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    format!("time::from_unix({})", now.checked_sub(back).unwrap())
+}
+
+#[test]
+fn the_floor_of_an_event_time_series_is_about_the_event() {
+    let store = store();
+    let mut session = opened(&store);
+    run(&mut session, "DEFINE SERIES readings RETAIN 1h TIME at;");
+    run(
+        &mut session,
+        &format!("CREATE readings = {{ at: {} }};", ago(1_800)),
+    );
+    let refusal = refused(
+        &mut session,
+        &format!("CREATE readings = {{ at: {} }};", ago(7_200)),
+    );
+    assert!(refusal.contains("past its retention"), "{refusal}");
+    assert_eq!(
+        instants(run(&mut session, "SELECT * FROM readings;")).len(),
+        1
+    );
+}
+
+#[test]
+fn an_event_time_series_refuses_what_would_misplace_a_record() {
+    let store = store();
+    let mut session = opened(&store);
+    run(
+        &mut session,
+        "DEFINE SERIES readings RETAIN 36500d TIME at;",
+    );
+
+    let missing = refused(&mut session, "CREATE readings = { celsius: 21 };");
+    assert!(
+        missing.contains("absent rather than a datetime"),
+        "{missing}"
+    );
+    let text = refused(&mut session, "CREATE readings = { at: '2026-09-29' };");
+    assert!(text.contains("string rather than a datetime"), "{text}");
+    let early = refused(
+        &mut session,
+        "CREATE readings = { at: datetime '1969-12-31T23:59:59Z' };",
+    );
+    assert!(early.contains("from 1970 on"), "{early}");
+    let named = refused(
+        &mut session,
+        "CREATE readings:uuid '0190a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b' = { at: datetime '2026-09-29T10:00:00Z' };",
+    );
+    assert!(named.contains("leave the identity out"), "{named}");
+
+    let Outcome::Keys(keys) = run(
+        &mut session,
+        "CREATE readings = { at: datetime '2026-09-29T10:00:00Z', celsius: 21 };",
+    ) else {
+        panic!("a store-named create answers with its key");
+    };
+    let id = keys[0].to_literal();
+    // Changing another field keeps the record where it is.
+    run(
+        &mut session,
+        &format!("UPDATE readings:{id} SET celsius = 22;"),
+    );
+    let moved = refused(
+        &mut session,
+        &format!("UPDATE readings:{id} SET at = datetime '2026-09-29T11:00:00Z';"),
+    );
+    assert!(moved.contains("cannot change"), "{moved}");
+}

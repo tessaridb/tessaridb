@@ -128,13 +128,7 @@ pub(crate) fn uuid_v7(span: Span) -> Result<[u8; UUID_LEN]> {
     // the year 10889, at which point the leading bytes stop being zero and this
     // wraps — which is the format's own limit and not this function's.
     let millis = u64::try_from(since_epoch.as_millis()).unwrap_or(u64::MAX);
-    let [_, _, t0, t1, t2, t3, t4, t5] = millis.to_be_bytes();
-    bytes[0] = t0;
-    bytes[1] = t1;
-    bytes[2] = t2;
-    bytes[3] = t3;
-    bytes[4] = t4;
-    bytes[5] = t5;
+    stamp(&mut bytes, millis);
 
     // Version 7 in the high nibble of the seventh byte, and the RFC's variant in
     // the top two bits of the ninth — the same six bits [`uuid`] spends, for the
@@ -143,6 +137,41 @@ pub(crate) fn uuid_v7(span: Span) -> Result<[u8; UUID_LEN]> {
     bytes[6] = (bytes[6] & 0x0f) | 0x70;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Ok(bytes)
+}
+
+/// A UUID version 7 minted **at** an instant rather than now: `millis` in the
+/// leading six bytes and `fraction` — the sub-millisecond part in 4096ths — in
+/// the twelve bits after the version (RFC 9562 §6.2, method 3), so identities
+/// minted at one instant sort by the finer time too. The remaining 62 bits are
+/// random, so two events at one instant are two identities (ADR-0088 §1).
+///
+/// # Errors
+///
+/// Returns [`Error::IdentityUnavailable`] when the randomness source cannot be
+/// read, as [`uuid_v7`] does.
+pub(crate) fn uuid_v7_at(millis: u64, fraction: u16, span: Span) -> Result<[u8; UUID_LEN]> {
+    let mut bytes = [0_u8; UUID_LEN];
+    fill(&mut bytes).map_err(|_| Error::IdentityUnavailable {
+        reason: "the operating system's randomness source could not be read",
+        span,
+    })?;
+    stamp(&mut bytes, millis);
+    let [high, low] = (fraction & 0x0fff).to_be_bytes();
+    bytes[6] = 0x70 | high;
+    bytes[7] = low;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Ok(bytes)
+}
+
+/// The low 48 bits of `millis`, big-endian, into the leading six bytes.
+fn stamp(bytes: &mut [u8; UUID_LEN], millis: u64) {
+    let [_, _, t0, t1, t2, t3, t4, t5] = millis.to_be_bytes();
+    bytes[0] = t0;
+    bytes[1] = t1;
+    bytes[2] = t2;
+    bytes[3] = t3;
+    bytes[4] = t4;
+    bytes[5] = t5;
 }
 
 /// Fill the buffer from this thread's source, opening it on the first call.

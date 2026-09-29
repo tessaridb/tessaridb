@@ -1,4 +1,5 @@
-//! Which tables have a retention floor, held per process.
+//! Which tables are series — their retention floor and event-time field — held
+//! per process.
 //!
 //! # Why this is a registry and not a catalog read
 //!
@@ -25,16 +26,16 @@
 //! read paying for the ones that have none.
 
 use dashmap::DashMap;
-use tessari_types::{Duration, TableId};
+use tessari_types::TableId;
 
-use crate::catalog::definition::TableKind;
+use crate::catalog::definition::{SeriesDeclaration, TableKind};
 
 /// The retention each table carries, as far as this process has learned.
 #[derive(Debug, Default)]
 pub(crate) struct SeriesRegistry {
     /// A `DashMap`: every write to a table asks `known` from every
     /// thread, and `learn`/`forget` change it only when a table's definition does.
-    known: DashMap<TableId, Option<Duration>>,
+    known: DashMap<TableId, Option<SeriesDeclaration>>,
 }
 
 impl SeriesRegistry {
@@ -42,17 +43,17 @@ impl SeriesRegistry {
     ///
     /// The outer `Option` is whether it has been learned; the inner is whether
     /// the table is a series.
-    pub(crate) fn known(&self, table: TableId) -> Option<Option<Duration>> {
-        self.known.get(&table).map(|held| *held)
+    pub(crate) fn known(&self, table: TableId) -> Option<Option<SeriesDeclaration>> {
+        self.known.get(&table).map(|held| held.clone())
     }
 
     /// Record what a table's kind says, learned from a declaration or a read.
     pub(crate) fn learn(&self, table: TableId, kind: &TableKind) {
-        let retain = match kind {
-            TableKind::Series(declared) => Some(declared.retain),
+        let declared = match kind {
+            TableKind::Series(declared) => Some(declared.clone()),
             _ => None,
         };
-        self.known.insert(table, retain);
+        self.known.insert(table, declared);
     }
 
     /// Forget a table that has been dropped.

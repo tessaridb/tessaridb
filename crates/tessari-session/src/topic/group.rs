@@ -448,7 +448,6 @@ impl Session<'_> {
         value: Value,
         span: Span,
     ) -> Result<()> {
-        let id = self.free_identity(transaction, context, letters, span)?;
         let letter = Value::Object(BTreeMap::from([
             ("topic".to_owned(), Value::from(topic.name.text.as_str())),
             ("group".to_owned(), Value::from(group)),
@@ -456,6 +455,7 @@ impl Session<'_> {
             ("deliveries".to_owned(), whole(held.deliveries)),
             ("value".to_owned(), value),
         ]));
+        let id = self.free_identity(transaction, context, letters, &letter, span)?;
         self.put_record(
             transaction,
             RecordAddress::new(context.namespace, context.database, letters, id),

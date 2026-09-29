@@ -28,7 +28,7 @@ use tessari_encoding::decode_payload;
 use tessari_types::{Duration, NamespaceId, RecordId, TableId};
 
 use super::{RecordAddress, Transaction};
-use crate::catalog::definition::{TableDefinition, TableKind};
+use crate::catalog::definition::{SeriesDeclaration, TableDefinition, TableKind};
 use crate::catalog::system;
 use crate::error::Result;
 
@@ -72,17 +72,57 @@ impl Transaction<'_> {
         // The registry answers without touching the backend for every table
         // this process has declared or already looked up, which is what keeps a
         // point read on an ordinary table at one round trip.
-        let retain = match self.store().series().known(table) {
-            Some(retain) => retain,
-            None => self.learn_kind(table)?,
-        };
-        let floor = retain.and_then(|retain| self.floor_at(retain));
+        let floor = self
+            .series_declaration(namespace, table)?
+            .and_then(|declared| self.floor_at(declared.retain));
         self.floors.borrow_mut().insert(table, floor.clone());
         Ok(floor)
     }
 
+    /// The field a series table mints its identities from, when it is ordered
+    /// by event time (ADR-0088 §1).
+    ///
+    /// `None` for every table that is not such a series — which costs the
+    /// registry lookup [`Self::series_floor`] already pays, and no catalog read
+    /// once this process has seen the table.
+    ///
+    /// # Errors
+    ///
+    /// Whatever reading the table's declaration returns.
+    pub fn series_time(&self, namespace: NamespaceId, table: TableId) -> Result<Option<String>> {
+        Ok(self
+            .series_declaration(namespace, table)?
+            .and_then(|declared| declared.time))
+    }
+
+    /// Whether `address` names a record below its series table's floor.
+    ///
+    /// # Errors
+    ///
+    /// Whatever reading the table's declaration returns.
+    pub fn below_floor(&self, address: &RecordAddress) -> Result<bool> {
+        self.below_series_floor(address)
+    }
+
+    /// The table's series declaration, from the registry or read once.
+    fn series_declaration(
+        &self,
+        namespace: NamespaceId,
+        table: TableId,
+    ) -> Result<Option<SeriesDeclaration>> {
+        // The system namespace is excluded for the reason `series_floor`
+        // excludes it: the read below would ask this question of itself.
+        if namespace == system::SYSTEM_NAMESPACE {
+            return Ok(None);
+        }
+        match self.store().series().known(table) {
+            Some(declared) => Ok(declared),
+            None => self.learn_kind(table),
+        }
+    }
+
     /// Read the table's declaration once, and tell the registry what it says.
-    fn learn_kind(&self, table: TableId) -> Result<Option<Duration>> {
+    fn learn_kind(&self, table: TableId) -> Result<Option<SeriesDeclaration>> {
         let entry = system::address(system::TABLES, RecordId::Int(i64::from(table.get())));
         let Some(bytes) = self.get_uncovered(&entry)? else {
             // Not found is **not** learned: a transaction whose snapshot
@@ -93,7 +133,7 @@ impl Transaction<'_> {
         let definition = TableDefinition::from_value(&decode_payload(&bytes)?)?;
         self.store().series().learn(table, &definition.kind);
         Ok(match definition.kind {
-            TableKind::Series(declared) => Some(declared.retain),
+            TableKind::Series(declared) => Some(declared),
             _ => None,
         })
     }

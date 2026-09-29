@@ -238,9 +238,13 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
                 "series `{name}` names records in a way its declaring word cannot say"
             )));
         }
+        let time = declared
+            .time
+            .as_ref()
+            .map_or_else(String::new, |field| format!(" TIME {field}"));
         let _ = writeln!(
             script,
-            "DEFINE SERIES {name} RETAIN {};",
+            "DEFINE SERIES {name} RETAIN {}{time};",
             declared.retain.to_literal()
         );
         return Ok(());

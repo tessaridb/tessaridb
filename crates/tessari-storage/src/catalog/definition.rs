@@ -69,6 +69,8 @@ const FIELD_SPACE: &str = "space";
 /// A topic's declaration: present (possibly empty) exactly when the table is one.
 const FIELD_TOPIC: &str = "topic";
 const FIELD_RETAIN: &str = "retain";
+/// The field a series mints its identities from (ADR-0088 §1).
+const FIELD_EVENT_TIME: &str = "time";
 const FIELD_DIMENSION: &str = "dimension";
 const FIELD_DISTANCE: &str = "distance";
 const FIELD_REPLICATION: &str = "replication";

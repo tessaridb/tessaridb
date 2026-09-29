@@ -59,6 +59,7 @@ mod reach;
 pub mod redact;
 mod reference;
 mod search;
+mod series;
 mod session;
 mod shape;
 mod text;

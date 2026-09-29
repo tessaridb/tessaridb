@@ -1,9 +1,9 @@
 //! What a series, view, vault, vector, queue and edge declaration holds.
 
 use super::{
-    FIELD_ATTEMPTS, FIELD_DESCENDING, FIELD_DIMENSION, FIELD_DISTANCE, FIELD_FROM, FIELD_KEY_ID,
-    FIELD_ORDER, FIELD_READ, FIELD_RETAIN, FIELD_TIMEOUT, FIELD_TO, FIELD_WRAPPED, VectorDistance,
-    field_id, flag, number, object,
+    FIELD_ATTEMPTS, FIELD_DESCENDING, FIELD_DIMENSION, FIELD_DISTANCE, FIELD_EVENT_TIME,
+    FIELD_FROM, FIELD_KEY_ID, FIELD_ORDER, FIELD_READ, FIELD_RETAIN, FIELD_TIMEOUT, FIELD_TO,
+    FIELD_WRAPPED, VectorDistance, field_id, flag, number, object,
 };
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
@@ -16,7 +16,7 @@ use tessari_vault::{KeyId, Wrapped};
 /// reason [`QueueDeclaration::timeout`] has none: a series table that keeps
 /// everything is a table, and a retention the store guessed would drop somebody's
 /// records at a boundary nobody chose.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeriesDeclaration {
     /// How far back the answer reaches.
     ///
@@ -25,16 +25,23 @@ pub struct SeriesDeclaration {
     /// deadline, because there is nothing to write it to: the rule is a property
     /// of the table and applies to records written before it as well as after.
     pub retain: Duration,
+    /// The `datetime` field each record's identity is minted from, when the
+    /// series is ordered by event time (ADR-0088 §1); `None` is arrival time.
+    ///
+    /// Absent from a declaration written before the clause existed, which then
+    /// reads back as arrival time — what that declaration meant.
+    pub time: Option<String>,
 }
 
 impl SeriesDeclaration {
     /// The value written inside the table's catalog entry.
     #[must_use]
     pub fn to_value(&self) -> Value {
-        Value::Object(BTreeMap::from([(
-            FIELD_RETAIN.to_owned(),
-            Value::Duration(self.retain),
-        )]))
+        let mut fields = BTreeMap::from([(FIELD_RETAIN.to_owned(), Value::Duration(self.retain))]);
+        if let Some(time) = &self.time {
+            fields.insert(FIELD_EVENT_TIME.to_owned(), Value::String(time.clone()));
+        }
+        Value::Object(fields)
     }
 
     /// Read a declaration back.
@@ -55,7 +62,21 @@ impl SeriesDeclaration {
                     .map_or("none", tessari_types::Value::type_name),
             });
         };
-        Ok(Self { retain: *retain })
+        let time = match fields.get(FIELD_EVENT_TIME) {
+            None => None,
+            Some(Value::String(time)) => Some(time.clone()),
+            Some(other) => {
+                return Err(Error::CatalogMalformed {
+                    entity: ENTITY,
+                    field: FIELD_EVENT_TIME,
+                    found: other.type_name(),
+                });
+            }
+        };
+        Ok(Self {
+            retain: *retain,
+            time,
+        })
     }
 }
 

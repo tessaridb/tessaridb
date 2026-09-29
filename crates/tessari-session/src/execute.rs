@@ -843,13 +843,17 @@ impl Session<'_> {
             StatementKind::DefineSeries {
                 name,
                 retain,
+                time,
                 if_not_exists,
             } => self.define_table(
                 transaction,
                 name,
                 TableShape {
                     schemafull: false,
-                    kind: TableKind::Series(SeriesDeclaration { retain: *retain }),
+                    kind: TableKind::Series(SeriesDeclaration {
+                        retain: *retain,
+                        time: time.as_ref().map(|field| field.text.clone()),
+                    }),
                     // Fixed by the kind rather than offered as a clause, on the
                     // rule a vector store's width follows: the floor is a
                     // position in the key, and only a time-carrying identity has

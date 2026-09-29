@@ -87,6 +87,7 @@ impl Session<'_> {
         // simply left out.
         let mut payload = payload;
         crate::queue::hold_engine_fields(transaction, &address, &mut payload, span)?;
+        crate::series::hold_event_time(transaction, &address, &payload, span)?;
         self.write_record(transaction, address, payload, partial, span)
     }
 
@@ -187,7 +188,7 @@ impl Session<'_> {
         let payload = self.with_defaults(transaction, id, payload)?;
         // Free by construction — `free_identity` does the read that establishes
         // it, so nothing here writes over a record that was already there.
-        let identity = self.free_identity(transaction, &context, id, table.span)?;
+        let identity = self.free_identity(transaction, &context, id, &payload, table.span)?;
         let address = RecordAddress::new(context.namespace, context.database, id, identity.clone());
         self.put_record(transaction, address, payload.clone(), span)?;
         Ok(match answer {
@@ -236,8 +237,26 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         context: &Context,
         table: TableId,
+        payload: &Value,
         span: Span,
     ) -> Result<RecordId> {
+        // A series ordered by event time names the record from its own time
+        // field, so a late event lands in its place (ADR-0088 §1). Checked for
+        // being free like any minted UUID, and for the same reason not drawn
+        // again when it is not.
+        if let Some(identity) =
+            crate::series::event_identity(transaction, context.namespace, table, payload, span)?
+        {
+            let address =
+                RecordAddress::new(context.namespace, context.database, table, identity.clone());
+            if transaction.get(&address)?.is_some() {
+                return Err(Error::RecordExists {
+                    id: identity.to_string(),
+                    span,
+                });
+            }
+            return Ok(identity);
+        }
         let kind = Catalog::new(transaction)
             .table(table)?
             .map_or_else(IdentityKind::default, |found| found.identity);
@@ -330,7 +349,7 @@ impl Session<'_> {
             }
             let payload = self.with_defaults(transaction, id, Value::Object(fields))?;
 
-            let identity = self.free_identity(transaction, &context, id, table.span)?;
+            let identity = self.free_identity(transaction, &context, id, &payload, table.span)?;
             let address =
                 RecordAddress::new(context.namespace, context.database, id, identity.clone());
             self.put_record(transaction, address, payload, span)?;
