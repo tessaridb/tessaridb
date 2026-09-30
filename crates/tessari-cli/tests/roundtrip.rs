@@ -109,12 +109,9 @@ fn every_value_kind_survives_being_printed_and_read_back() {
     assert!(line.starts_with("9: {"), "{line}");
 }
 
-/// The renderer, reached the way an integration test can reach a binary crate's
-/// module: by including the file. A binary has no library target to depend on,
-/// and giving it one to make a test possible would be shaping the crate around
-/// its test.
-#[path = "../src/render.rs"]
-mod render;
+/// The renderer, which lives in the language crate so a state script and the
+/// command line write a value the same way (ADR-0091).
+use tessari_ql::literal as render;
 
 fn tessari_cli_render(held: &Value) -> String {
     // The fixture holds no reference, by design — see the module note — so an

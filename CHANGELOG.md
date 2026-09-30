@@ -12,6 +12,34 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.16.0-beta — 2026-09-30
+
+- **A backup that survives a pruned log** (G047, ADR-0091). Beside the log two more
+  forms, both the store's current state: `BACKUP STATE` / `--snapshot` / `GET
+  /backup?as=state` writes every live record at one version (`.tessarisnap`), and
+  `BACKUP SCRIPT` / `--dump` / `GET /backup?as=script` writes TessariQL that
+  rebuilds the store (`.tessariql`), naming in its header whatever it cannot
+  carry. `--restore` and `--verify` read a snapshot by its opening bytes; a
+  restored snapshot stands where it was taken, so the log after it applies on top.
+  Measured: one record written 10 000 times is 1 641 008 bytes of log and 1 100
+  bytes of snapshot.
+- `DEFINE USER … PASSHASH '<argon2id hash>'` declares a user from a stored hash,
+  refused below the store's own hashing parameters.
+- **Fixed: a log backup of a pruned store** was refused but left its file behind,
+  and `--restore` read that file as an empty store with exit 0. Every backup is
+  now written aside and moved into place only when whole, and the refusal names
+  `--snapshot`.
+- **Fixed: vectors written in one transaction were not linked to each other.**
+  The graph was read from committed state per record, so several vectors in one
+  commit came out with no edge between them and `APPROXIMATE` reads under-answered.
+  Run `REBUILD INDEX` on a vector index filled by multi-record transactions before
+  this release.
+- **Fixed: `INFO FOR TABLE` on an edge table** answered a definition that refused
+  when run again, because it wrote the endpoint fields and indexes the `EDGE` word
+  makes for itself.
+- The docs said a pruned log's backup begins at its horizon; it is refused. They
+  now say so, and point at the snapshot.
+
 ## 0.15.0-beta — 2026-09-30
 
 **A browser speaks the wire protocol.** `GET /wire` on the HTTP port upgrades to

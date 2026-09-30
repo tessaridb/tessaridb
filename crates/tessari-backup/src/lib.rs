@@ -94,6 +94,7 @@
 use std::io::{Read, Write};
 
 pub use reading::{bootstrap, read_until, verify};
+pub use state::{STATE_MAGIC, StateTaken, is_state, read_state, verify_state, write_state};
 use tessari_encoding::{LogId, NodeVersion, StoreValue, Writer};
 use tessari_storage::Store;
 use tessari_types::{DatabaseId, NamespaceId, Reach, Sequence, ShardId, TableId};
@@ -101,6 +102,7 @@ use tessari_types::{DatabaseId, NamespaceId, Reach, Sequence, ShardId, TableId};
 mod check;
 mod format;
 mod reading;
+mod state;
 
 /// What every file of this kind begins with.
 const MAGIC: &[u8; 10] = b"TESSARILOG";
@@ -339,6 +341,18 @@ pub enum Error {
         /// Where in the log it was.
         sequence: u64,
     },
+
+    /// A snapshot that ends before its end frame, or whose end frame does not
+    /// count what was read.
+    ///
+    /// Refused whole rather than restored in part: a cut log is a prefix of
+    /// history, which is a state the store once held, and a cut snapshot is an
+    /// arbitrary subset of records, which is not (ADR-0091 §5).
+    #[error(
+        "this snapshot is not whole — it ends before its end frame or holds \
+         fewer records than it says; a snapshot is restored whole or not at all"
+    )]
+    StateIncomplete,
 }
 
 /// Result alias for this crate.

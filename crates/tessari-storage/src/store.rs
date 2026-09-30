@@ -40,6 +40,7 @@ mod logs;
 mod opening;
 mod parts;
 mod reporting;
+mod restoring;
 
 /// What a store says about itself when asked.
 ///

@@ -200,3 +200,128 @@ fn a_scoped_user_cannot_reach_another_tenancy_from_the_command_line() {
         "she was refused for some other reason: {said}"
     );
 }
+
+/// A backup the store refuses leaves its destination exactly as it found it.
+///
+/// Two outcomes a refused backup must not have, and both had one: an empty file
+/// where nothing stood, which `--restore` then reads as a backup, and an earlier
+/// good backup overwritten by nothing. The refusal used here is the incremental
+/// form over a store holding two logs, which is refused before any record is
+/// read — so the file that used to appear came from opening the destination
+/// before asking the store anything.
+#[test]
+fn a_refused_backup_leaves_its_destination_as_it_was() {
+    let path = store("refused-backup");
+    let (ok, said) = run(
+        &path,
+        None,
+        &[
+            "-e",
+            "DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; DEFINE COLLECTION t; CREATE t:1 = { n: 1 };",
+        ],
+        "",
+    );
+    assert!(ok, "the store was not made: {said}");
+    let files = std::env::temp_dir().join("tessaridb-cli-refusals-refused-backup-files");
+    drop(std::fs::remove_dir_all(&files));
+    std::fs::create_dir_all(&files).unwrap();
+
+    let fresh = files.join("fresh.tessarilog");
+    let (ok, said) = run(
+        &path,
+        None,
+        &["--backup", fresh.to_str().unwrap(), "--from", "5"],
+        "",
+    );
+    assert!(!ok, "an incremental backup over two logs was taken: {said}");
+    assert!(
+        !fresh.exists(),
+        "a refused backup left a file where there was none"
+    );
+
+    let kept = files.join("kept.tessarilog");
+    let (ok, said) = run(&path, None, &["--backup", kept.to_str().unwrap()], "");
+    assert!(ok, "the whole-store backup failed: {said}");
+    let before = std::fs::read(&kept).unwrap();
+    let (ok, said) = run(
+        &path,
+        None,
+        &["--backup", kept.to_str().unwrap(), "--from", "5"],
+        "",
+    );
+    assert!(!ok, "an incremental backup over two logs was taken: {said}");
+    assert_eq!(
+        std::fs::read(&kept).unwrap(),
+        before,
+        "a refused backup overwrote the good one standing at its destination"
+    );
+    let partial: Vec<_> = std::fs::read_dir(&files)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(
+        partial.len(),
+        1,
+        "something besides the kept backup is left behind: {partial:?}"
+    );
+}
+
+/// A snapshot the command line cannot finish leaves nothing, and one that is
+/// not whole is refused by `--verify` and by `--restore` with a non-zero exit.
+#[test]
+fn a_snapshot_that_is_not_whole_is_refused_and_leaves_nothing() {
+    let path = store("refused-snapshot");
+    let (ok, said) = run(
+        &path,
+        None,
+        &[
+            "-e",
+            "DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; DEFINE COLLECTION t; CREATE t:1 = { n: 1 };",
+        ],
+        "",
+    );
+    assert!(ok, "the store was not made: {said}");
+    let files = std::env::temp_dir().join("tessaridb-cli-refusals-refused-snapshot-files");
+    drop(std::fs::remove_dir_all(&files));
+    std::fs::create_dir_all(&files).unwrap();
+
+    let dumped = files.join("missing").join("state.tessariql");
+    let (ok, said) = run(&path, None, &["--dump", dumped.to_str().unwrap()], "");
+    assert!(
+        !ok,
+        "a dump into a directory that does not exist was taken: {said}"
+    );
+    let nowhere = files.join("missing").join("state.tessarisnap");
+    let (ok, said) = run(&path, None, &["--snapshot", nowhere.to_str().unwrap()], "");
+    assert!(
+        !ok,
+        "a snapshot into a directory that does not exist was taken: {said}"
+    );
+    assert!(
+        !files.join("missing").exists(),
+        "a failed snapshot created something"
+    );
+
+    let whole = files.join("state.tessarisnap");
+    let (ok, said) = run(&path, None, &["--snapshot", whole.to_str().unwrap()], "");
+    assert!(ok, "the snapshot failed: {said}");
+    let bytes = std::fs::read(&whole).unwrap();
+    let cut = files.join("cut.tessarisnap");
+    std::fs::write(&cut, &bytes[..bytes.len() - 3]).unwrap();
+    let (ok, said) = run(&path, None, &["--verify", cut.to_str().unwrap()], "");
+    assert!(
+        !ok && said.contains("not whole"),
+        "a cut snapshot verified: {said}"
+    );
+    let target = store("refused-snapshot-target");
+    let (ok, said) = run(&target, None, &["--restore", cut.to_str().unwrap()], "");
+    assert!(
+        !ok && said.contains("not whole"),
+        "a cut snapshot restored: {said}"
+    );
+    let (ok, said) = run(&target, None, &["--restore", whole.to_str().unwrap()], "");
+    assert!(
+        ok,
+        "a whole snapshot did not restore into the store a cut one was refused by: {said}"
+    );
+}

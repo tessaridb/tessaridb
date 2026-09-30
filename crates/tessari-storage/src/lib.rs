@@ -57,6 +57,7 @@ mod series;
 mod served;
 mod shards;
 mod snapshots;
+mod state;
 mod store;
 mod tailmarks;
 mod topic;
@@ -105,6 +106,7 @@ pub use sealing::{
     KEYS_FIELD, VAULT_RECIPIENT, add_recipient, initialise_root, mint_vault_key, open_data_key,
     open_field, recipients, remove_recipient, reseal_named, seal_secrets, vault_key_scope,
 };
+pub use state::{StateReader, TopicHead};
 pub use store::{Health, Store};
 pub use tessari_encoding::{BUILD_VERSION, LogId, NODE_ID_LEN, Roles, Writer};
 pub use transaction::{

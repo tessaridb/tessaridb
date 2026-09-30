@@ -100,7 +100,7 @@ const SECTION_LEN: usize = 1 + 9 + 16 + 8 + 8;
 const FRAME_LEN: usize = 1 + 4 + 8 + 4;
 
 /// Reads that touch each engine, so a difference anywhere shows up as an answer.
-const INTERROGATION: &[&str] = &[
+pub(crate) const INTERROGATION: &[&str] = &[
     "SELECT * FROM people;",
     "SELECT * FROM people WHERE email = 'b@x';",
     "SELECT * FROM people WHERE address.city = 'london';",
@@ -122,7 +122,7 @@ const INTERROGATION: &[&str] = &[
     "READ media:'/gone';",
 ];
 
-fn store() -> (Arc<dyn KvBackend>, Store) {
+pub(crate) fn store() -> (Arc<dyn KvBackend>, Store) {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     let store = Store::open(Arc::clone(&backend)).unwrap();
     (backend, store)
@@ -134,7 +134,7 @@ fn store() -> (Arc<dyn KvBackend>, Store) {
 /// the store (Q-620) — and nothing here writes *into* a database, which is what
 /// keeps this store at one log. One log is what the surfaces bounded by a single
 /// sequence need (Q-625), and this is the fixture that gives them one.
-fn one_log() -> (Arc<dyn KvBackend>, Store, Vec<u8>) {
+pub(crate) fn one_log() -> (Arc<dyn KvBackend>, Store, Vec<u8>) {
     let (backend, store) = store();
     {
         let mut session = Session::new(&store);
@@ -179,7 +179,7 @@ fn moved_since(base: &[u8], store: &Store) -> (LogId, Sequence) {
     }
 }
 
-fn signed_in(store: &Store) -> Session<'_> {
+pub(crate) fn signed_in(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     // The last statement of the fixture declares a user, which closes the store,
     // so anything reading it afterwards has to say who it is.
@@ -191,7 +191,7 @@ fn signed_in(store: &Store) -> Session<'_> {
 }
 
 /// Every key and value of one keyspace.
-fn dump(backend: &Arc<dyn KvBackend>, keyspace: Keyspace) -> Vec<(Vec<u8>, Vec<u8>)> {
+pub(crate) fn dump(backend: &Arc<dyn KvBackend>, keyspace: Keyspace) -> Vec<(Vec<u8>, Vec<u8>)> {
     let request = ScanRequest {
         keyspace,
         range: KeyRange::all(),
@@ -207,7 +207,7 @@ fn dump(backend: &Arc<dyn KvBackend>, keyspace: Keyspace) -> Vec<(Vec<u8>, Vec<u
 }
 
 /// A store with the fixture applied, and its backup.
-fn original() -> (Arc<dyn KvBackend>, Store, Vec<u8>) {
+pub(crate) fn original() -> (Arc<dyn KvBackend>, Store, Vec<u8>) {
     let (backend, store) = store();
     {
         let mut session = Session::new(&store);

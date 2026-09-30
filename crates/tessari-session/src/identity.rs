@@ -40,7 +40,7 @@ mod grants;
 mod kinds;
 mod needs;
 mod password;
-use tessari_ql::{Name, Password, ReachRef, Span, StatementKind, UserChange, UserGrant};
+use tessari_ql::{Name, ReachRef, Span, StatementKind, UserChange, UserGrant};
 use tessari_storage::{Catalog, Held, Kind, Reach, Role, Transaction, UserDefinition};
 
 use crate::error::{Error, Result};
@@ -131,8 +131,8 @@ pub(crate) struct UserDeclaration<'a> {
     pub(crate) scope: Option<&'a ReachRef>,
     /// What the user may do.
     pub(crate) role: &'a UserGrant,
-    /// The password, as written.
-    pub(crate) password: &'a Password,
+    /// The password or the stored hash, as written.
+    pub(crate) credential: &'a tessari_ql::Credential,
     /// Whether re-defining an existing name is accepted.
     pub(crate) if_not_exists: bool,
 }
@@ -155,7 +155,7 @@ impl Session<'_> {
             name,
             scope,
             role,
-            password,
+            credential,
             if_not_exists,
         } = declaration;
         let declared = Catalog::new(transaction)
@@ -185,7 +185,10 @@ impl Session<'_> {
                 span,
             });
         }
-        let secret = hash(password.expose(), span)?;
+        let secret = match credential {
+            tessari_ql::Credential::Password(password) => hash(password.expose(), span)?,
+            tessari_ql::Credential::Hash(held) => password::accepted(held, span)?,
+        };
         Catalog::new(transaction).create_user(
             &name.text,
             namespace,

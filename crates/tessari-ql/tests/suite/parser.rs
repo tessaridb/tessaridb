@@ -1720,3 +1720,52 @@ fn a_history_without_a_record_is_refused_and_says_what_is_missing() {
         "the refusal does not name what is missing: {error}"
     );
 }
+
+/// `BACKUP` names which backup it answers with, and `STATE` stays a field name.
+///
+/// `STATE` is contextual: reserving it would take a word that schemas use
+/// everywhere, so it is read as the backup's form only directly after `BACKUP`.
+/// A snapshot is one moment, so `FROM` — a position in a log — is refused beside
+/// it rather than ignored.
+#[test]
+fn backup_names_its_form_and_state_stays_an_ordinary_word() {
+    use tessari_ql::{BackupForm, StatementKind};
+    let kind = |script: &str| {
+        tessari_ql::parse(script).unwrap().statements[0]
+            .kind
+            .clone()
+    };
+    assert_eq!(
+        kind("BACKUP;"),
+        StatementKind::Backup {
+            from: None,
+            form: BackupForm::Log
+        }
+    );
+    assert_eq!(
+        kind("BACKUP FROM 42;"),
+        StatementKind::Backup {
+            from: Some(42),
+            form: BackupForm::Log
+        }
+    );
+    assert_eq!(
+        kind("backup state;"),
+        StatementKind::Backup {
+            from: None,
+            form: BackupForm::State
+        }
+    );
+    assert_eq!(
+        kind("BACKUP SCRIPT;"),
+        StatementKind::Backup {
+            from: None,
+            form: BackupForm::Script
+        }
+    );
+    assert!(tessari_ql::parse("BACKUP STATE FROM 5;").is_err());
+    assert!(tessari_ql::parse("BACKUP SCRIPT FROM 5;").is_err());
+    assert!(tessari_ql::parse("SELECT script FROM pages;").is_ok());
+    assert!(tessari_ql::parse("SELECT state FROM orders WHERE state = 'paid';").is_ok());
+    assert!(tessari_ql::parse("DEFINE FIELD state ON orders TYPE string;").is_ok());
+}

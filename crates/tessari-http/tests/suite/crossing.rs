@@ -175,6 +175,11 @@ fn the_backup_route_refuses_a_caller_who_would_take_a_tenancy_that_is_not_theirs
 
     let (status, said) = send(&address, "GET", "/backup", b"", Some(NINA));
     assert!(status >= 400, "a tenant downloaded the whole store: {said}");
+    let (status, said) = send(&address, "GET", "/backup?as=state", b"", Some(NINA));
+    assert!(
+        status >= 400,
+        "a tenant downloaded the whole store as a snapshot: {said}"
+    );
 
     let (status, _) = send(&address, "GET", "/backup", b"", Some(ROOT));
     assert_eq!(status, 200, "the store owner was refused their own backup");

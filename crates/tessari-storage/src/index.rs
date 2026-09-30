@@ -130,6 +130,14 @@ pub(crate) struct Pending {
     /// document a second time. `settle` reads this to know which of the two it
     /// is holding.
     built: BTreeSet<IndexAddress>,
+    /// Each vector graph as this batch has edited it so far.
+    ///
+    /// Read from committed state once per batch and then carried from mutation
+    /// to mutation. Read afresh per mutation, as it used to be, every record of
+    /// one commit was inserted into a graph that held none of the others — the
+    /// vectors of one transaction came out with no edge between them, and a
+    /// later mutation's write of a shared neighbour overwrote an earlier one's.
+    graphs: BTreeMap<IndexAddress, graph::Graph>,
 }
 
 /// How one term's dictionary entry moves in this batch.
@@ -302,12 +310,18 @@ fn apply_one(
     );
 
     if let Some(distance) = definition.vector {
-        // The graph is read from committed state and edited, then the nodes the
-        // edit touched are written. Reading the whole graph per mutation is the
-        // cost this shape pays, and it is stated in `graph.rs` rather than
-        // discovered: an index over more vectors than fit in memory wants a
-        // paging walk, which is not this.
-        let mut graph = graph::Graph::read(store, &address, distance)?;
+        // The graph is read from committed state once per batch and edited,
+        // then the nodes each edit touched are written; a node touched twice is
+        // written twice and the later write, which holds both edits, lands last.
+        // Reading the whole graph is the cost this shape pays, and it is stated
+        // in `graph.rs` rather than discovered: an index over more vectors than
+        // fit in memory wants a paging walk, which is not this.
+        let graph = match pending.graphs.entry(address) {
+            std::collections::btree_map::Entry::Occupied(held) => held.into_mut(),
+            std::collections::btree_map::Entry::Vacant(empty) => {
+                empty.insert(graph::Graph::read(store, &address, distance)?)
+            }
+        };
         let previous_vector = previous
             .map(decode_payload)
             .transpose()?

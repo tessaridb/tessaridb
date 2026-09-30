@@ -322,8 +322,9 @@ pub(crate) fn close_session(presented: &Presented, tokens: &Tokens) -> Answer {
     Answer::new(200, r#"{"closed":true}"#.to_owned())
 }
 
-/// `GET /backup` — the store's log as a backup file, or `?from=<n>` for the
-/// records since a sequence.
+/// `GET /backup` — the store's log as a backup file, `?from=<n>` for the
+/// records since a sequence, or `?as=state` for a snapshot of the current state
+/// (ADR-0091).
 ///
 /// A surface over the `BACKUP` statement rather than a second implementation of
 /// it, so who may take one is decided in one place: the statement needs an
@@ -337,15 +338,21 @@ pub(crate) fn backup(
     tokens: &Tokens,
     presented: &Presented,
 ) -> Answer {
-    let from = match query {
-        None => None,
+    // A query string that is not one this route takes is a mistake worth
+    // naming: silently backing the whole store up when the caller asked for an
+    // increment, or for a snapshot, is a very expensive typo.
+    let script = match query {
+        None => "BACKUP;".to_owned(),
+        Some("as=state") => "BACKUP STATE;".to_owned(),
+        Some("as=script") => "BACKUP SCRIPT;".to_owned(),
         Some(written) => match written.strip_prefix("from=").map(str::parse::<u64>) {
-            Some(Ok(held)) => Some(held),
-            // A query string that is not the one parameter this route takes is a
-            // mistake worth naming: silently backing the whole store up when the
-            // caller asked for an increment is a very expensive typo.
+            Some(Ok(held)) => format!("BACKUP FROM {held};"),
             _ => {
-                return Answer::bad_request("the only query this route takes is `from=<sequence>`");
+                return Answer::bad_request(
+                    "this route takes `from=<sequence>` for the log since a position, \
+                     `as=state` for a snapshot of the current state, or `as=script` \
+                     for that state as TessariQL",
+                );
             }
         },
     };
@@ -353,14 +360,13 @@ pub(crate) fn backup(
         Ok(session) => session,
         Err(answer) => return answer,
     };
-    let script = from.map_or_else(
-        || "BACKUP;".to_owned(),
-        |held| format!("BACKUP FROM {held};"),
-    );
     match session.run(&script) {
         Ok(outcomes) => match outcomes.last() {
             Some(Outcome::Value(tessaridb::Value::Bytes(bytes))) => {
                 Answer::octets(200, bytes.clone())
+            }
+            Some(Outcome::Value(tessaridb::Value::String(script))) => {
+                Answer::octets(200, script.clone().into_bytes())
             }
             _ => Answer::new(
                 500,

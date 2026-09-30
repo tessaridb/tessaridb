@@ -234,7 +234,7 @@ impl Session<'_> {
                 name,
                 scope,
                 role,
-                password,
+                credential,
                 if_not_exists,
             } => self.define_user(
                 transaction,
@@ -242,7 +242,7 @@ impl Session<'_> {
                     name,
                     scope: scope.as_ref(),
                     role,
-                    password,
+                    credential,
                     if_not_exists: *if_not_exists,
                 },
                 span,
@@ -997,7 +997,7 @@ impl Session<'_> {
                 start,
                 limit,
             } => self.read_file(transaction, target, *start, *limit),
-            StatementKind::Backup { from } => self.backup(*from),
+            StatementKind::Backup { from, form } => self.backup(*from, *form),
             StatementKind::Get { target } => {
                 Ok(Outcome::Value(self.read_key(transaction, target)?))
             }

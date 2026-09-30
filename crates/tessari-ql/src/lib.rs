@@ -20,6 +20,7 @@ mod bind;
 mod error;
 mod function;
 mod lexer;
+pub mod literal;
 mod parser;
 mod render;
 #[cfg(any(test, feature = "test-support"))]
@@ -27,10 +28,10 @@ pub mod test_support;
 mod token;
 
 pub use ast::{
-    Admitted, Aggregate, Answer, AnsweredBy, Approximation, ArithmeticOp, Assignment,
-    ColumnDeclaration, ConsumerSource, CreateTarget, DeleteBound, Direction, EdgeClause,
-    EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, Field, FieldMapping, FieldPath, Fill,
-    FillMode, Fusion, GroupClauses, Hop, Identity, InfoSubject, JoinSide, Name, OnFailure,
+    Admitted, Aggregate, Answer, AnsweredBy, Approximation, ArithmeticOp, Assignment, BackupForm,
+    ColumnDeclaration, ConsumerSource, CreateTarget, Credential, DeleteBound, Direction,
+    EdgeClause, EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, Field, FieldMapping, FieldPath,
+    Fill, FillMode, Fusion, GroupClauses, Hop, Identity, InfoSubject, JoinSide, Name, OnFailure,
     Ordering, Password, Projected, Projection, RangeExpr, ReachRef, RecordTarget, Retention,
     Script, Select, SetCondition, Source, SpaceBound, Statement, StatementKind, TableChange,
     TableRef, Timeout, TopicClauses, UserChange, UserGrant, Using, Version, Written,

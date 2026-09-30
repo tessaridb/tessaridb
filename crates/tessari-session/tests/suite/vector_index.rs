@@ -313,3 +313,66 @@ fn approximate_and_vector_are_still_usable_as_names() {
         .unwrap();
     assert_eq!(outcomes[0].records().unwrap().len(), 1);
 }
+
+/// Vectors written in one transaction are linked to each other, exactly as the
+/// same vectors are when each is its own commit.
+///
+/// The graph used to be read from committed state once per mutation, so every
+/// record of one commit was inserted into a graph that did not hold the others:
+/// three vectors created in one transaction came out as three nodes with no edge
+/// between them, and the approximate walk from the entry point found one record
+/// where it should have found all three — silently, since an approximate answer
+/// that is short looks like one that is right. Insertion order is record-id order
+/// on both paths, so the two graphs are required to be the same bytes.
+#[test]
+fn a_graph_written_in_one_transaction_is_the_graph_written_one_record_at_a_time() {
+    let script = |id: i64| {
+        format!(
+            "CREATE items:{id} = {{ at: [{}.0, {}.0] }};",
+            id % 7,
+            id / 7
+        )
+    };
+    let one_at_a_time = {
+        let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+        let store = Store::open(Arc::clone(&backend)).unwrap();
+        let mut session = ready(&store);
+        session
+            .run("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
+            .unwrap();
+        for id in 1..=40 {
+            session.run(&script(id)).unwrap();
+        }
+        graph(&backend)
+    };
+    let together = {
+        let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+        let store = Store::open(Arc::clone(&backend)).unwrap();
+        let mut session = ready(&store);
+        session
+            .run("DEFINE INDEX by_at ON items FIELDS at VECTOR euclidean;")
+            .unwrap();
+        let body: String = (1..=40).map(script).collect();
+        session.run(&format!("BEGIN; {body} COMMIT;")).unwrap();
+        graph(&backend)
+    };
+    assert_eq!(together.len(), 40, "not every vector has a node");
+    assert_eq!(
+        together, one_at_a_time,
+        "the graph a transaction wrote differs from the one single commits wrote"
+    );
+}
+
+/// Every node of every vector graph, as stored.
+fn graph(backend: &Arc<dyn KvBackend>) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let request = tessari_kv::ScanRequest::new(
+        tessari_kv::Keyspace::INDEX,
+        tessari_kv::KeyRange::prefix(&[0x13]),
+    );
+    backend
+        .scan(&request)
+        .unwrap()
+        .into_iter()
+        .map(|(key, value)| (key.as_slice().to_vec(), value.as_slice().to_vec()))
+        .collect()
+}

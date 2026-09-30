@@ -64,6 +64,35 @@ pub(crate) fn hash(password: &str, span: Span) -> Result<String> {
         .map_err(|_| Error::PasswordUnusable { span })
 }
 
+/// A stored hash given back by a state script, taken if this store could have
+/// produced it (ADR-0091).
+///
+/// Argon2id, version 19, at parameters no weaker than the ones this store hashes
+/// with. A hash below that floor is refused rather than stored: taking it would
+/// let a script declare a user whose password is cheaper to guess than any the
+/// store itself would ever write, which is a downgrade nobody would see.
+///
+/// # Errors
+///
+/// [`Error::PasshashRefused`] for anything else.
+pub(crate) fn accepted(held: &str, span: Span) -> Result<String> {
+    let refused = || Error::PasshashRefused { span };
+    let parsed = PasswordHash::new(held).map_err(|_| refused())?;
+    let param = |name: &str| parsed.params.get_decimal(name).ok_or_else(refused);
+    let at_least = parsed.algorithm == Algorithm::Argon2id.ident()
+        && parsed.version == Some(u32::from(Version::V0x13))
+        && param("m")? >= PASSWORD_HASH_MEMORY_KIB
+        && param("t")? >= PASSWORD_HASH_PASSES
+        && param("p")? >= PASSWORD_HASH_LANES
+        && parsed.salt.is_some()
+        && parsed.hash.is_some();
+    if at_least {
+        Ok(held.to_owned())
+    } else {
+        Err(refused())
+    }
+}
+
 /// Whether this password produces that stored hash.
 ///
 /// A stored hash that cannot be parsed answers **false** rather than raising:
