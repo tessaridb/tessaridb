@@ -269,12 +269,7 @@ impl Parser<'_> {
             _ if self.eat_word("unseal") => self.unseal_statement(start)?,
             _ if self.eat_word("change") => self.change_passphrase_statement(start)?,
             _ if self.eat_word("restore") => self.restore_statement()?,
-            _ if self.eat_word("seal") => {
-                self.expect_vault_word("`VAULT`")?;
-                StatementKind::SealVault {
-                    span: start.to(self.span_behind()),
-                }
-            }
+            _ if self.eat_word("seal") => self.seal_statement(start)?,
             _ => return Err(self.error_here("a statement")),
         };
         Ok(Statement {

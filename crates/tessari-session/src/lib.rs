@@ -86,4 +86,4 @@ pub use script::{ScriptTaken, write_script};
 pub use session::{Atomic, Session};
 pub use tessari_ql::Parameters;
 pub use ticket::Ticket;
-pub use vault_surface::VaultAct;
+pub use vault_surface::{VaultAct, VaultTarget};

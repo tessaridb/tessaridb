@@ -9,7 +9,7 @@ use crate::store::Store;
 use crate::transaction::{RecordAddress, Transaction};
 use std::collections::BTreeMap;
 use tessari_types::{DatabaseId, NamespaceId, Value};
-use tessari_vault::{Level, SecretBytes, Wrapped, keys};
+use tessari_vault::{Level, Root, SecretBytes, Wrapped, keys};
 
 /// Open a record's data key, for the one statement allowed to want it.
 ///
@@ -82,6 +82,60 @@ pub fn mint_vault_key(
     store
         .vault()
         .with_master(|master| Ok(keys::wrap_fresh(master, Level::Vault, &scope)?.0))
+}
+
+/// Mint a vault key under the vault's own passphrase (ADR-0093 D1), and hold
+/// it in this process for one period — declaring the vault unseals it, as the
+/// first `UNSEAL` of a store does.
+///
+/// Needs no master key and so no unsealed store. The scope is computed here, by
+/// the same function every later open uses.
+///
+/// # Errors
+///
+/// Returns [`Error::Vault`] when the entropy source or the derivation fails.
+pub fn mint_own_vault_key(
+    store: &Store,
+    namespace: NamespaceId,
+    database: DatabaseId,
+    name: &str,
+    passphrase: &str,
+) -> Result<Root> {
+    let scope = vault_key_scope(namespace, database, name);
+    let (root, key) = Root::create_for_vault(passphrase, &scope).map_err(Error::Vault)?;
+    store.vault().adopt_own(root.key_id, key)?;
+    Ok(root)
+}
+
+/// Unseal one own-custody vault with its passphrase.
+///
+/// # Errors
+///
+/// Returns [`Error::Vault`] carrying `WrongKey` or `AlreadyUnsealed`.
+pub fn unseal_own_vault(
+    store: &Store,
+    definition: &TableDefinition,
+    root: &Root,
+    passphrase: &str,
+) -> Result<()> {
+    let scope = vault_key_scope(definition.namespace, definition.database, &definition.name);
+    store.vault().unseal_own(root, &scope, passphrase)
+}
+
+/// The same vault key under a new passphrase — a rekey of one vault.
+///
+/// # Errors
+///
+/// Returns [`Error::Vault`] carrying `WrongKey` when `current` does not open it.
+pub fn rewrap_own_vault(
+    definition: &TableDefinition,
+    root: &Root,
+    current: &str,
+    new: &str,
+) -> Result<Root> {
+    let scope = vault_key_scope(definition.namespace, definition.database, &definition.name);
+    root.rewrap_vault(current, new, &scope)
+        .map_err(Error::Vault)
 }
 
 /// Add a recipient to a record's key set.

@@ -1232,11 +1232,50 @@ unsealed is refused with `NoVaultRoot`. **A backup taken before the change still
 opens with the old passphrase**, because the root record travels in the log like
 the rest of the catalog.
 
+#### A vault with its own passphrase
+
+```
+DEFINE VAULT team PASSPHRASE 'the team passphrase';
+UNSEAL VAULT team WITH 'the team passphrase';
+SEAL VAULT team;
+CHANGE VAULT team PASSPHRASE FROM 'the team passphrase' TO 'a new one';
+INFO FOR SEAL OF team;
+```
+
+A vault declared with `PASSPHRASE` keeps its key under a key derived from that
+passphrase instead of under the store's master key. The store's passphrase does
+not open it, holding every authority in the store does not open it, and it can be
+declared on a store that has never been unsealed. Declaring it leaves it unsealed
+for one period, exactly as the store's first unseal does. A vault declared without
+`PASSPHRASE` opens with the store's passphrase, as before, and which of the two a
+vault is cannot change after it is declared. `INFO FOR VAULT team` says which:
+`custody` is `'own'` or `'store'`.
+
+The named statements act on that vault alone. Its unseal lasts the node's period
+and is throttled on its own; sealing it leaves the store and every other vault as
+they were; changing its passphrase re-wraps the same key, so no secret is
+re-encrypted and a backup taken before the change still opens with the old one.
+`INFO FOR SEAL OF team` answers `{ state, seals_at, unseal_for, custody }` — for a
+vault in the store's custody, the store's own state. Naming a vault that opens with
+the store's passphrase in `UNSEAL`, `SEAL` or `CHANGE` is refused as
+`VaultUsesStorePassphrase`, because unsealing the store opens every vault in its
+custody and the caller named one.
+
+Anybody who may read in the vault's database may unseal or seal it — the
+passphrase is what they must also hold — and changing its passphrase needs
+`manage` there, as declaring it did. What an own passphrase does not change: a
+running node holding the unsealed key can decrypt, an administrator can still
+`DROP VAULT` it (which destroys the key rather than disclosing anything), and the
+names and number of its records stay visible as for every vault.
+
 A client need not write any of these as statement text. The HTTP surface has
 `GET /vault`, `POST /vault/unseal` (the body is the passphrase),
 `POST /vault/seal` and `POST /vault/passphrase` (`{"current": …, "new": …}`), and
 the wire protocol has a frame of its own for the same four acts, so the
-passphrase is never part of a script a console keeps or a client logs.
+passphrase is never part of a script a console keeps or a client logs. For a vault
+with its own passphrase the routes are `GET /vault/{namespace}/{database}/{vault}`
+and `POST /vault/{namespace}/{database}/{vault}/unseal`, `…/seal` and
+`…/passphrase`, and the frame names the vault as its target.
 
 #### Reading a secret
 

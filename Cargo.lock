@@ -1797,6 +1797,7 @@ dependencies = [
  "tessari-serve",
  "tessari-storage",
  "tessari-types",
+ "tessari-vault",
  "thiserror",
 ]
 

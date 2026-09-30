@@ -252,11 +252,17 @@ impl Needs {
             // it unwraps is store-wide, and it is `Operate` rather than `Manage`
             // for the same reason `DEFINE NODE` is: it changes what this process
             // can do, not what the store contains.
-            StatementKind::SealVault { .. }
-            | StatementKind::UnsealVault { .. }
-            | StatementKind::ChangeVaultPassphrase { .. } => {
-                Self::OPERATE_STORE
-            }
+            StatementKind::SealVault { vault: None, .. }
+            | StatementKind::UnsealVault { vault: None, .. }
+            | StatementKind::ChangeVaultPassphrase { vault: None, .. } => Self::OPERATE_STORE,
+            // One vault carrying its own passphrase (ADR-0093 D5). Opening or
+            // closing it is for whoever may `REVEAL` in it — the passphrase is
+            // the second factor, and unsealing grants no read that the reader
+            // did not already hold. Changing it rewrites the vault's
+            // declaration, which is shaping structure, as declaring it was.
+            StatementKind::SealVault { vault: Some(_), .. }
+            | StatementKind::UnsealVault { vault: Some(_), .. } => Self::READ,
+            StatementKind::ChangeVaultPassphrase { vault: Some(_), .. } => Self::MANAGE,
             StatementKind::Use { .. }
             | StatementKind::Begin
             | StatementKind::Commit
@@ -400,7 +406,7 @@ impl Needs {
             // names no table, so any signed-in caller may ask (ADR-0092 D1),
             // and an anonymous one on a closed store is refused before here.
             StatementKind::Info {
-                subject: InfoSubject::Seal,
+                subject: InfoSubject::Seal(None),
             } => Self::NOTHING,
             // The other four are reads of the catalog, and what they report is
             // narrowed to what the caller could have found out anyway.

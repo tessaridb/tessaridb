@@ -396,6 +396,11 @@ pub enum StatementKind {
         name: Name,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
+        /// `PASSPHRASE '…'`: the vault's key is wrapped under this passphrase
+        /// rather than under the store's master key (ADR-0093), so the store's
+        /// passphrase never opens it. A literal, for
+        /// [`StatementKind::UnsealVault`]'s reason.
+        passphrase: Option<String>,
     },
     /// `DEFINE INDEX by_email ON users FIELDS email UNIQUE`
     DefineIndex {
@@ -1474,6 +1479,9 @@ pub enum StatementKind {
     /// variable or an argument vector, both of which are readable by anything
     /// that can list a process. That is decision 3 of the design.
     UnsealVault {
+        /// `UNSEAL VAULT team WITH …`: one vault carrying its own passphrase
+        /// (ADR-0093) rather than the store's master key.
+        vault: Option<Name>,
         /// The passphrase, as written.
         passphrase: String,
         /// Where the statement sits, so a refusal can point at it without
@@ -1487,6 +1495,8 @@ pub enum StatementKind {
     /// new passphrase, so no secret is re-encrypted; a backup taken before the
     /// change still opens with the old one, because the root travels in the log.
     ChangeVaultPassphrase {
+        /// `CHANGE VAULT team PASSPHRASE …`: one vault's own passphrase.
+        vault: Option<Name>,
         /// The passphrase that opens the store now.
         current: String,
         /// The passphrase that will open it afterwards.
@@ -1501,6 +1511,8 @@ pub enum StatementKind {
     /// the worst a caller can do by sealing is stop this process opening
     /// secrets, which is the safe direction and is undone by unsealing again.
     SealVault {
+        /// `SEAL VAULT team`: one vault's own key rather than the master key.
+        vault: Option<Name>,
         /// Where the statement sits.
         span: Span,
     },

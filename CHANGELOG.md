@@ -46,13 +46,23 @@ compares carries no pre-release suffix.
   new passphrase — no secret is re-encrypted, the old passphrase stops unsealing,
   and a backup taken before the change still opens with the old one. A store never
   unsealed is `NoVaultRoot`.
+- **A vault may carry its own passphrase** (ADR-0093). `DEFINE VAULT team
+  PASSPHRASE '…'` wraps the vault's key under a key derived from that passphrase
+  instead of the store's master key, so neither the store's passphrase nor
+  store-wide authority opens it, and it can be declared on a sealed store.
+  `UNSEAL VAULT team WITH '…'`, `SEAL VAULT team`, `CHANGE VAULT team PASSPHRASE
+  FROM '…' TO '…'` and `INFO FOR SEAL OF team` act on that vault alone, with its
+  own ten-minute period and its own throttle; the same four exist as
+  `/vault/{ns}/{db}/{vault}[/unseal|/seal|/passphrase]` and as a target in the
+  wire frame. Naming a vault that opens with the store's passphrase is
+  `VaultUsesStorePassphrase`. `INFO FOR VAULT` now says which custody a vault has.
 - **`INFO FOR VAULT team RECORDS [AFTER team:'x'] [LIMIT n]`** lists a vault's
   record ids a page at a time (a thousand by default, ten thousand at most), with
   no value in the answer.
 - The console answers `HEAD /` and every console asset as `GET` without the body,
   with `Cache-Control: no-cache` and a strong `ETag`; a matching `If-None-Match` is
   a `304`, so a browser never runs an old console against an upgraded node.
-- **1454 conformance cases** define the language and run in the build.
+- **1462 conformance cases** define the language and run in the build.
 
 ## 0.16.0-beta — 2026-09-30
 

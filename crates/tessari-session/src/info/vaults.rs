@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use tessari_ql::{Name, RecordTarget, Span, TableRef};
-use tessari_storage::{Catalog, SealState, Transaction};
+use tessari_storage::{Catalog, SealState, Transaction, VaultCustody};
 use tessari_types::Value;
 
 use crate::error::{Error, Result};
@@ -21,10 +21,43 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
     ) -> Result<BTreeMap<String, Value>> {
         let initialised = Catalog::new(transaction).vault_root()?.is_some();
-        let (state, seals_at) = match self.store.vault().state() {
-            _ if !initialised => ("uninitialised", Value::None),
-            SealState::Sealed => ("sealed", Value::None),
-            SealState::Unsealed { seals_at } => ("unsealed", instant(seals_at)),
+        let state = self.store.vault().state();
+        Ok(self.seal_report(if initialised { Some(state) } else { None }))
+    }
+
+    /// `INFO FOR SEAL OF team` (ADR-0093 D4): the state of whatever opens this
+    /// vault — its own key, or the store's — and which of the two.
+    pub(super) fn info_seal_of(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<BTreeMap<String, Value>> {
+        let (_, definition) = self.named_vault(transaction, name, span)?;
+        let (mut report, custody) = match definition.vault_custody() {
+            Some(custody @ VaultCustody::Own(root)) => (
+                self.seal_report(Some(self.store.vault().own_state(root.key_id))),
+                custody,
+            ),
+            Some(custody @ VaultCustody::Store(_)) => (self.info_seal(transaction)?, custody),
+            None => {
+                return Err(Error::Unknown {
+                    entity: "vault",
+                    name: name.text.clone(),
+                    span,
+                });
+            }
+        };
+        report.insert("custody".to_owned(), Value::from(custody.word()));
+        Ok(report)
+    }
+
+    /// The seal object for one key's state, `None` meaning never initialised.
+    fn seal_report(&self, state: Option<SealState>) -> BTreeMap<String, Value> {
+        let (state, seals_at) = match state {
+            None => ("uninitialised", Value::None),
+            Some(SealState::Sealed) => ("sealed", Value::None),
+            Some(SealState::Unsealed { seals_at }) => ("unsealed", instant(seals_at)),
         };
         let period = self.store.vault().period();
         let unseal_for = tessari_types::Duration::new(
@@ -37,7 +70,7 @@ impl Session<'_> {
         report.insert("state".to_owned(), Value::from(state));
         report.insert("seals_at".to_owned(), seals_at);
         report.insert("unseal_for".to_owned(), unseal_for);
-        Ok(report)
+        report
     }
 
     pub(super) fn info_vault(
@@ -72,9 +105,13 @@ impl Session<'_> {
                 )
             })
             .collect();
+        let custody = definition
+            .vault_custody()
+            .map_or("store", VaultCustody::word);
         Ok(BTreeMap::from([
             ("name".to_owned(), Value::from(name.text.as_str())),
             ("fields".to_owned(), Value::Object(fields)),
+            ("custody".to_owned(), Value::from(custody)),
         ]))
     }
 

@@ -30,6 +30,8 @@
 //! key past it opens nothing even if nobody has dropped it yet; the housekeeping
 //! pass drops it so it does not sit in memory until the next use asks.
 
+mod own;
+
 use std::sync::RwLock;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -54,6 +56,14 @@ pub enum SealState {
 #[derive(Debug)]
 struct Held {
     keyring: Keyring,
+    /// The keys of vaults carrying their own passphrase (ADR-0093), each to its
+    /// own deadline under the same period.
+    ///
+    /// Inside this lock rather than in a concurrent map of its own: the period
+    /// is read here, the housekeeping pass drops due keys of both kinds in one
+    /// acquisition, and writes are rare (an unseal, a seal) while every use is a
+    /// short synchronous lookup with no suspension point anywhere in the crate.
+    own: own::OwnKeys,
     /// How long the next unseal lasts.
     period: Duration,
     /// When the key held now stops opening anything: monotonic for the judging,
@@ -65,6 +75,7 @@ impl Default for Held {
     fn default() -> Self {
         Self {
             keyring: Keyring::sealed(),
+            own: own::OwnKeys::default(),
             period: Duration::from_secs(tessari_constants::UNSEAL_SECONDS),
             until: None,
         }
@@ -167,11 +178,12 @@ impl OpenVault {
     /// Returns [`Error::VaultUnavailable`] when the lock is poisoned.
     pub fn seal_if_due(&self) -> Result<bool> {
         let mut held = self.held.write().map_err(|_| Error::VaultUnavailable)?;
+        let own = held.own.drop_due();
         if held.due() {
             held.seal();
             return Ok(true);
         }
-        Ok(false)
+        Ok(own)
     }
 
     /// Unseal with a passphrase, against the store's root record.

@@ -26,6 +26,7 @@ mod fields;
 mod relations;
 mod tables;
 mod topic_consumer;
+mod vault_custody;
 mod vaults;
 mod writes;
 
@@ -801,7 +802,14 @@ impl Session<'_> {
             StatementKind::DefineVault {
                 name,
                 if_not_exists,
-            } => self.define_vault(transaction, name, *if_not_exists, span),
+                passphrase,
+            } => self.define_vault(
+                transaction,
+                name,
+                *if_not_exists,
+                passphrase.as_deref(),
+                span,
+            ),
             StatementKind::DropVault { name } => self.drop_vault(transaction, name, span),
             StatementKind::DefineQueue {
                 name,
@@ -963,13 +971,33 @@ impl Session<'_> {
                     tessari_storage::remove_recipient(fields, table, &recipient)
                 })
             }
-            StatementKind::UnsealVault { passphrase, span } => {
-                self.unseal_vault(transaction, passphrase, *span)
-            }
-            StatementKind::ChangeVaultPassphrase { current, new, span } => {
-                self.change_passphrase(transaction, current, new, *span)
-            }
-            StatementKind::SealVault { .. } => {
+            StatementKind::UnsealVault {
+                vault: Some(vault),
+                passphrase,
+                span,
+            } => self.unseal_named_vault(transaction, vault, passphrase, *span),
+            StatementKind::UnsealVault {
+                vault: None,
+                passphrase,
+                span,
+            } => self.unseal_vault(transaction, passphrase, *span),
+            StatementKind::ChangeVaultPassphrase {
+                vault: Some(vault),
+                current,
+                new,
+                span,
+            } => self.change_named_vault_passphrase(transaction, vault, current, new, *span),
+            StatementKind::ChangeVaultPassphrase {
+                vault: None,
+                current,
+                new,
+                span,
+            } => self.change_passphrase(transaction, current, new, *span),
+            StatementKind::SealVault {
+                vault: Some(vault),
+                span,
+            } => self.seal_named_vault(transaction, vault, *span),
+            StatementKind::SealVault { vault: None, .. } => {
                 self.store.vault().seal()?;
                 Ok(Outcome::Done)
             }

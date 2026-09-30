@@ -134,7 +134,11 @@ impl Parser<'_> {
                 InfoSubject::History(self.record_target()?)
             }
             _ if self.eat_word("audit") => InfoSubject::Audit(self.audited_actor()?),
-            _ if self.eat_word("seal") => InfoSubject::Seal,
+            _ if self.eat_word("seal") => InfoSubject::Seal(if self.eat_word("of") {
+                Some(self.name()?)
+            } else {
+                None
+            }),
             _ => {
                 // Every subject the arms above accept, and in their order, so
                 // that adding an arm and forgetting this line is a visible

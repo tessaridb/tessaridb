@@ -132,7 +132,7 @@ pub use tessari_lsm::{Durability, StoreConfig};
 pub use tessari_session::redact::{Visible, seen};
 pub use tessari_session::{
     AccessPath, Detached, Error, Exactness, Nearest, Note, Outcome, Parameters, Result, Session,
-    Suggestion, Ticket, VaultAct,
+    Suggestion, Ticket, VaultAct, VaultTarget,
 };
 pub use tessari_storage::{
     BUILD_VERSION, Change, ChangeKind, Changes, LeadershipDefinition, Lease, LogId, Reach,

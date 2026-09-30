@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 use tessari_encoding::{decode_payload, encode_payload};
 use tessari_ql::{Name, RecordTarget, Span, TableRef};
 use tessari_storage::{
-    Catalog, RecordAddress, TableDefinition, TableKind, TableShape, Transaction, VaultDeclaration,
+    Catalog, RecordAddress, TableDefinition, TableKind, TableShape, Transaction, VaultCustody,
+    VaultDeclaration,
 };
 
 use tessari_types::{IdentityKind, TableId, Value};
@@ -22,10 +23,11 @@ impl Session<'_> {
     /// does: the words name different things even where they would remove the
     /// same rows, and a `DROP GEO` that quietly removed an ordinary table would
     /// be a typo with the blast radius of a table.
-    /// `DEFINE VAULT team`
+    /// `DEFINE VAULT team` · `DEFINE VAULT team PASSPHRASE '…'`
     ///
     /// A table of the vault kind, carrying a key minted here and wrapped under
-    /// the store's master key. That is why this is the **one** declaration that
+    /// the store's master key — or, given a passphrase, under a key derived
+    /// from it (ADR-0093), which needs no unsealed store at all. That is why this is the **one** declaration that
     /// needs an unsealed store: there is no way to defer the key without
     /// creating a vault nothing can ever write to, and a declaration that
     /// succeeded and left the key for later would be a vault that refuses every
@@ -35,20 +37,26 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         name: &Name,
         if_not_exists: bool,
+        passphrase: Option<&str>,
         span: Span,
     ) -> Result<Outcome> {
-        let context = self.context(transaction, None, span)?;
         // The scope is computed by the storage layer's own function, not
         // rebuilt here. The write path recomputes the same binding from the
         // stored definition, and two implementations of one binding produce a
         // vault that accepts every write and opens nothing, with both halves
         // looking correct in isolation.
-        let key = tessari_storage::mint_vault_key(
-            self.store,
-            context.namespace,
-            context.database,
-            &name.text,
-        )?;
+        let custody = match passphrase {
+            Some(passphrase) => self.own_vault_custody(transaction, name, passphrase, span)?,
+            None => {
+                let context = self.context(transaction, None, span)?;
+                VaultCustody::Store(tessari_storage::mint_vault_key(
+                    self.store,
+                    context.namespace,
+                    context.database,
+                    &name.text,
+                )?)
+            }
+        };
         self.define_table(
             transaction,
             name,
@@ -69,7 +77,7 @@ impl Session<'_> {
                 // It provides exactly one property and this is it: strictness is
                 // what makes *declared* and *sealed* the same set.
                 schemafull: true,
-                kind: TableKind::Vault(VaultDeclaration { key }),
+                kind: TableKind::Vault(VaultDeclaration { custody }),
                 identity: IdentityKind::default(),
                 graph: None,
                 conflict: None,
@@ -464,7 +472,7 @@ pub(crate) fn unseal_throttled(
 /// and not anybody's account: a guesser holding many accounts still gets three
 /// tries, not three each. Unseal and change share it, so a change is not a
 /// second, unthrottled way to test a guess.
-fn guessed<T>(
+pub(super) fn guessed<T>(
     root: &tessari_storage::VaultRoot,
     attempt: impl FnOnce() -> tessari_storage::Result<T>,
 ) -> Result<T> {

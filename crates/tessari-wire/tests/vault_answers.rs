@@ -157,12 +157,12 @@ fn the_vault_frame_unseals_seals_and_reports() {
     let mut client = Client::connect(&address).unwrap();
 
     assert_eq!(
-        state(&client.vault(&VaultCall::Status, None).unwrap()),
+        state(&client.vault(&VaultCall::Status, None, None).unwrap()),
         "uninitialised"
     );
 
     let unsealed = client
-        .vault(&VaultCall::Unseal(PASSPHRASE.to_owned()), None)
+        .vault(&VaultCall::Unseal(PASSPHRASE.to_owned()), None, None)
         .unwrap();
     assert_eq!(state(&unsealed), "unsealed");
     assert!(format!("{unsealed:?}").contains("initialised"));
@@ -172,12 +172,16 @@ fn the_vault_frame_unseals_seals_and_reports() {
     );
 
     assert_eq!(
-        state(&client.vault(&VaultCall::Seal, None).unwrap()),
+        state(&client.vault(&VaultCall::Seal, None, None).unwrap()),
         "sealed"
     );
 
     let refused = client
-        .vault(&VaultCall::Unseal("not the passphrase".to_owned()), None)
+        .vault(
+            &VaultCall::Unseal("not the passphrase".to_owned()),
+            None,
+            None,
+        )
         .expect_err("a wrong passphrase unsealed");
     assert!(
         !format!("{refused} {refused:?}").contains("not the passphrase"),
@@ -187,7 +191,7 @@ fn the_vault_frame_unseals_seals_and_reports() {
     // The connection is still a conversation afterwards: a refused vault act
     // does not end it, exactly as a refused statement does not.
     assert_eq!(
-        state(&client.vault(&VaultCall::Status, None).unwrap()),
+        state(&client.vault(&VaultCall::Status, None, None).unwrap()),
         "sealed"
     );
     client.run("INFO FOR SEAL;", None).unwrap();
@@ -205,7 +209,7 @@ fn the_vault_frame_changes_the_passphrase() {
     let (_node, address) = serving(Db::in_memory().unwrap());
     let mut client = Client::connect(&address).unwrap();
     client
-        .vault(&VaultCall::Unseal(PASSPHRASE.to_owned()), None)
+        .vault(&VaultCall::Unseal(PASSPHRASE.to_owned()), None, None)
         .unwrap();
     let changed = client
         .vault(
@@ -214,24 +218,93 @@ fn the_vault_frame_changes_the_passphrase() {
                 new: "the next one 9c02".to_owned(),
             },
             None,
+            None,
         )
         .unwrap();
     assert!(
         !format!("{changed:?}").contains("the next one"),
         "{changed:?}"
     );
-    client.vault(&VaultCall::Seal, None).unwrap();
+    client.vault(&VaultCall::Seal, None, None).unwrap();
     assert!(
         client
-            .vault(&VaultCall::Unseal(PASSPHRASE.to_owned()), None)
+            .vault(&VaultCall::Unseal(PASSPHRASE.to_owned()), None, None)
             .is_err()
     );
     assert_eq!(
         state(
             &client
-                .vault(&VaultCall::Unseal("the next one 9c02".to_owned()), None)
+                .vault(
+                    &VaultCall::Unseal("the next one 9c02".to_owned()),
+                    None,
+                    None
+                )
                 .unwrap()
         ),
         "unsealed"
+    );
+}
+
+// One vault carrying its own passphrase, reached by the same frame with a
+// target (ADR-0093 D6). The target never becomes the connection's `USE`.
+
+#[test]
+fn the_vault_frame_reaches_one_vault_and_leaves_the_connection_where_it_was() {
+    use tessari_wire::{VaultCall, VaultPlace};
+    let (_node, address) = serving(Db::in_memory().unwrap());
+    let mut setup = Client::connect(&address).unwrap();
+    setup
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE work; USE DATABASE work;
+             DEFINE VAULT team PASSPHRASE 'the team passphrase 5d13';",
+            None,
+        )
+        .unwrap();
+    let team = VaultPlace {
+        namespace: "prod".to_owned(),
+        database: "work".to_owned(),
+        vault: "team".to_owned(),
+    };
+
+    let mut client = Client::connect(&address).unwrap();
+    let status = client.vault(&VaultCall::Status, Some(&team), None).unwrap();
+    assert_eq!(state(&status), "unsealed");
+    assert!(format!("{status:?}").contains("\"own\""), "{status:?}");
+    assert_eq!(
+        state(&client.vault(&VaultCall::Seal, Some(&team), None).unwrap()),
+        "sealed"
+    );
+    let refused = client
+        .vault(
+            &VaultCall::Unseal("a wrong one 3e11".to_owned()),
+            Some(&team),
+            None,
+        )
+        .expect_err("a wrong vault passphrase unsealed");
+    assert!(
+        !format!("{refused} {refused:?}").contains("a wrong one"),
+        "{refused:?}"
+    );
+    assert_eq!(
+        state(
+            &client
+                .vault(
+                    &VaultCall::Unseal("the team passphrase 5d13".to_owned()),
+                    Some(&team),
+                    None
+                )
+                .unwrap()
+        ),
+        "unsealed"
+    );
+    // The store itself was never initialised by any of that.
+    assert_eq!(
+        state(&client.vault(&VaultCall::Status, None, None).unwrap()),
+        "uninitialised"
+    );
+    // And this connection selected no tenancy along the way.
+    assert!(
+        client.run("INFO FOR SEAL OF team;", None).is_err(),
+        "the frame's target became the connection's USE"
     );
 }

@@ -66,8 +66,10 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
             // Said at `info`, because a store that closed itself is something
             // the operator who opened it will otherwise read as a fault.
             match db.store().vault().seal_if_due() {
+                // The store's key or one vault's own (ADR-0093): either way an
+                // unseal ran its period out, and the log names neither secret.
                 Ok(true) => log::info!(
-                    "the store sealed itself: an unseal lasts {}s on this node",
+                    "an unseal ended and its key was dropped: an unseal lasts {}s on this node",
                     db.store().vault().period().as_secs()
                 ),
                 Ok(false) => {}

@@ -1553,6 +1553,23 @@ pub enum Error {
     #[error("this store has no vault passphrase yet: the first `UNSEAL VAULT` sets one")]
     NoVaultRoot,
 
+    /// A statement naming a vault that opens with the store's passphrase
+    /// (ADR-0093 D3).
+    ///
+    /// Refused rather than taken as the store-wide statement: unsealing the
+    /// store by naming one vault would open every other vault in the store's
+    /// custody too, which the caller did not name.
+    #[error(
+        "vault {vault} opens with the store's passphrase: use `UNSEAL VAULT`, `SEAL VAULT` or \
+         `CHANGE VAULT PASSPHRASE` without a name (at {span})"
+    )]
+    VaultUsesStorePassphrase {
+        /// The vault as written.
+        vault: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A score was asked for where there is no collection to measure against.
     ///
     /// Not answered with zero, and not answered against whatever records

@@ -148,28 +148,34 @@ fn answered(value: Value) -> std::collections::BTreeMap<String, Value> {
 
 #[test]
 fn the_surface_unseals_seals_and_reports_without_a_statement() {
-    use tessari_session::VaultAct;
+    use tessari_session::{VaultAct, VaultTarget};
     let store = store();
     let mut session = Session::new(&store);
 
     let first = answered(
         session
-            .vault(VaultAct::Unseal {
-                passphrase: PASSPHRASE,
-            })
+            .vault(
+                VaultTarget::Store,
+                VaultAct::Unseal {
+                    passphrase: PASSPHRASE,
+                },
+            )
             .unwrap(),
     );
     assert_eq!(first.get("state"), Some(&Value::from("unsealed")));
     assert_eq!(first.get("initialised"), Some(&Value::Bool(true)));
 
-    let sealed = answered(session.vault(VaultAct::Seal).unwrap());
+    let sealed = answered(session.vault(VaultTarget::Store, VaultAct::Seal).unwrap());
     assert_eq!(sealed.get("state"), Some(&Value::from("sealed")));
 
     let again = answered(
         session
-            .vault(VaultAct::Unseal {
-                passphrase: PASSPHRASE,
-            })
+            .vault(
+                VaultTarget::Store,
+                VaultAct::Unseal {
+                    passphrase: PASSPHRASE,
+                },
+            )
             .unwrap(),
     );
     assert_eq!(again.get("state"), Some(&Value::from("unsealed")));
@@ -179,13 +185,13 @@ fn the_surface_unseals_seals_and_reports_without_a_statement() {
         "a second unseal said it initialised"
     );
 
-    let status = answered(session.vault(VaultAct::Status).unwrap());
+    let status = answered(session.vault(VaultTarget::Store, VaultAct::Status).unwrap());
     assert_eq!(status.get("state"), Some(&Value::from("unsealed")));
 }
 
 #[test]
 fn the_surface_asks_the_authority_the_statement_asks() {
-    use tessari_session::VaultAct;
+    use tessari_session::{VaultAct, VaultTarget};
     let store = store();
     let mut owner = Session::new(&store);
     owner
@@ -203,23 +209,29 @@ fn the_surface_asks_the_authority_the_statement_asks() {
     viewer.sign_in("ada", "ada-password").unwrap();
     assert!(
         viewer
-            .vault(VaultAct::Unseal {
-                passphrase: PASSPHRASE
-            })
+            .vault(
+                VaultTarget::Store,
+                VaultAct::Unseal {
+                    passphrase: PASSPHRASE
+                }
+            )
             .is_err(),
         "a viewer unsealed the store"
     );
     assert!(
-        viewer.vault(VaultAct::Seal).is_err(),
+        viewer.vault(VaultTarget::Store, VaultAct::Seal).is_err(),
         "a viewer sealed the store"
     );
     assert_eq!(
-        answered(viewer.vault(VaultAct::Status).unwrap()).get("state"),
+        answered(viewer.vault(VaultTarget::Store, VaultAct::Status).unwrap()).get("state"),
         Some(&Value::from("uninitialised"))
     );
-    root.vault(VaultAct::Unseal {
-        passphrase: PASSPHRASE,
-    })
+    root.vault(
+        VaultTarget::Store,
+        VaultAct::Unseal {
+            passphrase: PASSPHRASE,
+        },
+    )
     .unwrap();
 }
 
@@ -317,23 +329,29 @@ fn a_store_with_no_root_has_no_passphrase_to_change() {
 
 #[test]
 fn the_surface_changes_the_passphrase_too() {
-    use tessari_session::VaultAct;
+    use tessari_session::{VaultAct, VaultTarget};
     let store = store();
     let mut session = holding_a_secret(&store);
     let answer = answered(
         session
-            .vault(VaultAct::Change {
-                current: PASSPHRASE,
-                new: "the new passphrase",
-            })
+            .vault(
+                VaultTarget::Store,
+                VaultAct::Change {
+                    current: PASSPHRASE,
+                    new: "the new passphrase",
+                },
+            )
             .unwrap(),
     );
     assert_eq!(answer.get("state"), Some(&Value::from("unsealed")));
-    session.vault(VaultAct::Seal).unwrap();
+    session.vault(VaultTarget::Store, VaultAct::Seal).unwrap();
     session
-        .vault(VaultAct::Unseal {
-            passphrase: "the new passphrase",
-        })
+        .vault(
+            VaultTarget::Store,
+            VaultAct::Unseal {
+                passphrase: "the new passphrase",
+            },
+        )
         .unwrap();
     assert_eq!(revealed(&mut session), Value::from(PLANTED));
 }

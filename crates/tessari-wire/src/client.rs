@@ -107,9 +107,10 @@ impl Client {
     }
 
     /// Unseal, seal or ask about the vault, with the passphrase as a field of
-    /// the frame rather than script text (ADR-0092 D2).
+    /// the frame rather than script text (ADR-0092 D2), on the store's key or,
+    /// with `place`, on one vault carrying its own passphrase (ADR-0093 D6).
     ///
-    /// Answers the node's seal status as one value.
+    /// Answers the seal status as one value.
     ///
     /// # Errors
     ///
@@ -119,6 +120,7 @@ impl Client {
     pub fn vault(
         &mut self,
         call: &crate::VaultCall,
+        place: Option<&crate::VaultPlace>,
         credentials: Option<(&str, &str)>,
     ) -> Result<Answer> {
         if self.minor < frame::VAULT {
@@ -130,6 +132,7 @@ impl Client {
         let asked = crate::VaultAsk {
             call: call.clone(),
             credentials: credentials.map(|(name, password)| (name.to_owned(), password.to_owned())),
+            place: place.cloned(),
         };
         frame::write(&mut self.writer, frame::Kind::Vault, &asked.encode())?;
         let Some((kind, body)) = frame::read(&mut self.reader)? else {

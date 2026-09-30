@@ -212,7 +212,12 @@ pub enum InfoSubject {
     /// own subject rather than a field on `INFO FOR VAULT`, which would make a
     /// per-vault question out of a store-wide one. It names no table, so it
     /// needs nothing beyond being signed in.
-    Seal,
+    ///
+    /// `INFO FOR SEAL OF team` asks about one vault (ADR-0093 D4): its own
+    /// key's state when it carries its own passphrase, the store's when it does
+    /// not, and which of the two with `custody`. It names a table, so it needs
+    /// what `INFO FOR VAULT` needs.
+    Seal(Option<Name>),
     /// `INFO FOR USER ada` — one user's role, tenancy and grants.
     ///
     /// The one subject that refuses rather than filters, because its content

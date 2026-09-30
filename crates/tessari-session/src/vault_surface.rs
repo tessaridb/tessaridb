@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 
-use tessari_ql::{InfoSubject, Script, Span, Statement, StatementKind};
+use tessari_ql::{InfoSubject, Name, Script, Span, Statement, StatementKind};
 use tessari_types::Value;
 
 use crate::error::Result;
@@ -42,24 +42,73 @@ pub enum VaultAct<'a> {
     },
 }
 
+/// What an act is about: the store's own key, or one vault's (ADR-0093 D6).
+#[derive(Debug, Clone, Copy)]
+pub enum VaultTarget<'a> {
+    /// The store's master key and every vault in its custody.
+    Store,
+    /// One vault, by its tenancy and name.
+    Vault {
+        /// The namespace it lives in.
+        namespace: &'a str,
+        /// The database it lives in.
+        database: &'a str,
+        /// Its name.
+        vault: &'a str,
+    },
+}
+
 impl Session<'_> {
-    /// Carry out `act` and answer as `INFO FOR SEAL` does, plus
-    /// `initialised: true` on the unseal that created the root.
+    /// Carry out `act` on `target` and answer as `INFO FOR SEAL` (or
+    /// `INFO FOR SEAL OF`) does, plus `initialised: true` on the unseal that
+    /// created the store's root.
+    ///
+    /// A vault target runs in its own tenancy and leaves the session's `USE`
+    /// as it found it, because the connection it arrived on is somebody's
+    /// session and a surface act is not a `USE`.
     ///
     /// # Errors
     ///
     /// Whatever the matching statement is refused with — the authority it
-    /// needs, a wrong passphrase, the throttle.
-    pub fn vault(&mut self, act: VaultAct<'_>) -> Result<Value> {
+    /// needs, a wrong passphrase, the throttle, a vault in the store's custody.
+    pub fn vault(&mut self, target: VaultTarget<'_>, act: VaultAct<'_>) -> Result<Value> {
+        match target {
+            VaultTarget::Store => self.vault_act(None, act),
+            VaultTarget::Vault {
+                namespace,
+                database,
+                vault,
+            } => {
+                let held = (
+                    self.namespace.replace(namespace.to_owned()),
+                    self.database.replace(database.to_owned()),
+                );
+                let answered = self.vault_act(Some(vault), act);
+                (self.namespace, self.database) = held;
+                answered
+            }
+        }
+    }
+
+    fn vault_act(&mut self, vault: Option<&str>, act: VaultAct<'_>) -> Result<Value> {
         let span = Span::new(0, 0);
+        let vault = vault.map(|vault| Name {
+            text: vault.to_owned(),
+            span,
+        });
         let kind = match act {
             VaultAct::Status => None,
             VaultAct::Unseal { passphrase } => Some(StatementKind::UnsealVault {
+                vault: vault.clone(),
                 passphrase: passphrase.to_owned(),
                 span,
             }),
-            VaultAct::Seal => Some(StatementKind::SealVault { span }),
+            VaultAct::Seal => Some(StatementKind::SealVault {
+                vault: vault.clone(),
+                span,
+            }),
             VaultAct::Change { current, new } => Some(StatementKind::ChangeVaultPassphrase {
+                vault: vault.clone(),
                 current: current.to_owned(),
                 new: new.to_owned(),
                 span,
@@ -74,7 +123,7 @@ impl Session<'_> {
         };
         let mut report = match self
             .built(StatementKind::Info {
-                subject: InfoSubject::Seal,
+                subject: InfoSubject::Seal(vault),
             })?
             .pop()
         {

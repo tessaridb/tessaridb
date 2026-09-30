@@ -142,7 +142,7 @@ pub use crate::peer::{Hello, Line, PeerFrame, Presented, Purpose, admit};
 pub use crate::push::{Became, Follow, Happened};
 
 pub use crate::redirect::{Elsewhere, Settlement};
-pub use crate::vault::{VaultAsk, VaultCall};
+pub use crate::vault::{VaultAsk, VaultCall, VaultPlace};
 /// The authority a cluster is issued by, re-exported because [`Joining`] hands
 /// one out and a caller cannot otherwise name the type it holds.
 #[cfg(feature = "server")]

@@ -23,8 +23,8 @@ use tessari_types::{DatabaseId, NamespaceId, Number, Replication, ReplicationCla
 use super::ShardMap;
 use crate::error::{Error, Result};
 pub use declarations::{
-    EdgeDeclaration, EdgeOrder, QueueDeclaration, SeriesDeclaration, VaultDeclaration,
-    VectorDeclaration, ViewDeclaration,
+    EdgeDeclaration, EdgeOrder, QueueDeclaration, SeriesDeclaration, VaultCustody,
+    VaultDeclaration, VectorDeclaration, ViewDeclaration,
 };
 pub use indexes::{IndexDefinition, IndexShape, VectorDistance};
 pub use kinds::{StoredKind, TableKind};

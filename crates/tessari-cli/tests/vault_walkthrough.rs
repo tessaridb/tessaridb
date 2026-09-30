@@ -383,9 +383,14 @@ fn the_passphrase_reaches_no_log_line_and_the_period_is_the_one_asked_for() {
         .vault(
             &tessari_wire::VaultCall::Unseal(PASSPHRASE.to_owned()),
             None,
+            None,
         )
         .unwrap();
-    drop(client.vault(&tessari_wire::VaultCall::Unseal(guess.to_owned()), None));
+    drop(client.vault(
+        &tessari_wire::VaultCall::Unseal(guess.to_owned()),
+        None,
+        None,
+    ));
 
     drop(node);
     let written = std::fs::read_to_string(&log).unwrap();

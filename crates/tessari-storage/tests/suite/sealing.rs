@@ -19,8 +19,8 @@ use tessari_encoding::{decode_payload, encode_payload};
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_storage::{
     Catalog, Error, FieldShape, KEYS_FIELD, RecordAddress, Store, TableDefinition, TableKind,
-    TableShape, VAULT_RECIPIENT, VaultDeclaration, open_data_key, open_field, seal_secrets,
-    vault_key_scope,
+    TableShape, VAULT_RECIPIENT, VaultCustody, VaultDeclaration, open_data_key, open_field,
+    seal_secrets, vault_key_scope,
 };
 use tessari_types::{FieldKind, RecordId, Value};
 use tessari_vault::{Level, Root, keys};
@@ -69,7 +69,9 @@ fn fixture(secret: bool) -> Fixture {
             database.id,
             "credentials",
             TableShape {
-                kind: TableKind::Vault(VaultDeclaration { key: wrapped }),
+                kind: TableKind::Vault(VaultDeclaration {
+                    custody: VaultCustody::Store(wrapped),
+                }),
                 ..TableShape::default()
             },
         )
@@ -421,7 +423,9 @@ fn crossing() -> Crossing {
                 database,
                 "credentials",
                 TableShape {
-                    kind: TableKind::Vault(VaultDeclaration { key }),
+                    kind: TableKind::Vault(VaultDeclaration {
+                        custody: VaultCustody::Store(key),
+                    }),
                     ..TableShape::default()
                 },
             )

@@ -169,8 +169,9 @@ fn erase_statement(statement: &mut Statement) {
             | InfoSubject::Database
             | InfoSubject::Users
             | InfoSubject::Node
-            | InfoSubject::Seal
+            | InfoSubject::Seal(None)
             | InfoSubject::Consumers => {}
+            InfoSubject::Seal(Some(vault)) => erase_name(vault),
             InfoSubject::Table(table) | InfoSubject::Access(table) => erase_table(table),
             InfoSubject::Recipients(target)
             | InfoSubject::Versions(target)
@@ -533,9 +534,10 @@ fn erase_statement(statement: &mut Statement) {
         // The passphrase is not erased because it is not a span — and it is not
         // compared either: two `UNSEAL`s differing only in their passphrase are
         // two different statements, which is the right answer.
-        StatementKind::UnsealVault { span, .. }
-        | StatementKind::ChangeVaultPassphrase { span, .. }
-        | StatementKind::SealVault { span } => {
+        StatementKind::UnsealVault { span, vault, .. }
+        | StatementKind::ChangeVaultPassphrase { span, vault, .. }
+        | StatementKind::SealVault { span, vault } => {
+            erase_optional_name(vault.as_mut());
             *span = CANONICAL;
         }
         StatementKind::Backup { .. }

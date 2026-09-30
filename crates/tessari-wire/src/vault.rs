@@ -3,6 +3,8 @@
 //! ```text
 //! u8      credentials flag: 0 = none, 1 = present
 //!         if 1: text user name, text password
+//! u8      target: 0 = the store, 1 = one vault (ADR-0093 D6)
+//!         if 1: text namespace, text database, text vault
 //! u8      act: 1 status, 2 unseal, 3 seal, 4 change passphrase
 //!         if 2: text passphrase
 //!         if 4: text current passphrase, text new passphrase
@@ -46,13 +48,27 @@ impl std::fmt::Debug for VaultCall {
     }
 }
 
-/// A vault frame: the act and who is asking.
+/// One vault, by its tenancy and name — the target of an act on a vault that
+/// carries its own passphrase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaultPlace {
+    /// The namespace it lives in.
+    pub namespace: String,
+    /// The database it lives in.
+    pub database: String,
+    /// Its name.
+    pub vault: String,
+}
+
+/// A vault frame: the act, what it is about, and who is asking.
 #[derive(Clone, PartialEq, Eq)]
 pub struct VaultAsk {
     /// The act.
     pub call: VaultCall,
     /// The credentials, when the caller has any.
     pub credentials: Option<(String, String)>,
+    /// One vault, or `None` for the store's own key.
+    pub place: Option<VaultPlace>,
 }
 
 /// Written by hand for [`crate::Request`]'s reason: the name is shown, the
@@ -61,6 +77,7 @@ impl std::fmt::Debug for VaultAsk {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VaultAsk")
             .field("call", &self.call)
+            .field("place", &self.place)
             .field(
                 "as",
                 &self
@@ -82,6 +99,15 @@ impl VaultAsk {
                 body.push(1);
                 put_text(&mut body, name);
                 put_text(&mut body, password);
+            }
+            None => body.push(0),
+        }
+        match &self.place {
+            Some(place) => {
+                body.push(1);
+                put_text(&mut body, &place.namespace);
+                put_text(&mut body, &place.database);
+                put_text(&mut body, &place.vault);
             }
             None => body.push(0),
         }
@@ -118,6 +144,25 @@ impl VaultAsk {
             }
             _ => return Err(Error::Malformed),
         };
+        let target = body.get(at).copied().ok_or(Error::Malformed)?;
+        let at = at.saturating_add(1);
+        let (place, at) = match target {
+            0 => (None, at),
+            1 => {
+                let (namespace, at) = take_text(body, at)?;
+                let (database, at) = take_text(body, at)?;
+                let (vault, at) = take_text(body, at)?;
+                (
+                    Some(VaultPlace {
+                        namespace,
+                        database,
+                        vault,
+                    }),
+                    at,
+                )
+            }
+            _ => return Err(Error::Malformed),
+        };
         let act = body.get(at).copied().ok_or(Error::Malformed)?;
         let at = at.saturating_add(1);
         let (call, at) = match act {
@@ -137,13 +182,46 @@ impl VaultAsk {
         if at != body.len() {
             return Err(Error::Malformed);
         }
-        Ok(Self { call, credentials })
+        Ok(Self {
+            call,
+            credentials,
+            place,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{VaultAsk, VaultCall};
+    use super::{VaultAsk, VaultCall, VaultPlace};
+
+    #[test]
+    fn a_vault_target_sits_between_the_credentials_and_the_act() {
+        let asked = VaultAsk {
+            call: VaultCall::Seal,
+            credentials: None,
+            place: Some(VaultPlace {
+                namespace: "a".to_owned(),
+                database: "b".to_owned(),
+                vault: "c".to_owned(),
+            }),
+        };
+        assert_eq!(
+            asked.encode(),
+            [
+                0, 1, 0, 0, 0, 1, b'a', 0, 0, 0, 1, b'b', 0, 0, 0, 1, b'c', 3
+            ]
+        );
+        let store = VaultAsk {
+            call: VaultCall::Seal,
+            credentials: None,
+            place: None,
+        };
+        assert_eq!(store.encode(), [0, 0, 3]);
+        assert!(
+            VaultAsk::decode(&[0, 2, 3]).is_err(),
+            "an unknown target was read"
+        );
+    }
 
     #[test]
     fn every_call_round_trips_and_trailing_bytes_are_refused() {
@@ -156,10 +234,22 @@ mod tests {
                 new: "new".to_owned(),
             },
         ] {
-            for credentials in [None, Some(("ada".to_owned(), "pw".to_owned()))] {
+            let places = [
+                None,
+                Some(VaultPlace {
+                    namespace: "shop".to_owned(),
+                    database: "live".to_owned(),
+                    vault: "team".to_owned(),
+                }),
+            ];
+            for (credentials, place) in [None, Some(("ada".to_owned(), "pw".to_owned()))]
+                .into_iter()
+                .flat_map(|credentials| places.clone().map(|place| (credentials.clone(), place)))
+            {
                 let asked = VaultAsk {
                     call: call.clone(),
                     credentials,
+                    place,
                 };
                 let body = asked.encode();
                 assert_eq!(VaultAsk::decode(&body).expect("decodes"), asked);
@@ -172,7 +262,7 @@ mod tests {
             }
         }
         assert!(
-            VaultAsk::decode(&[0, 9]).is_err(),
+            VaultAsk::decode(&[0, 0, 9]).is_err(),
             "an unknown act was read"
         );
     }

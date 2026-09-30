@@ -8,7 +8,13 @@ use super::{
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
 use tessari_types::{Duration, TableId, Value};
-use tessari_vault::{KeyId, Wrapped};
+use tessari_vault::{KeyId, Root, Wrapped};
+
+use crate::catalog::VaultRoot;
+
+/// Where a vault carrying its own passphrase keeps its salt — the one field
+/// the store-custody form does not have.
+const FIELD_SALT: &str = "salt";
 
 /// Where a series' rollups are listed in its catalog entry.
 const FIELD_ROLLUPS: &str = "rollups";
@@ -184,13 +190,45 @@ impl ViewDeclaration {
 /// ever open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VaultDeclaration {
-    /// The vault's own key, sealed under the store's master key.
+    /// The vault's own key, and what it is sealed under.
     ///
     /// Every record in the vault has its data key wrapped under this one, so
     /// this single value is what stands between a stolen backend and every
     /// secret the vault holds — and it is itself unreadable without a
     /// passphrase that is never stored anywhere.
-    pub key: Wrapped,
+    pub custody: VaultCustody,
+}
+
+/// Who can open a vault's key (ADR-0093 D1), fixed when the vault is declared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VaultCustody {
+    /// Sealed under the store's master key: the store's passphrase opens it,
+    /// as it opens every other vault in this custody.
+    Store(Wrapped),
+    /// Sealed under a key derived from the vault's own passphrase, bound to the
+    /// vault's scope. No master key is above it, so neither the store's
+    /// passphrase nor store-wide authority opens it.
+    Own(Root),
+}
+
+impl VaultCustody {
+    /// The identifier of the vault key inside, whichever custody holds it.
+    #[must_use]
+    pub const fn key_id(&self) -> KeyId {
+        match self {
+            Self::Store(wrapped) => wrapped.key_id,
+            Self::Own(root) => root.key_id,
+        }
+    }
+
+    /// The word `INFO` answers with: `'store'` or `'own'`.
+    #[must_use]
+    pub const fn word(&self) -> &'static str {
+        match self {
+            Self::Store(_) => "store",
+            Self::Own(_) => "own",
+        }
+    }
 }
 
 /// How wide a vector store's vectors are, and what distance searches them.
@@ -359,15 +397,19 @@ impl VaultDeclaration {
     /// hold them the way it holds any other declaration.
     #[must_use]
     pub fn to_value(&self) -> Value {
+        let key = match &self.custody {
+            // A vault's own root is written exactly as the store's root is —
+            // a salt beside the key id and the wrapped key — so the salt's
+            // presence is what says which custody this is.
+            VaultCustody::Own(root) => return VaultRoot(root.clone()).to_value(),
+            VaultCustody::Store(key) => key,
+        };
         Value::Object(BTreeMap::from([
             (
                 FIELD_KEY_ID.to_owned(),
-                Value::Bytes(self.key.key_id.bytes().to_vec()),
+                Value::Bytes(key.key_id.bytes().to_vec()),
             ),
-            (
-                FIELD_WRAPPED.to_owned(),
-                Value::Bytes(self.key.sealed.clone()),
-            ),
+            (FIELD_WRAPPED.to_owned(), Value::Bytes(key.sealed.clone())),
         ]))
     }
 
@@ -383,6 +425,11 @@ impl VaultDeclaration {
     pub fn from_value(value: &Value) -> Result<Self> {
         const ENTITY: &str = "vault";
         let fields = object(value, ENTITY)?;
+        if fields.contains_key(FIELD_SALT) {
+            return Ok(Self {
+                custody: VaultCustody::Own(VaultRoot::from_value(value)?.0),
+            });
+        }
         let Some(Value::Bytes(key_id)) = fields.get(FIELD_KEY_ID) else {
             return Err(Error::CatalogMalformed {
                 entity: ENTITY,
@@ -405,10 +452,10 @@ impl VaultDeclaration {
             });
         };
         Ok(Self {
-            key: Wrapped {
+            custody: VaultCustody::Store(Wrapped {
                 key_id: KeyId::adopt(key_id),
                 sealed: sealed.clone(),
-            },
+            }),
         })
     }
 }

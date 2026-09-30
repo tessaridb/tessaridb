@@ -370,7 +370,17 @@ pub(crate) fn respond_vault(
         crate::VaultCall::Seal => tessaridb::VaultAct::Seal,
         crate::VaultCall::Change { current, new } => tessaridb::VaultAct::Change { current, new },
     };
-    match session.vault(act) {
+    let target = asked
+        .place
+        .as_ref()
+        .map_or(tessaridb::VaultTarget::Store, |place| {
+            tessaridb::VaultTarget::Vault {
+                namespace: &place.namespace,
+                database: &place.database,
+                vault: &place.vault,
+            }
+        });
+    match session.vault(target, act) {
         Ok(status) => {
             let mut body = Vec::new();
             frame::put_u32(&mut body, 1);

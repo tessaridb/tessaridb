@@ -64,7 +64,8 @@ pub use definition::{
     GEO_FIELD, IndexDefinition, IndexShape, NamespaceDefinition, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY,
     QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, RollupCompute, RollupDeclaration,
     RollupFold, SeriesDeclaration, StoredKind, TableDefinition, TableKind, TableShape,
-    VECTOR_FIELD, VaultDeclaration, VectorDeclaration, VectorDistance, ViewDeclaration,
+    VECTOR_FIELD, VaultCustody, VaultDeclaration, VectorDeclaration, VectorDistance,
+    ViewDeclaration,
 };
 pub use edge_kind::EdgeKindDefinition;
 pub use failover::{FailoverDefinition, FailoverStamp};
@@ -297,6 +298,23 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             return Ok(false);
         };
         definition.kind = TableKind::Series(declared);
+        self.write(system::TABLES, id.get(), &definition.to_value());
+        Ok(true)
+    }
+
+    /// Replace a vault's declaration — its custody after a passphrase change
+    /// (ADR-0093 D3) — keeping everything else about the table.
+    ///
+    /// Answers `false` when there is no table under that id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored definition cannot be read.
+    pub fn set_vault(&mut self, id: TableId, declared: VaultDeclaration) -> Result<bool> {
+        let Some(mut definition) = self.table(id)? else {
+            return Ok(false);
+        };
+        definition.kind = TableKind::Vault(declared);
         self.write(system::TABLES, id.get(), &definition.to_value());
         Ok(true)
     }
