@@ -1276,6 +1276,8 @@ passphrase is never part of a script a console keeps or a client logs. For a vau
 with its own passphrase the routes are `GET /vault/{namespace}/{database}/{vault}`
 and `POST /vault/{namespace}/{database}/{vault}/unseal`, `…/seal` and
 `…/passphrase`, and the frame names the vault as its target.
+The console's **Vault** tab (⌘7) does all of this over those routes, for the
+store's key and for any one vault.
 
 #### Reading a secret
 
