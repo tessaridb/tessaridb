@@ -1236,8 +1236,8 @@ the rest of the catalog.
 
 ```
 DEFINE VAULT team PASSPHRASE 'the team passphrase';
-UNSEAL VAULT team WITH 'the team passphrase';
 SEAL VAULT team;
+UNSEAL VAULT team WITH 'the team passphrase';
 CHANGE VAULT team PASSPHRASE FROM 'the team passphrase' TO 'a new one';
 INFO FOR SEAL OF team;
 ```
