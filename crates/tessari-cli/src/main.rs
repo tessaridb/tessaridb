@@ -48,7 +48,9 @@ mod maintenance;
 mod peer_door;
 mod peers;
 mod raw;
-mod render;
+/// How a value is written back as TessariQL — the language's own, so a state
+/// script and this command line write one value the same way.
+use tessari_ql::literal as render;
 mod runtime;
 mod scanner;
 mod serving;
@@ -66,7 +68,7 @@ use std::process::ExitCode;
 use tessaridb::Db;
 
 use crate::arguments::{Asked, Source, credentials, parse};
-use crate::maintenance::{backup, health, restore, snapshot, verify};
+use crate::maintenance::{backup, dump, health, restore, snapshot, verify};
 use crate::serving::serve;
 use crate::session::{Ended, Mode};
 
@@ -152,6 +154,7 @@ fn run(asked: Asked) -> Result<Ended, String> {
     match &asked.source {
         Source::Backup(path) => return backup(&db, path, sequence).map(|()| Ended::Fine),
         Source::Snapshot(path) => return snapshot(&db, path).map(|()| Ended::Fine),
+        Source::Dump(path) => return dump(&db, path).map(|()| Ended::Fine),
         Source::Restore(path) => return restore(&db, path, sequence).map(|()| Ended::Fine),
         Source::Health => return health(&db),
         Source::Serve => return serve(db, &asked.serving, asked.cluster.as_ref(), started),
@@ -203,6 +206,7 @@ fn statements(
         }
         Source::Backup(_)
         | Source::Snapshot(_)
+        | Source::Dump(_)
         | Source::Restore(_)
         | Source::Verify(_)
         | Source::Version

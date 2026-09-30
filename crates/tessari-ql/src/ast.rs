@@ -472,6 +472,29 @@ impl std::fmt::Display for Password {
     }
 }
 
+/// What `DEFINE USER` is given to sign the user in with (ADR-0091).
+///
+/// A password is hashed before it is stored; a hash is stored as given, which is
+/// how a state script re-creates a user it could never have known the password
+/// of. Both print as `<redacted>`: a hash is not the password, but it is what an
+/// offline guess is checked against, and nothing needs it in a log line.
+#[derive(Clone, PartialEq, Eq)]
+pub enum Credential {
+    /// `PASSWORD '…'` — the plaintext, hashed on the way in.
+    Password(Password),
+    /// `PASSHASH '$argon2id$…'` — a hash this store would itself have produced.
+    Hash(String),
+}
+
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Password(_) => "Password(<redacted>)",
+            Self::Hash(_) => "Hash(<redacted>)",
+        })
+    }
+}
+
 /// The one field an [`AlterUser`](StatementKind::AlterUser) statement changes.
 ///
 /// One per statement rather than a record of optional fields, because the

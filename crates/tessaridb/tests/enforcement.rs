@@ -802,7 +802,13 @@ const TABLES: &[Table] = &[
         // `--backup`'s ground**: it opens a store this process holds and
         // writes it to a file; `--at` beside it is refused, as it is beside
         // `--backup`, so it cannot be pointed at a node.
-        expected: 11,
+        //
+        // 12 since `--dump` (G047, ADR-0091), on the same ground. It reads
+        // through `tessari_session::write_script`, which acts as a store-wide
+        // owner for a process that already holds every byte of the store; a
+        // session asking over the wire uses `BACKUP SCRIPT`, whose authority is
+        // `BACKUP`'s (`store_wide.rs`).
+        expected: 12,
         count: |text| variants(&block(text, "pub enum Source")),
     },
     Table {
@@ -913,7 +919,9 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 111 since the state snapshot: four on `Store`, one command-line source
     // and four in the backup module, each classified above (G047, ADR-0091).
-    assert_eq!(total, 111, "the counted tables no longer sum to 111");
+    //
+    // 112 since the state script: `--dump`, classified above.
+    assert_eq!(total, 112, "the counted tables no longer sum to 112");
 }
 
 /// Every `.rs` file under a directory.

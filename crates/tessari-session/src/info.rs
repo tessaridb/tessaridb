@@ -58,7 +58,9 @@ pub(crate) use consumers::{described_consumer, guarantees, running_state};
 pub(crate) use measures::{refining, reported};
 pub(crate) use replicas::{described_failover, described_follower, described_replica};
 pub(crate) use shapes::{described_field, described_index, shape_of};
-pub(crate) use users::{described_authorities, described_grant, described_user};
+pub(crate) use users::{
+    described_authorities, described_grant, described_user, named_database, named_namespace,
+};
 
 mod access;
 mod cluster;
@@ -133,7 +135,7 @@ fn by_name(mut names: Vec<String>) -> Value {
 /// today because doing it properly means a shared identifier predicate below
 /// both crates (ADR-0012's shape), which is a change about that rule rather than
 /// about this statement. Recorded as a question rather than half-built.
-fn nameable(name: &str) -> bool {
+pub(crate) fn nameable(name: &str) -> bool {
     name.chars()
         .all(|character| character.is_ascii_alphanumeric() || character == '_')
 }

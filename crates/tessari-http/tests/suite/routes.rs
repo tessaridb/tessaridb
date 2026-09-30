@@ -781,6 +781,14 @@ fn the_backup_route_takes_one_query_and_names_the_mistake_of_any_other() {
     assert_eq!(status, 200);
     assert!(tessari_backup::verify_state(&mut held.as_slice()).is_ok());
 
+    let (status, _, held) = send_bytes(&address, "GET", "/backup?as=script", None);
+    assert_eq!(status, 200);
+    assert!(
+        String::from_utf8(held)
+            .unwrap()
+            .starts_with("-- TessariDB state script")
+    );
+
     let (status, body) = request(&address, "GET", "/backup?since=1", "");
     assert_eq!(status, 400, "{body}");
     let (status, body) = request(&address, "GET", "/backup?as=log", "");

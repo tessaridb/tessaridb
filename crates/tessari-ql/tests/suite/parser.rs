@@ -1756,7 +1756,16 @@ fn backup_names_its_form_and_state_stays_an_ordinary_word() {
             form: BackupForm::State
         }
     );
+    assert_eq!(
+        kind("BACKUP SCRIPT;"),
+        StatementKind::Backup {
+            from: None,
+            form: BackupForm::Script
+        }
+    );
     assert!(tessari_ql::parse("BACKUP STATE FROM 5;").is_err());
+    assert!(tessari_ql::parse("BACKUP SCRIPT FROM 5;").is_err());
+    assert!(tessari_ql::parse("SELECT script FROM pages;").is_ok());
     assert!(tessari_ql::parse("SELECT state FROM orders WHERE state = 'paid';").is_ok());
     assert!(tessari_ql::parse("DEFINE FIELD state ON orders TYPE string;").is_ok());
 }

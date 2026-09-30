@@ -1915,6 +1915,16 @@ pub enum Error {
         span: Span,
     },
 
+    /// A `PASSHASH` this store would not have produced.
+    #[error(
+        "that hash is not one this store would store: it takes an Argon2id \
+         hash, version 19, at parameters no weaker than its own (at {span})"
+    )]
+    PasshashRefused {
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A password the hasher will not take.
     #[error("that password cannot be stored (at {span})")]
     PasswordUnusable {

@@ -213,6 +213,10 @@ impl Session<'_> {
         form: tessari_ql::BackupForm,
     ) -> Result<Outcome> {
         let mut held = Vec::new();
+        if form == tessari_ql::BackupForm::Script {
+            let taken = self.state_script()?;
+            return Ok(Outcome::Value(Value::String(taken.text)));
+        }
         if form == tessari_ql::BackupForm::State {
             tessari_backup::write_state(self.store, &mut held).map_err(|error| {
                 Error::BackupFailed {

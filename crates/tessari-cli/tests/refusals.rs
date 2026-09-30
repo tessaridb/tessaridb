@@ -285,6 +285,12 @@ fn a_snapshot_that_is_not_whole_is_refused_and_leaves_nothing() {
     drop(std::fs::remove_dir_all(&files));
     std::fs::create_dir_all(&files).unwrap();
 
+    let dumped = files.join("missing").join("state.tessariql");
+    let (ok, said) = run(&path, None, &["--dump", dumped.to_str().unwrap()], "");
+    assert!(
+        !ok,
+        "a dump into a directory that does not exist was taken: {said}"
+    );
     let nowhere = files.join("missing").join("state.tessarisnap");
     let (ok, said) = run(&path, None, &["--snapshot", nowhere.to_str().unwrap()], "");
     assert!(

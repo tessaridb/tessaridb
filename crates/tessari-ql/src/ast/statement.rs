@@ -1,8 +1,8 @@
 //! Every statement the language has, as one enum.
 
 use super::{
-    Answer, ColumnDeclaration, ConsumerSource, CreateTarget, DeleteBound, EdgeClause, Edit, Expr,
-    FieldMapping, FieldPath, GroupClauses, Identity, InfoSubject, Name, OnFailure, Password,
+    Answer, ColumnDeclaration, ConsumerSource, CreateTarget, Credential, DeleteBound, EdgeClause,
+    Edit, Expr, FieldMapping, FieldPath, GroupClauses, Identity, InfoSubject, Name, OnFailure,
     RangeExpr, ReachRef, RecordTarget, Select, SetCondition, SpaceBound, TableChange, TableRef,
     TopicClauses, UserChange, UserGrant, Written,
 };
@@ -507,8 +507,8 @@ pub enum StatementKind {
         scope: Option<ReachRef>,
         /// What the user may do.
         role: UserGrant,
-        /// The password, as written. Prints as `<redacted>`.
-        password: Password,
+        /// The password or the stored hash, as written. Prints as `<redacted>`.
+        credential: Credential,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -1775,4 +1775,6 @@ pub enum BackupForm {
     Log,
     /// `BACKUP STATE` — the store's current state at one version.
     State,
+    /// `BACKUP SCRIPT` — the store's current state as TessariQL that rebuilds it.
+    Script,
 }

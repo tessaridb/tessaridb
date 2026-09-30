@@ -35,8 +35,7 @@ use crate::store::{Embedded, Remote, Store};
 // A binary has no library target to depend on, and giving it one to make a test
 // possible would be shaping the crate around its test. Included the way
 // `roundtrip.rs` already includes the renderer.
-#[path = "../src/render.rs"]
-mod render;
+use tessari_ql::literal as render;
 #[path = "../src/scanner.rs"]
 mod scanner;
 #[path = "../src/session.rs"]

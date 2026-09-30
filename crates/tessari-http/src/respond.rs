@@ -344,12 +344,14 @@ pub(crate) fn backup(
     let script = match query {
         None => "BACKUP;".to_owned(),
         Some("as=state") => "BACKUP STATE;".to_owned(),
+        Some("as=script") => "BACKUP SCRIPT;".to_owned(),
         Some(written) => match written.strip_prefix("from=").map(str::parse::<u64>) {
             Some(Ok(held)) => format!("BACKUP FROM {held};"),
             _ => {
                 return Answer::bad_request(
                     "this route takes `from=<sequence>` for the log since a position, \
-                     or `as=state` for a snapshot of the current state",
+                     `as=state` for a snapshot of the current state, or `as=script` \
+                     for that state as TessariQL",
                 );
             }
         },
@@ -362,6 +364,9 @@ pub(crate) fn backup(
         Ok(outcomes) => match outcomes.last() {
             Some(Outcome::Value(tessaridb::Value::Bytes(bytes))) => {
                 Answer::octets(200, bytes.clone())
+            }
+            Some(Outcome::Value(tessaridb::Value::String(script))) => {
+                Answer::octets(200, script.clone().into_bytes())
             }
             _ => Answer::new(
                 500,

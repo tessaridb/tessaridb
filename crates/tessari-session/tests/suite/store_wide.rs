@@ -100,6 +100,7 @@ fn inside<'a>(store: &'a Store, name: &str) -> Session<'a> {
 const STORE_WIDE: &[&str] = &[
     "BACKUP;",
     "BACKUP STATE;",
+    "BACKUP SCRIPT;",
     "INFO FOR NODE;",
     "SELECT * FROM $node;",
     "EXPLAIN SELECT * FROM $node;",

@@ -64,6 +64,28 @@ pub(crate) fn snapshot(db: &Db, path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Write the store's current state as TessariQL that rebuilds it (ADR-0091).
+///
+/// The parts it does not carry are named in the file's own header, and here.
+pub(crate) fn dump(db: &Db, path: &std::path::Path) -> Result<(), String> {
+    let taken = aside(path, |out| {
+        let taken =
+            tessari_session::write_script(db.store()).map_err(|failure| failure.to_string())?;
+        std::io::Write::write_all(out, taken.text.as_bytes())
+            .map_err(|failure| failure.to_string())?;
+        Ok(taken)
+    })?;
+    println!(
+        "{} record(s) as statements to {}",
+        taken.records,
+        path.display()
+    );
+    for part in &taken.refused {
+        println!("  not carried: {part}");
+    }
+    Ok(())
+}
+
 /// Write a file beside `path` and move it into place only once it is whole.
 ///
 /// A backup that fails part-way must leave nothing a restore could mistake for

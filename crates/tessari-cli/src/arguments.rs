@@ -33,6 +33,7 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   -f, --file <file> run this file and exit
   --backup <file> write the store's log to <file> and exit
   --snapshot <file> write the store's current state to <file> and exit
+  --dump <file>   write the store's current state as TessariQL to <file> and exit
   --verify <file> read <file> and say what it holds, changing nothing
   --from <n>      with --backup: write only what happened at or after <n>
   --upto <n>      with --restore: stop replaying after sequence <n>
@@ -129,6 +130,8 @@ pub enum Source {
     Backup(PathBuf),
     /// Write this store's current state to a file (ADR-0091).
     Snapshot(PathBuf),
+    /// Write this store's current state as a TessariQL script (ADR-0091).
+    Dump(PathBuf),
     /// Replay a file into this store.
     Restore(PathBuf),
     /// Say whether the store is well.
@@ -207,6 +210,12 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                     .next()
                     .ok_or_else(|| "--snapshot wants a path".to_owned())?;
                 source = Source::Snapshot(PathBuf::from(path));
+            }
+            "--dump" => {
+                let path = arguments
+                    .next()
+                    .ok_or_else(|| "--dump wants a path".to_owned())?;
+                source = Source::Dump(PathBuf::from(path));
             }
             "--health" => source = Source::Health,
             "--verify" => {
@@ -323,6 +332,7 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
         let reached_past_the_session = match source {
             Source::Backup(_) => Some("--backup"),
             Source::Snapshot(_) => Some("--snapshot"),
+            Source::Dump(_) => Some("--dump"),
             Source::Restore(_) => Some("--restore"),
             Source::Health => Some("--health"),
             Source::Serve => Some("--serve"),
@@ -348,6 +358,7 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
     let runs_no_script = match source {
         Source::Backup(_) => Some("--backup"),
         Source::Snapshot(_) => Some("--snapshot"),
+        Source::Dump(_) => Some("--dump"),
         Source::Restore(_) => Some("--restore"),
         Source::Health => Some("--health"),
         Source::Serve => Some("--serve"),

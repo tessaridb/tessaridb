@@ -3,7 +3,9 @@
 use super::Parser;
 use tessari_types::Number;
 
-use crate::ast::{Name, Password, ReachRef, StatementKind, TableChange, UserChange, UserGrant};
+use crate::ast::{
+    Credential, Name, Password, ReachRef, StatementKind, TableChange, UserChange, UserGrant,
+};
 use crate::error::Result;
 use crate::token::{Keyword, Punct, Token};
 
@@ -31,13 +33,23 @@ impl Parser<'_> {
         } else {
             return Err(self.error_here("`ROLE` or `AUTHORITIES` and what the user may do"));
         };
-        self.expect_keyword(Keyword::Password, "`PASSWORD` and the credential")?;
-        let (password, _) = self.text("the password, as text")?;
+        // `PASSHASH` is contextual — an ordinary name everywhere else — and is
+        // the spelling a state script writes a user with (ADR-0091): the store
+        // never held the password, only what it hashed to.
+        let credential = if self.eat_keyword(Keyword::Password) {
+            let (password, _) = self.text("the password, as text")?;
+            Credential::Password(Password::new(password))
+        } else if self.eat_word("passhash") {
+            let (hash, _) = self.text("the stored hash, as text")?;
+            Credential::Hash(hash)
+        } else {
+            return Err(self.error_here("`PASSWORD` or `PASSHASH` and the credential"));
+        };
         Ok(StatementKind::DefineUser {
             name,
             scope,
             role,
-            password: Password::new(password),
+            credential,
             if_not_exists,
         })
     }

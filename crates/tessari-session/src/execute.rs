@@ -234,7 +234,7 @@ impl Session<'_> {
                 name,
                 scope,
                 role,
-                password,
+                credential,
                 if_not_exists,
             } => self.define_user(
                 transaction,
@@ -242,7 +242,7 @@ impl Session<'_> {
                     name,
                     scope: scope.as_ref(),
                     role,
-                    password,
+                    credential,
                     if_not_exists: *if_not_exists,
                 },
                 span,
