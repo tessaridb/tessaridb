@@ -38,7 +38,8 @@ use std::fmt::Write as _;
 
 pub(crate) use parts::{write_field, write_index, write_split};
 use tessari_storage::{
-    FieldDefinition, GEO_FIELD, IndexDefinition, TableDefinition, TableKind, VECTOR_FIELD,
+    EDGE_IN, EDGE_OUT, FieldDefinition, GEO_FIELD, IndexDefinition, TableDefinition, TableKind,
+    VECTOR_FIELD,
 };
 use tessari_types::{IdentityKind, Number};
 
@@ -88,18 +89,36 @@ pub(crate) fn declaration(
         _ => None,
     };
     for field in fields {
-        if declared_by_the_word == Some(field.name.as_str()) {
+        if declared_by_the_word == Some(field.name.as_str())
+            || made_by_the_edge_word(definition, &field.name)
+        {
             continue;
         }
         write_field(&mut script, &definition.name, field)?;
     }
     for index in indexes {
-        if declared_by_the_word == Some(index.name.as_str()) {
+        if declared_by_the_word == Some(index.name.as_str())
+            || made_by_the_edge_word(definition, &index.name)
+        {
             continue;
         }
         write_index(&mut script, &definition.name, index)?;
     }
     Ok(script)
+}
+
+/// Whether `name` is an endpoint field or index `DEFINE TABLE … EDGE` makes for
+/// itself.
+///
+/// Written out again they refuse on re-execution — the name is already taken —
+/// so a declaration that wrote them did not re-create the table it described.
+/// That was true of `INFO FOR TABLE` on every edge table until a state script,
+/// which runs the declarations it writes, found it (G047).
+pub(crate) fn made_by_the_edge_word(definition: &TableDefinition, name: &str) -> bool {
+    matches!(definition.kind, TableKind::Edge(_))
+        && [EDGE_OUT, EDGE_IN]
+            .iter()
+            .any(|endpoint| name == *endpoint || name == format!("{endpoint}_edges"))
 }
 
 /// The statement that declares the table itself.
