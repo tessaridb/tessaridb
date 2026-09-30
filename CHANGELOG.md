@@ -12,7 +12,7 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
-## 0.17.0-beta — 2026-09-30
+## 0.17.0-beta — 2026-10-01
 
 - **Backups written on the node, from the console.** `BACKUP [STATE | SCRIPT] TO
   '<name>'` writes the backup into the node's backup folder — `--backup-dir`, or
@@ -65,6 +65,9 @@ compares carries no pre-release suffix.
 - The console answers `HEAD /` and every console asset as `GET` without the body,
   with `Cache-Control: no-cache` and a strong `ETag`; a matching `If-None-Match` is
   a `304`, so a browser never runs an old console against an upgraded node.
+- Fixed: `INFO FOR RECIPIENTS OF team:$id` and `INFO FOR VAULT team RECORDS AFTER
+  team:$after` refused their parameter as unbound, so a client had to write the id
+  into the statement text. Both now bind it.
 - **1462 conformance cases** define the language and run in the build.
 
 ## 0.16.0-beta — 2026-09-30

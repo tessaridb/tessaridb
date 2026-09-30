@@ -22,8 +22,8 @@ written in Rust, for AI applications and the products built around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is a beta — `0.17.0-beta` on `dev`; the latest release is `0.16.0-beta`.** It is
-> released and tested, published as a container image (`tessaridb/tessaridb:0.16.0-beta`; the image tracks the
+> **TessariDB is a beta — `0.17.0-beta`.** It is released and tested, published as
+> a container image (`tessaridb/tessaridb:0.17.0-beta`; the image tracks the
 > larger releases), and the licence makes production use free, including inside
 > a commercial company.
 > What a beta does not promise yet is permanence of shape: before 1.0 the query
@@ -535,7 +535,7 @@ source, and no third-party database is vendored, linked, or derived from here.
 
 TessariDB is **source-available** under the
 [Business Source License 1.1](LICENSE). The source is public, and on
-**2030-09-30** — or four years after any given version is first published,
+**2030-10-01** — or four years after any given version is first published,
 whichever comes first — that version becomes **Apache-2.0** permanently.
 
 **Free, with no agreement and no charge**, for any use — including production,
