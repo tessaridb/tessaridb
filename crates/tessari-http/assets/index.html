@@ -703,6 +703,40 @@
             <button id="vault-one-change" type="button" disabled>Change passphrase</button>
           </div>
         </div>
+        <div class="pane">
+          <div class="pane-head">
+            <h2>Records in a vault</h2>
+            <span id="vault-rec-status" class="status" role="status"></span>
+          </div>
+          <p class="note">Ids come a page at a time with no value beside them. A reveal is recorded by the store before it answers; the plaintext stays on this page until you hide it or reveal another.</p>
+          <div class="row">
+            <label>Namespace <input id="vault-rec-namespace" type="text" autocomplete="off" /></label>
+            <label>Database <input id="vault-rec-database" type="text" autocomplete="off" /></label>
+            <button id="vault-rec-list" type="button">Vaults here</button>
+          </div>
+          <div id="vault-rec-vaults"></div>
+          <div class="row">
+            <label>Vault <input id="vault-rec-name" type="text" autocomplete="off" /></label>
+            <button id="vault-rec-records" type="button" class="primary">Records</button>
+            <button id="vault-rec-more" type="button" disabled>Next page</button>
+          </div>
+          <div id="vault-rec-ids"></div>
+          <div id="vault-rec-shown" aria-live="polite"></div>
+          <div class="row">
+            <button id="vault-rec-hide" type="button" class="quiet" disabled>Hide the revealed values</button>
+          </div>
+          <div class="row">
+            <label>Record id <input id="vault-rec-id" type="text" autocomplete="off" /></label>
+            <label>Field <input id="vault-rec-field" type="text" autocomplete="off" /></label>
+            <label>Value <input id="vault-rec-value" type="password" autocomplete="new-password" /></label>
+            <button id="vault-rec-write" type="button" disabled>Write</button>
+          </div>
+          <div class="row">
+            <label>Read by (optional) <input id="vault-rec-actor" type="text" autocomplete="off" /></label>
+            <button id="vault-rec-audit" type="button">Audit trail</button>
+          </div>
+          <div id="vault-rec-trail"></div>
+        </div>
       </section>
     </main>
     <footer class="tray">

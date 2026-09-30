@@ -12,6 +12,7 @@ import { Unreachable, route } from "./api.js";
 import { at, disable, say, setValue, trimmed, value, write } from "./dom.js";
 import { told } from "./session.js";
 import { aName } from "./topic-names.js";
+import { wireRecords } from "./vault-records.js";
 
 const SCREEN = "Vault";
 
@@ -151,4 +152,5 @@ export function wire(): void {
     at(id).addEventListener("input", shape);
   }
   shape();
+  wireRecords();
 }
