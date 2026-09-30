@@ -211,10 +211,11 @@ impl Session<'_> {
         &self,
         from: Option<u64>,
         form: tessari_ql::BackupForm,
+        of: &[tessari_ql::ReachRef],
     ) -> Result<Outcome> {
         let mut held = Vec::new();
         if form == tessari_ql::BackupForm::Script {
-            let taken = self.state_script()?;
+            let taken = self.state_script(of)?;
             return Ok(Outcome::Value(Value::String(taken.text)));
         }
         if form == tessari_ql::BackupForm::State {

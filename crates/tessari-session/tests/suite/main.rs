@@ -86,6 +86,7 @@ mod ordered_under_a_where;
 mod ordering;
 mod own_password;
 mod parameters;
+mod partial_backup;
 mod passhash;
 mod phrase;
 mod plan_invariance;

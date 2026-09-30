@@ -1741,6 +1741,7 @@ fn backup_names_its_form_and_state_stays_an_ordinary_word() {
             from: None,
             form: BackupForm::Log,
             to: None,
+            of: Vec::new(),
         }
     );
     assert_eq!(
@@ -1749,6 +1750,7 @@ fn backup_names_its_form_and_state_stays_an_ordinary_word() {
             from: Some(42),
             form: BackupForm::Log,
             to: None,
+            of: Vec::new(),
         }
     );
     assert_eq!(
@@ -1757,6 +1759,7 @@ fn backup_names_its_form_and_state_stays_an_ordinary_word() {
             from: None,
             form: BackupForm::State,
             to: None,
+            of: Vec::new(),
         }
     );
     assert_eq!(
@@ -1765,6 +1768,7 @@ fn backup_names_its_form_and_state_stays_an_ordinary_word() {
             from: None,
             form: BackupForm::Script,
             to: None,
+            of: Vec::new(),
         }
     );
     assert!(tessari_ql::parse("BACKUP STATE FROM 5;").is_err());
@@ -1772,6 +1776,70 @@ fn backup_names_its_form_and_state_stays_an_ordinary_word() {
     assert!(tessari_ql::parse("SELECT script FROM pages;").is_ok());
     assert!(tessari_ql::parse("SELECT state FROM orders WHERE state = 'paid';").is_ok());
     assert!(tessari_ql::parse("DEFINE FIELD state ON orders TYPE string;").is_ok());
+}
+
+/// `OF` names the part of the store a script carries, in the spellings a reach
+/// already has; a log or a snapshot of a part is refused, because a database's
+/// log holds none of the definitions it needs and a snapshot keeps the catalog
+/// as the store keeps it.
+#[test]
+fn backup_of_names_the_part_a_script_carries() {
+    use tessari_ql::{BackupForm, ReachRef, StatementKind};
+    let kind = |script: &str| {
+        tessari_ql::parse(script).unwrap().statements[0]
+            .kind
+            .clone()
+    };
+    let StatementKind::Backup { form, of, to, .. } = kind(
+        "BACKUP SCRIPT OF NAMESPACE prod, DATABASE billing.orders, crm.people TO 'part.tessariql';",
+    ) else {
+        panic!("not a backup");
+    };
+    assert_eq!(form, BackupForm::Script);
+    assert_eq!(to.as_deref(), Some("part.tessariql"));
+    let named: Vec<String> = of
+        .iter()
+        .map(|reach| match reach {
+            ReachRef::Namespace(name) => format!("ns {}", name.text),
+            ReachRef::Database(table) => format!(
+                "db {}.{}",
+                table
+                    .database
+                    .as_ref()
+                    .map_or("", |name| name.text.as_str()),
+                table.name.text
+            ),
+            other => format!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(named, ["ns prod", "db billing.orders", "db crm.people"]);
+
+    let StatementKind::Backup { form, of, .. } = kind("BACKUP SCRIPT OF prod.orders;") else {
+        panic!("not a backup");
+    };
+    assert_eq!((form, of.len()), (BackupForm::Script, 1));
+    // A snapshot keeps the catalog as the store keeps it, so a part is a script.
+    let snapshot = tessari_ql::parse("BACKUP STATE OF prod.orders;")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        snapshot.contains("BACKUP SCRIPT OF"),
+        "the refusal of a partial snapshot does not name the form that carries a part: {snapshot}"
+    );
+    let StatementKind::Backup { of, .. } = kind("BACKUP STATE;") else {
+        panic!("not a backup");
+    };
+    assert!(of.is_empty(), "a backup with no `OF` is the whole store");
+
+    let refused = tessari_ql::parse("BACKUP OF NAMESPACE prod;")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("definitions"),
+        "the refusal of a partial log does not say why: {refused}"
+    );
+    assert!(tessari_ql::parse("BACKUP SCRIPT OF STORE;").is_err());
+    assert!(tessari_ql::parse("BACKUP SCRIPT OF;").is_err());
 }
 
 /// `TO '<name>'` asks the node to write the backup into its backup folder under
@@ -1791,6 +1859,7 @@ fn backup_to_names_a_file_in_every_form() {
             from: None,
             form: BackupForm::Log,
             to: Some("nightly.tessarilog".to_owned()),
+            of: Vec::new(),
         }
     );
     assert_eq!(
@@ -1799,6 +1868,7 @@ fn backup_to_names_a_file_in_every_form() {
             from: Some(42),
             form: BackupForm::Log,
             to: Some("since-42.tessarilog".to_owned()),
+            of: Vec::new(),
         }
     );
     assert_eq!(
@@ -1807,6 +1877,7 @@ fn backup_to_names_a_file_in_every_form() {
             from: None,
             form: BackupForm::State,
             to: Some("weekly/state.tessarisnap".to_owned()),
+            of: Vec::new(),
         }
     );
     assert_eq!(
@@ -1815,6 +1886,7 @@ fn backup_to_names_a_file_in_every_form() {
             from: None,
             form: BackupForm::Script,
             to: Some("dump.tessariql".to_owned()),
+            of: Vec::new(),
         }
     );
     let refused = tessari_ql::parse("BACKUP STATE TO nightly;")

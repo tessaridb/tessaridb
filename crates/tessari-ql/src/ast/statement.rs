@@ -490,6 +490,9 @@ pub enum StatementKind {
         /// `TO '<name>'` — the file, inside the node's backup folder, the backup
         /// is written to; absent means the statement answers with the bytes.
         to: Option<String>,
+        /// `OF NAMESPACE prod, prod.orders` — the part of the store a script
+        /// carries; empty means the whole store.
+        of: Vec<ReachRef>,
     },
     /// `DEFINE ANALYZER simple FILTERS lowercase, ascii`
     DefineAnalyzer {

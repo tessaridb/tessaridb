@@ -3,12 +3,13 @@
 
 use super::Parser;
 
-use crate::ast::StatementKind;
+use crate::ast::{ReachRef, StatementKind};
 use crate::error::Result;
-use crate::token::{Keyword, Token};
+use crate::token::{Keyword, Punct, Token};
 
 impl Parser<'_> {
-    /// `BACKUP [STATE | SCRIPT | FROM n] [TO '<name>']`, from just after `BACKUP`.
+    /// `BACKUP [STATE | SCRIPT] [OF <place>, …] [TO '<name>']`, or `BACKUP [FROM n]
+    /// [TO '<name>']`, from just after `BACKUP`.
     pub(in crate::parser) fn backup_statement(&mut self) -> Result<StatementKind> {
         self.advance();
         // `STATE` is contextual, as every word a statement's head adds
@@ -28,10 +29,18 @@ impl Parser<'_> {
                      and `FROM` names a position in a log",
                 ));
             }
+            let of = self.backup_of()?;
+            if form == crate::ast::BackupForm::State && !of.is_empty() {
+                return Err(self.error_here(
+                    "`BACKUP SCRIPT OF` for a part; a snapshot carries the store's catalog as \
+                     it is kept, so it is taken of the whole store",
+                ));
+            }
             StatementKind::Backup {
                 from: None,
                 form,
                 to: self.backup_to()?,
+                of,
             }
         } else {
             // `FROM` reads as it does everywhere else — where the answer
@@ -48,12 +57,42 @@ impl Parser<'_> {
             } else {
                 None
             };
+            if self.eat_word("of") {
+                return Err(self.error_here(
+                    "`STATE` or `SCRIPT` before `OF`; a database's log holds its records but \
+                     not the definitions of the namespace and database it lives in, so a log \
+                     of a part restores nowhere on its own",
+                ));
+            }
             StatementKind::Backup {
                 from,
                 form: crate::ast::BackupForm::Log,
                 to: self.backup_to()?,
+                of: Vec::new(),
             }
         })
+    }
+
+    /// The places a partial backup carries — `NAMESPACE prod`, `DATABASE
+    /// prod.orders` or the bare `prod.orders` — when the statement names any.
+    fn backup_of(&mut self) -> Result<Vec<ReachRef>> {
+        if !self.eat_word("of") {
+            return Ok(Vec::new());
+        }
+        let mut places = Vec::new();
+        loop {
+            match self.reach_ref()? {
+                reach @ (ReachRef::Namespace(_) | ReachRef::Database(_)) => places.push(reach),
+                _ => {
+                    return Err(self.error_here(
+                        "a namespace or a database; a backup of the store names no `OF`",
+                    ));
+                }
+            }
+            if !self.eat_punct(Punct::Comma) {
+                return Ok(places);
+            }
+        }
     }
 
     /// The file a backup is written to, when the statement names one.

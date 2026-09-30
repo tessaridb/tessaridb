@@ -34,8 +34,8 @@ mod data;
 
 use std::fmt::Write as _;
 
-use tessari_storage::{Catalog, Store, TableDefinition, TableKind};
-use tessari_types::TableId;
+use tessari_storage::{Catalog, Reach, Store, TableDefinition, TableKind};
+use tessari_types::{DatabaseId, NamespaceId, TableId};
 
 use crate::error::Result;
 use crate::session::Session;
@@ -80,16 +80,23 @@ pub fn write_script(store: &Store) -> Result<ScriptTaken> {
     if let Some(id) = owner {
         reader.acting_as(id)?;
     }
-    written(&mut reader)
+    written(&mut reader, &[])
 }
 
 impl Session<'_> {
-    /// This session's store as a script, read with this session's identity on
-    /// a session of its own, so the caller's `USE` is left where it was.
-    pub(crate) fn state_script(&self) -> Result<ScriptTaken> {
+    /// This session's store as a script — or the part `of` names — read with
+    /// this session's identity on a session of its own, so the caller's `USE`
+    /// is left where it was.
+    pub(crate) fn state_script(&self, of: &[tessari_ql::ReachRef]) -> Result<ScriptTaken> {
+        let part = {
+            let mut view = self.store.begin()?;
+            of.iter()
+                .map(|named| self.reach_of(&mut view, named))
+                .collect::<Result<Vec<Reach>>>()?
+        };
         let mut reader = Session::new(self.store);
         reader.identity = self.identity.clone();
-        written(&mut reader)
+        written(&mut reader, &part)
     }
 }
 
@@ -99,7 +106,15 @@ struct Placed {
     databases: Vec<(String, Vec<TableDefinition>)>,
 }
 
-fn written(reader: &mut Session<'_>) -> Result<ScriptTaken> {
+/// Whether a database is carried: every one when `part` is empty, else those
+/// it names and those of a namespace it names.
+fn carried(part: &[Reach], namespace: NamespaceId, database: DatabaseId) -> bool {
+    part.is_empty()
+        || part.contains(&Reach::Namespace(namespace))
+        || part.contains(&Reach::Database(namespace, database))
+}
+
+fn written(reader: &mut Session<'_>, part: &[Reach]) -> Result<ScriptTaken> {
     let mut body = String::new();
     let mut refused = Vec::new();
     let mut records = 0_u64;
@@ -110,8 +125,12 @@ fn written(reader: &mut Session<'_>) -> Result<ScriptTaken> {
         let mut placed = Vec::new();
         let mut names = tessari_ql::literal::Names::new();
         for namespace in catalog.namespaces()? {
+            let whole = part.contains(&Reach::Namespace(namespace.id));
             let mut databases = Vec::new();
             for database in catalog.databases_in(namespace.id)? {
+                if !carried(part, namespace.id, database.id) {
+                    continue;
+                }
                 // A bucket's chunks and an edge kind's edges live in tables no
                 // statement can name; the chunks travel as the file `PUT`
                 // writes, and an edge kind is named among what is not carried.
@@ -125,16 +144,18 @@ fn written(reader: &mut Session<'_>) -> Result<ScriptTaken> {
                 }
                 databases.push((database.name, tables));
             }
-            placed.push(Placed {
-                namespace: namespace.name,
-                databases,
-            });
+            if part.is_empty() || whole || !databases.is_empty() {
+                placed.push(Placed {
+                    namespace: namespace.name,
+                    databases,
+                });
+            }
         }
         (
             placed,
             names,
-            access::analyzers(&catalog)?,
-            access::uncarried(&catalog)?,
+            access::analyzers(&catalog, part)?,
+            access::uncarried(&catalog, part)?,
         )
     };
     refused.extend(catalog_refusals);
@@ -180,14 +201,39 @@ fn written(reader: &mut Session<'_>) -> Result<ScriptTaken> {
         }
     }
     body.push_str(&indexes);
-    body.push_str(&access::users(reader, &placed_ids(reader.store)?)?);
-
     let mut text = String::from("-- TessariDB state script (ADR-0091)\n");
-    let _ = writeln!(
-        text,
-        "-- written by {} — restore into an EMPTY store with `tessaridb <store> -f <this file>`",
-        tessari_storage::BUILD_VERSION
-    );
+    if part.is_empty() {
+        body.push_str(&access::users(reader, &placed_ids(reader.store)?)?);
+        let _ = writeln!(
+            text,
+            "-- written by {} — restore into an EMPTY store with `tessaridb <store> -f <this file>`",
+            tessari_storage::BUILD_VERSION
+        );
+    } else {
+        // Users are the store's, not a namespace's, so a part carries none; and
+        // an analyzer is the store's too, so the ones its fields use are declared
+        // only where the restoring store has none of that name.
+        refused.push("users and grants — a part of the store carries none".to_owned());
+        let places: Vec<String> = placed
+            .iter()
+            .flat_map(|namespace| {
+                namespace
+                    .databases
+                    .iter()
+                    .map(move |(database, _)| format!("{}.{database}", namespace.namespace))
+            })
+            .collect();
+        let _ = writeln!(
+            text,
+            "-- written by {} — a PART of the store: {}",
+            tessari_storage::BUILD_VERSION,
+            places.join(", ")
+        );
+        text.push_str(
+            "-- restore where none of these namespaces and databases exists; an analyzer of the \
+             same name already there is kept as it is\n",
+        );
+    }
     if refused.is_empty() {
         text.push_str("-- carries every part of the store it was taken from\n");
     } else {

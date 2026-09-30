@@ -13,7 +13,7 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Component, Path, PathBuf};
 
-use tessari_ql::BackupForm;
+use tessari_ql::{BackupForm, ReachRef};
 use tessari_types::{Number, Value};
 
 use crate::error::{Error, Result};
@@ -27,6 +27,7 @@ impl Session<'_> {
         &self,
         from: Option<u64>,
         form: BackupForm,
+        of: &[ReachRef],
         name: &str,
     ) -> Result<Outcome> {
         let folder = self.backups.as_deref().ok_or(Error::NoBackupFolder)?;
@@ -36,7 +37,7 @@ impl Session<'_> {
                 path: target.display().to_string(),
             });
         }
-        let bytes = match self.backup(from, form)? {
+        let bytes = match self.backup(from, form, of)? {
             Outcome::Value(Value::Bytes(bytes)) => bytes,
             Outcome::Value(Value::String(text)) => text.into_bytes(),
             other => {

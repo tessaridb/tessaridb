@@ -6629,6 +6629,26 @@ DEFINE USER ada ON prod.orders ROLE editor PASSHASH '$argon2id$v=19$m=19456,t=2,
 Refused unless the store could have made that hash itself — Argon2id, at
 parameters no weaker than its own.
 
+### A part of the store, as a script
+
+```
+BACKUP SCRIPT OF NAMESPACE crm, prod.orders;
+BACKUP SCRIPT OF DATABASE billing.invoices TO 'billing.tessariql';
+```
+
+`OF` names what a script carries — `NAMESPACE x` for a namespace and every
+database in it, `DATABASE x.y` or the bare `x.y` for one database. It carries
+their declarations, their records, their indexes and the analyzers their fields
+use (each `IF NOT EXISTS`, so a store that already declares one of that name
+keeps its own). It carries **no users and no grants** — they belong to the
+store, not to a namespace — and its header says so and names the places it
+holds. A place the store does not hold is refused as `Unknown`.
+
+A part is a **script** only. A log of one database holds its records and none of
+the definitions of the namespace and database it lives in, so it would restore
+nowhere on its own; a snapshot keeps the catalog as the store keeps it, so it is
+taken of the whole store. Both are refused with that reason.
+
 ### Written by the node, into its backup folder
 
 ```
