@@ -140,12 +140,39 @@ impl Session<'_> {
     ) -> Result<Outcome> {
         let _ = span;
         if let Some(root) = Catalog::new(transaction).vault_root()? {
-            self.store.vault().unseal(&root.0, passphrase)?;
+            unseal_throttled(self.store, &root, passphrase)?;
             return Ok(Outcome::Value(Value::from("unsealed")));
         }
         let root = tessari_storage::initialise_root(self.store, passphrase)?;
         Catalog::new(transaction).set_vault_root(&root);
         Ok(Outcome::Value(Value::from("initialised")))
+    }
+
+    /// `CHANGE VAULT PASSPHRASE FROM '…' TO '…'` — a rekey (ADR-0092 D3).
+    ///
+    /// The current passphrase is checked under the unseal's own throttle, then
+    /// the same master key is wrapped under the new one and the root record
+    /// replaced in this transaction. Nothing else moves: the process stays
+    /// sealed or unsealed as it was, and every secret keeps its bytes.
+    pub(super) fn change_passphrase(
+        &self,
+        transaction: &mut Transaction<'_>,
+        current: &str,
+        new: &str,
+        span: Span,
+    ) -> Result<Outcome> {
+        let _ = span;
+        let Some(root) = Catalog::new(transaction).vault_root()? else {
+            return Err(Error::NoVaultRoot);
+        };
+        let moved = guessed(&root, || {
+            root.0
+                .rewrap(current, new)
+                .map_err(tessari_storage::Error::Vault)
+        })?;
+        Catalog::new(transaction).set_vault_root(&tessari_storage::VaultRoot(moved));
+        log::info!("the vault passphrase was changed");
+        Ok(Outcome::Done)
     }
 
     /// `REVEAL password FROM team:github` — the only path to a plaintext.
@@ -415,4 +442,64 @@ impl Session<'_> {
         }
         Ok(())
     }
+}
+
+/// Unseal with `passphrase`, under the bounds sign-in has (ADR-0092 D2).
+pub(crate) fn unseal_throttled(
+    store: &tessari_storage::Store,
+    root: &tessari_storage::VaultRoot,
+    passphrase: &str,
+) -> Result<()> {
+    guessed(root, || store.vault().unseal(&root.0, passphrase))
+}
+
+/// Try `attempt`, which checks a passphrase against `root`, under the bounds
+/// sign-in has.
+///
+/// A passphrase is guessed exactly as a password is — an attempt costs the
+/// guesser nothing and costs this node an Argon2id derivation — so it gets the
+/// same two bounds, asked before the derivation runs: a run of misses is made
+/// to wait, and only so many derivations run at once. The count is kept under
+/// the root's salt, because what is being guessed is this store's passphrase
+/// and not anybody's account: a guesser holding many accounts still gets three
+/// tries, not three each. Unseal and change share it, so a change is not a
+/// second, unthrottled way to test a guess.
+fn guessed<T>(
+    root: &tessari_storage::VaultRoot,
+    attempt: impl FnOnce() -> tessari_storage::Result<T>,
+) -> Result<T> {
+    let key = passphrase_key(root);
+    if !crate::throttle::attempts().permit(&key) {
+        log::warn!("unseal refused: too many recent wrong passphrases");
+        return Err(Error::PassphraseThrottled);
+    }
+    let Some(_verifying) = crate::throttle::verifying() else {
+        log::warn!("unseal refused: already verifying as many as this node will");
+        return Err(Error::PassphraseThrottled);
+    };
+    match attempt() {
+        Ok(held) => {
+            crate::throttle::attempts().succeeded(&key);
+            Ok(held)
+        }
+        Err(refused) => {
+            if refused.is_wrong_key() {
+                log::warn!("unseal refused: wrong passphrase");
+                crate::throttle::attempts().failed(&key);
+            }
+            Err(refused.into())
+        }
+    }
+}
+
+/// The throttle's key for guesses at one store's passphrase.
+///
+/// Starts with a character no user name can hold, so it never shares a count
+/// with somebody's sign-in by construction rather than by luck of the hash.
+fn passphrase_key(root: &tessari_storage::VaultRoot) -> String {
+    let mut key = String::from("\u{0}passphrase:");
+    for byte in root.0.salt {
+        key.push_str(&format!("{byte:02x}"));
+    }
+    key
 }

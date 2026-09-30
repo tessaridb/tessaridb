@@ -68,6 +68,10 @@ RUN chmod +x /usr/local/bin/tessaridb-entrypoint /usr/local/bin/tessaridb-health
 #                             Backup tab) writes; inside the volume, so a
 #                             backup outlives the container. Empty refuses
 #                             every `TO`.
+#   TESSARIDB_UNSEAL_FOR      how long an unseal lasts before the store seals
+#                             itself, as a TessariQL duration (`10m`, `1h`).
+#                             Read by the node itself, so it works outside a
+#                             container too; `--unseal-for` wins over it.
 #
 # `0.0.0.0` rather than a loopback address, because a container's loopback is
 # reachable from nothing outside it and a node bound there would answer no
@@ -76,7 +80,8 @@ ENV TESSARIDB_STORE=/var/lib/tessaridb/store \
     TESSARIDB_ADDRESS=0.0.0.0:9080 \
     TESSARIDB_HTTP_ADDRESS=0.0.0.0:8000 \
     TESSARIDB_LOG=info \
-    TESSARIDB_BACKUP_DIR=/var/lib/tessaridb/backups
+    TESSARIDB_BACKUP_DIR=/var/lib/tessaridb/backups \
+    TESSARIDB_UNSEAL_FOR=10m
 
 # What the node itself reads, and what this image deliberately does NOT default.
 #

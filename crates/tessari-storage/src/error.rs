@@ -862,6 +862,16 @@ pub enum Error {
 }
 
 impl Error {
+    /// Whether this is a key that did not open what it was given — for an
+    /// unseal, a wrong passphrase.
+    ///
+    /// Asked by the unseal throttle, which counts guesses and nothing else: a
+    /// store already unsealed or a poisoned lock is not a guess.
+    #[must_use]
+    pub const fn is_wrong_key(&self) -> bool {
+        matches!(self, Self::Vault(tessari_vault::Error::WrongKey))
+    }
+
     /// The category this error belongs to.
     #[must_use]
     pub fn category(&self) -> ErrorCategory {

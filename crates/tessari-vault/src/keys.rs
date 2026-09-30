@@ -125,6 +125,45 @@ impl Root {
     }
 }
 
+impl Root {
+    /// The same master key under a new passphrase — a rekey (ADR-0092 D3).
+    ///
+    /// Proves `current` by unlocking this record, then wraps the master key it
+    /// held under a key derived from `new` with a fresh salt. The master key and
+    /// its identifier are unchanged, so every vault key it wraps, and every
+    /// secret under those, opens exactly as before; only who can unseal moves.
+    ///
+    /// A copy of the old record — in a backup, on a node that has not caught up
+    /// — still opens with the old passphrase. That is what a rekey is and not a
+    /// defect of this one: replacing the master key is a root rotation, which
+    /// re-wraps every vault key and is not this operation.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::WrongKey`] when `current` does not open this record, and the
+    /// derivation's own failures otherwise.
+    pub fn rewrap(&self, current: &str, new: &str) -> Result<Self> {
+        let master = self.unlock(current)?;
+        let mut salt = [0_u8; SALT_BYTES];
+        getrandom::fill(&mut salt).map_err(|_| Error::Entropy)?;
+        let unseal = derive(new, &salt)?;
+        let wrapped = envelope::seal(
+            &unseal,
+            self.key_id,
+            &Binding::Key {
+                level: Level::Master,
+                scope: &salt,
+            },
+            master.expose(),
+        )?;
+        Ok(Self {
+            salt,
+            key_id: self.key_id,
+            wrapped,
+        })
+    }
+}
+
 /// Turn a passphrase into key material.
 ///
 /// Argon2id at the parameters above. The output goes straight into the
@@ -192,4 +231,33 @@ pub fn unwrap(
     wrapped: &Wrapped,
 ) -> Result<SecretBytes> {
     envelope::open_key(under, &Binding::Key { level, scope }, &wrapped.sealed)
+}
+
+#[cfg(test)]
+mod rekey {
+    use super::Root;
+    use crate::error::Error;
+
+    #[test]
+    fn a_rewrapped_root_opens_the_same_master_key_with_the_new_passphrase_only() {
+        let (root, master) = Root::create("the old one").expect("a root");
+        let moved = root
+            .rewrap("the old one", "the new one")
+            .expect("rewrapped");
+
+        assert_eq!(
+            moved.unlock("the new one").expect("opens").expose(),
+            master.expose(),
+            "the rekey replaced the master key rather than re-wrapping it"
+        );
+        assert!(matches!(moved.unlock("the old one"), Err(Error::WrongKey)));
+        assert_ne!(
+            moved.salt, root.salt,
+            "the new passphrase reused the old salt"
+        );
+        assert!(matches!(
+            root.rewrap("not it", "the new one"),
+            Err(Error::WrongKey)
+        ));
+    }
 }

@@ -59,14 +59,19 @@ pub(crate) const MAJOR: u8 = 1;
 /// major one: a value nested inside an array carries no length of its own, so an
 /// unknown one cannot be stepped over.
 ///
-/// # Why this is 1
+/// # Why this is 2
+///
+/// 2 since the vault frame (ADR-0092 D2): a node at 2 answers
+/// [`Kind::Vault`], and a client asks one only of a node that said 2 or more.
+///
+/// # Why it was 1
 ///
 /// It was 0 through the two waves that built the redirect — the frame kind and
 /// the client that can receive one — because **advertising a capability nothing
 /// sends is worse than the gap**: a peer that believed this build could redirect
 /// would have been believing something false. This build sends one, so the minor
 /// moves with the sender and not with the frame.
-pub(crate) const MINOR: u8 = 1;
+pub(crate) const MINOR: u8 = 2;
 
 /// The minor at which a peer can be sent a [`Kind::Elsewhere`] frame.
 ///
@@ -87,6 +92,16 @@ pub(crate) const REDIRECTS: u8 = 1;
 /// wrong is wrong for every caller at once and there is nothing to gain by
 /// finding out at run time.
 const _: () = assert!(MINOR >= REDIRECTS);
+
+/// The minor at which a node answers a [`Kind::Vault`] frame.
+///
+/// Asked by the client before it sends one: an older node closes the connection
+/// on a kind it does not know, which would read as a network fault rather than
+/// as the version gap it is.
+pub(crate) const VAULT: u8 = 2;
+
+/// This build's node answers the frame this build's client may send.
+const _: () = assert!(MINOR >= VAULT);
 
 /// The largest frame this build will read.
 ///
@@ -124,6 +139,11 @@ pub(crate) enum Kind {
     /// rule is that neither reader accepts the other's tags, and a contiguous
     /// range was only ever a convenient way to say so.
     Elsewhere,
+    /// Unseal, seal or ask about the vault, the passphrase a field of its own.
+    ///
+    /// Numbered **17** because the peer link holds 14-16 (ADR-0092 D2). Its own
+    /// kind rather than a script, so the passphrase is never statement text.
+    Vault,
 }
 
 impl Kind {
@@ -135,6 +155,7 @@ impl Kind {
             Self::Subscribe => 4,
             Self::Change => 5,
             Self::Elsewhere => 13,
+            Self::Vault => 17,
         }
     }
 
@@ -146,6 +167,7 @@ impl Kind {
             4 => Some(Self::Subscribe),
             5 => Some(Self::Change),
             13 => Some(Self::Elsewhere),
+            17 => Some(Self::Vault),
             // 6-12 belong to the peer link and are refused here on purpose, so a
             // peer frame arriving on the client port closes the connection
             // instead of being misread. Everything else is simply unclaimed, and
@@ -551,7 +573,7 @@ mod tests {
     /// constant makes a protocol change fail in this crate until somebody has
     /// been to `spec/protocol-v1.md` §2.3 and §3.1 and changed the document a
     /// third-party client is written against.
-    const SPECIFIED_GREETING: [u8; 6] = [b'T', b'E', b'S', b'S', 1, 1];
+    const SPECIFIED_GREETING: [u8; 6] = [b'T', b'E', b'S', b'S', 1, 2];
 
     /// A peer: what it will say, and what it hears.
     ///
@@ -596,7 +618,7 @@ mod tests {
             peer.heard, SPECIFIED_GREETING,
             "what this node puts on the wire is not what the specification says"
         );
-        assert_eq!(minor, 1, "the peer's minor is kept, not discarded");
+        assert_eq!(minor, 2, "the peer's minor is kept, not discarded");
     }
 
     #[test]

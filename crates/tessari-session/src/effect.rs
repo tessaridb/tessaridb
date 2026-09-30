@@ -197,6 +197,10 @@ impl Effect {
             // leave the follower they were actually using still sealed. The
             // operator would then have unsealed a node they never named.
             StatementKind::SealVault { .. } | StatementKind::UnsealVault { .. } => Self::Read,
+            // Not local like the two above: it replaces the root **record**,
+            // which is catalog state every node must receive through the log,
+            // so it is a write and runs where writes run.
+            StatementKind::ChangeVaultPassphrase { .. } => Self::Write,
             // `DEFINE REPLICA` is the opposite half and stays a write: it is a
             // catalog record, commits in the transaction that issued it, and
             // reaches every node through the ordinary apply path (ADR-0009).

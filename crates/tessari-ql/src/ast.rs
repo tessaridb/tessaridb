@@ -125,6 +125,21 @@ pub enum InfoSubject {
     /// length, a fingerprint or a key identifier would be a slower oracle rather
     /// than none, and a reader would have no way to tell it was one.
     Vault(Name),
+    /// `INFO FOR VAULT team RECORDS [AFTER team:'x'] [LIMIT n]` — the vault's
+    /// record ids, a page at a time, and never a value (ADR-0092 D5).
+    ///
+    /// Its own subject rather than a clause on [`InfoSubject::Vault`], because
+    /// it names the table for the grant check (`reach`) and the fields report
+    /// names none. Ids only, because identities are keys and keys are not
+    /// encrypted: this discloses nothing the key layout does not already.
+    VaultRecords {
+        /// The vault.
+        table: TableRef,
+        /// The last id of the page before.
+        after: Option<Box<RecordTarget>>,
+        /// How many ids at most; absent, a thousand.
+        limit: Option<u64>,
+    },
     /// `INFO FOR TOPIC events` — a topic's positions and its readers' (G037).
     Topic(TableRef),
     /// `INFO FOR BUCKET media` — one bucket's name and the largest file it takes.
@@ -189,6 +204,15 @@ pub enum InfoSubject {
     /// store itself — strictly narrower than any tenancy grant, and the reason
     /// one namespace's administrator cannot read another's reads.
     Audit(Option<Name>),
+    /// `INFO FOR SEAL` — whether this process can open secrets, and until when
+    /// (ADR-0092 D1).
+    ///
+    /// A property of the **process**, not of any vault: the master key is held
+    /// per process and so is the deadline it is held to. That is why it is its
+    /// own subject rather than a field on `INFO FOR VAULT`, which would make a
+    /// per-vault question out of a store-wide one. It names no table, so it
+    /// needs nothing beyond being signed in.
+    Seal,
     /// `INFO FOR USER ada` — one user's role, tenancy and grants.
     ///
     /// The one subject that refuses rather than filters, because its content

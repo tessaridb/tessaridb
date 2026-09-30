@@ -416,7 +416,16 @@ const TABLES: &[Table] = &[
         // Re-classification trigger: a caller other than the starting process
         // able to set or change the folder — a statement, a route or a peer
         // frame — which would let a caller choose where the node writes.
-        expected: 26,
+        //
+        // 27 since the expiring unseal (G048, ADR-0092 D4): `Db::unseal_for`
+        // sets how long an unseal lasts. Classified **exempt on
+        // `back_up_into`'s ground**: set once by the process that started the
+        // node, from its own command line or environment; it reads and writes no
+        // record, catalog entry or grant, and it can only shorten or lengthen a
+        // window an operator with `OPERATE_STORE` opens. Same
+        // re-classification trigger: a caller other than the starting process
+        // able to change it, which would let a caller keep a store open.
+        expected: 27,
         count: |text| public_functions(&block(text, "impl Db")),
     },
     Table {
@@ -827,7 +836,14 @@ const TABLES: &[Table] = &[
     Table {
         file: "crates/tessari-wire/src/frame.rs",
         what: "frame kinds the binary protocol accepts",
-        expected: 6,
+        // 7 since the vault frame (G048, ADR-0092 D2, tag 17). Classified
+        // **enforced**: it signs in exactly as a `Request` does and then runs
+        // `Session::vault`, which runs the act as a statement built rather than
+        // read — so the authority (`OPERATE_STORE` to unseal, seal or change;
+        // signed in to ask the status), the passphrase throttle and the answer
+        // are the statement's. It carries no record and returns only the seal
+        // status.
+        expected: 7,
         count: |text| variants(&block(text, "pub(crate) enum Kind")),
     },
     Table {
@@ -847,7 +863,14 @@ const TABLES: &[Table] = &[
         // every operation runs one space statement through `session_for`, the
         // three names are checked before interpolation, and the key, values,
         // durations and holders are bound.
-        expected: 9,
+        //
+        // 13 since the vault routes (G048, ADR-0092 D2): `GET /vault`,
+        // `POST /vault/unseal`, `POST /vault/seal`, `POST /vault/passphrase`.
+        // Classified **enforced** on the vault frame's ground: each runs
+        // `Session::vault` in the caller's own session from `session_for`, so
+        // who may do it is the statement's decision and not the route's. The
+        // body is a passphrase and never script text; no refusal quotes it.
+        expected: 13,
         count: |text| lines_beginning(text, "(Method::"),
     },
     Table {
@@ -937,7 +960,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 113 since backups written on the node: `Db::back_up_into`, exempt,
     // classified above.
-    assert_eq!(total, 113, "the counted tables no longer sum to 113");
+    //
+    // 119 since the vault surface (G048): `Db::unseal_for`, exempt; the vault
+    // frame and four vault routes, enforced — classified above.
+    assert_eq!(total, 119, "the counted tables no longer sum to 119");
 }
 
 /// Every `.rs` file under a directory.

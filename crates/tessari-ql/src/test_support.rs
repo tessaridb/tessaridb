@@ -169,6 +169,7 @@ fn erase_statement(statement: &mut Statement) {
             | InfoSubject::Database
             | InfoSubject::Users
             | InfoSubject::Node
+            | InfoSubject::Seal
             | InfoSubject::Consumers => {}
             InfoSubject::Table(table) | InfoSubject::Access(table) => erase_table(table),
             InfoSubject::Recipients(target)
@@ -194,6 +195,12 @@ fn erase_statement(statement: &mut Statement) {
                 erase_name(name);
             }
             InfoSubject::Topic(table) => erase_table(table),
+            InfoSubject::VaultRecords { table, after, .. } => {
+                erase_table(table);
+                if let Some(after) = after {
+                    erase_record(after);
+                }
+            }
         },
         // Its own arm rather than the name-only list above, because the
         // distance is a `Name` too: left unerased it carries a span, and two
@@ -526,7 +533,9 @@ fn erase_statement(statement: &mut Statement) {
         // The passphrase is not erased because it is not a span — and it is not
         // compared either: two `UNSEAL`s differing only in their passphrase are
         // two different statements, which is the right answer.
-        StatementKind::UnsealVault { span, .. } | StatementKind::SealVault { span } => {
+        StatementKind::UnsealVault { span, .. }
+        | StatementKind::ChangeVaultPassphrase { span, .. }
+        | StatementKind::SealVault { span } => {
             *span = CANONICAL;
         }
         StatementKind::Backup { .. }

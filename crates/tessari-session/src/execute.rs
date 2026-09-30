@@ -966,6 +966,9 @@ impl Session<'_> {
             StatementKind::UnsealVault { passphrase, span } => {
                 self.unseal_vault(transaction, passphrase, *span)
             }
+            StatementKind::ChangeVaultPassphrase { current, new, span } => {
+                self.change_passphrase(transaction, current, new, *span)
+            }
             StatementKind::SealVault { .. } => {
                 self.store.vault().seal()?;
                 Ok(Outcome::Done)

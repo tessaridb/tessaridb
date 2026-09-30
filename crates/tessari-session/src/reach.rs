@@ -65,6 +65,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // here for a grant to be asked about.
         | StatementKind::SealVault { .. }
         | StatementKind::UnsealVault { .. }
+        | StatementKind::ChangeVaultPassphrase { .. }
         // A graph is a container, so declaring or dropping one touches no row
         // in any table: it is the caller's tenancy level that decides, exactly
         // as it is for the four words above.
@@ -154,6 +155,13 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // may ask (G037).
         StatementKind::Info {
             subject: InfoSubject::Topic(table),
+        } => vec![table],
+
+        // A listing of a vault's ids names the vault, and for the reason every
+        // arm below gives: left to the empty list, it would pass the grant loop
+        // vacuously and tell any reader of the tenancy what a vault holds.
+        StatementKind::Info {
+            subject: InfoSubject::VaultRecords { table, .. },
         } => vec![table],
 
         // Listing a record's recipients names the vault it lives in, and this

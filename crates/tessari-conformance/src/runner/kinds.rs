@@ -68,6 +68,8 @@ pub(crate) fn kind_name(error: &Error) -> &'static str {
         Error::RoleForbids { .. } => "RoleForbids",
         Error::SignInRefused => "SignInRefused",
         Error::SignInThrottled => "SignInThrottled",
+        Error::PassphraseThrottled => "PassphraseThrottled",
+        Error::NoVaultRoot => "NoVaultRoot",
         Error::NoSuchRole { .. } => "NoSuchRole",
         Error::NoSuchVerb { .. } => "NoSuchVerb",
         Error::NoSuchAuthority { .. } => "NoSuchAuthority",

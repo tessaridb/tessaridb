@@ -132,7 +132,7 @@ pub use tessari_lsm::{Durability, StoreConfig};
 pub use tessari_session::redact::{Visible, seen};
 pub use tessari_session::{
     AccessPath, Detached, Error, Exactness, Nearest, Note, Outcome, Parameters, Result, Session,
-    Suggestion, Ticket,
+    Suggestion, Ticket, VaultAct,
 };
 pub use tessari_storage::{
     BUILD_VERSION, Change, ChangeKind, Changes, LeadershipDefinition, Lease, LogId, Reach,
@@ -299,6 +299,14 @@ impl Db {
     /// nothing, when a folder was already set.
     pub fn back_up_into(&self, folder: Arc<Path>) -> bool {
         self.backups.set(folder).is_ok()
+    }
+
+    /// How long every later unseal of this store lasts (ADR-0092 D4).
+    ///
+    /// Ten minutes unless set. A key already held keeps the deadline it was
+    /// given when it arrived.
+    pub fn unseal_for(&self, period: core::time::Duration) {
+        self.store.vault().last_for(period);
     }
 
     /// Take or renew the lease this node writes under.

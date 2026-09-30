@@ -136,3 +136,102 @@ fn serve_until_the_test_ends(node: &Node) {
         .unwrap();
     drop(runtime.block_on(node.serve(tokio_util::sync::CancellationToken::new())));
 }
+
+// The vault frame (ADR-0092 D2): unseal, seal and ask with the passphrase as a
+// field of its own, never script text, and never in what comes back.
+
+fn state(answer: &tessari_wire::Answer) -> String {
+    let rendered = format!("{answer:?}");
+    for state in ["uninitialised", "unsealed", "sealed"] {
+        if rendered.contains(&format!("\"{state}\"")) {
+            return state.to_owned();
+        }
+    }
+    panic!("no state in the answer: {rendered}");
+}
+
+#[test]
+fn the_vault_frame_unseals_seals_and_reports() {
+    use tessari_wire::VaultCall;
+    let (_node, address) = serving(Db::in_memory().unwrap());
+    let mut client = Client::connect(&address).unwrap();
+
+    assert_eq!(
+        state(&client.vault(&VaultCall::Status, None).unwrap()),
+        "uninitialised"
+    );
+
+    let unsealed = client
+        .vault(&VaultCall::Unseal(PASSPHRASE.to_owned()), None)
+        .unwrap();
+    assert_eq!(state(&unsealed), "unsealed");
+    assert!(format!("{unsealed:?}").contains("initialised"));
+    assert!(
+        !format!("{unsealed:?}").contains(PASSPHRASE),
+        "the passphrase came back"
+    );
+
+    assert_eq!(
+        state(&client.vault(&VaultCall::Seal, None).unwrap()),
+        "sealed"
+    );
+
+    let refused = client
+        .vault(&VaultCall::Unseal("not the passphrase".to_owned()), None)
+        .expect_err("a wrong passphrase unsealed");
+    assert!(
+        !format!("{refused} {refused:?}").contains("not the passphrase"),
+        "the guess came back: {refused:?}"
+    );
+
+    // The connection is still a conversation afterwards: a refused vault act
+    // does not end it, exactly as a refused statement does not.
+    assert_eq!(
+        state(&client.vault(&VaultCall::Status, None).unwrap()),
+        "sealed"
+    );
+    client.run("INFO FOR SEAL;", None).unwrap();
+}
+
+#[test]
+fn a_vault_call_never_prints_its_passphrase() {
+    let call = tessari_wire::VaultCall::Unseal(PASSPHRASE.to_owned());
+    assert!(!format!("{call:?}").contains(PASSPHRASE), "{call:?}");
+}
+
+#[test]
+fn the_vault_frame_changes_the_passphrase() {
+    use tessari_wire::VaultCall;
+    let (_node, address) = serving(Db::in_memory().unwrap());
+    let mut client = Client::connect(&address).unwrap();
+    client
+        .vault(&VaultCall::Unseal(PASSPHRASE.to_owned()), None)
+        .unwrap();
+    let changed = client
+        .vault(
+            &VaultCall::Change {
+                current: PASSPHRASE.to_owned(),
+                new: "the next one 9c02".to_owned(),
+            },
+            None,
+        )
+        .unwrap();
+    assert!(
+        !format!("{changed:?}").contains("the next one"),
+        "{changed:?}"
+    );
+    client.vault(&VaultCall::Seal, None).unwrap();
+    assert!(
+        client
+            .vault(&VaultCall::Unseal(PASSPHRASE.to_owned()), None)
+            .is_err()
+    );
+    assert_eq!(
+        state(
+            &client
+                .vault(&VaultCall::Unseal("the next one 9c02".to_owned()), None)
+                .unwrap()
+        ),
+        "unsealed"
+    );
+}

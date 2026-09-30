@@ -9,6 +9,9 @@ use crate::session::Ended;
 use crate::{bootstrap, consumers, runtime, shutdown, supervise};
 use tessaridb::Db;
 
+/// How long an unseal lasts, when `--unseal-for` does not say (ADR-0092 D4).
+const UNSEAL_FOR: &str = "TESSARIDB_UNSEAL_FOR";
+
 /// Be the node the other half of this program connects to.
 ///
 /// The same binary rather than a second one: what changes is where the store is,
@@ -134,6 +137,22 @@ pub(crate) fn serve(
     }
     if let Some(folder) = &serving.backups {
         db.back_up_into(std::sync::Arc::from(folder.as_path()));
+    }
+    // The flag, else the variable, else the store's own ten minutes. A variable
+    // that does not read as a period stops the start rather than being ignored:
+    // an operator who set it believes the store closes when they said.
+    let period = match serving.unseal_for {
+        Some(period) => Some(period),
+        None => match std::env::var(UNSEAL_FOR) {
+            Ok(written) if !written.is_empty() => Some(
+                crate::arguments::unseal_period(&written)
+                    .map_err(|why| format!("{UNSEAL_FOR} {why}"))?,
+            ),
+            _ => None,
+        },
+    };
+    if let Some(period) = period {
+        db.unseal_for(period);
     }
     // Both are bound before either serves, so an address that cannot be taken
     // is a failure to start rather than a surface that quietly went missing

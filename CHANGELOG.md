@@ -32,10 +32,27 @@ compares carries no pre-release suffix.
   into a place it did not create is `RestoreRefused` — both before anything is
   written, and a restore refused while it fills takes away what it created. The
   Backup tab restores from the same folder.
+- **A vault you can reach without writing its passphrase into a script**
+  (G048, ADR-0092). `GET /vault`, `POST /vault/unseal` (the body is the
+  passphrase), `POST /vault/seal` and `POST /vault/passphrase`, and a wire frame
+  of its own (tag 17, **protocol 1.2**), carry the passphrase as a field and never
+  as statement text; no refusal and no log line quotes it. Wrong passphrases are
+  throttled like wrong passwords (`PassphraseThrottled`).
+- **An unseal lasts ten minutes**, then the store seals itself; `--unseal-for` or
+  `TESSARIDB_UNSEAL_FOR` (`1h`, `90s`) sets the period per node. `INFO FOR SEAL`
+  answers `{ state, seals_at, unseal_for }`, `state` being `uninitialised`,
+  `sealed` or `unsealed`.
+- **`CHANGE VAULT PASSPHRASE FROM '…' TO '…'`** wraps the same master key under a
+  new passphrase — no secret is re-encrypted, the old passphrase stops unsealing,
+  and a backup taken before the change still opens with the old one. A store never
+  unsealed is `NoVaultRoot`.
+- **`INFO FOR VAULT team RECORDS [AFTER team:'x'] [LIMIT n]`** lists a vault's
+  record ids a page at a time (a thousand by default, ten thousand at most), with
+  no value in the answer.
 - The console answers `HEAD /` and every console asset as `GET` without the body,
   with `Cache-Control: no-cache` and a strong `ETag`; a matching `If-None-Match` is
   a `304`, so a browser never runs an old console against an upgraded node.
-- **1449 conformance cases** define the language and run in the build.
+- **1454 conformance cases** define the language and run in the build.
 
 ## 0.16.0-beta — 2026-09-30
 

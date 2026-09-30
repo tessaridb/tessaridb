@@ -377,6 +377,41 @@ fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
             Ok(body) => respond::change_password(db, &presented, body.trim_end_matches('\n')),
             Err(refused) => refused,
         },
+        // The vault's own surface. The passphrase is the body and nothing else,
+        // so it is never script text; the body is trimmed of one trailing line
+        // end exactly as `/password`'s is, so `curl -d @file` works.
+        (Method::GET, "/vault") => {
+            respond::vault::answer(db, tessaridb::VaultAct::Status, tokens, &presented)
+        }
+        (Method::POST, "/vault/seal") => {
+            respond::vault::answer(db, tessaridb::VaultAct::Seal, tokens, &presented)
+        }
+        (Method::POST, "/vault/passphrase") => match body::text(&mut request) {
+            Ok(body) => match request::passphrases(&body) {
+                Ok((current, new)) => respond::vault::answer(
+                    db,
+                    tessaridb::VaultAct::Change {
+                        current: &current,
+                        new: &new,
+                    },
+                    tokens,
+                    &presented,
+                ),
+                Err(shape) => Answer::bad_request(shape),
+            },
+            Err(refused) => refused,
+        },
+        (Method::POST, "/vault/unseal") => match body::text(&mut request) {
+            Ok(body) => respond::vault::answer(
+                db,
+                tessaridb::VaultAct::Unseal {
+                    passphrase: body.trim_end_matches('\n'),
+                },
+                tokens,
+                &presented,
+            ),
+            Err(refused) => refused,
+        },
         (Method::POST, "/script") => {
             // The body's shape is decided by what the caller says it is, not by
             // sniffing a leading brace: HTTP has a field for this, and a rule
@@ -422,7 +457,7 @@ fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
         (
             _,
             "/script" | "/session" | "/password" | "/health" | "/ready" | "/metrics" | "/watch"
-            | "/wire",
+            | "/wire" | "/vault" | "/vault/seal" | "/vault/unseal" | "/vault/passphrase",
         ) => Answer::new(
             405,
             r#"{"error":"that route takes another method"}"#.to_owned(),

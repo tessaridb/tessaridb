@@ -1480,6 +1480,21 @@ pub enum StatementKind {
         /// quoting what stands there.
         span: Span,
     },
+    /// `CHANGE VAULT PASSPHRASE FROM '…' TO '…'` — a rekey (ADR-0092 D3).
+    ///
+    /// Both passphrases are string literals for [`StatementKind::UnsealVault`]'s
+    /// reason. The master key stays what it was and is wrapped again under the
+    /// new passphrase, so no secret is re-encrypted; a backup taken before the
+    /// change still opens with the old one, because the root travels in the log.
+    ChangeVaultPassphrase {
+        /// The passphrase that opens the store now.
+        current: String,
+        /// The passphrase that will open it afterwards.
+        new: String,
+        /// Where the statement sits, so a refusal can point at it without
+        /// quoting what stands there.
+        span: Span,
+    },
     /// `SEAL VAULT` — and the master key leaves it.
     ///
     /// Takes no passphrase, because sealing is not an act that needs proving:

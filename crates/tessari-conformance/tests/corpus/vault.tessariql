@@ -298,3 +298,27 @@ DEFINE TABLE rotation_notes SCHEMALESS;
 CREATE rotation_notes:1 = { body: 'first' };
 UPDATE rotation_notes:1 SET body = 'second';
 --- expect: ok
+
+# The vault's own surface (ADR-0092): whether this process can open secrets
+# and until when, a passphrase that can change, and a vault's ids listed a page
+# at a time with no value among them.
+
+--- case: the seal is reported, with the moment it ends
+INFO FOR SEAL;
+--- expect: ok
+
+--- case: a passphrase change proves the current passphrase first
+CHANGE VAULT PASSPHRASE FROM 'not the passphrase' TO 'the next passphrase';
+--- expect: error Vault
+
+--- case: and then wraps the same master key under the new one
+CHANGE VAULT PASSPHRASE FROM 'an operator passphrase' TO 'the next passphrase';
+--- expect: ok
+
+--- case: a vault lists its record ids a page at a time
+INFO FOR VAULT rotations RECORDS LIMIT 1;
+--- expect: ok
+
+--- case: and a page above the ceiling is refused at the statement
+INFO FOR VAULT rotations RECORDS LIMIT 10001;
+--- expect: error UnexpectedToken

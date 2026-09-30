@@ -199,8 +199,17 @@ impl<'a> Session<'a> {
     /// this map has no value for, and nothing is written when it does. Otherwise
     /// as [`Session::run`].
     pub fn run_with(&mut self, source: &str, parameters: &Parameters) -> Result<Vec<Outcome>> {
+        let script = parse(source)?.bind(parameters)?;
+        self.run_script(script)
+    }
+
+    /// Run a script that is already parsed and bound, exactly as
+    /// [`Session::run_with`] runs one it read.
+    ///
+    /// Shared with the vault surface, whose statements are built rather than
+    /// read so that a passphrase is never text (ADR-0092 D2).
+    pub(crate) fn run_script(&mut self, mut script: tessari_ql::Script) -> Result<Vec<Outcome>> {
         let store = self.store;
-        let mut script = parse(source)?.bind(parameters)?;
 
         // Where a statement may run, asked once for the whole script and before
         // any of it runs — a script that writes must not have its first half

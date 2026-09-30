@@ -1536,6 +1536,23 @@ pub enum Error {
     #[error("this node is not taking a sign-in for that user right now")]
     SignInThrottled,
 
+    /// A passphrase was presented while guesses at it are being made to wait
+    /// (ADR-0092 D2).
+    ///
+    /// Its own refusal rather than [`Error::SignInThrottled`], whose words name
+    /// a user: what is being guessed here is the store's passphrase, and the
+    /// caller is told to wait without being told whether this try was right.
+    #[error("this node is not taking a vault passphrase right now")]
+    PassphraseThrottled,
+
+    /// A passphrase change on a store that has never been unsealed.
+    ///
+    /// There is no root to re-wrap. Creating one is what the first
+    /// `UNSEAL VAULT` does, and it says so; a change that quietly initialised
+    /// instead would make its `FROM` passphrase mean nothing.
+    #[error("this store has no vault passphrase yet: the first `UNSEAL VAULT` sets one")]
+    NoVaultRoot,
+
     /// A score was asked for where there is no collection to measure against.
     ///
     /// Not answered with zero, and not answered against whatever records

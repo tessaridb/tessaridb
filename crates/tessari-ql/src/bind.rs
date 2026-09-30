@@ -369,6 +369,7 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // would arrive through the same binding map every other value does, and
         // would be as loggable as any of them.
         | StatementKind::UnsealVault { .. }
+        | StatementKind::ChangeVaultPassphrase { .. }
         | StatementKind::SealVault { .. }
         | StatementKind::DefineGraph { .. }
         | StatementKind::DropGraph { .. }

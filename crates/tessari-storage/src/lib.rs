@@ -112,4 +112,4 @@ pub use tessari_encoding::{BUILD_VERSION, LogId, NODE_ID_LEN, Roles, Writer};
 pub use transaction::{
     Expansion, Nearby, Neighbour, RecordAddress, Region, StoredRecord, Transaction, Window,
 };
-pub use vault::OpenVault;
+pub use vault::{OpenVault, SealState};

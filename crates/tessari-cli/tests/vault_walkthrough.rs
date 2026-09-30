@@ -291,3 +291,118 @@ fn walk(directory: &Path, into: &mut Vec<u8>) {
         }
     }
 }
+
+// The dedicated surfaces on a real node (ADR-0092 D2, D4): the passphrase is in
+// no line the node writes, whatever the log level, and the period the flag sets
+// is the one the node keeps.
+
+const SURFACE_WIRE: &str = "127.0.0.1:47908";
+const SURFACE_HTTP: &str = "127.0.0.1:47909";
+
+fn listening(address: &str) -> bool {
+    let began = std::time::Instant::now();
+    while began.elapsed() < std::time::Duration::from_secs(30) {
+        if std::net::TcpStream::connect(address).is_ok() {
+            return true;
+        }
+        std::thread::yield_now();
+    }
+    false
+}
+
+/// A node that is killed when the test ends, however it ends. Without it a
+/// failed assertion leaves the node holding its ports, and the next run talks
+/// to the old process and fails for a reason that has nothing to do with it.
+struct Killed(std::process::Child);
+
+impl Drop for Killed {
+    fn drop(&mut self) {
+        drop(self.0.kill());
+        drop(self.0.wait());
+    }
+}
+
+fn post(address: &str, path: &str, body: &str) -> String {
+    use std::io::Read;
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    write!(
+        stream,
+        "POST {path} HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut said = String::new();
+    stream.read_to_string(&mut said).unwrap();
+    said
+}
+
+#[test]
+fn the_passphrase_reaches_no_log_line_and_the_period_is_the_one_asked_for() {
+    let path = store("surface");
+    let log = std::env::temp_dir().join("tessaridb-vault-surface.log");
+    let node = Command::new(binary())
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap())
+        .env("TESSARIDB_LOG", "trace")
+        .args([
+            path.display().to_string().as_str(),
+            "--serve",
+            SURFACE_WIRE,
+            "--http",
+            SURFACE_HTTP,
+            "--unseal-for",
+            "1ns",
+        ])
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(&log).unwrap())
+        .spawn()
+        .unwrap();
+    let node = Killed(node);
+    assert!(
+        listening(SURFACE_HTTP) && listening(SURFACE_WIRE),
+        "the node never listened"
+    );
+
+    // A period of one nanosecond is over before the answer is written, so the
+    // store reports itself sealed the moment it was unsealed — which is the
+    // flag, applied, observed from outside the process.
+    let first = post(SURFACE_HTTP, "/vault/unseal", PASSPHRASE);
+    assert!(first.contains(r#""initialised":true"#), "{first}");
+    assert!(
+        first.contains(r#""state":"sealed""#),
+        "the period was not applied: {first}"
+    );
+    assert!(first.contains(r#""unseal_for":"1ns""#), "{first}");
+
+    let guess = "a guess that is not it 5d20";
+    let refused = post(SURFACE_HTTP, "/vault/unseal", guess);
+    assert!(!refused.contains(guess), "{refused}");
+
+    let mut client = tessari_wire::Client::connect(SURFACE_WIRE).unwrap();
+    client
+        .vault(
+            &tessari_wire::VaultCall::Unseal(PASSPHRASE.to_owned()),
+            None,
+        )
+        .unwrap();
+    drop(client.vault(&tessari_wire::VaultCall::Unseal(guess.to_owned()), None));
+
+    drop(node);
+    let written = std::fs::read_to_string(&log).unwrap();
+    // The control: the log was captured at a level that records these acts, so
+    // the absences below are about the passphrase and not about an empty file.
+    assert!(
+        written.contains("unseal refused: wrong passphrase"),
+        "the log holds no record of the refusal, so the scan proves nothing:\n{written}"
+    );
+    assert!(
+        !written.contains(PASSPHRASE),
+        "the passphrase is in the node's log"
+    );
+    assert!(
+        !written.contains(guess),
+        "a guessed passphrase is in the node's log"
+    );
+    drop(std::fs::remove_dir_all(&path));
+    drop(std::fs::remove_file(&log));
+}

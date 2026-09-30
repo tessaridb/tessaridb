@@ -699,6 +699,17 @@ pub const MAX_SIGN_IN_VERIFICATIONS: usize = 24;
 /// revoked.
 pub const SESSION_TOKEN_SECONDS: u64 = 12 * 60 * 60;
 
+/// How long an unseal lasts before the store seals itself again (ADR-0092 D4).
+///
+/// Unit: seconds. Overridden per node by `--unseal-for` / `TESSARIDB_UNSEAL_FOR`.
+///
+/// Ten minutes, the owner's figure: long enough to unseal, do the work that
+/// needed it and leave, short enough that a store nobody remembered to seal is
+/// not left open for the rest of the process's life. Measured from the unseal
+/// and never renewed by use — a busy node that renewed on every read would never
+/// seal, which is the opposite of what the period is for.
+pub const UNSEAL_SECONDS: u64 = 10 * 60;
+
 /// How many session tokens one node will hold at once.
 ///
 /// Unit: tokens.

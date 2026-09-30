@@ -81,6 +81,7 @@ forms! {
     RemoveRecipient => "REMOVE RECIPIENT",
     UnsealVault => "UNSEAL VAULT",
     SealVault => "SEAL VAULT",
+    ChangeVaultPassphrase => "CHANGE VAULT PASSPHRASE",
     DefineGraph => "DEFINE GRAPH",
     DropGraph => "DROP GRAPH",
     DefineEdge => "DEFINE EDGE",
@@ -252,6 +253,7 @@ mod tests {
              REVEAL a FROM v:1;\
              ADD RECIPIENT 'r' TO v:1 KEY 0x00;\
              REMOVE RECIPIENT 'r' FROM v:1;\
+             CHANGE VAULT PASSPHRASE FROM 'x' TO 'y';\
              SEAL VAULT;\
              DROP VAULT v;\
              DEFINE GRAPH gr;\

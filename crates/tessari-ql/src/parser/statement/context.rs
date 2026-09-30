@@ -6,6 +6,10 @@ use crate::ast::{Expr, ExprKind, InfoSubject, Name, StatementKind};
 use crate::error::Result;
 use crate::token::{Keyword, Punct, Token};
 
+/// The most ids one `INFO FOR VAULT … RECORDS` page may ask for — a bound, so
+/// the answer is never a vault materialised whole (ADR-0092 D5).
+const VAULT_PAGE_CEILING: u64 = 10_000;
+
 impl Parser<'_> {
     /// `INFO FOR STORE` / `NAMESPACE` / `DATABASE` / `TABLE users` / `USER ada`
     ///
@@ -92,7 +96,23 @@ impl Parser<'_> {
             }
             _ if self.eat_word("vector") => InfoSubject::Vector(self.name()?),
             _ if self.eat_word("geo") => InfoSubject::Geo(self.name()?),
-            _ if self.eat_word("vault") => InfoSubject::Vault(self.name()?),
+            _ if self.eat_word("vault") => {
+                let table = self.table_ref()?;
+                if self.eat_word("records") {
+                    let after = self.after_anchor()?;
+                    let limit = self.bound("limit")?;
+                    if limit.is_some_and(|limit| limit > VAULT_PAGE_CEILING) {
+                        return Err(self.error_here("a page of at most 10000 ids"));
+                    }
+                    InfoSubject::VaultRecords {
+                        table,
+                        after,
+                        limit,
+                    }
+                } else {
+                    InfoSubject::Vault(table.name)
+                }
+            }
             _ if self.eat_word("topic") => {
                 if self.topic_consumer_follows(false) {
                     self.eat_word("consumer");
@@ -114,6 +134,7 @@ impl Parser<'_> {
                 InfoSubject::History(self.record_target()?)
             }
             _ if self.eat_word("audit") => InfoSubject::Audit(self.audited_actor()?),
+            _ if self.eat_word("seal") => InfoSubject::Seal,
             _ => {
                 // Every subject the arms above accept, and in their order, so
                 // that adding an arm and forgetting this line is a visible
@@ -123,7 +144,7 @@ impl Parser<'_> {
                 // list wrong is worse than one that lists none, because a caller
                 // reads it as the whole truth and stops looking.
                 return Err(self.error_here(
-                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `GRAPH`, `BUCKET`, `USER`, `USERS`, `ACCESS`, `NODE`, `KAFKA CONSUMER`, `KAFKA CONSUMERS`, `VECTOR`, `GEO`, `VAULT`, `TOPIC`, `RECIPIENTS OF`, `VERSIONS OF`, `HISTORY OF` or `AUDIT`",
+                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `GRAPH`, `BUCKET`, `USER`, `USERS`, `ACCESS`, `NODE`, `KAFKA CONSUMER`, `KAFKA CONSUMERS`, `VECTOR`, `GEO`, `VAULT`, `TOPIC`, `RECIPIENTS OF`, `VERSIONS OF`, `HISTORY OF`, `AUDIT` or `SEAL`",
                 ));
             }
         };

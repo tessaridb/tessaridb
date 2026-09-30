@@ -252,7 +252,9 @@ impl Needs {
             // it unwraps is store-wide, and it is `Operate` rather than `Manage`
             // for the same reason `DEFINE NODE` is: it changes what this process
             // can do, not what the store contains.
-            StatementKind::SealVault { .. } | StatementKind::UnsealVault { .. } => {
+            StatementKind::SealVault { .. }
+            | StatementKind::UnsealVault { .. }
+            | StatementKind::ChangeVaultPassphrase { .. } => {
                 Self::OPERATE_STORE
             }
             StatementKind::Use { .. }
@@ -393,6 +395,13 @@ impl Needs {
             StatementKind::Info {
                 subject: InfoSubject::Audit(_),
             } => Self::GOVERN_STORE,
+            // Whether secrets can be opened right now, and until when. Named
+            // rather than left to the catch-all, which demands a read: this
+            // names no table, so any signed-in caller may ask (ADR-0092 D1),
+            // and an anonymous one on a closed store is refused before here.
+            StatementKind::Info {
+                subject: InfoSubject::Seal,
+            } => Self::NOTHING,
             // The other four are reads of the catalog, and what they report is
             // narrowed to what the caller could have found out anyway.
             StatementKind::Info { .. } => Self::READ,

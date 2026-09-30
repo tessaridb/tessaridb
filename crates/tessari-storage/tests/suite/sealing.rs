@@ -517,3 +517,58 @@ fn a_vault_key_from_another_tenancy_does_not_open_this_vault() {
          this one: {across_namespaces:?}"
     );
 }
+
+// An unseal lasts a period and then the store is sealed again (ADR-0092 D4).
+//
+// A period of zero is the seam that lets these run without waiting: the key is
+// past its deadline the moment it arrives, so the next use must answer as a
+// sealed store would. The long period is the control — without it, a keyring
+// that refused everything would pass the first test.
+
+fn unsealed_for(period: std::time::Duration) -> Store {
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    store.vault().last_for(period);
+    let (_, master) = Root::create(PASSPHRASE).unwrap();
+    store.vault().adopt(master).unwrap();
+    store
+}
+
+#[test]
+fn a_key_past_its_period_opens_nothing() {
+    let store = unsealed_for(std::time::Duration::ZERO);
+
+    let opened = store.vault().with_master(|_| Ok(()));
+    assert!(
+        matches!(opened, Err(Error::Vault(tessari_vault::Error::Sealed))),
+        "a key past its period still opened: {opened:?}"
+    );
+    assert!(store.vault().is_sealed());
+}
+
+#[test]
+fn a_key_within_its_period_opens_and_says_when_it_stops() {
+    let period = std::time::Duration::from_secs(600);
+    let before = std::time::SystemTime::now();
+    let store = unsealed_for(period);
+
+    store.vault().with_master(|_| Ok(())).unwrap();
+    let tessari_storage::SealState::Unsealed { seals_at } = store.vault().state() else {
+        panic!("an unsealed store reported itself sealed");
+    };
+    let after = std::time::SystemTime::now();
+    assert!(seals_at >= before + period && seals_at <= after + period);
+}
+
+#[test]
+fn the_housekeeping_drop_takes_the_key_only_once_it_is_due() {
+    let due = unsealed_for(std::time::Duration::ZERO);
+    assert!(due.vault().seal_if_due().unwrap(), "a due key was kept");
+    assert_eq!(due.vault().state(), tessari_storage::SealState::Sealed);
+
+    let open = unsealed_for(std::time::Duration::from_secs(600));
+    assert!(
+        !open.vault().seal_if_due().unwrap(),
+        "a key was dropped early"
+    );
+    assert!(!open.vault().is_sealed());
+}

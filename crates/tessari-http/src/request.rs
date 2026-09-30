@@ -86,6 +86,48 @@ pub(crate) fn envelope(body: &str) -> Result<Envelope, String> {
     })
 }
 
+/// The body of `POST /vault/passphrase`: `{"current": "…", "new": "…"}`.
+///
+/// Refused with one fixed sentence whatever was wrong: the reader's own
+/// messages quote the character they stopped at, and here every character is
+/// part of a passphrase (ADR-0092 D2).
+///
+/// # Errors
+///
+/// The fixed sentence, for any body that is not exactly that object.
+pub(crate) fn passphrases(body: &str) -> Result<(String, String), &'static str> {
+    const SHAPE: &str = r#"present {"current": "…", "new": "…"}, both strings"#;
+    let mut at = Reader::new(body);
+    let mut current = None;
+    let mut new = None;
+    at.space();
+    at.expect('{').map_err(|_| SHAPE)?;
+    loop {
+        at.space();
+        let key = at.string().map_err(|_| SHAPE)?;
+        at.space();
+        at.expect(':').map_err(|_| SHAPE)?;
+        at.space();
+        let value = at.string().map_err(|_| SHAPE)?;
+        match key.as_str() {
+            "current" if current.is_none() => current = Some(value),
+            "new" if new.is_none() => new = Some(value),
+            _ => return Err(SHAPE),
+        }
+        at.space();
+        if at.eat(',') {
+            continue;
+        }
+        at.expect('}').map_err(|_| SHAPE)?;
+        break;
+    }
+    at.space();
+    match (current, new) {
+        (Some(current), Some(new)) if at.done() => Ok((current, new)),
+        _ => Err(SHAPE),
+    }
+}
+
 /// A position in the text, and the few things this envelope can hold.
 pub(crate) struct Reader {
     held: Vec<char>,

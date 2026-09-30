@@ -267,6 +267,7 @@ impl Parser<'_> {
             _ if self.eat_word("add") => self.add_recipient_statement(start)?,
             _ if self.eat_word("remove") => self.remove_recipient_statement(start)?,
             _ if self.eat_word("unseal") => self.unseal_statement(start)?,
+            _ if self.eat_word("change") => self.change_passphrase_statement(start)?,
             _ if self.eat_word("restore") => self.restore_statement()?,
             _ if self.eat_word("seal") => {
                 self.expect_vault_word("`VAULT`")?;

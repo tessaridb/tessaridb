@@ -45,12 +45,13 @@ impl Incoming {
 /// still answered as health rather than refused as too large.
 pub(crate) fn takes_body(method: &Method, url: &str) -> bool {
     match (method, url) {
-        (&Method::POST, "/script" | "/password") => true,
+        (&Method::POST, "/script" | "/password" | "/vault/unseal" | "/vault/passphrase") => true,
         (&Method::POST, url) if url.starts_with("/series/") => true,
         (&Method::PUT | &Method::POST, url) if url.starts_with("/kv/") => true,
         (
             _,
-            "/script" | "/session" | "/password" | "/health" | "/ready" | "/metrics" | "/watch",
+            "/script" | "/session" | "/password" | "/health" | "/ready" | "/metrics" | "/watch"
+            | "/vault" | "/vault/seal" | "/vault/unseal" | "/vault/passphrase",
         ) => false,
         (&Method::GET, url) if url == "/backup" || url.starts_with("/backup?") => false,
         (method, url) => {

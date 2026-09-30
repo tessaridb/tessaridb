@@ -1196,8 +1196,47 @@ by the very statement that read it.
 
 On a store that has never held a vault there is no root record, and the first
 `UNSEAL` creates one. It answers `initialised` rather than `unsealed` when it
-does, and the difference matters: there is no statement that replaces a root once
-written, so a mistyped passphrase on the first unseal is the passphrase.
+does, and the difference matters: a mistyped passphrase on the first unseal is
+the passphrase until somebody who knows it changes it.
+
+**An unseal lasts ten minutes**, and then the store seals itself. The period is
+measured from the unseal and is not renewed by use, so a busy node still closes.
+A node started with `--unseal-for 1h`, or with `TESSARIDB_UNSEAL_FOR=1h` in its
+environment, keeps its unseals for an hour instead; the flag wins over the
+variable, and a period of zero is refused at start. To extend an open window,
+seal and unseal again — unsealing a store that is already unsealed is refused.
+
+Wrong passphrases are throttled like wrong passwords: after three in a row a
+further attempt is made to wait, whether or not it is right, and is refused as
+`PassphraseThrottled`.
+
+```
+INFO FOR SEAL;
+```
+
+Answers whether this process can open secrets and until when:
+`{ state, seals_at, unseal_for }`, where `state` is `uninitialised` (no root yet),
+`sealed` or `unsealed`, and `seals_at` is the instant an unsealed store closes.
+It is this process's answer — on a cluster each node answers for itself — and any
+signed-in user may ask.
+
+```
+CHANGE VAULT PASSPHRASE FROM 'the operator passphrase' TO 'a new one';
+```
+
+Wraps the same master key under a new passphrase. No secret is re-encrypted and
+the store stays sealed or unsealed as it was; afterwards the old passphrase
+unseals nothing. Both are quoted strings for the reason `UNSEAL`'s is, the
+current one is checked under the same throttle, and a store that has never been
+unsealed is refused with `NoVaultRoot`. **A backup taken before the change still
+opens with the old passphrase**, because the root record travels in the log like
+the rest of the catalog.
+
+A client need not write any of these as statement text. The HTTP surface has
+`GET /vault`, `POST /vault/unseal` (the body is the passphrase),
+`POST /vault/seal` and `POST /vault/passphrase` (`{"current": …, "new": …}`), and
+the wire protocol has a frame of its own for the same four acts, so the
+passphrase is never part of a script a console keeps or a client logs.
 
 #### Reading a secret
 
@@ -1289,6 +1328,19 @@ INFO FOR VAULT team;
 Each declared field, its type, and whether it is `SECRET`. It carries no length,
 no fingerprint and no key identifier for a sealed field — each would be an oracle
 that answers slowly rather than not at all.
+
+```
+INFO FOR VAULT team RECORDS;
+INFO FOR VAULT team RECORDS AFTER team:'github' LIMIT 100;
+```
+
+The vault's record ids in key order, a page at a time: `{ records, next }`, with
+`next` naming the last id when the page was full and `NONE` when it was the last
+page. A page is a thousand ids unless `LIMIT` says otherwise, and at most ten
+thousand. No value of any record is in it, sealed or not; the ids themselves are
+not secret, because a record's identity is its key and keys are not encrypted —
+which is why a vault record should never be named after what it holds. Reading
+the list needs a grant on the vault, as reading anything in it does.
 
 `INFO FOR TABLE team` answers too, and reports `vault: true` beside the other
 markers. It matters because the declaration it renders back says `DEFINE VAULT`

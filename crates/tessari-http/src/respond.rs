@@ -412,7 +412,9 @@ pub(crate) fn failure(error: &Error) -> Answer {
         // backs off on.
         // A public topic's anonymous allowance is spent: the same back-off, for
         // the same reason, and it is earned back over the topic's window.
-        Error::SignInThrottled | Error::TopicRateExceeded { .. } => 429,
+        Error::SignInThrottled | Error::PassphraseThrottled | Error::TopicRateExceeded { .. } => {
+            429
+        }
         // It knows, and the answer is still no. A different thing entirely, and
         // a client that cannot tell retries a signin that will never help.
         //
@@ -470,6 +472,7 @@ pub(crate) fn failure(error: &Error) -> Answer {
         | Error::StillDepended { .. }
         | Error::BackupExists { .. }
         | Error::RestoreTargetExists { .. }
+        | Error::NoVaultRoot
         | Error::NoBackupFolder => 409,
         // A substrate or decoding failure. Anything reaching here is a bug.
         //
@@ -504,6 +507,7 @@ mod metrics;
 mod scripts;
 pub(crate) mod series;
 mod topics;
+pub(crate) mod vault;
 
 #[cfg(test)]
 mod tests {

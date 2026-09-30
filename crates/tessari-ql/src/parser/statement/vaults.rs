@@ -99,6 +99,36 @@ impl Parser<'_> {
         })
     }
 
+    /// `CHANGE VAULT PASSPHRASE FROM '…' TO '…'`
+    ///
+    /// Two string literals, for the reason `UNSEAL`'s one is a literal, and a
+    /// refusal that names the shape it wanted and never the token it found.
+    pub(super) fn change_passphrase_statement(&mut self, start: Span) -> Result<StatementKind> {
+        self.expect_vault_word("`VAULT PASSPHRASE`")?;
+        if !self.eat_word("passphrase") {
+            return Err(self.error_here("`PASSPHRASE`"));
+        }
+        self.expect_keyword(Keyword::From, "`FROM` and the current passphrase")?;
+        let current = self.passphrase("the current passphrase, quoted")?;
+        self.expect_keyword(Keyword::To, "`TO` and the new passphrase")?;
+        let new = self.passphrase("the new passphrase, quoted")?;
+        Ok(StatementKind::ChangeVaultPassphrase {
+            current,
+            new,
+            span: start.to(self.span_behind()),
+        })
+    }
+
+    /// A quoted passphrase, or a refusal naming the shape and never the token.
+    fn passphrase(&mut self, expected: &'static str) -> Result<String> {
+        let Some(Token::Str(held)) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let held = held.clone();
+        self.advance();
+        Ok(held)
+    }
+
     /// The word `VAULT` after `SEAL` or `UNSEAL`, which is contextual too.
     pub(super) fn expect_vault_word(&mut self, expected: &'static str) -> Result<()> {
         if self.eat_word("vault") {
