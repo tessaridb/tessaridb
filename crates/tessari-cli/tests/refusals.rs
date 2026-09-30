@@ -200,3 +200,68 @@ fn a_scoped_user_cannot_reach_another_tenancy_from_the_command_line() {
         "she was refused for some other reason: {said}"
     );
 }
+
+/// A backup the store refuses leaves its destination exactly as it found it.
+///
+/// Two outcomes a refused backup must not have, and both had one: an empty file
+/// where nothing stood, which `--restore` then reads as a backup, and an earlier
+/// good backup overwritten by nothing. The refusal used here is the incremental
+/// form over a store holding two logs, which is refused before any record is
+/// read — so the file that used to appear came from opening the destination
+/// before asking the store anything.
+#[test]
+fn a_refused_backup_leaves_its_destination_as_it_was() {
+    let path = store("refused-backup");
+    let (ok, said) = run(
+        &path,
+        None,
+        &[
+            "-e",
+            "DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; DEFINE COLLECTION t; CREATE t:1 = { n: 1 };",
+        ],
+        "",
+    );
+    assert!(ok, "the store was not made: {said}");
+    let files = std::env::temp_dir().join("tessaridb-cli-refusals-refused-backup-files");
+    drop(std::fs::remove_dir_all(&files));
+    std::fs::create_dir_all(&files).unwrap();
+
+    let fresh = files.join("fresh.tessarilog");
+    let (ok, said) = run(
+        &path,
+        None,
+        &["--backup", fresh.to_str().unwrap(), "--from", "5"],
+        "",
+    );
+    assert!(!ok, "an incremental backup over two logs was taken: {said}");
+    assert!(
+        !fresh.exists(),
+        "a refused backup left a file where there was none"
+    );
+
+    let kept = files.join("kept.tessarilog");
+    let (ok, said) = run(&path, None, &["--backup", kept.to_str().unwrap()], "");
+    assert!(ok, "the whole-store backup failed: {said}");
+    let before = std::fs::read(&kept).unwrap();
+    let (ok, said) = run(
+        &path,
+        None,
+        &["--backup", kept.to_str().unwrap(), "--from", "5"],
+        "",
+    );
+    assert!(!ok, "an incremental backup over two logs was taken: {said}");
+    assert_eq!(
+        std::fs::read(&kept).unwrap(),
+        before,
+        "a refused backup overwrote the good one standing at its destination"
+    );
+    let partial: Vec<_> = std::fs::read_dir(&files)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(
+        partial.len(),
+        1,
+        "something besides the kept backup is left behind: {partial:?}"
+    );
+}

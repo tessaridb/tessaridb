@@ -1,7 +1,6 @@
 //! The one-shot maintenance modes: backup, restore, verify and the health probe.
 
 use std::fs;
-use std::io::Write;
 
 use crate::session::Ended;
 use tessaridb::Db;
@@ -11,23 +10,20 @@ use tessaridb::Db;
 /// The whole store, because state is a pure function of the log — so this is a
 /// complete backup and not a partial one, and restoring it is a replay.
 pub(crate) fn backup(db: &Db, path: &std::path::Path, from: Option<u64>) -> Result<(), String> {
-    let mut out = std::io::BufWriter::new(
-        fs::File::create(path).map_err(|failure| format!("{}: {failure}", path.display()))?,
-    );
-    // No `FROM` is the whole store, and the whole store is every log it holds.
-    // A `FROM` names one sequence, which counts in one log — so it is the
-    // incremental path, and a store holding several logs refuses it rather than
-    // writing a file that reads as whole and is missing the rest (Q-624).
-    let written = match from {
-        None | Some(0 | 1) => tessari_backup::write(db.store(), &mut out),
-        Some(from) => {
-            let home = tessari_backup::only_log(db.store()).map_err(|why| why.to_string())?;
-            tessari_backup::write_from(db.store(), &mut out, home, tessaridb::Sequence::new(from))
+    let written = aside(path, |out| {
+        // No `FROM` is the whole store, and the whole store is every log it holds.
+        // A `FROM` names one sequence, which counts in one log — so it is the
+        // incremental path, and a store holding several logs refuses it rather than
+        // writing a file that reads as whole and is missing the rest (Q-624).
+        match from {
+            None | Some(0 | 1) => tessari_backup::write(db.store(), out),
+            Some(from) => {
+                let home = tessari_backup::only_log(db.store()).map_err(|why| why.to_string())?;
+                tessari_backup::write_from(db.store(), out, home, tessaridb::Sequence::new(from))
+            }
         }
-    }
-    .map_err(|failure| format!("{}: {failure}", path.display()))?;
-    out.flush()
-        .map_err(|failure| format!("{}: {failure}", path.display()))?;
+        .map_err(|failure| failure.to_string())
+    })?;
     println!("{} record(s) to {}", written.records, path.display());
     for log in &written.logs {
         println!(
@@ -38,6 +34,57 @@ pub(crate) fn backup(db: &Db, path: &std::path::Path, from: Option<u64>) -> Resu
         );
     }
     Ok(())
+}
+
+/// Write a file beside `path` and move it into place only once it is whole.
+///
+/// A backup that fails part-way must leave nothing a restore could mistake for
+/// one: `--restore` reads a cut file as the prefix it holds and says so on the
+/// error stream, and the exit code is still success. Writing in place also
+/// destroyed whatever good backup stood at the destination before the attempt.
+/// So the bytes go to `<path>.partial`, are flushed and synced, and a rename puts
+/// them where they were asked for; any failure removes the partial file instead
+/// (ADR-0091 §8).
+fn aside<T>(
+    path: &std::path::Path,
+    write: impl FnOnce(&mut std::io::BufWriter<fs::File>) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut partial = path.as_os_str().to_owned();
+    partial.push(".partial");
+    let partial = std::path::PathBuf::from(partial);
+    let written = fs::File::create(&partial)
+        .map_err(|failure| failure.to_string())
+        .and_then(|file| {
+            let mut out = std::io::BufWriter::new(file);
+            let written = write(&mut out)?;
+            let file = out
+                .into_inner()
+                .map_err(|failure| failure.error().to_string())?;
+            file.sync_all().map_err(|failure| failure.to_string())?;
+            Ok(written)
+        })
+        .and_then(|written| {
+            fs::rename(&partial, path).map_err(|failure| failure.to_string())?;
+            Ok(written)
+        });
+    match written {
+        Ok(written) => {
+            // The rename is durable only once the directory holding it is.
+            if let Some(parent) = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+            {
+                fs::File::open(parent)
+                    .and_then(|directory| directory.sync_all())
+                    .map_err(|failure| format!("{}: {failure}", parent.display()))?;
+            }
+            Ok(written)
+        }
+        Err(why) => {
+            drop(fs::remove_file(&partial));
+            Err(format!("{}: {why}", path.display()))
+        }
+    }
 }
 
 /// Replay a file into an empty store.
