@@ -770,13 +770,39 @@ const TABLES: &[Table] = &[
         // called with nothing and learns only that a log record landed.
         //
         // Its re-classification trigger: a hook that is handed the batch.
-        expected: 44,
+        //
+        // 45-48 since a backup can be a state snapshot (G047, ADR-0091).
+        // `Store::read_state` reads every record in every tenancy with no
+        // identity, which makes it the widest read on this list. Classified
+        // **not enforced here, and gated one layer up**, on `log_records`'s
+        // ground: its only callers are `backup::write_state`, reached by the
+        // `BACKUP STATE` statement — whose authority is `BACKUP`'s,
+        // store-wide, owner only (`store_wide.rs` carries both) — and by
+        // `--snapshot`, a process that already holds the store. Its
+        // re-classification trigger: a serving surface that calls it without
+        // going through the statement.
+        //
+        // `Store::restore_state_chunk` and `Store::finish_state` write records
+        // and positions with no identity. Classified **exempt, on
+        // `apply_record`'s ground**: their one caller is `backup::read_state`,
+        // reached only by `--restore`, a process holding the store, and it
+        // refuses a store that holds anything. Their re-classification
+        // trigger: any caller reachable from a session or a route.
+        //
+        // `Store::holds_nothing` is **not a data path**: it answers whether
+        // anything was ever written, which the version counter already
+        // publishes in `INFO FOR NODE`.
+        expected: 48,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
         file: "crates/tessari-cli/src/arguments.rs",
         what: "what the command line can be asked to do",
-        expected: 10,
+        // 11 since `--snapshot` (G047, ADR-0091). Classified **exempt on
+        // `--backup`'s ground**: it opens a store this process holds and
+        // writes it to a file; `--at` beside it is refused, as it is beside
+        // `--backup`, so it cannot be pointed at a node.
+        expected: 11,
         count: |text| variants(&block(text, "pub enum Source")),
     },
     Table {
@@ -815,7 +841,14 @@ const TABLES: &[Table] = &[
         // `Reach` derived from `Store::homes`, which is the shape of the store
         // and not a record in it. The whole module is reached only by a process
         // that already holds the store.
-        expected: 7,
+        //
+        // 11 since the state snapshot (G047, ADR-0091): `write_state`,
+        // `verify_state`, `read_state` and `is_state`. Classified **exempt on
+        // the same ground as the rest of this module** — each takes a store
+        // or a file and no identity; `verify_state` and `is_state` touch no
+        // store at all. The surfaces that reach a node go through
+        // `BACKUP STATE`, whose authority is the statement's.
+        expected: 11,
         count: module_functions,
     },
     Table {
@@ -877,7 +910,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // 102 since the key-value routes: `Db::is_space`, exempt, classified above
     // (G046 C3); the `/kv/…` arm itself is enforced and uncounted, named at the
     // HTTP routes table.
-    assert_eq!(total, 102, "the counted tables no longer sum to 102");
+    //
+    // 111 since the state snapshot: four on `Store`, one command-line source
+    // and four in the backup module, each classified above (G047, ADR-0091).
+    assert_eq!(total, 111, "the counted tables no longer sum to 111");
 }
 
 /// Every `.rs` file under a directory.

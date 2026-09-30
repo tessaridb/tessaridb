@@ -113,7 +113,7 @@ pub(crate) fn apply_batch(
     // refuse every first record, because an absent key does not satisfy a value
     // assertion.
     let first_in_this_log = at == Sequence::new(1);
-    let mut batch = if first_in_this_log {
+    let batch = if first_in_this_log {
         WriteBatch::new().expect_absent(AppliedPositionKey::keyspace(), applied_key.clone())
     } else {
         WriteBatch::new().expect_value(
@@ -138,7 +138,34 @@ pub(crate) fn apply_batch(
         LogKey::new(log, at).encode(),
         record.encode(),
     );
+    put_records(batch, version, record)
+}
 
+/// The batch that writes a restored state's records at `version` (ADR-0091).
+///
+/// [`apply_batch`] without the log: a state restore replays no log record and
+/// moves no log's position — the positions it restores are set once, at the end,
+/// from the file. The version counter is asserted and advanced exactly as an
+/// apply advances it, so a restore cannot interleave with a commit unseen.
+pub(crate) fn state_batch(version: Sequence, record: &LogRecord) -> WriteBatch {
+    let version_key = VersionPositionKey.encode();
+    let previous_version = Sequence::new(version.get().saturating_sub(1));
+    let batch = WriteBatch::new()
+        .expect_value(
+            VersionPositionKey::keyspace(),
+            version_key.clone(),
+            previous_version.encode(),
+        )
+        .put(
+            VersionPositionKey::keyspace(),
+            version_key,
+            version.encode(),
+        );
+    put_records(batch, version, record)
+}
+
+/// Every mutation of `record`, written at `version`.
+fn put_records(mut batch: WriteBatch, version: Sequence, record: &LogRecord) -> WriteBatch {
     for mutation in record.mutations() {
         let key = RecordKey::new(
             mutation.namespace,

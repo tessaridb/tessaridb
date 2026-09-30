@@ -66,7 +66,7 @@ use std::process::ExitCode;
 use tessaridb::Db;
 
 use crate::arguments::{Asked, Source, credentials, parse};
-use crate::maintenance::{backup, health, restore, verify};
+use crate::maintenance::{backup, health, restore, snapshot, verify};
 use crate::serving::serve;
 use crate::session::{Ended, Mode};
 
@@ -151,6 +151,7 @@ fn run(asked: Asked) -> Result<Ended, String> {
     // is what "rehearsed" in the readiness checklist means.
     match &asked.source {
         Source::Backup(path) => return backup(&db, path, sequence).map(|()| Ended::Fine),
+        Source::Snapshot(path) => return snapshot(&db, path).map(|()| Ended::Fine),
         Source::Restore(path) => return restore(&db, path, sequence).map(|()| Ended::Fine),
         Source::Health => return health(&db),
         Source::Serve => return serve(db, &asked.serving, asked.cluster.as_ref(), started),
@@ -201,6 +202,7 @@ fn statements(
             session::run(store, &mut input, out, Mode::Script)
         }
         Source::Backup(_)
+        | Source::Snapshot(_)
         | Source::Restore(_)
         | Source::Verify(_)
         | Source::Version

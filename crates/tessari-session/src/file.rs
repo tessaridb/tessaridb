@@ -207,8 +207,20 @@ impl Session<'_> {
     /// `FROM` is what bounds it — an incremental backup carries the records since
     /// a sequence — and a streaming answer is named in `docs/tessariql.md` §8 rather
     /// than left to be discovered by whoever backs up a large store first.
-    pub(crate) fn backup(&self, from: Option<u64>) -> Result<Outcome> {
+    pub(crate) fn backup(
+        &self,
+        from: Option<u64>,
+        form: tessari_ql::BackupForm,
+    ) -> Result<Outcome> {
         let mut held = Vec::new();
+        if form == tessari_ql::BackupForm::State {
+            tessari_backup::write_state(self.store, &mut held).map_err(|error| {
+                Error::BackupFailed {
+                    reason: error.to_string(),
+                }
+            })?;
+            return Ok(Outcome::Value(Value::Bytes(held)));
+        }
         // No `FROM` backs up the store, which is every log it holds. A `FROM`
         // names one sequence, and a sequence counts in one log — so it is the
         // incremental path, and a store holding several refuses it rather than

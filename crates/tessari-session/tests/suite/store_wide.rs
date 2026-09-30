@@ -99,6 +99,7 @@ fn inside<'a>(store: &'a Store, name: &str) -> Session<'a> {
 /// added to the whole matrix rather than to whichever test somebody remembered.
 const STORE_WIDE: &[&str] = &[
     "BACKUP;",
+    "BACKUP STATE;",
     "INFO FOR NODE;",
     "SELECT * FROM $node;",
     "EXPLAIN SELECT * FROM $node;",

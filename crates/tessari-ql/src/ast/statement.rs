@@ -484,6 +484,8 @@ pub enum StatementKind {
     Backup {
         /// The sequence the file starts at; absent means the whole log.
         from: Option<u64>,
+        /// Which of the backup formats is asked for (ADR-0091).
+        form: BackupForm,
     },
     /// `DEFINE ANALYZER simple FILTERS lowercase, ascii`
     DefineAnalyzer {
@@ -1764,4 +1766,13 @@ pub enum StatementKind {
     /// It exists because there was no way to ask *"would this be refused?"*
     /// other than to be refused, and being refused means having sent the write.
     Verify,
+}
+
+/// Which backup a `BACKUP` statement answers with (ADR-0091).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackupForm {
+    /// `BACKUP` — the store's log: every commit, in order.
+    Log,
+    /// `BACKUP STATE` — the store's current state at one version.
+    State,
 }

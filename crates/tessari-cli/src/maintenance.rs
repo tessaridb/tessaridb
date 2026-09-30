@@ -1,6 +1,7 @@
 //! The one-shot maintenance modes: backup, restore, verify and the health probe.
 
 use std::fs;
+use std::io::Read;
 
 use crate::session::Ended;
 use tessaridb::Db;
@@ -22,7 +23,14 @@ pub(crate) fn backup(db: &Db, path: &std::path::Path, from: Option<u64>) -> Resu
                 tessari_backup::write_from(db.store(), out, home, tessaridb::Sequence::new(from))
             }
         }
-        .map_err(|failure| failure.to_string())
+        .map_err(|failure| match failure {
+            // The log cannot be backed up whole once it is pruned, and the
+            // refusal is only useful if it names what can.
+            tessari_backup::Error::Store(tessari_storage::Error::BelowLogStart { .. }) => {
+                format!("{failure}; a pruned store is backed up whole with --snapshot")
+            }
+            other => other.to_string(),
+        })
     })?;
     println!("{} record(s) to {}", written.records, path.display());
     for log in &written.logs {
@@ -32,6 +40,26 @@ pub(crate) fn backup(db: &Db, path: &std::path::Path, from: Option<u64>) -> Resu
             log.from,
             log.tail
         );
+    }
+    Ok(())
+}
+
+/// Write the store's current state to a file (ADR-0091).
+///
+/// Sized by what the store holds rather than by its history, and the one whole
+/// backup a pruned store can still take.
+pub(crate) fn snapshot(db: &Db, path: &std::path::Path) -> Result<(), String> {
+    let taken = aside(path, |out| {
+        tessari_backup::write_state(db.store(), out).map_err(|failure| failure.to_string())
+    })?;
+    println!(
+        "{} record(s) at version {} to {}",
+        taken.records,
+        taken.version,
+        path.display()
+    );
+    for (log, at) in &taken.positions {
+        println!("  {} at {at}", log_name(log.home));
     }
     Ok(())
 }
@@ -87,8 +115,42 @@ fn aside<T>(
     }
 }
 
-/// Replay a file into an empty store.
+/// Whether the file at `path` is a state snapshot rather than a log.
+fn holds_a_state(path: &std::path::Path) -> Result<bool, String> {
+    let mut opening = Vec::with_capacity(tessari_backup::STATE_MAGIC.len());
+    std::io::Read::take(
+        fs::File::open(path).map_err(|failure| format!("{}: {failure}", path.display()))?,
+        u64::try_from(tessari_backup::STATE_MAGIC.len()).unwrap_or(u64::MAX),
+    )
+    .read_to_end(&mut opening)
+    .map_err(|failure| format!("{}: {failure}", path.display()))?;
+    Ok(tessari_backup::is_state(&opening))
+}
+
+/// Replay a file into an empty store, or write a snapshot's state into one.
 pub(crate) fn restore(db: &Db, path: &std::path::Path, upto: Option<u64>) -> Result<(), String> {
+    if holds_a_state(path)? {
+        if upto.is_some() {
+            return Err(format!(
+                "{}: a snapshot is one moment and is restored whole; --upto stops a log replay",
+                path.display()
+            ));
+        }
+        let taken = tessari_backup::read_state(db.store(), || {
+            fs::File::open(path).map(std::io::BufReader::new)
+        })
+        .map_err(|failure| format!("{}: {failure}", path.display()))?;
+        println!(
+            "{} record(s) at version {} from {}",
+            taken.records,
+            taken.version,
+            path.display()
+        );
+        for (log, at) in &taken.positions {
+            println!("  {} at {at}", log_name(log.home));
+        }
+        return Ok(());
+    }
     let mut input = std::io::BufReader::new(
         fs::File::open(path).map_err(|failure| format!("{}: {failure}", path.display()))?,
     );
@@ -137,6 +199,21 @@ pub(crate) fn log_name(home: tessaridb::Reach) -> String {
 
 /// Read a backup and say what it holds, applying none of it.
 pub(crate) fn verify(path: &std::path::Path) -> Result<Ended, String> {
+    if holds_a_state(path)? {
+        let mut input = std::io::BufReader::new(
+            fs::File::open(path).map_err(|failure| format!("{}: {failure}", path.display()))?,
+        );
+        let taken = tessari_backup::verify_state(&mut input)
+            .map_err(|failure| format!("{}: {failure}", path.display()))?;
+        println!(
+            "a snapshot of {} record(s) and {} topic position(s) at version {}, whole",
+            taken.records, taken.topics, taken.version
+        );
+        for (log, at) in &taken.positions {
+            println!("  {} at {at}", log_name(log.home));
+        }
+        return Ok(Ended::Fine);
+    }
     let mut input = std::io::BufReader::new(
         fs::File::open(path).map_err(|failure| format!("{}: {failure}", path.display()))?,
     );

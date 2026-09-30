@@ -34,7 +34,7 @@ pub use select::{
     Admitted, AnsweredBy, Approximation, Fill, FillMode, Fusion, Hop, JoinSide, Ordering,
     Projected, Projection, Select, Source, Staleness, Timeout, Using, Version,
 };
-pub use statement::StatementKind;
+pub use statement::{BackupForm, StatementKind};
 
 /// A parsed script: statements in the order they were written.
 #[derive(Debug, Clone, PartialEq, Eq)]

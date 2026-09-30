@@ -27,7 +27,7 @@ pub mod test_support;
 mod token;
 
 pub use ast::{
-    Admitted, Aggregate, Answer, AnsweredBy, Approximation, ArithmeticOp, Assignment,
+    Admitted, Aggregate, Answer, AnsweredBy, Approximation, ArithmeticOp, Assignment, BackupForm,
     ColumnDeclaration, ConsumerSource, CreateTarget, DeleteBound, Direction, EdgeClause,
     EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, Field, FieldMapping, FieldPath, Fill,
     FillMode, Fusion, GroupClauses, Hop, Identity, InfoSubject, JoinSide, Name, OnFailure,

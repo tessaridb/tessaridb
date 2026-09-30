@@ -265,3 +265,57 @@ fn a_refused_backup_leaves_its_destination_as_it_was() {
         "something besides the kept backup is left behind: {partial:?}"
     );
 }
+
+/// A snapshot the command line cannot finish leaves nothing, and one that is
+/// not whole is refused by `--verify` and by `--restore` with a non-zero exit.
+#[test]
+fn a_snapshot_that_is_not_whole_is_refused_and_leaves_nothing() {
+    let path = store("refused-snapshot");
+    let (ok, said) = run(
+        &path,
+        None,
+        &[
+            "-e",
+            "DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; DEFINE COLLECTION t; CREATE t:1 = { n: 1 };",
+        ],
+        "",
+    );
+    assert!(ok, "the store was not made: {said}");
+    let files = std::env::temp_dir().join("tessaridb-cli-refusals-refused-snapshot-files");
+    drop(std::fs::remove_dir_all(&files));
+    std::fs::create_dir_all(&files).unwrap();
+
+    let nowhere = files.join("missing").join("state.tessarisnap");
+    let (ok, said) = run(&path, None, &["--snapshot", nowhere.to_str().unwrap()], "");
+    assert!(
+        !ok,
+        "a snapshot into a directory that does not exist was taken: {said}"
+    );
+    assert!(
+        !files.join("missing").exists(),
+        "a failed snapshot created something"
+    );
+
+    let whole = files.join("state.tessarisnap");
+    let (ok, said) = run(&path, None, &["--snapshot", whole.to_str().unwrap()], "");
+    assert!(ok, "the snapshot failed: {said}");
+    let bytes = std::fs::read(&whole).unwrap();
+    let cut = files.join("cut.tessarisnap");
+    std::fs::write(&cut, &bytes[..bytes.len() - 3]).unwrap();
+    let (ok, said) = run(&path, None, &["--verify", cut.to_str().unwrap()], "");
+    assert!(
+        !ok && said.contains("not whole"),
+        "a cut snapshot verified: {said}"
+    );
+    let target = store("refused-snapshot-target");
+    let (ok, said) = run(&target, None, &["--restore", cut.to_str().unwrap()], "");
+    assert!(
+        !ok && said.contains("not whole"),
+        "a cut snapshot restored: {said}"
+    );
+    let (ok, said) = run(&target, None, &["--restore", whole.to_str().unwrap()], "");
+    assert!(
+        ok,
+        "a whole snapshot did not restore into the store a cut one was refused by: {said}"
+    );
+}

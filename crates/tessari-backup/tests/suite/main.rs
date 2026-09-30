@@ -15,6 +15,7 @@ mod from_a_running_node;
 mod gap;
 mod produced_identity;
 mod restore;
+mod state;
 mod vault_restore;
 mod vault_shredding;
 mod version;

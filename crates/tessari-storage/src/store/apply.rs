@@ -169,11 +169,25 @@ impl Store {
         // decided elsewhere, the version it writes them at is its own history
         // (Q-614). The two agree today because one flat log admits one writer.
         let version = Sequence::new(self.committed_version()?.get().saturating_add(1));
-        let batch = crate::index::maintain(
-            self,
+        self.derive_and_land(
             record,
             crate::log::apply_batch(log, at, version, record),
-        )?;
+            version,
+        )
+    }
+
+    /// Add everything a record derives to `batch`, and land it at `version`.
+    ///
+    /// The half of an apply that a state restore shares (ADR-0091): the log and
+    /// its position are the caller's, and every derived entry is written by the
+    /// same functions, in the same order, whichever of the two asked.
+    pub(super) fn derive_and_land(
+        &self,
+        record: &LogRecord,
+        batch: tessari_kv::WriteBatch,
+        version: Sequence,
+    ) -> Result<()> {
+        let batch = crate::index::maintain(self, record, batch)?;
         // Derived here as well as in the commit, because that is the whole
         // reason it is derived from the record: a follower that skipped this
         // would carry the edges and no way to walk them, and its walks would
