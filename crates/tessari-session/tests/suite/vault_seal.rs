@@ -428,3 +428,39 @@ fn a_listing_is_asked_of_the_vault_it_names() {
         .expect_err("a page above the ceiling was answered");
     assert!(refused.to_string().contains("10000"), "{refused}");
 }
+
+#[test]
+fn a_record_id_in_a_vault_listing_or_recipient_list_may_be_a_parameter() {
+    let store = store();
+    let mut session = holding_a_secret(&store);
+    session
+        .run(&format!(
+            "CREATE team:'gitlab' = {{ token: '{PLANTED}' }};
+             ADD RECIPIENT 'bob' TO team:'gitlab' KEY 0x0102;"
+        ))
+        .unwrap();
+    let mut parameters = tessari_ql::Parameters::new();
+    parameters.insert("after".to_owned(), Value::from("github"));
+    parameters.insert("id".to_owned(), Value::from("gitlab"));
+
+    let mut page = match session
+        .run_with(
+            "INFO FOR VAULT team RECORDS AFTER team:$after;",
+            &parameters,
+        )
+        .unwrap()
+        .pop()
+    {
+        Some(Outcome::Value(Value::Object(report))) => report,
+        other => panic!("expected a page, got {other:?}"),
+    };
+    assert_eq!(
+        page.remove("records"),
+        Some(Value::Array(vec![Value::from("gitlab")]))
+    );
+
+    let listed = session
+        .run_with("INFO FOR RECIPIENTS OF team:$id;", &parameters)
+        .unwrap();
+    assert!(format!("{listed:?}").contains("bob"), "{listed:?}");
+}
