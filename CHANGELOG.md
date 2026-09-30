@@ -12,6 +12,16 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.17.1-beta — 2026-10-01
+
+- **The console's Vault tab reads and writes records** (G048). A **Records** pane
+  lists a database's vaults, a vault's record ids a page at a time, reveals one
+  record on click (recorded by the store before it answers), writes one field and
+  shows the audit trail. It sends statements over `POST /script` with the record
+  id and the written value as bound parameters, so neither is in the statement
+  log; a revealed value is kept only on the page and removed by Hide.
+- `INFO FOR DATABASE` answers `vaults` beside `tables` and `topics`.
+
 ## 0.17.0-beta — 2026-10-01
 
 - **Backups written on the node, from the console.** `BACKUP [STATE | SCRIPT] TO
