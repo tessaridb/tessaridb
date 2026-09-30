@@ -62,6 +62,10 @@ pub struct Answer {
     /// redirect a client can act on, exactly as a `401` without a challenge is
     /// not a `401` a client can act on.
     pub location: Option<String>,
+    /// The strong tag of an answer that may be kept but must be asked about
+    /// again before it is reused — the console's assets, whose names carry no
+    /// hash of their bytes. Present means `ETag` plus `Cache-Control: no-cache`.
+    pub tag: Option<&'static str>,
 }
 
 /// What an answer says it is.
@@ -81,6 +85,7 @@ impl Answer {
             body: body.into_bytes(),
             kind: JSON,
             location: None,
+            tag: None,
         }
     }
 
@@ -92,6 +97,7 @@ impl Answer {
             body: body.into_bytes(),
             kind,
             location: None,
+            tag: None,
         }
     }
 
@@ -103,6 +109,7 @@ impl Answer {
             body,
             kind: OCTETS,
             location: None,
+            tag: None,
         }
     }
 

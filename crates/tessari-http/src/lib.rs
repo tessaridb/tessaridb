@@ -40,7 +40,11 @@ mod console {
 
     use crate::respond::Answer;
 
-    pub(crate) const fn asset(_method: &Method, _path: &str) -> Option<Answer> {
+    pub(crate) const fn asset(
+        _method: &Method,
+        _path: &str,
+        _if_none_match: Option<&str>,
+    ) -> Option<Answer> {
         None
     }
 }
@@ -439,7 +443,7 @@ fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
             // Last, and deliberately so: the console never shadows a route, it
             // only fills paths nothing else claimed. With the feature off there
             // is nothing to fill them with and this is the ordinary 404.
-            None => console::asset(&method, url)
+            None => console::asset(&method, url, request.header("If-None-Match"))
                 .unwrap_or_else(|| Answer::new(404, r#"{"error":"no such route"}"#.to_owned())),
         },
     };
@@ -484,6 +488,15 @@ fn to_response(reply: Answer) -> Response {
         && let Ok(value) = HeaderValue::from_str(where_to)
     {
         headers.insert(header::LOCATION, value);
+    }
+    // Kept, but asked about every time: the tag is what makes the asking cheap,
+    // and `no-cache` is what stops a browser giving an unhashed asset heuristic
+    // freshness across a node upgrade (RFC 9111 §4.2.2, §5.2.2.4).
+    if let Some(tag) = reply.tag
+        && let Ok(value) = HeaderValue::from_str(tag)
+    {
+        headers.insert(header::ETAG, value);
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     }
     // The answer says what it is; an answer without a content type still beats
     // no answer if a kind ever failed to be a header.

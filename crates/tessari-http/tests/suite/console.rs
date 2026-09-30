@@ -37,13 +37,18 @@ pub(crate) fn node() -> (Arc<Node>, String) {
 
 /// One request, and everything that came back: status, headers, body.
 pub(crate) fn get(address: &str, path: &str) -> (u16, Vec<String>, String) {
+    request(address, "GET", path, "")
+}
+
+/// A request with any method and any extra header lines, each ending `\r\n`.
+fn request(address: &str, method: &str, path: &str, extra: &str) -> (u16, Vec<String>, String) {
     let mut stream = TcpStream::connect(address).unwrap();
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .unwrap();
     write!(
         stream,
-        "GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\n{extra}Connection: close\r\n\r\n"
     )
     .unwrap();
     stream.flush().unwrap();
@@ -1356,6 +1361,66 @@ fn what_is_served_is_the_file_that_was_committed() {
             committed.len()
         );
         assert_eq!(served, committed, "{path} is not what the repository holds");
+    }
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn a_head_is_the_get_without_its_body_and_a_reload_is_revalidated() {
+    // Q-G042-2. A `HEAD` used to fall through to the 404, and every asset went
+    // out with no caching field at all — which lets a browser give the old
+    // script heuristic freshness and run it against a node that was upgraded
+    // underneath it (RFC 9111 §4.2.2). The asset names carry no hash, so the
+    // answer is `no-cache` with a tag: kept, but asked about every time.
+    let (_node, address) = node();
+    for path in ["/", "/console.js", "/console.css", "/favicon.svg"] {
+        let (status, got, body) = get(&address, path);
+        assert_eq!(status, 200, "{path} is not served");
+        assert_eq!(
+            header(&got, "Cache-Control"),
+            Some("no-cache"),
+            "{path} says nothing about how long it may be kept"
+        );
+        let tag = header(&got, "ETag").unwrap_or_else(|| panic!("{path} carries no tag"));
+        assert!(
+            tag.starts_with('"') && tag.ends_with('"'),
+            "{path}: {tag} is not a strong tag"
+        );
+
+        let (status, headed, empty) = request(&address, "HEAD", path, "");
+        assert_eq!(status, 200, "HEAD {path} is not answered as its GET is");
+        assert!(empty.is_empty(), "HEAD {path} carried a body");
+        for field in ["Content-Type", "Content-Length", "Cache-Control", "ETag"] {
+            assert_eq!(
+                header(&headed, field),
+                header(&got, field),
+                "HEAD {path} and GET {path} disagree on {field}"
+            );
+        }
+        assert_eq!(
+            header(&got, "Content-Length").map(str::to_owned),
+            Some(body.len().to_string()),
+            "{path}: the length a HEAD reports is not the body a GET sends"
+        );
+
+        for method in ["GET", "HEAD"] {
+            let (status, same, nothing) =
+                request(&address, method, path, &format!("If-None-Match: {tag}\r\n"));
+            assert_eq!(
+                status, 304,
+                "{method} {path} with its own tag was sent again"
+            );
+            assert!(nothing.is_empty(), "{method} {path}: a 304 carried a body");
+            assert_eq!(
+                header(&same, "ETag"),
+                Some(tag),
+                "{method} {path}: the 304 lost its tag"
+            );
+        }
+        let (status, _, again) =
+            request(&address, "GET", path, "If-None-Match: \"someone-else\"\r\n");
+        assert_eq!(status, 200, "{path} answered 304 to a tag it never gave");
+        assert_eq!(again, body, "{path} changed between two reads");
     }
 }
 

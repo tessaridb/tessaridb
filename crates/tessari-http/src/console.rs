@@ -14,6 +14,8 @@
 //! `POST /script` and `GET /watch`, which is what keeps a console feature from
 //! becoming a capability only the console has.
 
+use std::sync::LazyLock;
+
 use axum::http::Method;
 
 use crate::respond::Answer;
@@ -55,13 +57,38 @@ const ASSETS: &[Asset] = &[
     ),
 ];
 
+/// Each asset's strong tag, in `ASSETS` order: a hash of its bytes, taken once.
+///
+/// The bytes are fixed for the life of the process, so a tag computed per
+/// request would be the same answer paid for again; and the bytes are the
+/// only thing a tag may follow, because a strong tag changes exactly when the
+/// representation does (RFC 9110 §8.8.3) — a build number would change without
+/// the page changing, and stay put on a dev build whose page did.
+static TAGS: LazyLock<Vec<String>> = LazyLock::new(|| {
+    ASSETS
+        .iter()
+        .map(|(_, _, body)| {
+            // FNV-1a, 64 bits: stable across builds and toolchains, which the
+            // standard library's hasher does not promise.
+            let hash = body.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+                (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+            });
+            format!("\"{hash:016x}\"")
+        })
+        .collect()
+});
+
 /// The console asset served at `path`, if the console serves one there.
 ///
 /// Reading is the only thing this answers: a page is fetched, never posted to,
-/// and a method that is not `GET` falls through to the same "no such route" a
-/// misspelt path gets.
-pub(crate) fn asset(method: &Method, path: &str) -> Option<Answer> {
-    if *method != Method::GET {
+/// and a method that is neither `GET` nor `HEAD` falls through to the same "no
+/// such route" a misspelt path gets. A `HEAD` is answered as its `GET` is and
+/// the body is dropped on the way out, so the two cannot disagree on a header.
+///
+/// A caller holding the current bytes — its `If-None-Match` names this tag — is
+/// told `304` with no body, which is what makes `no-cache` cheap to live with.
+pub(crate) fn asset(method: &Method, path: &str, if_none_match: Option<&str>) -> Option<Answer> {
+    if *method != Method::GET && *method != Method::HEAD {
         return None;
     }
     // Split on `?` for the same reason `/backup` does: a query string is not
@@ -69,9 +96,23 @@ pub(crate) fn asset(method: &Method, path: &str) -> Option<Answer> {
     // a tracking parameter — or because a browser was asked to reload past its
     // cache — is a console that looks broken for a reason nobody can see.
     let path = path.split_once('?').map_or(path, |(before, _)| before);
-    ASSETS.iter().find_map(|(at, kind, body)| {
-        (*at == path).then(|| Answer::text(200, (*body).to_owned(), kind))
-    })
+    let at = ASSETS.iter().position(|(at, _, _)| *at == path)?;
+    let (_, kind, body) = ASSETS.get(at)?;
+    let tag = TAGS.get(at)?.as_str();
+    // Weak comparison, as RFC 9110 §13.1.2 asks of `If-None-Match`: a `W/` a
+    // proxy put in front of the tag does not make it a different tag.
+    let held = if_none_match.is_some_and(|listed| {
+        listed.split(',').map(str::trim).any(|candidate| {
+            candidate == "*" || candidate.strip_prefix("W/").unwrap_or(candidate) == tag
+        })
+    });
+    let mut answer = if held {
+        Answer::text(304, String::new(), kind)
+    } else {
+        Answer::text(200, (*body).to_owned(), kind)
+    };
+    answer.tag = Some(tag);
+    Some(answer)
 }
 
 #[cfg(test)]
