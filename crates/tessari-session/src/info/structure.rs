@@ -102,6 +102,7 @@ impl Session<'_> {
         let readable = self.readable_in(transaction)?;
         let mut names = Vec::new();
         let mut topics = Vec::new();
+        let mut vaults = Vec::new();
         for table in Catalog::new(transaction).tables_in(context.namespace, context.database)? {
             // A bucket's chunks live in a companion table whose name carries a
             // byte no identifier can hold, so no statement can name it and
@@ -123,11 +124,17 @@ impl Session<'_> {
             if matches!(table.kind, TableKind::Topic(_)) {
                 topics.push(table.name.clone());
             }
+            // And the vaults, for the same reason: a vault is read with `REVEAL`
+            // and listed with `INFO FOR VAULT … RECORDS`, never with `SELECT`.
+            if matches!(table.kind, TableKind::Vault(_)) {
+                vaults.push(table.name.clone());
+            }
             names.push(table.name);
         }
         Ok(BTreeMap::from([
             ("tables".to_owned(), by_name(names)),
             ("topics".to_owned(), by_name(topics)),
+            ("vaults".to_owned(), by_name(vaults)),
         ]))
     }
 

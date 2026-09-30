@@ -107,9 +107,18 @@ export async function ask(
   source: string,
   screen: string,
   why?: string,
+  parameters?: Readonly<Record<string, string>>,
 ): Promise<{ reply: Response; text: string }> {
   const started = performance.now();
   const headers: Record<string, string> = {};
+  // Bound values go in the envelope, each as the TessariQL source of one literal
+  // (protocol §5.5). The log below keeps `source` alone, so a value bound here —
+  // a secret being written, a record id — is never in it.
+  let body = source;
+  if (parameters !== undefined) {
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify({ script: source, parameters });
+  }
   const offered = credential();
   if (offered !== null) {
     headers["Authorization"] = offered;
@@ -119,7 +128,7 @@ export async function ask(
     reply = await fetch(SCRIPT_ROUTE, {
       method: "POST",
       headers,
-      body: source,
+      body,
       // Without this the browser handles the node's `401` challenge itself and
       // opens its own credential dialog on top of the page — a second sign-in
       // this console did not ask for, cannot read and cannot clear, and which
@@ -169,8 +178,9 @@ export async function valueOf(
   source: string,
   screen: string,
   why?: string,
+  parameters?: Readonly<Record<string, string>>,
 ): Promise<Result | null> {
-  const { reply, text } = await ask(source, screen, why);
+  const { reply, text } = await ask(source, screen, why, parameters);
   let body: Answer;
   try {
     body = JSON.parse(text) as Answer;

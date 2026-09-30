@@ -126,6 +126,20 @@ fn a_database_lists_its_tables_and_a_new_one_appears() {
 }
 
 #[test]
+fn a_database_names_its_vaults_among_its_tables() {
+    // A vault is read with its own statements, so a caller listing a database is
+    // told which tables those are, as it is told which are topics.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run("DEFINE VAULT team PASSPHRASE 'the team passphrase';")
+        .unwrap();
+    let answered = report(&mut session, "INFO FOR DATABASE;");
+    assert_eq!(listed(&answered, "vaults"), vec!["team".to_owned()]);
+    assert!(listed(&answered, "tables").contains(&"team".to_owned()));
+}
+
+#[test]
 fn a_buckets_chunk_table_is_not_listed_because_nothing_can_name_it() {
     // A bucket's bytes live in a companion table whose name carries a byte no
     // identifier can hold, which is what makes `SELECT * FROM media` answer with

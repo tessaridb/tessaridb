@@ -63,4 +63,40 @@ export const vault = (): Node =>
       ),
       row("default", button("vault-one-change", "Change passphrase", "default", { disabled: true })),
     ),
+    pane(
+      paneHead("Records in a vault", status("vault-rec-status")),
+      note(
+        "Ids come a page at a time with no value beside them. A reveal is recorded by the store before it answers; " +
+          "the plaintext stays on this page until you hide it or reveal another.",
+      ),
+      row(
+        "default",
+        field("Namespace", text("vault-rec-namespace", { spellcheck: false, autocomplete: "off" })),
+        field("Database", text("vault-rec-database", { spellcheck: false, autocomplete: "off" })),
+        button("vault-rec-list", "Vaults here", "default"),
+      ),
+      el("div", { id: "vault-rec-vaults" }),
+      row(
+        "default",
+        field("Vault", text("vault-rec-name", { spellcheck: false, autocomplete: "off" })),
+        button("vault-rec-records", "Records", "primary"),
+        button("vault-rec-more", "Next page", "default", { disabled: true }),
+      ),
+      el("div", { id: "vault-rec-ids" }),
+      el("div", { id: "vault-rec-shown", "aria-live": "polite" }),
+      row("default", button("vault-rec-hide", "Hide the revealed values", "quiet", { disabled: true })),
+      row(
+        "default",
+        field("Record id", text("vault-rec-id", { spellcheck: false, autocomplete: "off" })),
+        field("Field", text("vault-rec-field", { spellcheck: false, autocomplete: "off" })),
+        field("Value", secret("vault-rec-value", "new-password")),
+        button("vault-rec-write", "Write", "default", { disabled: true }),
+      ),
+      row(
+        "default",
+        field("Read by (optional)", text("vault-rec-actor", { spellcheck: false, autocomplete: "off" })),
+        button("vault-rec-audit", "Audit trail", "default"),
+      ),
+      el("div", { id: "vault-rec-trail" }),
+    ),
   );

@@ -1277,7 +1277,10 @@ with its own passphrase the routes are `GET /vault/{namespace}/{database}/{vault
 and `POST /vault/{namespace}/{database}/{vault}/unseal`, `…/seal` and
 `…/passphrase`, and the frame names the vault as its target.
 The console's **Vault** tab (⌘7) does all of this over those routes, for the
-store's key and for any one vault.
+store's key and for any one vault. Its **Records** pane lists a database's vaults,
+a vault's record ids a page at a time, reveals one record on click, writes one
+field, and shows the audit trail — as statements over `POST /script`, with the
+record id and the written value bound rather than written into the text.
 
 #### Reading a secret
 
@@ -1382,6 +1385,8 @@ thousand. No value of any record is in it, sealed or not; the ids themselves are
 not secret, because a record's identity is its key and keys are not encrypted —
 which is why a vault record should never be named after what it holds. Reading
 the list needs a grant on the vault, as reading anything in it does.
+`INFO FOR DATABASE` names the database's vaults under `vaults`, beside `tables` and
+`topics`, so a caller can tell which tables are read this way.
 
 `INFO FOR TABLE team` answers too, and reports `vault: true` beside the other
 markers. It matters because the declaration it renders back says `DEFINE VAULT`
@@ -8104,7 +8109,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.17.0", "build": "0.17.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.17.1", "build": "0.17.1-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],
