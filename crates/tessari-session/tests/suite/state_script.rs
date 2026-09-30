@@ -188,6 +188,32 @@ fn a_part_with_no_faithful_spelling_is_refused_by_name_and_not_written() {
         !taken.text.contains("CREATE likes:"),
         "records of a table that was not declared were written"
     );
-    // And the rest restores.
-    Session::new(&store()).run(&taken.text).unwrap();
+    // And the rest restores — and every table is either restored or named.
+    let target = store();
+    Session::new(&target).run(&taken.text).unwrap();
+    let tables = |held: &Store| {
+        let mut session = Session::new(held);
+        let info = session
+            .run("USE NAMESPACE n; USE DATABASE d; INFO FOR DATABASE;")
+            .unwrap();
+        format!("{info:?}")
+    };
+    let (before, after) = (tables(&source), tables(&target));
+    for name in ["\"a\"", "\"b\"", "\"likes\""] {
+        let named = taken
+            .refused
+            .iter()
+            .any(|part| part.starts_with(&format!("n.d.{}", name.trim_matches('"'))));
+        assert!(before.contains(name), "the source does not hold {name}");
+        assert!(
+            after.contains(name) != named,
+            "{name} is {} restored and {} named as not carried",
+            if after.contains(name) {
+                "both"
+            } else {
+                "neither"
+            },
+            if named { "also" } else { "not" }
+        );
+    }
 }
