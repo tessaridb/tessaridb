@@ -60,6 +60,21 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
                 }
                 Err(why) => log::warn!("this node cannot remove expired records: {why}"),
             }
+            // An unseal past its period. No statement is served by that key
+            // whether this runs or not — every use judges the deadline — so this
+            // only stops it sitting in memory until the next use (ADR-0092 D4).
+            // Said at `info`, because a store that closed itself is something
+            // the operator who opened it will otherwise read as a fault.
+            match db.store().vault().seal_if_due() {
+                // The store's key or one vault's own (ADR-0093): either way an
+                // unseal ran its period out, and the log names neither secret.
+                Ok(true) => log::info!(
+                    "an unseal ended and its key was dropped: an unseal lasts {}s on this node",
+                    db.store().vault().period().as_secs()
+                ),
+                Ok(false) => {}
+                Err(why) => log::warn!("this node cannot drop an expired unseal: {why}"),
+            }
             // A series' records past its floor, removed as one range per table
             // (G044 C11). This node's own storage work: every node runs it over
             // its own copy, leader or not, because the answer already changed

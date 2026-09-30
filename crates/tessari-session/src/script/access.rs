@@ -11,9 +11,31 @@ use crate::info::{named_database, named_namespace};
 use crate::session::Session;
 
 /// Every analyzer, once: an analyzer is the store's, not a database's.
-pub(super) fn analyzers(catalog: &Catalog<'_, '_>) -> Result<String> {
+///
+/// A part carries only the analyzers its fields use, each `IF NOT EXISTS`: the
+/// store it restores into may already declare one of that name for fields of
+/// its own, and a part must not change what those find.
+pub(super) fn analyzers(catalog: &Catalog<'_, '_>, part: &[Reach]) -> Result<String> {
+    let used: Option<std::collections::BTreeSet<String>> = if part.is_empty() {
+        None
+    } else {
+        Some(
+            catalog
+                .fields()?
+                .into_iter()
+                .filter(|field| super::carried(part, field.namespace, field.database))
+                .filter_map(|field| field.analyzer)
+                .collect(),
+        )
+    };
     let mut written = String::new();
     for analyzer in catalog.analyzers()? {
+        if used
+            .as_ref()
+            .is_some_and(|used| !used.contains(&analyzer.name))
+        {
+            continue;
+        }
         let filters: Vec<&str> = analyzer
             .analyzer
             .filters()
@@ -22,7 +44,8 @@ pub(super) fn analyzers(catalog: &Catalog<'_, '_>) -> Result<String> {
             .collect();
         let _ = writeln!(
             written,
-            "DEFINE ANALYZER {} FILTERS {};",
+            "DEFINE ANALYZER {}{} FILTERS {};",
+            if used.is_some() { "IF NOT EXISTS " } else { "" },
             analyzer.name,
             filters.join(", ")
         );
@@ -34,10 +57,13 @@ pub(super) fn analyzers(catalog: &Catalog<'_, '_>) -> Result<String> {
 ///
 /// Graph memberships and declared edge endpoints are refused per table by the
 /// declaration writer; what is left here is what belongs to no table.
-pub(super) fn uncarried(catalog: &Catalog<'_, '_>) -> Result<Vec<String>> {
+pub(super) fn uncarried(catalog: &Catalog<'_, '_>, part: &[Reach]) -> Result<Vec<String>> {
     let mut refused = Vec::new();
     for namespace in catalog.namespaces()? {
         for database in catalog.databases_in(namespace.id)? {
+            if !super::carried(part, namespace.id, database.id) {
+                continue;
+            }
             let place = format!("{}.{}", namespace.name, database.name);
             for graph in catalog.graphs_in(namespace.id, database.id)? {
                 refused.push(format!("{place}: graph `{}`", graph.name));

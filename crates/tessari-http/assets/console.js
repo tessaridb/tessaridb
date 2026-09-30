@@ -492,7 +492,7 @@
     }
     return answered2.value;
   }
-  async function route(method, path, screen) {
+  async function route(method, path, screen, body) {
     const started = performance.now();
     const headers = {};
     const offered = credential();
@@ -501,7 +501,7 @@
     }
     let reply;
     try {
-      reply = await fetch(path, { method, headers, credentials: "omit" });
+      reply = await fetch(path, { method, headers, credentials: "omit", ...body === void 0 ? {} : { body } });
     } catch {
       record({
         what: `${method} ${path}`,
@@ -1491,8 +1491,8 @@
         return null;
       }
       const [namespaceOf, databaseOf, table] = parts;
-      const act = giving ? `GRANT ${what} ON ${table} TO ${who};` : `REVOKE ${what} ON ${table} FROM ${who};`;
-      return `USE NAMESPACE ${namespaceOf}; USE DATABASE ${databaseOf}; ${act}`;
+      const act2 = giving ? `GRANT ${what} ON ${table} TO ${who};` : `REVOKE ${what} ON ${table} FROM ${who};`;
+      return `USE NAMESPACE ${namespaceOf}; USE DATABASE ${databaseOf}; ${act2}`;
     }
     const target = reach3 === "store" ? "STORE" : `${reach3 === "namespace" ? "NAMESPACE" : "DATABASE"} ${name}`;
     return giving ? `GRANT ${what} ON ${target} TO ${who};` : `REVOKE ${what} ON ${target} FROM ${who};`;
@@ -2150,7 +2150,7 @@
   var KEYS = [
     { press: "/", does: "find an account, a table, a namespace or a record" },
     { press: "⌘K  ·  Ctrl-K", does: "the same, from inside a field" },
-    { press: "⌘1 … ⌘5", does: "Run, Topics, Cluster, Access, This node" },
+    { press: "⌘1 … ⌘7", does: "Run, Topics, Cluster, Access, This node, Backup, Vault" },
     { press: "⌘↵  ·  Ctrl-↵", does: "run what is in the script box" },
     { press: "?", does: "this list" },
     { press: "Esc", does: "close the log, the drawer, or this list" }
@@ -2174,7 +2174,7 @@
   function closeIt4() {
     at("keys-sheet").hidden = true;
   }
-  var DESTINATIONS = ["run", "topics", "cluster", "access", "this-node"];
+  var DESTINATIONS = ["run", "topics", "cluster", "access", "this-node", "backup", "vault"];
   function wire15() {
     draw3();
     document.addEventListener("keydown", (event) => {
@@ -2391,16 +2391,16 @@
     try {
       const listed = strings(await valueOf(start + "INFO FOR DATABASE;", SCREEN), "topics");
       const names = listed.filter((name) => aName(name) !== null);
-      const shown2 = names.slice(0, TOPICS_SHOWN);
-      const asked2 = shown2.map((name) => `INFO FOR TOPIC ${name};`).join(" ");
-      const answered2 = shown2.length === 0 ? [] : await results(start + asked2);
+      const shown3 = names.slice(0, TOPICS_SHOWN);
+      const asked2 = shown3.map((name) => `INFO FOR TOPIC ${name};`).join(" ");
+      const answered2 = shown3.length === 0 ? [] : await results(start + asked2);
       const read = answered2.map((each) => topic(each.value)).filter((each) => each !== null);
       draw4(read);
       if (names.length === 0) {
         const here2 = `${place.namespace}.${place.database}`;
         state("topics-status", "empty", `${here2} holds no topics — create one below.`);
-      } else if (names.length > shown2.length) {
-        state("topics-status", "partial", `showing ${shown2.length} of ${names.length} topics`);
+      } else if (names.length > shown3.length) {
+        state("topics-status", "partial", `showing ${shown3.length} of ${names.length} topics`);
       } else {
         settled("topics-status");
       }
@@ -2757,6 +2757,290 @@
     at("topics-database").addEventListener("change", () => FORMS.forEach(shape3));
   }
 
+  // src/backup.ts
+  //! The Backup screen: `BACKUP … TO '<name>'`, and `RESTORE SCRIPT FROM '<name>'`.
+  //!
+  //! A file name is the operator's text, so it reaches a statement only through
+  //! `quoted()`, the one place the console escapes a string literal. A place a
+  //! part names is grammar and cannot be quoted, so each one passes `aName()`
+  //! first and a name that fails is refused here, before anything is sent. Whether
+  //! a name stays inside the backup folder, and whether a restore may land, is the
+  //! node's decision, and its refusal is shown in its own words.
+  var SCREEN3 = "Backup";
+  var WHAT = {
+    state: {
+      statement: "BACKUP STATE",
+      suffix: "tessarisnap",
+      says: "every live record at one moment; restores whole, and a pruned log does not stop it"
+    },
+    log: {
+      statement: "BACKUP",
+      suffix: "tessarilog",
+      says: "every commit in order; a restore can stop at any point in it"
+    },
+    script: {
+      statement: "BACKUP SCRIPT",
+      suffix: "tessariql",
+      says: "statements that rebuild the store; readable, and its header lists what it leaves out"
+    }
+  };
+  function chosenForm() {
+    const picked = value("backup-form");
+    return picked === "log" || picked === "script" ? picked : "state";
+  }
+  var partial = () => value("backup-part") === "places";
+  function places() {
+    const written = trimmed("backup-places").split(",").map((place) => place.trim()).filter((place) => place !== "");
+    if (written.length === 0) {
+      return { missing: "name at least one namespace or database, such as crm or prod.orders" };
+    }
+    const named = [];
+    for (const place of written) {
+      const [namespace, database, extra] = place.split(".");
+      const within = aName(namespace ?? "");
+      if (within === null || extra !== void 0) {
+        return { missing: `${place} is not a namespace or namespace.database` };
+      }
+      if (database === void 0) {
+        named.push(`NAMESPACE ${within}`);
+        continue;
+      }
+      const inner = aName(database);
+      if (inner === null) {
+        return { missing: `${place} is not a namespace or namespace.database` };
+      }
+      named.push(`DATABASE ${within}.${inner}`);
+    }
+    return { of: named.join(", ") };
+  }
+  function suggested(form) {
+    const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+    return `tessaridb-${stamp}.${WHAT[form].suffix}`;
+  }
+  function composeBackup() {
+    const name = trimmed("backup-name");
+    if (name === "") return { missing: "name the file to write" };
+    const form = chosenForm();
+    if (!partial()) {
+      return {
+        statement: `${WHAT[form].statement} TO ${quoted(name)};`,
+        says: `Writes ${name} into the node's backup folder: ${WHAT[form].says}.`
+      };
+    }
+    if (form !== "script") {
+      return { missing: "a part of the store is written as TessariQL; choose that form" };
+    }
+    const part = places();
+    if ("missing" in part) return part;
+    return {
+      statement: `BACKUP SCRIPT OF ${part.of} TO ${quoted(name)};`,
+      says: `Writes ${name} into the node's backup folder: ${part.of} as statements, with the analyzers their fields use; users belong to the whole store and stay out of it.`
+    };
+  }
+  function composeRestore() {
+    const name = trimmed("restore-name");
+    if (name === "") return { missing: "name a script in the backup folder" };
+    return {
+      statement: `RESTORE SCRIPT FROM ${quoted(name)};`,
+      says: `Runs ${name} from the node's backup folder, creating the databases it carries.`
+    };
+  }
+  var ours = true;
+  function shape4() {
+    const backup = composeBackup();
+    disable("backup-run", !("statement" in backup));
+    write("backup-says", "statement" in backup ? backup.says : backup.missing);
+    disable("backup-places", !partial());
+    const restore3 = composeRestore();
+    disable("restore-run", !("statement" in restore3));
+    write("restore-says", "statement" in restore3 ? restore3.says : restore3.missing);
+  }
+  async function send2(composed, button, status, answer2, shown3) {
+    if (!("statement" in composed)) {
+      return false;
+    }
+    disable(button, true);
+    say(status, "working…");
+    write(answer2, "");
+    try {
+      write(answer2, shown3(held2(await valueOf(composed.statement, SCREEN3))));
+      say(status, "done");
+      return true;
+    } catch (failure) {
+      const words4 = told(failure);
+      say(status, failure instanceof Unreachable ? "the node did not answer — " + words4 : words4, true);
+      return false;
+    } finally {
+      shape4();
+    }
+  }
+  async function backUp() {
+    const written = await send2(composeBackup(), "backup-run", "backup-status", "backup-answer", (answered2) => {
+      const path = typeof answered2?.path === "string" ? answered2.path : trimmed("backup-name");
+      const bytes = typeof answered2?.bytes === "number" ? answered2.bytes : null;
+      return bytes === null ? path : `${path}
+${bytes.toLocaleString("en")} bytes`;
+    });
+    if (written) {
+      ours = true;
+      setValue("backup-name", suggested(chosenForm()));
+      shape4();
+    }
+  }
+  async function restore2() {
+    await send2(composeRestore(), "restore-run", "restore-status", "restore-answer", (answered2) => {
+      const databases = Array.isArray(answered2?.databases) ? answered2.databases.filter((place) => typeof place === "string") : [];
+      const statements = typeof answered2?.statements === "number" ? answered2.statements : 0;
+      return `${databases.join(", ") || "no database"} created · ${statements.toLocaleString("en")} statements`;
+    });
+  }
+  function wire18() {
+    setValue("backup-name", suggested(chosenForm()));
+    for (const id of ["backup-form", "backup-part"]) {
+      at(id).addEventListener("change", () => {
+        if (ours) {
+          setValue("backup-name", suggested(chosenForm()));
+        }
+        shape4();
+      });
+    }
+    at("backup-name").addEventListener("input", () => {
+      ours = false;
+      shape4();
+    });
+    at("backup-places").addEventListener("input", shape4);
+    at("restore-name").addEventListener("input", shape4);
+    at("backup-run").addEventListener("click", () => void backUp());
+    at("restore-run").addEventListener("click", () => void restore2());
+    shape4();
+  }
+
+  // src/vault.ts
+  //! The Vault screen: the store's key over `/vault`, and one vault's over
+  //! `/vault/{namespace}/{database}/{vault}` (ADR-0092, ADR-0093).
+  //!
+  //! The passphrase travels as the body of its own route and never as a statement,
+  //! so it is in no script, no statement log line and no saved form: the log
+  //! records `METHOD path`, a passphrase field is `type="password"`, and each one is
+  //! emptied as soon as its request has gone. A vault's three names are grammar
+  //! in the path, so each passes `aName()` first and a name that fails is refused
+  //! here, before anything is sent.
+  var SCREEN4 = "Vault";
+  function shown2(body) {
+    if (typeof body !== "object" || body === null) return "";
+    const answered2 = body;
+    const state2 = typeof answered2.state === "string" ? answered2.state : "unknown";
+    const lines = [state2];
+    if (typeof answered2.seals_at === "string") {
+      lines.push(`seals at ${new Date(answered2.seals_at).toLocaleString()}`);
+    }
+    if (typeof answered2.unseal_for === "string") lines.push(`an unseal lasts ${answered2.unseal_for}`);
+    if (typeof answered2.custody === "string") {
+      lines.push(answered2.custody === "own" ? "opens with its own passphrase" : "opens with the store's passphrase");
+    }
+    if (answered2.initialised === true) lines.push("this unseal set the store's first passphrase");
+    return lines.join("\n");
+  }
+  function refusal(body) {
+    if (typeof body === "object" && body !== null && typeof body.error === "string") {
+      return body.error;
+    }
+    return typeof body === "string" && body !== "" ? body : "refused";
+  }
+  async function act(method, path, statusId, answerId, body) {
+    say(statusId, "working…");
+    try {
+      const answered2 = await route(method, path, SCREEN4, body);
+      if (answered2.status === 200) {
+        write(answerId, shown2(answered2.body));
+        say(statusId, "done");
+      } else {
+        const words4 = answered2.status === 429 ? "too many wrong passphrases — wait and try again" : refusal(answered2.body);
+        say(statusId, words4, true);
+      }
+    } catch (failure) {
+      const words4 = told(failure);
+      say(statusId, failure instanceof Unreachable ? "the node did not answer — " + words4 : words4, true);
+    }
+  }
+  function spent(id) {
+    const held5 = value(id);
+    setValue(id, "");
+    return held5;
+  }
+  var change3 = (current, next) => JSON.stringify({ current, new: next });
+  function onePath() {
+    const names = [
+      ["namespace", trimmed("vault-one-namespace")],
+      ["database", trimmed("vault-one-database")],
+      ["vault", trimmed("vault-one-name")]
+    ];
+    const checked = [];
+    for (const [what, name] of names) {
+      if (name === "") return { missing: `name the ${what}` };
+      const held5 = aName(name);
+      if (held5 === null) return { missing: `${name} is not a ${what} name` };
+      checked.push(held5);
+    }
+    return { path: `/vault/${checked.join("/")}` };
+  }
+  function shape5() {
+    disable("vault-store-unseal", value("vault-store-passphrase") === "");
+    disable("vault-store-change", value("vault-store-current") === "" || value("vault-store-new") === "");
+    const one2 = onePath();
+    write("vault-one-says", "path" in one2 ? `Acts on ${one2.path}.` : one2.missing);
+    const named = !("path" in one2);
+    disable("vault-one-show", named);
+    disable("vault-one-seal", named);
+    disable("vault-one-unseal", named || value("vault-one-passphrase") === "");
+    disable("vault-one-change", named || value("vault-one-current") === "" || value("vault-one-new") === "");
+  }
+  async function onOne(act_) {
+    const one2 = onePath();
+    if ("path" in one2) await act_(one2.path);
+    shape5();
+  }
+  function wire19() {
+    const store = (method, path, body) => act(method, path, "vault-store-status", "vault-store-answer", body).finally(shape5);
+    const one2 = (method, path, body) => act(method, path, "vault-one-status", "vault-one-answer", body);
+    at("vault-store-refresh").addEventListener("click", () => void store("GET", "/vault"));
+    at("vault-store-seal").addEventListener("click", () => void store("POST", "/vault/seal"));
+    at("vault-store-unseal").addEventListener(
+      "click",
+      () => void store("POST", "/vault/unseal", spent("vault-store-passphrase"))
+    );
+    at("vault-store-change").addEventListener(
+      "click",
+      () => void store("POST", "/vault/passphrase", change3(spent("vault-store-current"), spent("vault-store-new")))
+    );
+    at("vault-one-show").addEventListener("click", () => void onOne((path) => one2("GET", path)));
+    at("vault-one-seal").addEventListener("click", () => void onOne((path) => one2("POST", `${path}/seal`)));
+    at("vault-one-unseal").addEventListener(
+      "click",
+      () => void onOne((path) => one2("POST", `${path}/unseal`, spent("vault-one-passphrase")))
+    );
+    at("vault-one-change").addEventListener(
+      "click",
+      () => void onOne(
+        (path) => one2("POST", `${path}/passphrase`, change3(spent("vault-one-current"), spent("vault-one-new")))
+      )
+    );
+    for (const id of [
+      "vault-store-passphrase",
+      "vault-store-current",
+      "vault-store-new",
+      "vault-one-namespace",
+      "vault-one-database",
+      "vault-one-name",
+      "vault-one-passphrase",
+      "vault-one-current",
+      "vault-one-new"
+    ]) {
+      at(id).addEventListener("input", shape5);
+    }
+    shape5();
+  }
+
   // src/spaces-list.ts
   //! The Spaces pane's reading: which tables of a database are spaces, their keys by
   //! prefix, and one key's value.
@@ -2765,7 +3049,7 @@
   //! writes back the statement that made it. The keys and the value come from the
   //! `/kv` routes, so what the pane shows is what any HTTP caller of those routes
   //! would be answered.
-  var SCREEN3 = "Run";
+  var SCREEN5 = "Run";
   var TABLES_ASKED = 200;
   var KEYS_SHOWN = 100;
   var words2 = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
@@ -2782,7 +3066,7 @@
   async function readNamespaces2() {
     state("kv-status", "waiting", "asking…");
     try {
-      offer("kv-namespace", strings2(await valueOf("INFO FOR STORE;", SCREEN3), "namespaces"));
+      offer("kv-namespace", strings2(await valueOf("INFO FOR STORE;", SCREEN5), "namespaces"));
     } catch (failure) {
       state("kv-status", "wrong", words2(failure));
       return;
@@ -2798,7 +3082,7 @@
       return;
     }
     try {
-      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN3);
+      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN5);
       offer("kv-database", strings2(answered2, "databases"));
     } catch (failure) {
       state("kv-status", "wrong", words2(failure));
@@ -2819,10 +3103,10 @@
     const start = tenancy(namespace, database);
     state("kv-status", "waiting", "asking…");
     try {
-      const tables = strings2(await valueOf(start + "INFO FOR DATABASE;", SCREEN3), "tables").filter((name) => aName(name) !== null).slice(0, TABLES_ASKED);
+      const tables = strings2(await valueOf(start + "INFO FOR DATABASE;", SCREEN5), "tables").filter((name) => aName(name) !== null).slice(0, TABLES_ASKED);
       let answered2 = [];
       if (tables.length > 0) {
-        const { text } = await ask(start + tables.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN3);
+        const { text } = await ask(start + tables.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN5);
         const body = JSON.parse(text);
         if (!Array.isArray(body.results)) {
           throw new Error(typeof body.error === "string" ? body.error : text);
@@ -2861,7 +3145,7 @@
     const query = `?limit=${KEYS_SHOWN}` + (prefix === "" ? "" : `&prefix=${encodeURIComponent(prefix)}`);
     state("kv-status", "waiting", "asking…");
     try {
-      const { status, body } = await route("GET", where3 + query, SCREEN3);
+      const { status, body } = await route("GET", where3 + query, SCREEN5);
       if (mine !== listing) {
         return;
       }
@@ -2903,22 +3187,22 @@
       return;
     }
     try {
-      const { status, body } = await route("GET", `${where3}/key/${encodeURIComponent(key)}`, SCREEN3);
-      const shown2 = made("pre");
+      const { status, body } = await route("GET", `${where3}/key/${encodeURIComponent(key)}`, SCREEN5);
+      const shown3 = made("pre");
       if (status === 404) {
-        shown2.textContent = `${key}: no such key — it may have expired`;
+        shown3.textContent = `${key}: no such key — it may have expired`;
       } else {
         const { value: held5, ttl } = body;
         const left = typeof ttl === "string" ? `expires in ${ttl}` : "never expires";
-        shown2.textContent = `${key} — ${left}
+        shown3.textContent = `${key} — ${left}
 ${JSON.stringify(held5, null, 2)}`;
       }
-      at("kv-value").appendChild(shown2);
+      at("kv-value").appendChild(shown3);
     } catch (failure) {
       state("kv-status", "wrong", words2(failure));
     }
   }
-  function wire18() {
+  function wire20() {
     at("kv-namespace").addEventListener("change", () => void readDatabases2());
     at("kv-database").addEventListener("change", () => void readSpaces());
     at("kv-space").addEventListener("change", () => void listKeys());
@@ -2933,7 +3217,7 @@ ${JSON.stringify(held5, null, 2)}`;
   //! Everything here reads. A table's kind is not a field of `INFO FOR DATABASE`,
   //! so each table is asked for `INFO FOR TABLE`: a series writes back the
   //! `DEFINE SERIES` statement that made it, and a rollup says it is one.
-  var SCREEN4 = "Run";
+  var SCREEN6 = "Run";
   var TABLES_ASKED2 = 200;
   var DECLARED = /^DEFINE SERIES \S+ RETAIN (\S+?)(?: TIME (\S+?))?;/;
   function kind(value2) {
@@ -2961,7 +3245,7 @@ ${JSON.stringify(held5, null, 2)}`;
   async function readNamespaces3() {
     state("series-status", "waiting", "asking…");
     try {
-      offer("series-namespace", strings3(await valueOf("INFO FOR STORE;", SCREEN4), "namespaces"));
+      offer("series-namespace", strings3(await valueOf("INFO FOR STORE;", SCREEN6), "namespaces"));
     } catch (failure) {
       state("series-status", "wrong", words3(failure));
       return;
@@ -2977,7 +3261,7 @@ ${JSON.stringify(held5, null, 2)}`;
       return;
     }
     try {
-      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN4);
+      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN6);
       offer("series-database", strings3(answered2, "databases"));
     } catch (failure) {
       state("series-status", "wrong", words3(failure));
@@ -2996,11 +3280,11 @@ ${JSON.stringify(held5, null, 2)}`;
     const start = tenancy(namespace, database);
     state("series-status", "waiting", "asking…");
     try {
-      const tables = strings3(await valueOf(start + "INFO FOR DATABASE;", SCREEN4), "tables").filter((name) => aName(name) !== null);
+      const tables = strings3(await valueOf(start + "INFO FOR DATABASE;", SCREEN6), "tables").filter((name) => aName(name) !== null);
       const asked2 = tables.slice(0, TABLES_ASKED2);
       let answered2 = [];
       if (asked2.length > 0) {
-        const { text } = await ask(start + asked2.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN4);
+        const { text } = await ask(start + asked2.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN6);
         const body = JSON.parse(text);
         if (!Array.isArray(body.results)) {
           throw new Error(typeof body.error === "string" ? body.error : text);
@@ -3043,7 +3327,7 @@ ${JSON.stringify(held5, null, 2)}`;
     }
     at("series-list").appendChild(table);
   }
-  function wire19() {
+  function wire21() {
     at("series-namespace").addEventListener("change", () => void readDatabases3());
     at("series-database").addEventListener("change", () => void readSeries());
     at("series-refresh").addEventListener("click", () => void readNamespaces3());
@@ -3165,7 +3449,7 @@ ${JSON.stringify(held5, null, 2)}`;
     }
     write("user-count", tally(matched));
   }
-  function wire20() {
+  function wire22() {
     at("list").addEventListener("click", listUsers);
     at("user-filter").addEventListener("input", redraw);
     onArrival(["access"], () => void listUsers());
@@ -3286,11 +3570,13 @@ ${JSON.stringify(held5, null, 2)}`;
   wire5();
   wire4();
   wire8();
-  wire20();
+  wire22();
   wire11();
   wire12();
   wire16();
   wire17();
-  wire19();
   wire18();
+  wire19();
+  wire21();
+  wire20();
 })();

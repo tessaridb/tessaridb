@@ -12,6 +12,64 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.17.0-beta — 2026-10-01
+
+- **Backups written on the node, from the console.** `BACKUP [STATE | SCRIPT] TO
+  '<name>'` writes the backup into the node's backup folder — `--backup-dir`, or
+  `TESSARIDB_BACKUP_DIR`, which the image sets to `/var/lib/tessaridb/backups`
+  inside its volume — and answers `{ path, bytes, form }`. A name that would leave
+  the folder (`..`, absolute, a link on the way) is `BackupNameRefused`, an existing
+  file is `BackupExists`, a node with no folder is `NoBackupFolder`; the file is
+  written aside, verified where it was written, and only then renamed into place.
+  The console's new **Backup** tab (⌘6) runs it.
+- **A backup of chosen namespaces and databases.** `BACKUP SCRIPT OF NAMESPACE crm,
+  prod.orders` writes those places, their records and indexes, and the analyzers
+  their fields use (`IF NOT EXISTS`), and no users; its header says it is a part. A
+  log or a snapshot of a part is refused with the reason.
+- **`RESTORE SCRIPT FROM '<name>'`** runs a script from the backup folder into a
+  live store beside what it holds. It only creates: a database that exists is
+  `RestoreTargetExists`, and a script that deletes, drops, declares a user or writes
+  into a place it did not create is `RestoreRefused` — both before anything is
+  written, and a restore refused while it fills takes away what it created. The
+  Backup tab restores from the same folder.
+- **A vault you can reach without writing its passphrase into a script**
+  (G048, ADR-0092). `GET /vault`, `POST /vault/unseal` (the body is the
+  passphrase), `POST /vault/seal` and `POST /vault/passphrase`, and a wire frame
+  of its own (tag 17, **protocol 1.2**), carry the passphrase as a field and never
+  as statement text; no refusal and no log line quotes it. Wrong passphrases are
+  throttled like wrong passwords (`PassphraseThrottled`).
+- **An unseal lasts ten minutes**, then the store seals itself; `--unseal-for` or
+  `TESSARIDB_UNSEAL_FOR` (`1h`, `90s`) sets the period per node. `INFO FOR SEAL`
+  answers `{ state, seals_at, unseal_for }`, `state` being `uninitialised`,
+  `sealed` or `unsealed`.
+- **`CHANGE VAULT PASSPHRASE FROM '…' TO '…'`** wraps the same master key under a
+  new passphrase — no secret is re-encrypted, the old passphrase stops unsealing,
+  and a backup taken before the change still opens with the old one. A store never
+  unsealed is `NoVaultRoot`.
+- **A vault may carry its own passphrase** (ADR-0093). `DEFINE VAULT team
+  PASSPHRASE '…'` wraps the vault's key under a key derived from that passphrase
+  instead of the store's master key, so neither the store's passphrase nor
+  store-wide authority opens it, and it can be declared on a sealed store.
+  `UNSEAL VAULT team WITH '…'`, `SEAL VAULT team`, `CHANGE VAULT team PASSPHRASE
+  FROM '…' TO '…'` and `INFO FOR SEAL OF team` act on that vault alone, with its
+  own ten-minute period and its own throttle; the same four exist as
+  `/vault/{ns}/{db}/{vault}[/unseal|/seal|/passphrase]` and as a target in the
+  wire frame. Naming a vault that opens with the store's passphrase is
+  `VaultUsesStorePassphrase`. `INFO FOR VAULT` now says which custody a vault has.
+- **The console's Vault tab** (⌘7) unseals, seals and rekeys the store's key and any
+  one vault over the vault routes, so a passphrase typed there is never statement
+  text, never in the statement log and never kept in the page.
+- **`INFO FOR VAULT team RECORDS [AFTER team:'x'] [LIMIT n]`** lists a vault's
+  record ids a page at a time (a thousand by default, ten thousand at most), with
+  no value in the answer.
+- The console answers `HEAD /` and every console asset as `GET` without the body,
+  with `Cache-Control: no-cache` and a strong `ETag`; a matching `If-None-Match` is
+  a `304`, so a browser never runs an old console against an upgraded node.
+- Fixed: `INFO FOR RECIPIENTS OF team:$id` and `INFO FOR VAULT team RECORDS AFTER
+  team:$after` refused their parameter as unbound, so a client had to write the id
+  into the statement text. Both now bind it.
+- **1462 conformance cases** define the language and run in the build.
+
 ## 0.16.0-beta — 2026-09-30
 
 - **A backup that survives a pruned log** (G047, ADR-0091). Beside the log two more

@@ -44,7 +44,8 @@ use crate::error::{Error, Result};
 use crate::store::Store;
 use crate::transaction::{RecordAddress, Transaction};
 pub use vault_keys::{
-    add_recipient, mint_vault_key, open_data_key, open_field, recipients, remove_recipient,
+    add_recipient, mint_own_vault_key, mint_vault_key, open_data_key, open_field, recipients,
+    remove_recipient, rewrap_own_vault, unseal_own_vault,
 };
 
 /// The reserved entry holding a record's wrapped data keys.
@@ -123,7 +124,7 @@ fn seal_into_vault(
 
     declared_types_hold(&fields, &secrets, definition, address)?;
 
-    let Some(vault_key) = definition.vault_key() else {
+    let Some(custody) = definition.vault_custody() else {
         return Err(Error::VaultNoKey {
             table: definition.name.clone(),
         });
@@ -131,20 +132,22 @@ fn seal_into_vault(
     let table_scope = vault_scope(definition);
     let record_scope = record_scope(address);
 
-    transaction.store().vault().with_master(|master| {
-        let vault_key = keys::unwrap(master, Level::Vault, &table_scope, vault_key)?;
-        let (wrapped, data_key) = keys::wrap_fresh(&vault_key, Level::Data, &record_scope)?;
-        seal_each(
-            &mut fields,
-            &secrets,
-            definition,
-            &record_scope,
-            &data_key,
-            wrapped.key_id,
-        )?;
-        fields.insert(KEYS_FIELD.to_owned(), key_set(&wrapped));
-        Ok(())
-    })?;
+    transaction
+        .store()
+        .vault()
+        .with_vault_key(custody, &table_scope, |vault_key| {
+            let (wrapped, data_key) = keys::wrap_fresh(vault_key, Level::Data, &record_scope)?;
+            seal_each(
+                &mut fields,
+                &secrets,
+                definition,
+                &record_scope,
+                &data_key,
+                wrapped.key_id,
+            )?;
+            fields.insert(KEYS_FIELD.to_owned(), key_set(&wrapped));
+            Ok(())
+        })?;
 
     Ok(Value::Object(fields))
 }
@@ -318,7 +321,7 @@ fn data_key_of(
     definition: &TableDefinition,
     keys_of_record: &Value,
 ) -> Result<(SecretBytes, tessari_vault::KeyId)> {
-    let Some(vault_key) = definition.vault_key() else {
+    let Some(custody) = definition.vault_custody() else {
         return Err(Error::VaultNoKey {
             table: definition.name.clone(),
         });
@@ -336,17 +339,19 @@ fn data_key_of(
 
     let table_scope = vault_scope(definition);
     let record_scope = record_scope(address);
-    transaction.store().vault().with_master(|master| {
-        let vault_key = keys::unwrap(master, Level::Vault, &table_scope, vault_key)?;
-        // The identifier in the header names the data key; `unwrap` proves it by
-        // opening, so the copy here is only what the type needs.
-        let wrapped = Wrapped {
-            key_id: tessari_vault::envelope::key_id_of(sealed)?,
-            sealed: sealed.clone(),
-        };
-        let opened = keys::unwrap(&vault_key, Level::Data, &record_scope, &wrapped)?;
-        Ok((opened, wrapped.key_id))
-    })
+    transaction
+        .store()
+        .vault()
+        .with_vault_key(custody, &table_scope, |vault_key| {
+            // The identifier in the header names the data key; `unwrap` proves it by
+            // opening, so the copy here is only what the type needs.
+            let wrapped = Wrapped {
+                key_id: tessari_vault::envelope::key_id_of(sealed)?,
+                sealed: sealed.clone(),
+            };
+            let opened = keys::unwrap(vault_key, Level::Data, &record_scope, &wrapped)?;
+            Ok((opened, wrapped.key_id))
+        })
 }
 
 /// The recipient-keyed set of wrapped data keys a record carries.

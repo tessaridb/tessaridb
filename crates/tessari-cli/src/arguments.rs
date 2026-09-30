@@ -23,6 +23,11 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   --serve <host:port> serve this store over the wire protocol until stopped
   --http <host:port> serve this store over HTTP until stopped; may accompany
                   --serve, and one process then holds both
+  --backup-dir <folder> where a serving node writes `BACKUP … TO '<name>'`;
+                  without it every `TO` is refused
+  --unseal-for <duration> how long an unseal lasts before the store seals itself,
+                  written as TessariQL (`10m`, `1h`); default TESSARIDB_UNSEAL_FOR
+                  or 10m
   --cluster-credential <file> this node's peer credential, PEM, with --serve
   --cluster-key <file> its private key, PEM
   --cluster-authority <file> the one certificate this cluster trusts, PEM
@@ -107,6 +112,10 @@ pub struct Serving {
     pub wire: Option<String>,
     /// HTTP.
     pub http: Option<String>,
+    /// The folder `BACKUP … TO` writes into; absent, every `TO` is refused.
+    pub backups: Option<PathBuf>,
+    /// How long an unseal lasts; absent, `TESSARIDB_UNSEAL_FOR` or ten minutes.
+    pub unseal_for: Option<core::time::Duration>,
 }
 
 impl Serving {
@@ -267,6 +276,19 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                 serving.http = Some(address);
                 source = Source::Serve;
             }
+            "--backup-dir" => {
+                let folder = arguments
+                    .next()
+                    .ok_or_else(|| "--backup-dir wants a folder".to_owned())?;
+                serving.backups = Some(PathBuf::from(folder));
+            }
+            "--unseal-for" => {
+                let written = arguments
+                    .next()
+                    .ok_or_else(|| "--unseal-for wants a duration, such as 10m".to_owned())?;
+                serving.unseal_for =
+                    Some(unseal_period(&written).map_err(|why| format!("--unseal-for {why}"))?);
+            }
             "--cluster-credential" => {
                 let path = arguments
                     .next()
@@ -388,6 +410,22 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
     if serving.asked() && !matches!(source, Source::Serve) {
         return Err("an address to serve on and something else to do are two programs".to_owned());
     }
+    // The same reason again: a folder named and never written to is one somebody
+    // believes holds their backups.
+    if serving.backups.is_some() && !matches!(source, Source::Serve) {
+        return Err(
+            "--backup-dir is where a serving node writes `BACKUP … TO`, and this serves nothing"
+                .to_owned(),
+        );
+    }
+    // And again: a period named on a process that holds no unseal anybody can
+    // reach is a period somebody believes is protecting them.
+    if serving.unseal_for.is_some() && !matches!(source, Source::Serve) {
+        return Err(
+            "--unseal-for is how long a serving node's unseal lasts, and this serves nothing"
+                .to_owned(),
+        );
+    }
     // Same reason as the line above, and what the operator believes here is
     // stronger: not that a port is open, but that this node joined a cluster.
     let told_about_a_cluster = credential.is_some()
@@ -452,6 +490,29 @@ pub fn credentials(user: Option<String>) -> Result<Option<(String, String)>, Str
     let password = env::var(PASSWORD)
         .map_err(|_| format!("--user needs the password in {PASSWORD}, and it is not set"))?;
     Ok(Some((name, password)))
+}
+
+/// Read an unseal period written as a TessariQL duration (ADR-0092 D4).
+///
+/// The flag and `TESSARIDB_UNSEAL_FOR` both come through here, so the two
+/// spellings cannot accept different things. Zero is refused rather than read
+/// as "never": a period is how long the store stays open, and one that means
+/// the opposite of what it says at its smallest value is a trap.
+///
+/// # Errors
+///
+/// A text that is not a duration, or a duration that is not positive.
+pub fn unseal_period(written: &str) -> Result<core::time::Duration, String> {
+    let Ok(tessari_types::Value::Duration(period)) = tessaridb::value_of(written) else {
+        return Err(format!(
+            "wants a duration such as 10m or 1h, not `{written}`"
+        ));
+    };
+    let seconds = u64::try_from(period.seconds()).ok();
+    match seconds.map(|seconds| core::time::Duration::new(seconds, period.nanos())) {
+        Some(held) if !held.is_zero() => Ok(held),
+        _ => Err(format!("wants a period longer than zero, not `{written}`")),
+    }
 }
 
 #[cfg(test)]
@@ -770,6 +831,72 @@ mod tests {
         assert_eq!(only_http.serving.http.as_deref(), Some("127.0.0.1:8000"));
 
         assert!(asked(&["--http"]).is_err());
+    }
+
+    #[test]
+    fn a_backup_folder_belongs_to_a_serving_node() {
+        let held = asked(&[
+            "./data",
+            "--http",
+            "127.0.0.1:8000",
+            "--backup-dir",
+            "/backups",
+        ])
+        .expect("a folder beside a surface");
+        assert_eq!(
+            held.serving.backups.as_deref(),
+            Some(std::path::Path::new("/backups"))
+        );
+        assert_eq!(
+            asked(&["./data", "--http", "127.0.0.1:8000"])
+                .expect("no folder")
+                .serving
+                .backups,
+            None
+        );
+
+        // Refused rather than ignored: a folder named and never written to is
+        // one somebody believes holds their backups.
+        let refusal = asked(&["./data", "--backup-dir", "/backups", "-e", "SELECT 1;"])
+            .expect_err("nothing serves");
+        assert!(
+            refusal.contains("--backup-dir"),
+            "the refusal does not name the flag: {refusal}"
+        );
+        assert!(asked(&["./data", "--http", "127.0.0.1:8000", "--backup-dir"]).is_err());
+    }
+
+    #[test]
+    fn an_unseal_period_is_a_positive_duration_on_a_serving_node() {
+        let held = asked(&["./data", "--http", "127.0.0.1:8000", "--unseal-for", "90s"])
+            .expect("a period beside a surface");
+        assert_eq!(
+            held.serving.unseal_for,
+            Some(core::time::Duration::from_secs(90))
+        );
+        assert_eq!(
+            asked(&["./data", "--http", "127.0.0.1:8000"])
+                .expect("no period")
+                .serving
+                .unseal_for,
+            None
+        );
+
+        for (text, why) in [
+            ("0s", "zero"),
+            ("ten", "not a duration"),
+            ("10", "a number"),
+        ] {
+            let refusal = asked(&["./data", "--http", "127.0.0.1:8000", "--unseal-for", text])
+                .expect_err(why);
+            assert!(
+                refusal.contains("--unseal-for"),
+                "the refusal of {why} does not name the flag: {refusal}"
+            );
+        }
+        let refusal = asked(&["./data", "--unseal-for", "10m", "-e", "SELECT 1;"])
+            .expect_err("nothing serves");
+        assert!(refusal.contains("--unseal-for"), "{refusal}");
     }
 
     #[test]

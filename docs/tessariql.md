@@ -1196,8 +1196,88 @@ by the very statement that read it.
 
 On a store that has never held a vault there is no root record, and the first
 `UNSEAL` creates one. It answers `initialised` rather than `unsealed` when it
-does, and the difference matters: there is no statement that replaces a root once
-written, so a mistyped passphrase on the first unseal is the passphrase.
+does, and the difference matters: a mistyped passphrase on the first unseal is
+the passphrase until somebody who knows it changes it.
+
+**An unseal lasts ten minutes**, and then the store seals itself. The period is
+measured from the unseal and is not renewed by use, so a busy node still closes.
+A node started with `--unseal-for 1h`, or with `TESSARIDB_UNSEAL_FOR=1h` in its
+environment, keeps its unseals for an hour instead; the flag wins over the
+variable, and a period of zero is refused at start. To extend an open window,
+seal and unseal again — unsealing a store that is already unsealed is refused.
+
+Wrong passphrases are throttled like wrong passwords: after three in a row a
+further attempt is made to wait, whether or not it is right, and is refused as
+`PassphraseThrottled`.
+
+```
+INFO FOR SEAL;
+```
+
+Answers whether this process can open secrets and until when:
+`{ state, seals_at, unseal_for }`, where `state` is `uninitialised` (no root yet),
+`sealed` or `unsealed`, and `seals_at` is the instant an unsealed store closes.
+It is this process's answer — on a cluster each node answers for itself — and any
+signed-in user may ask.
+
+```
+CHANGE VAULT PASSPHRASE FROM 'the operator passphrase' TO 'a new one';
+```
+
+Wraps the same master key under a new passphrase. No secret is re-encrypted and
+the store stays sealed or unsealed as it was; afterwards the old passphrase
+unseals nothing. Both are quoted strings for the reason `UNSEAL`'s is, the
+current one is checked under the same throttle, and a store that has never been
+unsealed is refused with `NoVaultRoot`. **A backup taken before the change still
+opens with the old passphrase**, because the root record travels in the log like
+the rest of the catalog.
+
+#### A vault with its own passphrase
+
+```
+DEFINE VAULT team PASSPHRASE 'the team passphrase';
+UNSEAL VAULT team WITH 'the team passphrase';
+SEAL VAULT team;
+CHANGE VAULT team PASSPHRASE FROM 'the team passphrase' TO 'a new one';
+INFO FOR SEAL OF team;
+```
+
+A vault declared with `PASSPHRASE` keeps its key under a key derived from that
+passphrase instead of under the store's master key. The store's passphrase does
+not open it, holding every authority in the store does not open it, and it can be
+declared on a store that has never been unsealed. Declaring it leaves it unsealed
+for one period, exactly as the store's first unseal does. A vault declared without
+`PASSPHRASE` opens with the store's passphrase, as before, and which of the two a
+vault is cannot change after it is declared. `INFO FOR VAULT team` says which:
+`custody` is `'own'` or `'store'`.
+
+The named statements act on that vault alone. Its unseal lasts the node's period
+and is throttled on its own; sealing it leaves the store and every other vault as
+they were; changing its passphrase re-wraps the same key, so no secret is
+re-encrypted and a backup taken before the change still opens with the old one.
+`INFO FOR SEAL OF team` answers `{ state, seals_at, unseal_for, custody }` — for a
+vault in the store's custody, the store's own state. Naming a vault that opens with
+the store's passphrase in `UNSEAL`, `SEAL` or `CHANGE` is refused as
+`VaultUsesStorePassphrase`, because unsealing the store opens every vault in its
+custody and the caller named one.
+
+Anybody who may read in the vault's database may unseal or seal it — the
+passphrase is what they must also hold — and changing its passphrase needs
+`manage` there, as declaring it did. What an own passphrase does not change: a
+running node holding the unsealed key can decrypt, an administrator can still
+`DROP VAULT` it (which destroys the key rather than disclosing anything), and the
+names and number of its records stay visible as for every vault.
+
+A client need not write any of these as statement text. The HTTP surface has
+`GET /vault`, `POST /vault/unseal` (the body is the passphrase),
+`POST /vault/seal` and `POST /vault/passphrase` (`{"current": …, "new": …}`), and
+the wire protocol has a frame of its own for the same four acts, so the
+passphrase is never part of a script a console keeps or a client logs. For a vault
+with its own passphrase the routes are `GET /vault/{namespace}/{database}/{vault}`
+and `POST /vault/{namespace}/{database}/{vault}/unseal`, `…/seal` and
+`…/passphrase`, and the frame names the vault as its target.
+The console's **Vault** tab (⌘7) does all of this over those routes, for the
+store's key and for any one vault.
 
 #### Reading a secret
 
@@ -1289,6 +1369,19 @@ INFO FOR VAULT team;
 Each declared field, its type, and whether it is `SECRET`. It carries no length,
 no fingerprint and no key identifier for a sealed field — each would be an oracle
 that answers slowly rather than not at all.
+
+```
+INFO FOR VAULT team RECORDS;
+INFO FOR VAULT team RECORDS AFTER team:'github' LIMIT 100;
+```
+
+The vault's record ids in key order, a page at a time: `{ records, next }`, with
+`next` naming the last id when the page was full and `NONE` when it was the last
+page. A page is a thousand ids unless `LIMIT` says otherwise, and at most ten
+thousand. No value of any record is in it, sealed or not; the ids themselves are
+not secret, because a record's identity is its key and keys are not encrypted —
+which is why a vault record should never be named after what it holds. Reading
+the list needs a grant on the vault, as reading anything in it does.
 
 `INFO FOR TABLE team` answers too, and reports `vault: true` beside the other
 markers. It matters because the declaration it renders back says `DEFINE VAULT`
@@ -6629,6 +6722,93 @@ DEFINE USER ada ON prod.orders ROLE editor PASSHASH '$argon2id$v=19$m=19456,t=2,
 Refused unless the store could have made that hash itself — Argon2id, at
 parameters no weaker than its own.
 
+### A part of the store, as a script
+
+```
+BACKUP SCRIPT OF NAMESPACE crm, prod.orders;
+BACKUP SCRIPT OF DATABASE billing.invoices TO 'billing.tessariql';
+```
+
+`OF` names what a script carries — `NAMESPACE x` for a namespace and every
+database in it, `DATABASE x.y` or the bare `x.y` for one database. It carries
+their declarations, their records, their indexes and the analyzers their fields
+use (each `IF NOT EXISTS`, so a store that already declares one of that name
+keeps its own). It carries **no users and no grants** — they belong to the
+store, not to a namespace — and its header says so and names the places it
+holds. A place the store does not hold is refused as `Unknown`.
+
+A part is a **script** only. A log of one database holds its records and none of
+the definitions of the namespace and database it lives in, so it would restore
+nowhere on its own; a snapshot keeps the catalog as the store keeps it, so it is
+taken of the whole store. Both are refused with that reason.
+
+### Written by the node, into its backup folder
+
+```
+BACKUP STATE TO 'weekly/state.tessarisnap';
+BACKUP TO 'nightly.tessarilog';
+BACKUP SCRIPT TO 'dump.tessariql';
+```
+
+`TO` asks the node to write the file itself rather than answer with it, into the
+**backup folder** it was started with — `--backup-dir <folder>`, or
+`TESSARIDB_BACKUP_DIR` in the container image, which defaults it to
+`/var/lib/tessaridb/backups` inside its volume. It is what the console's Backup
+tab runs. The answer says where the file landed and how large it is:
+`{ path, bytes, form }`.
+
+The name is a file **inside** that folder, and the node decides whether it stays
+there:
+
+- it is relative and made of plain parts — an absolute path, a `..` or a `.` is
+  refused as `BackupNameRefused`, before anything is written;
+- subfolders it names are made one at a time, and one that is already a link or
+  a file is refused rather than followed out of the folder;
+- a file already at that name is **never replaced** — `BackupExists` (`409`),
+  because the file it would replace is most likely an earlier backup;
+- a node started without a folder refuses every `TO` as `NoBackupFolder` (`409`)
+  rather than writing somewhere nobody chose.
+
+The bytes go to `<name>.partial`, are synced, read back through the verifier
+where they were written (a log and a snapshot; a script has none), and only then
+renamed into place — so the folder never holds a file that reads as a backup and
+is not one. The same owner rule applies as for `BACKUP` itself.
+
+### Restoring a script into a live store
+
+```
+RESTORE SCRIPT FROM 'crm.tessariql';
+```
+
+`RESTORE` reads a script from the node's backup folder — the same folder
+`BACKUP … TO` writes, with the same rule for the name — and runs it into the
+store **beside what it already holds**. It is how a part taken with
+`BACKUP SCRIPT OF` comes back, and it is what the console's Backup tab runs.
+
+It only ever **creates**. Before anything runs, the script is read against the
+store, and it may define databases that do not exist yet, the namespaces around
+them (one that already exists is reused), the analyzers their fields use, and
+the tables, fields, indexes and records inside what it created. It is refused,
+with nothing written, when:
+
+- a database it would create already exists — `RestoreTargetExists` (`409`);
+- it does anything else — a delete, a drop, an alter, a user, a grant, a write
+  into a place it did not create — `RestoreRefused`, naming the statement by its
+  first words. A whole-store script carries its users, so it is refused here and
+  restores into an empty store with `tessaridb <store> -f`;
+- it runs inside `BEGIN … COMMIT`, since it commits on its own.
+
+It runs as the caller, and each statement is checked again as the caller's own;
+the statement itself needs a store-wide owner. The new namespaces and databases
+are created first and then filled, in one transaction that the script's own
+`BEGIN … COMMIT` batches fold into — a place must exist before a `USE` can
+select it. If the filling is refused, the places it created are dropped again,
+so a failed restore leaves nothing behind. The answer names the file, how many
+statements ran and the databases it created: `{ path, statements, databases }`.
+
+A log or a snapshot restores only into an empty store, with the node stopped:
+`tessaridb <store> --restore <file>`.
+
 ## 7b. Looking at a plan
 
 ```
@@ -7924,7 +8104,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.16.0", "build": "0.16.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.17.0", "build": "0.17.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],

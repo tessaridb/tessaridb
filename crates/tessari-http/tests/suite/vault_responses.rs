@@ -174,3 +174,178 @@ fn a_secret_has_no_place_in_a_request_path() {
         "the refusal echoed the secret it was sent in the path: {said}"
     );
 }
+
+// The dedicated routes (ADR-0092 D2): the passphrase travels as a body of its
+// own, never as script text, and never comes back.
+
+fn call(address: &str, method: &str, path: &str, body: &str) -> (u16, String) {
+    let mut stream = TcpStream::connect(address).unwrap();
+    let head = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.write_all(body.as_bytes()).unwrap();
+    let mut said = String::new();
+    BufReader::new(stream).read_to_string(&mut said).unwrap();
+    let status = said.split_whitespace().nth(1).unwrap().parse().unwrap();
+    (status, said)
+}
+
+#[test]
+fn the_vault_routes_unseal_seal_and_report() {
+    let (_node, address) = node();
+
+    let (status, said) = call(&address, "GET", "/vault", "");
+    assert_eq!(status, 200, "{said}");
+    assert!(said.contains(r#""state":"uninitialised""#), "{said}");
+
+    let (status, said) = call(&address, "POST", "/vault/unseal", PASSPHRASE);
+    assert_eq!(status, 200, "{said}");
+    assert!(said.contains(r#""state":"unsealed""#), "{said}");
+    assert!(said.contains(r#""initialised":true"#), "{said}");
+    assert!(said.contains(r#""seals_at""#), "{said}");
+    assert!(
+        !said.contains(PASSPHRASE),
+        "the passphrase came back: {said}"
+    );
+
+    let (status, said) = call(&address, "POST", "/vault/seal", "");
+    assert_eq!(status, 200, "{said}");
+    assert!(said.contains(r#""state":"sealed""#), "{said}");
+
+    let (status, said) = call(&address, "POST", "/vault/unseal", "not the passphrase");
+    assert_ne!(status, 200, "a wrong passphrase unsealed: {said}");
+    assert!(
+        !said.contains("not the passphrase"),
+        "the guess came back: {said}"
+    );
+    let (_, said) = call(&address, "GET", "/vault", "");
+    assert!(said.contains(r#""state":"sealed""#), "{said}");
+
+    // "Not that way" is its own answer, for the reason every other route has it.
+    let (status, _) = call(&address, "GET", "/vault/unseal", "");
+    assert_eq!(status, 405);
+    let (status, _) = call(&address, "POST", "/vault", "");
+    assert_eq!(status, 405);
+}
+
+#[test]
+fn the_passphrase_route_rekeys_and_never_quotes_either_passphrase() {
+    let (_node, address) = node();
+    call(&address, "POST", "/vault/unseal", PASSPHRASE);
+
+    let (status, said) = call(
+        &address,
+        "POST",
+        "/vault/passphrase",
+        r#"{"current": "a wrong one 71aa", "new": "the next one 9c02"}"#,
+    );
+    assert_ne!(
+        status, 200,
+        "a wrong current passphrase was accepted: {said}"
+    );
+    assert!(
+        !said.contains("a wrong one") && !said.contains("the next one"),
+        "{said}"
+    );
+
+    let (status, said) = call(
+        &address,
+        "POST",
+        "/vault/passphrase",
+        r#"{"current": "x\q"}"#,
+    );
+    assert_eq!(status, 400, "{said}");
+    assert!(
+        !said.contains("\\q"),
+        "a malformed body was quoted back: {said}"
+    );
+
+    let body = format!(r#"{{"current": "{PASSPHRASE}", "new": "the next one 9c02"}}"#);
+    let (status, said) = call(&address, "POST", "/vault/passphrase", &body);
+    assert_eq!(status, 200, "{said}");
+    assert!(
+        !said.contains(PASSPHRASE) && !said.contains("the next one"),
+        "{said}"
+    );
+
+    call(&address, "POST", "/vault/seal", "");
+    let (status, _) = call(&address, "POST", "/vault/unseal", PASSPHRASE);
+    assert_ne!(status, 200, "the old passphrase still unseals");
+    let (status, said) = call(&address, "POST", "/vault/unseal", "the next one 9c02");
+    assert_eq!(status, 200, "{said}");
+}
+
+// One vault carrying its own passphrase has the same four routes under its own
+// path (ADR-0093 D6), and a vault in the store's custody is refused there.
+
+const TEAM_PASSPHRASE: &str = "the team passphrase 5d13";
+
+#[test]
+fn a_vault_with_its_own_passphrase_has_its_own_routes() {
+    let (_node, address) = node();
+    call(&address, "POST", "/vault/unseal", PASSPHRASE);
+    let script = format!(
+        "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE work; USE DATABASE work;
+         DEFINE VAULT shared;
+         DEFINE VAULT team PASSPHRASE '{TEAM_PASSPHRASE}';"
+    );
+    let (status, said) = call(&address, "POST", "/script", &script);
+    assert_eq!(status, 200, "{said}");
+
+    let (status, said) = call(&address, "GET", "/vault/prod/work/team", "");
+    assert_eq!(status, 200, "{said}");
+    assert!(said.contains(r#""custody":"own""#), "{said}");
+    assert!(said.contains(r#""state":"unsealed""#), "{said}");
+
+    let (status, said) = call(&address, "POST", "/vault/prod/work/team/seal", "");
+    assert_eq!(status, 200, "{said}");
+    assert!(said.contains(r#""state":"sealed""#), "{said}");
+    // The store's key is untouched by sealing one vault.
+    let (_, said) = call(&address, "GET", "/vault", "");
+    assert!(said.contains(r#""state":"unsealed""#), "{said}");
+
+    let (status, said) = call(&address, "POST", "/vault/prod/work/team/unseal", PASSPHRASE);
+    assert_ne!(
+        status, 200,
+        "the store's passphrase opened the vault: {said}"
+    );
+    assert!(!said.contains(PASSPHRASE), "{said}");
+    let (status, said) = call(
+        &address,
+        "POST",
+        "/vault/prod/work/team/unseal",
+        TEAM_PASSPHRASE,
+    );
+    assert_eq!(status, 200, "{said}");
+    assert!(said.contains(r#""state":"unsealed""#), "{said}");
+    assert!(!said.contains(TEAM_PASSPHRASE), "{said}");
+
+    let body = format!(r#"{{"current": "{TEAM_PASSPHRASE}", "new": "the next team one"}}"#);
+    let (status, said) = call(&address, "POST", "/vault/prod/work/team/passphrase", &body);
+    assert_eq!(status, 200, "{said}");
+    assert!(!said.contains("the next team one"), "{said}");
+
+    let (status, said) = call(&address, "GET", "/vault/prod/work/shared", "");
+    assert_eq!(status, 200, "{said}");
+    assert!(said.contains(r#""custody":"store""#), "{said}");
+    let (status, said) = call(
+        &address,
+        "POST",
+        "/vault/prod/work/shared/unseal",
+        PASSPHRASE,
+    );
+    assert_eq!(status, 400, "{said}");
+    assert!(said.contains("store's passphrase"), "{said}");
+
+    assert_eq!(
+        call(&address, "GET", "/vault/prod/work/team/unseal", "").0,
+        405
+    );
+    assert_eq!(
+        call(&address, "GET", "/vault/prod/work/team/rotate", "").0,
+        404
+    );
+    assert_eq!(call(&address, "GET", "/vault/pr-od/work/team", "").0, 400);
+}

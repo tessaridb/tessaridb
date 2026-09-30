@@ -199,14 +199,16 @@ export function held(answered: Result | null): Record<string, unknown> | null {
 }
 
 /**
- * One key-value route (`/kv/…`, ADR-0090), signed in as the console is, parsed as
- * JSON. Recorded in the statement log as `METHOD path`, because a request this
- * session sent is accounted for whether or not it carried a script.
+ * One route (`/kv/…`, ADR-0090; `/vault/…`, ADR-0092/0093), signed in as the
+ * console is, parsed as JSON. Recorded in the statement log as `METHOD path`,
+ * because a request this session sent is accounted for whether or not it carried
+ * a script — and never with its body, which on `/vault` is a passphrase.
  */
 export async function route(
-  method: "GET",
+  method: "GET" | "POST",
   path: string,
   screen: string,
+  body?: string,
 ): Promise<{ status: number; body: unknown }> {
   const started = performance.now();
   const headers: Record<string, string> = {};
@@ -216,7 +218,7 @@ export async function route(
   }
   let reply: Response;
   try {
-    reply = await fetch(path, { method, headers, credentials: "omit" });
+    reply = await fetch(path, { method, headers, credentials: "omit", ...(body === undefined ? {} : { body }) });
   } catch {
     record({
       what: `${method} ${path}`,

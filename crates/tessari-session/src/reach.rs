@@ -65,6 +65,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // here for a grant to be asked about.
         | StatementKind::SealVault { .. }
         | StatementKind::UnsealVault { .. }
+        | StatementKind::ChangeVaultPassphrase { .. }
         // A graph is a container, so declaring or dropping one touches no row
         // in any table: it is the caller's tenancy level that decides, exactly
         // as it is for the four words above.
@@ -128,7 +129,10 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // at all (`Needs::Administer`), and `within_grants` refuses a
         // grant-governed user by name — because a rule shaped "every table it
         // names is granted" passes vacuously over an empty list.
-        | StatementKind::Backup { .. } => Vec::new(),
+        | StatementKind::Backup { .. }
+        // A restore names no table either: what it writes is decided by the
+        // script it reads, which it vets against the store before running.
+        | StatementKind::Restore { .. } => Vec::new(),
 
         // `INFO FOR TABLE users` names its table, so the grant loop below asks
         // about it exactly as a `SELECT` from it would — which is the rule the
@@ -151,6 +155,13 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // may ask (G037).
         StatementKind::Info {
             subject: InfoSubject::Topic(table),
+        } => vec![table],
+
+        // A listing of a vault's ids names the vault, and for the reason every
+        // arm below gives: left to the empty list, it would pass the grant loop
+        // vacuously and tell any reader of the tenancy what a vault holds.
+        StatementKind::Info {
+            subject: InfoSubject::VaultRecords { table, .. },
         } => vec![table],
 
         // Listing a record's recipients names the vault it lives in, and this

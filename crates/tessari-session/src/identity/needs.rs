@@ -106,6 +106,11 @@ impl Needs {
         kinds: &[Kind::Read, Kind::Operate],
         at: At::Store,
     };
+    /// Creating, filling and reading a file on the node — a restore.
+    const MANAGE_WRITE_OPERATE_STORE: Self = Self {
+        kinds: &[Kind::Manage, Kind::Write, Kind::Operate],
+        at: At::Store,
+    };
     /// Governing, where the thing governed is the store — the audit trail.
     ///
     /// [`Self::GOVERN`] with the container widened, as [`Self::MANAGE_STORE`] is
@@ -247,9 +252,17 @@ impl Needs {
             // it unwraps is store-wide, and it is `Operate` rather than `Manage`
             // for the same reason `DEFINE NODE` is: it changes what this process
             // can do, not what the store contains.
-            StatementKind::SealVault { .. } | StatementKind::UnsealVault { .. } => {
-                Self::OPERATE_STORE
-            }
+            StatementKind::SealVault { vault: None, .. }
+            | StatementKind::UnsealVault { vault: None, .. }
+            | StatementKind::ChangeVaultPassphrase { vault: None, .. } => Self::OPERATE_STORE,
+            // One vault carrying its own passphrase (ADR-0093 D5). Opening or
+            // closing it is for whoever may `REVEAL` in it — the passphrase is
+            // the second factor, and unsealing grants no read that the reader
+            // did not already hold. Changing it rewrites the vault's
+            // declaration, which is shaping structure, as declaring it was.
+            StatementKind::SealVault { vault: Some(_), .. }
+            | StatementKind::UnsealVault { vault: Some(_), .. } => Self::READ,
+            StatementKind::ChangeVaultPassphrase { vault: Some(_), .. } => Self::MANAGE,
             StatementKind::Use { .. }
             | StatementKind::Begin
             | StatementKind::Commit
@@ -295,6 +308,11 @@ impl Needs {
             // run the cluster and see no records, and a backup is every record
             // there is.
             StatementKind::Backup { .. } => Self::READ_OPERATE_STORE,
+            // A restore creates namespaces and databases, writes their records,
+            // and reads a file on this node — the three kinds together, at the
+            // store, which only a store-wide owner holds. Each statement it runs
+            // is then checked again as the caller's own.
+            StatementKind::Restore { .. } => Self::MANAGE_WRITE_OPERATE_STORE,
             // Asking about a **user** is asking what the permission system says,
             // so it is the same kind of act as writing it. The other four
             // subjects filter — they report the tables and fields the caller may
@@ -383,6 +401,13 @@ impl Needs {
             StatementKind::Info {
                 subject: InfoSubject::Audit(_),
             } => Self::GOVERN_STORE,
+            // Whether secrets can be opened right now, and until when. Named
+            // rather than left to the catch-all, which demands a read: this
+            // names no table, so any signed-in caller may ask (ADR-0092 D1),
+            // and an anonymous one on a closed store is refused before here.
+            StatementKind::Info {
+                subject: InfoSubject::Seal(None),
+            } => Self::NOTHING,
             // The other four are reads of the catalog, and what they report is
             // narrowed to what the caller could have found out anyway.
             StatementKind::Info { .. } => Self::READ,

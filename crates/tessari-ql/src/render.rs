@@ -105,6 +105,9 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         // a string, and a string is a thing that gets logged.
         StatementKind::UnsealVault { .. } => Err(unrenderable("UNSEAL VAULT", span)),
         StatementKind::SealVault { .. } => Err(unrenderable("SEAL VAULT", span)),
+        StatementKind::ChangeVaultPassphrase { .. } => {
+            Err(unrenderable("CHANGE VAULT PASSPHRASE", span))
+        }
         StatementKind::DefineIndex { .. } => Err(unrenderable("DEFINE INDEX", span)),
         StatementKind::DefineField { .. } => Err(unrenderable("DEFINE FIELD", span)),
         StatementKind::DefineAnalyzer { .. } => Err(unrenderable("DEFINE ANALYZER", span)),
@@ -123,6 +126,7 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::Explain(_) => Err(unrenderable("EXPLAIN", span)),
         StatementKind::Info { .. } => Err(unrenderable("INFO", span)),
         StatementKind::Backup { .. } => Err(unrenderable("BACKUP", span)),
+        StatementKind::Restore { .. } => Err(unrenderable("RESTORE", span)),
         StatementKind::DropUser { .. } => Err(unrenderable("DROP USER", span)),
         StatementKind::DropField { .. } => Err(unrenderable("DROP FIELD", span)),
         StatementKind::DropTable { .. } => Err(unrenderable("DROP TABLE", span)),

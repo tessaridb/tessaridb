@@ -8,6 +8,7 @@ use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
 
 mod access;
+mod backup;
 mod cluster;
 mod context;
 mod define;
@@ -217,48 +218,7 @@ impl Parser<'_> {
                     limit,
                 }
             }
-            Some(Keyword::Backup) => {
-                self.advance();
-                // `STATE` is contextual, as every word a statement's head adds
-                // is: it is an ordinary field name everywhere else, and after
-                // `BACKUP` nothing but this word or `FROM` can stand.
-                let form = if self.eat_word("state") {
-                    Some(crate::ast::BackupForm::State)
-                } else if self.eat_word("script") {
-                    Some(crate::ast::BackupForm::Script)
-                } else {
-                    None
-                };
-                if let Some(form) = form {
-                    if self.eat_keyword(Keyword::From) {
-                        return Err(self.error_here(
-                            "the end of the statement; a snapshot or a script is one moment, \
-                             and `FROM` names a position in a log",
-                        ));
-                    }
-                    StatementKind::Backup { from: None, form }
-                } else {
-                    // `FROM` reads as it does everywhere else — where the answer
-                    // starts — and leaving it out means the whole log, which is
-                    // what `write_from(.., 1)` already is.
-                    let from = if self.eat_keyword(Keyword::From) {
-                        let expected = "the sequence the backup starts at";
-                        let Some(Token::Number(tessari_types::Number::Integer(held))) = self.peek()
-                        else {
-                            return Err(self.error_here(expected));
-                        };
-                        let held = u64::try_from(*held).map_err(|_| self.error_here(expected))?;
-                        self.advance();
-                        Some(held)
-                    } else {
-                        None
-                    };
-                    StatementKind::Backup {
-                        from,
-                        form: crate::ast::BackupForm::Log,
-                    }
-                }
-            }
+            Some(Keyword::Backup) => self.backup_statement()?,
             Some(Keyword::Del) => {
                 self.advance();
                 StatementKind::Del {
@@ -307,12 +267,9 @@ impl Parser<'_> {
             _ if self.eat_word("add") => self.add_recipient_statement(start)?,
             _ if self.eat_word("remove") => self.remove_recipient_statement(start)?,
             _ if self.eat_word("unseal") => self.unseal_statement(start)?,
-            _ if self.eat_word("seal") => {
-                self.expect_vault_word("`VAULT`")?;
-                StatementKind::SealVault {
-                    span: start.to(self.span_behind()),
-                }
-            }
+            _ if self.eat_word("change") => self.change_passphrase_statement(start)?,
+            _ if self.eat_word("restore") => self.restore_statement()?,
+            _ if self.eat_word("seal") => self.seal_statement(start)?,
             _ => return Err(self.error_here("a statement")),
         };
         Ok(Statement {

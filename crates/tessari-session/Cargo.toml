@@ -30,6 +30,7 @@ thiserror.workspace = true
 tessari-encoding.workspace = true
 tessari-kv.workspace = true
 tessari-lsm.workspace = true
+tessari-vault.workspace = true
 tempfile = "3"
 
 [lints]

@@ -45,6 +45,8 @@
         <button type="button" role="tab" id="tab-cluster" aria-controls="panel-cluster" aria-selected="false" tabindex="-1">Cluster</button>
         <button type="button" role="tab" id="tab-access" aria-controls="panel-access" aria-selected="false" tabindex="-1">Access</button>
         <button type="button" role="tab" id="tab-this-node" aria-controls="panel-this-node" aria-selected="false" tabindex="-1">This node</button>
+        <button type="button" role="tab" id="tab-backup" aria-controls="panel-backup" aria-selected="false" tabindex="-1">Backup</button>
+        <button type="button" role="tab" id="tab-vault" aria-controls="panel-vault" aria-selected="false" tabindex="-1">Vault</button>
       </div>
     </nav>
     <main>
@@ -596,6 +598,110 @@
             <h2>Metrics</h2>
           </div>
           <div id="node-metrics" class="answer small" aria-live="polite"></div>
+        </div>
+      </section>
+      <section id="panel-backup" role="tabpanel" aria-labelledby="tab-backup" tabindex="0" hidden>
+        <div class="pane-head">
+          <h2>Backup</h2>
+          <span id="backup-status" class="status" role="status"></span>
+        </div>
+        <div class="pane">
+          <p class="note">The node writes the file into its backup folder (<code>--backup-dir</code>, or <code>TESSARIDB_BACKUP_DIR</code> in the image). The name may include subfolders and never replaces an existing file. Store-wide owners only.</p>
+          <div class="row">
+            <label>
+              What to write 
+              <select id="backup-form">
+                <option value="state" selected>the current state — a snapshot</option>
+                <option value="log">the log — every commit, in order</option>
+                <option value="script">the current state as TessariQL</option>
+              </select>
+            </label>
+            <label>File name <input id="backup-name" type="text" autocomplete="off" /></label>
+          </div>
+          <div class="row">
+            <label>
+              What to include 
+              <select id="backup-part">
+                <option value="store" selected>the whole store</option>
+                <option value="places">chosen namespaces and databases</option>
+              </select>
+            </label>
+            <label>Namespaces and databases <input id="backup-places" type="text" placeholder="crm, prod.orders" autocomplete="off" /></label>
+          </div>
+          <p id="backup-says" class="note says"></p>
+          <div class="row">
+            <button id="backup-run" type="button" class="primary" disabled>Back up</button>
+          </div>
+          <div id="backup-answer" class="answer small" aria-live="polite"></div>
+        </div>
+        <div class="pane">
+          <div class="pane-head">
+            <h2>Restore a script</h2>
+            <span id="restore-status" class="status" role="status"></span>
+          </div>
+          <p class="note">Runs a script from the same folder beside what the store holds: it creates the databases it carries and is refused, with nothing written, when one of them already exists.</p>
+          <div class="row">
+            <label>File name <input id="restore-name" type="text" autocomplete="off" /></label>
+          </div>
+          <p id="restore-says" class="note says"></p>
+          <div class="row">
+            <button id="restore-run" type="button" disabled>Restore</button>
+          </div>
+          <div id="restore-answer" class="answer small" aria-live="polite"></div>
+        </div>
+      </section>
+      <section id="panel-vault" role="tabpanel" aria-labelledby="tab-vault" tabindex="0" hidden>
+        <div class="pane-head">
+          <h2>The store's key</h2>
+          <span id="vault-store-status" class="status" role="status"></span>
+        </div>
+        <div class="pane">
+          <p class="note">Opens every vault declared without a passphrase of its own for the node's period (<code>--unseal-for</code>, ten minutes by default), then closes by itself. Store-wide operators only.</p>
+          <div id="vault-store-answer" class="answer small" aria-live="polite"></div>
+          <div class="row">
+            <label>Passphrase <input id="vault-store-passphrase" type="password" autocomplete="current-password" /></label>
+          </div>
+          <div class="row">
+            <button id="vault-store-unseal" type="button" class="primary" disabled>Unseal</button>
+            <button id="vault-store-seal" type="button">Seal</button>
+            <button id="vault-store-refresh" type="button">Refresh</button>
+          </div>
+          <div class="row">
+            <label>Current passphrase <input id="vault-store-current" type="password" autocomplete="current-password" /></label>
+            <label>New passphrase <input id="vault-store-new" type="password" autocomplete="new-password" /></label>
+          </div>
+          <div class="row">
+            <button id="vault-store-change" type="button" disabled>Change passphrase</button>
+          </div>
+        </div>
+        <div class="pane">
+          <div class="pane-head">
+            <h2>One vault</h2>
+            <span id="vault-one-status" class="status" role="status"></span>
+          </div>
+          <p class="note">A vault declared with <code>PASSPHRASE '…'</code> opens with its own passphrase. Readers of its database may open or close it; changing the passphrase needs manage there.</p>
+          <div class="row">
+            <label>Namespace <input id="vault-one-namespace" type="text" autocomplete="off" /></label>
+            <label>Database <input id="vault-one-database" type="text" autocomplete="off" /></label>
+            <label>Vault <input id="vault-one-name" type="text" autocomplete="off" /></label>
+          </div>
+          <p id="vault-one-says" class="note says"></p>
+          <div id="vault-one-answer" class="answer small" aria-live="polite"></div>
+          <div class="row">
+            <label>Passphrase <input id="vault-one-passphrase" type="password" autocomplete="current-password" /></label>
+          </div>
+          <div class="row">
+            <button id="vault-one-show" type="button" disabled>Status</button>
+            <button id="vault-one-unseal" type="button" class="primary" disabled>Unseal</button>
+            <button id="vault-one-seal" type="button" disabled>Seal</button>
+          </div>
+          <div class="row">
+            <label>Current passphrase <input id="vault-one-current" type="password" autocomplete="current-password" /></label>
+            <label>New passphrase <input id="vault-one-new" type="password" autocomplete="new-password" /></label>
+          </div>
+          <div class="row">
+            <button id="vault-one-change" type="button" disabled>Change passphrase</button>
+          </div>
         </div>
       </section>
     </main>

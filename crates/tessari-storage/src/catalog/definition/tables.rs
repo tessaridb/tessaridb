@@ -6,15 +6,14 @@ use super::{
     FIELD_EDGE, FIELD_ENDPOINTS, FIELD_GEO, FIELD_GRAPH, FIELD_ID, FIELD_IDENTITY, FIELD_NAME,
     FIELD_NAMESPACE, FIELD_QUEUE, FIELD_SCHEMAFULL, FIELD_SERIES, FIELD_SHARDS, FIELD_SPACE,
     FIELD_TOPIC, FIELD_VAULT, FIELD_VECTOR, FIELD_VIEW, QueueDeclaration, SeriesDeclaration,
-    StoredKind, TableKind, VaultDeclaration, VectorDeclaration, ViewDeclaration, byte_count,
-    ceiling, field_id, field_name, flag, identity_kind, number, object,
+    StoredKind, TableKind, VaultCustody, VaultDeclaration, VectorDeclaration, ViewDeclaration,
+    byte_count, ceiling, field_id, field_name, flag, identity_kind, number, object,
 };
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
 use tessari_types::{
     ConflictPolicy, DatabaseId, GraphId, IdentityKind, NamespaceId, RecordId, TableId, Value,
 };
-use tessari_vault::Wrapped;
 
 /// A table within a database.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,16 +148,16 @@ impl TableDefinition {
         matches!(self.kind, TableKind::Queue(_))
     }
 
-    /// The vault's key, sealed under the store's master key.
+    /// The vault's key and what it is sealed under (ADR-0093).
     ///
     /// `None` for everything that is not a vault, which is the same answer a
     /// vault gives if its declaration were ever absent — and that second case
     /// cannot arise, because a declaration that will not parse is refused at
     /// `from_value` rather than read as a vault with no key.
     #[must_use]
-    pub fn vault_key(&self) -> Option<&Wrapped> {
+    pub fn vault_custody(&self) -> Option<&VaultCustody> {
         match &self.kind {
-            TableKind::Vault(declared) => Some(&declared.key),
+            TableKind::Vault(declared) => Some(&declared.custody),
             _ => None,
         }
     }

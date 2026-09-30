@@ -29,6 +29,7 @@ pub struct Detached {
     consumer: Option<Consumer>,
     elsewhere: Option<Arc<dyn Elsewhere>>,
     gather: Option<Arc<dyn Gather>>,
+    backups: Option<Arc<std::path::Path>>,
 }
 
 impl Session<'_> {
@@ -42,6 +43,7 @@ impl Session<'_> {
             consumer: self.consumer,
             elsewhere: self.elsewhere,
             gather: self.gather,
+            backups: self.backups,
         }
     }
 }
@@ -58,6 +60,7 @@ impl Detached {
             consumer: self.consumer,
             elsewhere: self.elsewhere,
             gather: self.gather,
+            backups: self.backups,
         }
     }
 }

@@ -81,30 +81,7 @@ impl Root {
     /// unsealed by the act of initialising it — and needs the root record to
     /// persist. The master key is never derivable from the record alone.
     pub fn create(passphrase: &str) -> Result<(Self, SecretBytes)> {
-        let mut salt = [0_u8; SALT_BYTES];
-        getrandom::fill(&mut salt).map_err(|_| Error::Entropy)?;
-
-        let master = SecretBytes::generate()?;
-        let key_id = KeyId::generate()?;
-        let unseal = derive(passphrase, &salt)?;
-        let wrapped = envelope::seal(
-            &unseal,
-            key_id,
-            &Binding::Key {
-                level: Level::Master,
-                scope: &salt,
-            },
-            master.expose(),
-        )?;
-
-        Ok((
-            Self {
-                salt,
-                key_id,
-                wrapped,
-            },
-            master,
-        ))
+        Self::create_at(passphrase, Anchor::Store)
     }
 
     /// Recover the master key from this record and a passphrase.
@@ -113,15 +90,117 @@ impl Root {
     /// other failed authentication produces, so a caller learns only that it did
     /// not work.
     pub fn unlock(&self, passphrase: &str) -> Result<SecretBytes> {
+        self.unlock_at(passphrase, Anchor::Store)
+    }
+
+    /// The same master key under a new passphrase — a rekey (ADR-0092 D3).
+    ///
+    /// Proves `current` by unlocking this record, then wraps the master key it
+    /// held under a key derived from `new` with a fresh salt. The master key and
+    /// its identifier are unchanged, so every vault key it wraps, and every
+    /// secret under those, opens exactly as before; only who can unseal moves.
+    ///
+    /// A copy of the old record — in a backup, on a node that has not caught up
+    /// — still opens with the old passphrase. That is what a rekey is and not a
+    /// defect of this one: replacing the master key is a root rotation, which
+    /// re-wraps every vault key and is not this operation.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::WrongKey`] when `current` does not open this record, and the
+    /// derivation's own failures otherwise.
+    pub fn rewrap(&self, current: &str, new: &str) -> Result<Self> {
+        self.rewrap_at(current, new, Anchor::Store)
+    }
+
+    /// A vault's own root: a fresh vault key under its own passphrase
+    /// (ADR-0093 D1).
+    ///
+    /// The same record shape as the store's, bound to the vault's scope at the
+    /// vault level instead of to the salt at the master level — so it opens
+    /// neither as the store's root nor on any other vault's declaration. The
+    /// key it wraps is the vault key itself: there is no master key above it,
+    /// which is the whole point of a vault the store's passphrase cannot open.
+    pub fn create_for_vault(passphrase: &str, scope: &[u8]) -> Result<(Self, SecretBytes)> {
+        Self::create_at(passphrase, Anchor::Vault(scope))
+    }
+
+    /// Recover a vault key from its own root and passphrase.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::WrongKey`] for a wrong passphrase and for a root that belongs to
+    /// another vault, which are the same answer on purpose.
+    pub fn unlock_vault(&self, passphrase: &str, scope: &[u8]) -> Result<SecretBytes> {
+        self.unlock_at(passphrase, Anchor::Vault(scope))
+    }
+
+    /// The same vault key under a new passphrase, as [`Self::rewrap`] is for the
+    /// store's.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::WrongKey`] when `current` does not open this record.
+    pub fn rewrap_vault(&self, current: &str, new: &str, scope: &[u8]) -> Result<Self> {
+        self.rewrap_at(current, new, Anchor::Vault(scope))
+    }
+
+    fn create_at(passphrase: &str, anchor: Anchor<'_>) -> Result<(Self, SecretBytes)> {
+        let key = SecretBytes::generate()?;
+        let key_id = KeyId::generate()?;
+        let root = Self::wrap_at(passphrase, anchor, key_id, &key)?;
+        Ok((root, key))
+    }
+
+    fn unlock_at(&self, passphrase: &str, anchor: Anchor<'_>) -> Result<SecretBytes> {
         let unseal = derive(passphrase, &self.salt)?;
-        envelope::open_key(
-            &unseal,
-            &Binding::Key {
+        envelope::open_key(&unseal, &anchor.binding(&self.salt), &self.wrapped)
+    }
+
+    fn rewrap_at(&self, current: &str, new: &str, anchor: Anchor<'_>) -> Result<Self> {
+        let key = self.unlock_at(current, anchor)?;
+        Self::wrap_at(new, anchor, self.key_id, &key)
+    }
+
+    /// Wrap `key` under a key derived from `passphrase` with a fresh salt.
+    fn wrap_at(
+        passphrase: &str,
+        anchor: Anchor<'_>,
+        key_id: KeyId,
+        key: &SecretBytes,
+    ) -> Result<Self> {
+        let mut salt = [0_u8; SALT_BYTES];
+        getrandom::fill(&mut salt).map_err(|_| Error::Entropy)?;
+        let unseal = derive(passphrase, &salt)?;
+        let wrapped = envelope::seal(&unseal, key_id, &anchor.binding(&salt), key.expose())?;
+        Ok(Self {
+            salt,
+            key_id,
+            wrapped,
+        })
+    }
+}
+
+/// What a root record is bound to: the store's (its own salt, at the master
+/// level) or one vault's (the vault's scope, at the vault level).
+#[derive(Clone, Copy)]
+enum Anchor<'a> {
+    Store,
+    Vault(&'a [u8]),
+}
+
+impl<'a> Anchor<'a> {
+    fn binding(self, salt: &'a [u8]) -> Binding<'a> {
+        match self {
+            Self::Store => Binding::Key {
                 level: Level::Master,
-                scope: &self.salt,
+                scope: salt,
             },
-            &self.wrapped,
-        )
+            Self::Vault(scope) => Binding::Key {
+                level: Level::Vault,
+                scope,
+            },
+        }
     }
 }
 
@@ -192,4 +271,84 @@ pub fn unwrap(
     wrapped: &Wrapped,
 ) -> Result<SecretBytes> {
     envelope::open_key(under, &Binding::Key { level, scope }, &wrapped.sealed)
+}
+
+#[cfg(test)]
+mod rekey {
+    use super::Root;
+    use crate::error::Error;
+
+    #[test]
+    fn a_rewrapped_root_opens_the_same_master_key_with_the_new_passphrase_only() {
+        let (root, master) = Root::create("the old one").expect("a root");
+        let moved = root
+            .rewrap("the old one", "the new one")
+            .expect("rewrapped");
+
+        assert_eq!(
+            moved.unlock("the new one").expect("opens").expose(),
+            master.expose(),
+            "the rekey replaced the master key rather than re-wrapping it"
+        );
+        assert!(matches!(moved.unlock("the old one"), Err(Error::WrongKey)));
+        assert_ne!(
+            moved.salt, root.salt,
+            "the new passphrase reused the old salt"
+        );
+        assert!(matches!(
+            root.rewrap("not it", "the new one"),
+            Err(Error::WrongKey)
+        ));
+    }
+}
+
+#[cfg(test)]
+mod vault_root {
+    use super::Root;
+    use crate::error::Error;
+
+    const TEAM: &[u8] = b"1:1:team";
+
+    #[test]
+    fn a_vault_root_opens_its_own_vault_with_its_own_passphrase_only() {
+        let (root, key) = Root::create_for_vault("team pass", TEAM).expect("a root");
+        assert_eq!(
+            root.unlock_vault("team pass", TEAM)
+                .expect("opens")
+                .expose(),
+            key.expose()
+        );
+        assert!(matches!(
+            root.unlock_vault("not it", TEAM),
+            Err(Error::WrongKey)
+        ));
+        // Lifted onto another vault's declaration, it opens nothing.
+        assert!(matches!(
+            root.unlock_vault("team pass", b"1:1:other"),
+            Err(Error::WrongKey)
+        ));
+        // And it is not a store root under another name.
+        assert!(matches!(root.unlock("team pass"), Err(Error::WrongKey)));
+    }
+
+    #[test]
+    fn a_rewrapped_vault_root_opens_the_same_key_with_the_new_passphrase_only() {
+        let (root, key) = Root::create_for_vault("team pass", TEAM).expect("a root");
+        let moved = root
+            .rewrap_vault("team pass", "the new one", TEAM)
+            .expect("rewrapped");
+        assert_eq!(
+            moved
+                .unlock_vault("the new one", TEAM)
+                .expect("opens")
+                .expose(),
+            key.expose()
+        );
+        assert!(matches!(
+            moved.unlock_vault("team pass", TEAM),
+            Err(Error::WrongKey)
+        ));
+        assert_eq!(moved.key_id, root.key_id);
+        assert_ne!(moved.salt, root.salt);
+    }
 }

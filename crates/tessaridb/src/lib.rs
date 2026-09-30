@@ -132,7 +132,7 @@ pub use tessari_lsm::{Durability, StoreConfig};
 pub use tessari_session::redact::{Visible, seen};
 pub use tessari_session::{
     AccessPath, Detached, Error, Exactness, Nearest, Note, Outcome, Parameters, Result, Session,
-    Suggestion, Ticket,
+    Suggestion, Ticket, VaultAct, VaultTarget,
 };
 pub use tessari_storage::{
     BUILD_VERSION, Change, ChangeKind, Changes, LeadershipDefinition, Lease, LogId, Reach,
@@ -192,6 +192,9 @@ pub struct Db {
     /// What this store has landed, for whatever follows it — made on first
     /// asking, so a database nobody follows pays nothing on its commits.
     commits: std::sync::OnceLock<Arc<feed::Commits>>,
+    /// The folder `BACKUP … TO` writes into, set once by the process that was
+    /// given one; unset, every `TO` is refused rather than written anywhere.
+    backups: std::sync::OnceLock<Arc<Path>>,
 }
 
 impl Db {
@@ -211,6 +214,7 @@ impl Db {
             store: Store::open(backend)?,
             gather: std::sync::OnceLock::new(),
             commits: std::sync::OnceLock::new(),
+            backups: std::sync::OnceLock::new(),
         })
     }
 
@@ -240,6 +244,7 @@ impl Db {
             store: Store::open(backend)?,
             gather: std::sync::OnceLock::new(),
             commits: std::sync::OnceLock::new(),
+            backups: std::sync::OnceLock::new(),
         })
     }
 
@@ -251,8 +256,12 @@ impl Db {
     #[must_use]
     pub fn session(&self) -> Session<'_> {
         let session = Session::new(&self.store);
-        match self.gather.get() {
+        let session = match self.gather.get() {
             Some(gather) => session.gathering(Arc::clone(gather)),
+            None => session,
+        };
+        match self.backups.get() {
+            Some(folder) => session.backing_up_into(Arc::clone(folder)),
             None => session,
         }
     }
@@ -281,6 +290,23 @@ impl Db {
     /// Answers `false`, and changes nothing, when one was already set.
     pub fn gather_through(&self, gather: Arc<dyn tessari_session::Gather>) -> bool {
         self.gather.set(gather).is_ok()
+    }
+
+    /// Let `BACKUP … TO` write into `folder`, in every session opened from now on.
+    ///
+    /// Once per process, like [`Db::gather_through`]: where this machine keeps
+    /// its backups is fixed when the node starts. Answers `false`, and changes
+    /// nothing, when a folder was already set.
+    pub fn back_up_into(&self, folder: Arc<Path>) -> bool {
+        self.backups.set(folder).is_ok()
+    }
+
+    /// How long every later unseal of this store lasts (ADR-0092 D4).
+    ///
+    /// Ten minutes unless set. A key already held keeps the deadline it was
+    /// given when it arrived.
+    pub fn unseal_for(&self, period: core::time::Duration) {
+        self.store.vault().last_for(period);
     }
 
     /// Take or renew the lease this node writes under.
@@ -426,6 +452,7 @@ impl Db {
             store,
             gather: std::sync::OnceLock::new(),
             commits: std::sync::OnceLock::new(),
+            backups: std::sync::OnceLock::new(),
         }
     }
 

@@ -331,6 +331,58 @@ pub enum Error {
         reason: String,
     },
 
+    /// `BACKUP … TO` on a node started without a backup folder.
+    ///
+    /// A node writes a file only where its operator said it may, so with no
+    /// folder there is nowhere, rather than a default somebody did not choose.
+    #[error(
+        "this node has no backup folder, so `BACKUP … TO` has nowhere it may write; \
+         start it with --backup-dir (TESSARIDB_BACKUP_DIR in the image)"
+    )]
+    NoBackupFolder,
+
+    /// A `BACKUP … TO` name that would not stay inside the backup folder.
+    ///
+    /// Refused before anything is written: a name is a relative path of plain
+    /// parts, and a symlink inside the folder is never followed out of it.
+    #[error("the backup cannot be written to '{name}': {reason}")]
+    BackupNameRefused {
+        /// The name as the statement gave it.
+        name: String,
+        /// Why it would not stay inside the folder.
+        reason: String,
+    },
+
+    /// A `RESTORE` whose script would create a database that already exists.
+    ///
+    /// A restore only creates, so it lands beside what the store holds and never
+    /// over it; nothing of the script is written.
+    #[error("the restore was not run, because {place} already exists; a restore only creates")]
+    RestoreTargetExists {
+        /// The namespace and database, as `ns.db`.
+        place: String,
+    },
+
+    /// A `RESTORE` refused before anything ran: the script does something other
+    /// than create databases and fill them, or cannot be read as a script.
+    #[error("the restore was not run: {reason}")]
+    RestoreRefused {
+        /// Why, naming the statement by its first words.
+        reason: String,
+    },
+
+    /// A `BACKUP … TO` whose file is already there.
+    ///
+    /// A backup never replaces a file: the one it would replace is most likely
+    /// an earlier backup, and losing it to a mistyped name is not recoverable.
+    #[error(
+        "the backup was not written, because {path} already exists; a backup never replaces a file"
+    )]
+    BackupExists {
+        /// The file that is already there.
+        path: String,
+    },
+
     /// A stored value could not be read back.
     #[error(transparent)]
     Encoding(#[from] tessari_encoding::Error),
@@ -1483,6 +1535,40 @@ pub enum Error {
     /// where an attacker is not.
     #[error("this node is not taking a sign-in for that user right now")]
     SignInThrottled,
+
+    /// A passphrase was presented while guesses at it are being made to wait
+    /// (ADR-0092 D2).
+    ///
+    /// Its own refusal rather than [`Error::SignInThrottled`], whose words name
+    /// a user: what is being guessed here is the store's passphrase, and the
+    /// caller is told to wait without being told whether this try was right.
+    #[error("this node is not taking a vault passphrase right now")]
+    PassphraseThrottled,
+
+    /// A passphrase change on a store that has never been unsealed.
+    ///
+    /// There is no root to re-wrap. Creating one is what the first
+    /// `UNSEAL VAULT` does, and it says so; a change that quietly initialised
+    /// instead would make its `FROM` passphrase mean nothing.
+    #[error("this store has no vault passphrase yet: the first `UNSEAL VAULT` sets one")]
+    NoVaultRoot,
+
+    /// A statement naming a vault that opens with the store's passphrase
+    /// (ADR-0093 D3).
+    ///
+    /// Refused rather than taken as the store-wide statement: unsealing the
+    /// store by naming one vault would open every other vault in the store's
+    /// custody too, which the caller did not name.
+    #[error(
+        "vault {vault} opens with the store's passphrase: use `UNSEAL VAULT`, `SEAL VAULT` or \
+         `CHANGE VAULT PASSPHRASE` without a name (at {span})"
+    )]
+    VaultUsesStorePassphrase {
+        /// The vault as written.
+        vault: String,
+        /// Where the statement is.
+        span: Span,
+    },
 
     /// A score was asked for where there is no collection to measure against.
     ///

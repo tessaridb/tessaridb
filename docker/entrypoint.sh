@@ -24,6 +24,7 @@ fi
 STORE="${TESSARIDB_STORE:-}"
 ADDRESS="${TESSARIDB_ADDRESS:-}"
 HTTP_ADDRESS="${TESSARIDB_HTTP_ADDRESS:-}"
+BACKUP_DIR="${TESSARIDB_BACKUP_DIR:-}"
 
 # Refused rather than started. With neither surface the node would read
 # statements from standard input, which in a container with no terminal means it
@@ -59,6 +60,9 @@ if [ -n "${ADDRESS}" ]; then
 fi
 if [ -n "${HTTP_ADDRESS}" ]; then
   set -- "$@" --http "${HTTP_ADDRESS}"
+fi
+if [ -n "${BACKUP_DIR}" ]; then
+  set -- "$@" --backup-dir "${BACKUP_DIR}"
 fi
 
 exec tessaridb "$@"

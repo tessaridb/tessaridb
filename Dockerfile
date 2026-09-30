@@ -45,8 +45,8 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends libstdc++6 bash \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --home-dir /var/lib/tessaridb --shell /usr/sbin/nologin tessaridb \
- && mkdir -p /var/lib/tessaridb \
- && chown tessaridb:tessaridb /var/lib/tessaridb
+ && mkdir -p /var/lib/tessaridb/backups \
+ && chown -R tessaridb:tessaridb /var/lib/tessaridb
 
 COPY --from=build /src/target/release/tessaridb /usr/local/bin/tessaridb
 COPY docker/entrypoint.sh /usr/local/bin/tessaridb-entrypoint
@@ -64,6 +64,14 @@ RUN chmod +x /usr/local/bin/tessaridb-entrypoint /usr/local/bin/tessaridb-health
 #   TESSARIDB_HTTP_ADDRESS    the HTTP surface's address. Empty turns it off.
 #   TESSARIDB_LOG             how much the node reports: error, warn, info,
 #                             debug or trace.
+#   TESSARIDB_BACKUP_DIR      where `BACKUP … TO '<name>'` (and the console's
+#                             Backup tab) writes; inside the volume, so a
+#                             backup outlives the container. Empty refuses
+#                             every `TO`.
+#   TESSARIDB_UNSEAL_FOR      how long an unseal lasts before the store seals
+#                             itself, as a TessariQL duration (`10m`, `1h`).
+#                             Read by the node itself, so it works outside a
+#                             container too; `--unseal-for` wins over it.
 #
 # `0.0.0.0` rather than a loopback address, because a container's loopback is
 # reachable from nothing outside it and a node bound there would answer no
@@ -71,7 +79,9 @@ RUN chmod +x /usr/local/bin/tessaridb-entrypoint /usr/local/bin/tessaridb-health
 ENV TESSARIDB_STORE=/var/lib/tessaridb/store \
     TESSARIDB_ADDRESS=0.0.0.0:9080 \
     TESSARIDB_HTTP_ADDRESS=0.0.0.0:8000 \
-    TESSARIDB_LOG=info
+    TESSARIDB_LOG=info \
+    TESSARIDB_BACKUP_DIR=/var/lib/tessaridb/backups \
+    TESSARIDB_UNSEAL_FOR=10m
 
 # What the node itself reads, and what this image deliberately does NOT default.
 #

@@ -37,6 +37,18 @@ pub enum Error {
         supported: u8,
     },
 
+    /// The node is too old to be asked this: it said a minor below the one the
+    /// frame needs. Refused before sending, because an older node closes the
+    /// connection on a kind it does not know, which would read as a network
+    /// fault rather than as the version gap it is.
+    #[error("that node speaks minor version {found}; this needs {needed} or later")]
+    NodeTooOld {
+        /// The minor the node said.
+        found: u8,
+        /// The minor the frame needs.
+        needed: u8,
+    },
+
     /// A frame this build knows, arriving where a different one belongs.
     ///
     /// Kept apart from [`Error::UnknownFrame`] because the remedies are

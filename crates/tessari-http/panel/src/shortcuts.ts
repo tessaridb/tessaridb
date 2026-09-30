@@ -28,7 +28,7 @@ interface Key {
 const KEYS: readonly Key[] = [
   { press: "/", does: "find an account, a table, a namespace or a record" },
   { press: "⌘K  ·  Ctrl-K", does: "the same, from inside a field" },
-  { press: "⌘1 … ⌘5", does: "Run, Topics, Cluster, Access, This node" },
+  { press: "⌘1 … ⌘7", does: "Run, Topics, Cluster, Access, This node, Backup, Vault" },
   { press: "⌘↵  ·  Ctrl-↵", does: "run what is in the script box" },
   { press: "?", does: "this list" },
   { press: "Esc", does: "close the log, the drawer, or this list" },
@@ -62,7 +62,7 @@ function closeIt(): void {
 }
 
 /** The destinations, in the order the strip draws them. */
-const DESTINATIONS = ["run", "topics", "cluster", "access", "this-node"] as const;
+const DESTINATIONS = ["run", "topics", "cluster", "access", "this-node", "backup", "vault"] as const;
 
 export function wire(): void {
   draw();

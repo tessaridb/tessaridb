@@ -37,13 +37,18 @@ pub(crate) fn node() -> (Arc<Node>, String) {
 
 /// One request, and everything that came back: status, headers, body.
 pub(crate) fn get(address: &str, path: &str) -> (u16, Vec<String>, String) {
+    request(address, "GET", path, "")
+}
+
+/// A request with any method and any extra header lines, each ending `\r\n`.
+fn request(address: &str, method: &str, path: &str, extra: &str) -> (u16, Vec<String>, String) {
     let mut stream = TcpStream::connect(address).unwrap();
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .unwrap();
     write!(
         stream,
-        "GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\n{extra}Connection: close\r\n\r\n"
     )
     .unwrap();
     stream.flush().unwrap();
@@ -287,6 +292,12 @@ fn the_console_calls_no_route_that_did_not_already_exist() {
         "/ready",
         "/metrics",
         "/backup",
+        // The vault's own surface (ADR-0092, ADR-0093): protocol §5.11 routes that
+        // every client offers, so the passphrase never has to be statement text.
+        "/vault",
+        "/vault/seal",
+        "/vault/unseal",
+        "/vault/passphrase",
     ];
     for url in quoted_urls(&code) {
         // The console's own assets are answered above; what matters here is the
@@ -1152,7 +1163,7 @@ fn no_screen_but_run_asks_the_operator_to_read_a_statement() {
 
 #[cfg(feature = "console")]
 #[test]
-fn the_five_destinations_are_named_for_the_jobs_and_there_are_five() {
+fn the_seven_destinations_are_named_for_the_jobs_and_there_are_seven() {
     // S3.2's own measurement. Renaming the destinations passed every test this
     // suite had, because they all assert that a tab and a pane AGREE — which
     // stays true whatever the tab is called. The labels are the criterion, so
@@ -1161,7 +1172,9 @@ fn the_five_destinations_are_named_for_the_jobs_and_there_are_five() {
     // The cap is asserted with them rather than separately: another destination
     // is a trade to be argued for, and a test that only checked the names would
     // let one arrive silently beside them. The fifth, Topics, was that trade —
-    // asked for by the owner for G042 and recorded in `destinations.ts`.
+    // asked for by the owner for G042 and recorded in `destinations.ts` — and the
+    // sixth, Backup, was the same trade asked for again (2026-09-30), and the
+    // seventh, Vault, once more (G048, 2026-09-30).
     let (_node, address) = node();
     let (status, _, page) = get(&address, "/");
     assert_eq!(status, 200, "the console's page is not served");
@@ -1178,8 +1191,63 @@ fn the_five_destinations_are_named_for_the_jobs_and_there_are_five() {
 
     assert_eq!(
         labels,
-        vec!["Run", "Topics", "Cluster", "Access", "This node"],
-        "the destinations no longer name the jobs, or a sixth has arrived"
+        vec![
+            "Run",
+            "Topics",
+            "Cluster",
+            "Access",
+            "This node",
+            "Backup",
+            "Vault"
+        ],
+        "the destinations no longer name the jobs, or an eighth has arrived"
+    );
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn the_backup_screen_writes_the_file_name_as_a_quoted_string() {
+    // The name is the operator's text and becomes a string literal in `BACKUP …
+    // TO`; the script route binds nothing, so the one safe way in is the escaping
+    // `quoted()` writes. A name with a quote in it must not end the literal.
+    let sources = panel_sources();
+    let screen = sources
+        .iter()
+        .find(|(name, _)| name == "backup.ts")
+        .map(|(_, text)| text.as_str())
+        .expect("backup.ts is not among the panel's sources");
+    assert!(
+        screen.contains("TO ${quoted("),
+        "the Backup screen composes `TO` without quoting the name"
+    );
+    assert!(
+        screen.contains("from \"./user-forms.js\""),
+        "the Backup screen does not take `quoted` from the one module that escapes"
+    );
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn the_backup_screen_restores_by_a_quoted_name_and_checks_every_place_it_names() {
+    // A restore's file name is a value and goes in through `quoted()`; a place a
+    // part names — `NAMESPACE crm`, `DATABASE prod.orders` — is grammar and
+    // cannot be quoted, so each one passes the name check every client applies
+    // before it reaches the statement.
+    let sources = panel_sources();
+    let screen = sources
+        .iter()
+        .find(|(name, _)| name == "backup.ts")
+        .map(|(_, text)| text.as_str())
+        .expect("backup.ts is not among the panel's sources");
+    for composed in ["RESTORE SCRIPT FROM ${quoted(", "SCRIPT OF "] {
+        assert!(
+            screen.contains(composed),
+            "the Backup screen does not compose `{composed}`"
+        );
+    }
+    assert!(
+        screen.contains("from \"./topic-names.js\"") && screen.contains("aName("),
+        "the Backup screen names places without the name check"
     );
 }
 
@@ -1356,6 +1424,66 @@ fn what_is_served_is_the_file_that_was_committed() {
             committed.len()
         );
         assert_eq!(served, committed, "{path} is not what the repository holds");
+    }
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn a_head_is_the_get_without_its_body_and_a_reload_is_revalidated() {
+    // Q-G042-2. A `HEAD` used to fall through to the 404, and every asset went
+    // out with no caching field at all — which lets a browser give the old
+    // script heuristic freshness and run it against a node that was upgraded
+    // underneath it (RFC 9111 §4.2.2). The asset names carry no hash, so the
+    // answer is `no-cache` with a tag: kept, but asked about every time.
+    let (_node, address) = node();
+    for path in ["/", "/console.js", "/console.css", "/favicon.svg"] {
+        let (status, got, body) = get(&address, path);
+        assert_eq!(status, 200, "{path} is not served");
+        assert_eq!(
+            header(&got, "Cache-Control"),
+            Some("no-cache"),
+            "{path} says nothing about how long it may be kept"
+        );
+        let tag = header(&got, "ETag").unwrap_or_else(|| panic!("{path} carries no tag"));
+        assert!(
+            tag.starts_with('"') && tag.ends_with('"'),
+            "{path}: {tag} is not a strong tag"
+        );
+
+        let (status, headed, empty) = request(&address, "HEAD", path, "");
+        assert_eq!(status, 200, "HEAD {path} is not answered as its GET is");
+        assert!(empty.is_empty(), "HEAD {path} carried a body");
+        for field in ["Content-Type", "Content-Length", "Cache-Control", "ETag"] {
+            assert_eq!(
+                header(&headed, field),
+                header(&got, field),
+                "HEAD {path} and GET {path} disagree on {field}"
+            );
+        }
+        assert_eq!(
+            header(&got, "Content-Length").map(str::to_owned),
+            Some(body.len().to_string()),
+            "{path}: the length a HEAD reports is not the body a GET sends"
+        );
+
+        for method in ["GET", "HEAD"] {
+            let (status, same, nothing) =
+                request(&address, method, path, &format!("If-None-Match: {tag}\r\n"));
+            assert_eq!(
+                status, 304,
+                "{method} {path} with its own tag was sent again"
+            );
+            assert!(nothing.is_empty(), "{method} {path}: a 304 carried a body");
+            assert_eq!(
+                header(&same, "ETag"),
+                Some(tag),
+                "{method} {path}: the 304 lost its tag"
+            );
+        }
+        let (status, _, again) =
+            request(&address, "GET", path, "If-None-Match: \"someone-else\"\r\n");
+        assert_eq!(status, 200, "{path} answered 304 to a tag it never gave");
+        assert_eq!(again, body, "{path} changed between two reads");
     }
 }
 

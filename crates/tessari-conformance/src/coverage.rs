@@ -81,6 +81,7 @@ forms! {
     RemoveRecipient => "REMOVE RECIPIENT",
     UnsealVault => "UNSEAL VAULT",
     SealVault => "SEAL VAULT",
+    ChangeVaultPassphrase => "CHANGE VAULT PASSPHRASE",
     DefineGraph => "DEFINE GRAPH",
     DropGraph => "DROP GRAPH",
     DefineEdge => "DEFINE EDGE",
@@ -134,6 +135,7 @@ forms! {
     Put => "PUT",
     Read => "READ",
     Backup => "BACKUP",
+    Restore => "RESTORE",
     Explain => "EXPLAIN",
     Info => "INFO FOR",
     Keys => "KEYS",
@@ -251,6 +253,7 @@ mod tests {
              REVEAL a FROM v:1;\
              ADD RECIPIENT 'r' TO v:1 KEY 0x00;\
              REMOVE RECIPIENT 'r' FROM v:1;\
+             CHANGE VAULT PASSPHRASE FROM 'x' TO 'y';\
              SEAL VAULT;\
              DROP VAULT v;\
              DEFINE GRAPH gr;\
@@ -319,6 +322,7 @@ mod tests {
              PUT b:'/a.txt' = 0x0a;\
              READ b:'/a.txt';\
              BACKUP;\
+             RESTORE SCRIPT FROM 'part.tessariql';\
              EXPLAIN SELECT * FROM t;\
              CHECK TABLE t;\
              INFO FOR STORE;\

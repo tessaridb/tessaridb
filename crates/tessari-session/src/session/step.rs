@@ -89,6 +89,11 @@ impl<'a> Session<'a> {
             StatementKind::DefineRollup { .. } if open.is_some() => {
                 Err(Error::RollupInTransaction { span })
             }
+            // It runs its script in a transaction of its own, which an enclosing
+            // one would hold back or silently split from.
+            StatementKind::Restore { .. } if open.is_some() => Err(Error::RestoreRefused {
+                reason: "it runs in a transaction of its own, outside `BEGIN … COMMIT`".to_owned(),
+            }),
             other => match (read_version(other), open.as_mut()) {
                 // A transaction is one point in the store's history — that is
                 // what a snapshot is — so a statement inside one cannot ask for

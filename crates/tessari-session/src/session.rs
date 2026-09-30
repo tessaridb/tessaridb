@@ -12,6 +12,7 @@ mod atomic;
 mod step;
 
 pub use atomic::Atomic;
+use std::path::Path;
 use std::sync::Arc;
 
 use tessari_ql::{Parameters, StatementKind, parse};
@@ -79,6 +80,11 @@ pub struct Session<'a> {
     /// transaction or a `VERSION` read — see [`Session::step`] — so a read
     /// there refuses exactly as it did before gathering existed.
     pub(crate) gather: Option<Arc<dyn Gather>>,
+    /// Where `BACKUP … TO` may write, when the node was given a folder.
+    ///
+    /// A fact about the process, like `gather`, so it is taken at the session;
+    /// `None` refuses every `TO` rather than writing somewhere nobody chose.
+    pub(crate) backups: Option<Arc<Path>>,
 }
 
 /// Who a session is, to a queue.
@@ -111,6 +117,7 @@ impl<'a> Session<'a> {
             consumer: None,
             elsewhere: None,
             gather: None,
+            backups: None,
         }
     }
 
@@ -137,6 +144,14 @@ impl<'a> Session<'a> {
     #[must_use]
     pub fn gathering(mut self, gather: Arc<dyn Gather>) -> Self {
         self.gather = Some(gather);
+        self
+    }
+
+    /// Open this session able to write `BACKUP … TO` into `folder`, and nowhere
+    /// else.
+    #[must_use]
+    pub fn backing_up_into(mut self, folder: Arc<Path>) -> Self {
+        self.backups = Some(folder);
         self
     }
 
@@ -184,8 +199,17 @@ impl<'a> Session<'a> {
     /// this map has no value for, and nothing is written when it does. Otherwise
     /// as [`Session::run`].
     pub fn run_with(&mut self, source: &str, parameters: &Parameters) -> Result<Vec<Outcome>> {
+        let script = parse(source)?.bind(parameters)?;
+        self.run_script(script)
+    }
+
+    /// Run a script that is already parsed and bound, exactly as
+    /// [`Session::run_with`] runs one it read.
+    ///
+    /// Shared with the vault surface, whose statements are built rather than
+    /// read so that a passphrase is never text (ADR-0092 D2).
+    pub(crate) fn run_script(&mut self, mut script: tessari_ql::Script) -> Result<Vec<Outcome>> {
         let store = self.store;
-        let mut script = parse(source)?.bind(parameters)?;
 
         // Where a statement may run, asked once for the whole script and before
         // any of it runs — a script that writes must not have its first half
@@ -423,6 +447,8 @@ impl<'a> Session<'a> {
             // answer a bounded read differently from the session that spawned it.
             elsewhere: self.elsewhere.clone(),
             gather: self.gather.clone(),
+            // A probe answers who may do what and never writes a file.
+            backups: None,
         };
         probe.acting_as(id)?;
         Ok(probe)

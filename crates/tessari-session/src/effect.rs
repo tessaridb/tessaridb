@@ -94,6 +94,8 @@ impl Effect {
             // a statement classified as reading nothing.
             | StatementKind::Reveal { .. }
             | StatementKind::Backup { .. } => Self::Read,
+            // It writes, and it may only run where writes are taken.
+            StatementKind::Restore { .. } => Self::Write,
 
             // `USE` and the transaction verbs change what the *next* statement
             // runs in, and touch nothing themselves. They are reads here for the
@@ -195,6 +197,10 @@ impl Effect {
             // leave the follower they were actually using still sealed. The
             // operator would then have unsealed a node they never named.
             StatementKind::SealVault { .. } | StatementKind::UnsealVault { .. } => Self::Read,
+            // Not local like the two above: it replaces the root **record**,
+            // which is catalog state every node must receive through the log,
+            // so it is a write and runs where writes run.
+            StatementKind::ChangeVaultPassphrase { .. } => Self::Write,
             // `DEFINE REPLICA` is the opposite half and stays a write: it is a
             // catalog record, commits in the transaction that issued it, and
             // reaches every node through the ordinary apply path (ADR-0009).

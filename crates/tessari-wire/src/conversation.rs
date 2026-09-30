@@ -122,6 +122,44 @@ pub(crate) async fn converse<C: Carried>(
             drop((busy, place));
             return fed;
         }
+        if kind == frame::Kind::Vault {
+            // Always on the bridge, never on the task: an unseal is an Argon2id
+            // derivation, and a derivation on the runtime stalls every other
+            // connection it shares a worker with.
+            let asked = crate::VaultAsk::decode(&body)?;
+            let db = Arc::clone(&talk.db);
+            let id = talk.id;
+            let bridged = talk
+                .bridge
+                .call(session, move |held: Detached| {
+                    let mut attached = held.attach(db.store());
+                    let answer = respond_vault(id, &mut attached, &asked);
+                    (attached.detach(), answer)
+                })
+                .await;
+            match bridged {
+                Bridged::Answered((back, answer)) => {
+                    session = back;
+                    reply(&mut writer, &talk.stopping, answer.kind, &answer.body).await?;
+                }
+                Bridged::Busy(back) => {
+                    session = back;
+                    reply(
+                        &mut writer,
+                        &talk.stopping,
+                        frame::Kind::Refusal,
+                        BUSY.as_bytes(),
+                    )
+                    .await?;
+                }
+                Bridged::Panicked => {
+                    return Err(Error::Io(std::io::Error::other(
+                        "the vault call panicked, and the session it held went with it",
+                    )));
+                }
+            }
+            continue;
+        }
         if kind != frame::Kind::Request {
             // A client sending an answer is a client this build does not
             // understand, and continuing would be guessing at what it meant.
@@ -302,6 +340,59 @@ pub(crate) fn respond(
         }
         // A refusal does not close the connection: a client that mistyped a
         // statement has not stopped being a client.
+        Err(refused) => refusal(refused.to_string()),
+    }
+}
+
+/// Carry out one vault frame as the caller (ADR-0092 D2).
+///
+/// Signs in as a request does, then asks the session's own vault surface, so
+/// who may unseal, the throttle and the answer are the statement's. A refusal is
+/// the session's own words, which never quote the passphrase.
+pub(crate) fn respond_vault(
+    id: u64,
+    session: &mut tessaridb::Session<'_>,
+    asked: &crate::VaultAsk,
+) -> Answer {
+    let refusal = |message: String| Answer {
+        kind: frame::Kind::Refusal,
+        body: message.into_bytes(),
+    };
+    if let Some((name, password)) = &asked.credentials
+        && let Err(refused) = session.sign_in(name, password)
+    {
+        log::warn!("connection {id} refused: {refused}");
+        return refusal(refused.to_string());
+    }
+    let act = match &asked.call {
+        crate::VaultCall::Status => tessaridb::VaultAct::Status,
+        crate::VaultCall::Unseal(passphrase) => tessaridb::VaultAct::Unseal { passphrase },
+        crate::VaultCall::Seal => tessaridb::VaultAct::Seal,
+        crate::VaultCall::Change { current, new } => tessaridb::VaultAct::Change { current, new },
+    };
+    let target = asked
+        .place
+        .as_ref()
+        .map_or(tessaridb::VaultTarget::Store, |place| {
+            tessaridb::VaultTarget::Vault {
+                namespace: &place.namespace,
+                database: &place.database,
+                vault: &place.vault,
+            }
+        });
+    match session.vault(target, act) {
+        Ok(status) => {
+            let mut body = Vec::new();
+            frame::put_u32(&mut body, 1);
+            body.extend_from_slice(&message::encode_outcome(
+                &tessaridb::Outcome::Value(status),
+                &message::Names::new(),
+            ));
+            Answer {
+                kind: frame::Kind::Answer,
+                body,
+            }
+        }
         Err(refused) => refusal(refused.to_string()),
     }
 }

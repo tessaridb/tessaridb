@@ -49,6 +49,9 @@ pub struct Client {
     /// loop from progress, and the epoch already answers that. A hop counter or
     /// a redirect history would be a second mechanism for a job this does.
     seen: Option<Epoch>,
+    /// The minor version the node said at the greeting, which decides what this
+    /// client may send it.
+    minor: u8,
 }
 
 impl std::fmt::Debug for Client {
@@ -78,17 +81,18 @@ impl Client {
         let stream = TcpStream::connect(address)?;
         let mut reader = BufReader::new(stream.try_clone()?);
         let mut writer = BufWriter::new(stream);
-        {
+        let minor = {
             let mut both = frame::Duplex {
                 reader: &mut reader,
                 writer: &mut writer,
             };
-            frame::greet(&mut both)?;
-        }
+            frame::greet(&mut both)?
+        };
         Ok(Self {
             reader,
             writer,
             seen: None,
+            minor,
         })
     }
 
@@ -100,6 +104,53 @@ impl Client {
     /// store refused, and the stream's failure otherwise.
     pub fn run(&mut self, script: &str, credentials: Option<(&str, &str)>) -> Result<Vec<Answer>> {
         self.run_with(script, credentials, &Parameters::new())
+    }
+
+    /// Unseal, seal or ask about the vault, with the passphrase as a field of
+    /// the frame rather than script text (ADR-0092 D2), on the store's key or,
+    /// with `place`, on one vault carrying its own passphrase (ADR-0093 D6).
+    ///
+    /// Answers the seal status as one value.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NodeTooOld`] before anything is sent to a node below minor 2;
+    /// [`Error::Refused`] with the store's own message when the node refused —
+    /// which never quotes the passphrase; the stream's failure otherwise.
+    pub fn vault(
+        &mut self,
+        call: &crate::VaultCall,
+        place: Option<&crate::VaultPlace>,
+        credentials: Option<(&str, &str)>,
+    ) -> Result<Answer> {
+        if self.minor < frame::VAULT {
+            return Err(Error::NodeTooOld {
+                found: self.minor,
+                needed: frame::VAULT,
+            });
+        }
+        let asked = crate::VaultAsk {
+            call: call.clone(),
+            credentials: credentials.map(|(name, password)| (name.to_owned(), password.to_owned())),
+            place: place.cloned(),
+        };
+        frame::write(&mut self.writer, frame::Kind::Vault, &asked.encode())?;
+        let Some((kind, body)) = frame::read(&mut self.reader)? else {
+            return Err(Error::Truncated);
+        };
+        match kind {
+            frame::Kind::Refusal => Err(Error::Refused {
+                message: String::from_utf8(body).unwrap_or_else(|_| "unreadable".to_owned()),
+            }),
+            frame::Kind::Answer => {
+                let (count, at) = frame::take_u32(&body, 0)?;
+                if count != 1 {
+                    return Err(Error::Malformed);
+                }
+                Ok(message::decode_outcome(&body, at)?.0)
+            }
+            other => Err(Error::UnknownFrame { tag: other.tag() }),
+        }
     }
 
     /// Run a script and take back either the answers or the redirect.
@@ -167,9 +218,10 @@ impl Client {
             }
             // A node does not send a request, and a change only arrives on a
             // connection that asked to follow — which this one has not.
-            frame::Kind::Request | frame::Kind::Subscribe | frame::Kind::Change => {
-                Err(Error::UnknownFrame { tag: kind.tag() })
-            }
+            frame::Kind::Request
+            | frame::Kind::Subscribe
+            | frame::Kind::Change
+            | frame::Kind::Vault => Err(Error::UnknownFrame { tag: kind.tag() }),
         }
     }
 
@@ -300,7 +352,8 @@ impl Feed {
             frame::Kind::Request
             | frame::Kind::Answer
             | frame::Kind::Subscribe
-            | frame::Kind::Elsewhere => Err(Error::UnknownFrame { tag: kind.tag() }),
+            | frame::Kind::Elsewhere
+            | frame::Kind::Vault => Err(Error::UnknownFrame { tag: kind.tag() }),
         }
     }
 }

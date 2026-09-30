@@ -2,14 +2,77 @@
 
 use std::collections::BTreeMap;
 
-use tessari_ql::{Name, RecordTarget, Span};
-use tessari_storage::{Catalog, Transaction};
+use tessari_ql::{Name, RecordTarget, Span, TableRef};
+use tessari_storage::{Catalog, SealState, Transaction, VaultCustody};
 use tessari_types::Value;
 
 use crate::error::{Error, Result};
 use crate::session::Session;
 
 impl Session<'_> {
+    /// `INFO FOR SEAL` — `uninitialised`, `sealed` or `unsealed`, when an
+    /// unsealed store seals itself, and how long an unseal lasts here.
+    ///
+    /// `uninitialised` is read from the catalog and the other two from this
+    /// process, which is the split the root record and the key already have:
+    /// the root travels with the store, the key never leaves the process.
+    pub(super) fn info_seal(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<BTreeMap<String, Value>> {
+        let initialised = Catalog::new(transaction).vault_root()?.is_some();
+        let state = self.store.vault().state();
+        Ok(self.seal_report(if initialised { Some(state) } else { None }))
+    }
+
+    /// `INFO FOR SEAL OF team` (ADR-0093 D4): the state of whatever opens this
+    /// vault — its own key, or the store's — and which of the two.
+    pub(super) fn info_seal_of(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<BTreeMap<String, Value>> {
+        let (_, definition) = self.named_vault(transaction, name, span)?;
+        let (mut report, custody) = match definition.vault_custody() {
+            Some(custody @ VaultCustody::Own(root)) => (
+                self.seal_report(Some(self.store.vault().own_state(root.key_id))),
+                custody,
+            ),
+            Some(custody @ VaultCustody::Store(_)) => (self.info_seal(transaction)?, custody),
+            None => {
+                return Err(Error::Unknown {
+                    entity: "vault",
+                    name: name.text.clone(),
+                    span,
+                });
+            }
+        };
+        report.insert("custody".to_owned(), Value::from(custody.word()));
+        Ok(report)
+    }
+
+    /// The seal object for one key's state, `None` meaning never initialised.
+    fn seal_report(&self, state: Option<SealState>) -> BTreeMap<String, Value> {
+        let (state, seals_at) = match state {
+            None => ("uninitialised", Value::None),
+            Some(SealState::Sealed) => ("sealed", Value::None),
+            Some(SealState::Unsealed { seals_at }) => ("unsealed", instant(seals_at)),
+        };
+        let period = self.store.vault().period();
+        let unseal_for = tessari_types::Duration::new(
+            i64::try_from(period.as_secs()).unwrap_or(i64::MAX),
+            period.subsec_nanos(),
+        )
+        .map_or(Value::None, Value::Duration);
+
+        let mut report = BTreeMap::new();
+        report.insert("state".to_owned(), Value::from(state));
+        report.insert("seals_at".to_owned(), seals_at);
+        report.insert("unseal_for".to_owned(), unseal_for);
+        report
+    }
+
     pub(super) fn info_vault(
         &self,
         transaction: &mut Transaction<'_>,
@@ -42,9 +105,67 @@ impl Session<'_> {
                 )
             })
             .collect();
+        let custody = definition
+            .vault_custody()
+            .map_or("store", VaultCustody::word);
         Ok(BTreeMap::from([
             ("name".to_owned(), Value::from(name.text.as_str())),
             ("fields".to_owned(), Value::Object(fields)),
+            ("custody".to_owned(), Value::from(custody)),
+        ]))
+    }
+
+    /// `INFO FOR VAULT team RECORDS [AFTER team:'x'] [LIMIT n]` — one page of
+    /// the vault's record ids in key order, and `next` naming the last of them
+    /// when the page was full (ADR-0092 D5).
+    ///
+    /// Read by the key walk that serves `SELECT … AFTER`, so a page begins at a
+    /// position rather than at the table, and it reads the stored payloads only
+    /// to step over them: no field of any record reaches the answer, sealed or
+    /// not. `next` is absent when the page came back short, because a short page
+    /// is the last one.
+    pub(super) fn info_vault_records(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: &TableRef,
+        after: Option<&RecordTarget>,
+        limit: Option<u64>,
+        span: Span,
+    ) -> Result<BTreeMap<String, Value>> {
+        let missing = || Error::Unknown {
+            entity: "vault",
+            name: table.name.text.clone(),
+            span,
+        };
+        let (context, id) = self.resolve_any_table(transaction, table)?;
+        let is_vault = Catalog::new(transaction)
+            .table(id)?
+            .is_some_and(|definition| definition.is_vault());
+        if !is_vault {
+            return Err(missing());
+        }
+        let wanted = usize::try_from(limit.unwrap_or(VAULT_PAGE)).unwrap_or(usize::MAX);
+        let page = match after {
+            Some(anchor) => transaction.records_after(
+                context.namespace,
+                context.database,
+                id,
+                anchor.id.fixed(anchor.span)?,
+                Some(wanted),
+            )?,
+            None => {
+                transaction.first_records_of(context.namespace, context.database, id, wanted)?
+            }
+        };
+        let ids: Vec<Value> = page.into_iter().map(|(held, _)| id_value(held)).collect();
+        let next = if ids.len() >= wanted {
+            ids.last().cloned().unwrap_or(Value::None)
+        } else {
+            Value::None
+        };
+        Ok(BTreeMap::from([
+            ("records".to_owned(), Value::Array(ids)),
+            ("next".to_owned(), next),
         ]))
     }
 
@@ -98,5 +219,30 @@ impl Session<'_> {
             "recipients".to_owned(),
             Value::Object(entries),
         )]))
+    }
+}
+
+/// A wall-clock instant as a datetime value, or nothing when it lies outside
+/// what the clock can represent — never a made-up instant.
+fn instant(at: std::time::SystemTime) -> Value {
+    at.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|since| {
+            tessari_types::Datetime::new(i64::try_from(since.as_secs()).ok()?, since.subsec_nanos())
+        })
+        .map_or(Value::None, Value::Datetime)
+}
+
+/// How many ids a vault listing answers when it is not told (ADR-0092 D5).
+const VAULT_PAGE: u64 = 1_000;
+
+/// A record's identity as the value a caller writes after `team:` to name it
+/// again — so the `next` of one page is the `AFTER team:$next` of the one after.
+fn id_value(id: tessari_types::RecordId) -> Value {
+    match id {
+        tessari_types::RecordId::Int(number) => Value::from(number),
+        tessari_types::RecordId::Text(text) => Value::String(text),
+        tessari_types::RecordId::Uuid(bytes) => Value::Uuid(bytes),
+        tessari_types::RecordId::Bytes(bytes) => Value::Bytes(bytes),
     }
 }

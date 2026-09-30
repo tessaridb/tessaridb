@@ -45,12 +45,18 @@ impl Incoming {
 /// still answered as health rather than refused as too large.
 pub(crate) fn takes_body(method: &Method, url: &str) -> bool {
     match (method, url) {
-        (&Method::POST, "/script" | "/password") => true,
+        (&Method::POST, "/script" | "/password" | "/vault/unseal" | "/vault/passphrase") => true,
         (&Method::POST, url) if url.starts_with("/series/") => true,
+        // One vault's own surface (ADR-0093 D6): the two acts that carry a body.
+        (method, url) if url.starts_with("/vault/") => {
+            let path = url.split('?').next().unwrap_or(url);
+            *method == Method::POST && (path.ends_with("/unseal") || path.ends_with("/passphrase"))
+        }
         (&Method::PUT | &Method::POST, url) if url.starts_with("/kv/") => true,
         (
             _,
-            "/script" | "/session" | "/password" | "/health" | "/ready" | "/metrics" | "/watch",
+            "/script" | "/session" | "/password" | "/health" | "/ready" | "/metrics" | "/watch"
+            | "/vault" | "/vault/seal" | "/vault/unseal" | "/vault/passphrase",
         ) => false,
         (&Method::GET, url) if url == "/backup" || url.starts_with("/backup?") => false,
         (method, url) => {

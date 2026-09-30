@@ -98,3 +98,29 @@ BACKUP FROM 2;
 --- case: FROM takes a sequence and says so when it does not get one
 BACKUP FROM soon;
 --- expect: error UnexpectedToken
+
+# A part of the store is a script: a log of one database holds none of the
+# definitions around it, so it restores nowhere on its own and is refused.
+
+--- case: a script of one namespace
+BACKUP SCRIPT OF NAMESPACE prod;
+--- expect: ok
+
+--- case: a place the store does not hold is refused by name
+BACKUP SCRIPT OF NAMESPACE nowhere;
+--- expect: error Unknown
+
+--- case: a log of a part is refused at the statement
+BACKUP OF NAMESPACE prod;
+--- expect: error UnexpectedToken
+
+# `TO` and `RESTORE` read and write the node's backup folder, and a node is
+# given one when it starts (`--backup-dir`); this one was not.
+
+--- case: a backup written on a node with no folder is refused
+BACKUP STATE TO 'state.tessarisnap';
+--- expect: error NoBackupFolder
+
+--- case: and so is a restore
+RESTORE SCRIPT FROM 'part.tessariql';
+--- expect: error NoBackupFolder

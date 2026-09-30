@@ -32,8 +32,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use tessari_types::Value;
 
 use crate::ast::{
-    CreateTarget, Edit, JoinSide, RangeExpr, RecordTarget, Script, SetCondition, Statement,
-    StatementKind,
+    CreateTarget, Edit, InfoSubject, JoinSide, RangeExpr, RecordTarget, Script, SetCondition,
+    Statement, StatementKind,
 };
 use crate::error::{Error, Result};
 use crate::token::Span;
@@ -254,6 +254,20 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
             bind_target(target, binding)?;
             bind_expr(recipient, binding)
         }
+        // A subject is a name and never a value, but these two also carry a
+        // record's identity, which is a value wherever it appears — a client
+        // lists a vault's next page and a record's recipients by binding the id
+        // rather than writing it into the text (ADR-0092 D5, D6).
+        StatementKind::Info {
+            subject: InfoSubject::Recipients(target),
+        } => bind_target(target, binding),
+        StatementKind::Info {
+            subject:
+                InfoSubject::VaultRecords {
+                    after: Some(target),
+                    ..
+                },
+        } => bind_target(target, binding),
         StatementKind::Reveal { target, .. }
         | StatementKind::Get { target }
         | StatementKind::Delete { target, .. }
@@ -369,6 +383,7 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // would arrive through the same binding map every other value does, and
         // would be as loggable as any of them.
         | StatementKind::UnsealVault { .. }
+        | StatementKind::ChangeVaultPassphrase { .. }
         | StatementKind::SealVault { .. }
         | StatementKind::DefineGraph { .. }
         | StatementKind::DropGraph { .. }
@@ -419,6 +434,7 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::RebuildIndex { .. }
         | StatementKind::CheckTable { .. }
         | StatementKind::Backup { .. }
+        | StatementKind::Restore { .. }
         // A subject is a name and never a value. `INFO FOR TABLE $t` would be a
         // parameter supplying a *table*, which is refused everywhere else in
         // this language for the reason `bind_target` gives.

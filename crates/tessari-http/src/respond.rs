@@ -62,6 +62,10 @@ pub struct Answer {
     /// redirect a client can act on, exactly as a `401` without a challenge is
     /// not a `401` a client can act on.
     pub location: Option<String>,
+    /// The strong tag of an answer that may be kept but must be asked about
+    /// again before it is reused — the console's assets, whose names carry no
+    /// hash of their bytes. Present means `ETag` plus `Cache-Control: no-cache`.
+    pub tag: Option<&'static str>,
 }
 
 /// What an answer says it is.
@@ -81,6 +85,7 @@ impl Answer {
             body: body.into_bytes(),
             kind: JSON,
             location: None,
+            tag: None,
         }
     }
 
@@ -92,6 +97,7 @@ impl Answer {
             body: body.into_bytes(),
             kind,
             location: None,
+            tag: None,
         }
     }
 
@@ -103,6 +109,7 @@ impl Answer {
             body,
             kind: OCTETS,
             location: None,
+            tag: None,
         }
     }
 
@@ -405,7 +412,9 @@ pub(crate) fn failure(error: &Error) -> Answer {
         // backs off on.
         // A public topic's anonymous allowance is spent: the same back-off, for
         // the same reason, and it is earned back over the topic's window.
-        Error::SignInThrottled | Error::TopicRateExceeded { .. } => 429,
+        Error::SignInThrottled | Error::PassphraseThrottled | Error::TopicRateExceeded { .. } => {
+            429
+        }
         // It knows, and the answer is still no. A different thing entirely, and
         // a client that cannot tell retries a signin that will never help.
         //
@@ -458,7 +467,13 @@ pub(crate) fn failure(error: &Error) -> Answer {
         // goes, and a drop blocked by a dependency succeeds once the dependant
         // does. A client told `400` stops retrying, which is the one response
         // that never becomes right.
-        Error::Store(_) | Error::RecordExists { .. } | Error::StillDepended { .. } => 409,
+        Error::Store(_)
+        | Error::RecordExists { .. }
+        | Error::StillDepended { .. }
+        | Error::BackupExists { .. }
+        | Error::RestoreTargetExists { .. }
+        | Error::NoVaultRoot
+        | Error::NoBackupFolder => 409,
         // A substrate or decoding failure. Anything reaching here is a bug.
         //
         // A backup the writer could not write is a device speaking, not a
@@ -492,6 +507,7 @@ mod metrics;
 mod scripts;
 pub(crate) mod series;
 mod topics;
+pub(crate) mod vault;
 
 #[cfg(test)]
 mod tests {

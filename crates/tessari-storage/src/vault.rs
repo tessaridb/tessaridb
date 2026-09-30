@@ -22,13 +22,91 @@
 //! is presented again. It is also the property that makes an unattended restart
 //! impossible, which is a real operational cost and is written down rather than
 //! discovered.
+//!
+//! # An unseal lasts a period
+//!
+//! The key is held to a deadline set when it arrives — ten minutes unless the
+//! node was told otherwise (ADR-0092 D4). Every use judges the deadline, so a
+//! key past it opens nothing even if nobody has dropped it yet; the housekeeping
+//! pass drops it so it does not sit in memory until the next use asks.
+
+mod own;
 
 use std::sync::RwLock;
+use std::time::{Duration, Instant, SystemTime};
 
 use tessari_vault::{Keyring, Root, SecretBytes};
 
 use crate::error::{Error, Result};
 
+/// Whether this process can open anything right now, and until when.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SealState {
+    /// No master key is held.
+    Sealed,
+    /// A master key is held and will be dropped at `seals_at`.
+    Unsealed {
+        /// The wall-clock instant the key stops opening anything.
+        seals_at: SystemTime,
+    },
+}
+
+/// The keyring and the deadline it holds its key to, behind one lock so the two
+/// can never be read apart.
+#[derive(Debug)]
+struct Held {
+    keyring: Keyring,
+    /// The keys of vaults carrying their own passphrase (ADR-0093), each to its
+    /// own deadline under the same period.
+    ///
+    /// Inside this lock rather than in a concurrent map of its own: the period
+    /// is read here, the housekeeping pass drops due keys of both kinds in one
+    /// acquisition, and writes are rare (an unseal, a seal) while every use is a
+    /// short synchronous lookup with no suspension point anywhere in the crate.
+    own: own::OwnKeys,
+    /// How long the next unseal lasts.
+    period: Duration,
+    /// When the key held now stops opening anything: monotonic for the judging,
+    /// wall-clock for the answer.
+    until: Option<(Instant, SystemTime)>,
+}
+
+impl Default for Held {
+    fn default() -> Self {
+        Self {
+            keyring: Keyring::sealed(),
+            own: own::OwnKeys::default(),
+            period: Duration::from_secs(tessari_constants::UNSEAL_SECONDS),
+            until: None,
+        }
+    }
+}
+
+impl Held {
+    /// Whether the key held now is past its deadline.
+    fn due(&self) -> bool {
+        self.until
+            .is_some_and(|(deadline, _)| Instant::now() >= deadline)
+    }
+
+    /// Start the period for a key that has just arrived.
+    ///
+    /// A period too long for the clock to represent ends at once rather than
+    /// never: the failure of a deadline is to seal, not to stay open.
+    fn start(&mut self) {
+        let now = Instant::now();
+        let deadline = now.checked_add(self.period).unwrap_or(now);
+        let wall = SystemTime::now()
+            .checked_add(deadline.duration_since(now))
+            .unwrap_or_else(SystemTime::now);
+        self.until = Some((deadline, wall));
+    }
+
+    fn seal(&mut self) {
+        self.keyring.seal();
+        self.until = None;
+    }
+}
 /// This process's view of whether the store is open.
 ///
 /// `Default` is sealed, which is the safe direction: a keyring that turns up
@@ -36,8 +114,8 @@ use crate::error::{Error, Result};
 #[derive(Default, Debug)]
 pub struct OpenVault {
     /// A `RwLock`: sealing and revealing read the keyring on every use; it is
-    /// written only by `unseal`, `adopt` and `seal`.
-    keyring: RwLock<Keyring>,
+    /// written only by `unseal`, `adopt`, `seal` and a key found past its period.
+    held: RwLock<Held>,
 }
 
 impl OpenVault {
@@ -54,9 +132,58 @@ impl OpenVault {
     /// answer to "can you open secrets" when you do not know is no.
     #[must_use]
     pub fn is_sealed(&self) -> bool {
-        self.keyring
+        self.held
             .read()
-            .map_or(true, |keyring| keyring.is_sealed())
+            .map_or(true, |held| held.keyring.is_sealed() || held.due())
+    }
+
+    /// Whether this process can open anything, and until when.
+    #[must_use]
+    pub fn state(&self) -> SealState {
+        match self.held.read() {
+            Ok(held) if !held.keyring.is_sealed() && !held.due() => held
+                .until
+                .map_or(SealState::Sealed, |(_, seals_at)| SealState::Unsealed {
+                    seals_at,
+                }),
+            _ => SealState::Sealed,
+        }
+    }
+
+    /// How long an unseal lasts on this process.
+    #[must_use]
+    pub fn period(&self) -> Duration {
+        self.held.read().map_or(Duration::ZERO, |held| held.period)
+    }
+
+    /// Set how long every later unseal lasts (ADR-0092 D4).
+    ///
+    /// The key held now keeps the deadline it was given: a period is a promise
+    /// made at the unseal, and changing it underneath would extend a window the
+    /// operator already closed in their head.
+    pub fn last_for(&self, period: Duration) {
+        if let Ok(mut held) = self.held.write() {
+            held.period = period;
+        }
+    }
+
+    /// Drop the key if its period is over, and say whether it did.
+    ///
+    /// The hygiene half of an expiring unseal: no statement is served by a key
+    /// past its deadline whether this runs or not, because every use judges the
+    /// deadline itself. This only stops the key sitting in memory until then.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::VaultUnavailable`] when the lock is poisoned.
+    pub fn seal_if_due(&self) -> Result<bool> {
+        let mut held = self.held.write().map_err(|_| Error::VaultUnavailable)?;
+        let own = held.own.drop_due();
+        if held.due() {
+            held.seal();
+            return Ok(true);
+        }
+        Ok(own)
     }
 
     /// Unseal with a passphrase, against the store's root record.
@@ -66,8 +193,15 @@ impl OpenVault {
     /// Returns [`Error::Vault`] when the passphrase does not open the record, or
     /// when the store is already unsealed.
     pub fn unseal(&self, root: &Root, passphrase: &str) -> Result<()> {
-        let mut keyring = self.keyring.write().map_err(|_| Error::VaultUnavailable)?;
-        keyring.unseal(root, passphrase).map_err(Error::Vault)
+        let mut held = self.held.write().map_err(|_| Error::VaultUnavailable)?;
+        if held.due() {
+            held.seal();
+        }
+        held.keyring
+            .unseal(root, passphrase)
+            .map_err(Error::Vault)?;
+        held.start();
+        Ok(())
     }
 
     /// Adopt a master key produced by initialising the store.
@@ -76,8 +210,13 @@ impl OpenVault {
     ///
     /// Returns [`Error::Vault`] when the store is already unsealed.
     pub fn adopt(&self, master: SecretBytes) -> Result<()> {
-        let mut keyring = self.keyring.write().map_err(|_| Error::VaultUnavailable)?;
-        keyring.adopt(master).map_err(Error::Vault)
+        let mut held = self.held.write().map_err(|_| Error::VaultUnavailable)?;
+        if held.due() {
+            held.seal();
+        }
+        held.keyring.adopt(master).map_err(Error::Vault)?;
+        held.start();
+        Ok(())
     }
 
     /// Seal the store.
@@ -86,8 +225,8 @@ impl OpenVault {
     ///
     /// Returns [`Error::VaultUnavailable`] when the lock is poisoned.
     pub fn seal(&self) -> Result<()> {
-        let mut keyring = self.keyring.write().map_err(|_| Error::VaultUnavailable)?;
-        keyring.seal();
+        let mut held = self.held.write().map_err(|_| Error::VaultUnavailable)?;
+        held.seal();
         Ok(())
     }
 
@@ -103,8 +242,16 @@ impl OpenVault {
     /// Returns [`Error::Vault`] carrying `Sealed` when there is no key, and
     /// whatever the closure returns otherwise.
     pub fn with_master<T>(&self, act: impl FnOnce(&SecretBytes) -> Result<T>) -> Result<T> {
-        let keyring = self.keyring.read().map_err(|_| Error::VaultUnavailable)?;
-        let master = keyring.master().map_err(Error::Vault)?;
-        act(master)
+        {
+            let held = self.held.read().map_err(|_| Error::VaultUnavailable)?;
+            if !held.due() {
+                let master = held.keyring.master().map_err(Error::Vault)?;
+                return act(master);
+            }
+        }
+        // Past its period: drop it now rather than leave that to the
+        // housekeeping pass, and answer as the sealed store this is.
+        self.seal_if_due()?;
+        Err(Error::Vault(tessari_vault::Error::Sealed))
     }
 }

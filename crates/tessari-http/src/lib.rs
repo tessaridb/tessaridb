@@ -40,7 +40,11 @@ mod console {
 
     use crate::respond::Answer;
 
-    pub(crate) const fn asset(_method: &Method, _path: &str) -> Option<Answer> {
+    pub(crate) const fn asset(
+        _method: &Method,
+        _path: &str,
+        _if_none_match: Option<&str>,
+    ) -> Option<Answer> {
         None
     }
 }
@@ -373,6 +377,51 @@ fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
             Ok(body) => respond::change_password(db, &presented, body.trim_end_matches('\n')),
             Err(refused) => refused,
         },
+        // The vault's own surface. The passphrase is the body and nothing else,
+        // so it is never script text; the body is trimmed of one trailing line
+        // end exactly as `/password`'s is, so `curl -d @file` works.
+        (Method::GET, "/vault") => respond::vault::answer(
+            db,
+            tessaridb::VaultTarget::Store,
+            tessaridb::VaultAct::Status,
+            tokens,
+            &presented,
+        ),
+        (Method::POST, "/vault/seal") => respond::vault::answer(
+            db,
+            tessaridb::VaultTarget::Store,
+            tessaridb::VaultAct::Seal,
+            tokens,
+            &presented,
+        ),
+        (Method::POST, "/vault/passphrase") => match body::text(&mut request) {
+            Ok(body) => match request::passphrases(&body) {
+                Ok((current, new)) => respond::vault::answer(
+                    db,
+                    tessaridb::VaultTarget::Store,
+                    tessaridb::VaultAct::Change {
+                        current: &current,
+                        new: &new,
+                    },
+                    tokens,
+                    &presented,
+                ),
+                Err(shape) => Answer::bad_request(shape),
+            },
+            Err(refused) => refused,
+        },
+        (Method::POST, "/vault/unseal") => match body::text(&mut request) {
+            Ok(body) => respond::vault::answer(
+                db,
+                tessaridb::VaultTarget::Store,
+                tessaridb::VaultAct::Unseal {
+                    passphrase: body.trim_end_matches('\n'),
+                },
+                tokens,
+                &presented,
+            ),
+            Err(refused) => refused,
+        },
         (Method::POST, "/script") => {
             // The body's shape is decided by what the caller says it is, not by
             // sniffing a leading brace: HTTP has a field for this, and a rule
@@ -393,6 +442,13 @@ fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
                     Err(reason) => Answer::bad_request(&reason),
                 },
             }
+        }
+        // One vault carrying its own passphrase (ADR-0093 D6).
+        (method, url)
+            if url.starts_with("/vault/")
+                && !matches!(url, "/vault/seal" | "/vault/unseal" | "/vault/passphrase") =>
+        {
+            respond::vault::one_vault(db, method, url, &mut request, tokens, &presented)
         }
         // A batch of events for one series, in one transaction (G044 C12).
         (Method::POST, url) if url.starts_with("/series/") => match respond::series::target(url) {
@@ -418,7 +474,7 @@ fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
         (
             _,
             "/script" | "/session" | "/password" | "/health" | "/ready" | "/metrics" | "/watch"
-            | "/wire",
+            | "/wire" | "/vault" | "/vault/seal" | "/vault/unseal" | "/vault/passphrase",
         ) => Answer::new(
             405,
             r#"{"error":"that route takes another method"}"#.to_owned(),
@@ -439,7 +495,7 @@ fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
             // Last, and deliberately so: the console never shadows a route, it
             // only fills paths nothing else claimed. With the feature off there
             // is nothing to fill them with and this is the ordinary 404.
-            None => console::asset(&method, url)
+            None => console::asset(&method, url, request.header("If-None-Match"))
                 .unwrap_or_else(|| Answer::new(404, r#"{"error":"no such route"}"#.to_owned())),
         },
     };
@@ -484,6 +540,15 @@ fn to_response(reply: Answer) -> Response {
         && let Ok(value) = HeaderValue::from_str(where_to)
     {
         headers.insert(header::LOCATION, value);
+    }
+    // Kept, but asked about every time: the tag is what makes the asking cheap,
+    // and `no-cache` is what stops a browser giving an unhashed asset heuristic
+    // freshness across a node upgrade (RFC 9111 §4.2.2, §5.2.2.4).
+    if let Some(tag) = reply.tag
+        && let Ok(value) = HeaderValue::from_str(tag)
+    {
+        headers.insert(header::ETAG, value);
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     }
     // The answer says what it is; an answer without a content type still beats
     // no answer if a kind ever failed to be a header.

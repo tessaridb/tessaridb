@@ -73,7 +73,11 @@ impl Parser<'_> {
         })
     }
 
-    /// `UNSEAL VAULT WITH '…'`
+    /// `UNSEAL VAULT WITH '…'` · `UNSEAL VAULT team WITH '…'`
+    ///
+    /// The name, when there is one, is a vault carrying its own passphrase
+    /// (ADR-0093). `WITH` straight after `VAULT` is the store's form, so a vault
+    /// named `with` is unsealed by quoting its name.
     ///
     /// The passphrase is a **string literal** and nothing else — not an
     /// expression, not a parameter, not a name. An expression here would put a
@@ -82,9 +86,15 @@ impl Parser<'_> {
     /// it; a literal goes from the lexer to the key derivation and nowhere else.
     pub(super) fn unseal_statement(&mut self, start: Span) -> Result<StatementKind> {
         self.expect_vault_word("`VAULT`")?;
-        if !self.eat_word("with") {
-            return Err(self.error_here("`WITH` and the passphrase"));
-        }
+        let vault = if self.eat_word("with") {
+            None
+        } else {
+            let vault = self.name()?;
+            if !self.eat_word("with") {
+                return Err(self.error_here("`WITH` and the passphrase"));
+            }
+            Some(vault)
+        };
         let Some(Token::Str(passphrase)) = self.peek() else {
             // The expectation names the shape and never what stands there. Every
             // other parse error in this file quotes the token it found, and this
@@ -94,7 +104,59 @@ impl Parser<'_> {
         let passphrase = passphrase.clone();
         self.advance();
         Ok(StatementKind::UnsealVault {
+            vault,
             passphrase,
+            span: start.to(self.span_behind()),
+        })
+    }
+
+    /// `CHANGE VAULT [team] PASSPHRASE FROM '…' TO '…'`
+    ///
+    /// Two string literals, for the reason `UNSEAL`'s one is a literal, and a
+    /// refusal that names the shape it wanted and never the token it found.
+    pub(super) fn change_passphrase_statement(&mut self, start: Span) -> Result<StatementKind> {
+        self.expect_vault_word("`VAULT PASSPHRASE`")?;
+        let vault = if self.eat_word("passphrase") {
+            None
+        } else {
+            let vault = self.name()?;
+            if !self.eat_word("passphrase") {
+                return Err(self.error_here("`PASSPHRASE`"));
+            }
+            Some(vault)
+        };
+        self.expect_keyword(Keyword::From, "`FROM` and the current passphrase")?;
+        let current = self.passphrase("the current passphrase, quoted")?;
+        self.expect_keyword(Keyword::To, "`TO` and the new passphrase")?;
+        let new = self.passphrase("the new passphrase, quoted")?;
+        Ok(StatementKind::ChangeVaultPassphrase {
+            vault,
+            current,
+            new,
+            span: start.to(self.span_behind()),
+        })
+    }
+
+    /// A quoted passphrase, or a refusal naming the shape and never the token.
+    fn passphrase(&mut self, expected: &'static str) -> Result<String> {
+        let Some(Token::Str(held)) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let held = held.clone();
+        self.advance();
+        Ok(held)
+    }
+
+    /// `SEAL VAULT` · `SEAL VAULT team`
+    pub(super) fn seal_statement(&mut self, start: Span) -> Result<StatementKind> {
+        self.expect_vault_word("`VAULT`")?;
+        let vault = if self.peek().is_none() || self.at_punct(Punct::Semicolon) {
+            None
+        } else {
+            Some(self.name()?)
+        };
+        Ok(StatementKind::SealVault {
+            vault,
             span: start.to(self.span_behind()),
         })
     }
@@ -107,7 +169,7 @@ impl Parser<'_> {
         Err(self.error_here(expected))
     }
 
-    /// `DEFINE VAULT team`
+    /// `DEFINE VAULT team` · `DEFINE VAULT team PASSPHRASE '…'`
     ///
     /// A name and nothing else, for the reason `DEFINE GEO` gives: what makes a
     /// vault a vault is a key, and a key is not a clause a caller writes. The
@@ -116,9 +178,18 @@ impl Parser<'_> {
     /// here.
     pub(super) fn define_vault(&mut self) -> Result<StatementKind> {
         let if_not_exists = self.eat_if_not_exists()?;
+        let name = self.name()?;
+        // The vault's own passphrase (ADR-0093): a literal, refused by shape
+        // and never by quoting what stands there, as `UNSEAL`'s is.
+        let passphrase = if self.eat_word("passphrase") {
+            Some(self.passphrase("a quoted passphrase")?)
+        } else {
+            None
+        };
         Ok(StatementKind::DefineVault {
-            name: self.name()?,
+            name,
             if_not_exists,
+            passphrase,
         })
     }
 }

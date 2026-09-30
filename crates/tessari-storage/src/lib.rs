@@ -74,9 +74,9 @@ pub use catalog::{
     QueueDeclaration, RECORD_LEVEL, Reach, ReplicaDefinition, Role, RollupCompute,
     RollupDeclaration, RollupFold, SYSTEM_DATABASE, SYSTEM_NAMESPACE, SeriesDeclaration, ShardMap,
     ShardSpan, SpaceDeclaration, SpaceLimit, StoredKind, TableDefinition, TableKind, TableShape,
-    TopicDeclaration, UserDefinition, VECTOR_FIELD, VaultDeclaration, VectorDeclaration,
-    VectorDistance, Verb, ViewDeclaration, another_node_may_write, governing, names_a_peer,
-    the_row_a_greeting_binds,
+    TopicDeclaration, UserDefinition, VECTOR_FIELD, VaultCustody, VaultDeclaration,
+    VectorDeclaration, VectorDistance, Verb, ViewDeclaration, another_node_may_write, governing,
+    names_a_peer, the_row_a_greeting_binds,
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.
@@ -103,8 +103,9 @@ pub use reclaim::Reclaimed;
 pub use running::{Progress, Running};
 pub use schema::{Violation, violations};
 pub use sealing::{
-    KEYS_FIELD, VAULT_RECIPIENT, add_recipient, initialise_root, mint_vault_key, open_data_key,
-    open_field, recipients, remove_recipient, reseal_named, seal_secrets, vault_key_scope,
+    KEYS_FIELD, VAULT_RECIPIENT, add_recipient, initialise_root, mint_own_vault_key,
+    mint_vault_key, open_data_key, open_field, recipients, remove_recipient, reseal_named,
+    rewrap_own_vault, seal_secrets, unseal_own_vault, vault_key_scope,
 };
 pub use state::{StateReader, TopicHead};
 pub use store::{Health, Store};
@@ -112,4 +113,4 @@ pub use tessari_encoding::{BUILD_VERSION, LogId, NODE_ID_LEN, Roles, Writer};
 pub use transaction::{
     Expansion, Nearby, Neighbour, RecordAddress, Region, StoredRecord, Transaction, Window,
 };
-pub use vault::OpenVault;
+pub use vault::{OpenVault, SealState};

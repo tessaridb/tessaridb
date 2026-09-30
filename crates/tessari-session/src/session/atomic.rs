@@ -52,6 +52,20 @@ impl Atomic<'_, '_> {
     }
 }
 
+impl Atomic<'_, '_> {
+    /// Run a script that is already parsed, bound and vetted inside the held
+    /// transaction — a restore, whose statements were read against the store
+    /// before any of them runs.
+    pub(crate) fn run_parsed(&mut self, mut script: tessari_ql::Script) -> Result<Vec<Outcome>> {
+        let store = self.session.store;
+        if matches!(Effect::of_script(&script), Effect::Write) {
+            admits(store.node_identity()?.roles, &script)?;
+        }
+        self.session
+            .run_statements(store, &mut self.open, &mut script)
+    }
+}
+
 impl<'a> Session<'a> {
     /// Run `work` against one transaction and commit it when `work` answers
     /// `Ok`, through the commit `COMMIT` uses — so a refusal or contention reads

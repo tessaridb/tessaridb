@@ -396,6 +396,11 @@ pub enum StatementKind {
         name: Name,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
+        /// `PASSPHRASE '…'`: the vault's key is wrapped under this passphrase
+        /// rather than under the store's master key (ADR-0093), so the store's
+        /// passphrase never opens it. A literal, for
+        /// [`StatementKind::UnsealVault`]'s reason.
+        passphrase: Option<String>,
     },
     /// `DEFINE INDEX by_email ON users FIELDS email UNIQUE`
     DefineIndex {
@@ -476,7 +481,8 @@ pub enum StatementKind {
         /// What is being asked about.
         subject: InfoSubject,
     },
-    /// `BACKUP` or `BACKUP FROM 42` — the store's log as a backup file.
+    /// `BACKUP` or `BACKUP FROM 42` — the store's log as a backup file, answered
+    /// with or, after `TO '<name>'`, written into the node's backup folder.
     ///
     /// The one statement whose scope is the **store** rather than the selected
     /// namespace, which is why it needs an owner rather than a table permission:
@@ -486,6 +492,19 @@ pub enum StatementKind {
         from: Option<u64>,
         /// Which of the backup formats is asked for (ADR-0091).
         form: BackupForm,
+        /// `TO '<name>'` — the file, inside the node's backup folder, the backup
+        /// is written to; absent means the statement answers with the bytes.
+        to: Option<String>,
+        /// `OF NAMESPACE prod, prod.orders` — the part of the store a script
+        /// carries; empty means the whole store.
+        of: Vec<ReachRef>,
+    },
+    /// `RESTORE SCRIPT FROM '<name>'` — a script backup in the node's backup
+    /// folder, run into this store where it creates only places that do not
+    /// exist yet.
+    Restore {
+        /// The file, inside the node's backup folder.
+        from: String,
     },
     /// `DEFINE ANALYZER simple FILTERS lowercase, ascii`
     DefineAnalyzer {
@@ -1460,8 +1479,28 @@ pub enum StatementKind {
     /// variable or an argument vector, both of which are readable by anything
     /// that can list a process. That is decision 3 of the design.
     UnsealVault {
+        /// `UNSEAL VAULT team WITH …`: one vault carrying its own passphrase
+        /// (ADR-0093) rather than the store's master key.
+        vault: Option<Name>,
         /// The passphrase, as written.
         passphrase: String,
+        /// Where the statement sits, so a refusal can point at it without
+        /// quoting what stands there.
+        span: Span,
+    },
+    /// `CHANGE VAULT PASSPHRASE FROM '…' TO '…'` — a rekey (ADR-0092 D3).
+    ///
+    /// Both passphrases are string literals for [`StatementKind::UnsealVault`]'s
+    /// reason. The master key stays what it was and is wrapped again under the
+    /// new passphrase, so no secret is re-encrypted; a backup taken before the
+    /// change still opens with the old one, because the root travels in the log.
+    ChangeVaultPassphrase {
+        /// `CHANGE VAULT team PASSPHRASE …`: one vault's own passphrase.
+        vault: Option<Name>,
+        /// The passphrase that opens the store now.
+        current: String,
+        /// The passphrase that will open it afterwards.
+        new: String,
         /// Where the statement sits, so a refusal can point at it without
         /// quoting what stands there.
         span: Span,
@@ -1472,6 +1511,8 @@ pub enum StatementKind {
     /// the worst a caller can do by sealing is stop this process opening
     /// secrets, which is the safe direction and is undone by unsealing again.
     SealVault {
+        /// `SEAL VAULT team`: one vault's own key rather than the master key.
+        vault: Option<Name>,
         /// Where the statement sits.
         span: Span,
     },
