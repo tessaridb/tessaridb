@@ -6,19 +6,22 @@
 import { type Destination } from "./ui.js";
 
 /**
- * The five destinations, named for the JOB rather than for the noun.
+ * The six destinations, named for the JOB rather than for the noun.
  *
  * `Query`, `Users`, `Node` and `Cluster` named the things the console holds.
  * These name what somebody came to do: run a statement, look after the cluster,
  * decide who may reach what, see what this process is. The difference shows the
  * moment an operator arrives knowing their task and not the product's vocabulary.
  *
- * The cap is FIVE, and the fifth was a trade made on the record: the owner asked
+ * The cap was FIVE, and the fifth was a trade made on the record: the owner asked
  * for a place to manage topics (G042, 2026-09-29), and reading, creating and
  * settling topics is a job of its own rather than a statement typed on Run. It
- * sits beside Run because both work on the data. A sixth is the same trade again,
- * not a place to put the next screen — S3's whole claim is that navigation stays
- * readable at a glance, and a glance does not scale.
+ * sits beside Run because both work on the data. The sixth, Backup, was the same
+ * trade asked for again by the owner (2026-09-30): writing the store to a file on
+ * the node is a job of its own, and it sits last because it is the rarest. A
+ * seventh is the same trade once more, not a place to put the next screen — S3's
+ * whole claim is that navigation stays readable at a glance, and a glance does
+ * not scale.
  */
 export const DESTINATIONS: readonly Destination[] = [
   { name: "run", label: "Run" },
@@ -26,6 +29,7 @@ export const DESTINATIONS: readonly Destination[] = [
   { name: "cluster", label: "Cluster" },
   { name: "access", label: "Access" },
   { name: "this-node", label: "This node" },
+  { name: "backup", label: "Backup" },
 ];
 
 /**

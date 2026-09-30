@@ -45,6 +45,7 @@
         <button type="button" role="tab" id="tab-cluster" aria-controls="panel-cluster" aria-selected="false" tabindex="-1">Cluster</button>
         <button type="button" role="tab" id="tab-access" aria-controls="panel-access" aria-selected="false" tabindex="-1">Access</button>
         <button type="button" role="tab" id="tab-this-node" aria-controls="panel-this-node" aria-selected="false" tabindex="-1">This node</button>
+        <button type="button" role="tab" id="tab-backup" aria-controls="panel-backup" aria-selected="false" tabindex="-1">Backup</button>
       </div>
     </nav>
     <main>
@@ -596,6 +597,31 @@
             <h2>Metrics</h2>
           </div>
           <div id="node-metrics" class="answer small" aria-live="polite"></div>
+        </div>
+      </section>
+      <section id="panel-backup" role="tabpanel" aria-labelledby="tab-backup" tabindex="0" hidden>
+        <div class="pane-head">
+          <h2>Backup</h2>
+          <span id="backup-status" class="status" role="status"></span>
+        </div>
+        <div class="pane">
+          <p class="note">The node writes the file into its backup folder (<code>--backup-dir</code>, or <code>TESSARIDB_BACKUP_DIR</code> in the image). The name may include subfolders and never replaces an existing file. Store-wide owners only.</p>
+          <div class="row">
+            <label>
+              What to write 
+              <select id="backup-form">
+                <option value="state" selected>the current state — a snapshot</option>
+                <option value="log">the log — every commit, in order</option>
+                <option value="script">the current state as TessariQL</option>
+              </select>
+            </label>
+            <label>File name <input id="backup-name" type="text" autocomplete="off" /></label>
+          </div>
+          <p id="backup-says" class="note says"></p>
+          <div class="row">
+            <button id="backup-run" type="button" class="primary" disabled>Back up</button>
+          </div>
+          <div id="backup-answer" class="answer small" aria-live="polite"></div>
         </div>
       </section>
     </main>

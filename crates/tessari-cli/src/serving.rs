@@ -132,6 +132,9 @@ pub(crate) fn serve(
         );
         db.gather_through(std::sync::Arc::new(gathering));
     }
+    if let Some(folder) = &serving.backups {
+        db.back_up_into(std::sync::Arc::from(folder.as_path()));
+    }
     // Both are bound before either serves, so an address that cannot be taken
     // is a failure to start rather than a surface that quietly went missing
     // while the other one answered.

@@ -1157,7 +1157,7 @@ fn no_screen_but_run_asks_the_operator_to_read_a_statement() {
 
 #[cfg(feature = "console")]
 #[test]
-fn the_five_destinations_are_named_for_the_jobs_and_there_are_five() {
+fn the_six_destinations_are_named_for_the_jobs_and_there_are_six() {
     // S3.2's own measurement. Renaming the destinations passed every test this
     // suite had, because they all assert that a tab and a pane AGREE — which
     // stays true whatever the tab is called. The labels are the criterion, so
@@ -1166,7 +1166,8 @@ fn the_five_destinations_are_named_for_the_jobs_and_there_are_five() {
     // The cap is asserted with them rather than separately: another destination
     // is a trade to be argued for, and a test that only checked the names would
     // let one arrive silently beside them. The fifth, Topics, was that trade —
-    // asked for by the owner for G042 and recorded in `destinations.ts`.
+    // asked for by the owner for G042 and recorded in `destinations.ts` — and the
+    // sixth, Backup, was the same trade asked for again (2026-09-30).
     let (_node, address) = node();
     let (status, _, page) = get(&address, "/");
     assert_eq!(status, 200, "the console's page is not served");
@@ -1183,8 +1184,30 @@ fn the_five_destinations_are_named_for_the_jobs_and_there_are_five() {
 
     assert_eq!(
         labels,
-        vec!["Run", "Topics", "Cluster", "Access", "This node"],
-        "the destinations no longer name the jobs, or a sixth has arrived"
+        vec!["Run", "Topics", "Cluster", "Access", "This node", "Backup"],
+        "the destinations no longer name the jobs, or a seventh has arrived"
+    );
+}
+
+#[cfg(feature = "console")]
+#[test]
+fn the_backup_screen_writes_the_file_name_as_a_quoted_string() {
+    // The name is the operator's text and becomes a string literal in `BACKUP …
+    // TO`; the script route binds nothing, so the one safe way in is the escaping
+    // `quoted()` writes. A name with a quote in it must not end the literal.
+    let sources = panel_sources();
+    let screen = sources
+        .iter()
+        .find(|(name, _)| name == "backup.ts")
+        .map(|(_, text)| text.as_str())
+        .expect("backup.ts is not among the panel's sources");
+    assert!(
+        screen.contains("TO ${quoted("),
+        "the Backup screen composes `TO` without quoting the name"
+    );
+    assert!(
+        screen.contains("from \"./user-forms.js\""),
+        "the Backup screen does not take `quoted` from the one module that escapes"
     );
 }
 

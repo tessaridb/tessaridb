@@ -6629,6 +6629,38 @@ DEFINE USER ada ON prod.orders ROLE editor PASSHASH '$argon2id$v=19$m=19456,t=2,
 Refused unless the store could have made that hash itself — Argon2id, at
 parameters no weaker than its own.
 
+### Written by the node, into its backup folder
+
+```
+BACKUP STATE TO 'weekly/state.tessarisnap';
+BACKUP TO 'nightly.tessarilog';
+BACKUP SCRIPT TO 'dump.tessariql';
+```
+
+`TO` asks the node to write the file itself rather than answer with it, into the
+**backup folder** it was started with — `--backup-dir <folder>`, or
+`TESSARIDB_BACKUP_DIR` in the container image, which defaults it to
+`/var/lib/tessaridb/backups` inside its volume. It is what the console's Backup
+tab runs. The answer says where the file landed and how large it is:
+`{ path, bytes, form }`.
+
+The name is a file **inside** that folder, and the node decides whether it stays
+there:
+
+- it is relative and made of plain parts — an absolute path, a `..` or a `.` is
+  refused as `BackupNameRefused`, before anything is written;
+- subfolders it names are made one at a time, and one that is already a link or
+  a file is refused rather than followed out of the folder;
+- a file already at that name is **never replaced** — `BackupExists` (`409`),
+  because the file it would replace is most likely an earlier backup;
+- a node started without a folder refuses every `TO` as `NoBackupFolder` (`409`)
+  rather than writing somewhere nobody chose.
+
+The bytes go to `<name>.partial`, are synced, read back through the verifier
+where they were written (a log and a snapshot; a script has none), and only then
+renamed into place — so the folder never holds a file that reads as a backup and
+is not one. The same owner rule applies as for `BACKUP` itself.
+
 ## 7b. Looking at a plan
 
 ```

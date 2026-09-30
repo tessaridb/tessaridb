@@ -2150,7 +2150,7 @@
   var KEYS = [
     { press: "/", does: "find an account, a table, a namespace or a record" },
     { press: "⌘K  ·  Ctrl-K", does: "the same, from inside a field" },
-    { press: "⌘1 … ⌘5", does: "Run, Topics, Cluster, Access, This node" },
+    { press: "⌘1 … ⌘6", does: "Run, Topics, Cluster, Access, This node, Backup" },
     { press: "⌘↵  ·  Ctrl-↵", does: "run what is in the script box" },
     { press: "?", does: "this list" },
     { press: "Esc", does: "close the log, the drawer, or this list" }
@@ -2174,7 +2174,7 @@
   function closeIt4() {
     at("keys-sheet").hidden = true;
   }
-  var DESTINATIONS = ["run", "topics", "cluster", "access", "this-node"];
+  var DESTINATIONS = ["run", "topics", "cluster", "access", "this-node", "backup"];
   function wire15() {
     draw3();
     document.addEventListener("keydown", (event) => {
@@ -2757,6 +2757,87 @@
     at("topics-database").addEventListener("change", () => FORMS.forEach(shape3));
   }
 
+  // src/backup.ts
+  //! The Backup screen: `BACKUP … TO '<name>'`, and where the file landed.
+  //!
+  //! The name is the operator's text, so it reaches the statement only through
+  //! `quoted()`, the one place the console escapes a string literal; whether the
+  //! name stays inside the backup folder is the node's decision, and its refusal
+  //! is shown in its own words.
+  var SCREEN3 = "Backup";
+  var WHAT = {
+    state: {
+      statement: "BACKUP STATE",
+      suffix: "tessarisnap",
+      says: "every live record at one moment; restores whole, and a pruned log does not stop it"
+    },
+    log: {
+      statement: "BACKUP",
+      suffix: "tessarilog",
+      says: "every commit in order; a restore can stop at any point in it"
+    },
+    script: {
+      statement: "BACKUP SCRIPT",
+      suffix: "tessariql",
+      says: "statements that rebuild the store; readable, and its header lists what it leaves out"
+    }
+  };
+  function chosenForm() {
+    const picked = value("backup-form");
+    return picked === "log" || picked === "script" ? picked : "state";
+  }
+  function suggested(form) {
+    const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+    return `tessaridb-${stamp}.${WHAT[form].suffix}`;
+  }
+  var ours = true;
+  function shape4() {
+    const name = trimmed("backup-name");
+    disable("backup-run", name === "");
+    write(
+      "backup-says",
+      name === "" ? "name the file to write" : `Writes ${name} into the node's backup folder: ${WHAT[chosenForm()].says}.`
+    );
+  }
+  async function run2() {
+    const name = trimmed("backup-name");
+    if (name === "") {
+      return;
+    }
+    disable("backup-run", true);
+    say("backup-status", "writing…");
+    write("backup-answer", "");
+    try {
+      const answered2 = held2(await valueOf(`${WHAT[chosenForm()].statement} TO ${quoted(name)};`, SCREEN3));
+      const path = typeof answered2?.path === "string" ? answered2.path : name;
+      const bytes = typeof answered2?.bytes === "number" ? answered2.bytes : null;
+      say("backup-status", "written");
+      write("backup-answer", bytes === null ? path : `${path}
+${bytes.toLocaleString("en")} bytes`);
+      ours = true;
+      setValue("backup-name", suggested(chosenForm()));
+    } catch (failure) {
+      const words4 = told(failure);
+      say("backup-status", failure instanceof Unreachable ? "the node did not answer — " + words4 : words4, true);
+    }
+    shape4();
+  }
+  function wire18() {
+    setValue("backup-name", suggested(chosenForm()));
+    at("backup-form").addEventListener("change", () => {
+      if (ours) {
+        setValue("backup-name", suggested(chosenForm()));
+      }
+      shape4();
+    });
+    at("backup-name").addEventListener("input", () => {
+      ours = false;
+      shape4();
+    });
+    at("backup-run").addEventListener("click", () => void run2());
+    shape4();
+  }
+
   // src/spaces-list.ts
   //! The Spaces pane's reading: which tables of a database are spaces, their keys by
   //! prefix, and one key's value.
@@ -2765,7 +2846,7 @@
   //! writes back the statement that made it. The keys and the value come from the
   //! `/kv` routes, so what the pane shows is what any HTTP caller of those routes
   //! would be answered.
-  var SCREEN3 = "Run";
+  var SCREEN4 = "Run";
   var TABLES_ASKED = 200;
   var KEYS_SHOWN = 100;
   var words2 = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
@@ -2782,7 +2863,7 @@
   async function readNamespaces2() {
     state("kv-status", "waiting", "asking…");
     try {
-      offer("kv-namespace", strings2(await valueOf("INFO FOR STORE;", SCREEN3), "namespaces"));
+      offer("kv-namespace", strings2(await valueOf("INFO FOR STORE;", SCREEN4), "namespaces"));
     } catch (failure) {
       state("kv-status", "wrong", words2(failure));
       return;
@@ -2798,7 +2879,7 @@
       return;
     }
     try {
-      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN3);
+      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN4);
       offer("kv-database", strings2(answered2, "databases"));
     } catch (failure) {
       state("kv-status", "wrong", words2(failure));
@@ -2819,10 +2900,10 @@
     const start = tenancy(namespace, database);
     state("kv-status", "waiting", "asking…");
     try {
-      const tables = strings2(await valueOf(start + "INFO FOR DATABASE;", SCREEN3), "tables").filter((name) => aName(name) !== null).slice(0, TABLES_ASKED);
+      const tables = strings2(await valueOf(start + "INFO FOR DATABASE;", SCREEN4), "tables").filter((name) => aName(name) !== null).slice(0, TABLES_ASKED);
       let answered2 = [];
       if (tables.length > 0) {
-        const { text } = await ask(start + tables.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN3);
+        const { text } = await ask(start + tables.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN4);
         const body = JSON.parse(text);
         if (!Array.isArray(body.results)) {
           throw new Error(typeof body.error === "string" ? body.error : text);
@@ -2861,7 +2942,7 @@
     const query = `?limit=${KEYS_SHOWN}` + (prefix === "" ? "" : `&prefix=${encodeURIComponent(prefix)}`);
     state("kv-status", "waiting", "asking…");
     try {
-      const { status, body } = await route("GET", where3 + query, SCREEN3);
+      const { status, body } = await route("GET", where3 + query, SCREEN4);
       if (mine !== listing) {
         return;
       }
@@ -2903,7 +2984,7 @@
       return;
     }
     try {
-      const { status, body } = await route("GET", `${where3}/key/${encodeURIComponent(key)}`, SCREEN3);
+      const { status, body } = await route("GET", `${where3}/key/${encodeURIComponent(key)}`, SCREEN4);
       const shown2 = made("pre");
       if (status === 404) {
         shown2.textContent = `${key}: no such key — it may have expired`;
@@ -2918,7 +2999,7 @@ ${JSON.stringify(held5, null, 2)}`;
       state("kv-status", "wrong", words2(failure));
     }
   }
-  function wire18() {
+  function wire19() {
     at("kv-namespace").addEventListener("change", () => void readDatabases2());
     at("kv-database").addEventListener("change", () => void readSpaces());
     at("kv-space").addEventListener("change", () => void listKeys());
@@ -2933,7 +3014,7 @@ ${JSON.stringify(held5, null, 2)}`;
   //! Everything here reads. A table's kind is not a field of `INFO FOR DATABASE`,
   //! so each table is asked for `INFO FOR TABLE`: a series writes back the
   //! `DEFINE SERIES` statement that made it, and a rollup says it is one.
-  var SCREEN4 = "Run";
+  var SCREEN5 = "Run";
   var TABLES_ASKED2 = 200;
   var DECLARED = /^DEFINE SERIES \S+ RETAIN (\S+?)(?: TIME (\S+?))?;/;
   function kind(value2) {
@@ -2961,7 +3042,7 @@ ${JSON.stringify(held5, null, 2)}`;
   async function readNamespaces3() {
     state("series-status", "waiting", "asking…");
     try {
-      offer("series-namespace", strings3(await valueOf("INFO FOR STORE;", SCREEN4), "namespaces"));
+      offer("series-namespace", strings3(await valueOf("INFO FOR STORE;", SCREEN5), "namespaces"));
     } catch (failure) {
       state("series-status", "wrong", words3(failure));
       return;
@@ -2977,7 +3058,7 @@ ${JSON.stringify(held5, null, 2)}`;
       return;
     }
     try {
-      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN4);
+      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN5);
       offer("series-database", strings3(answered2, "databases"));
     } catch (failure) {
       state("series-status", "wrong", words3(failure));
@@ -2996,11 +3077,11 @@ ${JSON.stringify(held5, null, 2)}`;
     const start = tenancy(namespace, database);
     state("series-status", "waiting", "asking…");
     try {
-      const tables = strings3(await valueOf(start + "INFO FOR DATABASE;", SCREEN4), "tables").filter((name) => aName(name) !== null);
+      const tables = strings3(await valueOf(start + "INFO FOR DATABASE;", SCREEN5), "tables").filter((name) => aName(name) !== null);
       const asked2 = tables.slice(0, TABLES_ASKED2);
       let answered2 = [];
       if (asked2.length > 0) {
-        const { text } = await ask(start + asked2.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN4);
+        const { text } = await ask(start + asked2.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN5);
         const body = JSON.parse(text);
         if (!Array.isArray(body.results)) {
           throw new Error(typeof body.error === "string" ? body.error : text);
@@ -3043,7 +3124,7 @@ ${JSON.stringify(held5, null, 2)}`;
     }
     at("series-list").appendChild(table);
   }
-  function wire19() {
+  function wire20() {
     at("series-namespace").addEventListener("change", () => void readDatabases3());
     at("series-database").addEventListener("change", () => void readSeries());
     at("series-refresh").addEventListener("click", () => void readNamespaces3());
@@ -3165,7 +3246,7 @@ ${JSON.stringify(held5, null, 2)}`;
     }
     write("user-count", tally(matched));
   }
-  function wire20() {
+  function wire21() {
     at("list").addEventListener("click", listUsers);
     at("user-filter").addEventListener("input", redraw);
     onArrival(["access"], () => void listUsers());
@@ -3286,11 +3367,12 @@ ${JSON.stringify(held5, null, 2)}`;
   wire5();
   wire4();
   wire8();
-  wire20();
+  wire21();
   wire11();
   wire12();
   wire16();
   wire17();
-  wire19();
   wire18();
+  wire20();
+  wire19();
 })();

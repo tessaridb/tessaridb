@@ -403,7 +403,20 @@ const TABLES: &[Table] = &[
         // whether a catalog name is a space — a kind, never a key or a value —
         // and its one caller, `/kv/…`, asks only after the caller's own session
         // has taken the `USE`. Same re-classification trigger as `is_series`.
-        expected: 25,
+        //
+        // 26 since backups written on the node (2026-09-30): `Db::back_up_into`
+        // names the folder `BACKUP … TO` may write into. Classified **exempt**:
+        // it is set once by the process that started the node, from its own
+        // command line, and it reads and writes
+        // no record, no catalog entry and no grant. The authority is the
+        // statement's — only a store-wide owner runs `BACKUP` in any form — and
+        // the containment is the session's, which refuses a name that would
+        // leave the folder before anything is written.
+        //
+        // Re-classification trigger: a caller other than the starting process
+        // able to set or change the folder — a statement, a route or a peer
+        // frame — which would let a caller choose where the node writes.
+        expected: 26,
         count: |text| public_functions(&block(text, "impl Db")),
     },
     Table {
@@ -921,7 +934,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // and four in the backup module, each classified above (G047, ADR-0091).
     //
     // 112 since the state script: `--dump`, classified above.
-    assert_eq!(total, 112, "the counted tables no longer sum to 112");
+    //
+    // 113 since backups written on the node: `Db::back_up_into`, exempt,
+    // classified above.
+    assert_eq!(total, 113, "the counted tables no longer sum to 113");
 }
 
 /// Every `.rs` file under a directory.

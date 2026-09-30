@@ -23,6 +23,8 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   --serve <host:port> serve this store over the wire protocol until stopped
   --http <host:port> serve this store over HTTP until stopped; may accompany
                   --serve, and one process then holds both
+  --backup-dir <folder> where a serving node writes `BACKUP … TO '<name>'`;
+                  without it every `TO` is refused
   --cluster-credential <file> this node's peer credential, PEM, with --serve
   --cluster-key <file> its private key, PEM
   --cluster-authority <file> the one certificate this cluster trusts, PEM
@@ -107,6 +109,8 @@ pub struct Serving {
     pub wire: Option<String>,
     /// HTTP.
     pub http: Option<String>,
+    /// The folder `BACKUP … TO` writes into; absent, every `TO` is refused.
+    pub backups: Option<PathBuf>,
 }
 
 impl Serving {
@@ -267,6 +271,12 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                 serving.http = Some(address);
                 source = Source::Serve;
             }
+            "--backup-dir" => {
+                let folder = arguments
+                    .next()
+                    .ok_or_else(|| "--backup-dir wants a folder".to_owned())?;
+                serving.backups = Some(PathBuf::from(folder));
+            }
             "--cluster-credential" => {
                 let path = arguments
                     .next()
@@ -387,6 +397,14 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
     // used, and here what they believe is that a port is open.
     if serving.asked() && !matches!(source, Source::Serve) {
         return Err("an address to serve on and something else to do are two programs".to_owned());
+    }
+    // The same reason again: a folder named and never written to is one somebody
+    // believes holds their backups.
+    if serving.backups.is_some() && !matches!(source, Source::Serve) {
+        return Err(
+            "--backup-dir is where a serving node writes `BACKUP … TO`, and this serves nothing"
+                .to_owned(),
+        );
     }
     // Same reason as the line above, and what the operator believes here is
     // stronger: not that a port is open, but that this node joined a cluster.
@@ -770,6 +788,39 @@ mod tests {
         assert_eq!(only_http.serving.http.as_deref(), Some("127.0.0.1:8000"));
 
         assert!(asked(&["--http"]).is_err());
+    }
+
+    #[test]
+    fn a_backup_folder_belongs_to_a_serving_node() {
+        let held = asked(&[
+            "./data",
+            "--http",
+            "127.0.0.1:8000",
+            "--backup-dir",
+            "/backups",
+        ])
+        .expect("a folder beside a surface");
+        assert_eq!(
+            held.serving.backups.as_deref(),
+            Some(std::path::Path::new("/backups"))
+        );
+        assert_eq!(
+            asked(&["./data", "--http", "127.0.0.1:8000"])
+                .expect("no folder")
+                .serving
+                .backups,
+            None
+        );
+
+        // Refused rather than ignored: a folder named and never written to is
+        // one somebody believes holds their backups.
+        let refusal = asked(&["./data", "--backup-dir", "/backups", "-e", "SELECT 1;"])
+            .expect_err("nothing serves");
+        assert!(
+            refusal.contains("--backup-dir"),
+            "the refusal does not name the flag: {refusal}"
+        );
+        assert!(asked(&["./data", "--http", "127.0.0.1:8000", "--backup-dir"]).is_err());
     }
 
     #[test]

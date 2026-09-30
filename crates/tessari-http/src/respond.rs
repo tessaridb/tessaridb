@@ -465,7 +465,11 @@ pub(crate) fn failure(error: &Error) -> Answer {
         // goes, and a drop blocked by a dependency succeeds once the dependant
         // does. A client told `400` stops retrying, which is the one response
         // that never becomes right.
-        Error::Store(_) | Error::RecordExists { .. } | Error::StillDepended { .. } => 409,
+        Error::Store(_)
+        | Error::RecordExists { .. }
+        | Error::StillDepended { .. }
+        | Error::BackupExists { .. }
+        | Error::NoBackupFolder => 409,
         // A substrate or decoding failure. Anything reaching here is a bug.
         //
         // A backup the writer could not write is a device speaking, not a

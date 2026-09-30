@@ -476,7 +476,8 @@ pub enum StatementKind {
         /// What is being asked about.
         subject: InfoSubject,
     },
-    /// `BACKUP` or `BACKUP FROM 42` — the store's log as a backup file.
+    /// `BACKUP` or `BACKUP FROM 42` — the store's log as a backup file, answered
+    /// with or, after `TO '<name>'`, written into the node's backup folder.
     ///
     /// The one statement whose scope is the **store** rather than the selected
     /// namespace, which is why it needs an owner rather than a table permission:
@@ -486,6 +487,9 @@ pub enum StatementKind {
         from: Option<u64>,
         /// Which of the backup formats is asked for (ADR-0091).
         form: BackupForm,
+        /// `TO '<name>'` — the file, inside the node's backup folder, the backup
+        /// is written to; absent means the statement answers with the bytes.
+        to: Option<String>,
     },
     /// `DEFINE ANALYZER simple FILTERS lowercase, ascii`
     DefineAnalyzer {

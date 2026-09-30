@@ -331,6 +331,40 @@ pub enum Error {
         reason: String,
     },
 
+    /// `BACKUP … TO` on a node started without a backup folder.
+    ///
+    /// A node writes a file only where its operator said it may, so with no
+    /// folder there is nowhere, rather than a default somebody did not choose.
+    #[error(
+        "this node has no backup folder, so `BACKUP … TO` has nowhere it may write; \
+         start it with --backup-dir (TESSARIDB_BACKUP_DIR in the image)"
+    )]
+    NoBackupFolder,
+
+    /// A `BACKUP … TO` name that would not stay inside the backup folder.
+    ///
+    /// Refused before anything is written: a name is a relative path of plain
+    /// parts, and a symlink inside the folder is never followed out of it.
+    #[error("the backup cannot be written to '{name}': {reason}")]
+    BackupNameRefused {
+        /// The name as the statement gave it.
+        name: String,
+        /// Why it would not stay inside the folder.
+        reason: String,
+    },
+
+    /// A `BACKUP … TO` whose file is already there.
+    ///
+    /// A backup never replaces a file: the one it would replace is most likely
+    /// an earlier backup, and losing it to a mistyped name is not recoverable.
+    #[error(
+        "the backup was not written, because {path} already exists; a backup never replaces a file"
+    )]
+    BackupExists {
+        /// The file that is already there.
+        path: String,
+    },
+
     /// A stored value could not be read back.
     #[error(transparent)]
     Encoding(#[from] tessari_encoding::Error),

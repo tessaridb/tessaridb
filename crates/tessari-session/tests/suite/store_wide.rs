@@ -101,6 +101,8 @@ const STORE_WIDE: &[&str] = &[
     "BACKUP;",
     "BACKUP STATE;",
     "BACKUP SCRIPT;",
+    "BACKUP TO 'nightly.tessarilog';",
+    "BACKUP STATE TO 'nightly.tessarisnap';",
     "INFO FOR NODE;",
     "SELECT * FROM $node;",
     "EXPLAIN SELECT * FROM $node;",
@@ -145,8 +147,11 @@ fn the_store_owner_may_run_all_of_them() {
 
     // The other half of the rule, and the one that makes it a boundary rather
     // than a blanket refusal: somebody has to be able to back the store up.
+    // A folder for the `TO` forms: without one they are refused for the node's
+    // configuration, which would say nothing about who may run them.
+    let folder = tempfile::tempdir().unwrap();
     for statement in STORE_WIDE {
-        let mut root = signed_in(&store, "root");
+        let mut root = signed_in(&store, "root").backing_up_into(Arc::from(folder.path()));
         root.run(statement).unwrap_or_else(|failure| {
             panic!("the store's owner could not run {statement:?}: {failure}")
         });

@@ -1739,28 +1739,32 @@ fn backup_names_its_form_and_state_stays_an_ordinary_word() {
         kind("BACKUP;"),
         StatementKind::Backup {
             from: None,
-            form: BackupForm::Log
+            form: BackupForm::Log,
+            to: None,
         }
     );
     assert_eq!(
         kind("BACKUP FROM 42;"),
         StatementKind::Backup {
             from: Some(42),
-            form: BackupForm::Log
+            form: BackupForm::Log,
+            to: None,
         }
     );
     assert_eq!(
         kind("backup state;"),
         StatementKind::Backup {
             from: None,
-            form: BackupForm::State
+            form: BackupForm::State,
+            to: None,
         }
     );
     assert_eq!(
         kind("BACKUP SCRIPT;"),
         StatementKind::Backup {
             from: None,
-            form: BackupForm::Script
+            form: BackupForm::Script,
+            to: None,
         }
     );
     assert!(tessari_ql::parse("BACKUP STATE FROM 5;").is_err());
@@ -1768,4 +1772,56 @@ fn backup_names_its_form_and_state_stays_an_ordinary_word() {
     assert!(tessari_ql::parse("SELECT script FROM pages;").is_ok());
     assert!(tessari_ql::parse("SELECT state FROM orders WHERE state = 'paid';").is_ok());
     assert!(tessari_ql::parse("DEFINE FIELD state ON orders TYPE string;").is_ok());
+}
+
+/// `TO '<name>'` asks the node to write the backup into its backup folder under
+/// that name instead of answering with the bytes; every form takes it, and the
+/// name is a string — a path is text, never a name the grammar knows.
+#[test]
+fn backup_to_names_a_file_in_every_form() {
+    use tessari_ql::{BackupForm, StatementKind};
+    let kind = |script: &str| {
+        tessari_ql::parse(script).unwrap().statements[0]
+            .kind
+            .clone()
+    };
+    assert_eq!(
+        kind("BACKUP TO 'nightly.tessarilog';"),
+        StatementKind::Backup {
+            from: None,
+            form: BackupForm::Log,
+            to: Some("nightly.tessarilog".to_owned()),
+        }
+    );
+    assert_eq!(
+        kind("BACKUP FROM 42 TO 'since-42.tessarilog';"),
+        StatementKind::Backup {
+            from: Some(42),
+            form: BackupForm::Log,
+            to: Some("since-42.tessarilog".to_owned()),
+        }
+    );
+    assert_eq!(
+        kind("BACKUP STATE TO 'weekly/state.tessarisnap';"),
+        StatementKind::Backup {
+            from: None,
+            form: BackupForm::State,
+            to: Some("weekly/state.tessarisnap".to_owned()),
+        }
+    );
+    assert_eq!(
+        kind("BACKUP SCRIPT TO 'dump.tessariql';"),
+        StatementKind::Backup {
+            from: None,
+            form: BackupForm::Script,
+            to: Some("dump.tessariql".to_owned()),
+        }
+    );
+    let refused = tessari_ql::parse("BACKUP STATE TO nightly;")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("the file name the backup is written to"),
+        "the refusal does not say a name was expected: {refused}"
+    );
 }
