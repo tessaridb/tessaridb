@@ -56,6 +56,9 @@ compares carries no pre-release suffix.
   `/vault/{ns}/{db}/{vault}[/unseal|/seal|/passphrase]` and as a target in the
   wire frame. Naming a vault that opens with the store's passphrase is
   `VaultUsesStorePassphrase`. `INFO FOR VAULT` now says which custody a vault has.
+- **The console's Vault tab** (⌘7) unseals, seals and rekeys the store's key and any
+  one vault over the vault routes, so a passphrase typed there is never statement
+  text, never in the statement log and never kept in the page.
 - **`INFO FOR VAULT team RECORDS [AFTER team:'x'] [LIMIT n]`** lists a vault's
   record ids a page at a time (a thousand by default, ten thousand at most), with
   no value in the answer.

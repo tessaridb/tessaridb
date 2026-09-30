@@ -6,7 +6,7 @@
 import { type Destination } from "./ui.js";
 
 /**
- * The six destinations, named for the JOB rather than for the noun.
+ * The seven destinations, named for the JOB rather than for the noun.
  *
  * `Query`, `Users`, `Node` and `Cluster` named the things the console holds.
  * These name what somebody came to do: run a statement, look after the cluster,
@@ -18,10 +18,12 @@ import { type Destination } from "./ui.js";
  * settling topics is a job of its own rather than a statement typed on Run. It
  * sits beside Run because both work on the data. The sixth, Backup, was the same
  * trade asked for again by the owner (2026-09-30): writing the store to a file on
- * the node is a job of its own, and it sits last because it is the rarest. A
- * seventh is the same trade once more, not a place to put the next screen — S3's
- * whole claim is that navigation stays readable at a glance, and a glance does
- * not scale.
+ * the node is a job of its own, and it sits last because it is the rarest. The
+ * seventh, Vault, is that trade made once more on the owner's word (G048,
+ * 2026-09-30): opening and closing the store's key and each vault's is a job of
+ * its own. An eighth is the same trade again, not a place to put the next screen
+ * — S3's whole claim is that navigation stays readable at a glance, and a glance
+ * does not scale.
  */
 export const DESTINATIONS: readonly Destination[] = [
   { name: "run", label: "Run" },
@@ -30,6 +32,7 @@ export const DESTINATIONS: readonly Destination[] = [
   { name: "access", label: "Access" },
   { name: "this-node", label: "This node" },
   { name: "backup", label: "Backup" },
+  { name: "vault", label: "Vault" },
 ];
 
 /**

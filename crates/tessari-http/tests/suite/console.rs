@@ -292,6 +292,12 @@ fn the_console_calls_no_route_that_did_not_already_exist() {
         "/ready",
         "/metrics",
         "/backup",
+        // The vault's own surface (ADR-0092, ADR-0093): protocol §5.11 routes that
+        // every client offers, so the passphrase never has to be statement text.
+        "/vault",
+        "/vault/seal",
+        "/vault/unseal",
+        "/vault/passphrase",
     ];
     for url in quoted_urls(&code) {
         // The console's own assets are answered above; what matters here is the
@@ -1157,7 +1163,7 @@ fn no_screen_but_run_asks_the_operator_to_read_a_statement() {
 
 #[cfg(feature = "console")]
 #[test]
-fn the_six_destinations_are_named_for_the_jobs_and_there_are_six() {
+fn the_seven_destinations_are_named_for_the_jobs_and_there_are_seven() {
     // S3.2's own measurement. Renaming the destinations passed every test this
     // suite had, because they all assert that a tab and a pane AGREE — which
     // stays true whatever the tab is called. The labels are the criterion, so
@@ -1167,7 +1173,8 @@ fn the_six_destinations_are_named_for_the_jobs_and_there_are_six() {
     // is a trade to be argued for, and a test that only checked the names would
     // let one arrive silently beside them. The fifth, Topics, was that trade —
     // asked for by the owner for G042 and recorded in `destinations.ts` — and the
-    // sixth, Backup, was the same trade asked for again (2026-09-30).
+    // sixth, Backup, was the same trade asked for again (2026-09-30), and the
+    // seventh, Vault, once more (G048, 2026-09-30).
     let (_node, address) = node();
     let (status, _, page) = get(&address, "/");
     assert_eq!(status, 200, "the console's page is not served");
@@ -1184,8 +1191,16 @@ fn the_six_destinations_are_named_for_the_jobs_and_there_are_six() {
 
     assert_eq!(
         labels,
-        vec!["Run", "Topics", "Cluster", "Access", "This node", "Backup"],
-        "the destinations no longer name the jobs, or a seventh has arrived"
+        vec![
+            "Run",
+            "Topics",
+            "Cluster",
+            "Access",
+            "This node",
+            "Backup",
+            "Vault"
+        ],
+        "the destinations no longer name the jobs, or an eighth has arrived"
     );
 }
 

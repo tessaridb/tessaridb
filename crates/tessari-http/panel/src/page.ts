@@ -16,6 +16,7 @@ import { spaces } from "./spaces.js";
 import { series } from "./series.js";
 import { topics } from "./topics.js";
 import { backup } from "./backup-pane.js";
+import { vault } from "./vault-pane.js";
 import { DESTINATIONS, to } from "./destinations.js";
 import {
   answer, behindDisclosure, button, field, note, number, pane, paneHead, panel,
@@ -298,7 +299,7 @@ export const index = (): string =>
         tabs(DESTINATIONS),
         // In the tab strip's own order, so the reading order of the page and the
         // order of the controls above it are one thing rather than two.
-        el("main", {}, query(), topics(), cluster(), access(), node(), backup()),
+        el("main", {}, query(), topics(), cluster(), access(), node(), backup(), vault()),
         tray(),
         logSheet(),
         keysSheet(),
