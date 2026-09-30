@@ -6591,6 +6591,44 @@ The cost is stated rather than discovered: the whole file is materialised,
 because a statement answers with a value. `FROM` is what bounds it, and a
 streaming answer is named in §8.
 
+### The store's current state, as a snapshot or as a script
+
+```
+BACKUP STATE;
+BACKUP SCRIPT;
+```
+
+The log grows with history, and once a retained-record window has pruned it
+`BACKUP` is refused — its file starts at the first record, and that record is
+gone. Two more forms answer with the **state** instead (ADR-0091):
+
+- `BACKUP STATE` — a snapshot: every live record at one version of the store, in
+  the file `--verify` and `--restore` read by its opening bytes. A restore
+  writes the records and rebuilds every index from them, then stands exactly
+  where the snapshot was taken, so the log after it applies on top. A snapshot
+  missing its end is refused whole — a cut log is a prefix of history, a cut
+  snapshot is not a state the store ever held.
+- `BACKUP SCRIPT` — the same state as TessariQL: definitions, then data, then
+  indexes, then the users and their grants in one transaction at the end, since
+  the first user closes the store. Its header names every part it cannot write
+  — a vault's secrets, a queue's holds, a topic's positions, a cluster's
+  topology — rather than leaving one out in silence.
+
+Both read at one moment with writes running, need an owner for `BACKUP`'s
+reason, and take no `FROM`. Over HTTP they are `GET /backup?as=state` and
+`GET /backup?as=script`; on the command line, `--snapshot <file>` and
+`--dump <file>` for a store the process opens itself.
+
+A script brings a user back with the hash the store holds, since nobody knows the
+password:
+
+```
+DEFINE USER ada ON prod.orders ROLE editor PASSHASH '$argon2id$v=19$m=19456,t=2,p=1$…';
+```
+
+Refused unless the store could have made that hash itself — Argon2id, at
+parameters no weaker than its own.
+
 ## 7b. Looking at a plan
 
 ```
@@ -7886,7 +7924,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.15.0", "build": "0.15.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.16.0", "build": "0.16.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],
