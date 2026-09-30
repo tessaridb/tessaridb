@@ -32,8 +32,33 @@ export const backup = (): Node =>
         ),
         field("File name", text("backup-name", { spellcheck: false, autocomplete: "off" })),
       ),
+      row(
+        "default",
+        field(
+          "What to include",
+          choose("backup-part", [
+            { value: "store", label: "the whole store", chosen: true },
+            { value: "places", label: "chosen namespaces and databases" },
+          ]),
+        ),
+        field(
+          "Namespaces and databases",
+          text("backup-places", { placeholder: "crm, prod.orders", spellcheck: false, autocomplete: "off" }),
+        ),
+      ),
       says("backup-says"),
       row("default", button("backup-run", "Back up", "primary", { disabled: true })),
       answer("backup-answer", "small"),
+    ),
+    pane(
+      paneHead("Restore a script", status("restore-status")),
+      note(
+        "Runs a script from the same folder beside what the store holds: it creates the databases " +
+          "it carries and is refused, with nothing written, when one of them already exists.",
+      ),
+      row("default", field("File name", text("restore-name", { spellcheck: false, autocomplete: "off" }))),
+      says("restore-says"),
+      row("default", button("restore-run", "Restore", "default", { disabled: true })),
+      answer("restore-answer", "small"),
     ),
   );

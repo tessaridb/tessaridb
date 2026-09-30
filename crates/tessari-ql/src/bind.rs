@@ -419,6 +419,7 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::RebuildIndex { .. }
         | StatementKind::CheckTable { .. }
         | StatementKind::Backup { .. }
+        | StatementKind::Restore { .. }
         // A subject is a name and never a value. `INFO FOR TABLE $t` would be a
         // parameter supplying a *table*, which is refused everywhere else in
         // this language for the reason `bind_target` gives.

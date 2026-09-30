@@ -98,6 +98,7 @@ mod ranges;
 mod ranking;
 mod rebuild_index;
 mod refusal;
+mod restore;
 mod resumed;
 mod revocation;
 mod rollups;

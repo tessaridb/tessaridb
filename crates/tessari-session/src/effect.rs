@@ -94,6 +94,8 @@ impl Effect {
             // a statement classified as reading nothing.
             | StatementKind::Reveal { .. }
             | StatementKind::Backup { .. } => Self::Read,
+            // It writes, and it may only run where writes are taken.
+            StatementKind::Restore { .. } => Self::Write,
 
             // `USE` and the transaction verbs change what the *next* statement
             // runs in, and touch nothing themselves. They are reads here for the

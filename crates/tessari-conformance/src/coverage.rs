@@ -134,6 +134,7 @@ forms! {
     Put => "PUT",
     Read => "READ",
     Backup => "BACKUP",
+    Restore => "RESTORE",
     Explain => "EXPLAIN",
     Info => "INFO FOR",
     Keys => "KEYS",
@@ -319,6 +320,7 @@ mod tests {
              PUT b:'/a.txt' = 0x0a;\
              READ b:'/a.txt';\
              BACKUP;\
+             RESTORE SCRIPT FROM 'part.tessariql';\
              EXPLAIN SELECT * FROM t;\
              CHECK TABLE t;\
              INFO FOR STORE;\

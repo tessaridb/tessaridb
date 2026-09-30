@@ -1778,6 +1778,33 @@ fn backup_names_its_form_and_state_stays_an_ordinary_word() {
     assert!(tessari_ql::parse("DEFINE FIELD state ON orders TYPE string;").is_ok());
 }
 
+/// `RESTORE SCRIPT FROM '<name>'` names a script in the node's backup folder;
+/// the file name is a string, and only a script restores into a live store.
+#[test]
+fn restore_names_a_script_in_the_backup_folder() {
+    use tessari_ql::StatementKind;
+    let kind = tessari_ql::parse("restore script from 'crm.tessariql';")
+        .unwrap()
+        .statements[0]
+        .kind
+        .clone();
+    assert_eq!(
+        kind,
+        StatementKind::Restore {
+            from: "crm.tessariql".to_owned()
+        }
+    );
+    for refused in [
+        "RESTORE FROM 'x.tessariql';",
+        "RESTORE STATE FROM 'x.tessarisnap';",
+        "RESTORE SCRIPT FROM x;",
+    ] {
+        assert!(tessari_ql::parse(refused).is_err(), "{refused} parsed");
+    }
+    // Still an ordinary word everywhere a statement does not begin.
+    assert!(tessari_ql::parse("SELECT restore FROM jobs;").is_ok());
+}
+
 /// `OF` names the part of the store a script carries, in the spellings a reach
 /// already has; a log or a snapshot of a part is refused, because a database's
 /// log holds none of the definitions it needs and a snapshot keeps the catalog

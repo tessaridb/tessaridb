@@ -12,6 +12,31 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.17.0-beta — 2026-09-30
+
+- **Backups written on the node, from the console.** `BACKUP [STATE | SCRIPT] TO
+  '<name>'` writes the backup into the node's backup folder — `--backup-dir`, or
+  `TESSARIDB_BACKUP_DIR`, which the image sets to `/var/lib/tessaridb/backups`
+  inside its volume — and answers `{ path, bytes, form }`. A name that would leave
+  the folder (`..`, absolute, a link on the way) is `BackupNameRefused`, an existing
+  file is `BackupExists`, a node with no folder is `NoBackupFolder`; the file is
+  written aside, verified where it was written, and only then renamed into place.
+  The console's new **Backup** tab (⌘6) runs it.
+- **A backup of chosen namespaces and databases.** `BACKUP SCRIPT OF NAMESPACE crm,
+  prod.orders` writes those places, their records and indexes, and the analyzers
+  their fields use (`IF NOT EXISTS`), and no users; its header says it is a part. A
+  log or a snapshot of a part is refused with the reason.
+- **`RESTORE SCRIPT FROM '<name>'`** runs a script from the backup folder into a
+  live store beside what it holds. It only creates: a database that exists is
+  `RestoreTargetExists`, and a script that deletes, drops, declares a user or writes
+  into a place it did not create is `RestoreRefused` — both before anything is
+  written, and a restore refused while it fills takes away what it created. The
+  Backup tab restores from the same folder.
+- The console answers `HEAD /` and every console asset as `GET` without the body,
+  with `Cache-Control: no-cache` and a strong `ETag`; a matching `If-None-Match` is
+  a `304`, so a browser never runs an old console against an upgraded node.
+- **1449 conformance cases** define the language and run in the build.
+
 ## 0.16.0-beta — 2026-09-30
 
 - **A backup that survives a pruned log** (G047, ADR-0091). Beside the log two more

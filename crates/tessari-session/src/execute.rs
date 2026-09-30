@@ -997,6 +997,7 @@ impl Session<'_> {
                 start,
                 limit,
             } => self.read_file(transaction, target, *start, *limit),
+            StatementKind::Restore { from } => self.restore(from),
             StatementKind::Backup { from, form, to, of } => match to {
                 None => self.backup(*from, *form, of),
                 Some(name) => self.backup_to(*from, *form, of, name),

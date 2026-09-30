@@ -617,11 +617,36 @@
             </label>
             <label>File name <input id="backup-name" type="text" autocomplete="off" /></label>
           </div>
+          <div class="row">
+            <label>
+              What to include 
+              <select id="backup-part">
+                <option value="store" selected>the whole store</option>
+                <option value="places">chosen namespaces and databases</option>
+              </select>
+            </label>
+            <label>Namespaces and databases <input id="backup-places" type="text" placeholder="crm, prod.orders" autocomplete="off" /></label>
+          </div>
           <p id="backup-says" class="note says"></p>
           <div class="row">
             <button id="backup-run" type="button" class="primary" disabled>Back up</button>
           </div>
           <div id="backup-answer" class="answer small" aria-live="polite"></div>
+        </div>
+        <div class="pane">
+          <div class="pane-head">
+            <h2>Restore a script</h2>
+            <span id="restore-status" class="status" role="status"></span>
+          </div>
+          <p class="note">Runs a script from the same folder beside what the store holds: it creates the databases it carries and is refused, with nothing written, when one of them already exists.</p>
+          <div class="row">
+            <label>File name <input id="restore-name" type="text" autocomplete="off" /></label>
+          </div>
+          <p id="restore-says" class="note says"></p>
+          <div class="row">
+            <button id="restore-run" type="button" disabled>Restore</button>
+          </div>
+          <div id="restore-answer" class="answer small" aria-live="polite"></div>
         </div>
       </section>
     </main>

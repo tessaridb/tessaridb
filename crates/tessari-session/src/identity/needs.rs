@@ -106,6 +106,11 @@ impl Needs {
         kinds: &[Kind::Read, Kind::Operate],
         at: At::Store,
     };
+    /// Creating, filling and reading a file on the node — a restore.
+    const MANAGE_WRITE_OPERATE_STORE: Self = Self {
+        kinds: &[Kind::Manage, Kind::Write, Kind::Operate],
+        at: At::Store,
+    };
     /// Governing, where the thing governed is the store — the audit trail.
     ///
     /// [`Self::GOVERN`] with the container widened, as [`Self::MANAGE_STORE`] is
@@ -295,6 +300,11 @@ impl Needs {
             // run the cluster and see no records, and a backup is every record
             // there is.
             StatementKind::Backup { .. } => Self::READ_OPERATE_STORE,
+            // A restore creates namespaces and databases, writes their records,
+            // and reads a file on this node — the three kinds together, at the
+            // store, which only a store-wide owner holds. Each statement it runs
+            // is then checked again as the caller's own.
+            StatementKind::Restore { .. } => Self::MANAGE_WRITE_OPERATE_STORE,
             // Asking about a **user** is asking what the permission system says,
             // so it is the same kind of act as writing it. The other four
             // subjects filter — they report the tables and fields the caller may

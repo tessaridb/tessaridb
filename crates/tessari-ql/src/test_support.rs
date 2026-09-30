@@ -530,6 +530,7 @@ fn erase_statement(statement: &mut Statement) {
             *span = CANONICAL;
         }
         StatementKind::Backup { .. }
+        | StatementKind::Restore { .. }
         | StatementKind::Begin
         | StatementKind::Commit
         | StatementKind::Cancel

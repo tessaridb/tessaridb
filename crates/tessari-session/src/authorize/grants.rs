@@ -171,7 +171,10 @@ impl<'a> Session<'a> {
         // it vacuously. That is the same shape as the defect a `READ` falling
         // through a catch-all produced, so it is refused here by name rather than
         // left to an emptiness that reads as permission.
-        if matches!(kind, StatementKind::Backup { .. }) {
+        if matches!(
+            kind,
+            StatementKind::Backup { .. } | StatementKind::Restore { .. }
+        ) {
             return Err(Error::GrantedUserCannotBackUp {
                 user: user.name.clone(),
                 span,

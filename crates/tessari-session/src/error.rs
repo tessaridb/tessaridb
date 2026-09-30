@@ -353,6 +353,24 @@ pub enum Error {
         reason: String,
     },
 
+    /// A `RESTORE` whose script would create a database that already exists.
+    ///
+    /// A restore only creates, so it lands beside what the store holds and never
+    /// over it; nothing of the script is written.
+    #[error("the restore was not run, because {place} already exists; a restore only creates")]
+    RestoreTargetExists {
+        /// The namespace and database, as `ns.db`.
+        place: String,
+    },
+
+    /// A `RESTORE` refused before anything ran: the script does something other
+    /// than create databases and fill them, or cannot be read as a script.
+    #[error("the restore was not run: {reason}")]
+    RestoreRefused {
+        /// Why, naming the statement by its first words.
+        reason: String,
+    },
+
     /// A `BACKUP … TO` whose file is already there.
     ///
     /// A backup never replaces a file: the one it would replace is most likely

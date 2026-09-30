@@ -2758,12 +2758,14 @@
   }
 
   // src/backup.ts
-  //! The Backup screen: `BACKUP … TO '<name>'`, and where the file landed.
+  //! The Backup screen: `BACKUP … TO '<name>'`, and `RESTORE SCRIPT FROM '<name>'`.
   //!
-  //! The name is the operator's text, so it reaches the statement only through
-  //! `quoted()`, the one place the console escapes a string literal; whether the
-  //! name stays inside the backup folder is the node's decision, and its refusal
-  //! is shown in its own words.
+  //! A file name is the operator's text, so it reaches a statement only through
+  //! `quoted()`, the one place the console escapes a string literal. A place a
+  //! part names is grammar and cannot be quoted, so each one passes `aName()`
+  //! first and a name that fails is refused here, before anything is sent. Whether
+  //! a name stays inside the backup folder, and whether a restore may land, is the
+  //! node's decision, and its refusal is shown in its own words.
   var SCREEN3 = "Backup";
   var WHAT = {
     state: {
@@ -2786,55 +2788,130 @@
     const picked = value("backup-form");
     return picked === "log" || picked === "script" ? picked : "state";
   }
+  var partial = () => value("backup-part") === "places";
+  function places() {
+    const written = trimmed("backup-places").split(",").map((place) => place.trim()).filter((place) => place !== "");
+    if (written.length === 0) {
+      return { missing: "name at least one namespace or database, such as crm or prod.orders" };
+    }
+    const named = [];
+    for (const place of written) {
+      const [namespace, database, extra] = place.split(".");
+      const within = aName(namespace ?? "");
+      if (within === null || extra !== void 0) {
+        return { missing: `${place} is not a namespace or namespace.database` };
+      }
+      if (database === void 0) {
+        named.push(`NAMESPACE ${within}`);
+        continue;
+      }
+      const inner = aName(database);
+      if (inner === null) {
+        return { missing: `${place} is not a namespace or namespace.database` };
+      }
+      named.push(`DATABASE ${within}.${inner}`);
+    }
+    return { of: named.join(", ") };
+  }
   function suggested(form) {
     const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
     return `tessaridb-${stamp}.${WHAT[form].suffix}`;
   }
+  function composeBackup() {
+    const name = trimmed("backup-name");
+    if (name === "") return { missing: "name the file to write" };
+    const form = chosenForm();
+    if (!partial()) {
+      return {
+        statement: `${WHAT[form].statement} TO ${quoted(name)};`,
+        says: `Writes ${name} into the node's backup folder: ${WHAT[form].says}.`
+      };
+    }
+    if (form !== "script") {
+      return { missing: "a part of the store is written as TessariQL; choose that form" };
+    }
+    const part = places();
+    if ("missing" in part) return part;
+    return {
+      statement: `BACKUP SCRIPT OF ${part.of} TO ${quoted(name)};`,
+      says: `Writes ${name} into the node's backup folder: ${part.of} as statements, with the analyzers their fields use; users belong to the whole store and stay out of it.`
+    };
+  }
+  function composeRestore() {
+    const name = trimmed("restore-name");
+    if (name === "") return { missing: "name a script in the backup folder" };
+    return {
+      statement: `RESTORE SCRIPT FROM ${quoted(name)};`,
+      says: `Runs ${name} from the node's backup folder, creating the databases it carries.`
+    };
+  }
   var ours = true;
   function shape4() {
-    const name = trimmed("backup-name");
-    disable("backup-run", name === "");
-    write(
-      "backup-says",
-      name === "" ? "name the file to write" : `Writes ${name} into the node's backup folder: ${WHAT[chosenForm()].says}.`
-    );
+    const backup = composeBackup();
+    disable("backup-run", !("statement" in backup));
+    write("backup-says", "statement" in backup ? backup.says : backup.missing);
+    disable("backup-places", !partial());
+    const restore3 = composeRestore();
+    disable("restore-run", !("statement" in restore3));
+    write("restore-says", "statement" in restore3 ? restore3.says : restore3.missing);
   }
-  async function run2() {
-    const name = trimmed("backup-name");
-    if (name === "") {
-      return;
+  async function send2(composed, button, status, answer2, shown2) {
+    if (!("statement" in composed)) {
+      return false;
     }
-    disable("backup-run", true);
-    say("backup-status", "writing…");
-    write("backup-answer", "");
+    disable(button, true);
+    say(status, "working…");
+    write(answer2, "");
     try {
-      const answered2 = held2(await valueOf(`${WHAT[chosenForm()].statement} TO ${quoted(name)};`, SCREEN3));
-      const path = typeof answered2?.path === "string" ? answered2.path : name;
-      const bytes = typeof answered2?.bytes === "number" ? answered2.bytes : null;
-      say("backup-status", "written");
-      write("backup-answer", bytes === null ? path : `${path}
-${bytes.toLocaleString("en")} bytes`);
-      ours = true;
-      setValue("backup-name", suggested(chosenForm()));
+      write(answer2, shown2(held2(await valueOf(composed.statement, SCREEN3))));
+      say(status, "done");
+      return true;
     } catch (failure) {
       const words4 = told(failure);
-      say("backup-status", failure instanceof Unreachable ? "the node did not answer — " + words4 : words4, true);
+      say(status, failure instanceof Unreachable ? "the node did not answer — " + words4 : words4, true);
+      return false;
+    } finally {
+      shape4();
     }
-    shape4();
+  }
+  async function backUp() {
+    const written = await send2(composeBackup(), "backup-run", "backup-status", "backup-answer", (answered2) => {
+      const path = typeof answered2?.path === "string" ? answered2.path : trimmed("backup-name");
+      const bytes = typeof answered2?.bytes === "number" ? answered2.bytes : null;
+      return bytes === null ? path : `${path}
+${bytes.toLocaleString("en")} bytes`;
+    });
+    if (written) {
+      ours = true;
+      setValue("backup-name", suggested(chosenForm()));
+      shape4();
+    }
+  }
+  async function restore2() {
+    await send2(composeRestore(), "restore-run", "restore-status", "restore-answer", (answered2) => {
+      const databases = Array.isArray(answered2?.databases) ? answered2.databases.filter((place) => typeof place === "string") : [];
+      const statements = typeof answered2?.statements === "number" ? answered2.statements : 0;
+      return `${databases.join(", ") || "no database"} created · ${statements.toLocaleString("en")} statements`;
+    });
   }
   function wire18() {
     setValue("backup-name", suggested(chosenForm()));
-    at("backup-form").addEventListener("change", () => {
-      if (ours) {
-        setValue("backup-name", suggested(chosenForm()));
-      }
-      shape4();
-    });
+    for (const id of ["backup-form", "backup-part"]) {
+      at(id).addEventListener("change", () => {
+        if (ours) {
+          setValue("backup-name", suggested(chosenForm()));
+        }
+        shape4();
+      });
+    }
     at("backup-name").addEventListener("input", () => {
       ours = false;
       shape4();
     });
-    at("backup-run").addEventListener("click", () => void run2());
+    at("backup-places").addEventListener("input", shape4);
+    at("restore-name").addEventListener("input", shape4);
+    at("backup-run").addEventListener("click", () => void backUp());
+    at("restore-run").addEventListener("click", () => void restore2());
     shape4();
   }
 

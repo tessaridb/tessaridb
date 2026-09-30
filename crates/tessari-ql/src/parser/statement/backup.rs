@@ -73,6 +73,27 @@ impl Parser<'_> {
         })
     }
 
+    /// `RESTORE SCRIPT FROM '<name>'`, from just after `RESTORE`.
+    ///
+    /// Only a script: it is the one backup written in names, so it is the one
+    /// that can land beside what a live store already holds.
+    pub(in crate::parser) fn restore_statement(&mut self) -> Result<StatementKind> {
+        if !self.eat_word("script") {
+            return Err(self.error_here(
+                "`SCRIPT`; a log or a snapshot restores into an empty store with `--restore`",
+            ));
+        }
+        if !self.eat_keyword(Keyword::From) {
+            return Err(self.error_here("`FROM` and the file name, quoted"));
+        }
+        let Some(Token::Str(name)) = self.peek() else {
+            return Err(self.error_here("the file name the script is read from, quoted"));
+        };
+        let from = name.clone();
+        self.advance();
+        Ok(StatementKind::Restore { from })
+    }
+
     /// The places a partial backup carries — `NAMESPACE prod`, `DATABASE
     /// prod.orders` or the bare `prod.orders` — when the statement names any.
     fn backup_of(&mut self) -> Result<Vec<ReachRef>> {

@@ -469,6 +469,7 @@ pub(crate) fn failure(error: &Error) -> Answer {
         | Error::RecordExists { .. }
         | Error::StillDepended { .. }
         | Error::BackupExists { .. }
+        | Error::RestoreTargetExists { .. }
         | Error::NoBackupFolder => 409,
         // A substrate or decoding failure. Anything reaching here is a bug.
         //

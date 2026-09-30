@@ -494,6 +494,13 @@ pub enum StatementKind {
         /// carries; empty means the whole store.
         of: Vec<ReachRef>,
     },
+    /// `RESTORE SCRIPT FROM '<name>'` — a script backup in the node's backup
+    /// folder, run into this store where it creates only places that do not
+    /// exist yet.
+    Restore {
+        /// The file, inside the node's backup folder.
+        from: String,
+    },
     /// `DEFINE ANALYZER simple FILTERS lowercase, ascii`
     DefineAnalyzer {
         /// The name to create.

@@ -1213,6 +1213,31 @@ fn the_backup_screen_writes_the_file_name_as_a_quoted_string() {
 
 #[cfg(feature = "console")]
 #[test]
+fn the_backup_screen_restores_by_a_quoted_name_and_checks_every_place_it_names() {
+    // A restore's file name is a value and goes in through `quoted()`; a place a
+    // part names — `NAMESPACE crm`, `DATABASE prod.orders` — is grammar and
+    // cannot be quoted, so each one passes the name check every client applies
+    // before it reaches the statement.
+    let sources = panel_sources();
+    let screen = sources
+        .iter()
+        .find(|(name, _)| name == "backup.ts")
+        .map(|(_, text)| text.as_str())
+        .expect("backup.ts is not among the panel's sources");
+    for composed in ["RESTORE SCRIPT FROM ${quoted(", "SCRIPT OF "] {
+        assert!(
+            screen.contains(composed),
+            "the Backup screen does not compose `{composed}`"
+        );
+    }
+    assert!(
+        screen.contains("from \"./topic-names.js\"") && screen.contains("aName("),
+        "the Backup screen names places without the name check"
+    );
+}
+
+#[cfg(feature = "console")]
+#[test]
 fn the_topics_screen_checks_every_name_before_a_statement_carries_it() {
     // A topic, a group and a tenancy are grammar and cannot be bound, so the
     // Topics screen writes them into statement text — which is safe only behind

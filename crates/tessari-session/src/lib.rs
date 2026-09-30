@@ -60,6 +60,7 @@ mod rank;
 mod reach;
 pub mod redact;
 mod reference;
+mod restore;
 mod rollup;
 mod script;
 mod search;

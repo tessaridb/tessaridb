@@ -6681,6 +6681,41 @@ where they were written (a log and a snapshot; a script has none), and only then
 renamed into place — so the folder never holds a file that reads as a backup and
 is not one. The same owner rule applies as for `BACKUP` itself.
 
+### Restoring a script into a live store
+
+```
+RESTORE SCRIPT FROM 'crm.tessariql';
+```
+
+`RESTORE` reads a script from the node's backup folder — the same folder
+`BACKUP … TO` writes, with the same rule for the name — and runs it into the
+store **beside what it already holds**. It is how a part taken with
+`BACKUP SCRIPT OF` comes back, and it is what the console's Backup tab runs.
+
+It only ever **creates**. Before anything runs, the script is read against the
+store, and it may define databases that do not exist yet, the namespaces around
+them (one that already exists is reused), the analyzers their fields use, and
+the tables, fields, indexes and records inside what it created. It is refused,
+with nothing written, when:
+
+- a database it would create already exists — `RestoreTargetExists` (`409`);
+- it does anything else — a delete, a drop, an alter, a user, a grant, a write
+  into a place it did not create — `RestoreRefused`, naming the statement by its
+  first words. A whole-store script carries its users, so it is refused here and
+  restores into an empty store with `tessaridb <store> -f`;
+- it runs inside `BEGIN … COMMIT`, since it commits on its own.
+
+It runs as the caller, and each statement is checked again as the caller's own;
+the statement itself needs a store-wide owner. The new namespaces and databases
+are created first and then filled, in one transaction that the script's own
+`BEGIN … COMMIT` batches fold into — a place must exist before a `USE` can
+select it. If the filling is refused, the places it created are dropped again,
+so a failed restore leaves nothing behind. The answer names the file, how many
+statements ran and the databases it created: `{ path, statements, databases }`.
+
+A log or a snapshot restores only into an empty store, with the node stopped:
+`tessaridb <store> --restore <file>`.
+
 ## 7b. Looking at a plan
 
 ```
@@ -7976,7 +8011,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.16.0", "build": "0.16.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.17.0", "build": "0.17.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],

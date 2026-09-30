@@ -123,6 +123,7 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::Explain(_) => Err(unrenderable("EXPLAIN", span)),
         StatementKind::Info { .. } => Err(unrenderable("INFO", span)),
         StatementKind::Backup { .. } => Err(unrenderable("BACKUP", span)),
+        StatementKind::Restore { .. } => Err(unrenderable("RESTORE", span)),
         StatementKind::DropUser { .. } => Err(unrenderable("DROP USER", span)),
         StatementKind::DropField { .. } => Err(unrenderable("DROP FIELD", span)),
         StatementKind::DropTable { .. } => Err(unrenderable("DROP TABLE", span)),

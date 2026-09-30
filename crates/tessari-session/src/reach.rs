@@ -128,7 +128,10 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // at all (`Needs::Administer`), and `within_grants` refuses a
         // grant-governed user by name — because a rule shaped "every table it
         // names is granted" passes vacuously over an empty list.
-        | StatementKind::Backup { .. } => Vec::new(),
+        | StatementKind::Backup { .. }
+        // A restore names no table either: what it writes is decided by the
+        // script it reads, which it vets against the store before running.
+        | StatementKind::Restore { .. } => Vec::new(),
 
         // `INFO FOR TABLE users` names its table, so the grant loop below asks
         // about it exactly as a `SELECT` from it would — which is the rule the

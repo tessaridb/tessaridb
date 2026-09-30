@@ -66,56 +66,101 @@ impl Session<'_> {
     }
 }
 
+/// Why a name is refused, as the refusal carries it.
+fn name_refused(name: &str, reason: &str) -> Error {
+    Error::BackupNameRefused {
+        name: name.to_owned(),
+        reason: reason.to_owned(),
+    }
+}
+
+/// A name's parts, when every one is plain: the folders on the way, and the file.
+fn parts_of(name: &str) -> Result<(Vec<&std::ffi::OsStr>, &std::ffi::OsStr)> {
+    if name.ends_with('/') || name.ends_with(std::path::MAIN_SEPARATOR) {
+        return Err(name_refused(name, "it names a folder, not a file"));
+    }
+    let mut parts = Vec::new();
+    for part in Path::new(name).components() {
+        match part {
+            Component::Normal(part) => parts.push(part),
+            Component::ParentDir => {
+                return Err(name_refused(name, "`..` would leave the backup folder"));
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(name_refused(
+                    name,
+                    "it is absolute; name a file inside the backup folder",
+                ));
+            }
+            Component::CurDir => return Err(name_refused(name, "`.` is not a file name")),
+        }
+    }
+    let Some(file) = parts.pop() else {
+        return Err(name_refused(name, "it names no file"));
+    };
+    Ok((parts, file))
+}
+
+fn failed(what: &Path, failure: &std::io::Error) -> Error {
+    Error::BackupFailed {
+        reason: format!("{}: {failure}", what.display()),
+    }
+}
+
 /// The file `name` names inside `folder`, with every folder on the way made.
 ///
 /// Walked one part at a time rather than joined and created in one call,
 /// because creating a whole path follows a symlink partway along it — and the
 /// folder it would create would already be outside before any check ran.
 fn inside(folder: &Path, name: &str) -> Result<PathBuf> {
-    let refused = |reason: &str| Error::BackupNameRefused {
-        name: name.to_owned(),
-        reason: reason.to_owned(),
-    };
-    if name.ends_with('/') || name.ends_with(std::path::MAIN_SEPARATOR) {
-        return Err(refused("it names a folder, not a file"));
-    }
-    let mut parts = Vec::new();
-    for part in Path::new(name).components() {
-        match part {
-            Component::Normal(part) => parts.push(part),
-            Component::ParentDir => return Err(refused("`..` would leave the backup folder")),
-            Component::RootDir | Component::Prefix(_) => {
-                return Err(refused(
-                    "it is absolute; name a file inside the backup folder",
-                ));
-            }
-            Component::CurDir => return Err(refused("`.` is not a file name")),
-        }
-    }
-    let Some((file, folders)) = parts.split_last() else {
-        return Err(refused("it names no file"));
-    };
-    let failed = |what: &Path, failure: std::io::Error| Error::BackupFailed {
-        reason: format!("{}: {failure}", what.display()),
-    };
-    fs::create_dir_all(folder).map_err(|failure| failed(folder, failure))?;
+    let (folders, file) = parts_of(name)?;
+    fs::create_dir_all(folder).map_err(|failure| failed(folder, &failure))?;
     let mut at = folder
         .canonicalize()
-        .map_err(|failure| failed(folder, failure))?;
+        .map_err(|failure| failed(folder, &failure))?;
     for part in folders {
         at.push(part);
         match at.symlink_metadata() {
             Ok(held) if held.is_dir() => {}
             Ok(_) => {
-                return Err(refused(
+                return Err(name_refused(
+                    name,
                     "a part of it is a link or a file, and is not followed out of the folder",
                 ));
             }
-            Err(_) => fs::create_dir(&at).map_err(|failure| failed(&at, failure))?,
+            Err(_) => fs::create_dir(&at).map_err(|failure| failed(&at, &failure))?,
         }
     }
     at.push(file);
     Ok(at)
+}
+
+/// The file `name` names inside `folder`, which must already be there as a file
+/// and be reached through folders only — nothing is made, and no link is
+/// followed, for a read any more than for a write.
+pub(crate) fn readable(folder: &Path, name: &str) -> Result<PathBuf> {
+    let (folders, file) = parts_of(name)?;
+    let mut at = folder
+        .canonicalize()
+        .map_err(|failure| failed(folder, &failure))?;
+    for part in folders {
+        at.push(part);
+        if !at.symlink_metadata().is_ok_and(|held| held.is_dir()) {
+            return Err(name_refused(
+                name,
+                "no such folder inside the backup folder",
+            ));
+        }
+    }
+    at.push(file);
+    match at.symlink_metadata() {
+        Ok(held) if held.is_file() => Ok(at),
+        Ok(_) => Err(name_refused(
+            name,
+            "it is not a file, and a link is not followed",
+        )),
+        Err(_) => Err(name_refused(name, "no such file in the backup folder")),
+    }
 }
 
 /// Write `bytes` beside `target`, read them back where they landed, and only
