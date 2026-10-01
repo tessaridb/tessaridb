@@ -264,8 +264,9 @@ follows is what runs today, not a roadmap.
 - ⛔ **Not there:** sharding that spans machines at run time. A table can be
   split by the identities of its records (`SPLIT AT`), and each shard is logged,
   replicated and — where a member row places it (`LEADS`) — elected and led on
-  its own node, so writes to two shards can be taken by two nodes; but a
-  table's shards are fixed when it is declared. A node holding only some shards
+  its own node, so writes to two shards can be taken by two nodes, and a
+  shard can be split or two merged while the table serves (`ALTER TABLE … SPLIT
+  AT`, `MERGE SHARD`); but nothing splits one by itself. A node holding only some shards
   answers a read of the rest by fetching those shards' records from their
   leaders, but pushes nothing down to them, and a join side or a `FETCH` into a
   shard it lacks is still refused.

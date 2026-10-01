@@ -2093,7 +2093,8 @@ shards: [
 ```
 
 The `definition` the same report carries includes the `SPLIT AT`, so a table
-re-created from it is split the same way.
+re-created from it is split at the same points. A table whose map has been moved
+(below) is re-created with its shards numbered afresh from `1`.
 
 **Three declarations are refused, each by name.**
 
@@ -2117,6 +2118,64 @@ sharding **by time**: older shards stop receiving writes. That is useful when th
 point is to keep old records apart from new ones. It is not how writes are
 spread: for that, name records by a key whose leading part varies — a tenant, a
 region, an account — and split on that.
+
+### Splitting and merging a table that holds records: `ALTER TABLE … SPLIT AT` · `MERGE SHARD`
+
+A split table's map can be changed while it serves:
+
+```
+ALTER TABLE orders SPLIT AT 'm';
+ALTER TABLE orders MERGE SHARD 4, 5;
+```
+
+`SPLIT AT` retires the shard holding each point and **mints two** in its place:
+the first begins where the retired one began and the second at the point. With
+the map above, `SPLIT AT 'm'` retires shard `2` (`'g'`..`'p'`) into `4`
+(`'g'`..`'m'`) and `5` (`'m'`..`'p'`). `MERGE SHARD` retires two neighbouring
+shards, named by the numbers `INFO FOR TABLE` reports and in either order, and
+mints **one**. A new shard always takes the next number after every number the
+table has ever used, so a number never means two spans.
+
+**No record moves.** A shard is a log, and the records are stored where they
+always were. Writes committed before the change stay in the log of the shard they
+were filed in, which is why a retired shard is kept: its log still holds them, a
+follower still collects it, and a feed and a backup still read it. Every write
+committed after the change is filed by the new map — on the node that made it and
+on every follower that applies it, decided under the same lock that orders
+commits, so no write is admitted under one map and filed under the other.
+
+`INFO FOR TABLE` reports what moved the map beside the live shards:
+
+```text
+version: 1,
+retired: [ { id: 2, into: [4, 5] } ]
+```
+
+`version` counts the splits and merges; it is `0` for a map as declared.
+
+**Refused, each by name:**
+
+- **`NotASplitTable`** — the table was declared without `SPLIT AT`. Its records
+  are filed in its database's log, which no shard names; declare a split table
+  and move them into it.
+- **`SplitPointOnABoundary`** — a shard already begins at the point, and a split
+  there would mint a shard holding nothing.
+- **`ShardNotLive`** — a merge naming a shard the table does not have, or one a
+  split or merge already retired.
+- **`ShardsNotAdjacent`** — a merge of two shards that do not touch, or of one
+  shard twice.
+- **`ShardNamedByAReplica`** — a replica row names the shard by `REPLICATES SHARD`
+  or `LEADS SHARD`. A row names one range, and it would go on naming a shard
+  nothing writes again; change the row first. A row naming the database or the
+  store carries the new shards with no change.
+- A point written as a parameter is refused when the statement is read
+  (`SplitPointIsNotWritten`), as in `DEFINE TABLE`.
+
+**On a cluster** the change travels in the database's log like any definition.
+A node gathering a shard it lacks from another node whose map differs — the
+shard retired there, or minted by a change this node has not applied yet — is
+refused with **`ShardMapMoved`**, naming the table and the shard. It is
+retriable: read again once the change has reached this node.
 
 **What a shard is, underneath.** A split table's records are stored exactly
 where an unsplit table's are; nothing is rewritten. What changes is the log: a
@@ -8393,7 +8452,6 @@ be, because it is confined to the run its fixed values name.
 | Absent | Why |
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
-| **splitting a table that already exists**, and merging shards — `ALTER TABLE … SPLIT AT` | a table is split when it is declared, and its map does not move. A later split retires a shard and creates two, so every node routing by the old map has to be told — a versioned map and a refusal carrying the new one, which is its own piece of work. §4 |
 | **hash** sharding | shards are spans of identities, which is what keeps a span read one walk. Spreading writes by hash forfeits that order and is a second method the map can carry later, not a change to the first. §4 |
 | a gathered read that **pushes work down** to the shards' leaders | a node lacking shards fetches their records and runs the statement itself, so a `WHERE`, a `LIMIT` or an aggregate costs the missing shards' records on the network; evaluating them on the leaders — and combining a `mean` or a variance correctly across them — is a query engine of its own. A join side and a `FETCH` are not gathered at all. §7d |
 | **choosing among a range's candidates, and moving a placement** | `LEADS` elects a leader per placed range, but whichever candidate wins keeps it — there is no preference, no rebalancing and no hand-over — and a row naming one range cannot name a second or be dropped. Dropping safely needs every lease on the range to have lapsed first. §7d |

@@ -686,7 +686,7 @@ mod tests {
     use std::time::Duration;
     use tessari_encoding::{LogRecord, Writer};
     use tessari_types::{Epoch, Sequence};
-    use tessaridb::Db;
+    use tessaridb::{Db, Outcome};
 
     /// The node every door in this module belongs to.
     const LEADER: [u8; NODE_ID_LEN] = [70_u8; NODE_ID_LEN];
@@ -1580,6 +1580,201 @@ mod tests {
         };
         assert!(read(&leader).contains("Integer(4)"), "{}", read(&leader));
         assert_eq!(read(&follower), read(&leader));
+    }
+
+    /// G050 C2 (ADR-0095): writers keep committing while the table is split and
+    /// then merged; every write acknowledged is on the leader exactly once, and a
+    /// follower collecting over the peer door ends holding the same records and
+    /// the same map.
+    #[test]
+    fn writes_across_a_split_and_a_merge_are_all_kept_and_all_collected() {
+        use std::collections::{BTreeMap, BTreeSet};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        const WRITERS: usize = 4;
+        const EACH: usize = 60;
+        /// Generous: one per fetch, and the walk needs a few passes over ~10 logs.
+        const ROUNDS: usize = 160;
+
+        let authority = Authority::new();
+        let leader = granting(" REPLICATES STORE");
+        leader
+            .session()
+            .run(
+                "USE NAMESPACE prod; USE DATABASE orders; \
+                 DEFINE TABLE ledger (n int) IDENTITY uuid SPLIT AT 'm';",
+            )
+            .expect("a split table");
+
+        let written = AtomicUsize::new(0);
+        let acknowledged: BTreeSet<String> = std::thread::scope(|scope| {
+            let writers: Vec<_> = (0..WRITERS)
+                .map(|writer| {
+                    let (leader, written) = (&leader, &written);
+                    scope.spawn(move || {
+                        let mut session = leader.session();
+                        session
+                            .run("USE NAMESPACE prod; USE DATABASE orders;")
+                            .expect("tenancy");
+                        let mut kept = Vec::new();
+                        for n in 0..EACH {
+                            // Spread over the whole key range, so every shard
+                            // — retired, minted and merged — takes writes.
+                            let letter = char::from(
+                                b'a' + u8::try_from((n * 7 + writer) % 26).expect("a letter"),
+                            );
+                            let id = format!("{letter}{writer}{n:03}");
+                            let statement = format!("CREATE ledger:'{id}' = {{ n: {n} }};");
+                            for _ in 0..8 {
+                                if session.run(&statement).is_ok() {
+                                    kept.push(id.clone());
+                                    break;
+                                }
+                            }
+                            written.fetch_add(1, Ordering::Relaxed);
+                        }
+                        kept
+                    })
+                })
+                .collect();
+            let mut changes = leader.session();
+            changes
+                .run("USE NAMESPACE prod; USE DATABASE orders;")
+                .expect("tenancy");
+            while written.load(Ordering::Relaxed) < 40 {
+                std::thread::yield_now();
+            }
+            // Shard 1 (before 'm') into 3 and 4, while the writers write.
+            changes
+                .run("ALTER TABLE ledger SPLIT AT 'f';")
+                .expect("the split commits");
+            while written.load(Ordering::Relaxed) < 120 {
+                std::thread::yield_now();
+            }
+            // 4 ('f'..'m') and 2 ('m'..) into 5.
+            changes
+                .run("ALTER TABLE ledger MERGE SHARD 4, 2;")
+                .expect("the merge commits");
+            writers
+                .into_iter()
+                .flat_map(|writer| writer.join().expect("a writer"))
+                .collect()
+        });
+        assert!(
+            acknowledged.len() > WRITERS * EACH / 2,
+            "most writes are acknowledged: {}",
+            acknowledged.len()
+        );
+
+        let (address, door) = declaring_for(&authority, &leader, ROUNDS);
+        let follower = Db::in_memory().expect("an in-memory store");
+        let mine = authority.issue(THERE, Purpose::Peer);
+        let der = authority.der();
+        let said = hello(THERE);
+        let collector = collector(&mine, &der, &said, address, 1024);
+        let mut reached: BTreeMap<Reach, Sequence> = BTreeMap::new();
+        let mut used = 0_usize;
+        let mut settled = false;
+        for _ in 0..12 {
+            let logs = logs_to_collect(follower.store()).expect("this node's own logs");
+            let asks: Vec<(Reach, Sequence)> = logs
+                .iter()
+                .map(|home| {
+                    let at = reached.get(home).copied().unwrap_or(Sequence::ZERO);
+                    (*home, Sequence::new(at.get() + 1))
+                })
+                .collect();
+            used += asks.len();
+            assert!(
+                used <= ROUNDS,
+                "the walk needs more rounds than the door serves"
+            );
+            let mut moved = false;
+            for ((home, _), answer) in asks.iter().zip(collector.round(follower.store(), &asks)) {
+                if let Ok(at) = answer
+                    && reached.get(home) != Some(&at)
+                {
+                    reached.insert(*home, at);
+                    moved = true;
+                }
+            }
+            let again = logs_to_collect(follower.store()).expect("this node's own logs");
+            if !moved && again == logs {
+                settled = true;
+                break;
+            }
+        }
+        // The door serves a fixed number of connections and the walk's count
+        // is not worth predicting: dial the store's log until it has served
+        // them all, never more than it was told to.
+        for _ in 0..ROUNDS {
+            if door.is_finished() {
+                break;
+            }
+            // From where the follower stands: an ask from the first position
+            // is refused before it dials on a store that already holds one.
+            let at = reached
+                .get(&Reach::Store)
+                .copied()
+                .unwrap_or(Sequence::ZERO);
+            drop(collector.collect(follower.store(), Reach::Store, Sequence::new(at.get() + 1)));
+        }
+        door.join().expect("the door's thread");
+        assert!(settled, "the follower never caught up: {reached:?}");
+
+        let read = |db: &Db, script: &str| -> Outcome {
+            let mut outcomes = db
+                .session()
+                .run(&format!(
+                    "USE NAMESPACE prod; USE DATABASE orders; {script}"
+                ))
+                .expect("a read");
+            outcomes.pop().expect("an answer")
+        };
+        let ids = |db: &Db| -> Vec<String> {
+            let records = match read(db, "SELECT n FROM ledger;") {
+                Outcome::Records { records, .. } => Some(records),
+                _ => None,
+            }
+            .expect("a read answers records");
+            records
+                .into_iter()
+                .map(|(id, _)| {
+                    match id {
+                        tessari_types::RecordId::Text(id) => Some(id),
+                        _ => None,
+                    }
+                    .expect("the ids here are text")
+                })
+                .collect()
+        };
+        let on_the_leader = ids(&leader);
+        assert_eq!(
+            on_the_leader.len(),
+            acknowledged.len(),
+            "a write was lost or kept twice"
+        );
+        assert_eq!(
+            on_the_leader.iter().cloned().collect::<BTreeSet<_>>(),
+            acknowledged,
+            "the leader's records are not the acknowledged writes"
+        );
+        assert_eq!(
+            ids(&follower),
+            on_the_leader,
+            "the follower does not hold what the leader holds"
+        );
+        let map = |db: &Db| format!("{:?}", read(db, "INFO FOR TABLE ledger;"));
+        assert!(
+            map(&leader).contains("\"version\": Number(Integer(2))"),
+            "{}",
+            map(&leader)
+        );
+        assert_eq!(
+            map(&follower),
+            map(&leader),
+            "the follower holds a different map"
+        );
     }
 
     #[test]
