@@ -267,12 +267,43 @@ fn a_gathered_read_answers_what_a_node_holding_every_shard_answers() {
         "SELECT * FROM ledger:'b'..'q';",
         "SELECT * FROM ledger:'b'..='q';",
         "SELECT * FROM ledger:'h'..'k';",
+        "SELECT * FROM ledger LIMIT 2;",
+        "SELECT * FROM ledger START 2 LIMIT 3;",
+        "SELECT * FROM ledger WHERE total > 2 LIMIT 3;",
+        "SELECT * FROM ledger LIMIT 6;",
     ] {
         let (gathered, _) = answer(&mut follower, read);
         let (expected, _) = answer(&mut whole, read);
         assert!(!expected.is_empty(), "{read}: the control answered nothing");
         assert_eq!(gathered, expected, "{read}");
     }
+}
+
+/// ADR-0097 D2 — a bounded read stops asking once it has enough: shard 1 holds
+/// three records, this node holds shard 2's two, and shard 3 is asked only when
+/// those five are not enough.
+#[test]
+fn a_bounded_read_asks_no_shard_it_does_not_need() {
+    let pair = pair();
+    let mut follower = pair.on_the_follower("reader");
+    let shards = |pair: &Pair| -> Vec<u32> {
+        pair.asked()
+            .into_iter()
+            .map(|(shard, _, _)| shard)
+            .collect()
+    };
+    answer(&mut follower, "SELECT * FROM ledger LIMIT 2;");
+    assert_eq!(shards(&pair), vec![1]);
+    answer(&mut follower, "SELECT * FROM ledger LIMIT 5;");
+    assert_eq!(shards(&pair), vec![1]);
+    answer(&mut follower, "SELECT * FROM ledger LIMIT 6;");
+    assert_eq!(shards(&pair), vec![1, 3]);
+    // A condition that stays home cannot bound what the leader sends.
+    answer(
+        &mut follower,
+        "SELECT * FROM ledger WHERE note != rand::uuid() LIMIT 2;",
+    );
+    assert_eq!(shards(&pair), vec![1, 3]);
 }
 
 /// S1.2 — a read asks for exactly the shards and windows it needs.

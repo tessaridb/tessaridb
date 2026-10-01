@@ -157,6 +157,7 @@ impl Gathers for Gathering {
                 .map(|(id, inclusive)| (id.clone(), inclusive)),
             after: None,
             pushed: asked.pushed.cloned(),
+            enough: asked.enough.and_then(|enough| u64::try_from(enough).ok()),
         };
         let mut records = Vec::new();
         loop {
@@ -187,6 +188,13 @@ impl Gathers for Gathering {
             records.extend(answered.records);
             if records.len() > asked.most {
                 return Err(Unanswered::Ceiling);
+            }
+            // Enough is enough even from a leader that sent past it.
+            if let Some(enough) = asked.enough
+                && records.len() >= enough
+            {
+                records.truncate(enough);
+                return Ok(Gathered { records, node });
             }
             if !more {
                 return Ok(Gathered { records, node });

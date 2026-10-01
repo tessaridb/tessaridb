@@ -55,6 +55,10 @@ pub struct Asked<'a> {
     /// A condition the leader may narrow the records by first (ADR-0097); the
     /// asker tests every record again whatever the leader did with it.
     pub pushed: Option<&'a crate::Pushed>,
+    /// The most records this shard need send, in identity order, when the read
+    /// wants only its first few and the leader keeps exactly what this node
+    /// would (ADR-0097 D2); `None` for all of them.
+    pub enough: Option<usize>,
 }
 
 /// What a shard's leader answered.
@@ -194,6 +198,7 @@ impl Session<'_> {
         id: TableId,
         part: Part<'_>,
         pushed: Option<&crate::Pushed>,
+        enough: Option<usize>,
     ) -> Result<Option<(Stored, Note)>> {
         let Some(missing) = self.missing(transaction, id, part)? else {
             return Ok(None);
@@ -210,6 +215,13 @@ impl Session<'_> {
             let Some(window) = window_of(&span, part) else {
                 continue;
             };
+            // ADR-0097 D2: the spans are walked in key order, so a read that
+            // needs its first `n` records has them once `n` are in hand, and a
+            // shard past that point is not asked at all.
+            let remaining = enough.map(|enough| enough.saturating_sub(found.len()));
+            if remaining == Some(0) {
+                break;
+            }
             let most = GATHER_RECORDS.saturating_sub(found.len());
             let records = if missing.lacking.contains(&span.id) {
                 let asked = Asked {
@@ -220,6 +232,7 @@ impl Session<'_> {
                     window,
                     most,
                     pushed,
+                    enough: remaining,
                 };
                 match gatherer.gather(&asked) {
                     Ok(gathered) => gathered.records,
@@ -239,20 +252,35 @@ impl Session<'_> {
                     }
                 }
             } else {
-                transaction.records_between(
+                // This node's own span is narrowed by the same condition before
+                // it counts towards `enough`: a record the condition will drop
+                // must not take the place of one it keeps — which is also why
+                // the read is not cut at `enough` until it has been narrowed.
+                let held = transaction.records_between(
                     missing.namespace,
                     missing.database,
                     id,
                     window,
                     None,
-                    most.saturating_add(1),
-                )?
+                    match (pushed, remaining) {
+                        (None, Some(remaining)) => remaining.min(most.saturating_add(1)),
+                        _ => most.saturating_add(1),
+                    },
+                )?;
+                match pushed {
+                    Some(pushed) => crate::keeping(self.store, pushed, held)?,
+                    None => held,
+                }
             };
             // Checked here as well as asked of the gatherer: the ceiling is this
             // node's memory, and an answerer that ignored it would otherwise be
             // trusted with it.
             if records.len() > most {
                 return Err(too_much());
+            }
+            let mut records = records;
+            if let Some(remaining) = remaining {
+                records.truncate(remaining);
             }
             found.extend(records);
         }

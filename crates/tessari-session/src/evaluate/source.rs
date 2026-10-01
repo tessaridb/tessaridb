@@ -116,9 +116,13 @@ impl Session<'_> {
             Source::Record(target) => {
                 let (_, address) = self.address(transaction, target)?;
                 self.refuse_reading_a_vault(transaction, address.table, &target.table)?;
-                if let Some((found, note)) =
-                    self.gather_a_part(transaction, address.table, Part::Record(&address.id), None)?
-                {
+                if let Some((found, note)) = self.gather_a_part(
+                    transaction,
+                    address.table,
+                    Part::Record(&address.id),
+                    None,
+                    None,
+                )? {
                     reporting.collected.push(note);
                     let visible = self.visible_in(transaction, address.table)?;
                     return Ok((
@@ -148,9 +152,13 @@ impl Session<'_> {
                 let (context, id) = self.resolve_table(transaction, table)?;
                 self.refuse_reading_a_vault(transaction, id, table)?;
                 let searched = self.searched_for(transaction, id, &shown(select))?;
-                if let Some((found, note)) =
-                    self.gather_a_part(transaction, id, Part::Whole, None)?
-                {
+                if let Some((found, note)) = self.gather_a_part(
+                    transaction,
+                    id,
+                    Part::Whole,
+                    None,
+                    super::shape_rules::held_bound(select),
+                )? {
                     reporting.collected.push(note);
                     let visible = self.visible_in(transaction, id)?;
                     return Ok((
@@ -185,6 +193,7 @@ impl Session<'_> {
                         upper: upper.fixed(*span)?,
                         inclusive: *inclusive,
                     },
+                    None,
                     None,
                 )? {
                     reporting.collected.push(note);
@@ -250,9 +259,18 @@ impl Session<'_> {
                         condition,
                         parameters,
                     });
-                if let Some((found, note)) =
-                    self.gather_a_part(transaction, id, Part::Whole, pushed.as_ref())?
-                {
+                if let Some((found, note)) = self.gather_a_part(
+                    transaction,
+                    id,
+                    Part::Whole,
+                    pushed.as_ref(),
+                    // Bounded only when the condition went with it: then the
+                    // leader keeps exactly what this node keeps, and its first
+                    // `n` are this node's first `n`.
+                    pushed
+                        .as_ref()
+                        .and_then(|_| super::shape_rules::held_bound(select)),
+                )? {
                     reporting.collected.push(note);
                     // Narrowed after the records are in hand, over the redacted
                     // record, exactly as a materialised source is: a hidden

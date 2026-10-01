@@ -57,6 +57,9 @@ pub struct Gather {
     /// A condition to narrow the page by, under the asker's visibility
     /// (ADR-0097). Absent from a frame an older asker sent.
     pub pushed: Option<tessari_session::Pushed>,
+    /// The most records the asker still needs from this shard, in identity
+    /// order (ADR-0097 D2); `None` for all of them.
+    pub enough: Option<u64>,
 }
 
 /// One page of a shard's records.
@@ -143,8 +146,12 @@ impl Gather {
         }
         put_optional(&mut body, self.after.as_ref());
         if let Some(pushed) = &self.pushed {
-            body.push(1);
+            body.push(SECTION_PUSHED);
             put_pushed(&mut body, pushed);
+        }
+        if let Some(enough) = self.enough {
+            body.push(SECTION_ENOUGH);
+            frame::put_u64(&mut body, enough);
         }
         body
     }
@@ -169,19 +176,28 @@ impl Gather {
             _ => return Err(Error::Malformed),
         };
         let (after, at) = take_optional(body, at)?;
+        // Trailing sections, each at most once and in this order; a frame an
+        // older asker sent has none.
         let (pushed, at) = match body.get(at) {
-            None => (None, at),
-            Some(1) => {
+            Some(&SECTION_PUSHED) => {
                 let (pushed, at) = take_pushed(body, next(at)?)?;
                 (Some(pushed), at)
             }
-            Some(_) => return Err(Error::Malformed),
+            _ => (None, at),
+        };
+        let (enough, at) = match body.get(at) {
+            Some(&SECTION_ENOUGH) => {
+                let (enough, at) = frame::take_u64(body, next(at)?)?;
+                (Some(enough), at)
+            }
+            _ => (None, at),
         };
         if at != body.len() {
             return Err(Error::Malformed);
         }
         Ok(Self {
             pushed,
+            enough,
             namespace: NamespaceId::new(namespace),
             database: DatabaseId::new(database),
             table: TableId::new(table),
@@ -324,7 +340,7 @@ pub(crate) fn serve(
         )
         .map_err(refused)?;
     transaction.rollback();
-    let mut more = found.len() == GATHER_PAGE_RECORDS;
+    let more = found.len() == GATHER_PAGE_RECORDS;
     // ADR-0097: narrowed after the page is read and before it is budgeted, so
     // what the condition drops costs nothing to send. The page then resumes
     // after the last record READ, which may be one nobody kept.
@@ -338,6 +354,20 @@ pub(crate) fn serve(
         }
         None => found,
     };
+    // Enough is a promise about the asker's need, not a budget: the records past
+    // it are not sent, and nothing follows them.
+    let enough = asked
+        .enough
+        .map(|enough| usize::try_from(enough).unwrap_or(usize::MAX));
+    let (found, more) = match enough {
+        Some(enough) if found.len() >= enough => {
+            let mut found = found;
+            found.truncate(enough);
+            (found, false)
+        }
+        _ => (found, more),
+    };
+    let mut more = more;
     let mut cut = false;
     let mut records = Vec::with_capacity(found.len());
     let mut bytes = 0_usize;
@@ -365,6 +395,11 @@ pub(crate) fn serve(
         resume,
     })
 }
+
+/// The section of a `Gather` frame carrying a pushed condition.
+const SECTION_PUSHED: u8 = 1;
+/// The section of a `Gather` frame carrying how many records are enough.
+const SECTION_ENOUGH: u8 = 2;
 
 /// A pushed condition: the visible fields, the text, then each parameter as a
 /// name and a value in the store's own codec.
@@ -519,6 +554,7 @@ mod tests {
             to: Some((RecordId::Int(-7), true)),
             after: Some(RecordId::Uuid([9; 16])),
             pushed: None,
+            enough: None,
         };
         let body = asked.encode();
         assert_eq!(Gather::decode(&body).unwrap(), asked);
@@ -542,6 +578,19 @@ mod tests {
             ..open.clone()
         };
         assert_eq!(Gather::decode(&narrowed.encode()).unwrap(), narrowed);
+        let bounded = Gather {
+            enough: Some(3),
+            ..narrowed.clone()
+        };
+        assert_eq!(Gather::decode(&bounded.encode()).unwrap(), bounded);
+        let only_bounded = Gather {
+            pushed: None,
+            ..bounded
+        };
+        assert_eq!(
+            Gather::decode(&only_bounded.encode()).unwrap(),
+            only_bounded
+        );
 
         let page = Page {
             records: vec![
@@ -699,6 +748,7 @@ mod door {
             to: None,
             after: None,
             pushed: None,
+            enough: None,
         }
     }
 
@@ -922,5 +972,62 @@ mod door {
         handle.join().unwrap();
         assert_eq!(ids(&second).len(), 5);
         assert!(!second.more);
+    }
+
+    /// G050 C4: what a gather moves, in bytes of `Gathered` page bodies, for
+    /// one shard of 1 100 records read whole, bounded to 3, and narrowed to 5.
+    #[test]
+    fn a_bounded_or_narrowed_gather_moves_fewer_bytes() {
+        let authority = Authority::new();
+        let db = Db::in_memory().unwrap();
+        let mut script = String::from(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
+             DEFINE TABLE ledger (n int) IDENTITY uuid SPLIT AT 'g';",
+        );
+        for n in 0..1100 {
+            script.push_str(&format!(" CREATE ledger:'a{n:04}' = {{ n: {n} }};"));
+        }
+        db.session().run(&script).unwrap();
+        let table = {
+            let mut transaction = db.store().begin().unwrap();
+            Catalog::new(&mut transaction)
+                .table_id(NamespaceId::new(1), DatabaseId::new(1), "ledger")
+                .unwrap()
+                .unwrap()
+        };
+        let db = Arc::new(db);
+        let (address, handle) = door(&authority, &db, Some(Reach::Store), 1 << 20, 5);
+        let moved = |first: Gather| -> (usize, usize) {
+            let mut gather = first;
+            let (mut bytes, mut records) = (0, 0);
+            loop {
+                let page = ask(&authority, address, &gather).unwrap();
+                bytes += page.encode().len();
+                records += page.records.len();
+                if !page.more {
+                    return (bytes, records);
+                }
+                gather.after = page
+                    .resume
+                    .clone()
+                    .or_else(|| page.records.last().map(|(id, _)| id.clone()));
+            }
+        };
+        let whole = moved(asking(table, 1));
+        let bounded = moved(Gather {
+            enough: Some(3),
+            ..asking(table, 1)
+        });
+        let narrowed = moved(Gather {
+            pushed: Some(narrowed("(n >= $p0)", 1095, None)),
+            ..asking(table, 1)
+        });
+        handle.join().unwrap();
+        eprintln!("GATHER-BYTES whole={whole:?} bounded={bounded:?} narrowed={narrowed:?}");
+        assert_eq!((whole.1, bounded.1, narrowed.1), (1100, 3, 5));
+        assert!(
+            bounded.0 * 100 < whole.0 && narrowed.0 * 100 < whole.0,
+            "{whole:?} {bounded:?} {narrowed:?}"
+        );
     }
 }
