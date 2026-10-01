@@ -8013,7 +8013,7 @@ touches, and a span inside what the node holds asks nothing.
 visibility.** The fields the caller may read travel with the question, and a
 leader takes every other field away before it evaluates anything — so a grant
 hiding a field hides it from work done on the leader exactly as from a local
-read, and a condition on that field matches nothing there either. Three kinds of
+read, and a condition on that field matches nothing there either. Four kinds of
 work travel, and only when the expression reads nothing but the record in hand
 (no subquery, no other record, no clock or generator, no full-text match); every
 value in one travels as a value, never as statement text:
@@ -8025,6 +8025,15 @@ value in one travels as a value, never as statement text:
   grouping, `SPLIT` or `FETCH`), and behind a `WHERE` only when that `WHERE`
   travelled too: the shards are asked in key order and a shard past the bound is
   not asked at all;
+- an **`ORDER BY … LIMIT`** (from `0.20.0-beta`) whose keys read only the record
+  — a field, an expression over fields, a vector distance such as
+  `vector::euclidean(at, [0, 0])` — with no `FUSE`, cursor, grouping, `SPLIT`,
+  `FETCH` or `LATEST`, no key naming a value the projection renames, and behind a
+  `WHERE` only when that `WHERE` travelled too: each leader ranks its shard and
+  sends its first `LIMIT + START`, and this node orders them together. Ties fall
+  to the record's identity on every node, so the answer is the whole table's,
+  and an exact nearest-neighbour read over a split table past 100 000 records
+  answers rather than being refused;
 - a **grouping read** whose folds are `count`, `sum`, `mean`, `min` and `max`
   and whose `GROUP BY` keys read only the record: each leader sends one state per
   group rather than the records, and this node merges them in key order with its

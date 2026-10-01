@@ -159,6 +159,7 @@ impl Gathers for Gathering {
             pushed: asked.pushed.cloned(),
             enough: asked.enough.and_then(|enough| u64::try_from(enough).ok()),
             reduce: asked.reduce.cloned(),
+            ordered: asked.ordered.cloned(),
         };
         let mut records = Vec::new();
         let mut partials = Vec::new();

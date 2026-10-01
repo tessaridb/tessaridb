@@ -149,6 +149,7 @@ impl Session<'_> {
                     Part::Record(&address.id),
                     None,
                     None,
+                    None,
                 )? {
                     reporting.collected.push(note);
                     let visible = self.visible_in(transaction, address.table)?;
@@ -179,15 +180,19 @@ impl Session<'_> {
                 let (context, id) = self.resolve_table(transaction, table)?;
                 self.refuse_reading_a_vault(transaction, id, table)?;
                 let searched = self.searched_for(transaction, id, &shown(select))?;
+                let visible = self.visible_in(transaction, id)?;
+                // ADR-0102: with no condition, a leader ranks exactly the
+                // records this node would, so an ordered `LIMIT` travels.
+                let ordered = super::shape_rules::travelling_order(select, &visible);
                 if let Some((found, note)) = self.gather_a_part(
                     transaction,
                     id,
                     Part::Whole,
                     None,
                     super::shape_rules::held_bound(select),
+                    ordered.as_ref(),
                 )? {
                     reporting.collected.push(note);
-                    let visible = self.visible_in(transaction, id)?;
                     return Ok((
                         Prepared::Held(
                             self.records_of(found, &visible)?,
@@ -221,7 +226,7 @@ impl Session<'_> {
                     .on(table.name.text.as_str())
                     .touching(self.shards_touched(transaction, id, part)?);
                 if let Some((found, note)) =
-                    self.gather_a_part(transaction, id, part, None, None)?
+                    self.gather_a_part(transaction, id, part, None, None, None)?
                 {
                     reporting.collected.push(note);
                     return Ok((
@@ -312,6 +317,12 @@ impl Session<'_> {
                     pushed
                         .as_ref()
                         .and_then(|_| super::shape_rules::held_bound(select)),
+                    // Ranked there only when the condition went with it, for
+                    // the same reason (ADR-0102 D2).
+                    pushed
+                        .as_ref()
+                        .and_then(|_| super::shape_rules::travelling_order(select, &visible))
+                        .as_ref(),
                 )? {
                     reporting.collected.push(note);
                     // Narrowed after the records are in hand, over the redacted

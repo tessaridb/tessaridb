@@ -84,7 +84,7 @@ pub use error::{Depended, Error, Result};
 pub use gather::{Asked, Gather, Gathered, Unanswered};
 pub use outcome::{AccessPath, Exactness, Nearest, Note, Outcome, Suggestion};
 pub use plan::Plan;
-pub use pushdown::{Pushed, keeping};
+pub use pushdown::{OrderKey, Ordered, Pushed, keeping, leading};
 pub use reduce::{Folded, Partial, Portable, Reduce, Reduced, reducing};
 pub use script::{ScriptTaken, write_script};
 pub use session::{Atomic, Session};

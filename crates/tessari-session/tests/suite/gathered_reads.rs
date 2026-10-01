@@ -42,6 +42,11 @@ pub(crate) fn leader() -> Arc<Store> {
              DEFINE TABLE ledger (total int, note string, peer record) IDENTITY uuid \
              SPLIT AT 'g', 'p';\n\
              DEFINE TABLE other (total int) IDENTITY uuid;\n\
+             DEFINE TABLE points (at vector<2>) IDENTITY uuid SPLIT AT 'g', 'p';\n\
+             CREATE points:'a' = { at: [1, 1] }; CREATE points:'b' = { at: [5, 5] };\n\
+             CREATE points:'h' = { at: [2, 2] }; CREATE points:'k' = { at: [6, 6] };\n\
+             CREATE points:'q' = { at: [3, 3] }; CREATE points:'r' = { at: [3, 3] };\n\
+             CREATE points:'z' = { at: [9, 9] };\n\
              CREATE other:'x' = { total: 1 };\n\
              CREATE ledger:'a' = { total: 5, note: 'a' }; CREATE ledger:'b' = { total: 1, note: 'b' };\n\
              CREATE ledger:'c' = { total: 9, note: 'c' };\n\
@@ -160,6 +165,15 @@ impl Gather for FromTheLeader {
             Some(pushed) => tessari_session::keeping(&self.leader, pushed, records).unwrap(),
             None => records,
         };
+        // Ranked as the peer door ranks, so only the shard's first `n` is sent
+        // (ADR-0102).
+        let records = match asked.ordered {
+            Some(ordered) => {
+                let mut page = Some(records);
+                tessari_session::leading(&self.leader, ordered, || Ok(page.take())).unwrap()
+            }
+            None => records,
+        };
         if records.len() > asked.most {
             return Err(Unanswered::Ceiling);
         }
@@ -211,13 +225,13 @@ impl Gather for Flooding {
     }
 }
 
-struct Pair {
+pub(crate) struct Pair {
     leader: Arc<Store>,
     follower: Store,
     gatherer: Arc<FromTheLeader>,
 }
 
-fn pair() -> Pair {
+pub(crate) fn pair() -> Pair {
     let leader = leader();
     let follower = follower_of_the_middle(&leader);
     let gatherer = Arc::new(FromTheLeader {
@@ -234,7 +248,7 @@ fn pair() -> Pair {
 }
 
 impl Pair {
-    fn on_the_follower(&self, user: &str) -> Session<'_> {
+    pub(crate) fn on_the_follower(&self, user: &str) -> Session<'_> {
         let mut session = signed_in(&self.follower, user)
             .gathering(Arc::clone(&self.gatherer) as Arc<dyn Gather>);
         session
@@ -243,7 +257,7 @@ impl Pair {
         session
     }
 
-    fn on_the_leader(&self, user: &str) -> Session<'_> {
+    pub(crate) fn on_the_leader(&self, user: &str) -> Session<'_> {
         let mut session = signed_in(&self.leader, user);
         session
             .run("USE NAMESPACE prod; USE DATABASE shop;")
@@ -256,12 +270,12 @@ impl Pair {
     }
 
     /// How many records travelled since this was last asked.
-    fn sent(&self) -> usize {
+    pub(crate) fn sent(&self) -> usize {
         std::mem::take(&mut *self.gatherer.sent.lock().unwrap())
     }
 }
 
-fn answer(session: &mut Session<'_>, read: &str) -> (Vec<(RecordId, Value)>, Vec<Note>) {
+pub(crate) fn answer(session: &mut Session<'_>, read: &str) -> (Vec<(RecordId, Value)>, Vec<Note>) {
     match session.run(read) {
         Ok(outcomes) => match outcomes.last() {
             Some(Outcome::Records { records, notes, .. }) => (records.clone(), notes.clone()),
@@ -271,7 +285,7 @@ fn answer(session: &mut Session<'_>, read: &str) -> (Vec<(RecordId, Value)>, Vec
     }
 }
 
-fn refused(session: &mut Session<'_>, read: &str) -> tessari_session::Error {
+pub(crate) fn refused(session: &mut Session<'_>, read: &str) -> tessari_session::Error {
     match session.run(read) {
         Err(error) => error,
         Ok(outcomes) => panic!("{read}: expected a refusal, got {outcomes:?}"),
@@ -802,7 +816,8 @@ fn a_node_holding_every_shard_backs_the_database_up_complete() {
         .into_iter()
         .filter(|log| matches!(log.home, Reach::Shard(..)))
         .count();
-    assert_eq!(shards, 3, "the leader keeps a log per shard");
+    // Two split tables, `ledger` and `points`, of three shards each.
+    assert_eq!(shards, 6, "the leader keeps a log per shard");
     let recorded = taken
         .positions
         .iter()

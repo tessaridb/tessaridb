@@ -82,6 +82,7 @@ mod node;
 mod notes;
 mod one_plan;
 mod opened;
+mod ordered_gathers;
 mod ordered_under_a_where;
 mod ordering;
 mod own_password;

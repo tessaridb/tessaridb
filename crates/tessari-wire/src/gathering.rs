@@ -37,6 +37,7 @@ use crate::error::{Error, Result};
 use crate::frame;
 
 mod folds;
+mod ordered;
 
 use folds::{
     folded, put_portable, put_reduce, put_reduced, put_visible, take_portable, take_reduce,
@@ -69,6 +70,9 @@ pub struct Gather {
     pub enough: Option<u64>,
     /// The folds to answer instead of the records (ADR-0097 D2).
     pub reduce: Option<tessari_session::Reduce>,
+    /// The order whose first records are all the asker needs from this shard
+    /// (ADR-0102); `None` for all of them.
+    pub ordered: Option<tessari_session::Ordered>,
 }
 
 /// One page of a shard's records.
@@ -168,6 +172,10 @@ impl Gather {
             body.push(SECTION_REDUCE);
             put_reduce(&mut body, reduce);
         }
+        if let Some(ordered) = &self.ordered {
+            body.push(SECTION_ORDERED);
+            ordered::put_ordered(&mut body, ordered);
+        }
         body
     }
 
@@ -214,6 +222,13 @@ impl Gather {
             }
             _ => (None, at),
         };
+        let (ordered, at) = match body.get(at) {
+            Some(&SECTION_ORDERED) => {
+                let (ordered, at) = ordered::take_ordered(body, next(at)?)?;
+                (Some(ordered), at)
+            }
+            _ => (None, at),
+        };
         if at != body.len() {
             return Err(Error::Malformed);
         }
@@ -221,6 +236,7 @@ impl Gather {
             pushed,
             enough,
             reduce,
+            ordered,
             namespace: NamespaceId::new(namespace),
             database: DatabaseId::new(database),
             table: TableId::new(table),
@@ -378,6 +394,18 @@ pub(crate) fn serve(
         let more = found.len() == fold_records;
         return folded(store, reduce, (found, more), budget);
     }
+    if let Some(ordered) = &asked.ordered {
+        let page = ordered::ranked_page(
+            store,
+            &mut transaction,
+            asked,
+            ordered,
+            Window { from, to },
+            budget,
+        );
+        transaction.rollback();
+        return page;
+    }
     let found = transaction
         .records_between(
             asked.namespace,
@@ -452,6 +480,8 @@ const SECTION_PUSHED: u8 = 1;
 const SECTION_ENOUGH: u8 = 2;
 /// The section of a `Gather` frame carrying the folds to answer instead.
 const SECTION_REDUCE: u8 = 3;
+/// The section of a `Gather` frame carrying the order to rank by (ADR-0102).
+const SECTION_ORDERED: u8 = 4;
 /// The section of a `Gathered` frame carrying what the records folded into —
 /// past the optional resume, whose own first byte is `1`.
 const SECTION_REDUCED: u8 = 3;
@@ -569,6 +599,7 @@ mod tests {
             pushed: None,
             enough: None,
             reduce: None,
+            ordered: None,
         };
         let body = asked.encode();
         assert_eq!(Gather::decode(&body).unwrap(), asked);
@@ -619,6 +650,17 @@ mod tests {
             Gather::decode(&only_folding.encode()).unwrap(),
             only_folding
         );
+        let ranked = Gather {
+            ordered: Some(by_n(true, 2)),
+            ..narrowed.clone()
+        };
+        assert_eq!(Gather::decode(&ranked.encode()).unwrap(), ranked);
+        // A direction that is neither is a frame read wrongly, not a third one.
+        let mut sideways = ranked.encode();
+        let at = sideways.len() - 9;
+        assert_eq!(sideways.get(at), Some(&1));
+        *sideways.get_mut(at).unwrap() = 7;
+        assert!(matches!(Gather::decode(&sideways), Err(Error::Malformed)));
 
         let page = Page {
             records: vec![
@@ -665,6 +707,19 @@ mod tests {
             .unwrap();
         unknown.splice(at..at + 5, *b"blurt");
         assert!(matches!(Gather::decode(&unknown), Err(Error::Malformed)));
+    }
+
+    /// Ranked by `n`, keeping `most`.
+    pub(super) fn by_n(descending: bool, most: u64) -> tessari_session::Ordered {
+        tessari_session::Ordered {
+            visible: None,
+            keys: vec![tessari_session::OrderKey {
+                key: "n".to_owned(),
+                parameters: tessari_session::Parameters::new(),
+                descending,
+            }],
+            most,
+        }
     }
 
     /// `count(*)` and `sum(total)`, under an optional condition over `$p0`.
@@ -841,6 +896,7 @@ mod door {
             pushed: None,
             enough: None,
             reduce: None,
+            ordered: None,
         }
     }
 
@@ -875,6 +931,32 @@ mod door {
             "one record a page, the last saying no more follow"
         );
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn an_ordered_ask_is_answered_with_the_shards_first_records_page_by_page() {
+        // ADR-0102: shard 1 holds a (1), b (2) and c (3); its first two by `n`
+        // descending are c and b, sent in identity order. A budget of one byte
+        // puts each on its own page, so the second page is ranked again and
+        // begins past the first.
+        let authority = Authority::new();
+        let (db, table) = leader();
+        let (address, handle) = door(&authority, &db, Some(shard(table, 2)), 1, 2);
+        let mut gather = Gather {
+            ordered: Some(super::tests::by_n(true, 2)),
+            ..asking(table, 1)
+        };
+        let first = ask(&authority, address, &gather).unwrap();
+        gather.after = first.records.last().map(|(id, _)| id.clone());
+        let second = ask(&authority, address, &gather).unwrap();
+        handle.join().unwrap();
+        let ids = |page: &Page| -> Vec<RecordId> {
+            page.records.iter().map(|(id, _)| id.clone()).collect()
+        };
+        assert_eq!(ids(&first), [RecordId::from("b")]);
+        assert!(first.more);
+        assert_eq!(ids(&second), [RecordId::from("c")]);
+        assert!(!second.more);
     }
 
     #[test]

@@ -244,6 +244,24 @@ mod tests {
         );
     }
 
+    /// An array written inline — the query vector of a nearest-neighbour read
+    /// as the docs write it — travels with its items lifted like any literal
+    /// (ADR-0102).
+    #[test]
+    fn an_inline_array_travels_with_its_items_beside_it() {
+        let none = Parameters::new();
+        let held = condition("vector::euclidean(at, [3, total, 4.5]) < 2", &none);
+        let (text, parameters) = portable(&held).unwrap();
+        assert!(!text.contains('3'), "a value became text: {text}");
+        assert_eq!(parameters.len(), 3, "{parameters:?}");
+        assert!(
+            bound_condition(&text, &parameters)
+                .unwrap()
+                .same_shape(&held),
+            "{text} does not read back as the condition it was written from"
+        );
+    }
+
     #[test]
     fn a_condition_reading_more_than_the_record_stays_home() {
         let none = Parameters::new();

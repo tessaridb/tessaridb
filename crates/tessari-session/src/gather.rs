@@ -65,6 +65,10 @@ pub struct Asked<'a> {
     /// The folds the leader may answer instead of the records (ADR-0097 D2);
     /// `None` to be sent the records.
     pub reduce: Option<&'a crate::Reduce>,
+    /// The order whose first [`crate::Ordered::most`] records are all this
+    /// shard need send, ranked under the asker's visibility (ADR-0102); `None`
+    /// for all of them.
+    pub ordered: Option<&'a crate::Ordered>,
 }
 
 /// What a shard's leader answered.
@@ -275,6 +279,7 @@ impl Session<'_> {
         part: Part<'_>,
         pushed: Option<&crate::Pushed>,
         enough: Option<usize>,
+        ordered: Option<&crate::Ordered>,
     ) -> Result<Option<(Stored, Note)>> {
         let Some(missing) = self.missing(transaction, id, part)? else {
             return Ok(None);
@@ -307,11 +312,16 @@ impl Session<'_> {
                     pushed,
                     enough: remaining,
                     reduce: None,
+                    ordered,
                 };
                 match gatherer.gather(&asked) {
                     Ok(gathered) => gathered.records,
                     Err(why) => return Err(missing.unanswered(span.id, why)),
                 }
+            } else if let Some(ordered) = ordered {
+                // Ranked exactly as a leader ranks its shard, a page at a time,
+                // so what this node holds of its own span is its first `n` too.
+                self.leading_of_span(transaction, &missing, id, window, pushed, ordered)?
             } else {
                 // This node's own span is narrowed by the same condition before
                 // it counts towards `enough`: a record the condition will drop
@@ -346,6 +356,40 @@ impl Session<'_> {
             found.extend(records);
         }
         Ok(Some((found, missing.note())))
+    }
+
+    /// This node's own span of table `id`, narrowed by `pushed` and ranked by
+    /// `ordered` — its first `n`, in identity order (ADR-0102).
+    fn leading_of_span(
+        &self,
+        transaction: &mut Transaction<'_>,
+        missing: &Missing,
+        id: TableId,
+        window: Window<'_>,
+        pushed: Option<&crate::Pushed>,
+        ordered: &crate::Ordered,
+    ) -> Result<Stored> {
+        let mut after: Option<RecordId> = None;
+        let mut done = false;
+        crate::leading(self.store, ordered, || {
+            if done {
+                return Ok(None);
+            }
+            let page = transaction.records_between(
+                missing.namespace,
+                missing.database,
+                id,
+                window,
+                after.as_ref(),
+                GATHER_PAGE_RECORDS,
+            )?;
+            done = page.len() < GATHER_PAGE_RECORDS;
+            after = page.last().map(|(id, _)| id.clone());
+            Ok(Some(match pushed {
+                Some(pushed) => crate::keeping(self.store, pushed, page)?,
+                None => page,
+            }))
+        })
     }
 
     /// The groups a grouping read of the whole of table `id` folds into, this
@@ -387,6 +431,7 @@ impl Session<'_> {
                     pushed: None,
                     enough: None,
                     reduce: Some(reduce),
+                    ordered: None,
                 };
                 let partials = match gatherer.gather(&asked) {
                     Ok(Gathered {

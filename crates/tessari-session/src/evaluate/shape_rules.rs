@@ -370,3 +370,69 @@ pub(crate) fn shown(select: &Select) -> Vec<&Expr> {
     }
     found
 }
+
+/// The order a gathered read may hand the shards' leaders, so each sends only
+/// its first `LIMIT + START` (ADR-0102) — or `None`, and the records travel.
+///
+/// A whitelist for [`held_bound`]'s reason. Each refusal names a way a leader's
+/// first `n` could miss a record the answer holds: a `FUSE` ranks against every
+/// record; an `AFTER` cursor, a `FETCH`, a `SPLIT`, a `LATEST` or a grouping
+/// changes which records are ranked or how many there are; a key that reads
+/// more than the record cannot be evaluated there; and a key reading a name the
+/// projection produces reads a value only this node makes — save a field
+/// projected under its own name, which is the field.
+///
+/// Whether the `WHERE` travels too is the caller's question: only then does the
+/// leader rank exactly the records this node keeps.
+pub(crate) fn travelling_order(
+    select: &Select,
+    visible: &crate::redact::Visible,
+) -> Option<crate::Ordered> {
+    if select.order.is_empty()
+        || select.fusion.is_some()
+        || select.after.is_some()
+        || !select.fetch.is_empty()
+        || select.split.is_some()
+        || select.latest.is_some()
+        || groups(select)
+    {
+        return None;
+    }
+    let most = u64::try_from(order_bound(select)?).unwrap_or(u64::MAX);
+    let produced: std::collections::BTreeSet<&str> = select
+        .projection
+        .written()
+        .iter()
+        .filter(|projected| !names_its_own_field(projected))
+        .map(|projected| projected.name.text.as_str())
+        .collect();
+    let mut keys = Vec::with_capacity(select.order.len());
+    for ordering in &select.order {
+        let mut read = std::collections::BTreeSet::new();
+        crate::plan::roots_read(&ordering.key, &mut read);
+        if read.iter().any(|root| produced.contains(root.as_str())) {
+            return None;
+        }
+        let (key, parameters) = tessari_ql::portable(&ordering.key)?;
+        keys.push(crate::OrderKey {
+            key,
+            parameters,
+            descending: ordering.descending,
+        });
+    }
+    Some(crate::Ordered {
+        visible: visible.clone(),
+        keys,
+        most,
+    })
+}
+
+/// Whether a projection is a field under its own name, which a key reads the
+/// same on either side.
+fn names_its_own_field(projected: &tessari_ql::Projected) -> bool {
+    matches!(
+        &projected.value.kind,
+        tessari_ql::ExprKind::Path(path)
+            if path.path.steps().is_empty() && path.path.root() == projected.name.text
+    )
+}

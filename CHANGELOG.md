@@ -30,6 +30,13 @@ compares carries no pre-release suffix.
   member whose `REPLICATES` covers the table's database and which this node has
   heard serving, and leaves the wire as the `Elsewhere` frame, `transient`, to a
   client of minor ≥ 1. With no such member, or over HTTP, it is the refusal it was.
+- **An ordered `LIMIT` over a split table ranks on the leaders** (G051 C5,
+  ADR-0102). `ORDER BY … LIMIT n` whose keys read only the record — vector
+  distances included — sends each lacking shard's first `n` rather than all of its
+  records, so an exact nearest-neighbour read or a top-n over shards past 100 000
+  records answers instead of `GatheredTooMuch`. Every node in a cluster must run
+  this build: an older leader refuses the new gather section, and the read is
+  `NotGathered` until it is upgraded.
 
 ### Fixed
 
