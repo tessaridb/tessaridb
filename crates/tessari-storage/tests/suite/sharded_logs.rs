@@ -477,3 +477,183 @@ fn a_store_epoch_never_supersedes_a_placed_ranges_row() {
         "{refused:?}"
     );
 }
+
+// ---- G050 W-G050-3: a split moves where the NEXT write is filed ------------
+
+impl Split {
+    /// Split `orders` at `point` and commit it.
+    fn split_at(&self, point: &str) -> Result<(), Error> {
+        let mut transaction = self.store.begin()?;
+        Catalog::new(&mut transaction).split_table(self.orders, &RecordId::from(point))?;
+        transaction.commit().map(|_| ())
+    }
+}
+
+#[test]
+fn a_committed_split_files_the_next_write_in_the_shard_that_replaced_the_old_one() {
+    let split = Split::new();
+    // Written once first, so this process has learned the map the split moves:
+    // a registry that was never taught would be read afresh and prove nothing.
+    split.write(&[split.order("n")]).unwrap();
+    let (retired, successor) = (split.tail(split.shard(2)), split.tail(split.shard(5)));
+    // Shard 2 spans `'g'`..`'p'`; a split at `'m'` retires it into 4 and 5.
+    split.split_at("m").unwrap();
+    split.write(&[split.order("n")]).unwrap();
+    assert_eq!(
+        split.tail(split.shard(2)),
+        retired,
+        "a write after the split was filed in the shard the split retired"
+    );
+    assert!(
+        split.tail(split.shard(5)) > successor,
+        "the write is not in the shard that now holds `n`"
+    );
+}
+
+#[test]
+fn a_follower_that_applies_a_split_files_its_next_write_in_the_new_shard() {
+    let leader = Split::new();
+    let follower = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    // The namespace and database are declared in the store's log; a table's
+    // definition, and so its split, travels in its database's.
+    let writer = leader.store.writer().unwrap();
+    let replay = |home: Reach, from: Sequence| {
+        let log = leader.store.own_log(home).unwrap();
+        for (at, record) in leader.store.log_records(log, from, 1024).unwrap() {
+            follower.apply_record(writer, at, &record).unwrap();
+        }
+    };
+    replay(Reach::Store, Sequence::ZERO);
+    replay(leader.database(), Sequence::ZERO);
+    let applied = leader.tail(leader.database());
+    let on_the_follower = |shard: u32| {
+        follower
+            .committed_tail(follower.own_log(leader.shard(shard)).unwrap())
+            .unwrap()
+    };
+    let write = || {
+        let mut transaction = follower.begin().unwrap();
+        transaction.put(leader.order("n"), b"{}".to_vec());
+        transaction.commit().unwrap();
+    };
+    // The follower learns the declared map from its own first write.
+    write();
+    let (retired, successor) = (on_the_follower(2), on_the_follower(5));
+
+    leader.split_at("m").unwrap();
+    replay(
+        leader.database(),
+        Sequence::new(applied.get().saturating_add(1)),
+    );
+    write();
+
+    assert_eq!(
+        on_the_follower(2),
+        retired,
+        "the follower filed a write in the shard a split it had applied retired"
+    );
+    assert!(
+        on_the_follower(5) > successor,
+        "the follower's write is not in the shard that now holds `n`"
+    );
+}
+
+#[test]
+fn a_merge_files_the_next_write_in_the_shard_it_minted() {
+    let split = Split::new();
+    split.split_at("m").unwrap();
+    let mut transaction = split.store.begin().unwrap();
+    Catalog::new(&mut transaction)
+        .merge_shards(split.orders, ShardId::new(5), ShardId::new(4))
+        .unwrap();
+    transaction.commit().unwrap();
+    split.write(&[split.order("n")]).unwrap();
+    assert_eq!(
+        split.tail(split.shard(5)),
+        Sequence::ZERO,
+        "filed in a merged-away shard"
+    );
+    assert_eq!(
+        split.tail(split.shard(6)).get(),
+        1,
+        "not filed in the merged shard"
+    );
+}
+
+#[test]
+fn a_split_or_merge_that_cannot_describe_a_map_is_refused_by_name() {
+    let split = Split::new();
+    let attempt = |change: &dyn Fn(&mut Catalog<'_, '_>) -> Result<(), Error>| {
+        let mut transaction = split.store.begin().unwrap();
+        change(&mut Catalog::new(&mut transaction))
+    };
+    let refused = attempt(&|catalog| {
+        catalog
+            .split_table(split.notes, &RecordId::from("m"))
+            .map(|_| ())
+    })
+    .unwrap_err();
+    assert!(
+        matches!(refused, Error::NotASplitTable { ref table } if table == "notes"),
+        "{refused:?}"
+    );
+    let refused = attempt(&|catalog| {
+        catalog
+            .split_table(split.orders, &RecordId::from("g"))
+            .map(|_| ())
+    })
+    .unwrap_err();
+    assert!(
+        matches!(refused, Error::SplitPointOnABoundary { .. }),
+        "{refused:?}"
+    );
+    let refused = attempt(&|catalog| {
+        catalog
+            .merge_shards(split.orders, ShardId::new(1), ShardId::new(3))
+            .map(|_| ())
+    })
+    .unwrap_err();
+    assert!(
+        matches!(refused, Error::ShardsNotAdjacent { .. }),
+        "{refused:?}"
+    );
+
+    split.split_at("m").unwrap();
+    let refused = attempt(&|catalog| {
+        catalog
+            .merge_shards(split.orders, ShardId::new(2), ShardId::new(4))
+            .map(|_| ())
+    })
+    .unwrap_err();
+    assert!(
+        matches!(refused, Error::ShardNotLive { shard: 2, .. }),
+        "a retired shard was merged again: {refused:?}"
+    );
+}
+
+#[test]
+fn a_shard_a_replica_row_names_is_not_split_out_from_under_it() {
+    let split = Split::new();
+    let mut transaction = split.store.begin().unwrap();
+    Catalog::new(&mut transaction)
+        .create_replica(
+            "east",
+            "127.0.0.1:47950",
+            Roles::SERVING,
+            Some(THEM),
+            Some(split.shard(2)),
+            None,
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+    let refused = split.split_at("m").unwrap_err();
+    assert!(
+        matches!(
+            refused,
+            Error::ShardNamedByAReplica { shard: 2, ref replica, .. } if replica == "east"
+        ),
+        "{refused:?}"
+    );
+    // A shard the row does not name splits as before.
+    split.split_at("x").unwrap();
+}

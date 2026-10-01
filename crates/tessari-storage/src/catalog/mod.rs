@@ -45,6 +45,7 @@ mod replica;
 mod rows;
 mod shard;
 mod space;
+mod splitting;
 pub(crate) mod system;
 mod topic;
 mod user;

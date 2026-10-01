@@ -727,6 +727,67 @@ pub enum Error {
         kind: &'static str,
     },
 
+    /// `ALTER TABLE … SPLIT AT` or `… MERGE SHARD` on a table declared without
+    /// `SPLIT AT` (ADR-0095).
+    ///
+    /// Its records are filed in its database's log, so a map added now would
+    /// leave every existing record in a log no shard names.
+    #[error(
+        "table `{table}` is not split, so its records are filed in its database's \
+         log — declare a split table and move the records into it"
+    )]
+    NotASplitTable {
+        /// The table named.
+        table: String,
+    },
+
+    /// A split point that already begins a shard.
+    #[error(
+        "table `{table}` already has a shard beginning at that point, and a split \
+         there would mint a shard that holds nothing"
+    )]
+    SplitPointOnABoundary {
+        /// The table named.
+        table: String,
+    },
+
+    /// A merge naming a shard that is not one of the table's live shards.
+    #[error(
+        "table `{table}` has no live shard {shard} — only live shards are merged, \
+         and a retired one keeps the records written to it"
+    )]
+    ShardNotLive {
+        /// The table named.
+        table: String,
+        /// The shard named.
+        shard: u32,
+    },
+
+    /// A merge of two shards that do not touch, or of one shard twice.
+    #[error("table `{table}`'s shards are merged only with the shard beside them")]
+    ShardsNotAdjacent {
+        /// The table named.
+        table: String,
+    },
+
+    /// A split or merge of a shard a replica row names by `REPLICATES SHARD` or
+    /// `LEADS SHARD`.
+    ///
+    /// A row holds one reach, so it would go on naming a shard nothing writes
+    /// again (ADR-0095 amendment).
+    #[error(
+        "table `{table}`'s shard {shard} is named by replica `{replica}`, which would \
+         go on naming it after it is retired — change that row first"
+    )]
+    ShardNamedByAReplica {
+        /// The table named.
+        table: String,
+        /// The shard the row names.
+        shard: u32,
+        /// The row naming it.
+        replica: String,
+    },
+
     /// The parent a catalog entry was to be created under does not exist.
     #[error("no such {entity}: {id}")]
     NoSuchParent {
@@ -911,6 +972,11 @@ impl Error {
             | Self::SplitNeedsGeneratedUuid { .. }
             | Self::SplitPointsOutOfOrder { .. }
             | Self::SplitOnAKindThatIsNotRecords { .. }
+            | Self::NotASplitTable { .. }
+            | Self::SplitPointOnABoundary { .. }
+            | Self::ShardNotLive { .. }
+            | Self::ShardsNotAdjacent { .. }
+            | Self::ShardNamedByAReplica { .. }
             // Validation and not `Unavailable`: the store is healthy and the
             // sequence asked for is the thing that is wrong. Retrying the same
             // read cannot succeed, and a floor only ever rises, so a caller that

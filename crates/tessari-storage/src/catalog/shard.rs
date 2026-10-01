@@ -19,6 +19,10 @@
 //! A span over identities is therefore exactly a span over the table's keys, and
 //! a boundary written `'g'` bounds the records a span read `t:'g'..` would walk.
 
+mod moving;
+
+pub(crate) use moving::Unmovable;
+
 use std::collections::BTreeMap;
 
 use tessari_types::{RecordId, ShardId, Value};
@@ -30,6 +34,10 @@ use crate::error::{Error, Result};
 
 const FIELD_ID: &str = "id";
 const FIELD_FROM: &str = "from";
+const FIELD_INTO: &str = "into";
+const FIELD_VERSION: &str = "version";
+const FIELD_SHARDS: &str = "shards";
+const FIELD_RETIRED: &str = "retired";
 
 const ENTITY: &str = "shard";
 
@@ -41,8 +49,12 @@ const ENTITY: &str = "shard";
 /// end.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShardMap {
+    /// How many splits and merges made this map; `0` for one as declared.
+    version: u64,
     /// Ordered by lower bound; only the first has none.
     shards: Vec<Shard>,
+    /// Shards a split or a merge retired, in the order they were retired.
+    retired: Vec<Retired>,
 }
 
 /// One shard: its id and where its span begins.
@@ -53,6 +65,15 @@ pub struct ShardMap {
 struct Shard {
     id: ShardId,
     from: Option<RecordId>,
+}
+
+/// A shard no write is filed in any more, and the shards that replaced it.
+///
+/// Its log still holds what was written before, which is why it is kept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Retired {
+    id: ShardId,
+    into: Vec<ShardId>,
 }
 
 /// One shard as a reader sees it: its id and both ends of its span.
@@ -114,7 +135,11 @@ impl ShardMap {
                 from: Some(point.clone()),
             });
         }
-        Ok(Some(Self { shards }))
+        Ok(Some(Self {
+            version: 0,
+            shards,
+            retired: Vec::new(),
+        }))
     }
 
     /// The shard holding `id`.
@@ -148,15 +173,88 @@ impl ShardMap {
             })
     }
 
-    /// Whether this table has a shard numbered `id`.
+    /// Whether this table has a shard numbered `id`, live or retired.
+    ///
+    /// A retired shard is still the table's: its log holds what was written to
+    /// it, so a subscription or a placement may still name it.
     #[must_use]
     pub fn holds(&self, id: ShardId) -> bool {
-        self.shards.iter().any(|shard| shard.id == id)
+        self.logs().any(|held| held == id)
+    }
+
+    /// How many splits and merges made this map.
+    #[must_use]
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// The shards that replaced `id`, or nothing when it is not retired.
+    #[must_use]
+    pub fn successors(&self, id: ShardId) -> Vec<ShardId> {
+        self.retired
+            .iter()
+            .find(|retired| retired.id == id)
+            .map(|retired| retired.into.clone())
+            .unwrap_or_default()
+    }
+
+    /// Every shard whose log may hold records — live and retired — by id.
+    pub fn logs(&self) -> impl Iterator<Item = ShardId> {
+        let mut ids: Vec<ShardId> = self
+            .shards
+            .iter()
+            .map(|shard| shard.id)
+            .chain(self.retired.iter().map(|retired| retired.id))
+            .collect();
+        ids.sort_unstable();
+        ids.into_iter()
     }
 
     /// The value written into the table's definition.
+    ///
+    /// A map no statement has moved is the bare list it always was, so every
+    /// table declared before splits existed keeps its stored bytes; a moved map
+    /// carries its version and its retired shards beside the list.
     #[must_use]
     pub fn to_value(&self) -> Value {
+        let spans = self.spans_value();
+        if self.version == 0 {
+            return spans;
+        }
+        let retired = self
+            .retired
+            .iter()
+            .map(|retired| {
+                Value::Object(BTreeMap::from([
+                    (
+                        FIELD_ID.to_owned(),
+                        Value::from(i64::from(retired.id.get())),
+                    ),
+                    (
+                        FIELD_INTO.to_owned(),
+                        Value::Array(
+                            retired
+                                .into
+                                .iter()
+                                .map(|id| Value::from(i64::from(id.get())))
+                                .collect(),
+                        ),
+                    ),
+                ]))
+            })
+            .collect();
+        Value::Object(BTreeMap::from([
+            (
+                FIELD_VERSION.to_owned(),
+                Value::from(i64::try_from(self.version).unwrap_or(i64::MAX)),
+            ),
+            (FIELD_SHARDS.to_owned(), spans),
+            (FIELD_RETIRED.to_owned(), Value::Array(retired)),
+        ]))
+    }
+
+    /// The live shards as the stored list.
+    fn spans_value(&self) -> Value {
         Value::Array(
             self.shards
                 .iter()
@@ -184,6 +282,55 @@ impl ShardMap {
     /// map this build cannot read whole is refused rather than read in part,
     /// because a record routed by half a map is routed wrongly with no error.
     pub fn from_value(value: &Value) -> Result<Self> {
+        let Value::Object(fields) = value else {
+            return Self::spans_from(value);
+        };
+        let version = match fields.get(FIELD_VERSION) {
+            Some(Value::Number(number)) => number
+                .as_exact_integer()
+                .and_then(|raw| u64::try_from(raw).ok())
+                .filter(|raw| *raw > 0)
+                .ok_or_else(|| malformed(FIELD_VERSION, "a number that is not a version"))?,
+            _ => return Err(malformed(FIELD_VERSION, "none")),
+        };
+        let mut map = Self::spans_from(
+            fields
+                .get(FIELD_SHARDS)
+                .ok_or_else(|| malformed(FIELD_SHARDS, "none"))?,
+        )?;
+        let Some(Value::Array(entries)) = fields.get(FIELD_RETIRED) else {
+            return Err(malformed(FIELD_RETIRED, "not a list"));
+        };
+        for entry in entries {
+            let fields = object(entry, ENTITY)?;
+            let id = fields
+                .get(FIELD_ID)
+                .and_then(shard_id)
+                .ok_or_else(|| malformed(FIELD_ID, "a number that is not a shard id"))?;
+            let Some(Value::Array(into)) = fields.get(FIELD_INTO) else {
+                return Err(malformed(FIELD_INTO, "not a list"));
+            };
+            let into: Vec<ShardId> = into
+                .iter()
+                .map(|each| {
+                    shard_id(each)
+                        .ok_or_else(|| malformed(FIELD_INTO, "a number that is not a shard id"))
+                })
+                .collect::<Result<_>>()?;
+            if into.is_empty() || map.holds(id) {
+                return Err(malformed(
+                    FIELD_RETIRED,
+                    "a retired shard that is live, repeated or replaced by nothing",
+                ));
+            }
+            map.retired.push(Retired { id, into });
+        }
+        map.version = version;
+        Ok(map)
+    }
+
+    /// Read the stored list of live shards.
+    fn spans_from(value: &Value) -> Result<Self> {
         let Value::Array(entries) = value else {
             return Err(malformed("shards", "not a list"));
         };
@@ -229,7 +376,11 @@ impl ShardMap {
         if shards.is_empty() {
             return Err(malformed("shards", "an empty list"));
         }
-        Ok(Self { shards })
+        Ok(Self {
+            version: 0,
+            shards,
+            retired: Vec::new(),
+        })
     }
 }
 
@@ -294,6 +445,18 @@ pub(crate) fn declared_for(table: &str, shape: &TableShape) -> Result<Option<Sha
             position: shape.split.len(),
         },
     })
+}
+
+/// A stored shard id: a positive whole number that fits one.
+fn shard_id(value: &Value) -> Option<ShardId> {
+    let Value::Number(number) = value else {
+        return None;
+    };
+    number
+        .as_exact_integer()
+        .and_then(|raw| u32::try_from(raw).ok())
+        .filter(|raw| *raw > 0)
+        .map(ShardId::new)
 }
 
 fn malformed(field: &'static str, found: &'static str) -> Error {

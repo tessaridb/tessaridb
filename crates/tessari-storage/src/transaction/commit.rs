@@ -481,8 +481,17 @@ impl Transaction<'_> {
                 }
                 // Before the batch can be read: a reader at this version must not be
                 // answered from name or table rows held from before it.
+                // And, under the same turn, every map this commit moves is taught
+                // to the registry before the turn is handed on, because the next
+                // commit to hold it re-asks its placement against that registry
+                // (ADR-0095 D8). Forgotten again below if the batch does not land.
+                let mut taught = Vec::new();
                 if crate::catalog::CatalogRows::changes(carried) {
                     self.store.catalog_rows().changed(commit_version);
+                    taught = self
+                        .store
+                        .shards()
+                        .teach(self.store.decoded_tables(), carried)?;
                 }
 
                 // Staged rather than applied when the backend shares a sync
@@ -520,6 +529,7 @@ impl Transaction<'_> {
                     // waiting, so that this attempt does not re-race into the same
                     // instant as every other loser.
                     Err(tessari_kv::Error::Conflict { .. }) => {
+                        self.store.shards().forget(&taught);
                         // At debug: one contended key under load produces this line
                         // per loser per attempt, and a retry that then succeeds is
                         // the design working rather than an event.
@@ -527,7 +537,10 @@ impl Transaction<'_> {
                         back_off(attempt);
                         continue;
                     }
-                    Err(other) => return Err(other.into()),
+                    Err(other) => {
+                        self.store.shards().forget(&taught);
+                        return Err(other.into());
+                    }
                 }
             }
         }
