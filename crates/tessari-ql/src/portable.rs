@@ -38,12 +38,19 @@ pub fn portable(condition: &Expr) -> Option<(String, Parameters)> {
     Some((text, parameters))
 }
 
-/// Read a condition [`portable`] wrote, with its values bound.
+/// Read an expression [`portable`] wrote, with its values bound.
+///
+/// The text arrives from another node, so this is a trust boundary: what is
+/// read back is held to the whitelist [`portable`] sends under, whoever wrote
+/// it. An expression reading more than the record — another table, the clock —
+/// would otherwise be evaluated with this node's whole store behind it, and
+/// its value sent back to a peer entitled to one table.
 ///
 /// # Errors
 ///
-/// A parse failure, or [`crate::Error::UnboundParameter`] for a parameter the
-/// values do not carry.
+/// A parse failure, [`crate::Error::UnboundParameter`] for a parameter the
+/// values do not carry, and [`crate::Error::Unrenderable`] for text that is not
+/// one expression reading only the record in hand.
 pub fn bound_condition(text: &str, parameters: &Parameters) -> Result<Expr> {
     // Read in the position it was written in. A bare name is a field inside a
     // `WHERE` and a table outside one, so reading the text on its own would
@@ -51,21 +58,24 @@ pub fn bound_condition(text: &str, parameters: &Parameters) -> Result<Expr> {
     // keeps nothing, on the node whose answer the asker trusts not to drop.
     let script =
         crate::parse(&format!("SELECT * FROM portable WHERE {text};"))?.bind(parameters)?;
-    script
-        .statements
-        .into_iter()
-        .next()
-        .and_then(|statement| match statement.kind {
-            crate::StatementKind::Select(select) => match select.from {
-                crate::Source::Where { condition, .. } => Some(*condition),
-                _ => None,
-            },
-            _ => None,
-        })
-        .ok_or(crate::Error::Unrenderable {
-            statement: "a condition that reads back as something else",
-            span: crate::Span::new(0, text.len()),
-        })
+    let refused = crate::Error::Unrenderable {
+        statement: "an expression that does not read back as one reading only the record",
+        span: crate::Span::new(0, text.len()),
+    };
+    let mut statements = script.statements.into_iter();
+    let (Some(statement), None) = (statements.next(), statements.next()) else {
+        return Err(refused);
+    };
+    let crate::StatementKind::Select(select) = statement.kind else {
+        return Err(refused);
+    };
+    let crate::Source::Where { condition, .. } = select.from else {
+        return Err(refused);
+    };
+    if !reads_only_the_record(&condition) {
+        return Err(refused);
+    }
+    Ok(*condition)
 }
 
 /// Whether `expr` reads the record in hand and nothing else, the same way on
@@ -246,5 +256,35 @@ mod tests {
         ] {
             assert_eq!(portable(&condition(text, &none)), None, "{text} was pushed");
         }
+    }
+
+    /// The text comes from another node, so reading it back is a trust
+    /// boundary: what is read is held to the same whitelist that sent it,
+    /// whoever wrote it.
+    #[test]
+    fn a_text_reading_more_than_the_record_is_refused_where_it_is_read() {
+        let none = Parameters::new();
+        for text in [
+            "(SELECT * FROM users)",
+            "total IN (SELECT total FROM other)",
+            "at < time::now()",
+            "true; SELECT * FROM users",
+        ] {
+            assert!(
+                matches!(
+                    bound_condition(text, &none),
+                    Err(crate::Error::Unrenderable { .. })
+                ),
+                "{text} was read back: {:?}",
+                bound_condition(text, &none)
+            );
+        }
+        assert!(
+            bound_condition(
+                "(total > $p0)",
+                &[("p0".to_owned(), tessari_types::Value::from(1_i64))].into()
+            )
+            .is_ok()
+        );
     }
 }
