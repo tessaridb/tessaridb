@@ -2590,6 +2590,7 @@ nobody should have to read about. The filters are the part that differs:
 | `lowercase` | folds case, so `Lovelace` and `lovelace` are one term |
 | `ascii` | folds the common accented Latin letters, so `café` and `cafe` are one term |
 | `stemmer` | reduces an English word to the form its relatives share, so `running`, `runs` and `run` are one term |
+| `stemmer(russian)`, `stemmer(german)`, `stemmer(french)`, `stemmer(spanish)` | the same for that language (from `0.20.0-beta`): `важные` and `важный`, `Häuser` and `Haus`, `chevaux` and `cheval`, `canciones` and `canción` meet |
 
 A letter the fold does not know passes through rather than being dropped — a
 letter it has no opinion about is still a letter.
@@ -2602,6 +2603,17 @@ Snowball) and it stems only lower-case ASCII words, so a chain that wants it
 writes `lowercase` first — `FILTERS stemmer, lowercase` compiles, runs, and does
 nothing, because the stemmer declines a word it does not recognise as one rather
 than half-stemming it.
+
+**The other languages are their Snowball algorithms**, written from the
+published descriptions and checked against each project's whole published
+vocabulary — 49 785 Russian, 35 053 German, 21 653 French and 28 378 Spanish
+words, every one stemmed as published. Each stems only lower-case words of its
+own alphabet, accents included (`ё` is read as `е`), and passes anything else
+through. Their rules read the accents, so fold accents **after** them rather than
+before: `FILTERS lowercase, stemmer(french), ascii` stems `chevaux` with the
+French rules and then lets `cafe` meet `café`. Russian needs no fold:
+`FILTERS lowercase, stemmer(russian)`. `stemmer(english)` is a second spelling
+of `stemmer`, and an unknown language is refused rather than read as English.
 
 **A chain is part of the analyzer's identity, and an analyzer cannot be
 redefined.** A name already declared is refused — the postings on disk were

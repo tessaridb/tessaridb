@@ -47,6 +47,11 @@ compares carries no pre-release suffix.
   searched and valued sides, is the union of each side's candidates, tested again
   against the whole condition; `EXPLAIN` reports the shape `union` and every index
   read. A side with no index leaves the read a scan.
+- **`stemmer(russian)`, `stemmer(german)`, `stemmer(french)` and
+  `stemmer(spanish)`** (G051 T7.3) — the Snowball algorithms for those languages,
+  each checked against its whole published vocabulary (134 869 words, every one
+  stemmed as published). `stemmer` stays English and is stored as it was, so an
+  existing analyzer reads back unchanged.
 
 ### Fixed
 

@@ -295,10 +295,19 @@ impl Parser<'_> {
         let Some(Token::Ident(word)) = self.peek() else {
             return Err(self.error_here("a filter name"));
         };
-        let Some(filter) = Filter::parse(word) else {
-            return Err(self.error_here("a filter name"));
-        };
+        let mut word = word.clone();
         self.advance();
-        Ok(filter)
+        // `stemmer(russian)`: a filter's one argument, its language.
+        if self.eat_punct(Punct::ParenOpen) {
+            let Some(Token::Ident(argument)) = self.peek() else {
+                return Err(self.error_here("a language"));
+            };
+            word = format!("{word}({argument})");
+            self.advance();
+            if !self.eat_punct(Punct::ParenClose) {
+                return Err(self.error_here("`)`"));
+            }
+        }
+        Filter::parse(&word).ok_or_else(|| self.error_here("a filter name"))
     }
 }

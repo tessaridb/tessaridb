@@ -61,16 +61,42 @@ pub enum Filter {
     /// without it, a collection answers `run` with the documents that happen to
     /// spell it that way and silently omits the ones that say `running`.
     ///
-    /// Only lower-case ASCII words are stemmed and everything else passes
-    /// through unchanged, so a chain that wants stemming writes `lowercase`
-    /// before it — see [`stem`](crate::stem) for why half-stemming is worse
-    /// than not stemming.
-    Stemmer,
+    /// Only lower-case words of the language are stemmed and everything else
+    /// passes through unchanged, so a chain that wants stemming writes
+    /// `lowercase` before it — see [`stem`](crate::stem) for why half-stemming
+    /// is worse than not stemming.
+    ///
+    /// `stemmer` is English; `stemmer(russian)`, `stemmer(german)`,
+    /// `stemmer(french)` and `stemmer(spanish)` name the others (G051 T7.3).
+    Stemmer(Language),
+}
+
+/// The language a [`Filter::Stemmer`] reduces words of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Language {
+    /// Porter2.
+    English,
+    /// Snowball Russian.
+    Russian,
+    /// Snowball German.
+    German,
+    /// Snowball French.
+    French,
+    /// Snowball Spanish.
+    Spanish,
 }
 
 impl Filter {
     /// Every filter, so a listing cannot drift from the set.
-    pub const ALL: &'static [Self] = &[Self::Lowercase, Self::Ascii, Self::Stemmer];
+    pub const ALL: &'static [Self] = &[
+        Self::Lowercase,
+        Self::Ascii,
+        Self::Stemmer(Language::English),
+        Self::Stemmer(Language::Russian),
+        Self::Stemmer(Language::German),
+        Self::Stemmer(Language::French),
+        Self::Stemmer(Language::Spanish),
+    ];
 
     /// How the filter is written.
     #[must_use]
@@ -78,13 +104,23 @@ impl Filter {
         match self {
             Self::Lowercase => "lowercase",
             Self::Ascii => "ascii",
-            Self::Stemmer => "stemmer",
+            // English keeps the spelling it has always been stored under, so
+            // an analyzer declared before the languages reads back unchanged.
+            Self::Stemmer(Language::English) => "stemmer",
+            Self::Stemmer(Language::Russian) => "stemmer(russian)",
+            Self::Stemmer(Language::German) => "stemmer(german)",
+            Self::Stemmer(Language::French) => "stemmer(french)",
+            Self::Stemmer(Language::Spanish) => "stemmer(spanish)",
         }
     }
 
-    /// The filter a word names, if it names one.
+    /// The filter a word names, if it names one — `stemmer(english)` being a
+    /// second spelling of `stemmer`.
     #[must_use]
     pub fn parse(word: &str) -> Option<Self> {
+        if word.eq_ignore_ascii_case("stemmer(english)") {
+            return Some(Self::Stemmer(Language::English));
+        }
         Self::ALL
             .iter()
             .copied()
@@ -96,7 +132,7 @@ impl Filter {
         match self {
             Self::Lowercase => token.to_lowercase(),
             Self::Ascii => token.chars().map(fold).collect(),
-            Self::Stemmer => crate::stemmer::stem(token),
+            Self::Stemmer(language) => crate::stemmer::stem_in(language, token),
         }
     }
 }
@@ -184,7 +220,7 @@ impl Analyzer {
             .filters
             .iter()
             .copied()
-            .filter(|filter| *filter != Filter::Stemmer)
+            .filter(|filter| !matches!(filter, Filter::Stemmer(_)))
             .collect();
         let raw = self.tokens(text, &unstemmed);
         let stemmed = self.tokens(text, &self.filters);
@@ -297,7 +333,7 @@ fn fold(character: char) -> char {
 mod tests {
     #![allow(clippy::panic)]
 
-    use super::{Analyzer, Filter};
+    use super::{Analyzer, Filter, Language};
 
     fn simple() -> Analyzer {
         Analyzer::new(vec![Filter::Lowercase, Filter::Ascii])
@@ -353,7 +389,11 @@ mod tests {
         // The order is the caller's and it matters: the stemmer is defined over
         // lower-case words, so `lowercase` has to come first or `Running` is
         // returned untouched rather than half-stemmed.
-        let full = Analyzer::new(vec![Filter::Lowercase, Filter::Ascii, Filter::Stemmer]);
+        let full = Analyzer::new(vec![
+            Filter::Lowercase,
+            Filter::Ascii,
+            Filter::Stemmer(Language::English),
+        ]);
         assert_eq!(full.terms("Running quickly"), vec!["run", "quick"]);
         assert_eq!(full.terms("He runs"), vec!["he", "run"]);
 
@@ -380,7 +420,11 @@ mod tests {
 
     #[test]
     fn a_prefix_is_folded_but_never_stemmed() {
-        let full = Analyzer::new(vec![Filter::Lowercase, Filter::Ascii, Filter::Stemmer]);
+        let full = Analyzer::new(vec![
+            Filter::Lowercase,
+            Filter::Ascii,
+            Filter::Stemmer(Language::English),
+        ]);
         // The folding applies: a prefix of a lower-cased, unaccented word is
         // what the dictionary holds.
         assert_eq!(full.prefixes("VECto"), vec![vec!["vecto".to_owned()]]);
@@ -400,7 +444,11 @@ mod tests {
     fn a_complete_word_is_a_prefix_of_itself_even_when_it_stems_to_something_shorter() {
         // The case that makes the second spelling necessary, and the one a
         // reader hits first: typing all of a word rather than most of it.
-        let full = Analyzer::new(vec![Filter::Lowercase, Filter::Ascii, Filter::Stemmer]);
+        let full = Analyzer::new(vec![
+            Filter::Lowercase,
+            Filter::Ascii,
+            Filter::Stemmer(Language::English),
+        ]);
         assert_eq!(full.terms("contention"), vec!["content"]);
         assert!(reaches(&full, "Locking and contention", "conten"));
         assert!(reaches(&full, "Locking and contention", "contention"));
@@ -435,7 +483,11 @@ mod tests {
         // Asserted directly rather than inferred from a passing highlight,
         // because this is the property the whole offset source rests on: a
         // second tokenizer that agreed today would drift silently.
-        let full = Analyzer::new(vec![Filter::Lowercase, Filter::Ascii, Filter::Stemmer]);
+        let full = Analyzer::new(vec![
+            Filter::Lowercase,
+            Filter::Ascii,
+            Filter::Stemmer(Language::English),
+        ]);
         for text in [
             "Ada Lovelace, 1843!",
             "  ...  ",
@@ -455,7 +507,11 @@ mod tests {
     fn a_span_covers_the_bytes_the_token_occupied_and_not_the_term_it_became() {
         // The criterion's deciding case in miniature: the reader typed three
         // letters, the text holds seven, and the highlight is over the seven.
-        let full = Analyzer::new(vec![Filter::Lowercase, Filter::Ascii, Filter::Stemmer]);
+        let full = Analyzer::new(vec![
+            Filter::Lowercase,
+            Filter::Ascii,
+            Filter::Stemmer(Language::English),
+        ]);
         let text = "He was Running fast";
         let spans = full.spans(text);
         let running = spans
@@ -497,7 +553,7 @@ mod tests {
     fn a_stemmer_without_lowercase_in_front_of_it_leaves_the_word_alone() {
         // Stated as a test rather than a comment: half-stemming would produce a
         // term neither spelling of the word reaches, so the filter declines.
-        let bare = Analyzer::new(vec![Filter::Stemmer]);
+        let bare = Analyzer::new(vec![Filter::Stemmer(Language::English)]);
         assert_eq!(bare.terms("Running"), vec!["Running"]);
         assert_eq!(bare.terms("running"), vec!["run"]);
     }

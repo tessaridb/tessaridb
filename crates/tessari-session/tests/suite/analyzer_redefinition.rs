@@ -175,3 +175,89 @@ fn a_second_analyzer_under_a_new_name_is_not_a_redefinition() {
 
     assert_eq!(found(&mut session, "run"), 1);
 }
+
+// ---- G051 T7.3: a stemmer for a language ----
+
+/// A store whose `body` field is analysed in `language`, indexed or not.
+fn in_language(language: &str, indexed: bool, records: &[&str]) -> Store {
+    let held = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let mut session = Session::new(&held);
+    let mut script = format!(
+        "{PLACE}\
+         DEFINE ANALYZER spoken FILTERS lowercase, stemmer({language});\n\
+         DEFINE COLLECTION notes;\n\
+         DEFINE FIELD body ON notes TYPE string ANALYZER spoken;\n"
+    );
+    for (at, body) in records.iter().enumerate() {
+        script.push_str(&format!("CREATE notes:{at} = {{ body: '{body}' }};\n"));
+    }
+    if indexed {
+        script.push_str("DEFINE INDEX by_body ON notes FIELDS body SEARCH;\n");
+    }
+    session.run(&script).unwrap();
+    held
+}
+
+/// For each language: a query in one inflection finds a record holding
+/// another, by the scan and by the index alike, and the English stemmer —
+/// which leaves the word whole — does not.
+#[test]
+fn a_stemmer_for_a_language_makes_its_inflections_meet() {
+    for (language, records, query) in [
+        ("russian", ["Важные новости", "Совсем другое"], "важный"),
+        (
+            "german",
+            ["Die Häuser der Stadt", "Ganz etwas anderes"],
+            "Haus",
+        ),
+        (
+            "french",
+            ["Les chevaux blancs", "Tout autre chose"],
+            "cheval",
+        ),
+        ("spanish", ["Las canciones nuevas", "Otra cosa"], "canción"),
+    ] {
+        for indexed in [false, true] {
+            let held = in_language(language, indexed, &records);
+            let mut session = Session::new(&held);
+            session.run(USE).unwrap();
+            assert_eq!(
+                found(&mut session, query),
+                1,
+                "{language}, indexed: {indexed}"
+            );
+        }
+        let english = in_language("english", false, &records);
+        let mut session = Session::new(&english);
+        session.run(USE).unwrap();
+        assert_eq!(
+            found(&mut session, query),
+            0,
+            "{language} under English rules"
+        );
+    }
+}
+
+/// The declared chain is stored and written back as declared, the script
+/// runs into a fresh store analysing the same way, and an unknown language is
+/// refused rather than read as English.
+#[test]
+fn a_stemmers_language_is_declared_and_an_unknown_one_is_refused() {
+    let held = in_language("russian", true, &["Важные новости"]);
+    let script = tessari_session::write_script(&held).unwrap().text;
+    assert!(
+        script.contains("FILTERS lowercase, stemmer(russian);"),
+        "{script}"
+    );
+    let restored = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let mut session = Session::new(&restored);
+    session.run(&script).unwrap();
+    session.run(USE).unwrap();
+    assert_eq!(found(&mut session, "важный"), 1);
+    match session.run("DEFINE ANALYZER other FILTERS lowercase, stemmer(klingon);") {
+        Err(tessari_session::Error::Script(why)) => {
+            assert!(why.to_string().contains("filter"), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
