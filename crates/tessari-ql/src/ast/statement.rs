@@ -117,6 +117,10 @@ pub enum StatementKind {
         /// the catalog's to refuse rather than this list's to fix, because a list
         /// the parser sorted would hide the mistake the refusal names.
         split: Vec<RecordId>,
+        /// The field every record's identity begins with: `DEFINE TABLE
+        /// customers (region string, …) IDENTITY uuid PARTITION BY region`
+        /// (ADR-0096). A record of it is named `'<region>:<uuid>'`.
+        partition: Option<Name>,
         /// What the table does with a write it cannot order, when the statement
         /// said: `DEFINE TABLE ledger (…) LAST WRITER WINS` (G027 S3.2).
         ///

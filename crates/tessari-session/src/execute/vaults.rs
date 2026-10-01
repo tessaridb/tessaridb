@@ -82,6 +82,7 @@ impl Session<'_> {
                 graph: None,
                 conflict: None,
                 split: Vec::new(),
+                partition: None,
             },
             if_not_exists,
             span,

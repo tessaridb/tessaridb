@@ -699,6 +699,39 @@ pub enum Error {
         table: String,
     },
 
+    /// `PARTITION BY` on a table that does not name its own records by UUID.
+    ///
+    /// A partitioned record's identity is its field's value and a UUID v7 the
+    /// store mints after it (ADR-0096), so a counter has nowhere to go.
+    #[error(
+        "table `{table}` is partitioned, so the store names its records as the \
+         partition value and a uuid — declare it `IDENTITY uuid`"
+    )]
+    PartitionNeedsGeneratedUuid {
+        /// The table being declared.
+        table: String,
+    },
+
+    /// A record of a partitioned table whose identity does not begin with its
+    /// partition field's value and `:`, or whose value is not text without `:`.
+    ///
+    /// The identity is what decides the shard, so a record whose identity and
+    /// field disagree would sit in one region's shard while saying it belongs to
+    /// another — and an update moving it would leave it there (ADR-0096).
+    #[error(
+        "table {table} is partitioned by {field}, so record {record}'s identity must \
+         begin with its {field} — text holding no `:` — and a `:`; move a record \
+         between partitions by deleting it and creating it again"
+    )]
+    PartitionMismatch {
+        /// The table, by the name a declaration uses.
+        table: Box<str>,
+        /// The record that was being written.
+        record: Box<str>,
+        /// The partition field.
+        field: Box<str>,
+    },
+
     /// `SPLIT AT` points that do not ascend strictly in key order.
     ///
     /// Refused rather than sorted, because a list sorted for its author accepts
@@ -970,6 +1003,8 @@ impl Error {
             | Self::SpansLeaderships { .. }
             | Self::PlacementCannotBeDropped { .. }
             | Self::SplitNeedsGeneratedUuid { .. }
+            | Self::PartitionNeedsGeneratedUuid { .. }
+            | Self::PartitionMismatch { .. }
             | Self::SplitPointsOutOfOrder { .. }
             | Self::SplitOnAKindThatIsNotRecords { .. }
             | Self::NotASplitTable { .. }

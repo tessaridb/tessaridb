@@ -99,6 +99,9 @@ pub(crate) struct TableSchema {
     /// Whether this is a queue, which decides the same one thing for the three
     /// fields the queue engine writes onto a record it hands out.
     queue: bool,
+    /// The field every record's identity begins with, when the table is
+    /// partitioned (ADR-0096).
+    partition: Option<String>,
 }
 
 impl TableSchema {
@@ -108,7 +111,7 @@ impl TableSchema {
     /// it is what keeps the check off the path of every table that has no
     /// schema — which, until someone declares one, is every table.
     fn constrains_nothing(&self) -> bool {
-        self.fields.is_empty() && !self.schemafull
+        self.fields.is_empty() && !self.schemafull && self.partition.is_none()
     }
 }
 
@@ -301,6 +304,18 @@ fn found_as(declared: &FieldKind, held: &Value) -> Box<str> {
 /// record and not one per field: the caller's unit of work is the row, and a row
 /// with two mistakes in it is still one row to go back and fix.
 fn check(schema: &TableSchema, value: &Value, id: &RecordId) -> Option<Error> {
+    // First, and for every record whatever it holds: the identity decides the
+    // shard, so one whose identity and partition disagree would sit in one
+    // region's shard while saying it belongs to another (ADR-0096).
+    if let Some(field) = &schema.partition
+        && !partitioned_as(value, field, id)
+    {
+        return Some(Error::PartitionMismatch {
+            table: Box::from(schema.name.as_str()),
+            record: Box::from(id.to_string()),
+            field: Box::from(field.as_str()),
+        });
+    }
     // A record that is not an object has no named fields to constrain. The
     // key-value model stores single values that way (ADR-0010), and a field
     // declaration on such a table describes something that is not there.
@@ -405,6 +420,22 @@ fn check(schema: &TableSchema, value: &Value, id: &RecordId) -> Option<Error> {
     None
 }
 
+/// Whether `id` begins with the record's `field` value and a `:`, the value
+/// being text that holds no `:` — so a region's records sort together, between
+/// its name and the next.
+fn partitioned_as(value: &Value, field: &str, id: &RecordId) -> bool {
+    let (Value::Object(fields), RecordId::Text(id)) = (value, id) else {
+        return false;
+    };
+    let Some(Value::String(held)) = fields.get(field) else {
+        return false;
+    };
+    !held.contains(':')
+        && id
+            .strip_prefix(held.as_str())
+            .is_some_and(|rest| rest.starts_with(':'))
+}
+
 /// One stored record that disagrees with what its table declares now.
 ///
 /// An **answer**, not a refusal, which is the whole reason this type exists
@@ -450,6 +481,9 @@ impl Violation {
             }
             Error::SchemaViolation { record, field, .. } => {
                 (record.to_string(), field.to_string(), "type")
+            }
+            Error::PartitionMismatch { record, field, .. } => {
+                (record.to_string(), field.to_string(), "partition")
             }
             _ => return None,
         };

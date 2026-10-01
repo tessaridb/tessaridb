@@ -67,6 +67,11 @@ pub(crate) fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> 
     if let Some(read) = definition.view_read() {
         shape.insert("view".to_owned(), Value::from(read));
     }
+    // Present only on a partitioned table (ADR-0096): the field every record's
+    // identity begins with.
+    if let Some(field) = &definition.partition {
+        shape.insert("partition".to_owned(), Value::from(field.as_str()));
+    }
     // Present only on a split table (G031, ADR-0080). Each bound is the literal
     // the clause takes — `'g'`, `uuid '…'` — so what the report prints is what
     // the next declaration types, and `NONE` marks an open end rather than a

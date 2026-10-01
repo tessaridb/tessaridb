@@ -40,6 +40,7 @@ fn a_map_that_moves_before_the_gate_files_the_write_where_the_new_map_puts_it() 
                 graph: None,
                 conflict: None,
                 split: vec![RecordId::from("g"), RecordId::from("p")],
+                partition: None,
             },
         )
         .expect("a split table")

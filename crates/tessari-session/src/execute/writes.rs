@@ -273,12 +273,32 @@ impl Session<'_> {
                 });
             }
         }
-        let kind = Catalog::new(transaction)
-            .table(table)?
-            .map_or_else(IdentityKind::default, |found| found.identity);
+        let (kind, partition) = Catalog::new(transaction).table(table)?.map_or_else(
+            || (IdentityKind::default(), None),
+            |found| (found.identity, found.partition),
+        );
         loop {
             let identity = match kind {
-                IdentityKind::Uuid => RecordId::Uuid(generate::uuid_v7(span)?),
+                // A partitioned table names a record by its field's value and a
+                // UUID after it (ADR-0096). A record whose field is not text gets
+                // a bare UUID, which the store then refuses by name — the rule
+                // lives there, where every writer meets it.
+                IdentityKind::Uuid => {
+                    let minted = generate::uuid_v7(span)?;
+                    match partition.as_deref().and_then(|field| match payload {
+                        Value::Object(fields) => match fields.get(field) {
+                            Some(Value::String(value)) => Some(value),
+                            _ => None,
+                        },
+                        _ => None,
+                    }) {
+                        Some(value) => RecordId::Text(format!(
+                            "{value}:{}",
+                            tessari_types::uuid_to_text(&minted)
+                        )),
+                        None => RecordId::Uuid(minted),
+                    }
+                }
                 IdentityKind::Int => {
                     let number = Catalog::new(transaction).next_record_number(table)?;
                     // The counter is a `u64` and a record identity is an `i64`,

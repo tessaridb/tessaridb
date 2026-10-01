@@ -63,6 +63,7 @@ fn view(id: u32, read: &str) -> TableDefinition {
         graph: None,
         conflict: None,
         shards: None,
+        partition: None,
     }
 }
 

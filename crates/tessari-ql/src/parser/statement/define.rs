@@ -63,6 +63,7 @@ impl Parser<'_> {
                 let mut graph: Option<Name> = None;
                 let mut conflict: Option<ConflictPolicy> = None;
                 let mut split: Option<Vec<RecordId>> = None;
+                let mut partition: Option<Name> = None;
                 loop {
                     if strictness.is_none() && self.eat_keyword(Keyword::Schemafull) {
                         strictness = Some(true);
@@ -95,6 +96,11 @@ impl Parser<'_> {
                     } else if split.is_none() && self.eat_word("split") {
                         self.expect_word("at", "`AT` and the identity a shard begins at")?;
                         split = Some(self.split_points()?);
+                    // `PARTITION BY` — contextual words again, for the same
+                    // reason (ADR-0096).
+                    } else if partition.is_none() && self.eat_word("partition") {
+                        self.expect_word("by", "`BY` and the field a record's identity begins with")?;
+                        partition = Some(self.name()?);
                     } else {
                         break;
                     }
@@ -127,6 +133,7 @@ impl Parser<'_> {
                     identity: identity.unwrap_or_default(),
                     graph,
                     split: split.unwrap_or_default(),
+                    partition,
                     conflict,
                     if_not_exists,
                 })

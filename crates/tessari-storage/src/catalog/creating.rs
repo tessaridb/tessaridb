@@ -164,6 +164,13 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             });
         }
         let shards = shard::declared_for(name, &shape)?;
+        // The store names a partitioned record as the field's value and a UUID
+        // v7 after it (ADR-0096), so a counter has nowhere to go.
+        if shape.partition.is_some() && shape.identity != tessari_types::IdentityKind::Uuid {
+            return Err(Error::PartitionNeedsGeneratedUuid {
+                table: name.to_owned(),
+            });
+        }
         let qualified = qualify(Level::Table, &[namespace.get(), database.get()], name);
         self.reserve_name(&qualified)?;
         let id = TableId::new(self.allocate(Level::Table)?);
@@ -178,6 +185,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             graph: shape.graph,
             conflict: shape.conflict,
             shards,
+            partition: shape.partition,
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());

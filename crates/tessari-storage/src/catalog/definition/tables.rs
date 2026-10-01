@@ -4,10 +4,11 @@ use super::ShardMap;
 use super::{
     EdgeDeclaration, FIELD_BUCKET, FIELD_CEILING, FIELD_COLLECTION, FIELD_CONFLICT, FIELD_DATABASE,
     FIELD_EDGE, FIELD_ENDPOINTS, FIELD_GEO, FIELD_GRAPH, FIELD_ID, FIELD_IDENTITY, FIELD_NAME,
-    FIELD_NAMESPACE, FIELD_QUEUE, FIELD_SCHEMAFULL, FIELD_SERIES, FIELD_SHARDS, FIELD_SPACE,
-    FIELD_TOPIC, FIELD_VAULT, FIELD_VECTOR, FIELD_VIEW, QueueDeclaration, SeriesDeclaration,
-    StoredKind, TableKind, VaultCustody, VaultDeclaration, VectorDeclaration, ViewDeclaration,
-    byte_count, ceiling, field_id, field_name, flag, identity_kind, number, object,
+    FIELD_NAMESPACE, FIELD_PARTITION, FIELD_QUEUE, FIELD_SCHEMAFULL, FIELD_SERIES, FIELD_SHARDS,
+    FIELD_SPACE, FIELD_TOPIC, FIELD_VAULT, FIELD_VECTOR, FIELD_VIEW, QueueDeclaration,
+    SeriesDeclaration, StoredKind, TableKind, VaultCustody, VaultDeclaration, VectorDeclaration,
+    ViewDeclaration, byte_count, ceiling, field_id, field_name, flag, identity_kind, number,
+    object,
 };
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
@@ -85,6 +86,9 @@ pub struct TableDefinition {
     /// touched and no migration step is owed, the contract every optional field
     /// here keeps.
     pub shards: Option<ShardMap>,
+    /// The field whose value leads every record's identity, when the table was
+    /// declared `PARTITION BY` it (ADR-0096); written only when present.
+    pub partition: Option<String>,
 }
 
 impl TableDefinition {
@@ -234,6 +238,9 @@ impl TableDefinition {
         // unsharded table's entry stays byte-for-byte what it was.
         if let Some(shards) = &self.shards {
             fields.insert(FIELD_SHARDS.to_owned(), shards.to_value());
+        }
+        if let Some(partition) = &self.partition {
+            fields.insert(FIELD_PARTITION.to_owned(), Value::from(partition.as_str()));
         }
         // A declaration is not a flag, so it is written only by the edge table
         // that has one. Absent is how every edge table declared without a pair
@@ -400,6 +407,17 @@ impl TableDefinition {
                 None => None,
                 Some(held) => Some(ShardMap::from_value(held)?),
             },
+            partition: match fields.get(FIELD_PARTITION) {
+                None => None,
+                Some(Value::String(field)) => Some(field.clone()),
+                Some(_) => {
+                    return Err(Error::CatalogMalformed {
+                        entity: "table",
+                        field: FIELD_PARTITION,
+                        found: "a partition field that is not a name",
+                    });
+                }
+            },
         })
     }
 }
@@ -442,4 +460,7 @@ pub struct TableShape {
     /// map, because turning it into one is where the refusals live and they
     /// belong to the catalog that stores the result (`create_table`).
     pub split: Vec<RecordId>,
+    /// The field whose value leads every record's identity, when the table is
+    /// partitioned by one (`PARTITION BY region`, ADR-0096).
+    pub partition: Option<String>,
 }
