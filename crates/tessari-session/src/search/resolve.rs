@@ -206,6 +206,18 @@ impl Session<'_> {
                 .push((BinaryOp::Matches, text.clone()));
         }
 
+        // What this session may read of the table, asked once per read. A score
+        // and a suggestion are both read from the index by identity or by term,
+        // and neither ever touches the record the grant redacted — so the field
+        // the grant hides has to be hidden here as well, or a caller who cannot
+        // read it could rank the table by it and be told the words it holds.
+        let visible = self.visible_in(transaction, table)?;
+        let hidden = |path: &Path| {
+            visible
+                .as_ref()
+                .is_some_and(|fields| !fields.contains(path.root()))
+        };
+
         let mut corpora = BTreeMap::new();
         for (path, query) in ranked {
             let Some(analyzer) = analyzers.get(path) else {
@@ -215,6 +227,26 @@ impl Session<'_> {
                 continue;
             };
             if !index.search {
+                continue;
+            }
+            // A hidden field ranks as a field the record does not hold: every
+            // record scores `0`, which is what the redacted record would earn by
+            // the missing-field rule. Not a refusal — "this field has no search
+            // index" would be false, and a refusal of its own would say the
+            // field is there. No statistic of the collection is read either.
+            if hidden(path) {
+                corpora.insert(
+                    path.clone(),
+                    Ranked {
+                        corpus: Corpus {
+                            documents: 0,
+                            average_length: 0.0,
+                            terms: BTreeMap::new(),
+                            asked: Vec::new(),
+                        },
+                        index,
+                    },
+                );
                 continue;
             }
             // Only the terms this statement asks about: counting the rest would
@@ -252,6 +284,11 @@ impl Session<'_> {
         // property that matters: the suggestion is a fact about the query and
         // the collection, so a read must not be able to earn a different one by
         // being planned differently.
+        //
+        // A hidden field consults no dictionary at all — not even to say
+        // `NothingNearer`, which would tell the caller every word they typed is
+        // in a field they cannot read.
+        matched.retain(|(path, _)| !hidden(path));
         let indexes = Catalog::new(transaction).indexes_on(table)?;
         let suggestion = suggested(transaction, &indexes, &analyzers, &matched)?;
 

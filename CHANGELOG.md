@@ -12,6 +12,21 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.20.0-beta — 2026-10-01
+
+### Security
+
+- **A field grant now hides a searched field from the score and the suggestion as
+  well as from the match** (G051, Q-861). A caller granted `read ON t FIELDS a`
+  already got no records from `b MATCHES …`, but `search::score(b, …)` still ranked
+  records by `b`'s text and a misspelt `b MATCHES …` still answered `did you mean`
+  with a word `b` holds — both are read from the index by identity or by term and
+  never touched the record the grant redacted. A hidden field now scores `0` for
+  every record, as a field the record does not hold, and earns no suggestion at all.
+  Every release up to and including `0.19.0-beta` has this leak: text that a field
+  grant hides on those builds should be treated as having been probe-able by a
+  caller who could search the table.
+
 ## 0.19.0-beta — 2026-10-01
 
 ### Added

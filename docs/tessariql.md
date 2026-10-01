@@ -589,6 +589,11 @@ index path as to the scan. A **search** index on a plain conjunction of terms is
 the exception — its postings answer the clause exactly, so the read may skip that
 re-test — and it is therefore not taken when the indexed field is one this
 session may not read. The permission decides before the optimisation does. A
+score and a suggestion read the index by identity and by term rather than reading
+the record, so they are held to the same rule separately: over a hidden field
+every record scores `0` — what a record without the field earns — and the field
+consults no dictionary, so it yields no `did you mean` and not even the "nothing
+nearer" that would say every typed word is in it. A
 join hides it on whichever side
 declared it, `FETCH` hides it in the table it lands on, and the change feed hides
 it too.
@@ -8321,7 +8326,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.19.0", "build": "0.19.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.20.0", "build": "0.20.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],
