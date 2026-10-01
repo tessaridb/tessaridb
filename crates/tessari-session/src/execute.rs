@@ -459,6 +459,9 @@ impl Session<'_> {
             }
             StatementKind::DropAnalyzer { name } => self.drop_analyzer(transaction, name, span),
             StatementKind::DropReplica { name } => self.drop_replica(transaction, name, span),
+            StatementKind::AlterReplica { name, leads } => {
+                self.alter_replica(transaction, name, leads.as_ref(), span)
+            }
             StatementKind::DropDatabase { name } => self.drop_database(transaction, name, span),
             StatementKind::DropNamespace { name } => self.drop_namespace(transaction, name, span),
             StatementKind::DefineGraph {

@@ -1,7 +1,7 @@
 //! Declaring nodes, failover, replicas and stream consumers.
 
 use tessari_encoding::Roles;
-use tessari_ql::{Name, Span};
+use tessari_ql::{Name, ReachRef, Span};
 use tessari_storage::{Catalog, ConsumerDefinition, Feed, Mapped, OnFailure, Transaction};
 
 use crate::error::{Error, Result};
@@ -174,6 +174,32 @@ impl Session<'_> {
         span: Span,
     ) -> Result<Outcome> {
         if !Catalog::new(transaction).drop_replica(&name.text)? {
+            return Err(Error::Unknown {
+                entity: "replica",
+                name: name.text.clone(),
+                span,
+            });
+        }
+        Ok(Outcome::Done)
+    }
+
+    /// `ALTER REPLICA b LEADS …` — moves a placement (ADR-0098).
+    ///
+    /// The range is resolved by the reader `DEFINE REPLICA` uses, so a shard the
+    /// table lacks is refused the same way; what may be taken from whom is the
+    /// catalog's rule.
+    pub(super) fn alter_replica(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        leads: Option<&ReachRef>,
+        span: Span,
+    ) -> Result<Outcome> {
+        let leads = match leads {
+            None => None,
+            Some(named) => Some(self.reach_of(transaction, named)?),
+        };
+        if !Catalog::new(transaction).alter_replica_leads(&name.text, leads)? {
             return Err(Error::Unknown {
                 entity: "replica",
                 name: name.text.clone(),

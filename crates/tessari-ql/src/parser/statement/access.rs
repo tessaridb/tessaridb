@@ -65,6 +65,18 @@ impl Parser<'_> {
         if self.eat_word("group") {
             return self.alter_group();
         }
+        // ADR-0098. The placement and nothing else: the rest of a member row is
+        // what the operator declared, and changes by declaring it again.
+        if self.eat_word("replica") {
+            let name = self.name()?;
+            self.expect_word("leads", "`LEADS` and the range, or `NONE`")?;
+            let leads = if self.eat_keyword(Keyword::None) {
+                None
+            } else {
+                Some(self.placed_range()?)
+            };
+            return Ok(StatementKind::AlterReplica { name, leads });
+        }
         if self.eat_keyword(Keyword::Table) {
             let table = self.table_ref()?;
             // The columnar spellings first, because `SET` is the one that reads
@@ -127,7 +139,8 @@ impl Parser<'_> {
             return Ok(StatementKind::AlterNamespace { name, replication });
         }
         if !self.eat_keyword(Keyword::User) {
-            return Err(self.error_here("`NAMESPACE`, `USER` or `TABLE` and the thing to change"));
+            return Err(self
+                .error_here("`NAMESPACE`, `USER`, `TABLE` or `REPLICA` and the thing to change"));
         }
         let name = self.name()?;
         self.expect_keyword(Keyword::Set, "`SET` and the one thing to change")?;

@@ -311,19 +311,7 @@ impl Parser<'_> {
         // what every standing node already stands for, so a placement naming it
         // would carve the whole store out of itself.
         let leads = if self.eat_word("leads") {
-            if self.eat_word("shard") {
-                Some(self.shard_reach()?)
-            } else {
-                match self.reach_keyword()? {
-                    Some(ReachRef::Store) | None => {
-                        return Err(self.error_here(
-                            "`NAMESPACE`, `DATABASE` or `SHARD` after `LEADS` \
-                             (every standing node already stands for the store)",
-                        ));
-                    }
-                    Some(reach) => Some(reach),
-                }
-            }
+            Some(self.placed_range()?)
         } else {
             None
         };
@@ -336,6 +324,20 @@ impl Parser<'_> {
             leads,
             if_not_exists,
         })
+    }
+
+    /// The range after `LEADS`, read for `DEFINE REPLICA` and `ALTER REPLICA`.
+    pub(super) fn placed_range(&mut self) -> Result<ReachRef> {
+        if self.eat_word("shard") {
+            return self.shard_reach();
+        }
+        match self.reach_keyword()? {
+            Some(ReachRef::Store) | None => Err(self.error_here(
+                "`NAMESPACE`, `DATABASE` or `SHARD` after `LEADS` \
+                 (every standing node already stands for the store)",
+            )),
+            Some(reach) => Ok(reach),
+        }
     }
 
     /// A count standing where one is required.

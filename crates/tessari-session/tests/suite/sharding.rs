@@ -475,6 +475,75 @@ fn a_row_that_places_a_leader_cannot_be_dropped_and_one_that_does_not_can() {
     );
 }
 
+// ---- G050 W-G050-6: a placement moves (ADR-0098) --------------------------------
+
+#[test]
+fn a_placement_is_handed_to_another_row_and_taken_from_the_first() {
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run(
+            "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g'; \
+             DEFINE REPLICA a AT 'a:9001' LEADS SHARD prod.shop.orders 1; \
+             DEFINE REPLICA b AT 'b:9001';",
+        )
+        .unwrap();
+    session
+        .run("ALTER REPLICA b LEADS SHARD prod.shop.orders 1; ALTER REPLICA a LEADS NONE;")
+        .unwrap();
+    assert_eq!(
+        peer_field(&mut session, "leads"),
+        vec![
+            ("a".to_owned(), None),
+            ("b".to_owned(), Some("SHARD prod.shop.orders 1".to_owned())),
+        ]
+    );
+    // A row that is no longer the last candidate can be dropped.
+    session
+        .run("ALTER REPLICA a LEADS SHARD prod.shop.orders 1; DROP REPLICA b;")
+        .unwrap();
+    assert_eq!(
+        peer_field(&mut session, "leads"),
+        vec![("a".to_owned(), Some("SHARD prod.shop.orders 1".to_owned()))]
+    );
+}
+
+#[test]
+fn the_last_placement_on_a_range_is_not_taken_away() {
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run(
+            "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g'; \
+             DEFINE REPLICA a AT 'a:9001' LEADS SHARD prod.shop.orders 1;",
+        )
+        .unwrap();
+    for taking in [
+        "ALTER REPLICA a LEADS NONE;",
+        "ALTER REPLICA a LEADS SHARD prod.shop.orders 2;",
+    ] {
+        let refused = refusal(&mut session, taking);
+        assert!(
+            matches!(refused, tessari_storage::Error::PlacementCannotBeDropped { ref name } if name == "a"),
+            "{taking}: {refused:?}"
+        );
+    }
+    match session.run("ALTER REPLICA z LEADS NONE;") {
+        Err(Error::Unknown { entity, name, .. }) => {
+            assert_eq!((entity, name.as_str()), ("replica", "z"));
+        }
+        other => panic!("expected an unknown replica, got {other:?}"),
+    }
+    match session.run("ALTER REPLICA a LEADS SHARD prod.shop.orders 3;") {
+        Err(Error::Unknown { entity, .. }) => assert_eq!(entity, "shard"),
+        other => panic!("expected an unknown shard, got {other:?}"),
+    }
+    assert_eq!(
+        peer_field(&mut session, "leads"),
+        vec![("a".to_owned(), Some("SHARD prod.shop.orders 1".to_owned()))]
+    );
+}
+
 // ---- G050 W-G050-3: splitting and merging a table that already holds records --
 
 fn orders(session: &mut Session<'_>) -> Vec<Reported> {

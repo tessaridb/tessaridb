@@ -365,31 +365,67 @@ impl Catalog<'_, '_> {
     /// longer count that endpoint as a peer*, and a peer that disagrees is a
     /// question for the operator rather than one a catalog write can settle.
     ///
-    /// # A row that places a leader is not dropped
+    /// # The last row that places a range is not dropped
     ///
-    /// Dropping it would hand its range back to the store line at once on the
-    /// node that committed the drop, while the range's own leader goes on
-    /// writing under its lease until the drop reaches it — two writers on one
-    /// range for up to a lease. Dropping one safely needs every lease on the
-    /// range to have lapsed first, and nothing here can establish that
-    /// (ADR-0082).
+    /// See [`Self::keeps_a_candidate`]: a range another row still places stays
+    /// on its own line, and the last one would leave it two writers.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::PlacementCannotBeDropped`] for a row carrying `LEADS`,
-    /// and an error when the stored definition cannot be read.
+    /// Returns [`Error::PlacementCannotBeDropped`] for the last row placing its
+    /// range, and an error when the stored definitions cannot be read.
     pub fn drop_replica(&mut self, name: &str) -> Result<bool> {
         let Some(found) = self.replica_row(name)? else {
             return Ok(false);
         };
-        if found.leads.is_some() {
-            return Err(Error::PlacementCannotBeDropped {
-                name: name.to_owned(),
-            });
-        }
+        self.keeps_a_candidate(&found)?;
         self.transaction
             .delete(system::address(system::REPLICAS, RecordId::from(name)));
         Ok(true)
+    }
+
+    /// Replace the range a peer's row places (ADR-0098).
+    ///
+    /// Answers `false` when there is no row under that name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored definitions cannot be read.
+    pub fn alter_replica_leads(&mut self, name: &str, leads: Option<Reach>) -> Result<bool> {
+        let Some(mut definition) = self.replica_row(name)? else {
+            return Ok(false);
+        };
+        if definition.leads == leads {
+            return Ok(true);
+        }
+        self.keeps_a_candidate(&definition)?;
+        definition.leads = leads;
+        self.write_replica(&definition);
+        Ok(true)
+    }
+
+    /// Refuses taking `row`'s placement when no other row places its range.
+    ///
+    /// Another candidate keeps the range on its own line, whose election
+    /// already decides between two nodes. The last one would hand the range
+    /// back to the store line at once on the node that committed the change,
+    /// while the range's own leader goes on writing under its lease until the
+    /// change reaches it — two writers on one range for up to a lease
+    /// (ADR-0082, ADR-0098).
+    fn keeps_a_candidate(&self, row: &ReplicaDefinition) -> Result<()> {
+        let Some(range) = row.leads else {
+            return Ok(());
+        };
+        let other = self
+            .replicas()?
+            .iter()
+            .any(|peer| peer.name != row.name && peer.leads == Some(range));
+        if other {
+            return Ok(());
+        }
+        Err(Error::PlacementCannotBeDropped {
+            name: row.name.clone(),
+        })
     }
 
     /// Every declared peer, in name order.

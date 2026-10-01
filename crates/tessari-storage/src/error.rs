@@ -347,14 +347,16 @@ pub enum Error {
         nodes: Vec<[u8; tessari_encoding::NODE_ID_LEN]>,
     },
 
-    /// A peer row that places a leader (`LEADS`) was asked to be dropped.
+    /// The last peer row placing a range (`LEADS`) was asked to be dropped or
+    /// moved.
     ///
     /// Refused rather than taken: the node committing the drop would hand the
     /// range back to the store line at once while the range's own leader goes
     /// on writing under its lease until the drop reaches it (ADR-0082).
     #[error(
-        "peer `{name}` leads a range (`LEADS`), and dropping a placement needs every lease on \
-         that range to have lapsed first, which this build cannot establish"
+        "peer `{name}` is the last placed to lead its range (`LEADS`), and taking a range's last \
+         placement needs every lease on that range to have lapsed first, which this build cannot \
+         establish; place another peer on the range first"
     )]
     PlacementCannotBeDropped {
         /// The peer's name.

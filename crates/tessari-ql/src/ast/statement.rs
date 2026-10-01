@@ -1293,6 +1293,16 @@ pub enum StatementKind {
         /// What a value must satisfy.
         assert: Option<Assertion>,
     },
+    /// `ALTER REPLICA b LEADS SHARD prod.shop.orders 2` · `… LEADS NONE`
+    ///
+    /// Moves a placement (ADR-0098): the row's `LEADS` is replaced, and `NONE`
+    /// removes it. The other half of the row stays as declared.
+    AlterReplica {
+        /// The peer whose row changes.
+        name: Name,
+        /// The range it now stands to lead, or `None` for none.
+        leads: Option<ReachRef>,
+    },
     /// `ALTER TABLE users SET SCHEMAFULL` · `… SET SCHEMALESS`
     ///
     /// The one thing about a table worth changing after it exists.

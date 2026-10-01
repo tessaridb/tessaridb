@@ -8070,10 +8070,26 @@ and votes in the store's election without standing in it. Give the rows of the
 nodes that may lead the store `REPLICATES STORE`.
 
 `INFO FOR NODE` reports each peer's placement as `leads`, in the clause's own
-spelling, or `null`. **A row carrying `LEADS` cannot be dropped**
-(**`PlacementCannotBeDropped`**): the node committing the drop would hand the
+spelling, or `null`.
+
+**A placement moves to another row** with `ALTER REPLICA`:
+
+```
+ALTER REPLICA c LEADS SHARD prod.shop.orders 2;
+ALTER REPLICA b LEADS NONE;
+```
+
+The first makes `c` a candidate beside `b`; the second takes `b`'s placement
+away, and `b` stops standing for the range at once. The range stays on its own
+line throughout, so the store's leader never writes it. A row that is no longer
+a range's last candidate can also be dropped.
+
+**The last row placing a range is not taken away** — neither by `LEADS NONE`,
+by `LEADS` naming another range, nor by `DROP REPLICA`
+(**`PlacementCannotBeDropped`**): the node committing the change would hand the
 range back to the store's leader at once, while the range's own leader goes on
-writing under its lease until it hears of the drop.
+writing under its lease until it hears of the change. Place another row on the
+range first.
 
 
 ### How long the cluster waits before it replaces a leader
@@ -8298,7 +8314,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.18.1", "build": "0.18.1-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.19.0", "build": "0.19.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],
@@ -8535,7 +8551,7 @@ be, because it is confined to the run its fixed values name.
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
 | **hash** sharding | shards are spans of identities, which is what keeps a span read one walk. Spreading writes by hash forfeits that order and is a second method the map can carry later, not a change to the first. §4 |
 | more of a gathered read **pushed to the shards' leaders** | a `WHERE`, an unordered `LIMIT` and the folds that merge exactly (`count`, `sum`, `mean`, `min`, `max`) travel; an `ORDER BY … LIMIT`, `variance`, `stddev`, `median`, `collect`, the counter folds and a fold over floats gather the records and run here. Merging those exactly is each its own piece of work. A join side and a `FETCH` are not gathered at all. §7d |
-| **choosing among a range's candidates, and moving a placement** | `LEADS` elects a leader per placed range, but whichever candidate wins keeps it — there is no preference, no rebalancing and no hand-over — and a row naming one range cannot name a second or be dropped. Dropping safely needs every lease on the range to have lapsed first. §7d |
+| **choosing among a range's candidates, and giving a range back to the store** | `LEADS` elects a leader per placed range and `ALTER REPLICA` moves a placement between rows, but there is no preference among candidates and no rebalancing, and a range's last placement cannot be removed: that needs every lease on the range to have lapsed first. §7d |
 | a change feed over a split table **on a node that does not write all of it** | a feed merges one writer's logs in that writer's order, and two writers' orders are unrelated counters — so a shard led elsewhere, or a follower, is refused by name rather than merged by a guess. Following it there needs an order across writers. §4 |
 | **an index serving a branch of a fused read** (`ORDER BY FUSE`) | every branch is ranked over every record that passed the `WHERE`, which is exact and costs the filtered read. A branch served from the search walk or the vector graph would stop early, and a fused order needs each branch's places down to its depth — the bound is the depth, not the `LIMIT`, and proving the walk answers the same places is its own piece of work. §5 |
 | a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |

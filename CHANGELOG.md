@@ -12,6 +12,50 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.19.0-beta — 2026-10-01
+
+### Added
+
+- **A split table's map changes while it serves** (G050, ADR-0095). `ALTER TABLE
+  t SPLIT AT 'm'` retires the shard holding the point and mints two in its place;
+  `ALTER TABLE t MERGE SHARD 4, 5` retires two neighbours and mints one. No record
+  moves: a retired shard's log keeps what was written to it and is still
+  collected, fed and backed up, and every write after the change is filed by the
+  new map. `INFO FOR TABLE` reports the map's `version` and its `retired` shards.
+  Refused by name: `NotASplitTable`, `SplitPointOnABoundary`, `ShardNotLive`,
+  `ShardsNotAdjacent`, and `ShardNamedByAReplica` for a shard a `REPLICATES
+  SHARD` or `LEADS SHARD` row names. A gathered read asking a node whose map
+  differs is refused `ShardMapMoved` (retriable, HTTP 409).
+- **A gathered read is worked out on the shards' leaders** (ADR-0097). A `WHERE`
+  and an unordered `LIMIT` travel to each leader, and `count`, `sum`, `mean`,
+  `min` and `max` — with `GROUP BY` — are folded there and merged here, under the
+  caller's visibility, so a grouping read over more records than a gather holds
+  now answers. A fold the leader cannot do exactly (floats in `sum` or `mean`, a
+  comparison across kinds, an evaluation error) gathers the records as before.
+- **A table partitioned by region** (ADR-0096): `DEFINE TABLE t (…) IDENTITY uuid
+  PARTITION BY region` names each record `'<region>:<uuid v7>'`, so `SPLIT AT`
+  over region names gives each region a shard, placed on its node with `LEADS
+  SHARD`. A `WHERE region = 'de'` reads that region's records only, and
+  `EXPLAIN` names the one shard. Refused: `PartitionNeedsGeneratedUuid`,
+  `PartitionMismatch` (also for an `UPDATE` changing the region).
+- **A placement moves**: `ALTER REPLICA b LEADS SHARD …` / `… LEADS NONE` (ADR-0098).
+  A row that is not a range's last candidate can be moved or dropped; the last one
+  is still refused `PlacementCannotBeDropped`.
+
+### Fixed
+
+- **A node subscribed to one shard could lead the whole store** and then answer a
+  read of a split table from its one shard as if it were the whole. A node whose
+  own row replicates less than `STORE` now stands only for the range it is placed
+  on.
+
+### Changed
+
+- **A moved shard map is stored in a new shape.** A map no statement has moved
+  keeps the bytes it always had; a moved one is stored with its version and its
+  retired shards, which a build before this one refuses to read.
+- **1465 conformance cases** define the language and run in the build.
+
 ## 0.18.1-beta — 2026-10-01
 
 ### Fixed

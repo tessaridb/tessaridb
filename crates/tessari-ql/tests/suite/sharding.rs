@@ -149,3 +149,33 @@ fn a_placement_names_a_namespace_a_database_or_a_shard_and_never_the_store() {
     }
     assert!(parse("DEFINE REPLICA p AT 'b:9001' LEADS SHARD prod.shop.orders 0;").is_err());
 }
+
+#[test]
+fn a_placement_is_moved_by_alter_replica_and_removed_by_leads_none() {
+    let parsed =
+        parse("ALTER REPLICA b LEADS SHARD prod.shop.orders 2; ALTER REPLICA c LEADS NONE;")
+            .unwrap();
+    let altered: Vec<_> = parsed
+        .statements
+        .iter()
+        .map(|statement| match &statement.kind {
+            StatementKind::AlterReplica { name, leads } => (name.text.clone(), leads.clone()),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert!(
+        matches!(&altered[0], (name, Some(tessari_ql::ReachRef::Shard { shard: 2, .. })) if name == "b"),
+        "{altered:?}"
+    );
+    assert!(
+        matches!(&altered[1], (name, None) if name == "c"),
+        "{altered:?}"
+    );
+    for refused in [
+        "ALTER REPLICA b LEADS STORE;",
+        "ALTER REPLICA b LEADS;",
+        "ALTER REPLICA b;",
+    ] {
+        assert!(parse(refused).is_err(), "{refused}");
+    }
+}

@@ -208,7 +208,9 @@ impl Effect {
             // way: it removes a catalog record, so it is a write and it reaches
             // every node. `DROP NODE` has no arm here because it has no
             // statement — the parser refuses it and says why.
-            StatementKind::DefineReplica { .. } | StatementKind::DropReplica { .. } => Self::Write,
+            StatementKind::DefineReplica { .. }
+            | StatementKind::DropReplica { .. }
+            | StatementKind::AlterReplica { .. } => Self::Write,
             // `DEFINE FAILOVER` is a write for the same reason and it matters
             // more here than anywhere else: the periods decide when a leader
             // counts as gone, so a policy that reached one node and not the

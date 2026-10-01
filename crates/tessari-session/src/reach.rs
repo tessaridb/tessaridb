@@ -114,6 +114,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::DefineFailover { .. }
         | StatementKind::DefineReplica { .. }
         | StatementKind::DropReplica { .. }
+        | StatementKind::AlterReplica { .. }
         // Forgetting a consumer names no table. Declaring one does, and it is
         // listed below rather than here — see the arm that returns its
         // destination.
