@@ -422,6 +422,46 @@ fn a_fold_over_more_records_than_a_gather_holds_answers() {
     }
 }
 
+/// G050 C4, end to end: a shard holding one record past the ceiling, folded by
+/// the real leader-side code and merged here.
+#[test]
+#[ignore = "inserts 100 001 records — about three minutes in a debug build; \
+            G050 C4's own validation, run explicitly: cargo test -p tessari-session \
+            --test suite a_fold_over_a_real_shard_past_the_ceiling -- --ignored"]
+fn a_fold_over_a_real_shard_past_the_ceiling_answers() {
+    let pair = pair();
+    let past = tessari_constants::GATHER_RECORDS + 1;
+    // Generated identities sort after every text one, so all of these land in
+    // shard 3, which this node lacks.
+    let mut insert = String::from("INSERT INTO ledger (total, note) VALUES ");
+    for n in 0..past {
+        if n > 0 {
+            insert.push_str(", ");
+        }
+        insert.push_str("(1, 'many')");
+    }
+    insert.push(';');
+    pair.on_the_leader("root").run(&insert).unwrap();
+    let mut follower = pair.on_the_follower("reader");
+    let mut whole = pair.on_the_leader("reader");
+    let read = "SELECT note, count(*) AS n, sum(total) AS sum FROM ledger GROUP BY note;";
+    let (gathered, _) = answer(&mut follower, read);
+    assert_eq!(gathered, answer(&mut whole, read).0);
+    assert_eq!(pair.sent(), 0, "records travelled");
+    let many = gathered
+        .iter()
+        .find(|(_, row)| format!("{row:?}").contains("many"))
+        .expect("the inserted group");
+    assert!(
+        format!("{:?}", many.1).contains(&past.to_string()),
+        "{many:?}"
+    );
+    match refused(&mut follower, "SELECT * FROM ledger;") {
+        tessari_session::Error::GatheredTooMuch { table, .. } => assert_eq!(table, "ledger"),
+        other => panic!("expected GatheredTooMuch, got {other:?}"),
+    }
+}
+
 /// ADR-0097 D2 — a bounded read stops asking once it has enough: shard 1 holds
 /// three records, this node holds shard 2's two, and shard 3 is asked only when
 /// those five are not enough.

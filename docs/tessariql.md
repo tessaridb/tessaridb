@@ -7924,10 +7924,33 @@ SELECT count(*) AS n FROM orders;
 ```
 
 on a node holding shard 3 of `orders` counts shards 1 and 2 as well, read from
-whichever nodes lead them. The records travel and the statement does not, so a
-grant hiding a field hides it in a fetched record exactly as in a local one, and
-a condition on that field matches none of them. A point read or a span asks only
-for the shards it touches, and a span inside what the node holds asks nothing.
+whichever nodes lead them. A point read or a span asks only for the shards it
+touches, and a span inside what the node holds asks nothing.
+
+**Some of the work goes to the leaders, under the asking session's
+visibility.** The fields the caller may read travel with the question, and a
+leader takes every other field away before it evaluates anything — so a grant
+hiding a field hides it from work done on the leader exactly as from a local
+read, and a condition on that field matches nothing there either. Three kinds of
+work travel, and only when the expression reads nothing but the record in hand
+(no subquery, no other record, no clock or generator, no full-text match); every
+value in one travels as a value, never as statement text:
+
+- a **`WHERE`**: the leader sends only the records it keeps. This node tests
+  every record that arrives again, so the condition narrows what travels and
+  never what the answer holds;
+- a **`LIMIT`** with nothing reordering the read (no `ORDER BY`, cursor,
+  grouping, `SPLIT` or `FETCH`), and behind a `WHERE` only when that `WHERE`
+  travelled too: the shards are asked in key order and a shard past the bound is
+  not asked at all;
+- a **grouping read** whose folds are `count`, `sum`, `mean`, `min` and `max`
+  and whose `GROUP BY` keys read only the record: each leader sends one state per
+  group rather than the records, and this node merges them in key order with its
+  own — the same answer, and the same identity per group, as one walk of the
+  whole table. A leader that cannot fold a page exactly — a float offered to
+  `sum` or `mean`, whose total depends on the order it was added in, a value a
+  fold refuses, a comparison across two kinds — declines, and the read gathers
+  the records instead and answers, refuses or notes exactly as before.
 
 **The answer is complete and it is not one snapshot.** Each fetched shard is its
 leader's state when it was asked, beside this node's own. The answer says so
@@ -7939,11 +7962,13 @@ makes.
 
 **Nothing is answered in part.** A shard whose leader is not known, cannot be
 reached or declines refuses the whole read with **`NotGathered`**, naming the
-shard and what refused. A gathered read holds every record it needs before it
-answers, so past 100 000 records it is refused with **`GatheredTooMuch`** rather
-than shortened; a `LIMIT` or a `WHERE` does not reduce it, because they run here,
-after the records arrive. Read a span inside the shards the node holds, or read
-on a node that holds the whole table, when the table is larger than that.
+shard and what refused. A gathered read holds what it needs before it answers,
+so past 100 000 of it — records, or groups for a read the leaders fold — it is
+refused with **`GatheredTooMuch`** rather than shortened. A `WHERE` or `LIMIT`
+that travelled counts only the records kept, and a folded read counts groups,
+so `SELECT count(*) FROM orders` answers over any number of records. Read a span
+inside the shards the node holds, or read on a node that holds the whole table,
+when what is held would be larger than that.
 
 **Who may be asked.** A shard's leader hands its records only to a member whose
 subscription holds part of the same table — any of its shards, or its database.
@@ -8453,7 +8478,7 @@ be, because it is confined to the run its fixed values name.
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
 | **hash** sharding | shards are spans of identities, which is what keeps a span read one walk. Spreading writes by hash forfeits that order and is a second method the map can carry later, not a change to the first. §4 |
-| a gathered read that **pushes work down** to the shards' leaders | a node lacking shards fetches their records and runs the statement itself, so a `WHERE`, a `LIMIT` or an aggregate costs the missing shards' records on the network; evaluating them on the leaders — and combining a `mean` or a variance correctly across them — is a query engine of its own. A join side and a `FETCH` are not gathered at all. §7d |
+| more of a gathered read **pushed to the shards' leaders** | a `WHERE`, an unordered `LIMIT` and the folds that merge exactly (`count`, `sum`, `mean`, `min`, `max`) travel; an `ORDER BY … LIMIT`, `variance`, `stddev`, `median`, `collect`, the counter folds and a fold over floats gather the records and run here. Merging those exactly is each its own piece of work. A join side and a `FETCH` are not gathered at all. §7d |
 | **choosing among a range's candidates, and moving a placement** | `LEADS` elects a leader per placed range, but whichever candidate wins keeps it — there is no preference, no rebalancing and no hand-over — and a row naming one range cannot name a second or be dropped. Dropping safely needs every lease on the range to have lapsed first. §7d |
 | a change feed over a split table **on a node that does not write all of it** | a feed merges one writer's logs in that writer's order, and two writers' orders are unrelated counters — so a shard led elsewhere, or a follower, is refused by name rather than merged by a guess. Following it there needs an order across writers. §4 |
 | **an index serving a branch of a fused read** (`ORDER BY FUSE`) | every branch is ranked over every record that passed the `WHERE`, which is exact and costs the filtered read. A branch served from the search walk or the vector graph would stop early, and a fused order needs each branch's places down to its depth — the bound is the depth, not the `LIMIT`, and proving the walk answers the same places is its own piece of work. §5 |

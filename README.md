@@ -267,9 +267,11 @@ follows is what runs today, not a roadmap.
   its own node, so writes to two shards can be taken by two nodes, and a
   shard can be split or two merged while the table serves (`ALTER TABLE … SPLIT
   AT`, `MERGE SHARD`); but nothing splits one by itself. A node holding only some shards
-  answers a read of the rest by fetching those shards' records from their
-  leaders, but pushes nothing down to them, and a join side or a `FETCH` into a
-  shard it lacks is still refused.
+  answers a read of the rest from those shards' leaders — a `WHERE`, an
+  unordered `LIMIT` and `count`/`sum`/`mean`/`min`/`max` are worked out there,
+  under the caller's visibility — but an ordered top-n or a `variance` still
+  fetches the records, and a join side or a `FETCH` into a shard it lacks is
+  still refused.
   There is no cross-range transaction either: one writing ranges that two nodes
   lead is refused, naming both.
   <!-- absent: sharding-execution -->
