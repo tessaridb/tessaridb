@@ -8000,6 +8000,9 @@ front of the request's path. Both are optional and replicate with the row, so a
 node can say where to go from what it has applied, with the peer link down. A row
 that names neither keeps redirects naming `AT`, as they did before the clauses
 existed. `INFO FOR NODE` reports both for each peer (`null` when unsaid).
+A write a node that may not write forwards to the writable peer goes to
+`CLIENTS AT` too (from `0.20.0-beta`): the forward is a client of that node, and
+in a cluster run with peer credentials `AT` is a door that speaks TLS.
 
 **Declare every peer in one transaction.** A store is on its own until its
 catalog names somebody else, and from the moment the first `DEFINE REPLICA`

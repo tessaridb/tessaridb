@@ -325,7 +325,10 @@ pub(crate) fn forward(db: &Db, request: &Request) -> Result<(frame::Kind, Vec<u8
     let Some(peer_row) = declared else {
         return Err(Error::NoWritablePeer);
     };
-    let mut peer = client::Client::connect(peer_row.endpoint)?;
+    // A forward is a client of that node, so it dials where a client reaches it
+    // (`CLIENTS AT`, ADR-0101) — the row's own address is the peer door in a
+    // cluster run with peer credentials, and speaks TLS rather than this protocol.
+    let mut peer = client::Client::connect(peer_row.clients.unwrap_or(peer_row.endpoint))?;
     peer.relay(request)
 }
 

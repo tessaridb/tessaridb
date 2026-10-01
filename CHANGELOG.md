@@ -107,6 +107,10 @@ compares carries no pre-release suffix.
 
 ### Fixed
 
+- **A write a follower forwards reaches the leader in a cluster run with peer
+  credentials.** The forward dialled the leader's `AT` address, which is the peer
+  door and speaks TLS, so every such write was refused with *that is not a
+  TessariDB node*; it now dials `CLIENTS AT` when the row declares one.
 - **A `SEARCH`, `SPATIAL` or `VECTOR` index over several fields indexed the
   first alone** (G051 T7.2). `DEFINE INDEX … FIELDS title, body SEARCH` was
   accepted, and a search of `body` then answered as though no index existed. It is
