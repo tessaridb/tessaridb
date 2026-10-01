@@ -513,6 +513,9 @@ fn an_editor_may_shape_data_and_still_not_configure_the_node() {
             .run("DEFINE REPLICA second AT 'there:9001';")
             .is_err()
     );
+    // Moving a placement decides which node writes a range (ADR-0098).
+    let refused = format!("{:?}", editor.run("ALTER REPLICA second LEADS NONE;"));
+    assert!(refused.contains("RoleForbids"), "{refused}");
 }
 
 #[test]

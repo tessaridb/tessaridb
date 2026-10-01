@@ -23,7 +23,7 @@
 mod expr;
 mod select;
 mod statement;
-use tessari_types::{Assertion, FieldKind, Path};
+use tessari_types::{Assertion, FieldKind, Path, RecordId};
 
 use crate::token::Span;
 pub use expr::{
@@ -635,7 +635,7 @@ pub struct EdgeEndpoints {
 /// `SET SCHEMAFULL` and `SET SCHEMALESS` are two statements a reader writes,
 /// and a `schemafull: bool` field would make a third shape — *change nothing* —
 /// expressible in a statement that exists only to change something.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TableChange {
     /// `SET SCHEMAFULL` — from the commit onwards the declared fields are the
     /// whole story. Records written before it are not revisited.
@@ -647,6 +647,13 @@ pub enum TableChange {
     /// widening is the hole, because the marker that seals a field is `SECRET`
     /// on its declaration and a field nobody declared carries no marker.
     Schemaless,
+    /// `SPLIT AT 'm'` — the shard holding each point is retired and two are
+    /// minted in its place, one point after another (ADR-0095). Records are
+    /// not moved; writes from the commit onwards are filed by the new map.
+    Split(Vec<RecordId>),
+    /// `MERGE SHARD 4, 5` — two neighbouring live shards are retired and one is
+    /// minted in their place, by the numbers `INFO FOR TABLE` reports.
+    MergeShards(u32, u32),
 }
 
 /// Which endpoint of an edge a traversal starts from.

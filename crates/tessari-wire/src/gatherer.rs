@@ -156,8 +156,12 @@ impl Gathers for Gathering {
                 .to
                 .map(|(id, inclusive)| (id.clone(), inclusive)),
             after: None,
+            pushed: asked.pushed.cloned(),
+            enough: asked.enough.and_then(|enough| u64::try_from(enough).ok()),
+            reduce: asked.reduce.cloned(),
         };
         let mut records = Vec::new();
+        let mut partials = Vec::new();
         loop {
             let (_, answered) = call(
                 address,
@@ -167,27 +171,86 @@ impl Gathers for Gathering {
                 &said,
                 Ask::Gather(&page),
             )
-            .map_err(|why| Unanswered::Refused(format!("{endpoint}: {why}")))?;
+            .map_err(|why| match why {
+                // The leader's map differs from the one this ask was built
+                // from: said as itself, so the asker reads its map again
+                // rather than looking for a leader that did not answer.
+                crate::Error::NotGathered(crate::gathering::Ungathered::MapMoved) => {
+                    Unanswered::Moved
+                }
+                other => Unanswered::Refused(format!("{endpoint}: {other}")),
+            })?;
             let Answered::Gathered(answered) = answered else {
                 return Err(Unanswered::Refused(format!(
                     "{endpoint} answered something other than a page"
                 )));
             };
+            // Folded: groups rather than records, each page resuming where
+            // the leader's read stopped. A page that declined, or a leader that
+            // sent records when it was asked for folds, sends the asker back to
+            // the records.
+            if asked.reduce.is_some() {
+                let Some(tessari_session::Reduced::Partials(folded)) = answered.reduced else {
+                    return Ok(Gathered {
+                        records: Vec::new(),
+                        node,
+                        reduced: Some(tessari_session::Reduced::Declined),
+                    });
+                };
+                partials.extend(folded);
+                if partials.len() > asked.most {
+                    return Err(Unanswered::Ceiling);
+                }
+                if !answered.more {
+                    return Ok(Gathered {
+                        records: Vec::new(),
+                        node,
+                        reduced: Some(tessari_session::Reduced::Partials(partials)),
+                    });
+                }
+                let Some(resume) = answered.resume else {
+                    return Err(Unanswered::Refused(format!(
+                        "{endpoint} said more groups follow and gave no place to resume"
+                    )));
+                };
+                page.after = Some(resume);
+                continue;
+            }
             let more = answered.more;
             let empty = answered.records.is_empty();
             records.extend(answered.records);
             if records.len() > asked.most {
                 return Err(Unanswered::Ceiling);
             }
+            // Enough is enough even from a leader that sent past it.
+            if let Some(enough) = asked.enough
+                && records.len() >= enough
+            {
+                records.truncate(enough);
+                return Ok(Gathered {
+                    records,
+                    node,
+                    reduced: None,
+                });
+            }
             if !more {
-                return Ok(Gathered { records, node });
+                return Ok(Gathered {
+                    records,
+                    node,
+                    reduced: None,
+                });
             }
-            if empty {
-                return Err(Unanswered::Refused(format!(
-                    "{endpoint} said more records follow and sent none"
-                )));
+            // A narrowed page may keep none of what it read, and says where it
+            // got to; an un-narrowed one that sent nothing never got anywhere.
+            match answered.resume {
+                Some(resume) => page.after = Some(resume),
+                None if empty => {
+                    return Err(Unanswered::Refused(format!(
+                        "{endpoint} said more records follow and sent none"
+                    )));
+                }
+                None => page.after = records.last().map(|(id, _)| id.clone()),
             }
-            page.after = records.last().map(|(id, _)| id.clone());
         }
     }
 }

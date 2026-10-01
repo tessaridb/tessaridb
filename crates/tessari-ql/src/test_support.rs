@@ -257,6 +257,12 @@ fn erase_statement(statement: &mut Statement) {
                 erase_reach(reach);
             }
         }
+        StatementKind::AlterReplica { name, leads } => {
+            erase_name(name);
+            if let Some(reach) = leads {
+                erase_reach(reach);
+            }
+        }
         StatementKind::DefineConsumer {
             name,
             format,

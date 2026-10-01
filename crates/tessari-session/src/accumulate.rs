@@ -69,6 +69,7 @@
 
 mod arithmetic;
 mod counter;
+mod partial;
 use rust_decimal::Decimal;
 #[cfg(test)]
 use tessari_ql::Retention;

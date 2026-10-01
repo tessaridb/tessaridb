@@ -349,7 +349,8 @@ impl Needs {
             StatementKind::DefineNode { .. }
             | StatementKind::DefineFailover { .. }
             | StatementKind::DefineReplica { .. }
-            | StatementKind::DropReplica { .. } => Self::OPERATE_STORE,
+            | StatementKind::DropReplica { .. }
+            | StatementKind::AlterReplica { .. } => Self::OPERATE_STORE,
             // Declaring a consumer is administering, not writing — the same
             // reasoning that puts `DEFINE USER` here. It hands a broker address
             // and a group name to a process that will then write into somebody's

@@ -68,6 +68,7 @@ impl Session<'_> {
                 graph: Some(graph.id),
                 conflict: None,
                 split: Vec::new(),
+                partition: None,
             },
             if_not_exists,
             span,

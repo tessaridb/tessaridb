@@ -91,6 +91,33 @@ impl Session<'_> {
         }
     }
 
+    /// The records of `found` the condition keeps, tested as a local read
+    /// tests them — over the redacted record, with the searched context and the
+    /// read's notes.
+    fn kept(
+        &self,
+        transaction: &mut Transaction<'_>,
+        condition: &Expr,
+        found: Vec<(tessari_types::RecordId, tessari_types::Value)>,
+        searched: &Searched,
+        reporting: Reporting<'_>,
+    ) -> Result<Vec<(tessari_types::RecordId, tessari_types::Value)>> {
+        let mut kept = Vec::new();
+        for (record_id, record) in found {
+            let held = self.evaluate_in(
+                transaction,
+                condition,
+                Scope::searching(&record, searched)
+                    .identified(&record_id)
+                    .noticing(reporting.noticed),
+            )?;
+            if boolean(&held, condition.span)? {
+                kept.push((record_id, record));
+            }
+        }
+        Ok(kept)
+    }
+
     pub(super) fn prepare_source<'a>(
         &self,
         transaction: &mut Transaction<'_>,
@@ -116,9 +143,13 @@ impl Session<'_> {
             Source::Record(target) => {
                 let (_, address) = self.address(transaction, target)?;
                 self.refuse_reading_a_vault(transaction, address.table, &target.table)?;
-                if let Some((found, note)) =
-                    self.gather_a_part(transaction, address.table, Part::Record(&address.id))?
-                {
+                if let Some((found, note)) = self.gather_a_part(
+                    transaction,
+                    address.table,
+                    Part::Record(&address.id),
+                    None,
+                    None,
+                )? {
                     reporting.collected.push(note);
                     let visible = self.visible_in(transaction, address.table)?;
                     return Ok((
@@ -148,7 +179,13 @@ impl Session<'_> {
                 let (context, id) = self.resolve_table(transaction, table)?;
                 self.refuse_reading_a_vault(transaction, id, table)?;
                 let searched = self.searched_for(transaction, id, &shown(select))?;
-                if let Some((found, note)) = self.gather_a_part(transaction, id, Part::Whole)? {
+                if let Some((found, note)) = self.gather_a_part(
+                    transaction,
+                    id,
+                    Part::Whole,
+                    None,
+                    super::shape_rules::held_bound(select),
+                )? {
                     reporting.collected.push(note);
                     let visible = self.visible_in(transaction, id)?;
                     return Ok((
@@ -175,21 +212,20 @@ impl Session<'_> {
                 let (context, id) = self.resolve_table(transaction, table)?;
                 self.refuse_reading_a_vault(transaction, id, table)?;
                 let visible = self.visible_in(transaction, id)?;
-                if let Some((found, note)) = self.gather_a_part(
-                    transaction,
-                    id,
-                    Part::Span {
-                        lower: lower.fixed(*span)?,
-                        upper: upper.fixed(*span)?,
-                        inclusive: *inclusive,
-                    },
-                )? {
+                let part = Part::Span {
+                    lower: lower.fixed(*span)?,
+                    upper: upper.fixed(*span)?,
+                    inclusive: *inclusive,
+                };
+                let plan = Plan::new(AccessPath::Span)
+                    .on(table.name.text.as_str())
+                    .touching(self.shards_touched(transaction, id, part)?);
+                if let Some((found, note)) =
+                    self.gather_a_part(transaction, id, part, None, None)?
+                {
                     reporting.collected.push(note);
                     return Ok((
-                        Prepared::Held(
-                            self.records_of(found, &visible)?,
-                            Plan::new(AccessPath::Span).on(table.name.text.as_str()),
-                        ),
+                        Prepared::Held(self.records_of(found, &visible)?, plan),
                         Searched::default(),
                     ));
                 }
@@ -202,10 +238,7 @@ impl Session<'_> {
                     *inclusive,
                 )?;
                 Ok((
-                    Prepared::Held(
-                        self.records_of(found, &visible)?,
-                        Plan::new(AccessPath::Span).on(table.name.text.as_str()),
-                    ),
+                    Prepared::Held(self.records_of(found, &visible)?, plan),
                     Searched::default(),
                 ))
             }
@@ -237,32 +270,69 @@ impl Session<'_> {
                 let mut expressions: Vec<&Expr> = vec![condition];
                 expressions.extend(shown(select));
                 let searched = self.searched_for(transaction, id, &expressions)?;
-                if let Some((found, note)) = self.gather_a_part(transaction, id, Part::Whole)? {
+                // ADR-0097: the leader may narrow what it sends by the condition,
+                // under this session's visibility. Every record that arrives is
+                // still tested below, so the narrowing changes only what travels.
+                let visible = self.visible_in(transaction, id)?;
+                let pushed =
+                    tessari_ql::portable(condition).map(|(condition, parameters)| crate::Pushed {
+                        visible: visible.clone(),
+                        condition,
+                        parameters,
+                    });
+                // ADR-0096 D3: a condition fixing a partitioned table's field
+                // reads that partition's span — here or on the one shard holding
+                // it — and is still tested on every record the span holds.
+                let region = self.partition_span(transaction, id, condition)?;
+                let part = match &region {
+                    Some((lower, upper)) => Part::Span {
+                        lower,
+                        upper,
+                        inclusive: false,
+                    },
+                    None => Part::Whole,
+                };
+                let plan = match region {
+                    Some(_) => Plan::new(AccessPath::Span).touching(self.shards_touched(
+                        transaction,
+                        id,
+                        part,
+                    )?),
+                    None => Plan::new(AccessPath::Scan),
+                }
+                .on(table.name.text.as_str());
+                if let Some((found, note)) = self.gather_a_part(
+                    transaction,
+                    id,
+                    part,
+                    pushed.as_ref(),
+                    // Bounded only when the condition went with it: then the
+                    // leader keeps exactly what this node keeps, and its first
+                    // `n` are this node's first `n`.
+                    pushed
+                        .as_ref()
+                        .and_then(|_| super::shape_rules::held_bound(select)),
+                )? {
                     reporting.collected.push(note);
-                    let visible = self.visible_in(transaction, id)?;
                     // Narrowed after the records are in hand, over the redacted
                     // record, exactly as a materialised source is: a hidden
                     // field is as absent to this condition as to a local scan.
-                    let mut kept = Vec::new();
-                    for (record_id, record) in self.records_of(found, &visible)? {
-                        let held = self.evaluate_in(
-                            transaction,
-                            condition,
-                            Scope::searching(&record, &searched)
-                                .identified(&record_id)
-                                .noticing(reporting.noticed),
-                        )?;
-                        if boolean(&held, condition.span)? {
-                            kept.push((record_id, record));
-                        }
-                    }
-                    return Ok((
-                        Prepared::Held(
-                            kept,
-                            Plan::new(AccessPath::Scan).on(table.name.text.as_str()),
-                        ),
-                        searched,
-                    ));
+                    let found = self.records_of(found, &visible)?;
+                    let kept = self.kept(transaction, condition, found, &searched, reporting)?;
+                    return Ok((Prepared::Held(kept, plan), searched));
+                }
+                if let Some((lower, upper)) = &region {
+                    let found = transaction.records_in_span(
+                        context.namespace,
+                        context.database,
+                        id,
+                        lower,
+                        upper,
+                        false,
+                    )?;
+                    let found = self.records_of(found, &visible)?;
+                    let kept = self.kept(transaction, condition, found, &searched, reporting)?;
+                    return Ok((Prepared::Held(kept, plan), searched));
                 }
                 Ok((Prepared::Filtered(context, id, condition), searched))
             }

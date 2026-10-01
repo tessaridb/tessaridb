@@ -3177,6 +3177,20 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
     );
     let counted = read_at(GATHERING[2].0, "SELECT count(*) AS n FROM orders;").unwrap();
     assert_eq!(counted.len(), 1);
+    // ADR-0097 D2: the count is folded on the two leaders and merged here, and
+    // it is the count of all three shards.
+    let mut client = Client::connect(GATHERING[2].0).unwrap();
+    let answers = client
+        .run(
+            "USE NAMESPACE prod; USE DATABASE shop; SELECT count(*) AS n FROM orders;",
+            None,
+        )
+        .unwrap();
+    let Some(Answer::Records { records, .. }) = answers.last() else {
+        panic!("not records: {answers:?}");
+    };
+    let folded = format!("{:?}", records.first().map(|(_, value)| value));
+    assert!(folded.contains("Integer(3)"), "{folded}");
     let in_the_middle = whole.get(1).unwrap().clone();
     assert_eq!(
         read_at(
@@ -3209,6 +3223,275 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
             .len(),
         1,
         "a span inside the shard node 2 holds"
+    );
+}
+
+// ---- G050 C3: one table partitioned by region, each region led on its node --
+
+/// G050 C3's addresses: the last free pairs below the hand-run floor.
+const REGIONS: Band = [
+    ("127.0.0.1:47905", "127.0.0.1:47906"),
+    ("127.0.0.1:47907", "127.0.0.1:47908"),
+    ("127.0.0.1:47909", "127.0.0.1:47880"),
+];
+
+/// `customers`, partitioned by region and split so 'at', 'de' and 'fr' each
+/// have a shard of their own, declared on every node before the membership.
+const PARTITIONED: &str = "DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
+                           DEFINE DATABASE shop; USE DATABASE shop; \
+                           DEFINE TABLE customers (region string, name string) IDENTITY uuid \
+                           PARTITION BY region SPLIT AT 'de', 'fr';";
+
+/// One answer's value at `surface`, rendered, or the refusal.
+fn value_at(surface: &str, read: &str) -> Result<String, String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    let script = format!("USE NAMESPACE prod; USE DATABASE shop; {read}");
+    match client.run(&script, None) {
+        Ok(answers) => Ok(format!("{:?}", answers.last())),
+        Err(why) => Err(why.to_string()),
+    }
+}
+
+#[test]
+#[ignore = "real cadences across three processes — three shard lines and the \
+            store line have to be elected. G050 C3's own validation, run \
+            explicitly: cargo test -p tessari-cli --test serving \
+            a_table_partitioned_by_region -- --ignored"]
+fn a_table_partitioned_by_region_is_led_region_by_region() {
+    let leads = |shard: u32, holds: &str| {
+        format!(
+            "ROLES serving, writable, coordinating REPLICATES {holds} \
+             LEADS SHARD prod.shop.customers {shard}"
+        )
+    };
+    let cluster = a_cluster_of_rows(
+        &REGIONS,
+        PARTITIONED,
+        [
+            leads(1, "STORE"),
+            leads(2, "STORE"),
+            leads(3, "SHARD prod.shop.customers 3"),
+        ],
+    );
+    let logs = cluster.logs.clone();
+    // Each region written through the node placed to lead its shard, until that
+    // node holds the shard's lease and takes it.
+    for (index, region) in [(0, "at"), (1, "de"), (2, "fr")] {
+        let began = Instant::now();
+        let mut last = String::from("never connected");
+        loop {
+            if let Ok(mut client) = Client::connect(REGIONS[index].0) {
+                match client.run(
+                    &format!(
+                        "USE NAMESPACE prod; USE DATABASE shop; \
+                         CREATE customers = {{ region: '{region}', name: 'n' }};"
+                    ),
+                    None,
+                ) {
+                    Ok(_) => break,
+                    Err(why) => last = why.to_string(),
+                }
+            }
+            assert!(
+                began.elapsed() < Duration::from_secs(120),
+                "node {index} never took region {region}; last: {last}{}",
+                what_the_nodes_said(&REGIONS, &logs)
+            );
+            std::thread::sleep(POLL);
+        }
+    }
+    // The catalog says how the table is partitioned and where each region leads.
+    let table = value_at(REGIONS[0].0, "INFO FOR TABLE customers;").unwrap();
+    assert!(table.contains("\"partition\""), "{table}");
+    let node = value_at(REGIONS[0].0, "INFO FOR NODE;").unwrap();
+    for shard in 1..=3 {
+        assert!(
+            node.contains(&format!("SHARD prod.shop.customers {shard}")),
+            "no peer leads shard {shard}: {node}"
+        );
+    }
+    // A region read names one shard, and node 2 — holding only 'fr' — answers
+    // a read of 'de' from the one shard that holds it.
+    let explained = value_at(
+        REGIONS[2].0,
+        "EXPLAIN SELECT * FROM customers WHERE region = 'de';",
+    )
+    .unwrap();
+    assert!(
+        explained.contains("\"span\"") && explained.contains("shards"),
+        "{explained}"
+    );
+    let began = Instant::now();
+    let regional = loop {
+        match read_at(REGIONS[2].0, "SELECT * FROM customers WHERE region = 'de';") {
+            Ok(ids) if !ids.is_empty() => break ids,
+            other => {
+                assert!(
+                    began.elapsed() < Duration::from_secs(60),
+                    "node 2 never answered the 'de' region; last: {other:?}{}",
+                    what_the_nodes_said(&REGIONS, &logs)
+                );
+                std::thread::sleep(POLL);
+            }
+        }
+    };
+    assert!(
+        regional.iter().all(|id| id.starts_with("de:")),
+        "{regional:?}"
+    );
+    // Q-857. Node 2 holds one shard, so it never stands for the store line: a
+    // store-line leader never collects, and would answer a read of the table
+    // from its one shard as if it were the whole.
+    let second = value_at(REGIONS[2].0, "INFO FOR NODE;").unwrap();
+    assert!(
+        second.contains("\"campaigns\": Number(Integer(0))") && second.contains("\"lease\": Null"),
+        "node 2, holding one shard, stood for the store line: {second}"
+    );
+    eprintln!("REGIONS table={table}\nnode={node}\nexplained={explained}");
+}
+
+// ---- G050 C5: a placement handed to another node while writes continue -----
+
+/// The hand-over cluster's addresses — the free pairs below the suite's band.
+const HANDING: Band = [
+    ("127.0.0.1:47810", "127.0.0.1:47811"),
+    ("127.0.0.1:47812", "127.0.0.1:47813"),
+    ("127.0.0.1:47814", "127.0.0.1:47815"),
+];
+
+/// The epochs a node's log says it led shard 2 under.
+fn shard_two_epochs(log: &std::path::Path) -> Vec<u64> {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.contains("leading Shard(") && line.contains("ShardId(2)"))
+        .filter_map(|line| line.rsplit("at epoch ").next()?.trim().parse().ok())
+        .collect()
+}
+
+#[test]
+#[ignore = "real cadences across three processes — a placed shard's lease has to \
+            lapse and its new candidate be elected. G050 C5's own validation, run \
+            explicitly: cargo test -p tessari-cli --test serving \
+            a_placement_is_handed_over -- --ignored"]
+fn a_placement_is_handed_over_while_writes_continue() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    // Every node declares the membership and nothing else, so each follows the
+    // store line: the schema and the placement are then written through the
+    // store's leader and reach every node, as a move must.
+    let cluster = a_cluster_declared(&HANDING, "", ["", "", ""]);
+    let logs = cluster.logs.clone();
+    let on_the_store_leader = |script: &str| {
+        let began = Instant::now();
+        loop {
+            let done = HANDING.iter().any(|(surface, _)| {
+                Client::connect(surface).is_ok_and(|mut client| client.run(script, None).is_ok())
+            });
+            if done {
+                return Instant::now();
+            }
+            assert!(
+                began.elapsed() < Duration::from_secs(120),
+                "no node took `{script}`{}",
+                what_the_nodes_said(&HANDING, &logs)
+            );
+            std::thread::sleep(POLL);
+        }
+    };
+    on_the_store_leader(PLACED);
+    on_the_store_leader("ALTER REPLICA n0 LEADS SHARD prod.shop.orders 2;");
+    if let Err(last) = until_taken(HANDING[0].0, "h", Duration::from_secs(120)) {
+        panic!(
+            "node 0 never took shard 2; last: {last}{}",
+            what_the_nodes_said(&HANDING, &logs)
+        );
+    }
+    // One writer into shard 2 throughout, through whichever of the two nodes
+    // takes it: every write it was told was taken, and the longest stretch in
+    // which none was.
+    let stop = Arc::new(AtomicBool::new(false));
+    let taken = Arc::new(Mutex::new(Vec::<String>::new()));
+    let writer = {
+        let (stop, taken) = (Arc::clone(&stop), Arc::clone(&taken));
+        std::thread::spawn(move || {
+            let mut longest = Duration::ZERO;
+            let mut last = Instant::now();
+            let mut attempt = 0_u32;
+            while !stop.load(Ordering::Relaxed) {
+                attempt = attempt.saturating_add(1);
+                let key = format!("hw{attempt:06}");
+                let took = [HANDING[0].0, HANDING[1].0].iter().any(|surface| {
+                    Client::connect(surface)
+                        .is_ok_and(|mut client| client.run(&into_orders(&key), None).is_ok())
+                });
+                if took {
+                    longest = longest.max(last.elapsed());
+                    last = Instant::now();
+                    taken.lock().unwrap().push(key);
+                }
+                std::thread::sleep(POLL);
+            }
+            longest
+        })
+    };
+    // The move, committed by whichever node leads the store.
+    let moved = on_the_store_leader(
+        "ALTER REPLICA n1 LEADS SHARD prod.shop.orders 2; ALTER REPLICA n0 LEADS NONE;",
+    );
+    match until_taken(HANDING[1].0, "hz", Duration::from_secs(120)) {
+        Ok(_) => eprintln!("node 1 took shard 2 {:?} after the move", moved.elapsed()),
+        Err(last) => panic!(
+            "node 1 never took shard 2 after the move; last: {last}{}",
+            what_the_nodes_said(&HANDING, &logs)
+        ),
+    }
+    let before = taken.lock().unwrap().len();
+    let began = Instant::now();
+    while taken.lock().unwrap().len() < before + 5 {
+        assert!(
+            began.elapsed() < Duration::from_secs(30),
+            "the writer stopped"
+        );
+        std::thread::sleep(POLL);
+    }
+    stop.store(true, Ordering::Relaxed);
+    let longest = writer.join().unwrap();
+    let taken = taken.lock().unwrap().clone();
+    eprintln!(
+        "HANDOVER {} writes taken, the longest stretch with none taken {longest:?}",
+        taken.len()
+    );
+    // Node 0 now sends a write into shard 2 to node 1.
+    if let Err(last) = until_sent_to(
+        HANDING[0].0,
+        "hy1",
+        cluster.ids[1],
+        HANDING[1].1,
+        Duration::from_secs(60),
+    ) {
+        panic!(
+            "node 0 still takes shard 2; last: {last}{}",
+            what_the_nodes_said(&HANDING, &logs)
+        );
+    }
+    // Every write the writer was told was taken is on the new leader, once.
+    let mut held = read_at(HANDING[1].0, "SELECT * FROM orders:'hw'..'hx';").unwrap();
+    held.sort();
+    assert_eq!(
+        held, taken,
+        "every write taken, held once by the new leader"
+    );
+    // The new leader leads under a later epoch than the old one did.
+    let (old, new) = (shard_two_epochs(&logs[0]), shard_two_epochs(&logs[1]));
+    assert!(
+        new.iter().max() > old.iter().max() && !old.is_empty(),
+        "shard 2 led at {old:?} on node 0 and {new:?} on node 1"
+    );
+    // The stated bound: the old lease running out, plus an election.
+    assert!(
+        longest < Duration::from_secs(25),
+        "writes into shard 2 were refused for {longest:?}"
     );
 }
 

@@ -35,6 +35,14 @@ impl tessari_wire::Origin for PeerDoor {
     ) -> tessari_wire::Result<()> {
         tessari_wire::Serving::declared(self.db.store()).copied(follower, write)
     }
+
+    fn places(
+        &self,
+        candidate: [u8; tessari_storage::NODE_ID_LEN],
+        range: tessari_types::Reach,
+    ) -> bool {
+        tessari_wire::Serving::declared(self.db.store()).places(candidate, range)
+    }
 }
 
 impl tessari_wire::Holding for PeerDoor {

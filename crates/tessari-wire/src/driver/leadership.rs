@@ -262,6 +262,29 @@ pub fn stands_for(declared: &[ReplicaDefinition], me: &[u8; NODE_ID_LEN]) -> Opt
         .and_then(|peer| peer.leads)
 }
 
+/// Whether this node may stand for the store line, from its own member row.
+///
+/// The store line's leader writes every table that no placement carves out, so
+/// it must hold all of them: a leader never collects, which leaves it with
+/// nothing that says it holds less (`served()` is `None`), and a read on it is
+/// then answered from whatever it happens to hold as if that were the whole.
+/// A row that subscribes this node to something narrower than [`Reach::Store`]
+/// — a namespace, a database, one shard — is therefore not a store-line
+/// candidate. It still votes, and it still stands for a range its row places
+/// ([`stands_for`]).
+///
+/// The first row bound to `me`, as [`stands_for`] reads it, and a row with no
+/// subscription keeps the rule as it was: such a node collects nothing, so
+/// whatever it holds is its own.
+#[must_use]
+pub fn stands_for_the_store(declared: &[ReplicaDefinition], me: &[u8; NODE_ID_LEN]) -> bool {
+    declared
+        .iter()
+        .find(|peer| peer.node.as_ref() == Some(me))
+        .and_then(|peer| peer.replicates)
+        .is_none_or(|reach| reach == Reach::Store)
+}
+
 /// The voting members this node puts a ballot to, if it stands at all.
 ///
 /// # Who stands

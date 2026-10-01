@@ -32,6 +32,7 @@ pub(crate) use stages::{
 mod asof;
 mod candidates;
 mod delete;
+mod folded;
 mod fused;
 mod graph;
 mod join;
@@ -39,6 +40,7 @@ mod keys;
 mod latest;
 mod lent;
 mod ordered;
+mod partition;
 mod produce;
 mod projection;
 mod read;

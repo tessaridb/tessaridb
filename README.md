@@ -10,10 +10,10 @@ Eleven engines. One transaction. One binary. A real-time multi-model database,
 written in Rust, for AI applications and the products built around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.18.1--beta-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.19.0--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.98%2B-6B5FD1?style=flat-square)](Cargo.toml)
-[![conformance](https://img.shields.io/badge/conformance-1463%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![conformance](https://img.shields.io/badge/conformance-1465%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/tessaridb/tessaridb-protocol) ·
@@ -22,8 +22,8 @@ written in Rust, for AI applications and the products built around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is a beta — `0.18.1-beta`.** It is released and tested, published as
-> a container image (`tessaridb/tessaridb:0.18.1-beta`; the image tracks the
+> **TessariDB is a beta — `0.19.0-beta`.** It is released and tested, published as
+> a container image (`tessaridb/tessaridb:0.19.0-beta`; the image tracks the
 > larger releases), and the licence makes production use free, including inside
 > a commercial company.
 > What a beta does not promise yet is permanence of shape: before 1.0 the query
@@ -198,7 +198,7 @@ surviving version and the node that wrote it.
 
 ## Status
 
-**Stage: active development · `0.18.1-beta` · not published to crates.io.** What
+**Stage: active development · `0.19.0-beta` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 
@@ -264,11 +264,16 @@ follows is what runs today, not a roadmap.
 - ⛔ **Not there:** sharding that spans machines at run time. A table can be
   split by the identities of its records (`SPLIT AT`), and each shard is logged,
   replicated and — where a member row places it (`LEADS`) — elected and led on
-  its own node, so writes to two shards can be taken by two nodes; but a
-  table's shards are fixed when it is declared. A node holding only some shards
-  answers a read of the rest by fetching those shards' records from their
-  leaders, but pushes nothing down to them, and a join side or a `FETCH` into a
-  shard it lacks is still refused.
+  its own node, so writes to two shards can be taken by two nodes, and a
+  shard can be split or two merged while the table serves (`ALTER TABLE … SPLIT
+  AT`, `MERGE SHARD`); but nothing splits one by itself. A table partitioned by a
+  field (`PARTITION BY region`) keeps each region's records in its shard, and a
+  read naming the region touches only that shard. A node holding only some shards
+  answers a read of the rest from those shards' leaders — a `WHERE`, an
+  unordered `LIMIT` and `count`/`sum`/`mean`/`min`/`max` are worked out there,
+  under the caller's visibility — but an ordered top-n or a `variance` still
+  fetches the records, and a join side or a `FETCH` into a shard it lacks is
+  still refused.
   There is no cross-range transaction either: one writing ranges that two nodes
   lead is refused, naming both.
   <!-- absent: sharding-execution -->

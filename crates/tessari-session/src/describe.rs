@@ -438,6 +438,11 @@ fn write_conflict(script: &mut String, definition: &TableDefinition) {
 /// *called*, which no later read can undo.
 fn write_identity(script: &mut String, definition: &TableDefinition) {
     let _ = write!(script, " IDENTITY {}", definition.identity);
+    // Part of the naming scheme too: a table restored without it would go on
+    // accepting records whose identity and region disagree (ADR-0096).
+    if let Some(field) = &definition.partition {
+        let _ = write!(script, " PARTITION BY {field}");
+    }
 }
 
 /// A number as the literal that produces it.

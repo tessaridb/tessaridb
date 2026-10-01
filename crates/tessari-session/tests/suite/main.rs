@@ -87,6 +87,7 @@ mod ordering;
 mod own_password;
 mod parameters;
 mod partial_backup;
+mod partitioned;
 mod passhash;
 mod phrase;
 mod plan_invariance;

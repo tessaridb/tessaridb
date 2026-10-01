@@ -474,3 +474,203 @@ fn a_row_that_places_a_leader_cannot_be_dropped_and_one_that_does_not_can() {
         vec![("b".to_owned(), Some("SHARD prod.shop.orders 1".to_owned()))]
     );
 }
+
+// ---- G050 W-G050-6: a placement moves (ADR-0098) --------------------------------
+
+#[test]
+fn a_placement_is_handed_to_another_row_and_taken_from_the_first() {
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run(
+            "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g'; \
+             DEFINE REPLICA a AT 'a:9001' LEADS SHARD prod.shop.orders 1; \
+             DEFINE REPLICA b AT 'b:9001';",
+        )
+        .unwrap();
+    session
+        .run("ALTER REPLICA b LEADS SHARD prod.shop.orders 1; ALTER REPLICA a LEADS NONE;")
+        .unwrap();
+    assert_eq!(
+        peer_field(&mut session, "leads"),
+        vec![
+            ("a".to_owned(), None),
+            ("b".to_owned(), Some("SHARD prod.shop.orders 1".to_owned())),
+        ]
+    );
+    // A row that is no longer the last candidate can be dropped.
+    session
+        .run("ALTER REPLICA a LEADS SHARD prod.shop.orders 1; DROP REPLICA b;")
+        .unwrap();
+    assert_eq!(
+        peer_field(&mut session, "leads"),
+        vec![("a".to_owned(), Some("SHARD prod.shop.orders 1".to_owned()))]
+    );
+}
+
+#[test]
+fn the_last_placement_on_a_range_is_not_taken_away() {
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run(
+            "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g'; \
+             DEFINE REPLICA a AT 'a:9001' LEADS SHARD prod.shop.orders 1;",
+        )
+        .unwrap();
+    for taking in [
+        "ALTER REPLICA a LEADS NONE;",
+        "ALTER REPLICA a LEADS SHARD prod.shop.orders 2;",
+    ] {
+        let refused = refusal(&mut session, taking);
+        assert!(
+            matches!(refused, tessari_storage::Error::PlacementCannotBeDropped { ref name } if name == "a"),
+            "{taking}: {refused:?}"
+        );
+    }
+    match session.run("ALTER REPLICA z LEADS NONE;") {
+        Err(Error::Unknown { entity, name, .. }) => {
+            assert_eq!((entity, name.as_str()), ("replica", "z"));
+        }
+        other => panic!("expected an unknown replica, got {other:?}"),
+    }
+    match session.run("ALTER REPLICA a LEADS SHARD prod.shop.orders 3;") {
+        Err(Error::Unknown { entity, .. }) => assert_eq!(entity, "shard"),
+        other => panic!("expected an unknown shard, got {other:?}"),
+    }
+    assert_eq!(
+        peer_field(&mut session, "leads"),
+        vec![("a".to_owned(), Some("SHARD prod.shop.orders 1".to_owned()))]
+    );
+}
+
+// ---- G050 W-G050-3: splitting and merging a table that already holds records --
+
+fn orders(session: &mut Session<'_>) -> Vec<Reported> {
+    shards_of(&report(session, "INFO FOR TABLE orders;")).unwrap()
+}
+
+/// A reported bound: the literal the clause takes back, quotes included.
+fn text(value: &str) -> Option<String> {
+    Some(format!("'{value}'"))
+}
+
+#[test]
+fn alter_table_split_at_retires_the_shard_and_mints_two_in_its_place() {
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run("DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p';")
+        .unwrap();
+    session.run("ALTER TABLE orders SPLIT AT 'm';").unwrap();
+    assert_eq!(
+        orders(&mut session),
+        vec![
+            (1, None, text("g")),
+            (4, text("g"), text("m")),
+            (5, text("m"), text("p")),
+            (3, text("p"), None),
+        ]
+    );
+}
+
+#[test]
+fn a_moved_map_reports_its_version_and_what_it_retired() {
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run("DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p';")
+        .unwrap();
+    let declared = report(&mut session, "INFO FOR TABLE orders;");
+    let field = |report: &Value, name: &str| match report {
+        Value::Object(fields) => fields.get(name).cloned(),
+        other => panic!("a report is an object, got {other:?}"),
+    };
+    assert_eq!(field(&declared, "version"), Some(Value::from(0_i64)));
+    assert_eq!(field(&declared, "retired"), Some(Value::Array(Vec::new())));
+    session.run("ALTER TABLE orders SPLIT AT 'm';").unwrap();
+    let moved = report(&mut session, "INFO FOR TABLE orders;");
+    assert_eq!(field(&moved, "version"), Some(Value::from(1_i64)));
+    let retired = Value::Object(
+        [
+            ("id".to_owned(), Value::from(2_i64)),
+            (
+                "into".to_owned(),
+                Value::Array(vec![Value::from(4_i64), Value::from(5_i64)]),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    assert_eq!(field(&moved, "retired"), Some(Value::Array(vec![retired])));
+}
+
+#[test]
+fn alter_table_merge_shard_joins_two_neighbours_into_one_new_shard() {
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run("DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p';")
+        .unwrap();
+    session.run("ALTER TABLE orders MERGE SHARD 3, 2;").unwrap();
+    assert_eq!(
+        orders(&mut session),
+        vec![(1, None, text("g")), (4, text("g"), None)]
+    );
+}
+
+#[test]
+fn every_record_reads_back_after_a_split_and_a_merge_moved_the_map() {
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run(
+            "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g', 'p'; \
+             CREATE orders:'h' = { total: 1 }; CREATE orders:'n' = { total: 2 };",
+        )
+        .unwrap();
+    session.run("ALTER TABLE orders SPLIT AT 'm';").unwrap();
+    session
+        .run("CREATE orders:'k' = { total: 3 }; CREATE orders:'o' = { total: 4 };")
+        .unwrap();
+    session.run("ALTER TABLE orders MERGE SHARD 4, 5;").unwrap();
+    session.run("CREATE orders:'j' = { total: 5 };").unwrap();
+    // `h` 1, `j` 5, `k` 3, `n` 2, `o` 4 — written before, between and after the
+    // two changes, and every one answered in identity order.
+    let Some(Outcome::Records { records, .. }) = session
+        .run("SELECT total FROM orders ORDER BY id;")
+        .unwrap()
+        .last()
+        .cloned()
+    else {
+        panic!("a read answers records");
+    };
+    let read: Vec<(String, Value)> = records
+        .into_iter()
+        .map(|(id, row)| {
+            let tessari_types::RecordId::Text(id) = id else {
+                panic!("the ids here are text, got {id:?}");
+            };
+            let Value::Object(fields) = row else {
+                panic!("a row is an object, got {row:?}");
+            };
+            (id, fields.get("total").cloned().unwrap_or(Value::None))
+        })
+        .collect();
+    let expected: Vec<(String, Value)> = [("h", 1_i64), ("j", 5), ("k", 3), ("n", 2), ("o", 4)]
+        .into_iter()
+        .map(|(id, total)| (id.to_owned(), Value::from(total)))
+        .collect();
+    assert_eq!(read, expected);
+}
+
+#[test]
+fn a_split_of_a_table_that_is_not_split_is_refused_by_name() {
+    let store = store();
+    let mut session = tenancy(&store);
+    session.run("DEFINE TABLE notes (body string);").unwrap();
+    assert!(matches!(
+        refusal(&mut session, "ALTER TABLE notes SPLIT AT 'm';"),
+        tessari_storage::Error::NotASplitTable { .. }
+    ));
+}

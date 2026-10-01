@@ -158,6 +158,53 @@ type Holding = Vec<Vec<Accumulator>>;
 /// One group: the identity its answer carries, and what its folds hold.
 type Group = (RecordId, Holding);
 
+/// Every group a read has met, keyed by its values so the groups come out in
+/// the value system's order.
+pub(crate) type Groups = BTreeMap<Vec<Value>, Group>;
+
+/// Which folds each projection holds, in walk order — resolved once per read,
+/// because the tree does not change under one.
+pub(crate) fn occurrences(wanted: &[Projected]) -> Vec<Vec<&Expr>> {
+    wanted
+        .iter()
+        .map(|value| {
+            let mut found = Vec::new();
+            folds_in(&value.value, &mut found);
+            found
+        })
+        .collect()
+}
+
+/// Fold the states another node reached into `groups`, as if the records they
+/// came from had been offered here next (ADR-0097 D2).
+///
+/// `false` when a partial does not fit the folds this read holds — a leader
+/// answering some other question — and the caller gathers records instead.
+pub(crate) fn merge_partials(
+    groups: &mut Groups,
+    occurrences: &[Vec<&Expr>],
+    partials: Vec<crate::Partial>,
+) -> Result<bool> {
+    for crate::Partial { key, first, states } in partials {
+        let entry = groups
+            .entry(key)
+            .or_insert_with(|| (first, holding(occurrences)));
+        let mut states = states.iter();
+        for accumulator in entry.1.iter_mut().flatten() {
+            let Some(state) = states.next() else {
+                return Ok(false);
+            };
+            if !accumulator.merge(state)? {
+                return Ok(false);
+            }
+        }
+        if states.next().is_some() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// An accumulator per fold occurrence, positions preserved.
 fn holding(occurrences: &[Vec<&Expr>]) -> Holding {
     occurrences
@@ -204,24 +251,51 @@ impl Session<'_> {
         group: &[Expr],
         fill: Option<&tessari_ql::Fill>,
     ) -> Result<(Vec<(RecordId, Value)>, u64)> {
-        // Which folds each projection holds, resolved once rather than per
-        // record — the tree does not change under a read.
-        let occurrences: Vec<Vec<&Expr>> = wanted
-            .iter()
-            .map(|value| {
-                let mut found = Vec::new();
-                folds_in(&value.value, &mut found);
-                found
-            })
-            .collect();
+        let occurrences = occurrences(wanted);
+        let mut groups = Groups::new();
+        self.fold_into(
+            transaction,
+            &mut groups,
+            records,
+            &occurrences,
+            group,
+            false,
+        )?;
+        self.answer_groups(transaction, groups, wanted, &occurrences, group, fill)
+    }
 
-        // Keyed by the group's values so the groups come out in the value
-        // system's order; the identity of the first record in each group becomes
-        // the group's, so an answer still has one.
-        //
-        // The accumulators are indexed by projection, then by fold occurrence
-        // within it — and there it stops.
-        let mut groups: BTreeMap<Vec<Value>, Group> = BTreeMap::new();
+    /// Groups already folded — some of them on other nodes — answered as
+    /// [`Self::grouped`] answers its own (ADR-0097 D2).
+    pub(crate) fn grouped_from(
+        &self,
+        transaction: &mut Transaction<'_>,
+        groups: Groups,
+        wanted: &[Projected],
+        group: &[Expr],
+        fill: Option<&tessari_ql::Fill>,
+    ) -> Result<(Vec<(RecordId, Value)>, u64)> {
+        let occurrences = occurrences(wanted);
+        self.answer_groups(transaction, groups, wanted, &occurrences, group, fill)
+    }
+
+    /// The first pass: offer every record to its group's folds.
+    ///
+    /// The identity of the first record in each group becomes the group's, so an
+    /// answer still has one. The accumulators are indexed by projection, then by
+    /// fold occurrence within it — and there it stops.
+    ///
+    /// `exact` is set when these groups will be merged with another node's: a
+    /// float offered to `sum` or `mean` then answers `false` and offers nothing,
+    /// because float addition depends on its order and a merge changes it.
+    pub(crate) fn fold_into(
+        &self,
+        transaction: &mut Transaction<'_>,
+        groups: &mut Groups,
+        records: Vec<(RecordId, Value)>,
+        occurrences: &[Vec<&Expr>],
+        group: &[Expr],
+        exact: bool,
+    ) -> Result<bool> {
         for (id, record) in records {
             // Evaluated rather than resolved, so a window — `time::bucket(at,
             // 1h)` — is a key like any other. A bare name still reads as a route
@@ -233,7 +307,7 @@ impl Session<'_> {
             }
             let entry = groups
                 .entry(key)
-                .or_insert_with(|| (id.clone(), holding(&occurrences)));
+                .or_insert_with(|| (id.clone(), holding(occurrences)));
             for (position, held) in occurrences.iter().enumerate() {
                 for (which, fold) in held.iter().enumerate() {
                     let ExprKind::Fold { over, at, .. } = &fold.kind else {
@@ -246,6 +320,9 @@ impl Session<'_> {
                         None => Value::Bool(true),
                         Some(expr) => self.evaluate_in(transaction, expr, Scope::of(&record))?,
                     };
+                    if exact && !crate::reduce::merges_exactly(&fold.kind, &value) {
+                        return Ok(false);
+                    }
                     // A counter fold is offered the value with the instant it
                     // was observed at, so it can order its samples itself.
                     let value = match at {
@@ -265,7 +342,20 @@ impl Session<'_> {
                 }
             }
         }
+        Ok(true)
+    }
 
+    /// The second pass: each group's folds answer, and the projection is
+    /// evaluated over what they answered.
+    fn answer_groups(
+        &self,
+        transaction: &mut Transaction<'_>,
+        groups: Groups,
+        wanted: &[Projected],
+        occurrences: &[Vec<&Expr>],
+        group: &[Expr],
+        fill: Option<&tessari_ql::Fill>,
+    ) -> Result<(Vec<(RecordId, Value)>, u64)> {
         let mut answered: Vec<crate::fill::Row> = Vec::with_capacity(groups.len());
         for (key, (id, accumulated)) in groups {
             let mut fields = BTreeMap::new();

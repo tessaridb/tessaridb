@@ -423,6 +423,7 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // statement was written with, not a value.
         | StatementKind::DropAnalyzer { .. }
         | StatementKind::DropReplica { .. }
+        | StatementKind::AlterReplica { .. }
         | StatementKind::DropDatabase { .. }
         | StatementKind::DropNamespace { .. }
         | StatementKind::AlterTable { .. }

@@ -217,6 +217,18 @@ DROP REPLICA warsaw;
 DROP REPLICA warsaw;
 --- expect: error Unknown
 
+--- case: a peer's placement is changed by ALTER REPLICA, and a missing peer is refused
+# A row placing nothing is given nothing to give up, so `LEADS NONE` on it is
+# accepted and changes nothing (ADR-0098).
+DEFINE REPLICA lodz AT 'lodz:9001';
+ALTER REPLICA lodz LEADS NONE;
+DROP REPLICA lodz;
+--- expect: ok
+
+--- case: altering a peer that was never declared is refused
+ALTER REPLICA warsaw LEADS NONE;
+--- expect: error Unknown
+
 --- case: a node is not undeclared by a statement, and the refusal says so
 # Declined, not missing. The message names the configuration as the place to
 # change and `DROP REPLICA` as the statement that does the related job, so a

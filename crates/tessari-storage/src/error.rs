@@ -347,14 +347,16 @@ pub enum Error {
         nodes: Vec<[u8; tessari_encoding::NODE_ID_LEN]>,
     },
 
-    /// A peer row that places a leader (`LEADS`) was asked to be dropped.
+    /// The last peer row placing a range (`LEADS`) was asked to be dropped or
+    /// moved.
     ///
     /// Refused rather than taken: the node committing the drop would hand the
     /// range back to the store line at once while the range's own leader goes
     /// on writing under its lease until the drop reaches it (ADR-0082).
     #[error(
-        "peer `{name}` leads a range (`LEADS`), and dropping a placement needs every lease on \
-         that range to have lapsed first, which this build cannot establish"
+        "peer `{name}` is the last placed to lead its range (`LEADS`), and taking a range's last \
+         placement needs every lease on that range to have lapsed first, which this build cannot \
+         establish; place another peer on the range first"
     )]
     PlacementCannotBeDropped {
         /// The peer's name.
@@ -699,6 +701,39 @@ pub enum Error {
         table: String,
     },
 
+    /// `PARTITION BY` on a table that does not name its own records by UUID.
+    ///
+    /// A partitioned record's identity is its field's value and a UUID v7 the
+    /// store mints after it (ADR-0096), so a counter has nowhere to go.
+    #[error(
+        "table `{table}` is partitioned, so the store names its records as the \
+         partition value and a uuid — declare it `IDENTITY uuid`"
+    )]
+    PartitionNeedsGeneratedUuid {
+        /// The table being declared.
+        table: String,
+    },
+
+    /// A record of a partitioned table whose identity does not begin with its
+    /// partition field's value and `:`, or whose value is not text without `:`.
+    ///
+    /// The identity is what decides the shard, so a record whose identity and
+    /// field disagree would sit in one region's shard while saying it belongs to
+    /// another — and an update moving it would leave it there (ADR-0096).
+    #[error(
+        "table {table} is partitioned by {field}, so record {record}'s identity must \
+         begin with its {field} — text holding no `:` — and a `:`; move a record \
+         between partitions by deleting it and creating it again"
+    )]
+    PartitionMismatch {
+        /// The table, by the name a declaration uses.
+        table: Box<str>,
+        /// The record that was being written.
+        record: Box<str>,
+        /// The partition field.
+        field: Box<str>,
+    },
+
     /// `SPLIT AT` points that do not ascend strictly in key order.
     ///
     /// Refused rather than sorted, because a list sorted for its author accepts
@@ -725,6 +760,67 @@ pub enum Error {
         table: String,
         /// What it is instead, as a phrase.
         kind: &'static str,
+    },
+
+    /// `ALTER TABLE … SPLIT AT` or `… MERGE SHARD` on a table declared without
+    /// `SPLIT AT` (ADR-0095).
+    ///
+    /// Its records are filed in its database's log, so a map added now would
+    /// leave every existing record in a log no shard names.
+    #[error(
+        "table `{table}` is not split, so its records are filed in its database's \
+         log — declare a split table and move the records into it"
+    )]
+    NotASplitTable {
+        /// The table named.
+        table: String,
+    },
+
+    /// A split point that already begins a shard.
+    #[error(
+        "table `{table}` already has a shard beginning at that point, and a split \
+         there would mint a shard that holds nothing"
+    )]
+    SplitPointOnABoundary {
+        /// The table named.
+        table: String,
+    },
+
+    /// A merge naming a shard that is not one of the table's live shards.
+    #[error(
+        "table `{table}` has no live shard {shard} — only live shards are merged, \
+         and a retired one keeps the records written to it"
+    )]
+    ShardNotLive {
+        /// The table named.
+        table: String,
+        /// The shard named.
+        shard: u32,
+    },
+
+    /// A merge of two shards that do not touch, or of one shard twice.
+    #[error("table `{table}`'s shards are merged only with the shard beside them")]
+    ShardsNotAdjacent {
+        /// The table named.
+        table: String,
+    },
+
+    /// A split or merge of a shard a replica row names by `REPLICATES SHARD` or
+    /// `LEADS SHARD`.
+    ///
+    /// A row holds one reach, so it would go on naming a shard nothing writes
+    /// again (ADR-0095 amendment).
+    #[error(
+        "table `{table}`'s shard {shard} is named by replica `{replica}`, which would \
+         go on naming it after it is retired — change that row first"
+    )]
+    ShardNamedByAReplica {
+        /// The table named.
+        table: String,
+        /// The shard the row names.
+        shard: u32,
+        /// The row naming it.
+        replica: String,
     },
 
     /// The parent a catalog entry was to be created under does not exist.
@@ -909,8 +1005,15 @@ impl Error {
             | Self::SpansLeaderships { .. }
             | Self::PlacementCannotBeDropped { .. }
             | Self::SplitNeedsGeneratedUuid { .. }
+            | Self::PartitionNeedsGeneratedUuid { .. }
+            | Self::PartitionMismatch { .. }
             | Self::SplitPointsOutOfOrder { .. }
             | Self::SplitOnAKindThatIsNotRecords { .. }
+            | Self::NotASplitTable { .. }
+            | Self::SplitPointOnABoundary { .. }
+            | Self::ShardNotLive { .. }
+            | Self::ShardsNotAdjacent { .. }
+            | Self::ShardNamedByAReplica { .. }
             // Validation and not `Unavailable`: the store is healthy and the
             // sequence asked for is the thing that is wrong. Retrying the same
             // read cannot succeed, and a floor only ever rises, so a caller that

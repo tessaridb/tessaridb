@@ -1527,6 +1527,7 @@ fn declaring(policy: Option<ConflictPolicy>) -> (Store, NamespaceId, DatabaseId,
                 graph: None,
                 conflict: policy,
                 split: Vec::new(),
+                partition: None,
             },
         )
         .unwrap();

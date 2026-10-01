@@ -79,6 +79,7 @@ const FIELD_REPLICATION: &str = "replication";
 const FIELD_REPLICATION_CLASS: &str = "replication_class";
 const FIELD_CONFLICT: &str = "conflict";
 const FIELD_SHARDS: &str = "shards";
+const FIELD_PARTITION: &str = "partition";
 
 /// A namespace: the outermost tenancy level.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -479,6 +480,7 @@ mod tests {
             identity: IdentityKind::Uuid,
             conflict: None,
             shards: None,
+            partition: None,
         };
         assert_eq!(
             TableDefinition::from_value(&table.to_value()).unwrap(),
@@ -588,6 +590,7 @@ mod tests {
             schemafull: false,
             graph: None,
             shards: None,
+            partition: None,
             kind: TableKind::Edge(Some(EdgeDeclaration {
                 from: TableId::new(4),
                 to: TableId::new(5),
@@ -646,6 +649,7 @@ mod tests {
             schemafull: false,
             graph: None,
             shards: None,
+            partition: None,
             // Deliberately the second distance rather than the first: a store
             // that round tripped as `cosine` whatever it was declared with
             // survives an assertion made with the default.

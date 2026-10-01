@@ -65,6 +65,18 @@ impl Parser<'_> {
         if self.eat_word("group") {
             return self.alter_group();
         }
+        // ADR-0098. The placement and nothing else: the rest of a member row is
+        // what the operator declared, and changes by declaring it again.
+        if self.eat_word("replica") {
+            let name = self.name()?;
+            self.expect_word("leads", "`LEADS` and the range, or `NONE`")?;
+            let leads = if self.eat_keyword(Keyword::None) {
+                None
+            } else {
+                Some(self.placed_range()?)
+            };
+            return Ok(StatementKind::AlterReplica { name, leads });
+        }
         if self.eat_keyword(Keyword::Table) {
             let table = self.table_ref()?;
             // The columnar spellings first, because `SET` is the one that reads
@@ -87,9 +99,28 @@ impl Parser<'_> {
                     table,
                 });
             }
+            // ADR-0095. `split` and `at` contextual, as in `DEFINE TABLE`; a
+            // point is a literal for the reason `split_points` gives.
+            if self.eat_word("split") {
+                self.expect_word("at", "`AT` and the identity a new shard begins at")?;
+                return Ok(StatementKind::AlterTable {
+                    table,
+                    change: TableChange::Split(self.split_points()?),
+                });
+            }
+            if self.eat_keyword(Keyword::Merge) {
+                self.expect_word("shard", "`SHARD` and the two shards to merge")?;
+                let first = self.shard_number()?;
+                self.expect_punct(Punct::Comma, "`,` and the shard beside it")?;
+                let second = self.shard_number()?;
+                return Ok(StatementKind::AlterTable {
+                    table,
+                    change: TableChange::MergeShards(first, second),
+                });
+            }
             self.expect_keyword(
                 Keyword::Set,
-                "`SET`, `ADD FIELD`, `ALTER FIELD` or `DROP FIELD`",
+                "`SET`, `ADD FIELD`, `ALTER FIELD`, `DROP FIELD`, `SPLIT AT` or `MERGE SHARD`",
             )?;
             let change = if self.eat_keyword(Keyword::Schemafull) {
                 TableChange::Schemafull
@@ -108,7 +139,8 @@ impl Parser<'_> {
             return Ok(StatementKind::AlterNamespace { name, replication });
         }
         if !self.eat_keyword(Keyword::User) {
-            return Err(self.error_here("`NAMESPACE`, `USER` or `TABLE` and the thing to change"));
+            return Err(self
+                .error_here("`NAMESPACE`, `USER`, `TABLE` or `REPLICA` and the thing to change"));
         }
         let name = self.name()?;
         self.expect_keyword(Keyword::Set, "`SET` and the one thing to change")?;
@@ -225,6 +257,17 @@ impl Parser<'_> {
         let database = self.name()?;
         self.expect_punct(Punct::Dot, "`.` and the split table")?;
         let table = self.name()?;
+        let shard = self.shard_number()?;
+        Ok(ReachRef::Shard {
+            namespace,
+            database,
+            table,
+            shard,
+        })
+    }
+
+    /// A shard's number, as `INFO FOR TABLE` reports it.
+    pub(super) fn shard_number(&mut self) -> Result<u32> {
         let expected = "the shard's number, as `INFO FOR TABLE` reports it";
         let Some(Token::Number(Number::Integer(shard))) = self.peek() else {
             return Err(self.error_here(expected));
@@ -234,12 +277,7 @@ impl Parser<'_> {
             .filter(|shard| *shard > 0)
             .ok_or_else(|| self.error_here(expected))?;
         self.advance();
-        Ok(ReachRef::Shard {
-            namespace,
-            database,
-            table,
-            shard,
-        })
+        Ok(shard)
     }
 
     /// A reach in any of its spellings, including the bare `prod.orders`.

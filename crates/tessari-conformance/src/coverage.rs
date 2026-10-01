@@ -111,6 +111,7 @@ forms! {
     DropField => "DROP FIELD",
     DropAnalyzer => "DROP ANALYZER",
     DropReplica => "DROP REPLICA",
+    AlterReplica => "ALTER REPLICA",
     DropDatabase => "DROP DATABASE",
     DropNamespace => "DROP NAMESPACE",
     AlterTable => "ALTER TABLE",
@@ -268,6 +269,7 @@ mod tests {
              DROP FIELD f ON t;\
              DROP ANALYZER a;\
              DROP REPLICA second;\
+             ALTER REPLICA second LEADS NONE;\
              DROP DATABASE d;\
              DROP NAMESPACE n;\
              ALTER TABLE t SET SCHEMAFULL;\

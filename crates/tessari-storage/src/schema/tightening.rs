@@ -58,6 +58,7 @@ pub(crate) fn declared_schema(view: &mut Transaction<'_>, table: TableId) -> Res
         .unwrap_or_default();
     let vault = defined.as_ref().is_some_and(|found| found.is_vault());
     let queue = defined.as_ref().is_some_and(|found| found.is_queue());
+    let partition = defined.as_ref().and_then(|found| found.partition.clone());
     let schemafull = defined.is_some_and(|found| found.schemafull);
     let fields: BTreeMap<String, Declared> = Catalog::new(view)
         .fields_on(table)?
@@ -80,6 +81,7 @@ pub(crate) fn declared_schema(view: &mut Transaction<'_>, table: TableId) -> Res
         schemafull,
         vault,
         queue,
+        partition,
     })
 }
 
@@ -95,6 +97,7 @@ pub(crate) fn build_schema(
         mut schemafull,
         mut vault,
         queue,
+        mut partition,
     } = declared_schema(view, table)?;
 
     for mutation in record.mutations() {
@@ -103,6 +106,7 @@ pub(crate) fn build_schema(
                 name = declared.name.clone();
                 schemafull = declared.schemafull;
                 vault = declared.is_vault();
+                partition.clone_from(&declared.partition);
             }
             Some(CatalogChange::FieldDefined(declared)) if declared.table == table => {
                 fields.insert(
@@ -136,6 +140,7 @@ pub(crate) fn build_schema(
         schemafull,
         vault,
         queue,
+        partition,
     })
 }
 

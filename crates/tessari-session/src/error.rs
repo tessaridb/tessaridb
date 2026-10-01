@@ -984,6 +984,23 @@ pub enum Error {
         why: String,
     },
 
+    /// The leader asked for a shard holds a different map of the table: the
+    /// shard was retired there, or minted by a change this node has not applied
+    /// yet (ADR-0095 D4).
+    ///
+    /// Retriable, and not the same as a leader that did not answer: the repair
+    /// is to read the map again once this node has applied the change.
+    #[error(
+        "shard {shard} of `{table}` is not in the map the node leading it holds — one \
+         of the two maps has moved; read again once this node has applied the change"
+    )]
+    ShardMapMoved {
+        /// The table asked for.
+        table: String,
+        /// The shard asked for.
+        shard: u32,
+    },
+
     /// A gathered read would hold more records than a node holds in memory (G033).
     #[error(
         "reading `{table}` here would gather more than {most} records, and this build \

@@ -211,10 +211,19 @@ impl Store {
         let batch = crate::lapse::maintain(self, record, batch)?;
         let batch = crate::bounded::maintain(self, record, batch, version)?;
         let batch = crate::topic::maintain(self, record, batch)?;
+        // The map a split carries, taught under the turn this apply holds and
+        // before it lands, exactly as the leader's commit teaches it (ADR-0095
+        // D8): a follower that wrote under the old map after applying the split
+        // would file its record in a retired shard.
+        let mut taught = Vec::new();
         if crate::catalog::CatalogRows::changes(record) {
             self.catalog_rows.changed(version);
+            taught = self.shards.teach(&self.decoded_tables, record)?;
         }
-        self.writing.apply(batch, self.backend.as_ref())?;
+        if let Err(failed) = self.writing.apply(batch, self.backend.as_ref()) {
+            self.shards.forget(&taught);
+            return Err(failed.into());
+        }
         Ok(())
     }
 

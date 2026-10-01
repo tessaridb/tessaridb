@@ -36,8 +36,15 @@ use crate::collection::Subscriptions;
 use crate::error::{Error, Result};
 use crate::frame;
 
+mod folds;
+
+use folds::{
+    folded, put_portable, put_reduce, put_reduced, put_visible, take_portable, take_reduce,
+    take_reduced, take_visible,
+};
+
 /// A peer asking for one page of one shard's records.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Gather {
     /// The table's namespace.
     pub namespace: NamespaceId,
@@ -54,15 +61,28 @@ pub struct Gather {
     pub to: Option<(RecordId, bool)>,
     /// The last identity already received, so the page begins past it.
     pub after: Option<RecordId>,
+    /// A condition to narrow the page by, under the asker's visibility
+    /// (ADR-0097). Absent from a frame an older asker sent.
+    pub pushed: Option<tessari_session::Pushed>,
+    /// The most records the asker still needs from this shard, in identity
+    /// order (ADR-0097 D2); `None` for all of them.
+    pub enough: Option<u64>,
+    /// The folds to answer instead of the records (ADR-0097 D2).
+    pub reduce: Option<tessari_session::Reduce>,
 }
 
 /// One page of a shard's records.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Page {
     /// Stored records in identity order.
     pub records: Vec<(RecordId, Vec<u8>)>,
     /// Whether the answer stopped at a bound rather than at the window's end.
     pub more: bool,
+    /// Where the next page begins when it is not the last record sent: a page
+    /// narrowed by a pushed condition may keep none of the records it read.
+    pub resume: Option<RecordId>,
+    /// What the page's records folded into, when the asker sent folds.
+    pub reduced: Option<tessari_session::Reduced>,
 }
 
 /// Why a shard's leader would not answer.
@@ -78,6 +98,10 @@ pub enum Ungathered {
     NotHeld,
     /// This node's catalog has no such table or shard.
     NoSuchTable,
+    /// This node's map of the table no longer has — or does not yet have — the
+    /// shard asked for: one of the two maps moved, and the asker reads its own
+    /// again (ADR-0095 D4).
+    MapMoved,
 }
 
 impl Ungathered {
@@ -87,6 +111,7 @@ impl Ungathered {
             Self::NotEntitled => 1,
             Self::NotHeld => 2,
             Self::NoSuchTable => 3,
+            Self::MapMoved => 4,
         }
     }
 
@@ -96,6 +121,7 @@ impl Ungathered {
             1 => Ok(Self::NotEntitled),
             2 => Ok(Self::NotHeld),
             3 => Ok(Self::NoSuchTable),
+            4 => Ok(Self::MapMoved),
             _ => Err(Error::Malformed),
         }
     }
@@ -107,6 +133,7 @@ impl core::fmt::Display for Ungathered {
             Self::NotEntitled => "the asking node's subscription holds no part of this table",
             Self::NotHeld => "the node asked does not hold this shard",
             Self::NoSuchTable => "the node asked has no such table or shard",
+            Self::MapMoved => "the node asked holds a different map of this table's shards",
         })
     }
 }
@@ -129,6 +156,18 @@ impl Gather {
             None => body.push(0),
         }
         put_optional(&mut body, self.after.as_ref());
+        if let Some(pushed) = &self.pushed {
+            body.push(SECTION_PUSHED);
+            put_pushed(&mut body, pushed);
+        }
+        if let Some(enough) = self.enough {
+            body.push(SECTION_ENOUGH);
+            frame::put_u64(&mut body, enough);
+        }
+        if let Some(reduce) = &self.reduce {
+            body.push(SECTION_REDUCE);
+            put_reduce(&mut body, reduce);
+        }
         body
     }
 
@@ -152,10 +191,36 @@ impl Gather {
             _ => return Err(Error::Malformed),
         };
         let (after, at) = take_optional(body, at)?;
+        // Trailing sections, each at most once and in this order; a frame an
+        // older asker sent has none.
+        let (pushed, at) = match body.get(at) {
+            Some(&SECTION_PUSHED) => {
+                let (pushed, at) = take_pushed(body, next(at)?)?;
+                (Some(pushed), at)
+            }
+            _ => (None, at),
+        };
+        let (enough, at) = match body.get(at) {
+            Some(&SECTION_ENOUGH) => {
+                let (enough, at) = frame::take_u64(body, next(at)?)?;
+                (Some(enough), at)
+            }
+            _ => (None, at),
+        };
+        let (reduce, at) = match body.get(at) {
+            Some(&SECTION_REDUCE) => {
+                let (reduce, at) = take_reduce(body, next(at)?)?;
+                (Some(reduce), at)
+            }
+            _ => (None, at),
+        };
         if at != body.len() {
             return Err(Error::Malformed);
         }
         Ok(Self {
+            pushed,
+            enough,
+            reduce,
             namespace: NamespaceId::new(namespace),
             database: DatabaseId::new(database),
             table: TableId::new(table),
@@ -180,6 +245,13 @@ impl Page {
             put_id(&mut body, id);
             frame::put_bytes(&mut body, record);
         }
+        if self.resume.is_some() {
+            put_optional(&mut body, self.resume.as_ref());
+        }
+        if let Some(reduced) = &self.reduced {
+            body.push(SECTION_REDUCED);
+            put_reduced(&mut body, reduced);
+        }
         body
     }
 
@@ -202,10 +274,31 @@ impl Page {
             records.push((id, record));
             at = next_at;
         }
+        // Written only when there is one, so a section that says *none* is not
+        // a page this side sent.
+        let (resume, at) = match body.get(at) {
+            Some(1) => match take_optional(body, at)? {
+                (Some(resume), at) => (Some(resume), at),
+                (None, _) => return Err(Error::Malformed),
+            },
+            _ => (None, at),
+        };
+        let (reduced, at) = match body.get(at) {
+            Some(&SECTION_REDUCED) => {
+                let (reduced, at) = take_reduced(body, next(at)?)?;
+                (Some(reduced), at)
+            }
+            _ => (None, at),
+        };
         if at != body.len() {
             return Err(Error::Malformed);
         }
-        Ok(Self { records, more })
+        Ok(Self {
+            records,
+            more,
+            resume,
+            reduced,
+        })
     }
 }
 
@@ -221,7 +314,7 @@ pub(crate) fn serve(
     granted: &dyn Subscriptions,
     asker: [u8; NODE_ID_LEN],
     asked: &Gather,
-    budget: usize,
+    (budget, fold_records): (usize, usize),
 ) -> Result<Page> {
     let refused = |why: tessari_storage::Error| Error::Refused {
         message: why.to_string(),
@@ -234,8 +327,11 @@ pub(crate) fn serve(
     let Some(map) = definition.and_then(|found| found.shards) else {
         return Err(Error::NotGathered(Ungathered::NoSuchTable));
     };
+    // The table is here and split, so a shard missing from its live spans is a
+    // map that moved on one side or the other — retired here, or minted by a
+    // change this node has not applied yet (ADR-0095 D4).
     let Some(span) = map.spans().find(|span| span.id == asked.shard) else {
-        return Err(Error::NotGathered(Ungathered::NoSuchTable));
+        return Err(Error::NotGathered(Ungathered::MapMoved));
     };
     let shard_of = |shard| Reach::Shard(asked.namespace, asked.database, asked.table, shard);
     let entitled = granted.granted(asker)?.is_some_and(|over| {
@@ -267,6 +363,21 @@ pub(crate) fn serve(
         (None, Some((wanted, inclusive))) => Some((wanted, *inclusive)),
         (None, None) => None,
     };
+    if let Some(reduce) = &asked.reduce {
+        let found = transaction
+            .records_between(
+                asked.namespace,
+                asked.database,
+                asked.table,
+                Window { from, to },
+                asked.after.as_ref(),
+                fold_records,
+            )
+            .map_err(refused)?;
+        transaction.rollback();
+        let more = found.len() == fold_records;
+        return folded(store, reduce, (found, more), budget);
+    }
     let found = transaction
         .records_between(
             asked.namespace,
@@ -278,7 +389,35 @@ pub(crate) fn serve(
         )
         .map_err(refused)?;
     transaction.rollback();
-    let mut more = found.len() == GATHER_PAGE_RECORDS;
+    let more = found.len() == GATHER_PAGE_RECORDS;
+    // ADR-0097: narrowed after the page is read and before it is budgeted, so
+    // what the condition drops costs nothing to send. The page then resumes
+    // after the last record READ, which may be one nobody kept.
+    let read_to = found.last().map(|(id, _)| id.clone());
+    let narrowed = asked.pushed.is_some();
+    let found = match &asked.pushed {
+        Some(pushed) => {
+            tessari_session::keeping(store, pushed, found).map_err(|why| Error::Refused {
+                message: why.to_string(),
+            })?
+        }
+        None => found,
+    };
+    // Enough is a promise about the asker's need, not a budget: the records past
+    // it are not sent, and nothing follows them.
+    let enough = asked
+        .enough
+        .map(|enough| usize::try_from(enough).unwrap_or(usize::MAX));
+    let (found, more) = match enough {
+        Some(enough) if found.len() >= enough => {
+            let mut found = found;
+            found.truncate(enough);
+            (found, false)
+        }
+        _ => (found, more),
+    };
+    let mut more = more;
+    let mut cut = false;
     let mut records = Vec::with_capacity(found.len());
     let mut bytes = 0_usize;
     for (id, record) in found {
@@ -286,12 +425,54 @@ pub(crate) fn serve(
         // than the budget could never be fetched at all.
         if !records.is_empty() && bytes.saturating_add(record.len()) > budget {
             more = true;
+            cut = true;
             break;
         }
         bytes = bytes.saturating_add(record.len());
         records.push((id, record));
     }
-    Ok(Page { records, more })
+    // Cut by the budget, the next page begins after the last record sent, as it
+    // always has; narrowed and not cut, after the last record read.
+    let resume = if narrowed && more && !cut {
+        read_to
+    } else {
+        None
+    };
+    Ok(Page {
+        records,
+        more,
+        resume,
+        reduced: None,
+    })
+}
+
+/// The section of a `Gather` frame carrying a pushed condition.
+const SECTION_PUSHED: u8 = 1;
+/// The section of a `Gather` frame carrying how many records are enough.
+const SECTION_ENOUGH: u8 = 2;
+/// The section of a `Gather` frame carrying the folds to answer instead.
+const SECTION_REDUCE: u8 = 3;
+/// The section of a `Gathered` frame carrying what the records folded into —
+/// past the optional resume, whose own first byte is `1`.
+const SECTION_REDUCED: u8 = 3;
+
+/// A pushed condition: the visible fields, then the condition as an expression.
+fn put_pushed(into: &mut Vec<u8>, pushed: &tessari_session::Pushed) {
+    put_visible(into, &pushed.visible);
+    put_portable(into, &pushed.condition, &pushed.parameters);
+}
+
+fn take_pushed(from: &[u8], at: usize) -> Result<(tessari_session::Pushed, usize)> {
+    let (visible, at) = take_visible(from, at)?;
+    let ((condition, parameters), at) = take_portable(from, at)?;
+    Ok((
+        tessari_session::Pushed {
+            visible,
+            condition,
+            parameters,
+        },
+        at,
+    ))
 }
 
 fn next(at: usize) -> Result<usize> {
@@ -385,6 +566,9 @@ mod tests {
             from: Some(RecordId::Text("g".to_owned())),
             to: Some((RecordId::Int(-7), true)),
             after: Some(RecordId::Uuid([9; 16])),
+            pushed: None,
+            enough: None,
+            reduce: None,
         };
         let body = asked.encode();
         assert_eq!(Gather::decode(&body).unwrap(), asked);
@@ -399,6 +583,42 @@ mod tests {
             ..asked
         };
         assert_eq!(Gather::decode(&open.encode()).unwrap(), open);
+        let narrowed = Gather {
+            pushed: Some(tessari_session::Pushed {
+                visible: Some(["total".to_owned()].into()),
+                condition: "(total > $p0)".to_owned(),
+                parameters: [("p0".to_owned(), tessari_types::Value::from(3_i64))].into(),
+            }),
+            ..open.clone()
+        };
+        assert_eq!(Gather::decode(&narrowed.encode()).unwrap(), narrowed);
+        let bounded = Gather {
+            enough: Some(3),
+            ..narrowed.clone()
+        };
+        assert_eq!(Gather::decode(&bounded.encode()).unwrap(), bounded);
+        let only_bounded = Gather {
+            pushed: None,
+            ..bounded
+        };
+        assert_eq!(
+            Gather::decode(&only_bounded.encode()).unwrap(),
+            only_bounded
+        );
+        let folding = Gather {
+            enough: Some(3),
+            reduce: Some(folds(Some("(total > $p0)"))),
+            ..narrowed.clone()
+        };
+        assert_eq!(Gather::decode(&folding.encode()).unwrap(), folding);
+        let only_folding = Gather {
+            reduce: Some(folds(None)),
+            ..open.clone()
+        };
+        assert_eq!(
+            Gather::decode(&only_folding.encode()).unwrap(),
+            only_folding
+        );
 
         let page = Page {
             records: vec![
@@ -406,12 +626,64 @@ mod tests {
                 (RecordId::Text("h".to_owned()), Vec::new()),
             ],
             more: true,
+            resume: None,
+            reduced: None,
         };
         let body = page.encode();
         assert_eq!(Page::decode(&body).unwrap(), page);
         let mut long = body.clone();
         long.push(0);
         assert!(matches!(Page::decode(&long), Err(Error::Malformed)));
+        let resuming = Page {
+            resume: Some(RecordId::Text("z".to_owned())),
+            ..page
+        };
+        assert_eq!(Page::decode(&resuming.encode()).unwrap(), resuming);
+        let folded = Page {
+            records: Vec::new(),
+            reduced: Some(tessari_session::Reduced::Partials(vec![
+                tessari_session::Partial {
+                    key: vec![tessari_types::Value::from("x"), tessari_types::Value::None],
+                    first: RecordId::Text("a".to_owned()),
+                    states: vec![tessari_types::Value::from(2_i64)],
+                },
+            ])),
+            ..resuming.clone()
+        };
+        assert_eq!(Page::decode(&folded.encode()).unwrap(), folded);
+        let declined = Page {
+            resume: None,
+            reduced: Some(tessari_session::Reduced::Declined),
+            ..folded
+        };
+        assert_eq!(Page::decode(&declined.encode()).unwrap(), declined);
+        // A fold this build does not merge exactly is not read as another one.
+        let mut unknown = only_folding.encode();
+        let at = unknown
+            .windows(5)
+            .position(|held| held == b"count")
+            .unwrap();
+        unknown.splice(at..at + 5, *b"blurt");
+        assert!(matches!(Gather::decode(&unknown), Err(Error::Malformed)));
+    }
+
+    /// `count(*)` and `sum(total)`, under an optional condition over `$p0`.
+    fn folds(condition: Option<&str>) -> tessari_session::Reduce {
+        let text = |text: &str| (text.to_owned(), tessari_session::Parameters::new());
+        tessari_session::Reduce {
+            visible: Some(["total".to_owned()].into()),
+            condition: condition.map(|condition| {
+                (
+                    condition.to_owned(),
+                    [("p0".to_owned(), tessari_types::Value::from(3_i64))].into(),
+                )
+            }),
+            keys: vec![text("note")],
+            folds: vec![
+                tessari_session::Folded::named("count", None).unwrap(),
+                tessari_session::Folded::named("sum", Some(text("total"))).unwrap(),
+            ],
+        }
     }
 
     #[test]
@@ -420,11 +692,12 @@ mod tests {
             Ungathered::NotEntitled,
             Ungathered::NotHeld,
             Ungathered::NoSuchTable,
+            Ungathered::MapMoved,
         ] {
             assert_eq!(Ungathered::from_byte(reason.byte()).unwrap(), reason);
         }
         assert!(matches!(Ungathered::from_byte(0), Err(Error::Malformed)));
-        assert!(matches!(Ungathered::from_byte(4), Err(Error::Malformed)));
+        assert!(matches!(Ungathered::from_byte(5), Err(Error::Malformed)));
     }
 }
 
@@ -500,6 +773,23 @@ mod door {
         budget: usize,
         rounds: usize,
     ) -> (SocketAddr, JoinHandle<()>) {
+        folding_door(
+            authority,
+            db,
+            granted,
+            (budget, tessari_constants::GATHER_FOLD_RECORDS),
+            rounds,
+        )
+    }
+
+    /// The same, folding at most `fold` records into a page of groups.
+    fn folding_door(
+        authority: &Authority,
+        db: &Arc<Db>,
+        granted: Option<Reach>,
+        (budget, fold): (usize, usize),
+        rounds: usize,
+    ) -> (SocketAddr, JoinHandle<()>) {
         let peers = Peers::bind(
             "127.0.0.1:0",
             authority.issue(LEADER, Purpose::Peer),
@@ -516,7 +806,7 @@ mod door {
                     || Ok(mine),
                     &LEADER,
                     &Deciding::holding(settled()),
-                    &Serving::within(db.store(), &granting, budget),
+                    &Serving::within(db.store(), &granting, budget).folding_by(fold),
                 ));
             }
         });
@@ -548,6 +838,9 @@ mod door {
             from: None,
             to: None,
             after: None,
+            pushed: None,
+            enough: None,
+            reduce: None,
         }
     }
 
@@ -636,6 +929,305 @@ mod door {
         assert!(
             matches!(no_table, Err(Error::NotGathered(Ungathered::NoSuchTable))),
             "{no_table:?}"
+        );
+    }
+
+    #[test]
+    fn a_shard_the_answerers_map_has_moved_past_is_refused_as_moved() {
+        // ADR-0095 D4: an asker holding an older map names a shard the answerer
+        // has retired. *No such table* would send it looking for a table; the
+        // repair is to read the map again, so the refusal says the map moved.
+        let authority = Authority::new();
+        let (db, table) = leader();
+        db.session()
+            .run("USE NAMESPACE prod; USE DATABASE shop; ALTER TABLE ledger SPLIT AT 'c';")
+            .unwrap();
+        let (address, handle) = door(&authority, &db, Some(Reach::Store), 1 << 20, 1);
+        let retired = ask(&authority, address, &asking(table, 1));
+        handle.join().unwrap();
+        assert!(
+            matches!(retired, Err(Error::NotGathered(Ungathered::MapMoved))),
+            "{retired:?}"
+        );
+    }
+
+    fn narrowed(condition: &str, bound: i64, visible: Option<&str>) -> tessari_session::Pushed {
+        tessari_session::Pushed {
+            visible: visible.map(|field| [field.to_owned()].into()),
+            condition: condition.to_owned(),
+            parameters: [("p0".to_owned(), tessari_types::Value::from(bound))].into(),
+        }
+    }
+
+    fn ids(page: &Page) -> Vec<RecordId> {
+        page.records.iter().map(|(id, _)| id.clone()).collect()
+    }
+
+    #[test]
+    fn a_pushed_condition_narrows_the_page_before_it_travels() {
+        let authority = Authority::new();
+        let (db, table) = leader();
+        let (address, handle) = door(&authority, &db, Some(Reach::Store), 1 << 20, 1);
+        let page = ask(
+            &authority,
+            address,
+            &Gather {
+                pushed: Some(narrowed("(n > $p0)", 1, None)),
+                ..asking(table, 1)
+            },
+        )
+        .unwrap();
+        handle.join().unwrap();
+        assert_eq!(ids(&page), ["b", "c"].map(RecordId::from).to_vec());
+        assert!(!page.more);
+    }
+
+    #[test]
+    fn a_field_the_asker_cannot_see_is_not_searchable_through_the_leader() {
+        // ADR-0097 D1: the asker's grant shows it `other` and not `n`, so `n` is
+        // absent to the condition exactly as it is to the asker's own read —
+        // and the leader keeps nothing rather than revealing which records
+        // carry an `n` above 1.
+        let authority = Authority::new();
+        let (db, table) = leader();
+        let (address, handle) = door(&authority, &db, Some(Reach::Store), 1 << 20, 1);
+        let page = ask(
+            &authority,
+            address,
+            &Gather {
+                pushed: Some(narrowed("(n > $p0)", 1, Some("other"))),
+                ..asking(table, 1)
+            },
+        )
+        .unwrap();
+        handle.join().unwrap();
+        assert_eq!(ids(&page), Vec::<RecordId>::new());
+    }
+
+    #[test]
+    fn narrowed_pages_still_end_where_the_budget_cuts_them() {
+        let authority = Authority::new();
+        let (db, table) = leader();
+        let (address, handle) = door(&authority, &db, Some(Reach::Store), 1, 2);
+        let mut gather = Gather {
+            pushed: Some(narrowed("(n >= $p0)", 2, None)),
+            ..asking(table, 1)
+        };
+        let first = ask(&authority, address, &gather).unwrap();
+        assert_eq!(
+            (ids(&first), first.more, first.resume.clone()),
+            (vec![RecordId::from("b")], true, None)
+        );
+        gather.after = Some(RecordId::from("b"));
+        let second = ask(&authority, address, &gather).unwrap();
+        handle.join().unwrap();
+        assert_eq!(
+            (ids(&second), second.more),
+            (vec![RecordId::from("c")], false)
+        );
+    }
+
+    #[test]
+    fn a_page_that_keeps_nothing_it_read_says_where_it_got_to() {
+        let authority = Authority::new();
+        let db = Db::in_memory().unwrap();
+        let mut script = String::from(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
+             DEFINE TABLE ledger (n int) IDENTITY uuid SPLIT AT 'g';",
+        );
+        for n in 0..1100 {
+            script.push_str(&format!(" CREATE ledger:'a{n:04}' = {{ n: {n} }};"));
+        }
+        db.session().run(&script).unwrap();
+        let table = {
+            let mut transaction = db.store().begin().unwrap();
+            Catalog::new(&mut transaction)
+                .table_id(NamespaceId::new(1), DatabaseId::new(1), "ledger")
+                .unwrap()
+                .unwrap()
+        };
+        let db = Arc::new(db);
+        let (address, handle) = door(&authority, &db, Some(Reach::Store), 1 << 20, 2);
+        let mut gather = Gather {
+            pushed: Some(narrowed("(n >= $p0)", 1095, None)),
+            ..asking(table, 1)
+        };
+        let first = ask(&authority, address, &gather).unwrap();
+        assert!(first.records.is_empty() && first.more, "{:?}", ids(&first));
+        assert_eq!(
+            first.resume,
+            Some(RecordId::from("a1023")),
+            "resumes after the last record read"
+        );
+        gather.after = first.resume;
+        let second = ask(&authority, address, &gather).unwrap();
+        handle.join().unwrap();
+        assert_eq!(ids(&second).len(), 5);
+        assert!(!second.more);
+    }
+
+    /// ADR-0097 D2: asked for folds, a leader sends groups and no record, a
+    /// page of records at a time, each page resuming where its read stopped.
+    #[test]
+    fn a_shard_is_folded_page_by_page_and_no_record_travels() {
+        let authority = Authority::new();
+        let (db, table) = leader();
+        let (address, handle) =
+            folding_door(&authority, &db, Some(shard(table, 2)), (1 << 20, 2), 2);
+        let count_and_sum = || tessari_session::Reduce {
+            visible: None,
+            condition: None,
+            keys: Vec::new(),
+            folds: vec![
+                tessari_session::Folded::named("count", None).unwrap(),
+                tessari_session::Folded::named(
+                    "sum",
+                    Some(("n".to_owned(), tessari_session::Parameters::new())),
+                )
+                .unwrap(),
+            ],
+        };
+        let first = ask(
+            &authority,
+            address,
+            &Gather {
+                reduce: Some(count_and_sum()),
+                ..asking(table, 1)
+            },
+        )
+        .unwrap();
+        let id = |text: &str| RecordId::Text(text.to_owned());
+        let states = |page: &Page| match &page.reduced {
+            Some(tessari_session::Reduced::Partials(partials)) => partials
+                .iter()
+                .map(|partial| (partial.first.clone(), partial.states.first().cloned()))
+                .collect::<Vec<_>>(),
+            other => panic!("{other:?}"),
+        };
+        assert!(first.records.is_empty() && first.more, "{first:?}");
+        assert_eq!(first.resume, Some(id("b")));
+        assert_eq!(
+            states(&first),
+            vec![(id("a"), Some(tessari_types::Value::from(2_i64)))]
+        );
+        let second = ask(
+            &authority,
+            address,
+            &Gather {
+                reduce: Some(count_and_sum()),
+                after: first.resume.clone(),
+                ..asking(table, 1)
+            },
+        )
+        .unwrap();
+        handle.join().unwrap();
+        assert!(second.records.is_empty() && !second.more, "{second:?}");
+        assert_eq!(second.resume, None);
+        assert_eq!(
+            states(&second),
+            vec![(id("c"), Some(tessari_types::Value::from(1_i64)))]
+        );
+    }
+
+    /// A page of groups past the byte budget declines rather than being cut.
+    #[test]
+    fn a_page_of_groups_past_the_budget_declines() {
+        let authority = Authority::new();
+        let (db, table) = leader();
+        let (address, handle) = door(&authority, &db, Some(shard(table, 2)), 1, 1);
+        let page = ask(
+            &authority,
+            address,
+            &Gather {
+                reduce: Some(tessari_session::Reduce {
+                    visible: None,
+                    condition: None,
+                    keys: Vec::new(),
+                    folds: vec![tessari_session::Folded::named("count", None).unwrap()],
+                }),
+                ..asking(table, 1)
+            },
+        )
+        .unwrap();
+        handle.join().unwrap();
+        assert_eq!(page.reduced, Some(tessari_session::Reduced::Declined));
+        assert!(page.records.is_empty() && !page.more, "{page:?}");
+    }
+
+    /// G050 C4: what a gather moves, in bytes of `Gathered` page bodies, for
+    /// one shard of 1 100 records read whole, bounded to 3, and narrowed to 5.
+    #[test]
+    fn a_bounded_or_narrowed_gather_moves_fewer_bytes() {
+        let authority = Authority::new();
+        let db = Db::in_memory().unwrap();
+        let mut script = String::from(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
+             DEFINE TABLE ledger (n int) IDENTITY uuid SPLIT AT 'g';",
+        );
+        for n in 0..1100 {
+            script.push_str(&format!(" CREATE ledger:'a{n:04}' = {{ n: {n} }};"));
+        }
+        db.session().run(&script).unwrap();
+        let table = {
+            let mut transaction = db.store().begin().unwrap();
+            Catalog::new(&mut transaction)
+                .table_id(NamespaceId::new(1), DatabaseId::new(1), "ledger")
+                .unwrap()
+                .unwrap()
+        };
+        let db = Arc::new(db);
+        let (address, handle) = door(&authority, &db, Some(Reach::Store), 1 << 20, 6);
+        let moved = |first: Gather| -> (usize, usize) {
+            let mut gather = first;
+            let (mut bytes, mut records) = (0, 0);
+            loop {
+                let page = ask(&authority, address, &gather).unwrap();
+                bytes += page.encode().len();
+                records += page.records.len();
+                if !page.more {
+                    return (bytes, records);
+                }
+                gather.after = page
+                    .resume
+                    .clone()
+                    .or_else(|| page.records.last().map(|(id, _)| id.clone()));
+            }
+        };
+        let whole = moved(asking(table, 1));
+        let bounded = moved(Gather {
+            enough: Some(3),
+            ..asking(table, 1)
+        });
+        let narrowed = moved(Gather {
+            pushed: Some(narrowed("(n >= $p0)", 1095, None)),
+            ..asking(table, 1)
+        });
+        // ADR-0097 D2: `count(*)` and `sum(n)` over the same shard, folded.
+        let folded = moved(Gather {
+            reduce: Some(tessari_session::Reduce {
+                visible: None,
+                condition: None,
+                keys: Vec::new(),
+                folds: vec![
+                    tessari_session::Folded::named("count", None).unwrap(),
+                    tessari_session::Folded::named(
+                        "sum",
+                        Some(("n".to_owned(), tessari_session::Parameters::new())),
+                    )
+                    .unwrap(),
+                ],
+            }),
+            ..asking(table, 1)
+        });
+        handle.join().unwrap();
+        eprintln!(
+            "GATHER-BYTES whole={whole:?} bounded={bounded:?} narrowed={narrowed:?} \
+             folded={folded:?}"
+        );
+        assert_eq!((whole.1, bounded.1, narrowed.1, folded.1), (1100, 3, 5, 0));
+        assert!(
+            bounded.0 * 100 < whole.0 && narrowed.0 * 100 < whole.0 && folded.0 * 100 < whole.0,
+            "{whole:?} {bounded:?} {narrowed:?} {folded:?}"
         );
     }
 }

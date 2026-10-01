@@ -10,7 +10,7 @@ use tessari_storage::{
     Transaction, VectorDistance, ViewDeclaration, violations,
 };
 
-use tessari_types::{IdentityKind, Value};
+use tessari_types::{IdentityKind, ShardId, Value};
 
 use crate::condition::boolean;
 use crate::error::{Error, Result};
@@ -100,6 +100,7 @@ impl Session<'_> {
                 identity,
                 graph,
                 split,
+                partition,
                 conflict,
                 if_not_exists,
             } => {
@@ -125,6 +126,7 @@ impl Session<'_> {
                         graph,
                         conflict: *conflict,
                         split: split.clone(),
+                        partition: partition.as_ref().map(|field| field.text.clone()),
                     },
                     *if_not_exists,
                     span,
@@ -457,6 +459,9 @@ impl Session<'_> {
             }
             StatementKind::DropAnalyzer { name } => self.drop_analyzer(transaction, name, span),
             StatementKind::DropReplica { name } => self.drop_replica(transaction, name, span),
+            StatementKind::AlterReplica { name, leads } => {
+                self.alter_replica(transaction, name, leads.as_ref(), span)
+            }
             StatementKind::DropDatabase { name } => self.drop_database(transaction, name, span),
             StatementKind::DropNamespace { name } => self.drop_namespace(transaction, name, span),
             StatementKind::DefineGraph {
@@ -506,6 +511,26 @@ impl Session<'_> {
             }
             StatementKind::AlterTable { table, change } => {
                 let (_, id) = self.resolve_table(transaction, table)?;
+                // ADR-0095: the definition is written here and the map reaches
+                // the registry when this commit lands, under the write gate.
+                match change {
+                    TableChange::Split(points) => {
+                        let mut catalog = Catalog::new(transaction);
+                        for point in points {
+                            catalog.split_table(id, point)?;
+                        }
+                        return Ok(Outcome::Done);
+                    }
+                    TableChange::MergeShards(first, second) => {
+                        Catalog::new(transaction).merge_shards(
+                            id,
+                            ShardId::new(*first),
+                            ShardId::new(*second),
+                        )?;
+                        return Ok(Outcome::Done);
+                    }
+                    TableChange::Schemafull | TableChange::Schemaless => {}
+                }
                 // A vault is declared strict and cannot be talked out of it.
                 // Without this the protection above is one statement deep: a
                 // caller who may alter the table turns the vault schemaless and
@@ -754,6 +779,7 @@ impl Session<'_> {
                     graph: None,
                     conflict: None,
                     split: Vec::new(),
+                    partition: None,
                 },
                 *if_not_exists,
                 span,
@@ -776,6 +802,7 @@ impl Session<'_> {
                     graph: None,
                     conflict: None,
                     split: Vec::new(),
+                    partition: None,
                 },
                 *if_not_exists,
                 span,
@@ -842,6 +869,7 @@ impl Session<'_> {
                         graph,
                         conflict: None,
                         split: Vec::new(),
+                        partition: None,
                     },
                     *if_not_exists,
                     span,
@@ -876,6 +904,7 @@ impl Session<'_> {
                     graph: None,
                     conflict: None,
                     split: Vec::new(),
+                    partition: None,
                 },
                 *if_not_exists,
                 span,
@@ -921,6 +950,7 @@ impl Session<'_> {
                     graph: None,
                     conflict: None,
                     split: Vec::new(),
+                    partition: None,
                 },
                 *if_not_exists,
                 span,

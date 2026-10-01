@@ -115,6 +115,12 @@ pub(crate) async fn stand_for_leadership(
                 &mut on_a_line,
                 now,
             );
+            // Q-857. The store line's leader must hold every table it writes,
+            // so a node subscribed to less does not stand for it — after its
+            // placed range, which it still leads.
+            if !tessari_wire::stands_for_the_store(&declared, &me.id) {
+                return;
+            }
             // ADR-0066. A node that can still hear a leader does not stand
             // against it — and this is not politeness, it is what stops a
             // follower's own self-vote from refusing that leader's renewal for a

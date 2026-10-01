@@ -281,8 +281,10 @@ pub fn logs_to_collect(store: &Store) -> Result<Vec<Reach>> {
                 let Some(shards) = &table.shards else {
                     continue;
                 };
-                for span in shards.spans() {
-                    logs.push(Reach::Shard(namespace.id, database.id, table.id, span.id));
+                // Retired shards too: a split stops new writes to a shard, not
+                // the records already in its log (ADR-0095 D3).
+                for shard in shards.logs() {
+                    logs.push(Reach::Shard(namespace.id, database.id, table.id, shard));
                 }
             }
         }

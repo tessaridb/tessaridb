@@ -474,7 +474,8 @@ pub(crate) fn failure(error: &Error) -> Answer {
         | Error::BackupExists { .. }
         | Error::RestoreTargetExists { .. }
         | Error::NoVaultRoot
-        | Error::NoBackupFolder => 409,
+        | Error::NoBackupFolder
+        | Error::ShardMapMoved { .. } => 409,
         // A substrate or decoding failure. Anything reaching here is a bug.
         //
         // A backup the writer could not write is a device speaking, not a
