@@ -421,6 +421,9 @@ pub struct Serving<'a> {
     /// is a bound nothing checks, and forcing this one at its real value costs
     /// four megabytes of log per assertion.
     budget: usize,
+    /// The most records one page of groups folds, for the same reason: at its
+    /// real value a second page costs 65 536 records (ADR-0097 D2).
+    fold_records: usize,
 }
 
 impl<'a> Serving<'a> {
@@ -431,6 +434,7 @@ impl<'a> Serving<'a> {
             log,
             granted: log,
             budget: COLLECTION_BUDGET_BYTES,
+            fold_records: tessari_constants::GATHER_FOLD_RECORDS,
         }
     }
 
@@ -445,6 +449,7 @@ impl<'a> Serving<'a> {
             log,
             granted,
             budget: COLLECTION_BUDGET_BYTES,
+            fold_records: tessari_constants::GATHER_FOLD_RECORDS,
         }
     }
 
@@ -460,13 +465,27 @@ impl<'a> Serving<'a> {
             log,
             granted,
             budget,
+            fold_records: tessari_constants::GATHER_FOLD_RECORDS,
         }
+    }
+
+    /// The same, folding at most `records` records into one page of groups.
+    #[cfg(test)]
+    pub(crate) const fn folding_by(mut self, records: usize) -> Self {
+        self.fold_records = records;
+        self
     }
 }
 
 impl Origin for Serving<'_> {
     fn gathered(&self, asker: [u8; NODE_ID_LEN], asked: &Gather) -> Result<Page> {
-        crate::gathering::serve(self.log, self.granted, asker, asked, self.budget)
+        crate::gathering::serve(
+            self.log,
+            self.granted,
+            asker,
+            asked,
+            (self.budget, self.fold_records),
+        )
     }
 
     fn copied(

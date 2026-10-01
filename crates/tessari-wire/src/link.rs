@@ -383,7 +383,7 @@ pub enum Ask<'a> {
 /// Paired with [`Ask`] on purpose: an answer of the wrong kind is a peer
 /// speaking this protocol incorrectly and is refused as
 /// [`Error::OutOfTurn`], rather than accepted because it happened to decode.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Answered {
     /// Nothing was asked, so nothing was answered.

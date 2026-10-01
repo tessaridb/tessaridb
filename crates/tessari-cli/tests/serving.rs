@@ -3177,6 +3177,20 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
     );
     let counted = read_at(GATHERING[2].0, "SELECT count(*) AS n FROM orders;").unwrap();
     assert_eq!(counted.len(), 1);
+    // ADR-0097 D2: the count is folded on the two leaders and merged here, and
+    // it is the count of all three shards.
+    let mut client = Client::connect(GATHERING[2].0).unwrap();
+    let answers = client
+        .run(
+            "USE NAMESPACE prod; USE DATABASE shop; SELECT count(*) AS n FROM orders;",
+            None,
+        )
+        .unwrap();
+    let Some(Answer::Records { records, .. }) = answers.last() else {
+        panic!("not records: {answers:?}");
+    };
+    let folded = format!("{:?}", records.first().map(|(_, value)| value));
+    assert!(folded.contains("Integer(3)"), "{folded}");
     let in_the_middle = whole.get(1).unwrap().clone();
     assert_eq!(
         read_at(

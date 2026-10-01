@@ -32,6 +32,7 @@ pub(crate) use stages::{
 mod asof;
 mod candidates;
 mod delete;
+mod folded;
 mod fused;
 mod graph;
 mod join;

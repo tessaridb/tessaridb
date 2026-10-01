@@ -12,8 +12,8 @@ use crate::outcome::Note;
 use crate::session::Session;
 
 use super::{
-    Answered, Reporting, Shaped, alone, asserted, groups, held_bound, opened, order_bound, sought,
-    streams,
+    Answered, Prepared, Reporting, Shaped, alone, asserted, groups, held_bound, opened,
+    order_bound, sought, streams,
 };
 
 impl Session<'_> {
@@ -162,15 +162,29 @@ impl Session<'_> {
         if let Some(latest) = &select.latest {
             self.check_latest(transaction, select, latest)?;
         }
-        let (prepared, searched) = self.prepare_source(
-            transaction,
-            select,
-            Reporting {
-                collected: &mut notes,
-                noticed: &noticed,
-            },
-            within,
-        )?;
+        // A grouping read of a table this node holds only part of is folded on
+        // the leaders when it can be (ADR-0097 D2): its groups stand in for the
+        // records, and every stage after the fold runs below as it always has.
+        let (prepared, searched, mut folded) =
+            match self.prepare_folded(transaction, select, &mut notes, &noticed)? {
+                Some((groups, plan)) => (
+                    Prepared::Held(Vec::new(), plan),
+                    crate::search::Searched::default(),
+                    Some(groups),
+                ),
+                None => {
+                    let (prepared, searched) = self.prepare_source(
+                        transaction,
+                        select,
+                        Reporting {
+                            collected: &mut notes,
+                            noticed: &noticed,
+                        },
+                        within,
+                    )?;
+                    (prepared, searched, None)
+                }
+            };
         // The bound the sort may keep to. `bounded` is applied to the ordering
         // stage's output below, so keeping only what it will keep is an identity
         // between two adjacent stages rather than a decision about the
@@ -278,13 +292,22 @@ impl Session<'_> {
             // the group rather than about a record — so the star has nothing to
             // contribute here and the grammar has already refused one written
             // beside a fold.
-            let (rows, filled) = self.grouped(
-                transaction,
-                records,
-                select.projection.written(),
-                &select.group,
-                select.fill.as_ref(),
-            )?;
+            let (rows, filled) = match folded.take() {
+                Some(groups) => self.grouped_from(
+                    transaction,
+                    groups,
+                    select.projection.written(),
+                    &select.group,
+                    select.fill.as_ref(),
+                )?,
+                None => self.grouped(
+                    transaction,
+                    records,
+                    select.projection.written(),
+                    &select.group,
+                    select.fill.as_ref(),
+                )?,
+            };
             if filled > 0 {
                 notes.push(Note::Filled { windows: filled });
             }

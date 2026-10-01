@@ -158,8 +158,10 @@ impl Gathers for Gathering {
             after: None,
             pushed: asked.pushed.cloned(),
             enough: asked.enough.and_then(|enough| u64::try_from(enough).ok()),
+            reduce: asked.reduce.cloned(),
         };
         let mut records = Vec::new();
+        let mut partials = Vec::new();
         loop {
             let (_, answered) = call(
                 address,
@@ -183,6 +185,37 @@ impl Gathers for Gathering {
                     "{endpoint} answered something other than a page"
                 )));
             };
+            // Folded: groups rather than records, each page resuming where
+            // the leader's read stopped. A page that declined, or a leader that
+            // sent records when it was asked for folds, sends the asker back to
+            // the records.
+            if asked.reduce.is_some() {
+                let Some(tessari_session::Reduced::Partials(folded)) = answered.reduced else {
+                    return Ok(Gathered {
+                        records: Vec::new(),
+                        node,
+                        reduced: Some(tessari_session::Reduced::Declined),
+                    });
+                };
+                partials.extend(folded);
+                if partials.len() > asked.most {
+                    return Err(Unanswered::Ceiling);
+                }
+                if !answered.more {
+                    return Ok(Gathered {
+                        records: Vec::new(),
+                        node,
+                        reduced: Some(tessari_session::Reduced::Partials(partials)),
+                    });
+                }
+                let Some(resume) = answered.resume else {
+                    return Err(Unanswered::Refused(format!(
+                        "{endpoint} said more groups follow and gave no place to resume"
+                    )));
+                };
+                page.after = Some(resume);
+                continue;
+            }
             let more = answered.more;
             let empty = answered.records.is_empty();
             records.extend(answered.records);
@@ -194,10 +227,18 @@ impl Gathers for Gathering {
                 && records.len() >= enough
             {
                 records.truncate(enough);
-                return Ok(Gathered { records, node });
+                return Ok(Gathered {
+                    records,
+                    node,
+                    reduced: None,
+                });
             }
             if !more {
-                return Ok(Gathered { records, node });
+                return Ok(Gathered {
+                    records,
+                    node,
+                    reduced: None,
+                });
             }
             // A narrowed page may keep none of what it read, and says where it
             // got to; an un-narrowed one that sent nothing never got anywhere.

@@ -23,13 +23,16 @@
 //! records pass [`GATHER_RECORDS`]. A partial answer is the silent wrong number
 //! this store refuses everywhere else.
 
-use tessari_constants::GATHER_RECORDS;
+use tessari_constants::{GATHER_PAGE_RECORDS, GATHER_RECORDS};
 use tessari_encoding::NODE_ID_LEN;
 use tessari_storage::{Catalog, ShardMap, ShardSpan, Transaction, Window};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, ShardId, TableId};
 
+use crate::aggregate::{Groups, merge_partials, occurrences};
+use crate::condition::boolean;
 use crate::error::{Error, Result};
-use crate::evaluate::Part;
+use crate::evaluate::{Part, Scope};
+use crate::noticed::Noticed;
 use crate::outcome::Note;
 use crate::session::Session;
 
@@ -59,15 +62,21 @@ pub struct Asked<'a> {
     /// wants only its first few and the leader keeps exactly what this node
     /// would (ADR-0097 D2); `None` for all of them.
     pub enough: Option<usize>,
+    /// The folds the leader may answer instead of the records (ADR-0097 D2);
+    /// `None` to be sent the records.
+    pub reduce: Option<&'a crate::Reduce>,
 }
 
 /// What a shard's leader answered.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Gathered {
     /// The stored records, in identity order.
     pub records: Vec<(RecordId, Vec<u8>)>,
     /// The node that answered.
     pub node: [u8; NODE_ID_LEN],
+    /// What the leader folded the records into, when it was asked to; `None`
+    /// from a leader that was not asked, and read as declined from one that was.
+    pub reduced: Option<crate::Reduced>,
 }
 
 /// Why a shard's records did not arrive.
@@ -109,6 +118,38 @@ pub(crate) struct Missing {
 }
 
 impl Missing {
+    /// The refusal a shard that did not answer gives.
+    fn unanswered(&self, shard: ShardId, why: Unanswered) -> Error {
+        match why {
+            Unanswered::Ceiling => self.too_much(),
+            Unanswered::Moved => Error::ShardMapMoved {
+                table: self.table.clone(),
+                shard: shard.get(),
+            },
+            Unanswered::Refused(why) => Error::NotGathered {
+                table: self.table.clone(),
+                shard: shard.get(),
+                why,
+            },
+        }
+    }
+
+    /// The refusal a read holding more than a gather may gives.
+    fn too_much(&self) -> Error {
+        Error::GatheredTooMuch {
+            table: self.table.clone(),
+            most: GATHER_RECORDS,
+        }
+    }
+
+    /// The note a gathered answer carries.
+    fn note(&self) -> Note {
+        Note::Gathered {
+            table: self.table.clone(),
+            shards: self.lacking.iter().map(|shard| shard.get()).collect(),
+        }
+    }
+
     /// The refusal a node with no way to gather gives.
     pub(crate) fn refusal(&self) -> Error {
         Error::NotHeldHere {
@@ -206,10 +247,7 @@ impl Session<'_> {
         let (Some(gatherer), Some(map)) = (self.gather.as_ref(), missing.map.as_ref()) else {
             return Err(missing.refusal());
         };
-        let too_much = || Error::GatheredTooMuch {
-            table: missing.table.clone(),
-            most: GATHER_RECORDS,
-        };
+        let too_much = || missing.too_much();
         let mut found: Stored = Vec::new();
         for span in map.spans().filter(|span| missing.needed.contains(&span.id)) {
             let Some(window) = window_of(&span, part) else {
@@ -233,23 +271,11 @@ impl Session<'_> {
                     most,
                     pushed,
                     enough: remaining,
+                    reduce: None,
                 };
                 match gatherer.gather(&asked) {
                     Ok(gathered) => gathered.records,
-                    Err(Unanswered::Ceiling) => return Err(too_much()),
-                    Err(Unanswered::Moved) => {
-                        return Err(Error::ShardMapMoved {
-                            table: missing.table.clone(),
-                            shard: span.id.get(),
-                        });
-                    }
-                    Err(Unanswered::Refused(why)) => {
-                        return Err(Error::NotGathered {
-                            table: missing.table.clone(),
-                            shard: span.id.get(),
-                            why,
-                        });
-                    }
+                    Err(why) => return Err(missing.unanswered(span.id, why)),
                 }
             } else {
                 // This node's own span is narrowed by the same condition before
@@ -284,11 +310,109 @@ impl Session<'_> {
             }
             found.extend(records);
         }
-        let note = Note::Gathered {
-            table: missing.table.clone(),
-            shards: missing.lacking.iter().map(|shard| shard.get()).collect(),
+        Ok(Some((found, missing.note())))
+    }
+
+    /// The groups a grouping read of the whole of table `id` folds into, this
+    /// node's records offered and the leaders' partials merged, in key order
+    /// (ADR-0097 D2) — or `None` when this node holds the whole table, or a
+    /// leader declined and the read gathers records instead.
+    ///
+    /// The ceiling is on what travels: groups, never the records they fold
+    /// (ADR-0097 D3).
+    pub(crate) fn gather_folded(
+        &self,
+        transaction: &mut Transaction<'_>,
+        id: TableId,
+        reduce: &crate::Reduce,
+        select: &tessari_ql::Select,
+        condition: Option<&tessari_ql::Expr>,
+        noticed: &Noticed,
+    ) -> Result<Option<(Groups, Note)>> {
+        let Some(missing) = self.missing(transaction, id, Part::Whole)? else {
+            return Ok(None);
         };
-        Ok(Some((found, note)))
+        let (Some(gatherer), Some(map)) = (self.gather.as_ref(), missing.map.as_ref()) else {
+            return Err(missing.refusal());
+        };
+        let occurrences = occurrences(select.projection.written());
+        let mut groups = Groups::new();
+        for span in map.spans().filter(|span| missing.needed.contains(&span.id)) {
+            let Some(window) = window_of(&span, Part::Whole) else {
+                continue;
+            };
+            if missing.lacking.contains(&span.id) {
+                let asked = Asked {
+                    namespace: missing.namespace,
+                    database: missing.database,
+                    table: id,
+                    shard: span.id,
+                    window,
+                    most: GATHER_RECORDS,
+                    pushed: None,
+                    enough: None,
+                    reduce: Some(reduce),
+                };
+                let partials = match gatherer.gather(&asked) {
+                    Ok(Gathered {
+                        reduced: Some(crate::Reduced::Partials(partials)),
+                        ..
+                    }) => partials,
+                    Ok(_) => return Ok(None),
+                    Err(why) => return Err(missing.unanswered(span.id, why)),
+                };
+                if !merge_partials(&mut groups, &occurrences, partials)? {
+                    return Ok(None);
+                }
+            } else {
+                // This node's own span, a page at a time, tested here exactly as
+                // a local read tests it — notes and refusals included.
+                let mut after: Option<RecordId> = None;
+                loop {
+                    let page = transaction.records_between(
+                        missing.namespace,
+                        missing.database,
+                        id,
+                        window,
+                        after.as_ref(),
+                        GATHER_PAGE_RECORDS,
+                    )?;
+                    let full = page.len() == GATHER_PAGE_RECORDS;
+                    after = page.last().map(|(id, _)| id.clone());
+                    let mut kept = Vec::with_capacity(page.len());
+                    for (record_id, record) in self.records_of(page, &reduce.visible)? {
+                        if let Some(condition) = condition {
+                            let held = self.evaluate_in(
+                                transaction,
+                                condition,
+                                Scope::of(&record).identified(&record_id).noticing(noticed),
+                            )?;
+                            if !boolean(&held, condition.span)? {
+                                continue;
+                            }
+                        }
+                        kept.push((record_id, record));
+                    }
+                    if !self.fold_into(
+                        transaction,
+                        &mut groups,
+                        kept,
+                        &occurrences,
+                        &select.group,
+                        true,
+                    )? {
+                        return Ok(None);
+                    }
+                    if !full {
+                        break;
+                    }
+                }
+            }
+            if groups.len() > GATHER_RECORDS {
+                return Err(missing.too_much());
+            }
+        }
+        Ok(Some((groups, missing.note())))
     }
 }
 

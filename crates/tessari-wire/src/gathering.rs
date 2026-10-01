@@ -36,6 +36,13 @@ use crate::collection::Subscriptions;
 use crate::error::{Error, Result};
 use crate::frame;
 
+mod folds;
+
+use folds::{
+    folded, put_portable, put_reduce, put_reduced, put_visible, take_portable, take_reduce,
+    take_reduced, take_visible,
+};
+
 /// A peer asking for one page of one shard's records.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Gather {
@@ -60,10 +67,12 @@ pub struct Gather {
     /// The most records the asker still needs from this shard, in identity
     /// order (ADR-0097 D2); `None` for all of them.
     pub enough: Option<u64>,
+    /// The folds to answer instead of the records (ADR-0097 D2).
+    pub reduce: Option<tessari_session::Reduce>,
 }
 
 /// One page of a shard's records.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Page {
     /// Stored records in identity order.
     pub records: Vec<(RecordId, Vec<u8>)>,
@@ -72,6 +81,8 @@ pub struct Page {
     /// Where the next page begins when it is not the last record sent: a page
     /// narrowed by a pushed condition may keep none of the records it read.
     pub resume: Option<RecordId>,
+    /// What the page's records folded into, when the asker sent folds.
+    pub reduced: Option<tessari_session::Reduced>,
 }
 
 /// Why a shard's leader would not answer.
@@ -153,6 +164,10 @@ impl Gather {
             body.push(SECTION_ENOUGH);
             frame::put_u64(&mut body, enough);
         }
+        if let Some(reduce) = &self.reduce {
+            body.push(SECTION_REDUCE);
+            put_reduce(&mut body, reduce);
+        }
         body
     }
 
@@ -192,12 +207,20 @@ impl Gather {
             }
             _ => (None, at),
         };
+        let (reduce, at) = match body.get(at) {
+            Some(&SECTION_REDUCE) => {
+                let (reduce, at) = take_reduce(body, next(at)?)?;
+                (Some(reduce), at)
+            }
+            _ => (None, at),
+        };
         if at != body.len() {
             return Err(Error::Malformed);
         }
         Ok(Self {
             pushed,
             enough,
+            reduce,
             namespace: NamespaceId::new(namespace),
             database: DatabaseId::new(database),
             table: TableId::new(table),
@@ -225,6 +248,10 @@ impl Page {
         if self.resume.is_some() {
             put_optional(&mut body, self.resume.as_ref());
         }
+        if let Some(reduced) = &self.reduced {
+            body.push(SECTION_REDUCED);
+            put_reduced(&mut body, reduced);
+        }
         body
     }
 
@@ -249,13 +276,19 @@ impl Page {
         }
         // Written only when there is one, so a section that says *none* is not
         // a page this side sent.
-        let (resume, at) = if at == body.len() {
-            (None, at)
-        } else {
-            match take_optional(body, at)? {
+        let (resume, at) = match body.get(at) {
+            Some(1) => match take_optional(body, at)? {
                 (Some(resume), at) => (Some(resume), at),
                 (None, _) => return Err(Error::Malformed),
+            },
+            _ => (None, at),
+        };
+        let (reduced, at) = match body.get(at) {
+            Some(&SECTION_REDUCED) => {
+                let (reduced, at) = take_reduced(body, next(at)?)?;
+                (Some(reduced), at)
             }
+            _ => (None, at),
         };
         if at != body.len() {
             return Err(Error::Malformed);
@@ -264,6 +297,7 @@ impl Page {
             records,
             more,
             resume,
+            reduced,
         })
     }
 }
@@ -280,7 +314,7 @@ pub(crate) fn serve(
     granted: &dyn Subscriptions,
     asker: [u8; NODE_ID_LEN],
     asked: &Gather,
-    budget: usize,
+    (budget, fold_records): (usize, usize),
 ) -> Result<Page> {
     let refused = |why: tessari_storage::Error| Error::Refused {
         message: why.to_string(),
@@ -329,6 +363,21 @@ pub(crate) fn serve(
         (None, Some((wanted, inclusive))) => Some((wanted, *inclusive)),
         (None, None) => None,
     };
+    if let Some(reduce) = &asked.reduce {
+        let found = transaction
+            .records_between(
+                asked.namespace,
+                asked.database,
+                asked.table,
+                Window { from, to },
+                asked.after.as_ref(),
+                fold_records,
+            )
+            .map_err(refused)?;
+        transaction.rollback();
+        let more = found.len() == fold_records;
+        return folded(store, reduce, (found, more), budget);
+    }
     let found = transaction
         .records_between(
             asked.namespace,
@@ -393,6 +442,7 @@ pub(crate) fn serve(
         records,
         more,
         resume,
+        reduced: None,
     })
 }
 
@@ -400,58 +450,21 @@ pub(crate) fn serve(
 const SECTION_PUSHED: u8 = 1;
 /// The section of a `Gather` frame carrying how many records are enough.
 const SECTION_ENOUGH: u8 = 2;
+/// The section of a `Gather` frame carrying the folds to answer instead.
+const SECTION_REDUCE: u8 = 3;
+/// The section of a `Gathered` frame carrying what the records folded into —
+/// past the optional resume, whose own first byte is `1`.
+const SECTION_REDUCED: u8 = 3;
 
-/// A pushed condition: the visible fields, the text, then each parameter as a
-/// name and a value in the store's own codec.
+/// A pushed condition: the visible fields, then the condition as an expression.
 fn put_pushed(into: &mut Vec<u8>, pushed: &tessari_session::Pushed) {
-    match &pushed.visible {
-        Some(fields) => {
-            into.push(1);
-            frame::put_u32(into, u32::try_from(fields.len()).unwrap_or(u32::MAX));
-            for field in fields {
-                frame::put_text(into, field);
-            }
-        }
-        None => into.push(0),
-    }
-    frame::put_text(into, &pushed.condition);
-    frame::put_u32(
-        into,
-        u32::try_from(pushed.parameters.len()).unwrap_or(u32::MAX),
-    );
-    for (name, value) in &pushed.parameters {
-        frame::put_text(into, name);
-        frame::put_bytes(into, &tessari_encoding::encode_payload(value).into_bytes());
-    }
+    put_visible(into, &pushed.visible);
+    put_portable(into, &pushed.condition, &pushed.parameters);
 }
 
 fn take_pushed(from: &[u8], at: usize) -> Result<(tessari_session::Pushed, usize)> {
-    let (visible, mut at) = match from.get(at) {
-        Some(0) => (None, next(at)?),
-        Some(1) => {
-            let (count, mut at) = frame::take_u32(from, next(at)?)?;
-            let mut fields = std::collections::BTreeSet::new();
-            for _ in 0..count {
-                let (field, next_at) = frame::take_text(from, at)?;
-                fields.insert(field);
-                at = next_at;
-            }
-            (Some(fields), at)
-        }
-        _ => return Err(Error::Malformed),
-    };
-    let (condition, next_at) = frame::take_text(from, at)?;
-    at = next_at;
-    let (count, next_at) = frame::take_u32(from, at)?;
-    at = next_at;
-    let mut parameters = tessari_session::Parameters::new();
-    for _ in 0..count {
-        let (name, next_at) = frame::take_text(from, at)?;
-        let (value, next_at) = frame::take_bytes(from, next_at)?;
-        let value = tessari_encoding::decode_payload(&value).map_err(|_| Error::Malformed)?;
-        parameters.insert(name, value);
-        at = next_at;
-    }
+    let (visible, at) = take_visible(from, at)?;
+    let ((condition, parameters), at) = take_portable(from, at)?;
     Ok((
         tessari_session::Pushed {
             visible,
@@ -555,6 +568,7 @@ mod tests {
             after: Some(RecordId::Uuid([9; 16])),
             pushed: None,
             enough: None,
+            reduce: None,
         };
         let body = asked.encode();
         assert_eq!(Gather::decode(&body).unwrap(), asked);
@@ -591,6 +605,20 @@ mod tests {
             Gather::decode(&only_bounded.encode()).unwrap(),
             only_bounded
         );
+        let folding = Gather {
+            enough: Some(3),
+            reduce: Some(folds(Some("(total > $p0)"))),
+            ..narrowed.clone()
+        };
+        assert_eq!(Gather::decode(&folding.encode()).unwrap(), folding);
+        let only_folding = Gather {
+            reduce: Some(folds(None)),
+            ..open.clone()
+        };
+        assert_eq!(
+            Gather::decode(&only_folding.encode()).unwrap(),
+            only_folding
+        );
 
         let page = Page {
             records: vec![
@@ -599,6 +627,7 @@ mod tests {
             ],
             more: true,
             resume: None,
+            reduced: None,
         };
         let body = page.encode();
         assert_eq!(Page::decode(&body).unwrap(), page);
@@ -610,6 +639,51 @@ mod tests {
             ..page
         };
         assert_eq!(Page::decode(&resuming.encode()).unwrap(), resuming);
+        let folded = Page {
+            records: Vec::new(),
+            reduced: Some(tessari_session::Reduced::Partials(vec![
+                tessari_session::Partial {
+                    key: vec![tessari_types::Value::from("x"), tessari_types::Value::None],
+                    first: RecordId::Text("a".to_owned()),
+                    states: vec![tessari_types::Value::from(2_i64)],
+                },
+            ])),
+            ..resuming.clone()
+        };
+        assert_eq!(Page::decode(&folded.encode()).unwrap(), folded);
+        let declined = Page {
+            resume: None,
+            reduced: Some(tessari_session::Reduced::Declined),
+            ..folded
+        };
+        assert_eq!(Page::decode(&declined.encode()).unwrap(), declined);
+        // A fold this build does not merge exactly is not read as another one.
+        let mut unknown = only_folding.encode();
+        let at = unknown
+            .windows(5)
+            .position(|held| held == b"count")
+            .unwrap();
+        unknown.splice(at..at + 5, *b"blurt");
+        assert!(matches!(Gather::decode(&unknown), Err(Error::Malformed)));
+    }
+
+    /// `count(*)` and `sum(total)`, under an optional condition over `$p0`.
+    fn folds(condition: Option<&str>) -> tessari_session::Reduce {
+        let text = |text: &str| (text.to_owned(), tessari_session::Parameters::new());
+        tessari_session::Reduce {
+            visible: Some(["total".to_owned()].into()),
+            condition: condition.map(|condition| {
+                (
+                    condition.to_owned(),
+                    [("p0".to_owned(), tessari_types::Value::from(3_i64))].into(),
+                )
+            }),
+            keys: vec![text("note")],
+            folds: vec![
+                tessari_session::Folded::named("count", None).unwrap(),
+                tessari_session::Folded::named("sum", Some(text("total"))).unwrap(),
+            ],
+        }
     }
 
     #[test]
@@ -699,6 +773,23 @@ mod door {
         budget: usize,
         rounds: usize,
     ) -> (SocketAddr, JoinHandle<()>) {
+        folding_door(
+            authority,
+            db,
+            granted,
+            (budget, tessari_constants::GATHER_FOLD_RECORDS),
+            rounds,
+        )
+    }
+
+    /// The same, folding at most `fold` records into a page of groups.
+    fn folding_door(
+        authority: &Authority,
+        db: &Arc<Db>,
+        granted: Option<Reach>,
+        (budget, fold): (usize, usize),
+        rounds: usize,
+    ) -> (SocketAddr, JoinHandle<()>) {
         let peers = Peers::bind(
             "127.0.0.1:0",
             authority.issue(LEADER, Purpose::Peer),
@@ -715,7 +806,7 @@ mod door {
                     || Ok(mine),
                     &LEADER,
                     &Deciding::holding(settled()),
-                    &Serving::within(db.store(), &granting, budget),
+                    &Serving::within(db.store(), &granting, budget).folding_by(fold),
                 ));
             }
         });
@@ -749,6 +840,7 @@ mod door {
             after: None,
             pushed: None,
             enough: None,
+            reduce: None,
         }
     }
 
@@ -974,6 +1066,94 @@ mod door {
         assert!(!second.more);
     }
 
+    /// ADR-0097 D2: asked for folds, a leader sends groups and no record, a
+    /// page of records at a time, each page resuming where its read stopped.
+    #[test]
+    fn a_shard_is_folded_page_by_page_and_no_record_travels() {
+        let authority = Authority::new();
+        let (db, table) = leader();
+        let (address, handle) =
+            folding_door(&authority, &db, Some(shard(table, 2)), (1 << 20, 2), 2);
+        let count_and_sum = || tessari_session::Reduce {
+            visible: None,
+            condition: None,
+            keys: Vec::new(),
+            folds: vec![
+                tessari_session::Folded::named("count", None).unwrap(),
+                tessari_session::Folded::named(
+                    "sum",
+                    Some(("n".to_owned(), tessari_session::Parameters::new())),
+                )
+                .unwrap(),
+            ],
+        };
+        let first = ask(
+            &authority,
+            address,
+            &Gather {
+                reduce: Some(count_and_sum()),
+                ..asking(table, 1)
+            },
+        )
+        .unwrap();
+        let id = |text: &str| RecordId::Text(text.to_owned());
+        let states = |page: &Page| match &page.reduced {
+            Some(tessari_session::Reduced::Partials(partials)) => partials
+                .iter()
+                .map(|partial| (partial.first.clone(), partial.states.first().cloned()))
+                .collect::<Vec<_>>(),
+            other => panic!("{other:?}"),
+        };
+        assert!(first.records.is_empty() && first.more, "{first:?}");
+        assert_eq!(first.resume, Some(id("b")));
+        assert_eq!(
+            states(&first),
+            vec![(id("a"), Some(tessari_types::Value::from(2_i64)))]
+        );
+        let second = ask(
+            &authority,
+            address,
+            &Gather {
+                reduce: Some(count_and_sum()),
+                after: first.resume.clone(),
+                ..asking(table, 1)
+            },
+        )
+        .unwrap();
+        handle.join().unwrap();
+        assert!(second.records.is_empty() && !second.more, "{second:?}");
+        assert_eq!(second.resume, None);
+        assert_eq!(
+            states(&second),
+            vec![(id("c"), Some(tessari_types::Value::from(1_i64)))]
+        );
+    }
+
+    /// A page of groups past the byte budget declines rather than being cut.
+    #[test]
+    fn a_page_of_groups_past_the_budget_declines() {
+        let authority = Authority::new();
+        let (db, table) = leader();
+        let (address, handle) = door(&authority, &db, Some(shard(table, 2)), 1, 1);
+        let page = ask(
+            &authority,
+            address,
+            &Gather {
+                reduce: Some(tessari_session::Reduce {
+                    visible: None,
+                    condition: None,
+                    keys: Vec::new(),
+                    folds: vec![tessari_session::Folded::named("count", None).unwrap()],
+                }),
+                ..asking(table, 1)
+            },
+        )
+        .unwrap();
+        handle.join().unwrap();
+        assert_eq!(page.reduced, Some(tessari_session::Reduced::Declined));
+        assert!(page.records.is_empty() && !page.more, "{page:?}");
+    }
+
     /// G050 C4: what a gather moves, in bytes of `Gathered` page bodies, for
     /// one shard of 1 100 records read whole, bounded to 3, and narrowed to 5.
     #[test]
@@ -996,7 +1176,7 @@ mod door {
                 .unwrap()
         };
         let db = Arc::new(db);
-        let (address, handle) = door(&authority, &db, Some(Reach::Store), 1 << 20, 5);
+        let (address, handle) = door(&authority, &db, Some(Reach::Store), 1 << 20, 6);
         let moved = |first: Gather| -> (usize, usize) {
             let mut gather = first;
             let (mut bytes, mut records) = (0, 0);
@@ -1022,12 +1202,32 @@ mod door {
             pushed: Some(narrowed("(n >= $p0)", 1095, None)),
             ..asking(table, 1)
         });
+        // ADR-0097 D2: `count(*)` and `sum(n)` over the same shard, folded.
+        let folded = moved(Gather {
+            reduce: Some(tessari_session::Reduce {
+                visible: None,
+                condition: None,
+                keys: Vec::new(),
+                folds: vec![
+                    tessari_session::Folded::named("count", None).unwrap(),
+                    tessari_session::Folded::named(
+                        "sum",
+                        Some(("n".to_owned(), tessari_session::Parameters::new())),
+                    )
+                    .unwrap(),
+                ],
+            }),
+            ..asking(table, 1)
+        });
         handle.join().unwrap();
-        eprintln!("GATHER-BYTES whole={whole:?} bounded={bounded:?} narrowed={narrowed:?}");
-        assert_eq!((whole.1, bounded.1, narrowed.1), (1100, 3, 5));
+        eprintln!(
+            "GATHER-BYTES whole={whole:?} bounded={bounded:?} narrowed={narrowed:?} \
+             folded={folded:?}"
+        );
+        assert_eq!((whole.1, bounded.1, narrowed.1, folded.1), (1100, 3, 5, 0));
         assert!(
-            bounded.0 * 100 < whole.0 && narrowed.0 * 100 < whole.0,
-            "{whole:?} {bounded:?} {narrowed:?}"
+            bounded.0 * 100 < whole.0 && narrowed.0 * 100 < whole.0 && folded.0 * 100 < whole.0,
+            "{whole:?} {bounded:?} {narrowed:?} {folded:?}"
         );
     }
 }

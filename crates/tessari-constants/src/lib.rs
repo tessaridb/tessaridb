@@ -1005,11 +1005,12 @@ pub const MAX_VIEW_DEPTH: usize = 8;
 ///
 /// A read of a split table on a node lacking some shards fetches those shards'
 /// records and evaluates the statement over all of them, so the whole answer is
-/// in memory before the first record is handed on, and nothing the author wrote
-/// bounds it: a `LIMIT` or a `WHERE` is evaluated here, after the records have
-/// arrived. Past this the read is REFUSED rather than shortened, because a
-/// gathered answer missing the records past a ceiling is exactly the partial
-/// answer sharding refuses everywhere else.
+/// in memory before the first record is handed on. A pushed `WHERE` and a
+/// `LIMIT` reduce what arrives; a grouping read whose folds merge exactly sends
+/// groups instead of records, and this ceiling then counts groups (ADR-0097).
+/// Past it the read is REFUSED rather than shortened, because a gathered answer
+/// missing the records past a ceiling is exactly the partial answer sharding
+/// refuses everywhere else.
 ///
 /// Ten times the ceiling on a held read written by hand, because a gathered read
 /// is a table read and not a subquery: a table somebody split is a large one.
@@ -1029,3 +1030,13 @@ pub const GATHER_PAGE_BYTES: usize = COLLECTION_BUDGET_BYTES;
 ///
 /// Unit: records.
 pub const GATHER_PAGE_RECORDS: usize = 1024;
+
+/// The most records the answering leader folds into one page of groups.
+///
+/// Unit: records.
+///
+/// Larger than [`GATHER_PAGE_RECORDS`] because what such a page sends is one
+/// state per group rather than the records, so its size follows the groups; it
+/// is bounded at all so that one page is read and folded well inside the
+/// peer link's read deadline (`GREETING_SECONDS`).
+pub const GATHER_FOLD_RECORDS: usize = 65_536;

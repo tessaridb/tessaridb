@@ -14,7 +14,7 @@
 use std::sync::{Arc, Mutex};
 
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_session::{Asked, Gather, Gathered, Note, Outcome, Session, Unanswered};
+use tessari_session::{Asked, Gather, Gathered, Note, Outcome, Reduced, Session, Unanswered};
 use tessari_storage::{Reach, Store};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, ShardId, TableId, Value};
 
@@ -113,6 +113,8 @@ struct FromTheLeader {
     asked: Mutex<Vec<Question>>,
     /// The condition each question carried, in the order asked (ADR-0097).
     pushed: Mutex<Vec<Option<tessari_session::Pushed>>>,
+    /// How many records were sent rather than folded (ADR-0097 D2).
+    sent: Mutex<usize>,
 }
 
 impl Gather for FromTheLeader {
@@ -134,9 +136,24 @@ impl Gather for FromTheLeader {
                 asked.table,
                 asked.window,
                 None,
-                asked.most.saturating_add(1),
+                match asked.reduce {
+                    Some(_) => usize::MAX,
+                    None => asked.most.saturating_add(1),
+                },
             )
             .unwrap();
+        // Folded as the peer door folds, in one page.
+        if let Some(reduce) = asked.reduce {
+            let reduced = match tessari_session::reducing(&self.leader, reduce, records).unwrap() {
+                Some(partials) => Reduced::Partials(partials),
+                None => Reduced::Declined,
+            };
+            return Ok(Gathered {
+                records: Vec::new(),
+                node: THE_LEADER,
+                reduced: Some(reduced),
+            });
+        }
         // Narrowed as the peer door narrows, so every equality below runs
         // with the leader's half of the pushdown in place.
         let records = match asked.pushed {
@@ -146,9 +163,13 @@ impl Gather for FromTheLeader {
         if records.len() > asked.most {
             return Err(Unanswered::Ceiling);
         }
+        let mut sent = self.sent.lock().unwrap();
+        *sent = sent.saturating_add(records.len());
+        drop(sent);
         Ok(Gathered {
             records,
             node: THE_LEADER,
+            reduced: None,
         })
     }
 }
@@ -185,6 +206,7 @@ impl Gather for Flooding {
         Ok(Gathered {
             records,
             node: THE_LEADER,
+            reduced: None,
         })
     }
 }
@@ -202,6 +224,7 @@ fn pair() -> Pair {
         leader: Arc::clone(&leader),
         asked: Mutex::new(Vec::new()),
         pushed: Mutex::new(Vec::new()),
+        sent: Mutex::new(0),
     });
     Pair {
         leader,
@@ -230,6 +253,11 @@ impl Pair {
 
     fn asked(&self) -> Vec<Question> {
         std::mem::take(&mut *self.gatherer.asked.lock().unwrap())
+    }
+
+    /// How many records travelled since this was last asked.
+    fn sent(&self) -> usize {
+        std::mem::take(&mut *self.gatherer.sent.lock().unwrap())
     }
 }
 
@@ -271,11 +299,126 @@ fn a_gathered_read_answers_what_a_node_holding_every_shard_answers() {
         "SELECT * FROM ledger START 2 LIMIT 3;",
         "SELECT * FROM ledger WHERE total > 2 LIMIT 3;",
         "SELECT * FROM ledger LIMIT 6;",
-    ] {
+    ]
+    .into_iter()
+    .chain(FOLDED)
+    {
         let (gathered, _) = answer(&mut follower, read);
         let (expected, _) = answer(&mut whole, read);
         assert!(!expected.is_empty(), "{read}: the control answered nothing");
         assert_eq!(gathered, expected, "{read}");
+    }
+}
+
+/// Grouping reads whose every fold merges exactly, so the leaders fold them.
+const FOLDED: [&str; 7] = [
+    "SELECT count(*) AS n FROM ledger;",
+    "SELECT sum(total) AS sum, note FROM ledger GROUP BY note;",
+    "SELECT count(*) AS n, min(total) AS low, max(total) AS high, mean(total) AS avg FROM ledger;",
+    "SELECT note, count(*) AS n FROM ledger WHERE total > 2 GROUP BY note;",
+    "SELECT mean(total) * 2 AS twice FROM ledger;",
+    "SELECT min(note) AS first, max(note) AS last FROM ledger;",
+    "SELECT count(peer) AS linked FROM ledger;",
+];
+
+/// ADR-0097 D2 — a grouping read is folded on the leaders, so no record of a
+/// shard this node lacks travels, and the answer is still the whole node's.
+#[test]
+fn a_grouping_read_is_folded_on_the_leader_and_no_record_travels() {
+    let pair = pair();
+    let mut follower = pair.on_the_follower("reader");
+    let mut whole = pair.on_the_leader("reader");
+    for read in FOLDED {
+        let (gathered, notes) = answer(&mut follower, read);
+        assert_eq!(gathered, answer(&mut whole, read).0, "{read}");
+        assert_eq!(pair.sent(), 0, "{read}: records travelled");
+        assert!(
+            notes.iter().any(|note| note.kind() == "gathered"),
+            "{read}: {notes:?}"
+        );
+    }
+    // A fold that does not merge exactly gathers the records, as before.
+    let read = "SELECT median(total) AS middle FROM ledger;";
+    assert_eq!(answer(&mut follower, read).0, answer(&mut whole, read).0);
+    assert_eq!(pair.sent(), 5, "{read}");
+    // A float offered to `sum` declines the fold, because float addition depends
+    // on its order; the read gathers records and answers the whole node's total.
+    let read = "SELECT sum(total * 0.5) AS half FROM ledger;";
+    assert_eq!(answer(&mut follower, read).0, answer(&mut whole, read).0);
+    assert_eq!(pair.sent(), 5, "{read}");
+}
+
+/// A leader that folded more records than a gather may hold into one group.
+#[derive(Debug)]
+struct FoldingMany;
+
+impl FoldingMany {
+    /// How many records each shard folded: one past the ceiling.
+    fn many() -> i64 {
+        i64::try_from(tessari_constants::GATHER_RECORDS + 1).unwrap()
+    }
+}
+
+impl Gather for FoldingMany {
+    fn gather(&self, asked: &Asked<'_>) -> Result<Gathered, Unanswered> {
+        // Asked for the records themselves, there are too many to send.
+        if asked.reduce.is_none() {
+            return Err(Unanswered::Ceiling);
+        }
+        let many = Self::many();
+        let total = tessari_types::Number::from(many).as_decimal().unwrap();
+        Ok(Gathered {
+            records: Vec::new(),
+            node: THE_LEADER,
+            reduced: Some(Reduced::Partials(vec![tessari_session::Partial {
+                key: vec![Value::from("many")],
+                first: asked
+                    .window
+                    .from
+                    .cloned()
+                    .unwrap_or_else(|| RecordId::from("a")),
+                states: vec![
+                    Value::from(many),
+                    Value::Array(vec![
+                        Value::Number(tessari_types::Number::Decimal(total)),
+                        Value::Bool(true),
+                    ]),
+                ],
+            }])),
+        })
+    }
+}
+
+/// ADR-0097 D3 — the ceiling is on what travels: a fold over shards holding
+/// more records than a gather may hold answers, and a read of those records is
+/// still refused rather than answered in part.
+#[test]
+fn a_fold_over_more_records_than_a_gather_holds_answers() {
+    let pair = pair();
+    let mut follower = signed_in(&pair.follower, "reader").gathering(Arc::new(FoldingMany));
+    follower
+        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    let (rows, _) = answer(
+        &mut follower,
+        "SELECT note, count(*) AS n, sum(total) AS sum FROM ledger GROUP BY note;",
+    );
+    // Shards 1 and 3 each folded `many`; this node's own shard 2 holds h and k.
+    let both = Value::from(FoldingMany::many() * 2);
+    let many = rows
+        .iter()
+        .map(|(_, row)| row)
+        .find(|row| format!("{row:?}").contains("many"))
+        .expect("the folded group");
+    let Value::Object(fields) = many else {
+        panic!("{many:?}")
+    };
+    assert_eq!(fields.get("n"), Some(&both), "{many:?}");
+    assert_eq!(fields.get("sum"), Some(&both), "{many:?}");
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    match refused(&mut follower, "SELECT * FROM ledger;") {
+        tessari_session::Error::GatheredTooMuch { table, .. } => assert_eq!(table, "ledger"),
+        other => panic!("expected GatheredTooMuch, got {other:?}"),
     }
 }
 
@@ -452,6 +595,7 @@ fn a_hidden_field_is_hidden_in_gathered_records_too() {
         "SELECT * FROM ledger;",
         "SELECT * FROM ledger WHERE total > 0;",
         "SELECT count(*) AS n FROM ledger WHERE total > 0;",
+        "SELECT count(total) AS seen, sum(total) AS sum, count(*) AS every FROM ledger;",
     ] {
         assert_eq!(
             answer(&mut follower, read).0,
