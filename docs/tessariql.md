@@ -8040,7 +8040,21 @@ with the note **`gathered`**, naming the shards fetched. For the same reason a
 read **inside a transaction** or under **`VERSION`** is not gathered — a snapshot
 is what those promise — and stays refused with `NotHeldHere`, as do a join side,
 a `FETCH` into a shard the node lacks, and the read an `UPDATE` or `DELETE`
-makes.
+makes: a conditional or span `DELETE` over the table, and an `UPDATE` or
+`DELETE` of one record in a shard the node lacks. Until `0.20.0-beta` those
+writes were not refused — they found only this node's records, so a `DELETE`
+removed that part and reported it as the whole, and a record held elsewhere
+answered `NoSuchRecord` or was deleted as though it had been there.
+
+**`NotHeldHere` names a node holding the whole table when this node knows one**
+(from `0.20.0-beta`): a member whose `REPLICATES` covers the table's database —
+`REPLICATES STORE`, the namespace or the database — and which this node has
+heard serving. Over the wire, to a client of protocol minor ≥ 1, the refusal
+leaves as the `Elsewhere` frame marked `transient` — it answers this request,
+since the same read outside a transaction is one this node gathers — and only
+when nothing in the script has committed. A node knowing no such member refuses
+as before. The HTTP surface carries no peer directory, so there the refusal is
+unchanged.
 
 **Nothing is answered in part.** A shard whose leader is not known, cannot be
 reached or declines refuses the whole read with **`NotGathered`**, naming the

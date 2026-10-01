@@ -390,9 +390,12 @@ pub(crate) fn respond_vault(
 
 /// The redirect a refusal stands for, if it stands for one.
 ///
-/// Two refusals mean *go there* and they differ in what they promise. A read
+/// Three refusals mean *go there* and they differ in what they promise. A read
 /// beyond a bound is about **this read** — the node's own copy may satisfy the
-/// same bound at the next request — so it is `Transient`. A write into a range
+/// same bound at the next request — so it is `Transient`, and so is a read a
+/// node holding part of a split table could not gather, sent to a peer holding
+/// the whole of it (G051 C4): the same table read outside a transaction is one
+/// this node gathers itself. A write into a range
 /// another node leads names a **leadership**, which holds until its epoch is
 /// superseded, so it is `Settled` and a client may remember it per range.
 ///
@@ -410,6 +413,15 @@ fn redirected(
             epoch,
             ..
         }) => (endpoint, node, epoch, redirect::Settlement::Transient),
+        Err(tessaridb::Error::NotHeldHere {
+            holder: Some(holder),
+            ..
+        }) => (
+            &holder.endpoint,
+            &holder.node,
+            &holder.epoch,
+            redirect::Settlement::Transient,
+        ),
         Err(tessaridb::Error::Store(tessari_storage::Error::WriteIsElsewhere {
             endpoint,
             node,

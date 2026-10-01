@@ -26,7 +26,7 @@ fn store() -> Store {
     Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
 }
 
-fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
+pub(crate) fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
     session.sign_in(name, PASSWORD).unwrap();
     session
@@ -34,7 +34,7 @@ fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
 
 /// A leader holding `ledger` split at 'g' and 'p', with records in all three
 /// shards, an owner, a reader, a reader who may see only `note`, and a node.
-fn leader() -> Arc<Store> {
+pub(crate) fn leader() -> Arc<Store> {
     let leader = store();
     Session::new(&leader)
         .run(
@@ -82,7 +82,7 @@ fn shard(store: &Store, id: u32) -> Reach {
 }
 
 /// A follower of shard 2 only, recorded as served that way.
-fn follower_of_the_middle(leader: &Store) -> Store {
+pub(crate) fn follower_of_the_middle(leader: &Store) -> Store {
     let over = shard(leader, 2);
     let follower = store();
     let mut node = signed_in(leader, "node");
@@ -598,7 +598,7 @@ fn a_read_that_cannot_be_gathered_whole_is_refused_and_never_answered_in_part() 
     let pair = pair();
     let mut follower = pair.on_the_follower("reader");
     let not_held = |error: tessari_session::Error| match error {
-        tessari_session::Error::NotHeldHere { table, shards } => (table, shards),
+        tessari_session::Error::NotHeldHere { table, shards, .. } => (table, shards),
         other => panic!("expected NotHeldHere, got {other:?}"),
     };
     let held = ("ledger".to_owned(), vec![1, 3]);
@@ -770,7 +770,7 @@ fn a_node_holding_part_of_a_split_table_refuses_to_back_it_up() {
         "BACKUP OF NAMESPACE prod;",
     ] {
         match signed_in(&follower, "root").run(statement) {
-            Err(tessari_session::Error::NotHeldHere { table, shards }) => {
+            Err(tessari_session::Error::NotHeldHere { table, shards, .. }) => {
                 assert_eq!(
                     (table.as_str(), shards),
                     ("ledger", vec![1, 3]),

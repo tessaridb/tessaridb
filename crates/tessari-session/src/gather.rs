@@ -150,16 +150,51 @@ impl Missing {
         }
     }
 
-    /// The refusal a node with no way to gather gives.
-    pub(crate) fn refusal(&self) -> Error {
+    /// The refusal a node with no way to gather gives, naming `holder` when a
+    /// peer holding the whole table is known.
+    pub(crate) fn refusal(&self, holder: Option<crate::Peer>) -> Error {
         Error::NotHeldHere {
             table: self.table.clone(),
             shards: self.lacking.iter().map(|shard| shard.get()).collect(),
+            holder,
         }
     }
 }
 
 impl Session<'_> {
+    /// The refusal for `missing`, naming a peer that holds the whole table when
+    /// this node knows one (G051 C4, ADR-0101).
+    ///
+    /// *Holds the whole table* is asked of a peer's declared subscription
+    /// exactly as [`Self::missing`] asks it of this node's served reach: a reach
+    /// containing the table's database. The catalog says what a peer collects
+    /// and only the directory says whether it answered, as that node, serving —
+    /// so a session among no peers names nobody, and neither does a row the
+    /// directory has not heard from. This node's own row is never named, since
+    /// a redirect to the node refusing would send the client round in a loop.
+    ///
+    /// Membership is read from the store as it is NOW, in a transaction of its
+    /// own, and never through the read's: under `VERSION` that one is the
+    /// catalog as it stood, and a peer declared since would be invisible.
+    pub(crate) fn not_held_here(&self, missing: &Missing) -> Result<Error> {
+        let Some(known) = self.elsewhere.as_ref() else {
+            return Ok(missing.refusal(None));
+        };
+        let me = self.store.node_identity()?.id;
+        let whole = tessari_storage::Reach::Database(missing.namespace, missing.database);
+        let mut now = self.store.begin()?;
+        let holder = Catalog::new(&mut now)
+            .replicas()?
+            .into_iter()
+            .filter(|row| row.replicates.is_some_and(|reach| reach.contains(whole)))
+            .find_map(|row| {
+                row.node
+                    .filter(|node| *node != me)
+                    .and_then(|node| known.serving(&row.endpoint, &node))
+            });
+        Ok(missing.refusal(holder))
+    }
+
     /// What of `part` of table `id` this node was not served, or `None` when it
     /// holds all of it (G031 S3.3).
     ///
@@ -245,7 +280,7 @@ impl Session<'_> {
             return Ok(None);
         };
         let (Some(gatherer), Some(map)) = (self.gather.as_ref(), missing.map.as_ref()) else {
-            return Err(missing.refusal());
+            return Err(self.not_held_here(&missing)?);
         };
         let too_much = || missing.too_much();
         let mut found: Stored = Vec::new();
@@ -333,7 +368,7 @@ impl Session<'_> {
             return Ok(None);
         };
         let (Some(gatherer), Some(map)) = (self.gather.as_ref(), missing.map.as_ref()) else {
-            return Err(missing.refusal());
+            return Err(self.not_held_here(&missing)?);
         };
         let occurrences = occurrences(select.projection.written());
         let mut groups = Groups::new();

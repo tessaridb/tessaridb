@@ -946,9 +946,13 @@ pub enum Error {
     /// whole with nothing in an error state, so the read is refused and the
     /// shards it lacks are named. An empty list means it holds none of the
     /// table at all.
+    ///
+    /// When this node knows a peer holding the whole table it names it, and a
+    /// surface that can redirect turns the refusal into one (G051 C4,
+    /// ADR-0101) — to a client that greeted minor 0 it stays this refusal.
     #[error(
         "this node does not hold all of `{table}`{} — read it on a node that holds \
-         the whole table, or name a span of identities inside what this one holds",
+         the whole table{}, or name a span of identities inside what this one holds",
         if shards.is_empty() {
             String::new()
         } else {
@@ -958,13 +962,17 @@ pub enum Error {
                 shards.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "),
                 if shards.len() == 1 { "is" } else { "are" }
             )
-        }
+        },
+        holder.as_ref().map_or_else(String::new, |peer| format!(" ({} does)", peer.endpoint))
     )]
     NotHeldHere {
         /// The table asked for.
         table: String,
         /// The shards the read needs and this node does not hold.
         shards: Vec<u32>,
+        /// A peer holding the whole table that this node has heard serving, when
+        /// it knows one.
+        holder: Option<crate::Peer>,
     },
 
     /// A shard this node lacks could not be fetched from its leader (G033).

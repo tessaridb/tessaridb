@@ -86,4 +86,17 @@ pub trait Elsewhere: core::fmt::Debug + Send + Sync {
     /// and a copy of no known age is outside every bound rather than inside the
     /// ones nobody measured.
     fn within(&self, bound: Duration) -> Option<Peer>;
+
+    /// The node `node` at `endpoint`, if this node has heard it serving there.
+    ///
+    /// The third question, asked by a node holding part of a split table about
+    /// a peer whose declared subscription covers the whole of it (G051 C4): the
+    /// catalog says what that peer collects, and only the directory says whether
+    /// it answered, as that node, carrying `SERVING`. A row nobody has heard from
+    /// is a node of no known state, so `None` — and a client is not sent there.
+    ///
+    /// Required for [`Self::writable`]'s reason: a default answering `None`
+    /// would compile and quietly turn every redirect it should have issued back
+    /// into a refusal.
+    fn serving(&self, endpoint: &str, node: &[u8; NODE_ID_LEN]) -> Option<Peer>;
 }

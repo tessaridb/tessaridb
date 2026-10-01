@@ -616,6 +616,12 @@ impl Session<'_> {
                 answer,
             } => {
                 let (_, address) = self.writable(transaction, target)?;
+                // A record in a shard this node lacks is not absent (G051 C4).
+                self.refuse_reading_a_part(
+                    transaction,
+                    address.table,
+                    crate::evaluate::Part::Record(&address.id),
+                )?;
                 let Some(existing) = transaction.get(&address)? else {
                     return Err(Error::NoSuchRecord {
                         id: address.id.to_string(),
@@ -735,6 +741,13 @@ impl Session<'_> {
                 // could ever find its way back to.
                 self.clear_file(transaction, target)?;
                 let (_, address) = self.address(transaction, target)?;
+                // Deleting a record held elsewhere would remove nothing and
+                // answer as though it had (G051 C4).
+                self.refuse_reading_a_part(
+                    transaction,
+                    address.table,
+                    crate::evaluate::Part::Record(&address.id),
+                )?;
                 let before = match transaction.get(&address)? {
                     Some(held) => decode_payload(&held)?,
                     None => Value::None,

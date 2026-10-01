@@ -86,7 +86,7 @@ impl Session<'_> {
         part: Part<'_>,
     ) -> Result<()> {
         match self.missing(transaction, id, part)? {
-            Some(missing) => Err(missing.refusal()),
+            Some(missing) => Err(self.not_held_here(&missing)?),
             None => Ok(()),
         }
     }

@@ -3200,6 +3200,38 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
         vec![in_the_middle.clone()]
     );
 
+    // G051 C4: inside a transaction node 2 may not gather, so the read is sent
+    // to a node holding the whole table — 0 and 1 replicate the store — as a
+    // transient redirect naming that node at its own address (no `CLIENTS AT`).
+    let began = Instant::now();
+    let mut last = String::from("never connected");
+    'sent: loop {
+        if let Ok(mut client) = Client::connect(GATHERING[2].0) {
+            match client.run_routed(
+                "USE NAMESPACE prod; USE DATABASE shop; BEGIN; SELECT * FROM orders; COMMIT;",
+                None,
+                &tessaridb::Parameters::new(),
+            ) {
+                Ok(Served::Elsewhere(sent))
+                    if sent.settlement == tessari_wire::Settlement::Transient
+                        && [0, 1].iter().any(|whole| {
+                            sent.endpoint == GATHERING[*whole].1 && sent.node == cluster.ids[*whole]
+                        }) =>
+                {
+                    break 'sent;
+                }
+                other => last = format!("{other:?}"),
+            }
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "node 2 never sent a transaction it cannot gather to a whole holder; \
+             last: {last}{}",
+            what_the_nodes_said(&GATHERING, &logs)
+        );
+        std::thread::sleep(POLL);
+    }
+
     // Shard 2's leader stops: a read needing shard 2 is refused naming it —
     // never answered without it — and a read inside what node 2 holds answers.
     cluster.running[1] = None;

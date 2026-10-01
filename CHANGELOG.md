@@ -24,8 +24,21 @@ compares carries no pre-release suffix.
 - **`DEFINE REPLICA … CLIENTS AT '<host:port>' HTTP AT '<url>'`** — where a client
   reaches each member, so a redirect names an address a client can speak to
   rather than the peer door. Optional; `INFO FOR NODE` reports both per peer.
+- **A node holding part of a split table sends what it cannot gather to a node
+  holding all of it** (G051 C4). `NotHeldHere` — a read inside a transaction,
+  under `VERSION`, a join side, a `FETCH`, an `UPDATE` or `DELETE` — names a
+  member whose `REPLICATES` covers the table's database and which this node has
+  heard serving, and leaves the wire as the `Elsewhere` frame, `transient`, to a
+  client of minor ≥ 1. With no such member, or over HTTP, it is the refusal it was.
 
 ### Fixed
+
+- **A `DELETE` on a node holding part of a split table no longer removes only
+  that part.** A conditional or span `DELETE` read just the shards this node
+  holds, removed what matched there and reported that count as the statement's;
+  `DELETE` of one record held elsewhere answered as though it had removed it, and
+  `UPDATE` of one answered `NoSuchRecord`. Each is now refused `NotHeldHere`, as
+  the docs already said.
 
 - **A redirect is no longer sent after part of the script committed.** A client
   follows a redirect by sending the script again, and a script is not a
