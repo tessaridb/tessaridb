@@ -109,12 +109,13 @@ pub fn read_until(
                     break;
                 }
                 let record = LogRecord::decode(&body)?;
-                // The writer the SECTION named, which is the same fact the
-                // home already was: a restore files a record where the backup
-                // read it from and never where the restoring node happens to
-                // write. Deriving the writer from the record is not available
-                // and would be wrong if it were.
-                store.apply_record(section.log.writer, sequence, &record)?;
+                // The log the SECTION named, home and writer both: a restore
+                // files a record where the backup read it from and never where
+                // the restoring node happens to write. Deriving the home from
+                // the record instead refused every store whose records were
+                // filed before each database had a log of its own — they sit in
+                // the store log and derive a database home today.
+                store.apply_record_in(section.log, sequence, &record)?;
                 applied = applied.saturating_add(1);
                 *reached = sequence;
             }
