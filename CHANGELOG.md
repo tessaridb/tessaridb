@@ -42,9 +42,19 @@ compares carries no pre-release suffix.
   counts its documents, tokens and the documents holding each asked word, and
   every record of the read is scored from its own text, so `search::score` and
   `ORDER BY FUSE` answer what a node holding every shard answers.
+- **An `OR` whose every side an index serves is read through those indexes**
+  (G051 T7.2). `title MATCHES 'ada' OR body MATCHES 'lovelace'`, or any mix of
+  searched and valued sides, is the union of each side's candidates, tested again
+  against the whole condition; `EXPLAIN` reports the shape `union` and every index
+  read. A side with no index leaves the read a scan.
 
 ### Fixed
 
+- **A `SEARCH`, `SPATIAL` or `VECTOR` index over several fields indexed the
+  first alone** (G051 T7.2). `DEFINE INDEX … FIELDS title, body SEARCH` was
+  accepted, and a search of `body` then answered as though no index existed. It is
+  now refused with `IndexReadsOneField`; declare one index per field. A store that
+  already holds such an index keeps it as an index over its first field.
 - **`search::score` on a node holding part of a split table was silently
   wrong** (G051 C6). A gathered record scored `0` and a held one was measured
   against this node's shards alone, so the order differed from the whole table's
@@ -78,6 +88,11 @@ compares carries no pre-release suffix.
   Every release up to and including `0.19.0-beta` has this leak: text that a field
   grant hides on those builds should be treated as having been probe-able by a
   caller who could search the table.
+
+### Changed
+
+- **1466 conformance cases** define the language and run in the build.
+
 
 ## 0.19.0-beta — 2026-10-01
 

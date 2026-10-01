@@ -283,3 +283,162 @@ fn explain_still_reports_terms_for_a_query_with_no_operator() {
         "an unchanged query keeps its plan — got {said}"
     );
 }
+
+// ---- G051 T7.2: one query over several fields (S8), and an index kind that
+// reads one field declared over several (S9) ----
+
+/// `title` and `body` searched, `n` plain, each record answering a different
+/// disjunct so a union that dropped either side, or a scan that read a third,
+/// gives a different set.
+fn titled(indexed: bool) -> Store {
+    let held = store();
+    let mut session = Session::new(&held);
+    session
+        .run(&format!(
+            "{PLACE}\
+             DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
+             DEFINE COLLECTION papers;\n\
+             DEFINE FIELD title ON papers TYPE string ANALYZER english;\n\
+             DEFINE FIELD body ON papers TYPE string ANALYZER english;\n\
+             CREATE papers:1 = {{ title: 'ada on engines', body: 'notes', n: 1 }};\n\
+             CREATE papers:2 = {{ title: 'a letter', body: 'lovelace wrote it', n: 2 }};\n\
+             CREATE papers:3 = {{ title: 'ada and lovelace', body: 'both', n: 3 }};\n\
+             CREATE papers:4 = {{ title: 'unrelated', body: 'nothing here', n: 4 }};",
+        ))
+        .unwrap();
+    if indexed {
+        session
+            .run(
+                "DEFINE INDEX by_title ON papers FIELDS title SEARCH;\n\
+                 DEFINE INDEX by_body ON papers FIELDS body SEARCH;\n\
+                 DEFINE INDEX by_n ON papers FIELDS n;",
+            )
+            .unwrap();
+    }
+    held
+}
+
+/// The answer to `read` without the indexes and with them, and the plan the
+/// indexed store reports for it.
+fn titled_both_ways(read: &str) -> (Vec<String>, Vec<String>, String) {
+    let mut answers = Vec::new();
+    let mut plan = String::new();
+    for indexed in [false, true] {
+        let held = titled(indexed);
+        let mut session = Session::new(&held);
+        session.run(USE).unwrap();
+        answers.push(ids(&mut session, read));
+        if indexed {
+            let explained = format!(
+                "{:?}",
+                session.run(&format!("EXPLAIN {read}")).unwrap().last()
+            );
+            // The plan the read itself reports, which must be the one EXPLAIN
+            // says: two planners that agree today disagree the first time one
+            // changes.
+            let Some(Outcome::Records { plan: taken, .. }) = session.run(read).unwrap().pop()
+            else {
+                panic!("{read}");
+            };
+            assert_eq!(
+                explained.contains("union"),
+                taken.shape == Some("union"),
+                "{explained} against {taken:?}"
+            );
+            plan = explained;
+        }
+    }
+    (answers[0].clone(), answers[1].clone(), plan)
+}
+
+#[test]
+fn a_disjunction_across_two_searched_fields_is_served_by_both_indexes() {
+    let read = "SELECT * FROM papers WHERE title MATCHES 'ada' OR body MATCHES 'lovelace';";
+    let (scanned, indexed, plan) = titled_both_ways(read);
+    assert_eq!(scanned, indexed);
+    assert_eq!(scanned, ["1", "2", "3"]);
+    assert!(
+        plan.contains("union") && plan.contains("by_title") && plan.contains("by_body"),
+        "{plan}"
+    );
+    assert!(!plan.contains("String(\"scan\")"), "{plan}");
+}
+
+#[test]
+fn a_disjunction_of_a_search_and_a_value_is_one_union_too() {
+    let read = "SELECT * FROM papers WHERE title MATCHES 'lovelace' OR n = 1 OR n = 4;";
+    let (scanned, indexed, plan) = titled_both_ways(read);
+    assert_eq!(scanned, indexed);
+    assert_eq!(scanned, ["1", "3", "4"]);
+    assert!(plan.contains("union"), "{plan}");
+}
+
+#[test]
+fn a_disjunct_no_index_serves_leaves_the_read_a_scan() {
+    // `body` is searched, `n > 1` has no ordered index here to serve it as a
+    // range of its own — and one side unserved means the union cannot be
+    // complete, so the read scans and answers the same.
+    let read = "SELECT * FROM papers WHERE body MATCHES 'lovelace' OR title = 'unrelated';";
+    let (scanned, indexed, plan) = titled_both_ways(read);
+    assert_eq!(scanned, indexed);
+    assert_eq!(scanned, ["2", "4"]);
+    assert!(
+        plan.contains("String(\"scan\")") && !plan.contains("union"),
+        "{plan}"
+    );
+}
+
+#[test]
+fn an_index_kind_that_reads_one_field_is_refused_over_several() {
+    let held = titled(false);
+    let mut session = Session::new(&held);
+    session.run(USE).unwrap();
+    for statement in [
+        "DEFINE INDEX by_both ON papers FIELDS title, body SEARCH;",
+        "DEFINE INDEX by_both ON papers FIELDS title, body SPATIAL;",
+        "DEFINE INDEX by_both ON papers FIELDS title, body VECTOR cosine;",
+    ] {
+        match session.run(statement) {
+            Err(tessari_session::Error::Store(tessari_storage::Error::IndexReadsOneField {
+                name,
+                fields,
+                ..
+            })) => {
+                assert_eq!((name.as_str(), fields), ("by_both", 2), "{statement}");
+            }
+            other => panic!("{statement}: {other:?}"),
+        }
+    }
+    // The control: an ordinary index over two fields is a composite key.
+    session
+        .run("DEFINE INDEX by_both ON papers FIELDS title, body;")
+        .unwrap();
+}
+
+/// G051 T7.2 (inventory S26): a space whose values are objects is searched
+/// through a field's index like a table; a scalar value has no field to name
+/// and is not (Q-866).
+#[test]
+fn a_space_holding_objects_is_searched_through_its_index() {
+    let held = store();
+    let mut session = Session::new(&held);
+    session
+        .run(&format!(
+            "{PLACE}\
+             DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
+             DEFINE SPACE kv;\n\
+             DEFINE FIELD body ON kv TYPE string ANALYZER english;\n\
+             DEFINE INDEX by_body ON kv FIELDS body SEARCH;\n\
+             SET kv:'a' = {{ body: 'the quick foxes' }};\n\
+             SET kv:'b' = {{ body: 'a lazy dog' }};\n\
+             SET kv:'c' = 'a fox, but not in a field';",
+        ))
+        .unwrap();
+    let read = "SELECT * FROM kv WHERE body MATCHES 'fox';";
+    assert_eq!(ids(&mut session, read), ["a"]);
+    let plan = format!(
+        "{:?}",
+        session.run(&format!("EXPLAIN {read}")).unwrap().last()
+    );
+    assert!(plan.contains("by_body") && plan.contains("terms"), "{plan}");
+}

@@ -2567,6 +2567,15 @@ what exists; the answer is not.** An analyzer on an index would make
 after, or different things under two indexes. On the field, an index can only
 make the same question faster.
 
+**A `SEARCH` index reads one field**, and so do a `SPATIAL` and a `VECTOR`
+index. Naming several — `DEFINE INDEX by_both ON notes FIELDS title, body
+SEARCH` — is refused with `IndexReadsOneField` (from `0.20.0-beta`; before, the
+declaration was accepted and indexed `title` alone). Declare one index per field;
+a query over several of them is served by their union, as described under
+"Which index runs". A space whose values are objects is searched through a field's
+index like a table; a value that is not an object has no field to name and is
+not.
+
 The query is analyzed by the same analyzer as the field, so searching for
 `Lovelace` finds a document that stored `lovelace` — which is the entire point
 of having one. **Several terms mean all of them**: "find me documents about X Y"
@@ -3933,6 +3942,22 @@ Where the store has no count, or the candidate is a shape the counting walk
 cannot follow — a `LIKE 'a%'` prefix, a `MATCHES` expansion, a geometric region —
 the comparison says nothing and the ranking decides alone. A missing measurement
 never overrules a declared index.
+
+**An `OR` is served when every side of it is** (from `0.20.0-beta`). A
+condition written `title MATCHES 'ada' OR body MATCHES 'lovelace'` offers no
+conjunct either index can serve alone — a candidate from one side would leave out
+the records only the other reaches — so until then it read the whole table. Now
+each side is planned on its own, by the same ranking and the same half-the-table
+measure, and when every side has an index worth reading the read is served by the
+union of their records, each tested again against the whole condition. One side
+with no index leaves the read a scan, because a union missing a side is not a
+superset of the answer. The plan names every index read, in the order the sides
+were written, under the shape `union`:
+
+```tessariql
+EXPLAIN SELECT * FROM papers WHERE title MATCHES 'ada' OR body MATCHES 'lovelace';
+-- { access: 'index', index: 'by_title, by_body', shape: 'union', … }
+```
 
 `EXPLAIN` (§7b) asks the same question the read asks, so it reports the path the
 read takes rather than the one the ranking preferred. `USING INDEX <name>`
@@ -5937,9 +5962,11 @@ Two rules make the composition mean something:
   neither, because both live under one database and a database is the unit a
   transaction may not leave (ADR-0008 §4).
 
-A space is not indexed by value. A record whose payload is not an object projects
-to no fields, so an index over a space holds nothing. Searching a space by its
-values is a separate feature and is not claimed here.
+A space whose values are objects is indexed by their fields like a table, and a
+`MATCHES` over one of them is served by its `SEARCH` index. A value that is not
+an object projects to no fields, so an index over a space holds nothing for it.
+Searching scalar values needs a way to name the value itself in a condition and is
+a separate feature, not claimed here.
 
 ## 6a. Files
 

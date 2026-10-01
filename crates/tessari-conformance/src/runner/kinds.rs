@@ -205,6 +205,7 @@ pub(crate) fn store_kind(error: &tessari_storage::Error) -> &'static str {
         tessari_storage::Error::CommitContention { .. } => "CommitContention",
         tessari_storage::Error::NameTaken { .. } => "NameTaken",
         tessari_storage::Error::EmptyIndex { .. } => "EmptyIndex",
+        tessari_storage::Error::IndexReadsOneField { .. } => "IndexReadsOneField",
         tessari_storage::Error::UniqueViolation { .. } => "UniqueViolation",
         tessari_storage::Error::SpaceFull { .. } => "SpaceFull",
         tessari_storage::Error::TopicIsAppendOnly { .. } => "TopicIsAppendOnly",

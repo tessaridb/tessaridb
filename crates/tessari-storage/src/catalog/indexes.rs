@@ -17,7 +17,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// # Errors
     ///
     /// Returns [`Error::NoSuchParent`] when the table does not exist,
-    /// [`Error::EmptyIndex`] when no field is named, and [`Error::NameTaken`]
+    /// [`Error::EmptyIndex`] when no field is named, [`Error::IndexReadsOneField`]
+    /// when a search, spatial or vector index names more than one, and [`Error::NameTaken`]
     /// when the name is in use on that table.
     pub fn create_index(
         &mut self,
@@ -29,6 +30,26 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         if fields.is_empty() {
             return Err(Error::EmptyIndex {
                 name: name.to_owned(),
+            });
+        }
+        // Each of these reads the first field and no other, so a second one
+        // named would be a declaration the index does not keep.
+        let one_field = if shape.search {
+            Some("SEARCH")
+        } else if shape.spatial {
+            Some("SPATIAL")
+        } else if shape.vector.is_some() {
+            Some("VECTOR")
+        } else {
+            None
+        };
+        if let Some(kind) = one_field
+            && fields.len() > 1
+        {
+            return Err(Error::IndexReadsOneField {
+                name: name.to_owned(),
+                kind,
+                fields: fields.len(),
             });
         }
         let Some(parent) = self.table(table)? else {

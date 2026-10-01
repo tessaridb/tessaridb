@@ -13,7 +13,7 @@ written in Rust, for AI applications and the products built around them.
 [![version](https://img.shields.io/badge/version-0.20.0--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.98%2B-6B5FD1?style=flat-square)](Cargo.toml)
-[![conformance](https://img.shields.io/badge/conformance-1465%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![conformance](https://img.shields.io/badge/conformance-1466%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/tessaridb/tessaridb-protocol) ·
@@ -147,7 +147,7 @@ store rather than three stores, and queues and topics share one row. The
 | Engine | What it gives you | Cases | State |
 |---|---|---|:--|
 | **Documents** | schemaless or schemafull records, nested objects and arrays, typed fields with defaults | 38 + 85 + 16 | ✅ runs |
-| **Relational** | declared tables and fields, unique and multi-field indexes, joins whose answer an index may not change, `INSERT` of several records in one statement at identities the store produces | 62 + 27 + 51 + 21 | ✅ runs |
+| **Relational** | declared tables and fields, unique and multi-field indexes, joins whose answer an index may not change, `INSERT` of several records in one statement at identities the store produces | 63 + 27 + 51 + 21 | ✅ runs |
 | **Graph** | edge tables, `RELATE`, properties on the edge, multi-hop traversal in both directions, an edge table that names the pair it joins and refuses every other, a declared graph that holds its own records with no table declared beside it and takes them with it when dropped, tables you already have joining it with `IN`, `DEFINE EDGE` writing adjacency beside the node so a hop is a range read, an edge removed by the pair it joins, and `DEPTH n` bounding a repeated hop | 71 | ✅ runs |
 | **Key–value** | `SPACE`s — one key, one whole value, a per-key expiry (`EXPIRE`, `TTL`, `PERSIST`), atomic `INCR` and conditional `SET … IF`, and a seeking key walk by range or prefix with `AFTER`/`LIMIT` paging, and a key limit (`MAX n`) that evicts the least recently modified or refuses, on memory and on disk | 33 | ✅ runs |
 | **Objects & files** | `BUCKET`s — bytes addressed by path, byte-range reads, writes at an offset, metadata that is an ordinary record, and a declared ceiling on the largest file the bucket takes | 38 | ✅ runs |

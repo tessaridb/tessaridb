@@ -224,10 +224,21 @@ impl Session<'_> {
                     }
                     _ => None,
                 };
-                Ok(match chosen {
-                    Some(chosen) => chosen.plan(Some(named)),
-                    None => Plan::new(AccessPath::Scan).on(named),
-                })
+                if let Some(chosen) = chosen {
+                    return Ok(chosen.plan(Some(named)));
+                }
+                Ok(
+                    match self.union_of(
+                        transaction,
+                        id,
+                        condition,
+                        (&declared, &searched),
+                        select.lift_scan_guard,
+                    )? {
+                        Some(sides) => super::union_plan(&sides, Some(named)),
+                        None => Plan::new(AccessPath::Scan).on(named),
+                    },
+                )
             }
             // A walk reads an index per step, and which index is not a choice:
             // an edge table is given one on each endpoint when it is declared.
