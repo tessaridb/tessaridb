@@ -12,6 +12,31 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.20.1-beta — 2026-10-02
+
+### Fixed
+
+- **The command line no longer submits half a statement.** A line that closed
+  one statement with `;` and began another — `CREATE notes:1 = { … }; SELECT body`
+  with the rest on the next line — sent the unfinished second statement on its
+  own, which was refused for what it lacked. A statement begun after a `;` now
+  waits for its own `;`.
+- **An unknown filter or stemmer language is refused at the word, with the
+  choices named.** `FILTERS lowercase, stemmer(klingon)` now says *a stemmer
+  language: english, russian, german, french or spanish* at `klingon`, and an
+  unknown filter name lists `lowercase, ascii or stemmer`, where the refusal used
+  to point past the word and name nothing.
+- **Two search refusals lost a run of spaces in the middle of their message**
+  (`SearchIsItsOwnOrder`, `NotSearched`). A test now holds every refusal message
+  in the engine to having no run of spaces and no line break.
+
+### Changed
+
+- **Documentation: the `at` of `INFO FOR HISTORY` is a position in the
+  database's log, not a number `VERSION` takes.** The two count different things
+  and differ as soon as anything else is written; read a history's entries for
+  what changed and use a version from `INFO FOR VERSIONS` to read the past.
+
 ## 0.20.0-beta — 2026-10-01
 
 ### Added
