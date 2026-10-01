@@ -156,6 +156,7 @@ impl Gathers for Gathering {
                 .to
                 .map(|(id, inclusive)| (id.clone(), inclusive)),
             after: None,
+            pushed: asked.pushed.cloned(),
         };
         let mut records = Vec::new();
         loop {
@@ -190,12 +191,17 @@ impl Gathers for Gathering {
             if !more {
                 return Ok(Gathered { records, node });
             }
-            if empty {
-                return Err(Unanswered::Refused(format!(
-                    "{endpoint} said more records follow and sent none"
-                )));
+            // A narrowed page may keep none of what it read, and says where it
+            // got to; an un-narrowed one that sent nothing never got anywhere.
+            match answered.resume {
+                Some(resume) => page.after = Some(resume),
+                None if empty => {
+                    return Err(Unanswered::Refused(format!(
+                        "{endpoint} said more records follow and sent none"
+                    )));
+                }
+                None => page.after = records.last().map(|(id, _)| id.clone()),
             }
-            page.after = records.last().map(|(id, _)| id.clone());
         }
     }
 }

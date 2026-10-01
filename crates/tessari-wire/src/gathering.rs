@@ -37,7 +37,7 @@ use crate::error::{Error, Result};
 use crate::frame;
 
 /// A peer asking for one page of one shard's records.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Gather {
     /// The table's namespace.
     pub namespace: NamespaceId,
@@ -54,6 +54,9 @@ pub struct Gather {
     pub to: Option<(RecordId, bool)>,
     /// The last identity already received, so the page begins past it.
     pub after: Option<RecordId>,
+    /// A condition to narrow the page by, under the asker's visibility
+    /// (ADR-0097). Absent from a frame an older asker sent.
+    pub pushed: Option<tessari_session::Pushed>,
 }
 
 /// One page of a shard's records.
@@ -63,6 +66,9 @@ pub struct Page {
     pub records: Vec<(RecordId, Vec<u8>)>,
     /// Whether the answer stopped at a bound rather than at the window's end.
     pub more: bool,
+    /// Where the next page begins when it is not the last record sent: a page
+    /// narrowed by a pushed condition may keep none of the records it read.
+    pub resume: Option<RecordId>,
 }
 
 /// Why a shard's leader would not answer.
@@ -136,6 +142,10 @@ impl Gather {
             None => body.push(0),
         }
         put_optional(&mut body, self.after.as_ref());
+        if let Some(pushed) = &self.pushed {
+            body.push(1);
+            put_pushed(&mut body, pushed);
+        }
         body
     }
 
@@ -159,10 +169,19 @@ impl Gather {
             _ => return Err(Error::Malformed),
         };
         let (after, at) = take_optional(body, at)?;
+        let (pushed, at) = match body.get(at) {
+            None => (None, at),
+            Some(1) => {
+                let (pushed, at) = take_pushed(body, next(at)?)?;
+                (Some(pushed), at)
+            }
+            Some(_) => return Err(Error::Malformed),
+        };
         if at != body.len() {
             return Err(Error::Malformed);
         }
         Ok(Self {
+            pushed,
             namespace: NamespaceId::new(namespace),
             database: DatabaseId::new(database),
             table: TableId::new(table),
@@ -187,6 +206,9 @@ impl Page {
             put_id(&mut body, id);
             frame::put_bytes(&mut body, record);
         }
+        if self.resume.is_some() {
+            put_optional(&mut body, self.resume.as_ref());
+        }
         body
     }
 
@@ -209,10 +231,24 @@ impl Page {
             records.push((id, record));
             at = next_at;
         }
+        // Written only when there is one, so a section that says *none* is not
+        // a page this side sent.
+        let (resume, at) = if at == body.len() {
+            (None, at)
+        } else {
+            match take_optional(body, at)? {
+                (Some(resume), at) => (Some(resume), at),
+                (None, _) => return Err(Error::Malformed),
+            }
+        };
         if at != body.len() {
             return Err(Error::Malformed);
         }
-        Ok(Self { records, more })
+        Ok(Self {
+            records,
+            more,
+            resume,
+        })
     }
 }
 
@@ -289,6 +325,20 @@ pub(crate) fn serve(
         .map_err(refused)?;
     transaction.rollback();
     let mut more = found.len() == GATHER_PAGE_RECORDS;
+    // ADR-0097: narrowed after the page is read and before it is budgeted, so
+    // what the condition drops costs nothing to send. The page then resumes
+    // after the last record READ, which may be one nobody kept.
+    let read_to = found.last().map(|(id, _)| id.clone());
+    let narrowed = asked.pushed.is_some();
+    let found = match &asked.pushed {
+        Some(pushed) => {
+            tessari_session::keeping(store, pushed, found).map_err(|why| Error::Refused {
+                message: why.to_string(),
+            })?
+        }
+        None => found,
+    };
+    let mut cut = false;
     let mut records = Vec::with_capacity(found.len());
     let mut bytes = 0_usize;
     for (id, record) in found {
@@ -296,12 +346,85 @@ pub(crate) fn serve(
         // than the budget could never be fetched at all.
         if !records.is_empty() && bytes.saturating_add(record.len()) > budget {
             more = true;
+            cut = true;
             break;
         }
         bytes = bytes.saturating_add(record.len());
         records.push((id, record));
     }
-    Ok(Page { records, more })
+    // Cut by the budget, the next page begins after the last record sent, as it
+    // always has; narrowed and not cut, after the last record read.
+    let resume = if narrowed && more && !cut {
+        read_to
+    } else {
+        None
+    };
+    Ok(Page {
+        records,
+        more,
+        resume,
+    })
+}
+
+/// A pushed condition: the visible fields, the text, then each parameter as a
+/// name and a value in the store's own codec.
+fn put_pushed(into: &mut Vec<u8>, pushed: &tessari_session::Pushed) {
+    match &pushed.visible {
+        Some(fields) => {
+            into.push(1);
+            frame::put_u32(into, u32::try_from(fields.len()).unwrap_or(u32::MAX));
+            for field in fields {
+                frame::put_text(into, field);
+            }
+        }
+        None => into.push(0),
+    }
+    frame::put_text(into, &pushed.condition);
+    frame::put_u32(
+        into,
+        u32::try_from(pushed.parameters.len()).unwrap_or(u32::MAX),
+    );
+    for (name, value) in &pushed.parameters {
+        frame::put_text(into, name);
+        frame::put_bytes(into, &tessari_encoding::encode_payload(value).into_bytes());
+    }
+}
+
+fn take_pushed(from: &[u8], at: usize) -> Result<(tessari_session::Pushed, usize)> {
+    let (visible, mut at) = match from.get(at) {
+        Some(0) => (None, next(at)?),
+        Some(1) => {
+            let (count, mut at) = frame::take_u32(from, next(at)?)?;
+            let mut fields = std::collections::BTreeSet::new();
+            for _ in 0..count {
+                let (field, next_at) = frame::take_text(from, at)?;
+                fields.insert(field);
+                at = next_at;
+            }
+            (Some(fields), at)
+        }
+        _ => return Err(Error::Malformed),
+    };
+    let (condition, next_at) = frame::take_text(from, at)?;
+    at = next_at;
+    let (count, next_at) = frame::take_u32(from, at)?;
+    at = next_at;
+    let mut parameters = tessari_session::Parameters::new();
+    for _ in 0..count {
+        let (name, next_at) = frame::take_text(from, at)?;
+        let (value, next_at) = frame::take_bytes(from, next_at)?;
+        let value = tessari_encoding::decode_payload(&value).map_err(|_| Error::Malformed)?;
+        parameters.insert(name, value);
+        at = next_at;
+    }
+    Ok((
+        tessari_session::Pushed {
+            visible,
+            condition,
+            parameters,
+        },
+        at,
+    ))
 }
 
 fn next(at: usize) -> Result<usize> {
@@ -395,6 +518,7 @@ mod tests {
             from: Some(RecordId::Text("g".to_owned())),
             to: Some((RecordId::Int(-7), true)),
             after: Some(RecordId::Uuid([9; 16])),
+            pushed: None,
         };
         let body = asked.encode();
         assert_eq!(Gather::decode(&body).unwrap(), asked);
@@ -409,6 +533,15 @@ mod tests {
             ..asked
         };
         assert_eq!(Gather::decode(&open.encode()).unwrap(), open);
+        let narrowed = Gather {
+            pushed: Some(tessari_session::Pushed {
+                visible: Some(["total".to_owned()].into()),
+                condition: "(total > $p0)".to_owned(),
+                parameters: [("p0".to_owned(), tessari_types::Value::from(3_i64))].into(),
+            }),
+            ..open.clone()
+        };
+        assert_eq!(Gather::decode(&narrowed.encode()).unwrap(), narrowed);
 
         let page = Page {
             records: vec![
@@ -416,12 +549,18 @@ mod tests {
                 (RecordId::Text("h".to_owned()), Vec::new()),
             ],
             more: true,
+            resume: None,
         };
         let body = page.encode();
         assert_eq!(Page::decode(&body).unwrap(), page);
         let mut long = body.clone();
         long.push(0);
         assert!(matches!(Page::decode(&long), Err(Error::Malformed)));
+        let resuming = Page {
+            resume: Some(RecordId::Text("z".to_owned())),
+            ..page
+        };
+        assert_eq!(Page::decode(&resuming.encode()).unwrap(), resuming);
     }
 
     #[test]
@@ -559,6 +698,7 @@ mod door {
             from: None,
             to: None,
             after: None,
+            pushed: None,
         }
     }
 
@@ -667,5 +807,120 @@ mod door {
             matches!(retired, Err(Error::NotGathered(Ungathered::MapMoved))),
             "{retired:?}"
         );
+    }
+
+    fn narrowed(condition: &str, bound: i64, visible: Option<&str>) -> tessari_session::Pushed {
+        tessari_session::Pushed {
+            visible: visible.map(|field| [field.to_owned()].into()),
+            condition: condition.to_owned(),
+            parameters: [("p0".to_owned(), tessari_types::Value::from(bound))].into(),
+        }
+    }
+
+    fn ids(page: &Page) -> Vec<RecordId> {
+        page.records.iter().map(|(id, _)| id.clone()).collect()
+    }
+
+    #[test]
+    fn a_pushed_condition_narrows_the_page_before_it_travels() {
+        let authority = Authority::new();
+        let (db, table) = leader();
+        let (address, handle) = door(&authority, &db, Some(Reach::Store), 1 << 20, 1);
+        let page = ask(
+            &authority,
+            address,
+            &Gather {
+                pushed: Some(narrowed("(n > $p0)", 1, None)),
+                ..asking(table, 1)
+            },
+        )
+        .unwrap();
+        handle.join().unwrap();
+        assert_eq!(ids(&page), ["b", "c"].map(RecordId::from).to_vec());
+        assert!(!page.more);
+    }
+
+    #[test]
+    fn a_field_the_asker_cannot_see_is_not_searchable_through_the_leader() {
+        // ADR-0097 D1: the asker's grant shows it `other` and not `n`, so `n` is
+        // absent to the condition exactly as it is to the asker's own read —
+        // and the leader keeps nothing rather than revealing which records
+        // carry an `n` above 1.
+        let authority = Authority::new();
+        let (db, table) = leader();
+        let (address, handle) = door(&authority, &db, Some(Reach::Store), 1 << 20, 1);
+        let page = ask(
+            &authority,
+            address,
+            &Gather {
+                pushed: Some(narrowed("(n > $p0)", 1, Some("other"))),
+                ..asking(table, 1)
+            },
+        )
+        .unwrap();
+        handle.join().unwrap();
+        assert_eq!(ids(&page), Vec::<RecordId>::new());
+    }
+
+    #[test]
+    fn narrowed_pages_still_end_where_the_budget_cuts_them() {
+        let authority = Authority::new();
+        let (db, table) = leader();
+        let (address, handle) = door(&authority, &db, Some(Reach::Store), 1, 2);
+        let mut gather = Gather {
+            pushed: Some(narrowed("(n >= $p0)", 2, None)),
+            ..asking(table, 1)
+        };
+        let first = ask(&authority, address, &gather).unwrap();
+        assert_eq!(
+            (ids(&first), first.more, first.resume.clone()),
+            (vec![RecordId::from("b")], true, None)
+        );
+        gather.after = Some(RecordId::from("b"));
+        let second = ask(&authority, address, &gather).unwrap();
+        handle.join().unwrap();
+        assert_eq!(
+            (ids(&second), second.more),
+            (vec![RecordId::from("c")], false)
+        );
+    }
+
+    #[test]
+    fn a_page_that_keeps_nothing_it_read_says_where_it_got_to() {
+        let authority = Authority::new();
+        let db = Db::in_memory().unwrap();
+        let mut script = String::from(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
+             DEFINE TABLE ledger (n int) IDENTITY uuid SPLIT AT 'g';",
+        );
+        for n in 0..1100 {
+            script.push_str(&format!(" CREATE ledger:'a{n:04}' = {{ n: {n} }};"));
+        }
+        db.session().run(&script).unwrap();
+        let table = {
+            let mut transaction = db.store().begin().unwrap();
+            Catalog::new(&mut transaction)
+                .table_id(NamespaceId::new(1), DatabaseId::new(1), "ledger")
+                .unwrap()
+                .unwrap()
+        };
+        let db = Arc::new(db);
+        let (address, handle) = door(&authority, &db, Some(Reach::Store), 1 << 20, 2);
+        let mut gather = Gather {
+            pushed: Some(narrowed("(n >= $p0)", 1095, None)),
+            ..asking(table, 1)
+        };
+        let first = ask(&authority, address, &gather).unwrap();
+        assert!(first.records.is_empty() && first.more, "{:?}", ids(&first));
+        assert_eq!(
+            first.resume,
+            Some(RecordId::from("a1023")),
+            "resumes after the last record read"
+        );
+        gather.after = first.resume;
+        let second = ask(&authority, address, &gather).unwrap();
+        handle.join().unwrap();
+        assert_eq!(ids(&second).len(), 5);
+        assert!(!second.more);
     }
 }

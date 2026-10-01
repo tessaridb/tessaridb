@@ -117,7 +117,7 @@ impl Session<'_> {
                 let (_, address) = self.address(transaction, target)?;
                 self.refuse_reading_a_vault(transaction, address.table, &target.table)?;
                 if let Some((found, note)) =
-                    self.gather_a_part(transaction, address.table, Part::Record(&address.id))?
+                    self.gather_a_part(transaction, address.table, Part::Record(&address.id), None)?
                 {
                     reporting.collected.push(note);
                     let visible = self.visible_in(transaction, address.table)?;
@@ -148,7 +148,9 @@ impl Session<'_> {
                 let (context, id) = self.resolve_table(transaction, table)?;
                 self.refuse_reading_a_vault(transaction, id, table)?;
                 let searched = self.searched_for(transaction, id, &shown(select))?;
-                if let Some((found, note)) = self.gather_a_part(transaction, id, Part::Whole)? {
+                if let Some((found, note)) =
+                    self.gather_a_part(transaction, id, Part::Whole, None)?
+                {
                     reporting.collected.push(note);
                     let visible = self.visible_in(transaction, id)?;
                     return Ok((
@@ -183,6 +185,7 @@ impl Session<'_> {
                         upper: upper.fixed(*span)?,
                         inclusive: *inclusive,
                     },
+                    None,
                 )? {
                     reporting.collected.push(note);
                     return Ok((
@@ -237,9 +240,20 @@ impl Session<'_> {
                 let mut expressions: Vec<&Expr> = vec![condition];
                 expressions.extend(shown(select));
                 let searched = self.searched_for(transaction, id, &expressions)?;
-                if let Some((found, note)) = self.gather_a_part(transaction, id, Part::Whole)? {
+                // ADR-0097: the leader may narrow what it sends by the condition,
+                // under this session's visibility. Every record that arrives is
+                // still tested below, so the narrowing changes only what travels.
+                let visible = self.visible_in(transaction, id)?;
+                let pushed =
+                    tessari_ql::portable(condition).map(|(condition, parameters)| crate::Pushed {
+                        visible: visible.clone(),
+                        condition,
+                        parameters,
+                    });
+                if let Some((found, note)) =
+                    self.gather_a_part(transaction, id, Part::Whole, pushed.as_ref())?
+                {
                     reporting.collected.push(note);
-                    let visible = self.visible_in(transaction, id)?;
                     // Narrowed after the records are in hand, over the redacted
                     // record, exactly as a materialised source is: a hidden
                     // field is as absent to this condition as to a local scan.

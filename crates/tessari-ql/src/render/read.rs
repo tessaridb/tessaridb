@@ -213,7 +213,24 @@ pub(crate) fn write_expr(out: &mut String, expr: &Expr) -> Result<()> {
         ExprKind::Negate(_) => unwritten("a negation"),
         ExprKind::Literal(_) => unwritten("a literal value"),
         ExprKind::Fold { .. } => unwritten("a fold"),
-        ExprKind::Call { .. } => unwritten("a function call"),
+        // A call is its spelling and its arguments, each written as any other
+        // expression — so a literal argument is refused here like any literal.
+        ExprKind::Call {
+            function,
+            arguments,
+            ..
+        } => {
+            out.push_str(function.spelling());
+            out.push('(');
+            for (position, argument) in arguments.iter().enumerate() {
+                if position > 0 {
+                    out.push_str(", ");
+                }
+                write_expr(out, argument)?;
+            }
+            out.push(')');
+            Ok(())
+        }
         ExprKind::Table(_) => unwritten("a table in a value position"),
         ExprKind::Record(_) => unwritten("a record in a value position"),
         ExprKind::Array(_) => unwritten("an array"),

@@ -22,6 +22,7 @@ mod function;
 mod lexer;
 pub mod literal;
 mod parser;
+mod portable;
 mod render;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
@@ -41,6 +42,7 @@ pub use error::{Error, Result};
 pub use function::{Function, Purity};
 pub use lexer::tokenize;
 pub use parser::{parse, parse_expression, parse_read};
+pub use portable::{bound_condition, portable};
 pub use render::render;
 pub use tessari_types::BinaryOp;
 pub use token::{Keyword, Punct, Span, Spanned, Token};

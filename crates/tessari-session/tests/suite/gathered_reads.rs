@@ -111,6 +111,8 @@ type Question = (u32, Option<RecordId>, Option<(RecordId, bool)>);
 struct FromTheLeader {
     leader: Arc<Store>,
     asked: Mutex<Vec<Question>>,
+    /// The condition each question carried, in the order asked (ADR-0097).
+    pushed: Mutex<Vec<Option<tessari_session::Pushed>>>,
 }
 
 impl Gather for FromTheLeader {
@@ -123,6 +125,7 @@ impl Gather for FromTheLeader {
                 .to
                 .map(|(id, inclusive)| (id.clone(), inclusive)),
         ));
+        self.pushed.lock().unwrap().push(asked.pushed.cloned());
         let transaction = self.leader.begin().unwrap();
         let records = transaction
             .records_between(
@@ -134,6 +137,12 @@ impl Gather for FromTheLeader {
                 asked.most.saturating_add(1),
             )
             .unwrap();
+        // Narrowed as the peer door narrows, so every equality below runs
+        // with the leader's half of the pushdown in place.
+        let records = match asked.pushed {
+            Some(pushed) => tessari_session::keeping(&self.leader, pushed, records).unwrap(),
+            None => records,
+        };
         if records.len() > asked.most {
             return Err(Unanswered::Ceiling);
         }
@@ -192,6 +201,7 @@ fn pair() -> Pair {
     let gatherer = Arc::new(FromTheLeader {
         leader: Arc::clone(&leader),
         asked: Mutex::new(Vec::new()),
+        pushed: Mutex::new(Vec::new()),
     });
     Pair {
         leader,
@@ -428,6 +438,45 @@ fn a_hidden_field_is_hidden_in_gathered_records_too() {
     );
     let (matched, _) = answer(&mut follower, "SELECT * FROM ledger WHERE total > 0;");
     assert!(matched.is_empty(), "{matched:?}");
+}
+
+/// ADR-0097 — a condition that reads only the record travels, with the
+/// session's visibility and no value written into it; one that reads the
+/// clock or the generator stays home.
+#[test]
+fn a_condition_travels_to_the_leader_with_the_askers_visibility() {
+    let pair = pair();
+    let pushed = |user: &str, read: &str| {
+        let mut follower = pair.on_the_follower(user);
+        drop(follower.run(read));
+        let mut sent = std::mem::take(&mut *pair.gatherer.pushed.lock().unwrap());
+        sent.pop().expect("the read gathered")
+    };
+    let full = pushed("reader", "SELECT * FROM ledger WHERE total > 2;").expect("pushed");
+    assert_eq!(full.visible, None);
+    assert!(
+        !full.condition.contains('2'),
+        "a value became text: {}",
+        full.condition
+    );
+    assert_eq!(
+        full.parameters.values().collect::<Vec<_>>(),
+        vec![&Value::from(2_i64)]
+    );
+    let narrow = pushed("narrow", "SELECT * FROM ledger WHERE total > 2;").expect("pushed");
+    assert!(
+        narrow
+            .visible
+            .as_ref()
+            .is_some_and(|fields| !fields.contains("total")),
+        "{:?}",
+        narrow.visible
+    );
+    assert_eq!(
+        pushed("reader", "SELECT * FROM ledger WHERE note = rand::uuid();"),
+        None,
+        "a condition that reads the generator was pushed"
+    );
 }
 
 /// A follower of the whole database, recorded as served that way.

@@ -52,6 +52,9 @@ pub struct Asked<'a> {
     /// The most records the answer may hold. An answer that would hold more is
     /// [`Unanswered::Ceiling`] and never a shortened one.
     pub most: usize,
+    /// A condition the leader may narrow the records by first (ADR-0097); the
+    /// asker tests every record again whatever the leader did with it.
+    pub pushed: Option<&'a crate::Pushed>,
 }
 
 /// What a shard's leader answered.
@@ -190,6 +193,7 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         id: TableId,
         part: Part<'_>,
+        pushed: Option<&crate::Pushed>,
     ) -> Result<Option<(Stored, Note)>> {
         let Some(missing) = self.missing(transaction, id, part)? else {
             return Ok(None);
@@ -215,6 +219,7 @@ impl Session<'_> {
                     shard: span.id,
                     window,
                     most,
+                    pushed,
                 };
                 match gatherer.gather(&asked) {
                     Ok(gathered) => gathered.records,
