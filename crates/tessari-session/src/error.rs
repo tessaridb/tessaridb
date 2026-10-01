@@ -1007,6 +1007,9 @@ pub enum Error {
         table: String,
         /// The shard asked for.
         shard: u32,
+        /// A peer holding the whole table that this node has heard serving, when
+        /// it knows one — the node a surface redirects the read to (G051 SG3).
+        holder: Option<crate::Peer>,
     },
 
     /// A gathered read would hold more records than a node holds in memory (G033).

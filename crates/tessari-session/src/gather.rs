@@ -131,12 +131,16 @@ pub(crate) struct Missing {
 
 impl Missing {
     /// The refusal a shard that did not answer gives.
-    fn unanswered(&self, shard: ShardId, why: Unanswered) -> Error {
+    ///
+    /// `holder` is named only by a moved map, the one of the three a node
+    /// holding the whole table answers in its stead.
+    fn unanswered(&self, shard: ShardId, why: Unanswered, holder: Option<crate::Peer>) -> Error {
         match why {
             Unanswered::Ceiling => self.too_much(),
             Unanswered::Moved => Error::ShardMapMoved {
                 table: self.table.clone(),
                 shard: shard.get(),
+                holder,
             },
             Unanswered::Refused(why) => Error::NotGathered {
                 table: self.table.clone(),
@@ -189,8 +193,24 @@ impl Session<'_> {
     /// own, and never through the read's: under `VERSION` that one is the
     /// catalog as it stood, and a peer declared since would be invisible.
     pub(crate) fn not_held_here(&self, missing: &Missing) -> Result<Error> {
+        Ok(missing.refusal(self.whole_holder(missing)?))
+    }
+
+    /// The refusal a shard that did not answer gives; a moved map names the
+    /// whole holder as [`Self::not_held_here`] does (G051 SG3).
+    fn unanswered(&self, missing: &Missing, shard: ShardId, why: Unanswered) -> Result<Error> {
+        let holder = match why {
+            Unanswered::Moved => self.whole_holder(missing)?,
+            Unanswered::Ceiling | Unanswered::Refused(_) => None,
+        };
+        Ok(missing.unanswered(shard, why, holder))
+    }
+
+    /// A serving peer holding the whole of `missing`'s table, when this node
+    /// knows one.
+    fn whole_holder(&self, missing: &Missing) -> Result<Option<crate::Peer>> {
         let Some(known) = self.elsewhere.as_ref() else {
-            return Ok(missing.refusal(None));
+            return Ok(None);
         };
         let me = self.store.node_identity()?.id;
         let whole = tessari_storage::Reach::Database(missing.namespace, missing.database);
@@ -204,7 +224,7 @@ impl Session<'_> {
                     .filter(|node| *node != me)
                     .and_then(|node| known.serving(&row.endpoint, &node))
             });
-        Ok(missing.refusal(holder))
+        Ok(holder)
     }
 
     /// What of `part` of table `id` this node was not served, or `None` when it
@@ -325,7 +345,7 @@ impl Session<'_> {
                 };
                 match gatherer.gather(&asked) {
                     Ok(gathered) => gathered.records,
-                    Err(why) => return Err(missing.unanswered(span.id, why)),
+                    Err(why) => return Err(self.unanswered(&missing, span.id, why)?),
                 }
             } else if let Some(ordered) = ordered {
                 // Ranked exactly as a leader ranks its shard, a page at a time,
@@ -449,7 +469,7 @@ impl Session<'_> {
                         ..
                     }) => partials,
                     Ok(_) => return Ok(None),
-                    Err(why) => return Err(missing.unanswered(span.id, why)),
+                    Err(why) => return Err(self.unanswered(&missing, span.id, why)?),
                 };
                 if !merge_partials(&mut groups, &occurrences, partials)? {
                     return Ok(None);

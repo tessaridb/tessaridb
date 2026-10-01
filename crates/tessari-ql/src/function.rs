@@ -403,6 +403,11 @@ pub enum Function {
     ObjectHas,
     /// `object::merge(a, b)` — both objects' fields, `b` winning a collision.
     ObjectMerge,
+    /// `session::context()` — `{ node, namespace, database }`: the node this
+    /// session is talking to and the tenancy the session has selected, `null`
+    /// where nothing is. What a client following a redirect checks on arrival
+    /// and replays from where it left (G051 SG3).
+    SessionContext,
 }
 
 /// The functions, declared once.
@@ -537,6 +542,7 @@ impl Function {
         ObjectEntries => "object::entries",
         ObjectHas => "object::has",
         ObjectMerge => "object::merge",
+        SessionContext => "session::context",
     }
 
     /// Whether this function has an answer for an argument that holds nothing.
@@ -622,7 +628,9 @@ mod tests {
             .filter(|function| function.purity() == Purity::PerStatement)
             .map(|function| function.spelling())
             .collect();
-        assert_eq!(constant, ["time::now"]);
+        // `session::context` joined in G051 SG3: fixed for a statement, and
+        // folding it once above the records is exactly right.
+        assert_eq!(constant, ["time::now", "session::context"]);
     }
 
     /// The whole membership of [`Purity::PerCall`], asserted the same way.
@@ -658,7 +666,7 @@ mod tests {
     fn every_function_is_classified_and_only_the_clock_and_the_generator_are_not_pure() {
         for function in Function::ALL {
             let expected = match function {
-                Function::TimeNow => Purity::PerStatement,
+                Function::TimeNow | Function::SessionContext => Purity::PerStatement,
                 Function::RandUuid
                 | Function::SearchRanks
                 | Function::SearchScore

@@ -16,15 +16,16 @@
 
 #![allow(clippy::panic, clippy::unwrap_used)]
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tessari_encoding::{NODE_ID_LEN, Roles};
-use tessari_session::{Elsewhere, Peer};
+use tessari_session::{Elsewhere, Outcome, Peer};
 use tessari_storage::{Catalog, Reach, ReplicaDefinition, Store};
-use tessari_types::{DatabaseId, Epoch, NamespaceId, ShardId};
+use tessari_types::{DatabaseId, Epoch, NamespaceId, ShardId, Value};
 
-use crate::gathered_reads::{follower_of_the_middle, leader, signed_in};
+use crate::gathered_reads::{Moved, follower_of_the_middle, leader, signed_in};
 
 const WHOLE: [u8; NODE_ID_LEN] = [5; NODE_ID_LEN];
 const WHOLE_AT: &str = "whole.example:9180";
@@ -174,4 +175,77 @@ fn a_node_is_never_named_as_the_holder_it_is_not() {
     for read in REFUSED {
         assert_eq!(named(&follower, me, read), None, "{read}");
     }
+}
+
+/// SG3 — a gathered read whose leader holds a different map of the table
+/// names the whole holder too: the read this node cannot answer now is one that
+/// node answers, so a surface can send the client there (a transient redirect)
+/// instead of making it parse a refusal and retry by hand.
+#[test]
+fn a_moved_map_names_a_node_holding_the_whole_database() {
+    let leader = leader();
+    let follower = follower_of_the_middle(&leader);
+    let holder_of = |heard: [u8; NODE_ID_LEN]| {
+        let mut session = signed_in(&follower, "root")
+            .among(Arc::new(Heard { node: heard }))
+            .gathering(Arc::new(Moved));
+        session
+            .run("USE NAMESPACE prod; USE DATABASE shop;")
+            .unwrap();
+        match session.run("SELECT * FROM ledger;") {
+            Err(tessari_session::Error::ShardMapMoved { table, holder, .. }) => {
+                assert_eq!(table, "ledger");
+                holder
+            }
+            other => panic!("expected ShardMapMoved, got {other:?}"),
+        }
+    };
+    assert_eq!(holder_of(WHOLE), None, "no peer declared yet");
+    declare(&follower, WHOLE, the_database());
+    assert_eq!(
+        holder_of(WHOLE),
+        Some(Peer {
+            endpoint: WHOLE_AT.to_owned(),
+            node: WHOLE,
+            epoch: ITS_EPOCH,
+        })
+    );
+    assert_eq!(holder_of([6; NODE_ID_LEN]), None, "a node nobody heard");
+}
+
+/// SG3 — `session::context()` is what a client following a redirect asks on
+/// both ends: which node it is talking to, and which tenancy its session had
+/// selected there. Any session may ask, a reader included: the node id is what
+/// every redirect frame already discloses and the tenancy is the caller's own.
+#[test]
+fn a_session_reads_its_node_and_its_own_tenancy() {
+    let leader = leader();
+    let me = leader.node_identity().unwrap().id;
+    let mut session = signed_in(&leader, "reader");
+    let context = |session: &mut tessari_session::Session<'_>| match session
+        .run("RETURN session::context();")
+        .unwrap()
+        .pop()
+    {
+        Some(Outcome::Value(value)) => value,
+        other => panic!("expected a value, got {other:?}"),
+    };
+    let expected = |namespace: Value, database: Value| {
+        Value::Object(BTreeMap::from([
+            ("node".to_owned(), Value::Uuid(me)),
+            ("namespace".to_owned(), namespace),
+            ("database".to_owned(), database),
+        ]))
+    };
+    assert_eq!(context(&mut session), expected(Value::Null, Value::Null));
+    session.run("USE NAMESPACE prod;").unwrap();
+    assert_eq!(
+        context(&mut session),
+        expected(Value::from("prod"), Value::Null)
+    );
+    session.run("USE DATABASE shop;").unwrap();
+    assert_eq!(
+        context(&mut session),
+        expected(Value::from("prod"), Value::from("shop"))
+    );
 }

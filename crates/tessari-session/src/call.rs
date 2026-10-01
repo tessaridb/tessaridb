@@ -329,6 +329,9 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         // A search's own answers about its record, answered in the evaluator
         // where the record's hit is in scope (ADR-0105).
         Function::SearchTable | Function::SearchSnippet => Ok(Value::None),
+        // The session's node and tenancy are not values either, and are answered
+        // in the evaluator, where the session is.
+        Function::SessionContext => Ok(Value::None),
         // The one function that makes a window sayable, and the reason
         // `GROUP BY` takes an expression: without it a caller would have to
         // store the bucket alongside the instant and keep the two in step.

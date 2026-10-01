@@ -81,9 +81,10 @@ impl Session<'_> {
                     return Err(missing.unanswered(
                         span.id,
                         Unanswered::Refused("the leader did not count the shard".to_owned()),
+                        None,
                     ));
                 }
-                Err(why) => return Err(missing.unanswered(span.id, why)),
+                Err(why) => return Err(self.unanswered(&missing, span.id, why)?),
             };
             total.documents = total.documents.saturating_add(counted.documents);
             total.tokens = total.tokens.saturating_add(counted.tokens);

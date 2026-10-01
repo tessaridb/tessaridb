@@ -2181,7 +2181,11 @@ retired: [ { id: 2, into: [4, 5] } ]
 A node gathering a shard it lacks from another node whose map differs — the
 shard retired there, or minted by a change this node has not applied yet — is
 refused with **`ShardMapMoved`**, naming the table and the shard. It is
-retriable: read again once the change has reached this node.
+retriable: read again once the change has reached this node. From
+`0.20.0-beta` it also names a node holding the whole table when this node knows
+one, exactly as `NotHeldHere` does (§7d), and over the wire leaves as a
+`transient` `Elsewhere` frame to that node: the maps come back into agreement on
+their own, and the whole holder answers in the meantime.
 
 **What a shard is, underneath.** A split table's records are stored exactly
 where an unsplit table's are; nothing is rewritten. What changes is the log: a
@@ -5325,6 +5329,25 @@ sentence for `from_unix`, and there is no `time::unix_millis` to be the one
 here. `time::now()` carries a remainder nearly always, so a strict `time::unix`
 would fail the pairing everybody writes. The remainder is still on the instant
 when the whole value is kept.
+
+### The session
+
+| Written | What it answers |
+|---|---|
+| `session::context()` | `{ node, namespace, database }` — the identity of the node this session is talking to, and the namespace and database the session selected, `null` where it selected none |
+
+```
+RETURN session::context();
+```
+
+It is what a client following a redirect asks at both ends: on the node it is
+leaving, which tenancy to select again after the move, and on the node it
+arrives at, whether that is the node the redirect named — the `node` here is
+the identity an `Elsewhere` frame carries. **Every session may ask**, a reader
+with one grant included: the node identity is what every redirect already
+discloses, and the names are the session's own `USE`. `$node`, which carries the
+node's roles and endpoints, stays behind its authority. The answer is fixed for
+a statement, since a `USE` is a statement of its own.
 
 ### Generated identifiers
 

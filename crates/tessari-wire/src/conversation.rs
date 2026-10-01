@@ -28,6 +28,8 @@
 
 mod carried;
 mod feeding;
+#[cfg(test)]
+mod tests;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -390,12 +392,14 @@ pub(crate) fn respond_vault(
 
 /// The redirect a refusal stands for, if it stands for one.
 ///
-/// Three refusals mean *go there* and they differ in what they promise. A read
+/// Four refusals mean *go there* and they differ in what they promise. A read
 /// beyond a bound is about **this read** — the node's own copy may satisfy the
 /// same bound at the next request — so it is `Transient`, and so is a read a
 /// node holding part of a split table could not gather, sent to a peer holding
 /// the whole of it (G051 C4): the same table read outside a transaction is one
-/// this node gathers itself. A write into a range
+/// this node gathers itself. So is a gathered read whose leader holds a
+/// different map of the table (G051 SG3): the maps come back into agreement on
+/// their own, and the whole holder answers meanwhile. A write into a range
 /// another node leads names a **leadership**, which holds until its epoch is
 /// superseded, so it is `Settled` and a client may remember it per range.
 ///
@@ -413,10 +417,16 @@ fn redirected(
             epoch,
             ..
         }) => (endpoint, node, epoch, redirect::Settlement::Transient),
-        Err(tessaridb::Error::NotHeldHere {
-            holder: Some(holder),
-            ..
-        }) => (
+        Err(
+            tessaridb::Error::NotHeldHere {
+                holder: Some(holder),
+                ..
+            }
+            | tessaridb::Error::ShardMapMoved {
+                holder: Some(holder),
+                ..
+            },
+        ) => (
             &holder.endpoint,
             &holder.node,
             &holder.epoch,

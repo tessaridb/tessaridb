@@ -234,7 +234,7 @@ impl Gather for Unreachable {
 
 /// A gatherer whose leader holds a different map of the table.
 #[derive(Debug)]
-struct Moved;
+pub(crate) struct Moved;
 
 impl Gather for Moved {
     fn gather(&self, _: &Asked<'_>) -> Result<Gathered, Unanswered> {
@@ -707,7 +707,7 @@ fn a_read_that_cannot_be_gathered_whole_is_refused_and_never_answered_in_part() 
     let mut moved = signed_in(&pair.follower, "reader").gathering(Arc::new(Moved));
     moved.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
     match refused(&mut moved, "SELECT * FROM ledger;") {
-        tessari_session::Error::ShardMapMoved { table, shard } => {
+        tessari_session::Error::ShardMapMoved { table, shard, .. } => {
             assert_eq!((table.as_str(), shard), ("ledger", 1));
         }
         other => panic!("expected ShardMapMoved, got {other:?}"),

@@ -258,6 +258,7 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::ObjectEntries
         | Function::ObjectHas
         | Function::ObjectMerge
+        | Function::SessionContext
         | Function::SearchHighlight => None,
     }
 }

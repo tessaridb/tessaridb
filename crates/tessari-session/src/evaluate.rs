@@ -227,6 +227,9 @@ impl Session<'_> {
                             .collect(),
                     ));
                 }
+                if *function == Function::SessionContext {
+                    return self.session_context();
+                }
                 if let Some(distance) =
                     self.distance_between(transaction, *function, arguments, scope)?
                 {

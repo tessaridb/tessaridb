@@ -33,7 +33,8 @@ impl Function {
             | Self::RandUuid
             | Self::SearchRanks
             | Self::SearchTable
-            | Self::SearchSnippet => 0,
+            | Self::SearchSnippet
+            | Self::SessionContext => 0,
             Self::StringLen
             | Self::StringLower
             | Self::StringUpper
@@ -145,6 +146,9 @@ impl Function {
             // The clock moves while a statement runs; the statement should not
             // see it move.
             Self::TimeNow => Purity::PerStatement,
+            // The node and the session's tenancy cannot change while one
+            // statement runs: a `USE` is a statement of its own.
+            Self::SessionContext => Purity::PerStatement,
             // The one function the fold may not touch. Reading no record makes
             // it *look* constant, and a `SELECT rand::uuid() AS id` evaluated
             // once above the records hands every row the same id.

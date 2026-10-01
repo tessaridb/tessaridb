@@ -30,6 +30,11 @@ compares carries no pre-release suffix.
   member whose `REPLICATES` covers the table's database and which this node has
   heard serving, and leaves the wire as the `Elsewhere` frame, `transient`, to a
   client of minor ≥ 1. With no such member, or over HTTP, it is the refusal it was.
+  `ShardMapMoved` — a gathered read whose leader holds a different map of the
+  table — names that member and leaves the wire the same way.
+- **`session::context()`** — `{ node, namespace, database }`: the node this
+  session is talking to and the tenancy it selected. Open to every session; it is
+  what a client following a redirect checks on arrival and selects again there.
 - **An ordered `LIMIT` over a split table ranks on the leaders** (G051 C5,
   ADR-0102). `ORDER BY … LIMIT n` whose keys read only the record — vector
   distances included — sends each lacking shard's first `n` rather than all of its
@@ -143,7 +148,7 @@ compares carries no pre-release suffix.
 
 ### Changed
 
-- **1485 conformance cases** define the language and run in the build.
+- **1488 conformance cases** define the language and run in the build.
 - **`MATCHES FUZZY` counts swapping two adjacent letters as one edit** (G051
   T7.4, ADR-0100 D1.4), where it counted two, so it reaches a few more words —
   `vetcor` is now one edit from `vector`.
