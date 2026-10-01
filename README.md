@@ -266,7 +266,9 @@ follows is what runs today, not a roadmap.
   replicated and — where a member row places it (`LEADS`) — elected and led on
   its own node, so writes to two shards can be taken by two nodes, and a
   shard can be split or two merged while the table serves (`ALTER TABLE … SPLIT
-  AT`, `MERGE SHARD`); but nothing splits one by itself. A node holding only some shards
+  AT`, `MERGE SHARD`); but nothing splits one by itself. A table partitioned by a
+  field (`PARTITION BY region`) keeps each region's records in its shard, and a
+  read naming the region touches only that shard. A node holding only some shards
   answers a read of the rest from those shards' leaders — a `WHERE`, an
   unordered `LIMIT` and `count`/`sum`/`mean`/`min`/`max` are worked out there,
   under the caller's visibility — but an ordered top-n or a `variance` still

@@ -2117,7 +2117,8 @@ store names lands in the **last** shard, and `SPLIT AT` over those identities is
 sharding **by time**: older shards stop receiving writes. That is useful when the
 point is to keep old records apart from new ones. It is not how writes are
 spread: for that, name records by a key whose leading part varies — a tenant, a
-region, an account — and split on that.
+region, an account — and split on that, or let the table do it with
+`PARTITION BY` (below).
 
 ### Splitting and merging a table that holds records: `ALTER TABLE … SPLIT AT` · `MERGE SHARD`
 
@@ -2220,6 +2221,54 @@ name — follow it on the node that writes it. A feed over an unsplit table is
 unchanged and its changes carry no cursor. If a table is split while a feed
 follows it, the feed ends with a refusal and you subscribe again from the last
 change handled.
+
+### Partitioning a table by region: `PARTITION BY`
+
+A table can say which field decides where its records live:
+
+```
+DEFINE TABLE customers (region string, name string)
+    IDENTITY uuid
+    PARTITION BY region
+    SPLIT AT 'de', 'fr';
+```
+
+Every record's identity then **begins with its region**: the store names a new
+record `'<region>:<uuid v7>'` — `customers:'de:01926f…'` — so a region's records
+sort together, between `'de:'` and the next name, and `SPLIT AT` over region
+names puts each region in a shard of its own. The split points are plain region
+names; a shard holds every region that sorts from its point up to the next one.
+
+The rule is checked on **every write and on every node that applies one**, by
+the same check that refuses a field the table does not declare:
+
+- **`PartitionNeedsGeneratedUuid`** — `PARTITION BY` on a table that does not
+  declare `IDENTITY uuid`. The store must be able to name a record by its region.
+- **`PartitionMismatch`** — naming the table, the record and the field: the
+  identity does not begin with the field's value and a `:`, or the value is not
+  text, is absent, or holds a `:` itself. An `UPDATE` that changes a record's
+  region is refused the same way — a record cannot move to another region's
+  shard; delete it and create it again. `CHECK TABLE` reports a stored record
+  that breaks the rule under `partition`.
+
+A record named by hand is accepted when its identity follows the rule:
+`CREATE customers:'fr:42' = { region: 'fr', name: 'n' }`.
+
+`INFO FOR TABLE` reports the field as `partition`, and its `definition`
+re-creates the clause.
+
+**A read naming one region reads that region.** A `WHERE` whose top level fixes
+the field to a text value — `WHERE region = 'de'`, alone or `AND` anything else
+— reads only the identities from `'de:'` to `'de;'` and tests the whole
+condition on each. `EXPLAIN` reports the read as a `span` and names the shards
+it touches; on a node holding part of the table, only those shards are gathered
+(§7d). Any other condition reads the table.
+
+**Placing a region on a node** is placing its shard: a member row with
+`LEADS SHARD prod.shop.customers 2` makes that node the candidate to lead the
+`'de'` shard (§7d). A node may also hold only its region —
+`REPLICATES SHARD prod.shop.customers 2` — and then answers a read of the whole
+table by gathering the other regions from their leaders.
 
 ### What a table declares about its fields
 
@@ -8012,6 +8061,13 @@ a write whose every range has a live leader of its own.
 
 A transaction that writes ranges led by two different nodes is refused as
 **`SpansLeaderships`**, naming both; write each leader's ranges separately.
+
+**A node subscribed to less than the store does not lead the store.** The
+store's leader writes every range no row places, and a leader collects from
+nobody, so it must hold all of it. A node whose own row says `REPLICATES SHARD`,
+`DATABASE` or `NAMESPACE` therefore stands only for the range its row places,
+and votes in the store's election without standing in it. Give the rows of the
+nodes that may lead the store `REPLICATES STORE`.
 
 `INFO FOR NODE` reports each peer's placement as `leads`, in the clause's own
 spelling, or `null`. **A row carrying `LEADS` cannot be dropped**
