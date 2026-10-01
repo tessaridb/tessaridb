@@ -1735,10 +1735,30 @@ fn backup_names_its_form_and_state_stays_an_ordinary_word() {
             .kind
             .clone()
     };
+    // A bare `BACKUP` is the snapshot (ADR-0094 D1); the log is asked for by
+    // name or by `FROM`, which only a log has.
     assert_eq!(
         kind("BACKUP;"),
         StatementKind::Backup {
             from: None,
+            form: BackupForm::State,
+            to: None,
+            of: Vec::new(),
+        }
+    );
+    assert_eq!(
+        kind("BACKUP LOG;"),
+        StatementKind::Backup {
+            from: None,
+            form: BackupForm::Log,
+            to: None,
+            of: Vec::new(),
+        }
+    );
+    assert_eq!(
+        kind("BACKUP LOG FROM 7;"),
+        StatementKind::Backup {
+            from: Some(7),
             form: BackupForm::Log,
             to: None,
             of: Vec::new(),
@@ -1845,20 +1865,29 @@ fn backup_of_names_the_part_a_script_carries() {
         panic!("not a backup");
     };
     assert_eq!((form, of.len()), (BackupForm::Script, 1));
-    // A snapshot keeps the catalog as the store keeps it, so a part is a script.
-    let snapshot = tessari_ql::parse("BACKUP STATE OF prod.orders;")
+    // A snapshot of one place (ADR-0094 D5): one reach, read at one version.
+    let StatementKind::Backup { form, of, .. } = kind("BACKUP STATE OF prod.orders;") else {
+        panic!("not a backup");
+    };
+    assert_eq!((form, of.len()), (BackupForm::State, 1));
+    let StatementKind::Backup { form, of, .. } = kind("BACKUP OF NAMESPACE prod;") else {
+        panic!("not a backup");
+    };
+    assert_eq!((form, of.len()), (BackupForm::State, 1));
+    // Two places are two snapshots, and the refusal says so.
+    let two = tessari_ql::parse("BACKUP STATE OF NAMESPACE prod, NAMESPACE crm;")
         .unwrap_err()
         .to_string();
     assert!(
-        snapshot.contains("BACKUP SCRIPT OF"),
-        "the refusal of a partial snapshot does not name the form that carries a part: {snapshot}"
+        two.contains("one place"),
+        "a snapshot of two places is refused without saying why: {two}"
     );
     let StatementKind::Backup { of, .. } = kind("BACKUP STATE;") else {
         panic!("not a backup");
     };
     assert!(of.is_empty(), "a backup with no `OF` is the whole store");
 
-    let refused = tessari_ql::parse("BACKUP OF NAMESPACE prod;")
+    let refused = tessari_ql::parse("BACKUP LOG OF NAMESPACE prod;")
         .unwrap_err()
         .to_string();
     assert!(
@@ -1881,11 +1910,11 @@ fn backup_to_names_a_file_in_every_form() {
             .clone()
     };
     assert_eq!(
-        kind("BACKUP TO 'nightly.tessarilog';"),
+        kind("BACKUP TO 'nightly.tessarisnap';"),
         StatementKind::Backup {
             from: None,
-            form: BackupForm::Log,
-            to: Some("nightly.tessarilog".to_owned()),
+            form: BackupForm::State,
+            to: Some("nightly.tessarisnap".to_owned()),
             of: Vec::new(),
         }
     );

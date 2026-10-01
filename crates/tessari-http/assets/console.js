@@ -215,15 +215,15 @@
     why.hidden = one2.why === void 0;
     const actions = made("div", "row tight");
     const told3 = made("span", "status");
-    const copied = made("button", "quiet");
-    copied.type = "button";
-    copied.textContent = "Copy";
-    copied.addEventListener("click", () => copy(one2.what, what, told3));
+    const copied2 = made("button", "quiet");
+    copied2.type = "button";
+    copied2.textContent = "Copy";
+    copied2.addEventListener("click", () => copy(one2.what, what, told3));
     const opened = made("button", "quiet");
     opened.type = "button";
     opened.textContent = "Open in Run";
     opened.addEventListener("click", () => reopen(one2.what));
-    actions.append(copied, opened, told3);
+    actions.append(copied2, opened, told3);
     row.append(head, what, said3, why, actions);
     return row;
   }
@@ -1687,6 +1687,21 @@
     }
     return box;
   }
+  function furthest(followers) {
+    let most = null;
+    for (const one2 of followers) {
+      if (typeof one2.behind === "number" && (most === null || one2.behind > most)) {
+        most = one2.behind;
+      }
+    }
+    return most === null ? null : `${most} record(s)`;
+  }
+  function copied(upstream) {
+    if (typeof upstream?.copies !== "number" || upstream.copies === 0) {
+      return null;
+    }
+    return `${told2(upstream.copied_records)} record(s) in ${upstream.copies} cop${upstream.copies === 1 ? "y" : "ies"}`;
+  }
   function draw2(into, seen) {
     const cluster = seen.cluster ?? {};
     const mine = seen.roles ?? [];
@@ -1702,6 +1717,11 @@
         fact("epoch", told2(cluster.epoch)),
         fact("campaigns", told2(cluster.campaigns)),
         fact("collecting from here", String((cluster.followers ?? []).length)),
+        fact("furthest follower behind", furthest(cluster.followers ?? [])),
+        // Absent on a node that follows nobody: `in sync` there would be a
+        // state it has never been in.
+        fact("sync with its upstream", cluster.upstream?.state ?? null),
+        fact("copied from its upstream", copied(cluster.upstream)),
         wanted2 === null ? null : fact("declared for it", wanted2.join(", "))
       ],
       "self",
@@ -2779,7 +2799,7 @@
       says: "every live record at one moment; restores whole, and a pruned log does not stop it"
     },
     log: {
-      statement: "BACKUP",
+      statement: "BACKUP LOG",
       suffix: "tessarilog",
       says: "every commit in order; a restore can stop at any point in it"
     },
@@ -2832,11 +2852,20 @@
         says: `Writes ${name} into the node's backup folder: ${WHAT[form].says}.`
       };
     }
-    if (form !== "script") {
-      return { missing: "a part of the store is written as TessariQL; choose that form" };
+    if (form === "log") {
+      return { missing: "a log of a part restores nowhere; choose a snapshot or TessariQL" };
     }
     const part = places();
     if ("missing" in part) return part;
+    if (form === "state") {
+      if (part.of.includes(",")) {
+        return { missing: "a snapshot is of one place; name one, or choose TessariQL for several" };
+      }
+      return {
+        statement: `BACKUP STATE OF ${part.of} TO ${quoted(name)};`,
+        says: `Writes ${name} into the node's backup folder: ${part.of} at one moment, with the store's users; it restores into an empty store.`
+      };
+    }
     return {
       statement: `BACKUP SCRIPT OF ${part.of} TO ${quoted(name)};`,
       says: `Writes ${name} into the node's backup folder: ${part.of} as statements, with the analyzers their fields use; users belong to the whole store and stay out of it.`

@@ -12,6 +12,52 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.18.0-beta — 2026-10-01
+
+### Changed
+
+- **A backup is a snapshot unless the log is asked for** (G049, ADR-0094). `BACKUP`,
+  `BACKUP … TO`, `GET /backup`, `--backup <file>` and the console now write a state
+  snapshot. The log is `BACKUP LOG`, `GET /backup?as=log`, or any form with a
+  position (`BACKUP FROM n`, `?from=n`, `--backup <file> --from n`; `--from 1` is
+  the whole log). A client's `backup()` with no position now receives a snapshot.
+- **A serving node bounds its log by default**: the newest 100 000 records of each
+  log are kept and the rest pruned. `TESSARIDB_RETAIN_RECORDS` sets another count
+  or `none`; `DEFINE NODE RETAIN` stored on the node wins over both, and `RETAIN
+  NONE` is now remembered as a choice. `INFO FOR NODE` reports `retain_source`
+  (`statement`, `environment`, `default`). A store upgraded from an earlier version
+  starts pruning at its first housekeeping pass — take a snapshot first if its
+  history matters, or start it with `TESSARIDB_RETAIN_RECORDS=none`.
+- **The refusal for a read below a pruned log names its repair**: a follower node
+  copies its leader's state by itself; a client re-reads what it follows and follows
+  again from the current tail.
+
+### Added
+
+- **A follower below its leader's pruned log re-seeds itself** (ADR-0094 D3). A node
+  that leads nothing copies its leader's state over one peer connection, then follows
+  again from where the copy stood; a node that leads a range reports `stranded` and is
+  restored from a snapshot. `INFO FOR NODE` answers `cluster.upstream` (`state`,
+  `copied_records`, `copies`); `/metrics` adds `tessari_replica_state{state}`,
+  `tessari_replica_copied_records` and `tessari_follower_behind_records{node}`; the
+  console's cluster map shows the sync state and how far the furthest follower is
+  behind.
+- **A snapshot of one place**: `BACKUP STATE OF NAMESPACE n` or `OF n.d` (also bare
+  `BACKUP OF …`) carries that place's records and the catalog that defines it, with
+  the store's users, and restores into an empty store. Two places are two snapshots.
+- **A snapshot is never held in memory** (ADR-0094 D6): `GET /backup` writes it to an
+  unlinked file in the node's temporary folder and sends it from there with its exact
+  `Content-Length` (the protocol forbids chunked framing), and `BACKUP … TO` writes it
+  straight into the file. Measured on a debug build, the node's peak memory during
+  `GET /backup` was 25.9 MB for a 21.8 MB snapshot and 28.5 MB for an 87.0 MB one
+  (idle 20.4 and 21.3 MB), against 160 MB and 553 MB when the same snapshot is answered
+  whole over `POST /script` — use `GET /backup` or `TO` for a large store, and leave the
+  node's temporary folder room for one snapshot.
+- **A snapshot on a cluster** is taken on any node holding the whole place, a
+  follower included; a node holding part of it — some shards of a split table —
+  refuses with `NotHeldHere`, naming the shards it lacks.
+- **1463 conformance cases** define the language and run in the build.
+
 ## 0.17.1-beta — 2026-10-01
 
 - **The console's Vault tab reads and writes records** (G048). A **Records** pane

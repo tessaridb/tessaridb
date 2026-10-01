@@ -233,6 +233,44 @@ impl<H: Holding> Connection<H> {
         };
         let voted = match asked {
             None => None,
+            // A copy streams (ADR-0094 D3): the store side runs on the bridge
+            // and hands each frame over a bounded channel, so a follower that
+            // reads slowly slows the read instead of filling memory, and one
+            // that goes away closes the channel and ends the read.
+            Some((tag, _)) if tag == PeerFrame::State.tag() => {
+                let holding = Arc::clone(&self.holding);
+                let node = said.node;
+                let (sender, receiver) = tokio::sync::mpsc::channel::<(u8, Vec<u8>)>(4);
+                let copying = self.store(move || {
+                    holding.copied(node, &mut |tag, body| {
+                        sender.blocking_send((tag, body)).map_err(|_| {
+                            Error::Transport("the follower stopped reading the copy".to_owned())
+                        })
+                    })
+                });
+                let forwarding = async {
+                    let mut receiver = receiver;
+                    while let Some((tag, body)) = receiver.recv().await {
+                        bounded(frame_async::write_tagged(&mut link, tag, &body)).await??;
+                    }
+                    Ok::<(), Error>(())
+                };
+                let (copied, forwarded) = tokio::join!(copying, forwarding);
+                forwarded?;
+                match copied {
+                    Ok(()) => {}
+                    Err(Error::Unsubscribed) => {
+                        bounded(frame_async::write_tagged(
+                            &mut link,
+                            PeerFrame::Unsubscribed.tag(),
+                            &[],
+                        ))
+                        .await??;
+                    }
+                    Err(why) => return Err(why),
+                }
+                None
+            }
             Some((tag, body)) => {
                 let holding = Arc::clone(&self.holding);
                 let voter = Arc::clone(&self.voter);
@@ -307,6 +345,14 @@ mod tests {
 
         fn gathered(&self, asker: [u8; NODE_ID_LEN], asked: &Gather) -> Result<Page> {
             NoLog.gathered(asker, asked)
+        }
+
+        fn copied(
+            &self,
+            follower: [u8; NODE_ID_LEN],
+            write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
+        ) -> Result<()> {
+            NoLog.copied(follower, write)
         }
     }
 

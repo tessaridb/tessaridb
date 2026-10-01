@@ -106,6 +106,16 @@ impl Store {
         &self.served
     }
 
+    /// The default this process keeps the log to where no statement said.
+    pub(crate) fn process_retention(&self) -> &crate::retention::ProcessRetention {
+        &self.retention
+    }
+
+    /// The positions held against pruning while followers are copied.
+    pub(crate) fn log_holds(&self) -> &Arc<crate::log_holds::LogHolds> {
+        &self.log_holds
+    }
+
     /// Whether this process can open what the store's vaults hold.
     ///
     /// Sealed after every restart, deliberately: unsealing is the one thing

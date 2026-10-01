@@ -34,7 +34,21 @@ impl Store {
     ///
     /// Returns an error when a position or the version cannot be read.
     pub fn read_state(&self) -> Result<crate::state::StateReader<'_>> {
-        crate::state::StateReader::open(self)
+        crate::state::StateReader::open(self, tessari_types::Reach::Store)
+    }
+
+    /// Begin reading the part of this store a peer subscribed at `within` is
+    /// given: its records by the rule a collect applies, the logs inside or
+    /// above it, and the topics inside it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a position or the version cannot be read.
+    pub fn read_state_within(
+        &self,
+        within: tessari_types::Reach,
+    ) -> Result<crate::state::StateReader<'_>> {
+        crate::state::StateReader::open(self, within)
     }
 
     /// Whether nothing has ever been written into this store.

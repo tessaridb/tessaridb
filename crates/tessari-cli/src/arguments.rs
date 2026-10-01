@@ -36,11 +36,12 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   --param <name>=<value> bind $name to <value>, written as TessariQL; repeatable
   -e, --execute <script> run this and exit
   -f, --file <file> run this file and exit
-  --backup <file> write the store's log to <file> and exit
+  --backup <file> write the store's current state (a snapshot) to <file> and
+                  exit; with --from, its log instead
   --snapshot <file> write the store's current state to <file> and exit
   --dump <file>   write the store's current state as TessariQL to <file> and exit
   --verify <file> read <file> and say what it holds, changing nothing
-  --from <n>      with --backup: write only what happened at or after <n>
+  --from <n>      with --backup: write the log from <n> (1 for the whole log)
   --upto <n>      with --restore: stop replaying after sequence <n>
   --restore <file> replay <file> into an empty store and exit
   --health        say whether the store is well, and exit non-zero if not
@@ -62,7 +63,11 @@ store. Both or neither: half of them is refused rather than started, because a
 node that came up open because a variable was misspelled looks exactly like one
 that came up correctly. A store that already has users ignores them, so a
 container may carry them on every restart, and they are not a way to reset a
-password.";
+password.
+
+a serving node keeps the newest 100000 records of each log and prunes the rest;
+TESSARIDB_RETAIN_RECORDS sets another count, or `none` for every record, and
+`DEFINE NODE RETAIN` stored on the node wins over both.";
 
 /// Where the password is read from.
 ///
@@ -515,6 +520,30 @@ pub fn unseal_period(written: &str) -> Result<core::time::Duration, String> {
     }
 }
 
+/// `TESSARIDB_RETAIN_RECORDS`: how many log records a serving node keeps where
+/// no `DEFINE NODE RETAIN` said (ADR-0094 D2) — a positive count, or `none` for
+/// an unbounded log.
+///
+/// Anything else stops the start rather than falling back to the default: an
+/// operator who set the variable believes the log is bounded where they said.
+///
+/// # Errors
+///
+/// Returns the sentence naming what was wrong with `written`.
+pub fn retained_records(written: &str) -> Result<tessari_storage::Retention, String> {
+    if written.eq_ignore_ascii_case("none") {
+        return Ok(tessari_storage::Retention::Unbounded);
+    }
+    match written.parse::<u64>() {
+        Ok(count) if count > 0 => Ok(tessari_storage::Retention::Keep(
+            tessari_types::Sequence::new(count),
+        )),
+        _ => Err(format!(
+            "wants a number of records above zero, or `none`, not `{written}`"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::panic)]
@@ -864,6 +893,27 @@ mod tests {
             "the refusal does not name the flag: {refusal}"
         );
         assert!(asked(&["./data", "--http", "127.0.0.1:8000", "--backup-dir"]).is_err());
+    }
+
+    #[test]
+    fn a_retained_count_is_a_positive_number_or_none() {
+        assert_eq!(
+            super::retained_records("100000"),
+            Ok(tessari_storage::Retention::Keep(
+                tessari_types::Sequence::new(100_000)
+            ))
+        );
+        assert_eq!(
+            super::retained_records("NONE"),
+            Ok(tessari_storage::Retention::Unbounded)
+        );
+        for written in ["0", "-1", "ten", "", "1e5"] {
+            assert!(
+                super::retained_records(written).is_err(),
+                "`{written}` is not a count, and a start that guessed would \
+                 prune where nobody said"
+            );
+        }
     }
 
     #[test]

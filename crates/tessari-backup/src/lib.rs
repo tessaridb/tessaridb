@@ -94,7 +94,9 @@
 use std::io::{Read, Write};
 
 pub use reading::{bootstrap, read_until, verify};
-pub use state::{STATE_MAGIC, StateTaken, is_state, read_state, verify_state, write_state};
+pub use state::{
+    STATE_MAGIC, StateTaken, is_state, read_state, verify_state, write_state, write_state_within,
+};
 use tessari_encoding::{LogId, NodeVersion, StoreValue, Writer};
 use tessari_storage::Store;
 use tessari_types::{DatabaseId, NamespaceId, Reach, Sequence, ShardId, TableId};

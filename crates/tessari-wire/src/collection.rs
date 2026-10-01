@@ -282,6 +282,23 @@ pub trait Origin {
     /// Returns [`Error::NotGathered`] with the reason when the peer may not have
     /// the shard or this node cannot give it.
     fn gathered(&self, asker: [u8; NODE_ID_LEN], asked: &Gather) -> Result<Page>;
+
+    /// Stream this node's state, as the follower's subscription is given it,
+    /// through `write` — a head, the chunks, an end (ADR-0094 D3).
+    ///
+    /// No default: a door that forgot this would refuse every copy as
+    /// unsubscribed and still compile, which is how the node's own door first
+    /// shipped it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Unsubscribed`] when nothing grants the follower a reach,
+    /// the store's own failure, and whatever `write` returns.
+    fn copied(
+        &self,
+        follower: [u8; NODE_ID_LEN],
+        write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
+    ) -> Result<()>;
 }
 
 /// A door with no log behind it.
@@ -319,6 +336,16 @@ impl Origin for NoLog {
 
     fn gathered(&self, _asker: [u8; NODE_ID_LEN], _asked: &Gather) -> Result<Page> {
         Err(Error::NotGathered(Ungathered::NotHeld))
+    }
+
+    // A door with no log has no state to give, which is the refusal a node
+    // nobody subscribed gets.
+    fn copied(
+        &self,
+        _follower: [u8; NODE_ID_LEN],
+        _write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
+    ) -> Result<()> {
+        Err(Error::Unsubscribed)
     }
 }
 
@@ -442,6 +469,17 @@ impl Origin for Serving<'_> {
         crate::gathering::serve(self.log, self.granted, asker, asked, self.budget)
     }
 
+    fn copied(
+        &self,
+        follower: [u8; NODE_ID_LEN],
+        write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
+    ) -> Result<()> {
+        let Some(over) = self.granted.granted(follower)? else {
+            return Err(Error::Unsubscribed);
+        };
+        crate::copying::serve(self.log, over, write)
+    }
+
     fn collected(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
         let Some(over) = self.granted.granted(follower)? else {
             // Not `Uncollectable`: *you may not ask* and *I cannot state what
@@ -474,6 +512,9 @@ impl Origin for Serving<'_> {
             message: why.to_string(),
         })?;
         let previous = preceding(self.log, over, served, asked.from)?;
+        // A position below where this log now begins cannot be caught up from
+        // the log: it is the answer to *copy my state*, not to *catch me up*
+        // (ADR-0094 D3), and it crosses as the frame that already says so.
         // A `u64` from a peer against a `usize` here: on a platform where the
         // two differ the ask is larger than anything this node could answer, so
         // the whole log is the honest ceiling.
@@ -549,10 +590,18 @@ impl Serving<'_> {
             // what this follower may SEE, and `log` is which log the cursor
             // counts in. They were one value while a frame carried no log, and
             // that made every ask a read of one link of the chain (Q-618).
-            let page = self
-                .log
-                .log_records_within(over, log, cursor, room.min(COLLECTION_PAGE_RECORDS))
-                .map_err(refused)?;
+            let page = match self.log.log_records_within(
+                over,
+                log,
+                cursor,
+                room.min(COLLECTION_PAGE_RECORDS),
+            ) {
+                Ok(page) => page,
+                Err(tessari_storage::Error::BelowLogStart { .. }) => {
+                    return Err(Error::Uncollectable { from: from.get() });
+                }
+                Err(why) => return Err(refused(why)),
+            };
             if page.is_empty() {
                 return Ok((carried, false));
             }
@@ -596,11 +645,17 @@ fn preceding(store: &Store, over: Reach, log: LogId, from: Sequence) -> Result<E
     // are the same value either way. Reading wider bought exactly the disclosure
     // the subscription exists to prevent, in the one place a reach was not
     // threaded through — which is how a rule acquires a hole.
-    let held = store
-        .log_records_within(over, log, before, 1)
-        .map_err(|why| Error::Refused {
-            message: why.to_string(),
-        })?;
+    let held = match store.log_records_within(over, log, before, 1) {
+        Ok(held) => held,
+        Err(tessari_storage::Error::BelowLogStart { .. }) => {
+            return Err(Error::Uncollectable { from: from.get() });
+        }
+        Err(why) => {
+            return Err(Error::Refused {
+                message: why.to_string(),
+            });
+        }
+    };
     match held.first() {
         // The log answers from `before` ONWARD, so a position it no longer holds
         // comes back as the next one that does. Comparing the position is what
@@ -1609,6 +1664,94 @@ mod tests {
         );
     }
 
+    /// A follower whose leader pruned past it copies the state, then follows
+    /// (ADR-0094 D3): the collect that used to be refused for ever is the
+    /// answer that means *copy me*, the copy carries the subscription and
+    /// nothing beside it, and the next collect continues from the positions the
+    /// copy stood the logs at.
+    #[test]
+    fn a_follower_below_a_pruned_log_copies_the_state_and_then_collects() {
+        let authority = Authority::new();
+        let leader = granting(" REPLICATES NAMESPACE prod");
+        leader
+            .session()
+            .run(
+                "USE NAMESPACE prod; USE DATABASE orders; \
+                 CREATE users:2 = { name: 'grace' }; CREATE users:3 = { name: 'edith' }; \
+                 DELETE users:1;",
+            )
+            .expect("the leader moves on");
+        leader
+            .store()
+            .set_log_retention(Some(Sequence::new(1)))
+            .expect("a retention");
+        leader.store().trim_logs().expect("the leader prunes");
+
+        // Three connections: the refused collect, the copy, the collect after.
+        let (address, door) = declaring_for(&authority, &leader, 3);
+        let refused = collect(&authority, address, 1, 1024);
+        assert!(
+            matches!(refused, Err(Error::Uncollectable { .. })),
+            "a position below the leader's log start asks for a copy: {refused:?}"
+        );
+
+        let follower = Db::in_memory().expect("an in-memory store");
+        let mine = authority.issue(THERE, Purpose::Peer);
+        let der = authority.der();
+        let said = hello(THERE);
+        let copied = crate::copy(
+            &address.to_string(),
+            authority.issue(THERE, Purpose::Peer),
+            &der,
+            LEADER,
+            &said,
+            follower.store(),
+        )
+        .expect("the copy lands");
+        assert!(matches!(copied.over, Reach::Namespace(_)), "{copied:?}");
+
+        let mut session = follower.session();
+        let held = session
+            .run("USE NAMESPACE prod; USE DATABASE orders; SELECT name FROM users;")
+            .expect("the subscribed namespace arrived");
+        assert_eq!(
+            format!("{:?}", held.last()),
+            format!(
+                "{:?}",
+                leader
+                    .session()
+                    .run("USE NAMESPACE prod; USE DATABASE orders; SELECT name FROM users;")
+                    .expect("the leader answers")
+                    .last()
+            ),
+            "the follower answers what its leader answers"
+        );
+        assert!(
+            session
+                .run("USE NAMESPACE other; USE DATABASE ledger; SELECT * FROM secrets;")
+                .is_err(),
+            "a copy carries the subscription and nothing beside it"
+        );
+
+        // The collect after the copy starts one past where the copy stood the
+        // namespace's log, and is answered rather than refused.
+        let (log, at) = *copied
+            .positions
+            .iter()
+            .find(|(log, _)| log.home != Reach::Store)
+            .expect("a log below the store's was copied");
+        let collector = collector(&mine, &der, &said, address, 1024);
+        let reached = collector
+            .collect(
+                follower.store(),
+                log.home,
+                Sequence::new(at.get().saturating_add(1)),
+            )
+            .expect("the follower follows on from the copy");
+        assert_eq!(reached, at, "nothing was written after the copy");
+        door.join().expect("the door's thread");
+    }
+
     #[test]
     fn a_record_read_out_of_one_log_is_applied_into_that_same_log() {
         // The defect this slice closes, asserted by POSITION and not by
@@ -1935,6 +2078,14 @@ mod tests {
             asked: &crate::gathering::Gather,
         ) -> Result<crate::gathering::Page> {
             Serving::declared(self.db.store()).gathered(asker, asked)
+        }
+
+        fn copied(
+            &self,
+            follower: [u8; NODE_ID_LEN],
+            write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
+        ) -> Result<()> {
+            Serving::declared(self.db.store()).copied(follower, write)
         }
     }
 

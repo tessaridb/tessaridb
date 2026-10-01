@@ -37,22 +37,39 @@ impl Session<'_> {
                 path: target.display().to_string(),
             });
         }
-        let bytes = match self.backup(from, form, of)? {
-            Outcome::Value(Value::Bytes(bytes)) => bytes,
-            Outcome::Value(Value::String(text)) => text.into_bytes(),
-            other => {
-                return Err(Error::BackupFailed {
-                    reason: format!("the backup answered {other:?} rather than a file"),
-                });
-            }
+        // A snapshot goes from the read straight into the file, chunk by chunk,
+        // so the node's memory does not grow with the store (ADR-0094 D6). The
+        // other forms are answered whole and written as they were answered.
+        let size = if form == BackupForm::State {
+            let within = self.state_scope(of)?;
+            self.refuse_a_partial_snapshot(within)?;
+            settle(&target, form, |file| {
+                let mut out = std::io::BufWriter::new(file);
+                tessari_backup::write_state_within(self.store, within, &mut out)
+                    .map_err(|failure| failure.to_string())?;
+                out.flush().map_err(|failure| failure.to_string())
+            })?
+        } else {
+            let bytes = match self.backup(from, form, of)? {
+                Outcome::Value(Value::Bytes(bytes)) => bytes,
+                Outcome::Value(Value::String(text)) => text.into_bytes(),
+                other => {
+                    return Err(Error::BackupFailed {
+                        reason: format!("the backup answered {other:?} rather than a file"),
+                    });
+                }
+            };
+            settle(&target, form, |file| {
+                file.write_all(&bytes)
+                    .map_err(|failure| failure.to_string())
+            })?
         };
-        settle(&target, &bytes, form)?;
         let mut answer = std::collections::BTreeMap::new();
         answer.insert(
             "path".to_owned(),
             Value::String(target.display().to_string()),
         );
-        let size = i64::try_from(bytes.len()).map_err(|_| Error::BackupFailed {
+        let size = i64::try_from(size).map_err(|_| Error::BackupFailed {
             reason: "the backup is larger than a count can say".to_owned(),
         })?;
         answer.insert("bytes".to_owned(), Value::Number(Number::Integer(size)));
@@ -63,6 +80,72 @@ impl Session<'_> {
         };
         answer.insert("form".to_owned(), Value::String(form.to_owned()));
         Ok(Outcome::Value(Value::Object(answer)))
+    }
+}
+
+impl Session<'_> {
+    /// Refuse a snapshot of `within` on a node that holds only part of it
+    /// (ADR-0094 D7) — a backup assembled from what one node happens to hold
+    /// is not one state of anything. A node never served anything holds all it
+    /// has, and pays one in-memory read here.
+    ///
+    /// The refusal is the one a read gets, naming a table this node lacks and,
+    /// where the table is split, the shards it lacks — which are named first,
+    /// since they say where the rest of the table is.
+    pub(crate) fn refuse_a_partial_snapshot(&self, within: tessari_types::Reach) -> Result<()> {
+        if self.store.served().is_none() {
+            return Ok(());
+        }
+        let mut transaction = self.store.begin()?;
+        let mut tables = Vec::new();
+        {
+            let catalog = tessari_storage::Catalog::new(&mut transaction);
+            for namespace in catalog.namespaces()? {
+                for database in catalog.databases_in(namespace.id)? {
+                    let place = tessari_types::Reach::Database(namespace.id, database.id);
+                    if within.contains(place) {
+                        tables.extend(catalog.tables_in(namespace.id, database.id)?);
+                    }
+                }
+            }
+        }
+        let mut lacking = Vec::new();
+        for table in tables {
+            if let Some(missing) =
+                self.missing(&mut transaction, table.id, crate::evaluate::Part::Whole)?
+            {
+                lacking.push(missing.refusal());
+            }
+        }
+        lacking.sort_by_key(
+            |refusal| !matches!(refusal, Error::NotHeldHere { shards, .. } if !shards.is_empty()),
+        );
+        lacking.into_iter().next().map_or(Ok(()), Err)
+    }
+}
+
+/// Where a snapshot goes when the caller streams it, taken once.
+pub(crate) struct Sink(std::cell::RefCell<Option<Box<dyn std::io::Write + Send>>>);
+
+impl Sink {
+    pub(crate) const fn none() -> Self {
+        Self(std::cell::RefCell::new(None))
+    }
+
+    pub(crate) fn to(out: Box<dyn std::io::Write + Send>) -> Self {
+        Self(std::cell::RefCell::new(Some(out)))
+    }
+
+    /// The sink, the first time it is asked for.
+    pub(crate) fn take(&self) -> Option<Box<dyn std::io::Write + Send>> {
+        self.0.borrow_mut().take()
+    }
+}
+
+impl std::fmt::Debug for Sink {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let held = self.0.try_borrow().map_or(true, |held| held.is_some());
+        formatter.debug_tuple("Sink").field(&held).finish()
     }
 }
 
@@ -165,19 +248,28 @@ pub(crate) fn readable(folder: &Path, name: &str) -> Result<PathBuf> {
 
 /// Write `bytes` beside `target`, read them back where they landed, and only
 /// then put them at `target`.
-fn settle(target: &Path, bytes: &[u8], form: BackupForm) -> Result<()> {
+fn settle(
+    target: &Path,
+    form: BackupForm,
+    write: impl FnOnce(&mut fs::File) -> std::result::Result<(), String>,
+) -> Result<u64> {
     let mut partial = target.as_os_str().to_owned();
     partial.push(".partial");
     let partial = PathBuf::from(partial);
-    let written = write_new(&partial, bytes)
-        .and_then(|()| check(&partial, form))
-        .and_then(|()| fs::rename(&partial, target).map_err(|failure| failure.to_string()));
-    if let Err(why) = written {
-        drop(fs::remove_file(&partial));
-        return Err(Error::BackupFailed {
-            reason: format!("{}: {why}", target.display()),
-        });
-    }
+    let written = write_new(&partial, write).and_then(|size| {
+        check(&partial, form)?;
+        fs::rename(&partial, target).map_err(|failure| failure.to_string())?;
+        Ok(size)
+    });
+    let size = match written {
+        Ok(size) => size,
+        Err(why) => {
+            drop(fs::remove_file(&partial));
+            return Err(Error::BackupFailed {
+                reason: format!("{}: {why}", target.display()),
+            });
+        }
+    };
     // The rename is durable only once the folder holding it is.
     if let Some(parent) = target.parent() {
         fs::File::open(parent)
@@ -186,19 +278,25 @@ fn settle(target: &Path, bytes: &[u8], form: BackupForm) -> Result<()> {
                 reason: format!("{}: {failure}", parent.display()),
             })?;
     }
-    Ok(())
+    Ok(size)
 }
 
-/// Create `path` — never open one that exists — and sync `bytes` into it.
-fn write_new(path: &Path, bytes: &[u8]) -> std::result::Result<(), String> {
+/// Create `path` — never open one that exists — write into it, sync it, and
+/// answer its size.
+fn write_new(
+    path: &Path,
+    write: impl FnOnce(&mut fs::File) -> std::result::Result<(), String>,
+) -> std::result::Result<u64, String> {
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
         .map_err(|failure| failure.to_string())?;
-    file.write_all(bytes)
-        .map_err(|failure| failure.to_string())?;
-    file.sync_all().map_err(|failure| failure.to_string())
+    write(&mut file)?;
+    file.sync_all().map_err(|failure| failure.to_string())?;
+    file.metadata()
+        .map(|held| held.len())
+        .map_err(|failure| failure.to_string())
 }
 
 /// Read the file back through the verifier, where it was written.

@@ -46,10 +46,12 @@ mod lapse;
 mod lease;
 mod lines;
 mod log;
+mod log_holds;
 mod node;
 mod ordering;
 mod pruning;
 mod reclaim;
+mod retention;
 mod running;
 mod schema;
 mod sealing;
@@ -81,10 +83,12 @@ pub use catalog::{
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.
 pub use catalog::VaultRoot;
-pub use collections::{Collection, Collections, Currency};
+pub use collections::{Collection, Collections, Currency, Upstream, UpstreamReport};
 pub use covering::MEASURED_RELATION;
 pub use expiry::Expired;
 pub use lapse::Lapsed;
+pub use log_holds::LogHold;
+pub use retention::{Retention, RetentionSource};
 pub use topic::{Message, Messages};
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
 // the field but cannot name its type has a public API it cannot use.

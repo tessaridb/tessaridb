@@ -174,6 +174,11 @@ pub(crate) async fn collect_from_upstream(
                 asks.push((home, collecting.reached(home).unwrap_or(seed)));
             }
             let answers = collector.round(store, &asks);
+            // A log that no longer reaches back to this node's position is not
+            // a refusal to retry (ADR-0094 D3): it is repaired by a copy.
+            let below = answers
+                .iter()
+                .any(|answer| matches!(answer, Err(tessari_wire::Error::Uncollectable { .. })));
             for ((home, at), answer) in asks.into_iter().zip(answers) {
                 let before = collecting.reached(home);
                 match collecting.once(home, at, |_| answer) {
@@ -195,6 +200,19 @@ pub(crate) async fn collect_from_upstream(
                         log::info!("collected {home:?} to {} from {endpoint}", reached.get());
                     }
                 }
+            }
+            if below
+                && crate::reseeding::reseed(
+                    db,
+                    (mine, authority),
+                    (node, &endpoint),
+                    &said,
+                    crate::reseeding::leads_a_range(&declared, me, &heard),
+                )
+            {
+                // The copy stood each log where the leader's stood, so every
+                // cursor starts again from this node's own tails.
+                collecting = tessari_wire::Collecting::new();
             }
         },
     )

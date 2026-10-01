@@ -29,7 +29,7 @@ use std::io::{Read, Write};
 
 use tessari_encoding::{LogId, LogRecord, NodeVersion, StoreValue};
 use tessari_storage::{Store, TopicHead};
-use tessari_types::{DatabaseId, NamespaceId, Sequence, TableId};
+use tessari_types::{DatabaseId, NamespaceId, Reach, Sequence, TableId};
 
 use crate::format::{Head, fill};
 use crate::{
@@ -77,7 +77,26 @@ pub fn is_state(opening: &[u8]) -> bool {
 ///
 /// Returns an error when the store or the stream fails.
 pub fn write_state(store: &Store, out: &mut impl Write) -> Result<StateTaken> {
-    let mut reader = store.read_state()?;
+    write_state_within(store, Reach::Store, out)
+}
+
+/// Write the state of one place in `store` — a namespace or a database — to
+/// `out` (ADR-0094 D5).
+///
+/// It is what a follower subscribed at `within` is given: the place's records,
+/// the catalog that defines it, and the logs inside or above it. The format is
+/// the whole store's, so it verifies and restores the same way, into an empty
+/// store.
+///
+/// # Errors
+///
+/// Returns an error when the store or the stream fails.
+pub fn write_state_within(
+    store: &Store,
+    within: Reach,
+    out: &mut impl Write,
+) -> Result<StateTaken> {
+    let mut reader = store.read_state_within(within)?;
     let writer = NodeVersion::current();
     out.write_all(STATE_MAGIC)?;
     out.write_all(&[STATE_FORMAT, tessari_encoding::CODEC_VERSION])?;

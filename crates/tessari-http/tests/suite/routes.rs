@@ -761,6 +761,25 @@ fn the_backup_route_hands_over_a_file_the_verifier_reads() {
             .contains("application/octet-stream")),
         "{headers:?}"
     );
+    // A snapshot unless the caller asks for the log (ADR-0094 D1), with its
+    // length declared and never chunked (protocol §5.3) — it is spooled to disk
+    // rather than built in memory (D6), and the length is the file's exact one.
+    tessari_backup::verify_state(&mut held.as_slice()).unwrap();
+    assert!(
+        headers
+            .iter()
+            .any(|line| line.eq_ignore_ascii_case(&format!("content-length: {}", held.len()))),
+        "the snapshot's length is not declared, or is not what arrived: {headers:?}"
+    );
+    assert!(
+        !headers
+            .iter()
+            .any(|line| line.to_ascii_lowercase().starts_with("transfer-encoding")),
+        "the snapshot was sent with a framing the protocol forbids: {headers:?}"
+    );
+
+    let (status, _, held) = send_bytes(&address, "GET", "/backup?as=log", None);
+    assert_eq!(status, 200);
     let verified = tessari_backup::verify(&mut held.as_slice()).unwrap();
     assert!(verified.records > 0, "{verified:?}");
     assert!(!verified.truncated, "{verified:?}");
@@ -791,7 +810,7 @@ fn the_backup_route_takes_one_query_and_names_the_mistake_of_any_other() {
 
     let (status, body) = request(&address, "GET", "/backup?since=1", "");
     assert_eq!(status, 400, "{body}");
-    let (status, body) = request(&address, "GET", "/backup?as=log", "");
+    let (status, body) = request(&address, "GET", "/backup?as=logs", "");
     assert_eq!(status, 400, "{body}");
     let (status, body) = request(&address, "GET", "/backup?from=later", "");
     assert_eq!(status, 400, "{body}");
@@ -807,7 +826,7 @@ fn the_backup_route_adds_no_permission_of_its_own() {
     assert!(status >= 400, "a viewer downloaded the whole store: {body}");
     let (status, _, held) = send_bytes(&address, "GET", "/backup", Some(ROOT));
     assert_eq!(status, 200);
-    assert!(tessari_backup::verify(&mut held.as_slice()).is_ok());
+    assert!(tessari_backup::verify_state(&mut held.as_slice()).is_ok());
 }
 
 /// A JSON body, sent with the content type that says so.
@@ -1008,5 +1027,53 @@ fn a_body_that_declares_no_length_is_read_only_to_the_ceiling() {
     assert_eq!(
         status_for_body(&address, "Transfer-Encoding: chunked\r\n", body),
         413
+    );
+}
+
+#[test]
+fn a_scrape_says_where_a_follower_stands_and_how_far_behind_its_followers_are() {
+    let db = Arc::new(Db::in_memory().unwrap());
+    let node = Arc::new(Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap());
+    let address = node.address();
+    let serving = Arc::clone(&node);
+    std::thread::spawn(move || crate::serve_until_the_test_ends(&serving));
+
+    // Absent rather than zero on a node that follows nobody and that nobody
+    // follows: a series that always reads zero teaches whoever watches it to
+    // stop looking.
+    let (_, _, quiet) = send(&address, "GET", "/metrics", "", None);
+    assert!(!quiet.contains("tessari_replica_state"), "{quiet}");
+    assert!(
+        !quiet.contains("tessari_follower_behind_records"),
+        "{quiet}"
+    );
+
+    let (_, _, _) = send(&address, "POST", "/script", "DEFINE NAMESPACE prod;", None);
+    let follower = [7_u8; 16];
+    db.store().follower_served(
+        follower,
+        tessari_types::Reach::Store,
+        tessari_types::Sequence::new(0),
+    );
+    db.store().upstream_is(tessari_storage::Upstream::Copying);
+    db.store().replica_copied(40);
+
+    let (_, _, scrape) = send(&address, "GET", "/metrics", "", None);
+    assert_eq!(
+        counter(&scrape, "tessari_replica_state{state=\"catching up\"}"),
+        1
+    );
+    assert_eq!(
+        counter(&scrape, "tessari_replica_state{state=\"in sync\"}"),
+        0
+    );
+    assert_eq!(counter(&scrape, "tessari_replica_copied_records"), 40);
+    let behind = counter(
+        &scrape,
+        "tessari_follower_behind_records{node=\"07070707-0707-0707-0707-070707070707\"}",
+    );
+    assert!(
+        behind > 0,
+        "the follower was given nothing, so it is behind: {scrape}"
     );
 }

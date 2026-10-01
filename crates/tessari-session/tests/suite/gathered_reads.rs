@@ -408,3 +408,86 @@ fn a_hidden_field_is_hidden_in_gathered_records_too() {
     let (matched, _) = answer(&mut follower, "SELECT * FROM ledger WHERE total > 0;");
     assert!(matched.is_empty(), "{matched:?}");
 }
+
+/// A follower of the whole database, recorded as served that way.
+fn follower_of_the_database(leader: &Store) -> Store {
+    let over = Reach::Database(NamespaceId::new(1), DatabaseId::new(1));
+    let follower = store();
+    let mut node = signed_in(leader, "node");
+    for log in leader.logs().unwrap() {
+        let carried = node
+            .replicate_from(leader, A_FOLLOWER, over, log, Sequence::new(1), 256)
+            .unwrap();
+        let mut previous = tessari_types::Epoch::ZERO;
+        for (sequence, record) in carried {
+            follower
+                .apply_from_stream(log, sequence, previous, &record)
+                .unwrap();
+            previous = record.epoch();
+        }
+    }
+    follower.record_served(over).unwrap();
+    follower
+}
+
+#[test]
+fn a_node_holding_part_of_a_split_table_refuses_to_back_it_up() {
+    // A backup assembled from what one node happens to hold is not one state of
+    // anything (ADR-0094 D7): it is refused, naming the shards it lacks.
+    let leader = leader();
+    let follower = follower_of_the_middle(&leader);
+    for statement in [
+        "BACKUP STATE;",
+        "BACKUP STATE OF prod.shop;",
+        "BACKUP OF NAMESPACE prod;",
+    ] {
+        match signed_in(&follower, "root").run(statement) {
+            Err(tessari_session::Error::NotHeldHere { table, shards }) => {
+                assert_eq!(
+                    (table.as_str(), shards),
+                    ("ledger", vec![1, 3]),
+                    "{statement}"
+                );
+            }
+            Ok(_) => panic!("{statement} on a partial holder answered with a backup"),
+            Err(other) => panic!("{statement} on a partial holder was refused as {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_node_holding_every_shard_backs_the_database_up_complete() {
+    let leader = leader();
+    let follower = follower_of_the_database(&leader);
+    let Some(tessari_session::Outcome::Value(Value::Bytes(file))) = signed_in(&follower, "root")
+        .run("BACKUP STATE OF prod.shop;")
+        .unwrap()
+        .pop()
+    else {
+        panic!("a snapshot is bytes");
+    };
+    // Each shard's log is recorded at its own position.
+    let taken = tessari_backup::verify_state(&mut file.as_slice()).unwrap();
+    let shards = leader
+        .logs()
+        .unwrap()
+        .into_iter()
+        .filter(|log| matches!(log.home, Reach::Shard(..)))
+        .count();
+    assert_eq!(shards, 3, "the leader keeps a log per shard");
+    let recorded = taken
+        .positions
+        .iter()
+        .filter(|(log, _)| matches!(log.home, Reach::Shard(..)))
+        .count();
+    assert_eq!(recorded, shards, "{:?}", taken.positions);
+
+    let restored = store();
+    tessari_backup::read_state(&restored, || Ok(std::io::Cursor::new(file.clone()))).unwrap();
+    let read = "USE NAMESPACE prod; USE DATABASE shop; SELECT note FROM ledger;";
+    assert_eq!(
+        format!("{:?}", signed_in(&restored, "root").run(read).unwrap()),
+        format!("{:?}", signed_in(&leader, "root").run(read).unwrap()),
+        "the restored database is not the leader's"
+    );
+}

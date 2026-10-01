@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use tessari_encoding::{LogId, encode_payload};
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_storage::{Catalog, Error, RecordAddress, Store, TableShape};
+use tessari_storage::{
+    Catalog, Error, RecordAddress, Retention, RetentionSource, Store, TableShape,
+};
 use tessari_types::{RecordId, Sequence, Value};
 
 use crate::{FIXTURE_HOME, fixture_log};
@@ -109,6 +111,13 @@ fn a_read_below_the_start_is_refused_in_words_that_name_the_repair() {
         said.contains("fresh copy of the state"),
         "a reader below the start cannot catch up, and the refusal has to say so \
          rather than leave it to be discovered: {said}"
+    );
+    // And it names who does what (ADR-0094 D3): a follower node repairs itself,
+    // a client has to re-read.
+    assert!(
+        said.contains("a follower node copies its leader's state by itself")
+            && said.contains("a client re-reads what it follows"),
+        "the refusal must name the repair for both kinds of reader: {said}"
     );
 }
 
@@ -231,19 +240,101 @@ fn a_prune_is_bounded_to_the_log_it_names() {
 }
 
 #[test]
-fn a_store_nobody_configured_keeps_the_whole_log() {
+fn a_store_nobody_configured_keeps_the_default_window() {
     let (store, _, log) = logged(5);
     assert_eq!(
         store.log_retention().unwrap(),
         None,
-        "unbounded is the default, because the default for an irreversible \
-         operation has to be the one that changes nothing"
+        "nothing is stored until somebody says DEFINE NODE RETAIN"
+    );
+    assert_eq!(
+        store.effective_retention().unwrap(),
+        (
+            Retention::Keep(Sequence::new(
+                tessari_constants::DEFAULT_LOG_RETENTION_RECORDS
+            )),
+            RetentionSource::Default
+        ),
+        "a bounded log is the default (owner, G049): an unbounded one is a disk \
+         that fills"
+    );
+    let trimmed = store
+        .trim_logs()
+        .unwrap()
+        .expect("the default window applies");
+    assert_eq!(trimmed.records, 0, "five records are inside the window");
+    assert_eq!(store.log_start(log).unwrap(), Sequence::ZERO);
+}
+
+#[test]
+fn the_process_default_overrides_the_constant() {
+    let (store, _, log) = logged(10);
+    store.retain_by_default(Retention::Keep(Sequence::new(4)));
+    assert_eq!(
+        store.effective_retention().unwrap(),
+        (
+            Retention::Keep(Sequence::new(4)),
+            RetentionSource::Environment
+        )
+    );
+    let trimmed = store
+        .trim_logs()
+        .unwrap()
+        .expect("the process default applies");
+    assert_eq!(trimmed.records, 6);
+    assert_eq!(store.log_start(log).unwrap(), Sequence::new(7));
+}
+
+#[test]
+fn an_unbounded_process_default_trims_nothing() {
+    let (store, _, log) = logged(10);
+    store.retain_by_default(Retention::Unbounded);
+    assert_eq!(
+        store.effective_retention().unwrap(),
+        (Retention::Unbounded, RetentionSource::Environment)
     );
     assert!(
         store.trim_logs().unwrap().is_none(),
-        "and *nobody asked for this* is a different answer from *there was \
-         nothing to do*"
+        "*nobody wants a bound* is a different answer from *there was nothing to do*"
     );
+    assert_eq!(store.log_start(log).unwrap(), Sequence::ZERO);
+}
+
+#[test]
+fn a_statement_overrides_the_process_default() {
+    let (store, _, log) = logged(10);
+    store.retain_by_default(Retention::Unbounded);
+    store.set_log_retention(Some(Sequence::new(4))).unwrap();
+    assert_eq!(
+        store.effective_retention().unwrap(),
+        (
+            Retention::Keep(Sequence::new(4)),
+            RetentionSource::Statement
+        )
+    );
+    store
+        .trim_logs()
+        .unwrap()
+        .expect("the statement's window applies");
+    assert_eq!(store.log_start(log).unwrap(), Sequence::new(7));
+}
+
+#[test]
+fn retain_none_is_remembered_as_a_choice_and_beats_the_default() {
+    let (store, _, log) = logged(10);
+    store.retain_by_default(Retention::Keep(Sequence::new(4)));
+    store.set_log_retention(None).unwrap();
+    assert_eq!(
+        store.log_retention().unwrap(),
+        Some(Retention::Unbounded),
+        "RETAIN NONE is stored, so an operator's unbounded log is not mistaken \
+         for one nobody configured"
+    );
+    assert_eq!(
+        store.effective_retention().unwrap(),
+        (Retention::Unbounded, RetentionSource::Statement)
+    );
+    assert!(store.trim_logs().unwrap().is_none());
     assert_eq!(store.log_start(log).unwrap(), Sequence::ZERO);
 }
 
@@ -251,7 +342,10 @@ fn a_store_nobody_configured_keeps_the_whole_log() {
 fn a_retained_count_is_what_the_log_is_trimmed_to() {
     let (store, _, log) = logged(10);
     store.set_log_retention(Some(Sequence::new(4))).unwrap();
-    assert_eq!(store.log_retention().unwrap(), Some(Sequence::new(4)));
+    assert_eq!(
+        store.log_retention().unwrap(),
+        Some(Retention::Keep(Sequence::new(4)))
+    );
 
     let trimmed = store.trim_logs().unwrap().expect("retention is set");
     assert!(trimmed.logs >= 1, "every log this node holds is looked at");
@@ -288,7 +382,7 @@ fn clearing_the_retention_stops_the_trimming_without_restoring_anything() {
     store.trim_logs().unwrap();
     store.set_log_retention(None).unwrap();
 
-    assert_eq!(store.log_retention().unwrap(), None);
+    assert_eq!(store.log_retention().unwrap(), Some(Retention::Unbounded));
     assert!(store.trim_logs().unwrap().is_none());
     assert_eq!(
         store.log_start(log).unwrap(),
@@ -315,5 +409,40 @@ fn a_window_wider_than_the_log_removes_nothing() {
         store.log_records(log, Sequence::ZERO, 64).unwrap().len(),
         5,
         "and a read from the beginning is still answered"
+    );
+}
+
+/// A follower being copied collects from just past the position it was handed,
+/// so that position is held against the window until the copy ends (ADR-0094
+/// D3) — and released at once if the copy failed, so nobody pins the disk.
+#[test]
+fn a_held_position_is_not_pruned_past_until_its_hold_is_released() {
+    let (store, _, log) = logged(10);
+    store.set_log_retention(Some(Sequence::new(2))).unwrap();
+    let hold = store.hold_logs(&[(log, Sequence::new(5))]);
+    store.trim_logs().unwrap();
+    assert_eq!(
+        store.log_start(log).unwrap(),
+        Sequence::new(5),
+        "the held position and everything after it survive the window"
+    );
+    drop(hold);
+    store.trim_logs().unwrap();
+    assert_eq!(
+        store.log_start(log).unwrap(),
+        Sequence::new(9),
+        "a released hold leaves the window to decide"
+    );
+
+    let (store, _, log) = logged(10);
+    store.set_log_retention(Some(Sequence::new(2))).unwrap();
+    store
+        .hold_logs(&[(log, Sequence::new(5))])
+        .keep_for(std::time::Duration::from_secs(3600));
+    store.trim_logs().unwrap();
+    assert_eq!(
+        store.log_start(log).unwrap(),
+        Sequence::new(5),
+        "a finished copy keeps its hold for the follower's first collect"
     );
 }

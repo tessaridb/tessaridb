@@ -329,9 +329,9 @@ pub(crate) fn close_session(presented: &Presented, tokens: &Tokens) -> Answer {
     Answer::new(200, r#"{"closed":true}"#.to_owned())
 }
 
-/// `GET /backup` — the store's log as a backup file, `?from=<n>` for the
-/// records since a sequence, or `?as=state` for a snapshot of the current state
-/// (ADR-0091).
+/// `GET /backup` — a snapshot of the store's current state (ADR-0094 D1),
+/// `?as=log` for the store's log, `?from=<n>` for the log's records since a
+/// sequence, or `?as=script` for the state as TessariQL (ADR-0091).
 ///
 /// A surface over the `BACKUP` statement rather than a second implementation of
 /// it, so who may take one is decided in one place: the statement needs an
@@ -351,14 +351,15 @@ pub(crate) fn backup(
     let script = match query {
         None => "BACKUP;".to_owned(),
         Some("as=state") => "BACKUP STATE;".to_owned(),
+        Some("as=log") => "BACKUP LOG;".to_owned(),
         Some("as=script") => "BACKUP SCRIPT;".to_owned(),
         Some(written) => match written.strip_prefix("from=").map(str::parse::<u64>) {
             Some(Ok(held)) => format!("BACKUP FROM {held};"),
             _ => {
                 return Answer::bad_request(
-                    "this route takes `from=<sequence>` for the log since a position, \
-                     `as=state` for a snapshot of the current state, or `as=script` \
-                     for that state as TessariQL",
+                    "this route answers a snapshot of the current state, or takes \
+                     `as=log` for the log, `from=<sequence>` for the log since a \
+                     position, or `as=script` for the state as TessariQL",
                 );
             }
         },

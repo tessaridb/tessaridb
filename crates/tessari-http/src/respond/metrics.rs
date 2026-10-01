@@ -99,6 +99,8 @@ pub(crate) fn metrics(
         }
     }
 
+    replication(&mut out, db);
+
     // Worth a line of its own because it is the one number that says whether
     // the token bound is close: a node at `MAX_SESSION_TOKENS` starts refusing
     // sign-ins while every other counter here still reads healthy.
@@ -130,6 +132,58 @@ pub(crate) fn metrics(
 
     out.push_str(&topics);
     Answer::text(200, out, EXPOSITION)
+}
+
+/// Where this node stands against the peer it collects from, and how far
+/// behind each follower it serves is (ADR-0094 D4).
+///
+/// Both halves are absent until there is something to say: a node that follows
+/// nobody has no state, and a leader nobody has collected from has no
+/// followers. The state is one gauge per state with exactly one at 1, so a
+/// dashboard can alert on `stranded` or `copy failed` without parsing a label.
+fn replication(out: &mut String, db: &Db) {
+    let store = db.store();
+    if let Some(held) = store.upstream() {
+        out.push_str(
+            "# HELP tessari_replica_state Where this node stands against the peer it collects \
+             from; the state it is in reads 1.\n",
+        );
+        out.push_str("# TYPE tessari_replica_state gauge\n");
+        for state in tessaridb::Upstream::ALL {
+            out.push_str(&format!(
+                "tessari_replica_state{{state=\"{}\"}} {}\n",
+                state.name(),
+                u8::from(state == held.state)
+            ));
+        }
+        out.push_str(
+            "# HELP tessari_replica_copied_records Records installed by copies of the leader's \
+             state.\n",
+        );
+        out.push_str("# TYPE tessari_replica_copied_records counter\n");
+        out.push_str(&format!(
+            "tessari_replica_copied_records {}\n",
+            held.copied_records
+        ));
+    }
+    let Ok(followers) = store.follower_lag() else {
+        return;
+    };
+    if followers.is_empty() {
+        return;
+    }
+    out.push_str(
+        "# HELP tessari_follower_behind_records How many records each follower is short of \
+         this node's tail.\n",
+    );
+    out.push_str("# TYPE tessari_follower_behind_records gauge\n");
+    for follower in followers {
+        out.push_str(&format!(
+            "tessari_follower_behind_records{{node=\"{}\"}} {}\n",
+            tessari_types::uuid_to_text(&follower.node),
+            follower.behind
+        ));
+    }
 }
 
 /// One surface's five numbers, labelled by which surface it is.

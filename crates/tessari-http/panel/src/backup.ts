@@ -24,7 +24,7 @@ const WHAT: Readonly<Record<Form, { readonly statement: string; readonly suffix:
     says: "every live record at one moment; restores whole, and a pruned log does not stop it",
   },
   log: {
-    statement: "BACKUP",
+    statement: "BACKUP LOG",
     suffix: "tessarilog",
     says: "every commit in order; a restore can stop at any point in it",
   },
@@ -92,11 +92,22 @@ function composeBackup(): Composed {
       says: `Writes ${name} into the node's backup folder: ${WHAT[form].says}.`,
     };
   }
-  if (form !== "script") {
-    return { missing: "a part of the store is written as TessariQL; choose that form" };
+  if (form === "log") {
+    return { missing: "a log of a part restores nowhere; choose a snapshot or TessariQL" };
   }
   const part = places();
   if ("missing" in part) return part;
+  if (form === "state") {
+    if (part.of.includes(",")) {
+      return { missing: "a snapshot is of one place; name one, or choose TessariQL for several" };
+    }
+    return {
+      statement: `BACKUP STATE OF ${part.of} TO ${quoted(name)};`,
+      says:
+        `Writes ${name} into the node's backup folder: ${part.of} at one moment, with the store's ` +
+        "users; it restores into an empty store.",
+    };
+  }
   return {
     statement: `BACKUP SCRIPT OF ${part.of} TO ${quoted(name)};`,
     says:

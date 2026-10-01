@@ -51,6 +51,7 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
     ) -> Result<BTreeMap<String, Value>> {
         let identity = self.store.node_identity()?;
+        let (retention, retained_by) = self.store.effective_retention()?;
         let catalog = Catalog::new(transaction);
         let peers = catalog
             .replicas()?
@@ -96,6 +97,19 @@ impl Session<'_> {
             None => Value::Null,
             Some(held) => described_failover(&held),
         };
+        let upstream = self.store.upstream().map_or(Value::Null, |held| {
+            Value::Object(BTreeMap::from([
+                ("state".to_owned(), Value::from(held.state.name())),
+                (
+                    "copied_records".to_owned(),
+                    Value::from(i64::try_from(held.copied_records).unwrap_or(i64::MAX)),
+                ),
+                (
+                    "copies".to_owned(),
+                    Value::from(i64::try_from(held.copies).unwrap_or(i64::MAX)),
+                ),
+            ]))
+        });
         let followers = self
             .store
             .follower_lag()?
@@ -145,18 +159,21 @@ impl Session<'_> {
             (
                 // Beside `endpoints` rather than under `cluster`, because it is
                 // on the local side of ADR-0018's line: a disk budget describes
-                // this machine and does not travel. `null` is *unbounded*, which
-                // is what every store holds until an operator sets a number —
-                // and reporting it as a number would make *nobody asked for
-                // retention* indistinguishable from a very large window.
+                // this machine and does not travel. `null` is *unbounded* — a
+                // choice now, since the default is a window (ADR-0094 D2) —
+                // and `retain_source` beside it says who made it.
                 "retain".to_owned(),
-                self.store.log_retention()?.map_or(Value::Null, |keep| {
-                    // Saturating rather than an `as` cast: the report is a
-                    // number a person reads, and a width that wrapped would
-                    // print a negative retention rather than fail.
-                    Value::from(i64::try_from(keep.get()).unwrap_or(i64::MAX))
-                }),
+                match retention {
+                    tessari_storage::Retention::Keep(keep) => {
+                        // Saturating rather than an `as` cast: the report is a
+                        // number a person reads, and a width that wrapped would
+                        // print a negative retention rather than fail.
+                        Value::from(i64::try_from(keep.get()).unwrap_or(i64::MAX))
+                    }
+                    tessari_storage::Retention::Unbounded => Value::Null,
+                },
             ),
+            ("retain_source".to_owned(), Value::from(retained_by.name())),
             (
                 "cluster".to_owned(),
                 Value::Object(BTreeMap::from([
@@ -171,6 +188,11 @@ impl Session<'_> {
                     // what was declared. Joining them would put a lag figure on
                     // a peer that has never asked for anything.
                     ("followers".to_owned(), Value::Array(followers)),
+                    // The follower's own side (ADR-0094 D4): where this node
+                    // stands against the peer it collects from. `null` on a
+                    // node that has never collected nor copied, which is a
+                    // node that follows nobody rather than one in sync.
+                    ("upstream".to_owned(), upstream),
                     // `null` on a node nobody made a leader, which is a
                     // different statement from zero: a store standing alone is
                     // not a leader whose time has run out. When it is a

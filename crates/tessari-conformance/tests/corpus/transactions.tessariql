@@ -111,8 +111,12 @@ BACKUP SCRIPT OF NAMESPACE nowhere;
 --- expect: error Unknown
 
 --- case: a log of a part is refused at the statement
-BACKUP OF NAMESPACE prod;
+BACKUP LOG OF NAMESPACE prod;
 --- expect: error UnexpectedToken
+
+--- case: a snapshot of one namespace is taken at the statement
+BACKUP OF NAMESPACE prod;
+--- expect: ok
 
 # `TO` and `RESTORE` read and write the node's backup folder, and a node is
 # given one when it starts (`--backup-dir`); this one was not.

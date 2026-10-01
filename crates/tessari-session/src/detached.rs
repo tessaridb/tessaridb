@@ -61,6 +61,9 @@ impl Detached {
             elsewhere: self.elsewhere,
             gather: self.gather,
             backups: self.backups,
+            // A sink belongs to the request that streams, never to state
+            // carried to a later one.
+            sink: crate::backup_to::Sink::none(),
         }
     }
 }

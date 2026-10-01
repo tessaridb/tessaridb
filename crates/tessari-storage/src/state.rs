@@ -40,7 +40,7 @@ use tessari_encoding::{
     TopicHeadKey,
 };
 use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest};
-use tessari_types::{DatabaseId, NamespaceId, Sequence, ShardId, TableId};
+use tessari_types::{DatabaseId, NamespaceId, Reach, Sequence, ShardId, TableId};
 
 use crate::catalog::ShardMap;
 use crate::catalog::system;
@@ -67,6 +67,9 @@ pub struct TopicHead {
 /// A read of a store's state at one version, handed out a chunk at a time.
 pub struct StateReader<'a> {
     store: &'a Store,
+    /// The part of the store read: every record a collect at this reach would
+    /// carry, by the same rule (`catalog::carried_to`), and nothing else.
+    within: Reach,
     view: Transaction<'a>,
     version: Sequence,
     positions: Vec<(LogId, Sequence)>,
@@ -81,18 +84,24 @@ pub struct StateReader<'a> {
 }
 
 impl<'a> StateReader<'a> {
-    /// Begin reading `store`'s current state; see [`Store::read_state`].
-    pub(crate) fn open(store: &'a Store) -> Result<Self> {
+    /// Begin reading `store`'s state as a peer subscribed at `within` would be
+    /// given it; [`Reach::Store`] is all of it. See [`Store::read_state`].
+    pub(crate) fn open(store: &'a Store, within: Reach) -> Result<Self> {
         loop {
             let before = store.committed_version()?;
             let mut positions = Vec::new();
             for log in store.logs()? {
-                positions.push((log, store.committed_tail(log)?));
+                // The logs a collect at this reach may read: inside it, or
+                // above it carrying the definitions it needs.
+                if within.contains(log.home) || log.home.contains(within) {
+                    positions.push((log, store.committed_tail(log)?));
+                }
             }
             let view = store.begin_at(before)?;
             if store.committed_version()? == before {
                 return Ok(Self {
                     store,
+                    within,
                     view,
                     version: before,
                     positions,
@@ -135,6 +144,12 @@ impl StateReader<'_> {
         let mut heads = Vec::new();
         for (key, value) in self.store.backend().scan(&request)? {
             let key = TopicHeadKey::decode(key.as_slice())?;
+            if !self
+                .within
+                .contains(Reach::Database(key.namespace, key.database))
+            {
+                continue;
+            }
             heads.push(TopicHead {
                 namespace: key.namespace,
                 database: key.database,
@@ -201,6 +216,11 @@ impl StateReader<'_> {
                     shard,
                     value,
                 };
+                if self.within != Reach::Store
+                    && !crate::catalog::carried_to(&mutation)?.reaches(self.within)
+                {
+                    continue;
+                }
                 // The catalog is restored in chunks of its own, and all of it
                 // before any other record. A restore derives each chunk against
                 // what is already committed, as an apply does, so an index or an
@@ -250,7 +270,7 @@ impl StateReader<'_> {
 
 /// Whether a record is written by a `maintain` function rather than by a
 /// statement, and so comes back when the records around it are restored.
-fn derived(stored: &RecordKey) -> bool {
+pub(crate) fn derived(stored: &RecordKey) -> bool {
     stored.namespace == system::SYSTEM_NAMESPACE
         && stored.database == system::SYSTEM_DATABASE
         && stored.table == system::RECORD_COUNTS

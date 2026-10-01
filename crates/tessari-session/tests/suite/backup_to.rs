@@ -72,8 +72,10 @@ fn each_form_lands_in_the_folder_with_the_bytes_the_statement_answers() {
     let mut root = owner(&store, folder.path());
 
     for (form, statement, name) in [
-        ("log", "BACKUP", "nightly.tessarilog"),
+        ("log", "BACKUP LOG", "nightly.tessarilog"),
         ("state", "BACKUP STATE", "nightly.tessarisnap"),
+        // No form named is the snapshot (ADR-0094 D1).
+        ("state", "BACKUP", "default.tessarisnap"),
         ("script", "BACKUP SCRIPT", "nightly.tessariql"),
     ] {
         let written = answer(&mut root, &format!("{statement} TO '{name}';"));
@@ -112,6 +114,7 @@ fn each_form_lands_in_the_folder_with_the_bytes_the_statement_answers() {
     assert_eq!(
         names,
         [
+            "default.tessarisnap",
             "nightly.tessarilog",
             "nightly.tessariql",
             "nightly.tessarisnap"
@@ -236,4 +239,109 @@ fn only_a_store_wide_owner_may_write_one() {
         "an owner of one database reached the file checks: {error:?}"
     );
     assert_eq!(std::fs::read_dir(folder.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn a_snapshot_of_one_namespace_restores_that_namespace_and_nothing_else() {
+    let store = store();
+    let folder = tempfile::tempdir().unwrap();
+    let mut root = owner(&store, folder.path());
+    root.run(
+        "DEFINE NAMESPACE crm; USE NAMESPACE crm; DEFINE DATABASE people; USE DATABASE people;
+         DEFINE COLLECTION contacts; CREATE contacts:1 = { name: 'left behind' };",
+    )
+    .unwrap();
+
+    let Value::Bytes(snapshot) = answer(&mut root, "BACKUP STATE OF NAMESPACE prod;") else {
+        panic!("a snapshot is bytes");
+    };
+    let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
+    let restored = Store::open(backend).unwrap();
+    tessari_backup::read_state(&restored, || Ok(std::io::Cursor::new(snapshot.clone()))).unwrap();
+
+    // The store-wide users come with the place, so the restored store is as
+    // closed as the one the snapshot was taken of: an open store would answer
+    // anybody.
+    assert!(
+        Session::new(&restored)
+            .run("USE NAMESPACE prod; USE DATABASE app; SELECT * FROM notes;")
+            .is_err(),
+        "a restored part answered a caller who never signed in"
+    );
+    let mut reader = Session::new(&restored);
+    reader.sign_in("root", PASSWORD).unwrap();
+    let kept = reader
+        .run("USE NAMESPACE prod; USE DATABASE app; SELECT body FROM notes;")
+        .unwrap();
+    assert!(format!("{kept:?}").contains("kept"), "{kept:?}");
+    let other = reader.run("USE NAMESPACE crm;");
+    assert!(
+        other.is_err(),
+        "the namespace the snapshot was not of came back with it: {other:?}"
+    );
+
+    // One database is a place too, and the records of the database beside it
+    // stay out. Its definition travels, as it does to a follower subscribed at
+    // one database: a database is defined in its namespace's catalog.
+    root.run(
+        "USE NAMESPACE prod; DEFINE DATABASE elsewhere; USE DATABASE elsewhere;
+         DEFINE COLLECTION notes; CREATE notes:9 = { body: 'left behind' };",
+    )
+    .unwrap();
+    let Value::Bytes(snapshot) = answer(&mut root, "BACKUP STATE OF prod.app;") else {
+        panic!("a snapshot is bytes");
+    };
+    let backend: Arc<dyn KvBackend> = Arc::new(MemoryBackend::new());
+    let restored = Store::open(backend).unwrap();
+    tessari_backup::read_state(&restored, || Ok(std::io::Cursor::new(snapshot.clone()))).unwrap();
+    let mut reader = Session::new(&restored);
+    reader.sign_in("root", PASSWORD).unwrap();
+    let kept = reader
+        .run("USE NAMESPACE prod; USE DATABASE app; SELECT body FROM notes;")
+        .unwrap();
+    assert!(format!("{kept:?}").contains("kept"), "{kept:?}");
+    let beside = reader.run("USE DATABASE elsewhere; SELECT * FROM notes;");
+    assert!(
+        !format!("{beside:?}").contains("left behind"),
+        "the records of the database the snapshot was not of came back: {beside:?}"
+    );
+}
+
+/// A writer a test can read back after the session has dropped its handle.
+#[derive(Clone, Default)]
+struct Shared(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Shared {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_streamed_snapshot_is_the_answered_one_and_a_refused_caller_streams_nothing() {
+    let store = store();
+    let folder = tempfile::tempdir().unwrap();
+    let Value::Bytes(answered) = answer(&mut owner(&store, folder.path()), "BACKUP STATE;") else {
+        panic!("a snapshot is bytes");
+    };
+
+    let streamed = Shared::default();
+    let mut root = Session::new(&store).snapshot_into(Box::new(streamed.clone()));
+    root.sign_in("root", PASSWORD).unwrap();
+    let summary = answer(&mut root, "BACKUP STATE;");
+    assert_eq!(field(&summary, "form"), &Value::String("state".to_owned()));
+    assert_eq!(*streamed.0.lock().unwrap(), answered);
+
+    // The statement still decides: a database owner is refused, and the sink
+    // is never written.
+    let refused_sink = Shared::default();
+    let mut nina = Session::new(&store).snapshot_into(Box::new(refused_sink.clone()));
+    nina.sign_in("nina", PASSWORD).unwrap();
+    assert!(nina.run("BACKUP STATE;").is_err());
+    assert!(refused_sink.0.lock().unwrap().is_empty());
 }

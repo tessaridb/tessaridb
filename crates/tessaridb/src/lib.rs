@@ -136,7 +136,7 @@ pub use tessari_session::{
 };
 pub use tessari_storage::{
     BUILD_VERSION, Change, ChangeKind, Changes, LeadershipDefinition, Lease, LogId, Reach,
-    Subscription, Watch, Writer,
+    Subscription, Upstream, Watch, Writer,
 };
 pub use tessari_types::{
     DatabaseId, Datetime, Duration, FieldKind, Geometry, NamespaceId, Number, Path as FieldPath,

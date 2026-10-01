@@ -56,10 +56,68 @@ pub struct Collection {
     pub level_at: Option<Instant>,
 }
 
+/// Where this node stands against the peer it collects from (ADR-0094 D4).
+///
+/// The follower's own answer, because only the follower knows it is copying:
+/// its leader sees one long read on the peer door and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Upstream {
+    /// Its position is below the leader's log start, and it is copying the
+    /// leader's state before it collects again.
+    Copying,
+    /// It collects, and the last answer filled the bound, so there is more.
+    CatchingUp,
+    /// The last answer was shorter than the bound: it holds what its leader
+    /// had to give.
+    InSync,
+    /// A copy failed. The node is behind, not damaged: a failed copy writes
+    /// no position, and the next round tries again.
+    CopyFailed,
+    /// Its position is below the leader's log start, and it leads something
+    /// of its own, so a copy would overwrite what it is the origin of. An
+    /// operator restores it from a snapshot; it is not re-seeded by itself.
+    Stranded,
+}
+
+impl Upstream {
+    /// Every state, in the order a scrape lists them.
+    pub const ALL: [Self; 5] = [
+        Self::Copying,
+        Self::CatchingUp,
+        Self::InSync,
+        Self::CopyFailed,
+        Self::Stranded,
+    ];
+
+    /// The name a report prints, in the words an operator reads.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Copying => "copying",
+            Self::CatchingUp => "catching up",
+            Self::InSync => "in sync",
+            Self::CopyFailed => "copy failed",
+            Self::Stranded => "stranded",
+        }
+    }
+}
+
+/// [`Upstream`], with what this process has copied so far.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpstreamReport {
+    /// Where the node stands now.
+    pub state: Upstream,
+    /// How many records the copies this process made have installed.
+    pub copied_records: u64,
+    /// How many copies this process has completed.
+    pub copies: u64,
+}
+
 /// What this node has collected, held for the life of the process.
 #[derive(Debug, Default)]
 pub struct Collections {
     last: Mutex<Option<Collection>>,
+    upstream: Mutex<Option<UpstreamReport>>,
 }
 
 impl Collections {
@@ -84,11 +142,99 @@ impl Collections {
             };
             *last = Some(Collection { reached, level_at });
         }
+        // A collection that landed ends a failed copy or a stranding: the
+        // peer answered, so the node is following again.
+        self.upstream_is(match currency {
+            Currency::Level => Upstream::InSync,
+            Currency::Behind => Upstream::CatchingUp,
+        });
+    }
+
+    /// Record where this node now stands against its upstream.
+    pub fn upstream_is(&self, state: Upstream) {
+        if let Ok(mut held) = self.upstream.lock() {
+            let (copied_records, copies) =
+                held.map_or((0, 0), |held| (held.copied_records, held.copies));
+            *held = Some(UpstreamReport {
+                state,
+                copied_records,
+                copies,
+            });
+        }
+    }
+
+    /// Record a copy that installed `records` records; the node now collects
+    /// from where the copy stood it.
+    pub fn copied(&self, records: u64) {
+        if let Ok(mut held) = self.upstream.lock() {
+            let (copied_records, copies) =
+                held.map_or((0, 0), |held| (held.copied_records, held.copies));
+            *held = Some(UpstreamReport {
+                state: Upstream::CatchingUp,
+                copied_records: copied_records.saturating_add(records),
+                copies: copies.saturating_add(1),
+            });
+        }
+    }
+
+    /// Where this node stands against its upstream, or `None` when it has
+    /// never collected nor copied — a node that follows nobody.
+    #[must_use]
+    pub fn upstream(&self) -> Option<UpstreamReport> {
+        self.upstream.lock().ok().and_then(|held| *held)
     }
 
     /// The last collection, if this node has ever made one.
     #[must_use]
     pub fn last(&self) -> Option<Collection> {
         self.last.lock().ok().and_then(|last| *last)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_copy_reads_catching_up_until_a_short_collection_says_level() {
+        let held = Collections::default();
+        assert_eq!(
+            held.upstream(),
+            None,
+            "a node that never collected follows nobody yet"
+        );
+        held.upstream_is(Upstream::Copying);
+        assert_eq!(
+            held.upstream().map(|seen| seen.state),
+            Some(Upstream::Copying)
+        );
+        held.copied(40);
+        let seen = held.upstream().expect("a copy happened");
+        assert_eq!(
+            (seen.state, seen.copied_records, seen.copies),
+            (Upstream::CatchingUp, 40, 1)
+        );
+        held.collected(Sequence::new(9), Currency::Behind);
+        assert_eq!(
+            held.upstream().map(|seen| seen.state),
+            Some(Upstream::CatchingUp)
+        );
+        held.collected(Sequence::new(12), Currency::Level);
+        let seen = held.upstream().expect("still known");
+        assert_eq!((seen.state, seen.copied_records), (Upstream::InSync, 40));
+    }
+
+    #[test]
+    fn a_collection_that_lands_ends_a_failed_or_stranded_state() {
+        let held = Collections::default();
+        for refused in [Upstream::CopyFailed, Upstream::Stranded] {
+            held.upstream_is(refused);
+            assert_eq!(held.upstream().map(|seen| seen.state), Some(refused));
+            held.collected(Sequence::new(3), Currency::Level);
+            assert_eq!(
+                held.upstream().map(|seen| seen.state),
+                Some(Upstream::InSync)
+            );
+        }
     }
 }

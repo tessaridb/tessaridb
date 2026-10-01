@@ -55,6 +55,7 @@ mod listening;
 mod object;
 mod request;
 mod respond;
+mod snapshot;
 mod tokens;
 mod websocket;
 
@@ -277,6 +278,12 @@ async fn handle(
     }
     if parts.method == Method::GET && url == "/wire" {
         return websocket::wire(node, &mut parts, busy, place).await;
+    }
+    // A snapshot leaves as it is read rather than as one answer (ADR-0094 D6),
+    // so it cannot wait for the bridge to hand back a finished body. The other
+    // `/backup` forms are answered whole through the bridge below.
+    if parts.method == Method::GET && (url == "/backup" || url == "/backup?as=state") {
+        return snapshot::backup(node, &parts, busy, place).await;
     }
     let read = if incoming::takes_body(&parts.method, &url) {
         Some(incoming::read(&parts.headers, body).await)

@@ -814,7 +814,38 @@ const TABLES: &[Table] = &[
         // `Store::holds_nothing` is **not a data path**: it answers whether
         // anything was ever written, which the version counter already
         // publishes in `INFO FOR NODE`.
-        expected: 48,
+        //
+        // 49-50 since a follower copies its leader's state (G049, ADR-0094 D3).
+        // `Store::read_state_within` reads the records a subscription carries.
+        // Classified **enforced, on `log_records_within`'s ground**: its one
+        // caller is the peer door's `copying::serve`, reached through
+        // `Serving::copied`, which asks the follower's grant first and refuses
+        // a node nobody subscribed — so the reach it reads with is the one the
+        // follower's own catalog row declares, and the filter is
+        // `catalog::carried_to`, the one a collect applies. Its
+        // re-classification trigger: a caller passing a reach it did not take
+        // from the grant.
+        //
+        // `Store::sweep_unreplaced` writes tombstones with no identity.
+        // Classified **exempt, on `apply_record`'s ground**: its one caller is
+        // the follower's own copy (`copying::copy`), installing what its leader
+        // served it — which is now also a second caller of
+        // `restore_state_chunk` and `finish_state`, on the same ground, and like
+        // the first not reachable from a session or a route. Their
+        // re-classification trigger is unchanged: any caller reachable from a
+        // session or a route.
+        //
+        // 51-53 since a follower reports where it stands (G049, ADR-0094 D4):
+        // `Store::upstream_is`, `Store::replica_copied` and `Store::upstream`.
+        // Classified **exempt, on `follower_served`'s ground**: they write and
+        // read a process-local report and nothing else — no record, catalog
+        // entry or grant — and the writers' one caller is the node's own
+        // collection round. The reader reaches a caller only through
+        // `INFO FOR NODE` (`Administer`) and `/metrics`, which already publish
+        // the follower rows beside it. Re-classification trigger: a writer
+        // reachable from a session or a route, which would let a caller report
+        // a node in sync that is not.
+        expected: 53,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -890,7 +921,15 @@ const TABLES: &[Table] = &[
         // or a file and no identity; `verify_state` and `is_state` touch no
         // store at all. The surfaces that reach a node go through
         // `BACKUP STATE`, whose authority is the statement's.
-        expected: 11,
+        //
+        // 12 since a snapshot of one place (G049, ADR-0094 D5):
+        // `write_state_within`. Classified **exempt on `write_state`'s ground**
+        // — it takes a store, a reach and a sink and no identity, and
+        // `write_state` is now this with the whole store. Its node callers are
+        // `BACKUP STATE OF` and the streamed `GET /backup`, both through the
+        // statement, which only a store-wide owner runs; the reach is resolved
+        // from names the statement carries, never from the caller's grant.
+        expected: 12,
         count: module_functions,
     },
     Table {
@@ -963,7 +1002,17 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 119 since the vault surface (G048): `Db::unseal_for`, exempt; the vault
     // frame and four vault routes, enforced — classified above.
-    assert_eq!(total, 119, "the counted tables no longer sum to 119");
+    //
+    // 121 since a follower copies its leader's state (G049, ADR-0094 D3):
+    // `Store::read_state_within`, enforced, and `Store::sweep_unreplaced`,
+    // exempt — classified above.
+    //
+    // 124 since a follower reports where it stands (G049, ADR-0094 D4): three
+    // on `Store`, exempt, classified above.
+    //
+    // 125 since a snapshot of one place (G049, ADR-0094 D5):
+    // `backup::write_state_within`, exempt, classified above.
+    assert_eq!(total, 125, "the counted tables no longer sum to 125");
 }
 
 /// Every `.rs` file under a directory.
@@ -1121,11 +1170,11 @@ const CLASSIFIED: &[(&str, &str)] = &[
     ),
     (
         "tessari-wire/src/collection.rs",
-        ".log_records_within(over, log, cursor, room.min(COLLECTION_PAGE_RECORDS))",
+        "let page = match self.log.log_records_within(",
     ),
     (
         "tessari-wire/src/collection.rs",
-        ".log_records_within(over, log, before, 1)",
+        "let held = match store.log_records_within(over, log, before, 1) {",
     ),
 ];
 

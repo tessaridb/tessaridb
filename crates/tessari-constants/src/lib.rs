@@ -436,6 +436,14 @@ pub const AWARENESS_SECONDS: u64 = 10;
 /// meet even when everything is working.
 pub const COLLECTION_SECONDS: u64 = AWARENESS_SECONDS;
 
+/// How long a leader keeps the positions it copied a follower to, after the copy
+/// ended, against its own retention window (ADR-0094 D3).
+///
+/// Unit: seconds. Twelve collection intervals: the follower's first collect after
+/// a copy is due within one, and a follower that has not asked by then is not
+/// coming soon enough to be worth a disk that keeps growing for it.
+pub const REPLICA_COPY_GRACE_SECONDS: u64 = COLLECTION_SECONDS * 12;
+
 /// The most records one collection carries.
 ///
 /// Unit: records.
@@ -698,6 +706,16 @@ pub const MAX_SIGN_IN_VERIFICATIONS: usize = 24;
 /// expiry. This constant is what covers the case nobody noticed and so nobody
 /// revoked.
 pub const SESSION_TOKEN_SECONDS: u64 = 12 * 60 * 60;
+
+/// How many records each log keeps when nobody configured a number (ADR-0094 D2).
+///
+/// Unit: log records, per log. Overridden per node by `TESSARIDB_RETAIN_RECORDS`
+/// (a number, or `none` for unbounded) and per store by `DEFINE NODE RETAIN`.
+///
+/// The owner's figure (G049): a bounded log is the default because an unbounded
+/// one is a disk that fills, and the routine backup is a state snapshot, which
+/// does not need the history below the window.
+pub const DEFAULT_LOG_RETENTION_RECORDS: u64 = 100_000;
 
 /// How long an unseal lasts before the store seals itself again (ADR-0092 D4).
 ///

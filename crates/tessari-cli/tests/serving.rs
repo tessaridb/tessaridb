@@ -1445,6 +1445,33 @@ struct Three {
     /// be read — the same reason `the_node_a_majority_granted` carries its
     /// refusals into its own.
     logs: Vec<std::path::PathBuf>,
+    /// The arguments each node was started with, in band order, so a node
+    /// killed by emptying its slot can be started again on the same store.
+    started_with: Vec<Vec<std::ffi::OsString>>,
+}
+
+impl Three {
+    /// Start node `index` again, on the store and with the arguments it was
+    /// first started with, its standard error appended to the same log.
+    fn restart(&mut self, index: usize) {
+        self.running[index] = Some(started(&self.started_with[index], &self.logs[index]));
+    }
+}
+
+/// Start the shipped binary with `args`, its standard error appended to `log`.
+fn started(args: &[std::ffi::OsString], log: &std::path::Path) -> Running {
+    let writing = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+        .unwrap();
+    let child = Command::new(TESSARIDB)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(writing))
+        .spawn()
+        .unwrap();
+    Running(child)
 }
 
 /// The tail of each node's own log, for a panic that would otherwise send its
@@ -1626,6 +1653,7 @@ fn a_cluster_of_rows(band: &Band, preamble: &str, rows: [String; 3]) -> Three {
 
     let mut running: Vec<Option<Running>> = Vec::new();
     let mut logs: Vec<std::path::PathBuf> = Vec::new();
+    let mut started_with = Vec::new();
     for index in 0..band.len() {
         let (leaf, key, authority) = &papers[index];
         // Standard error is where this binary reports, so it is kept rather
@@ -1633,33 +1661,37 @@ fn a_cluster_of_rows(band: &Band, preamble: &str, rows: [String; 3]) -> Three {
         // descriptor interleave, and a log line carries a timestamp and a
         // target but never says which node wrote it.
         let log = directory.path().join(format!("n{index}")).join("node.log");
-        let writing = std::fs::File::create(&log).unwrap();
+        // A seed names the node as well as the address (ADR-0067): the
+        // handshake derives the peer's TLS name from its id, so a bare
+        // address is not a dial this transport can express. These three
+        // declare each other in their catalogs, so the seed is never read
+        // — it is here because a running node takes the flag.
+        let seed = format!(
+            "{}@{}",
+            tessari_types::RecordId::Uuid(ids[the_next_node(band, index)]),
+            band[the_next_node(band, index)].1
+        );
+        let args: Vec<std::ffi::OsString> = [
+            stores[index].as_os_str(),
+            "--serve".as_ref(),
+            band[index].0.as_ref(),
+            "--cluster-credential".as_ref(),
+            leaf.as_ref(),
+            "--cluster-key".as_ref(),
+            key.as_ref(),
+            "--cluster-authority".as_ref(),
+            authority.as_ref(),
+            "--cluster-address".as_ref(),
+            band[index].1.as_ref(),
+            "--seed".as_ref(),
+            seed.as_ref(),
+        ]
+        .iter()
+        .map(|arg| (*arg).to_owned())
+        .collect();
+        running.push(Some(started(&args, &log)));
         logs.push(log);
-        let child = Command::new(TESSARIDB)
-            .arg(&stores[index])
-            .args(["--serve", band[index].0])
-            .args(["--cluster-credential", leaf])
-            .args(["--cluster-key", key])
-            .args(["--cluster-authority", authority])
-            .args(["--cluster-address", band[index].1])
-            // A seed names the node as well as the address (ADR-0067): the
-            // handshake derives the peer's TLS name from its id, so a bare
-            // address is not a dial this transport can express. These three
-            // declare each other in their catalogs, so the seed is never read
-            // — it is here because a running node takes the flag.
-            .args([
-                "--seed",
-                &format!(
-                    "{}@{}",
-                    tessari_types::RecordId::Uuid(ids[the_next_node(band, index)]),
-                    band[the_next_node(band, index)].1
-                ),
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(writing))
-            .spawn()
-            .unwrap();
-        running.push(Some(Running(child)));
+        started_with.push(args);
     }
     for (client, peer) in band {
         assert!(listening(client, Duration::from_secs(30)), "{client}");
@@ -1670,6 +1702,7 @@ fn a_cluster_of_rows(band: &Band, preamble: &str, rows: [String; 3]) -> Three {
         running,
         logs,
         ids,
+        started_with,
     }
 }
 
@@ -3358,4 +3391,122 @@ fn a_node_runs_its_topic_consumers_in_every_build_and_stops_them_with_itself() {
         std::thread::sleep(Duration::from_millis(50));
     }
     drop(reopened);
+}
+
+/// A band of its own for the re-seed test, above the hand-run floor's
+/// neighbours so it collides with no other case.
+const RESEEDED: Band = [
+    ("127.0.0.1:47920", "127.0.0.1:47921"),
+    ("127.0.0.1:47922", "127.0.0.1:47923"),
+    ("127.0.0.1:47924", "127.0.0.1:47925"),
+];
+
+/// Each node keeps twenty records of each log, so a follower stopped for sixty
+/// commits comes back below its leader's log start.
+const RESEEDED_SCHEMA: &str = "DEFINE NODE RETAIN 20 RECORDS; \
+                               DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
+                               DEFINE DATABASE shop; USE DATABASE shop; \
+                               DEFINE TABLE item SCHEMALESS;";
+
+/// How many `item` records `surface` holds, or the refusal as text.
+fn items_at(surface: &str) -> String {
+    answered_at(
+        surface,
+        "USE NAMESPACE prod; USE DATABASE shop; SELECT count(*) AS n FROM item;",
+    )
+}
+
+#[test]
+#[ignore = "real cadences across three processes — a leader is elected, a \
+            follower is stopped, the leader prunes past it and the follower is \
+            started again. It is G049 C4's own validation and is run explicitly: \
+            cargo test -p tessari-cli --test serving a_follower_stopped_past -- --ignored"]
+fn a_follower_stopped_past_its_leaders_log_copies_the_state_and_follows_again() {
+    let mut cluster = a_cluster_declared(&RESEEDED, RESEEDED_SCHEMA, ["", "", ""]);
+    let logs = cluster.logs.clone();
+    let write = |surface: &str, n: usize| {
+        asked(
+            surface,
+            &format!("USE NAMESPACE prod; USE DATABASE shop; CREATE item:{n} = {{ n: {n} }};"),
+            None,
+        )
+    };
+    let began = Instant::now();
+    let leader = loop {
+        if let Some(index) = (0..RESEEDED.len()).find(|index| write(RESEEDED[*index].0, 0).is_ok())
+        {
+            break index;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(120),
+            "no node took a write{}",
+            what_the_nodes_said(&RESEEDED, &logs)
+        );
+        std::thread::sleep(POLL);
+    };
+    let stopped = the_next_node(&RESEEDED, leader);
+    // Level first, so what the follower holds when it stops is a real copy
+    // rather than an empty store that any answer would beat.
+    assert!(
+        until(Duration::from_secs(60), || items_at(RESEEDED[stopped].0)
+            == items_at(RESEEDED[leader].0)),
+        "the follower never caught up before it was stopped{}",
+        what_the_nodes_said(&RESEEDED, &logs)
+    );
+    cluster.running[stopped] = None;
+    for n in 1..=60 {
+        write(RESEEDED[leader].0, n).unwrap();
+    }
+    // The leader says it pruned; until it does, the follower is not below it.
+    assert!(
+        until(Duration::from_secs(60), || std::fs::read_to_string(
+            &logs[leader]
+        )
+        .is_ok_and(|said| said.contains("pruned"))),
+        "the leader never pruned{}",
+        what_the_nodes_said(&RESEEDED, &logs)
+    );
+    cluster.restart(stopped);
+    assert!(listening(RESEEDED[stopped].0, Duration::from_secs(30)));
+    let expected = items_at(RESEEDED[leader].0);
+    assert!(expected.contains("Integer(61)"), "{expected}");
+    assert!(
+        until(Duration::from_secs(90), || items_at(RESEEDED[stopped].0)
+            == expected),
+        "the follower never held what its leader holds: {} against {expected}{}",
+        items_at(RESEEDED[stopped].0),
+        what_the_nodes_said(&RESEEDED, &logs)
+    );
+    // And it follows again from there: a write after the copy arrives too.
+    write(RESEEDED[leader].0, 61).unwrap();
+    let expected = items_at(RESEEDED[leader].0);
+    assert!(
+        until(Duration::from_secs(60), || items_at(RESEEDED[stopped].0)
+            == expected),
+        "the follower copied and then stopped following{}",
+        what_the_nodes_said(&RESEEDED, &logs)
+    );
+
+    // And a snapshot taken on that follower, with no load on the leader,
+    // restores what the leader holds (ADR-0094 D7).
+    let answers = asked(RESEEDED[stopped].0, "BACKUP;", None).unwrap();
+    let Some(Answer::Value {
+        value: tessari_types::Value::Bytes(file),
+        ..
+    }) = answers.last()
+    else {
+        panic!("a snapshot is bytes: {answers:?}");
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let restored = tessaridb::Db::open(directory.path().join("restored")).unwrap();
+    tessari_backup::read_state(restored.store(), || Ok(std::io::Cursor::new(file.clone())))
+        .unwrap();
+    let counted = restored
+        .session()
+        .run("USE NAMESPACE prod; USE DATABASE shop; SELECT count(*) AS n FROM item;")
+        .unwrap();
+    assert!(
+        format!("{counted:?}").contains("Integer(62)"),
+        "the follower's snapshot is not the leader's state: {counted:?} against {expected}"
+    );
 }
