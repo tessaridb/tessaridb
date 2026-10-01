@@ -36,6 +36,9 @@ use crate::noticed::Noticed;
 use crate::outcome::Note;
 use crate::session::Session;
 
+mod counting;
+pub use counting::Counting;
+
 /// Stored records, each with its identity, in identity order.
 pub(crate) type Stored = Vec<(RecordId, Vec<u8>)>;
 
@@ -69,6 +72,9 @@ pub struct Asked<'a> {
     /// shard need send, ranked under the asker's visibility (ADR-0102); `None`
     /// for all of them.
     pub ordered: Option<&'a crate::Ordered>,
+    /// The search index this shard's figures are wanted for, instead of its
+    /// records (ADR-0103); `None` for the records.
+    pub counting: Option<&'a Counting>,
 }
 
 /// What a shard's leader answered.
@@ -81,6 +87,8 @@ pub struct Gathered {
     /// What the leader folded the records into, when it was asked to; `None`
     /// from a leader that was not asked, and read as declined from one that was.
     pub reduced: Option<crate::Reduced>,
+    /// What the leader counted, when it was asked to count (ADR-0103).
+    pub counted: Option<tessari_storage::SearchCounts>,
 }
 
 /// Why a shard's records did not arrive.
@@ -313,6 +321,7 @@ impl Session<'_> {
                     enough: remaining,
                     reduce: None,
                     ordered,
+                    counting: None,
                 };
                 match gatherer.gather(&asked) {
                     Ok(gathered) => gathered.records,
@@ -432,6 +441,7 @@ impl Session<'_> {
                     enough: None,
                     reduce: Some(reduce),
                     ordered: None,
+                    counting: None,
                 };
                 let partials = match gatherer.gather(&asked) {
                     Ok(Gathered {

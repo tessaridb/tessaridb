@@ -81,7 +81,7 @@ pub use detached::Detached;
 pub use effect::{Effect, admits};
 pub use elsewhere::{Elsewhere, Peer};
 pub use error::{Depended, Error, Result};
-pub use gather::{Asked, Gather, Gathered, Unanswered};
+pub use gather::{Asked, Counting, Gather, Gathered, Unanswered};
 pub use outcome::{AccessPath, Exactness, Nearest, Note, Outcome, Suggestion};
 pub use plan::Plan;
 pub use pushdown::{OrderKey, Ordered, Pushed, keeping, leading};

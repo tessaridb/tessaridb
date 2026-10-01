@@ -8043,6 +8043,23 @@ value in one travels as a value, never as statement text:
   fold refuses, a comparison across two kinds — declines, and the read gathers
   the records instead and answers, refuses or notes exactly as before.
 
+**Search over a gathered read answers what the whole table answers** (from
+`0.20.0-beta`). `MATCHES` and its `PREFIX`, `FUZZY`, phrase and `NOT` forms,
+`search::highlight` and the `geo::` predicates and distances judge each record by
+its own text or shape, so a gathered record is judged exactly as a held one.
+`search::score` — and `ORDER BY FUSE` through it — is measured against the
+**whole collection**: this node's index describes the shards it holds, and the
+leader of every shard it lacks counts that shard's documents, tokens and the
+documents holding each asked word, through the same analysis its index is
+written with. Each record of the read is then scored from its own text. That
+count reads every record of the lacked shards on their leaders once per scored
+read; a node holding the whole table pays nothing for it. A leader that cannot
+count refuses the read with `NotGathered` rather than leaving the score measured
+against part of the collection. The **suggestion** an answer carries ("did you
+mean") is withheld on a node holding part of the table: its dictionary is part of
+the collection's, and "nothing nearer" from it would be false whenever the nearer
+word sits in a shard it lacks.
+
 **The answer is complete and it is not one snapshot.** Each fetched shard is its
 leader's state when it was asked, beside this node's own. The answer says so
 with the note **`gathered`**, naming the shards fetched. For the same reason a
@@ -8613,7 +8630,7 @@ be, because it is confined to the run its fixed values name.
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
 | **hash** sharding | shards are spans of identities, which is what keeps a span read one walk. Spreading writes by hash forfeits that order and is a second method the map can carry later, not a change to the first. §4 |
-| more of a gathered read **pushed to the shards' leaders** | a `WHERE`, an unordered `LIMIT` and the folds that merge exactly (`count`, `sum`, `mean`, `min`, `max`) travel; an `ORDER BY … LIMIT`, `variance`, `stddev`, `median`, `collect`, the counter folds and a fold over floats gather the records and run here. Merging those exactly is each its own piece of work. A join side and a `FETCH` are not gathered at all. §7d |
+| more of a gathered read **pushed to the shards' leaders** | a `WHERE`, a `LIMIT`, an `ORDER BY … LIMIT` over record-only keys and the folds that merge exactly (`count`, `sum`, `mean`, `min`, `max`) travel; `variance`, `stddev`, `median`, `collect`, the counter folds and a fold over floats gather the records and run here, and a suggestion is withheld on a node holding part of the table. Merging those exactly is each its own piece of work. A join side and a `FETCH` are not gathered at all. §7d |
 | **choosing among a range's candidates, and giving a range back to the store** | `LEADS` elects a leader per placed range and `ALTER REPLICA` moves a placement between rows, but there is no preference among candidates and no rebalancing, and a range's last placement cannot be removed: that needs every lease on the range to have lapsed first. §7d |
 | a change feed over a split table **on a node that does not write all of it** | a feed merges one writer's logs in that writer's order, and two writers' orders are unrelated counters — so a shard led elsewhere, or a follower, is refused by name rather than merged by a guess. Following it there needs an order across writers. §4 |
 | **an index serving a branch of a fused read** (`ORDER BY FUSE`) | every branch is ranked over every record that passed the `WHERE`, which is exact and costs the filtered read. A branch served from the search walk or the vector graph would stop early, and a fused order needs each branch's places down to its depth — the bound is the depth, not the `LIMIT`, and proving the walk answers the same places is its own piece of work. §5 |

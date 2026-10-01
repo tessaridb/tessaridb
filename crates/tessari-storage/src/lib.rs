@@ -115,6 +115,7 @@ pub use state::{StateReader, TopicHead};
 pub use store::{Health, Store};
 pub use tessari_encoding::{BUILD_VERSION, LogId, NODE_ID_LEN, Roles, Writer};
 pub use transaction::{
-    Expansion, Nearby, Neighbour, RecordAddress, Region, StoredRecord, Transaction, Window,
+    Expansion, Nearby, Neighbour, RecordAddress, Region, SearchCounts, StoredRecord, Transaction,
+    Window,
 };
 pub use vault::{OpenVault, SealState};

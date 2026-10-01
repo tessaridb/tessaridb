@@ -37,9 +37,20 @@ compares carries no pre-release suffix.
   records answers instead of `GatheredTooMuch`. Every node in a cluster must run
   this build: an older leader refuses the new gather section, and the read is
   `NotGathered` until it is upgraded.
+- **A score over a split table is measured against the whole collection on a
+  node holding part of it** (G051 C6, ADR-0103). The leader of each lacking shard
+  counts its documents, tokens and the documents holding each asked word, and
+  every record of the read is scored from its own text, so `search::score` and
+  `ORDER BY FUSE` answer what a node holding every shard answers.
 
 ### Fixed
 
+- **`search::score` on a node holding part of a split table was silently
+  wrong** (G051 C6). A gathered record scored `0` and a held one was measured
+  against this node's shards alone, so the order differed from the whole table's
+  with no refusal and no note. The "did you mean" suggestion there came from the
+  node's own dictionary and could say nothing was nearer when a shard it lacked
+  held the word; it is now withheld on such a node.
 - **A `DELETE` on a node holding part of a split table no longer removes only
   that part.** A conditional or span `DELETE` read just the shards this node
   holds, removed what matched there and reported that count as the statement's;

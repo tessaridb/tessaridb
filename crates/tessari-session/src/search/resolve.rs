@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use tessari_encoding::{SearchStatistics, TermStatistics};
 use tessari_ql::{BinaryOp, Expr, ExprKind, Function};
 use tessari_storage::{Catalog, IndexDefinition, Transaction};
 use tessari_types::{Analyzer, Path, TableId, Value};
@@ -15,6 +16,7 @@ use tessari_types::{Analyzer, Path, TableId, Value};
 use tessari_constants::{SEARCH_FUZZY_PREFIX, SEARCH_PREFIX_MINIMUM};
 
 use crate::error::{Error, Result};
+use crate::evaluate::Part;
 use crate::outcome::Suggestion;
 use crate::rank::Corpus;
 use crate::session::Session;
@@ -33,6 +35,10 @@ pub(crate) struct Ranked {
     pub(crate) corpus: Corpus,
     /// The search index this path's statistics were read from.
     pub(crate) index: IndexDefinition,
+    /// Whether a record's own text is what it is scored by, rather than this
+    /// node's postings: the read gathers records this node's index does not
+    /// hold (ADR-0103 D2).
+    pub(crate) from_text: bool,
 }
 
 /// What the searched fields of one read need, resolved before any record is.
@@ -245,6 +251,7 @@ impl Session<'_> {
                             asked: Vec::new(),
                         },
                         index,
+                        from_text: false,
                     },
                 );
                 continue;
@@ -264,6 +271,26 @@ impl Session<'_> {
                 let held = transaction.term_statistics(&index, term)?;
                 terms.insert(term.clone(), held);
             }
+            // ADR-0103: this node's index describes the shards it holds, and the
+            // leaders of the others count theirs. A term's figure is then a
+            // count alone — the bounds a pruned walk reads describe this node's
+            // postings, and a gathered read walks none of them.
+            let distinct: Vec<String> = terms.keys().cloned().collect();
+            let elsewhere = self.counted_elsewhere(transaction, table, &index, &distinct)?;
+            let statistics = match &elsewhere {
+                Some(counted) => {
+                    for (term, more) in distinct.iter().zip(&counted.holding) {
+                        if let Some(held) = terms.get_mut(term) {
+                            *held = TermStatistics::new(held.documents.saturating_add(*more));
+                        }
+                    }
+                    SearchStatistics::new(
+                        statistics.documents.saturating_add(counted.documents),
+                        statistics.terms.saturating_add(counted.tokens),
+                    )
+                }
+                None => statistics,
+            };
             corpora.insert(
                 path.clone(),
                 Ranked {
@@ -274,6 +301,7 @@ impl Session<'_> {
                         asked,
                     },
                     index,
+                    from_text: elsewhere.is_some(),
                 },
             );
         }
@@ -289,8 +317,15 @@ impl Session<'_> {
         // `NothingNearer`, which would tell the caller every word they typed is
         // in a field they cannot read.
         matched.retain(|(path, _)| !hidden(path));
-        let indexes = Catalog::new(transaction).indexes_on(table)?;
-        let suggestion = suggested(transaction, &indexes, &analyzers, &matched)?;
+        // ADR-0103 D3: on a node holding part of the table, its dictionary is
+        // part of the collection's, and "nothing nearer" from it is false
+        // whenever the nearer word sits in a shard it lacks.
+        let suggestion = if self.missing(transaction, table, Part::Whole)?.is_some() {
+            None
+        } else {
+            let indexes = Catalog::new(transaction).indexes_on(table)?;
+            suggested(transaction, &indexes, &analyzers, &matched)?
+        };
 
         Ok(Searched {
             analyzers,

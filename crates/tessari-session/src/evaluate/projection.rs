@@ -224,8 +224,10 @@ impl Session<'_> {
         // nothing: with no occurrences there is no term for the length to divide.
         let mut occurrences = BTreeMap::new();
         let mut length = 0_u32;
-        let mut membership = false;
-        for term in corpus.terms.keys() {
+        // A gathered read's records are not in this node's postings, so every
+        // one of them is scored from its text (ADR-0103 D2).
+        let mut membership = ranked.from_text;
+        for term in corpus.terms.keys().filter(|_| !ranked.from_text) {
             match transaction.posting(&ranked.index, term, id)? {
                 None => {}
                 Some(Posting::Counted {

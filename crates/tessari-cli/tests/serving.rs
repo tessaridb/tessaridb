@@ -2913,7 +2913,10 @@ const SHARD_FAILOVER: Band = [
 /// `LEADS SHARD` resolves in the transaction that declares it.
 const PLACED: &str = "DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
                       DEFINE DATABASE shop; USE DATABASE shop; \
-                      DEFINE TABLE orders (n int) IDENTITY uuid SPLIT AT 'g', 'p';";
+                      DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer; \
+                      DEFINE TABLE orders (n int, note string ANALYZER english) IDENTITY uuid \
+                      SPLIT AT 'g', 'p'; \
+                      DEFINE INDEX by_note ON orders FIELDS note SEARCH;";
 
 /// A write into `orders` at `key`, which names its shard by its first letter.
 fn into_orders(key: &str) -> String {
@@ -3232,6 +3235,75 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
         std::thread::sleep(POLL);
     }
 
+    // G051 C6 (ADR-0103): a score on node 2 is measured against all three
+    // shards — node 2 counts its own, the leaders count theirs — so it is the
+    // score a node holding the whole store gives. One annotated record per
+    // shard, each through whichever node takes it.
+    for (key, note) in [
+        ("af", "fox fox"),
+        ("hf", "a fox among the dogs"),
+        ("xf", "dogs"),
+    ] {
+        let began = Instant::now();
+        while ![0, 1].into_iter().any(|index| {
+            Client::connect(GATHERING[index].0).is_ok_and(|mut client| {
+                client
+                    .run(
+                        &format!(
+                            "USE NAMESPACE prod; USE DATABASE shop; \
+                             CREATE orders:'{key}' = {{ n: 1, note: '{note}' }};"
+                        ),
+                        None,
+                    )
+                    .is_ok()
+            })
+        }) {
+            assert!(
+                began.elapsed() < Duration::from_secs(60),
+                "nobody took {key}{}",
+                what_the_nodes_said(&GATHERING, &logs)
+            );
+            std::thread::sleep(POLL);
+        }
+    }
+    let scored = "SELECT id, search::score(note, 'fox') AS s FROM orders \
+                  WHERE note MATCHES 'fox' ORDER BY s DESC;";
+    let scores_at = |surface: &str| -> Result<Vec<String>, String> {
+        let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+        match client.run(
+            &format!("USE NAMESPACE prod; USE DATABASE shop; {scored}"),
+            None,
+        ) {
+            Ok(answers) => match answers.last() {
+                Some(Answer::Records { records, .. }) => {
+                    Ok(records.iter().map(|record| format!("{record:?}")).collect())
+                }
+                other => Err(format!("{other:?}")),
+            },
+            Err(why) => Err(why.to_string()),
+        }
+    };
+    let began = Instant::now();
+    loop {
+        let (partial, whole) = (scores_at(GATHERING[2].0), scores_at(GATHERING[0].0));
+        if let (Ok(partial), Ok(whole)) = (&partial, &whole)
+            && whole.len() == 2
+            && partial == whole
+        {
+            assert!(
+                whole.first().is_some_and(|first| first.contains("af")),
+                "{whole:?}"
+            );
+            break;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(90),
+            "node 2's scores never matched a whole node's: {partial:?} against {whole:?}{}",
+            what_the_nodes_said(&GATHERING, &logs)
+        );
+        std::thread::sleep(POLL);
+    }
+
     // Shard 2's leader stops: a read needing shard 2 is refused naming it —
     // never answered without it — and a read inside what node 2 holds answers.
     cluster.running[1] = None;
@@ -3239,7 +3311,8 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
     loop {
         match read_at(GATHERING[2].0, "SELECT * FROM orders;") {
             Err(why) if why.contains("shard 2") => break,
-            Ok(ids) if ids.len() == 3 => {}
+            // The three first records and the three annotated for C6.
+            Ok(ids) if ids.len() == 6 => {}
             other => panic!("a partial or wrong answer while shard 2's leader is gone: {other:?}"),
         }
         assert!(
@@ -3252,8 +3325,8 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
         read_at(GATHERING[2].0, "SELECT * FROM orders:'p'..'zz';")
             .unwrap()
             .len(),
-        1,
-        "a span inside the shard node 2 holds"
+        2,
+        "a span inside the shard node 2 holds: its first record and `xf`"
     );
 }
 

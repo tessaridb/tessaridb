@@ -111,5 +111,6 @@ pub(super) fn ranked_page(
         more,
         resume: None,
         reduced: None,
+        counted: None,
     })
 }

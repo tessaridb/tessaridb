@@ -69,26 +69,38 @@ pub(crate) fn leader() -> Arc<Store> {
     Arc::new(leader)
 }
 
-fn ledger(store: &Store) -> TableId {
+fn table(store: &Store, name: &str) -> TableId {
     let mut transaction = store.begin().unwrap();
     tessari_storage::Catalog::new(&mut transaction)
-        .table_id(NamespaceId::new(1), DatabaseId::new(1), "ledger")
+        .table_id(NamespaceId::new(1), DatabaseId::new(1), name)
         .unwrap()
         .unwrap()
 }
 
 fn shard(store: &Store, id: u32) -> Reach {
+    shard_of(store, "ledger", id)
+}
+
+fn shard_of(store: &Store, name: &str, id: u32) -> Reach {
     Reach::Shard(
         NamespaceId::new(1),
         DatabaseId::new(1),
-        ledger(store),
+        table(store, name),
         ShardId::new(id),
     )
 }
 
 /// A follower of shard 2 only, recorded as served that way.
 pub(crate) fn follower_of_the_middle(leader: &Store) -> Store {
-    let over = shard(leader, 2);
+    follower_of(leader, shard(leader, 2))
+}
+
+/// A follower of the middle shard of `name`, recorded as served that way.
+pub(crate) fn follower_of_the_middle_of(leader: &Store, name: &str) -> Store {
+    follower_of(leader, shard_of(leader, name, 2))
+}
+
+fn follower_of(leader: &Store, over: Reach) -> Store {
     let follower = store();
     let mut node = signed_in(leader, "node");
     for log in leader.logs().unwrap() {
@@ -141,9 +153,9 @@ impl Gather for FromTheLeader {
                 asked.table,
                 asked.window,
                 None,
-                match asked.reduce {
-                    Some(_) => usize::MAX,
-                    None => asked.most.saturating_add(1),
+                match (asked.reduce, asked.counting) {
+                    (None, None) => asked.most.saturating_add(1),
+                    _ => usize::MAX,
                 },
             )
             .unwrap();
@@ -157,6 +169,27 @@ impl Gather for FromTheLeader {
                 records: Vec::new(),
                 node: THE_LEADER,
                 reduced: Some(reduced),
+                counted: None,
+            });
+        }
+        // Counted as the peer door counts, through the analysis the leader's
+        // own index writer uses (ADR-0103).
+        if let Some(counting) = asked.counting {
+            let mut transaction = self.leader.begin().unwrap();
+            let index = tessari_storage::Catalog::new(&mut transaction)
+                .indexes_on(asked.table)
+                .unwrap()
+                .into_iter()
+                .find(|index| index.id == counting.index)
+                .unwrap();
+            let counted = transaction
+                .search_counts(&index, &records, &counting.terms)
+                .unwrap();
+            return Ok(Gathered {
+                records: Vec::new(),
+                node: THE_LEADER,
+                reduced: None,
+                counted: Some(counted),
             });
         }
         // Narrowed as the peer door narrows, so every equality below runs
@@ -184,6 +217,7 @@ impl Gather for FromTheLeader {
             records,
             node: THE_LEADER,
             reduced: None,
+            counted: None,
         })
     }
 }
@@ -221,6 +255,7 @@ impl Gather for Flooding {
             records,
             node: THE_LEADER,
             reduced: None,
+            counted: None,
         })
     }
 }
@@ -234,6 +269,11 @@ pub(crate) struct Pair {
 pub(crate) fn pair() -> Pair {
     let leader = leader();
     let follower = follower_of_the_middle(&leader);
+    pair_of(leader, follower)
+}
+
+/// A leader and a follower of part of it, the follower gathering from it.
+pub(crate) fn pair_of(leader: Arc<Store>, follower: Store) -> Pair {
     let gatherer = Arc::new(FromTheLeader {
         leader: Arc::clone(&leader),
         asked: Mutex::new(Vec::new()),
@@ -263,6 +303,10 @@ impl Pair {
             .run("USE NAMESPACE prod; USE DATABASE shop;")
             .unwrap();
         session
+    }
+
+    pub(crate) fn leader(&self) -> &Store {
+        &self.leader
     }
 
     fn asked(&self) -> Vec<Question> {
@@ -384,6 +428,7 @@ impl Gather for FoldingMany {
         Ok(Gathered {
             records: Vec::new(),
             node: THE_LEADER,
+            counted: None,
             reduced: Some(Reduced::Partials(vec![tessari_session::Partial {
                 key: vec![Value::from("many")],
                 first: asked

@@ -36,6 +36,7 @@ use crate::collection::Subscriptions;
 use crate::error::{Error, Result};
 use crate::frame;
 
+mod counted;
 mod folds;
 mod ordered;
 
@@ -73,6 +74,9 @@ pub struct Gather {
     /// The order whose first records are all the asker needs from this shard
     /// (ADR-0102); `None` for all of them.
     pub ordered: Option<tessari_session::Ordered>,
+    /// The search index whose figures to count instead of sending records
+    /// (ADR-0103); `None` for the records.
+    pub counting: Option<tessari_session::Counting>,
 }
 
 /// One page of a shard's records.
@@ -87,6 +91,9 @@ pub struct Page {
     pub resume: Option<RecordId>,
     /// What the page's records folded into, when the asker sent folds.
     pub reduced: Option<tessari_session::Reduced>,
+    /// What the page's records hold for a search index, when the asker sent
+    /// a count (ADR-0103).
+    pub counted: Option<tessari_storage::SearchCounts>,
 }
 
 /// Why a shard's leader would not answer.
@@ -176,6 +183,10 @@ impl Gather {
             body.push(SECTION_ORDERED);
             ordered::put_ordered(&mut body, ordered);
         }
+        if let Some(counting) = &self.counting {
+            body.push(SECTION_COUNTING);
+            counted::put_counting(&mut body, counting);
+        }
         body
     }
 
@@ -229,6 +240,13 @@ impl Gather {
             }
             _ => (None, at),
         };
+        let (counting, at) = match body.get(at) {
+            Some(&SECTION_COUNTING) => {
+                let (counting, at) = counted::take_counting(body, next(at)?)?;
+                (Some(counting), at)
+            }
+            _ => (None, at),
+        };
         if at != body.len() {
             return Err(Error::Malformed);
         }
@@ -237,6 +255,7 @@ impl Gather {
             enough,
             reduce,
             ordered,
+            counting,
             namespace: NamespaceId::new(namespace),
             database: DatabaseId::new(database),
             table: TableId::new(table),
@@ -267,6 +286,10 @@ impl Page {
         if let Some(reduced) = &self.reduced {
             body.push(SECTION_REDUCED);
             put_reduced(&mut body, reduced);
+        }
+        if let Some(counted) = &self.counted {
+            body.push(SECTION_COUNTED);
+            counted::put_counted(&mut body, counted);
         }
         body
     }
@@ -306,6 +329,13 @@ impl Page {
             }
             _ => (None, at),
         };
+        let (counted, at) = match body.get(at) {
+            Some(&SECTION_COUNTED) => {
+                let (counted, at) = counted::take_counted(body, next(at)?)?;
+                (Some(counted), at)
+            }
+            _ => (None, at),
+        };
         if at != body.len() {
             return Err(Error::Malformed);
         }
@@ -314,6 +344,7 @@ impl Page {
             more,
             resume,
             reduced,
+            counted,
         })
     }
 }
@@ -394,6 +425,17 @@ pub(crate) fn serve(
         let more = found.len() == fold_records;
         return folded(store, reduce, (found, more), budget);
     }
+    if let Some(counting) = &asked.counting {
+        let page = counted::counted_page(
+            &mut transaction,
+            asked,
+            counting,
+            Window { from, to },
+            fold_records,
+        );
+        transaction.rollback();
+        return page;
+    }
     if let Some(ordered) = &asked.ordered {
         let page = ordered::ranked_page(
             store,
@@ -471,6 +513,7 @@ pub(crate) fn serve(
         more,
         resume,
         reduced: None,
+        counted: None,
     })
 }
 
@@ -482,9 +525,15 @@ const SECTION_ENOUGH: u8 = 2;
 const SECTION_REDUCE: u8 = 3;
 /// The section of a `Gather` frame carrying the order to rank by (ADR-0102).
 const SECTION_ORDERED: u8 = 4;
+/// The section of a `Gather` frame carrying the search index to count
+/// (ADR-0103).
+const SECTION_COUNTING: u8 = 5;
 /// The section of a `Gathered` frame carrying what the records folded into —
 /// past the optional resume, whose own first byte is `1`.
 const SECTION_REDUCED: u8 = 3;
+/// The section of a `Gathered` frame carrying what the page counted
+/// (ADR-0103).
+const SECTION_COUNTED: u8 = 4;
 
 /// A pushed condition: the visible fields, then the condition as an expression.
 fn put_pushed(into: &mut Vec<u8>, pushed: &tessari_session::Pushed) {
@@ -600,6 +649,7 @@ mod tests {
             enough: None,
             reduce: None,
             ordered: None,
+            counting: None,
         };
         let body = asked.encode();
         assert_eq!(Gather::decode(&body).unwrap(), asked);
@@ -670,6 +720,7 @@ mod tests {
             more: true,
             resume: None,
             reduced: None,
+            counted: None,
         };
         let body = page.encode();
         assert_eq!(Page::decode(&body).unwrap(), page);
@@ -739,6 +790,51 @@ mod tests {
                 tessari_session::Folded::named("sum", Some(text("total"))).unwrap(),
             ],
         }
+    }
+
+    #[test]
+    fn a_count_and_its_answer_round_trip_and_a_term_the_body_lacks_is_refused() {
+        let asked = Gather {
+            namespace: NamespaceId::new(1),
+            database: DatabaseId::new(2),
+            table: TableId::new(3),
+            shard: ShardId::new(4),
+            from: None,
+            to: None,
+            after: Some(RecordId::from("b")),
+            pushed: None,
+            enough: None,
+            reduce: None,
+            ordered: None,
+            counting: Some(tessari_session::Counting {
+                index: tessari_types::IndexId::new(7),
+                terms: ["fox".to_owned(), "dog".to_owned()].to_vec(),
+            }),
+        };
+        let body = asked.encode();
+        assert_eq!(Gather::decode(&body).unwrap(), asked);
+        assert!(matches!(
+            Gather::decode(body.get(..body.len() - 1).unwrap()),
+            Err(Error::Malformed)
+        ));
+        let page = Page {
+            records: Vec::new(),
+            more: true,
+            resume: Some(RecordId::from("c")),
+            reduced: None,
+            counted: Some(tessari_storage::SearchCounts {
+                documents: 3,
+                tokens: 8,
+                holding: vec![2, 0],
+            }),
+        };
+        let body = page.encode();
+        assert_eq!(Page::decode(&body).unwrap(), page);
+        // A count claiming a third term the body does not carry.
+        let mut claimed = body.clone();
+        let at = claimed.len() - 2 * 8 - 4;
+        *claimed.get_mut(at + 3).unwrap() = 3;
+        assert!(matches!(Page::decode(&claimed), Err(Error::Malformed)));
     }
 
     #[test]
@@ -897,6 +993,7 @@ mod door {
             enough: None,
             reduce: None,
             ordered: None,
+            counting: None,
         }
     }
 
@@ -1208,6 +1305,77 @@ mod door {
         assert_eq!(
             states(&second),
             vec![(id("c"), Some(tessari_types::Value::from(1_i64)))]
+        );
+    }
+
+    /// ADR-0103: a shard's search figures, counted on its leader a page of
+    /// records at a time and summed by the asker, are what the leader's own
+    /// index holds for those records.
+    #[test]
+    fn a_shards_search_figures_are_counted_page_by_page_and_no_record_travels() {
+        let db = Db::in_memory().unwrap();
+        db.session()
+            .run(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+                 USE DATABASE shop; \
+                 DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer; \
+                 DEFINE TABLE docs (body string ANALYZER english) IDENTITY uuid SPLIT AT 'g'; \
+                 DEFINE INDEX by_body ON docs FIELDS body SEARCH; \
+                 CREATE docs:'a' = { body: 'fox jumps' }; \
+                 CREATE docs:'b' = { body: 'a fox and a fox' }; \
+                 CREATE docs:'c' = { body: 'dogs' }; CREATE docs:'h' = { body: 'fox' };",
+            )
+            .unwrap();
+        let (table, index) = {
+            let mut transaction = db.store().begin().unwrap();
+            let table = Catalog::new(&mut transaction)
+                .table_id(NamespaceId::new(1), DatabaseId::new(1), "docs")
+                .unwrap()
+                .unwrap();
+            let index = Catalog::new(&mut transaction)
+                .indexes_on(table)
+                .unwrap()
+                .into_iter()
+                .find(|index| index.search)
+                .unwrap();
+            (table, index.id)
+        };
+        let db = Arc::new(db);
+        let authority = Authority::new();
+        let (address, handle) =
+            folding_door(&authority, &db, Some(shard(table, 2)), (1 << 20, 2), 2);
+        let mut gather = Gather {
+            counting: Some(tessari_session::Counting {
+                index,
+                terms: ["fox".to_owned(), "dog".to_owned()].to_vec(),
+            }),
+            ..asking(table, 1)
+        };
+        let first = ask(&authority, address, &gather).unwrap();
+        gather.after = first.resume.clone();
+        let second = ask(&authority, address, &gather).unwrap();
+        handle.join().unwrap();
+        assert!(first.records.is_empty() && first.more, "{first:?}");
+        assert_eq!(first.resume, Some(RecordId::from("b")));
+        assert!(second.records.is_empty() && !second.more, "{second:?}");
+        let counted = |page: &Page| page.counted.clone().unwrap();
+        // a and b: two documents, 2 + 5 tokens, both say fox; then c: one
+        // document of one token, `dog` once stemmed. Not h, which is shard 2.
+        assert_eq!(
+            counted(&first),
+            tessari_storage::SearchCounts {
+                documents: 2,
+                tokens: 7,
+                holding: vec![2, 0],
+            }
+        );
+        assert_eq!(
+            counted(&second),
+            tessari_storage::SearchCounts {
+                documents: 1,
+                tokens: 1,
+                holding: vec![0, 1],
+            }
         );
     }
 

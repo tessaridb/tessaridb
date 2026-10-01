@@ -26,6 +26,7 @@ pub(super) fn folded(
         more: false,
         resume: None,
         reduced: Some(tessari_session::Reduced::Declined),
+        counted: None,
     };
     let Some(partials) =
         tessari_session::reducing(store, reduce, found).map_err(|why| Error::Refused {
@@ -39,6 +40,7 @@ pub(super) fn folded(
         more,
         resume: if more { read_to } else { None },
         reduced: Some(tessari_session::Reduced::Partials(partials)),
+        counted: None,
     };
     // Measured as it will be sent; a page is a handful of groups far more often
     // than it is near the budget, so the second encoding is the cheap side.

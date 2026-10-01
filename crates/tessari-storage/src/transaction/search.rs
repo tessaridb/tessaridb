@@ -4,7 +4,9 @@
 //! through a bounded walk of the term dictionary. Both confirm against the
 //! record, because an index entry is derived and the record is the fact.
 
+mod counts;
 mod expansions;
+pub use counts::SearchCounts;
 use std::collections::BTreeSet;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
