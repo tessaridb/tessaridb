@@ -1453,8 +1453,11 @@ struct Three {
 impl Three {
     /// Start node `index` again, on the store and with the arguments it was
     /// first started with, its standard error appended to the same log.
-    fn restart(&mut self, index: usize) {
-        self.running[index] = Some(started(&self.started_with[index], &self.logs[index]));
+    /// `extra` arguments are added after the ones it first had.
+    fn restart_with(&mut self, index: usize, extra: &[&str]) {
+        let mut args = self.started_with[index].clone();
+        args.extend(extra.iter().map(std::ffi::OsString::from));
+        self.running[index] = Some(started(&args, &self.logs[index]));
     }
 }
 
@@ -3401,6 +3404,10 @@ const RESEEDED: Band = [
     ("127.0.0.1:47924", "127.0.0.1:47925"),
 ];
 
+/// The HTTP surface the stopped follower is restarted with, so its own report
+/// of where it stands can be read and its console opened.
+const RESEEDED_HTTP: &str = "127.0.0.1:47926";
+
 /// Each node keeps twenty records of each log, so a follower stopped for sixty
 /// commits comes back below its leader's log start.
 const RESEEDED_SCHEMA: &str = "DEFINE NODE RETAIN 20 RECORDS; \
@@ -3466,7 +3473,7 @@ fn a_follower_stopped_past_its_leaders_log_copies_the_state_and_follows_again() 
         "the leader never pruned{}",
         what_the_nodes_said(&RESEEDED, &logs)
     );
-    cluster.restart(stopped);
+    cluster.restart_with(stopped, &["--http", RESEEDED_HTTP]);
     assert!(listening(RESEEDED[stopped].0, Duration::from_secs(30)));
     let expected = items_at(RESEEDED[leader].0);
     assert!(expected.contains("Integer(61)"), "{expected}");
@@ -3486,6 +3493,40 @@ fn a_follower_stopped_past_its_leaders_log_copies_the_state_and_follows_again() 
         "the follower copied and then stopped following{}",
         what_the_nodes_said(&RESEEDED, &logs)
     );
+
+    // It says so where an operator looks (ADR-0094 D4): `INFO FOR NODE`, the
+    // scrape, and its own log, which shows the copy before the collection.
+    let reported = || over_http(RESEEDED_HTTP, "/script", "INFO FOR NODE;");
+    assert!(
+        until(Duration::from_secs(60), || reported()
+            .contains(r#""state":"in sync""#)),
+        "the follower never reported itself in sync: {}",
+        reported()
+    );
+    let report = reported();
+    assert!(report.contains(r#""copies":1"#), "{report}");
+    let scrape = probing(RESEEDED_HTTP, "/metrics").unwrap();
+    assert!(
+        scrape.contains("tessari_replica_state{state=\"in sync\"} 1")
+            && scrape.contains("tessari_replica_state{state=\"copying\"} 0"),
+        "{scrape}"
+    );
+    let said = std::fs::read_to_string(&logs[stopped]).unwrap();
+    let copying = said
+        .find("copying its state")
+        .expect("the follower said it was copying");
+    let copied = said
+        .find(" record(s) from ")
+        .expect("the follower said what it copied");
+    assert!(copying < copied, "the copy was reported before it began");
+    // A pause for a person: `TESSARIDB_HOLD_FOR_BROWSER=<file>` keeps the
+    // cluster up, with the follower's console on its HTTP surface, until that
+    // file exists.
+    if let Some(release) = std::env::var_os("TESSARIDB_HOLD_FOR_BROWSER") {
+        while !std::path::Path::new(&release).exists() {
+            std::thread::sleep(POLL);
+        }
+    }
 
     // And a snapshot taken on that follower, with no load on the leader,
     // restores what the leader holds (ADR-0094 D7).
