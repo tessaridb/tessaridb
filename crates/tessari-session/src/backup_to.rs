@@ -42,6 +42,7 @@ impl Session<'_> {
         // other forms are answered whole and written as they were answered.
         let size = if form == BackupForm::State {
             let within = self.state_scope(of)?;
+            self.refuse_a_partial_snapshot(within)?;
             settle(&target, form, |file| {
                 let mut out = std::io::BufWriter::new(file);
                 tessari_backup::write_state_within(self.store, within, &mut out)
@@ -79,6 +80,47 @@ impl Session<'_> {
         };
         answer.insert("form".to_owned(), Value::String(form.to_owned()));
         Ok(Outcome::Value(Value::Object(answer)))
+    }
+}
+
+impl Session<'_> {
+    /// Refuse a snapshot of `within` on a node that holds only part of it
+    /// (ADR-0094 D7) — a backup assembled from what one node happens to hold
+    /// is not one state of anything. A node never served anything holds all it
+    /// has, and pays one in-memory read here.
+    ///
+    /// The refusal is the one a read gets, naming a table this node lacks and,
+    /// where the table is split, the shards it lacks — which are named first,
+    /// since they say where the rest of the table is.
+    pub(crate) fn refuse_a_partial_snapshot(&self, within: tessari_types::Reach) -> Result<()> {
+        if self.store.served().is_none() {
+            return Ok(());
+        }
+        let mut transaction = self.store.begin()?;
+        let mut tables = Vec::new();
+        {
+            let catalog = tessari_storage::Catalog::new(&mut transaction);
+            for namespace in catalog.namespaces()? {
+                for database in catalog.databases_in(namespace.id)? {
+                    let place = tessari_types::Reach::Database(namespace.id, database.id);
+                    if within.contains(place) {
+                        tables.extend(catalog.tables_in(namespace.id, database.id)?);
+                    }
+                }
+            }
+        }
+        let mut lacking = Vec::new();
+        for table in tables {
+            if let Some(missing) =
+                self.missing(&mut transaction, table.id, crate::evaluate::Part::Whole)?
+            {
+                lacking.push(missing.refusal());
+            }
+        }
+        lacking.sort_by_key(
+            |refusal| !matches!(refusal, Error::NotHeldHere { shards, .. } if !shards.is_empty()),
+        );
+        lacking.into_iter().next().map_or(Ok(()), Err)
     }
 }
 

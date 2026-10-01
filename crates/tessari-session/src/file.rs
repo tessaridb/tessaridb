@@ -220,6 +220,7 @@ impl Session<'_> {
         }
         if form == tessari_ql::BackupForm::State {
             let within = self.state_scope(of)?;
+            self.refuse_a_partial_snapshot(within)?;
             if let Some(out) = self.sink.take() {
                 return self.snapshot_streamed(within, out);
             }

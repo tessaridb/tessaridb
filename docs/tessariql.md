@@ -6772,6 +6772,20 @@ A log of a part is refused: a log of one database holds its records and none of
 the definitions of the namespace and database it lives in, so it would restore
 nowhere on its own.
 
+### A snapshot on a cluster
+
+A snapshot is taken on **any node that holds the whole place** — a follower
+included, which keeps the load off the leader. It is that node's own applied
+state, and the file records where each log stood, so how far behind its leader
+the node was is in the file rather than assumed. A database whose split table
+is led by several nodes is backed up complete from a node that holds every
+shard's log; each shard is consistent at its own recorded position, and there is
+no single version across writers — the same statement a gathered read makes.
+
+A node that holds only **part** of the place refuses with `NotHeldHere`, naming
+the table and the shards it lacks. There is no gathered backup: a file assembled
+from several leaders is not one state of anything.
+
 ### Written by the node, into its backup folder
 
 ```

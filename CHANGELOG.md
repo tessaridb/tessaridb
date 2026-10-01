@@ -50,6 +50,9 @@ compares carries no pre-release suffix.
   node's peak memory during a streamed backup was 29.6 MB for a 21.8 MB snapshot and
   31.0 MB for an 87.0 MB one, against 160 MB and 553 MB when the same snapshot is
   answered whole over `POST /script` — use `GET /backup` or `TO` for a large store.
+- **A snapshot on a cluster** is taken on any node holding the whole place, a
+  follower included; a node holding part of it — some shards of a split table —
+  refuses with `NotHeldHere`, naming the shards it lacks.
 - **1463 conformance cases** define the language and run in the build.
 
 ## 0.17.1-beta — 2026-10-01

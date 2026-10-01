@@ -3486,4 +3486,27 @@ fn a_follower_stopped_past_its_leaders_log_copies_the_state_and_follows_again() 
         "the follower copied and then stopped following{}",
         what_the_nodes_said(&RESEEDED, &logs)
     );
+
+    // And a snapshot taken on that follower, with no load on the leader,
+    // restores what the leader holds (ADR-0094 D7).
+    let answers = asked(RESEEDED[stopped].0, "BACKUP;", None).unwrap();
+    let Some(Answer::Value {
+        value: tessari_types::Value::Bytes(file),
+        ..
+    }) = answers.last()
+    else {
+        panic!("a snapshot is bytes: {answers:?}");
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let restored = tessaridb::Db::open(directory.path().join("restored")).unwrap();
+    tessari_backup::read_state(restored.store(), || Ok(std::io::Cursor::new(file.clone())))
+        .unwrap();
+    let counted = restored
+        .session()
+        .run("USE NAMESPACE prod; USE DATABASE shop; SELECT count(*) AS n FROM item;")
+        .unwrap();
+    assert!(
+        format!("{counted:?}").contains("Integer(62)"),
+        "the follower's snapshot is not the leader's state: {counted:?} against {expected}"
+    );
 }
