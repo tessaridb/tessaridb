@@ -1607,8 +1607,16 @@
   //! made.
   var BITS2 = [
     { name: "serving", letter: "S", means: "answers client requests" },
-    { name: "writable", letter: "W", means: "accepts writes rather than forwarding them" },
-    { name: "coordinating", letter: "C", means: "takes part in deciding, not only in storing" }
+    {
+      name: "writable",
+      letter: "W",
+      means: "accepts writes rather than forwarding them"
+    },
+    {
+      name: "coordinating",
+      letter: "C",
+      means: "takes part in deciding, not only in storing"
+    }
   ];
   function lamp(letter, state2, title) {
     const one2 = made("span", "lamp " + state2);
@@ -1625,7 +1633,13 @@
     for (const bit of BITS2) {
       const held5 = has.includes(bit.name);
       const asked2 = wanted2 !== null && wanted2.includes(bit.name);
-      row.appendChild(lamp(bit.letter, held5 ? "held" : asked2 ? "wanted" : "off", bit.means));
+      row.appendChild(
+        lamp(
+          bit.letter,
+          held5 ? "held" : asked2 ? "wanted" : "off",
+          bit.means
+        )
+      );
     }
     return row;
   }
@@ -1716,7 +1730,10 @@
         fact("answers on", (seen.endpoints ?? []).join(", ") || null),
         fact("epoch", told2(cluster.epoch)),
         fact("campaigns", told2(cluster.campaigns)),
-        fact("collecting from here", String((cluster.followers ?? []).length)),
+        fact(
+          "collecting from here",
+          String((cluster.followers ?? []).length)
+        ),
         fact("furthest follower behind", furthest(cluster.followers ?? [])),
         // Absent on a node that follows nobody: `in sync` there would be a
         // state it has never been in.
@@ -1725,7 +1742,14 @@
         wanted2 === null ? null : fact("declared for it", wanted2.join(", "))
       ],
       "self",
-      { name: "This node", self: true, endpoint: null, node: null, roles: mine, declared: wanted2 }
+      {
+        name: "This node",
+        self: true,
+        endpoint: null,
+        node: null,
+        roles: mine,
+        declared: wanted2
+      }
     );
     into.appendChild(self);
     for (const peer of cluster.peers ?? []) {
@@ -1736,6 +1760,12 @@
           null,
           [
             fact("answers on", told2(peer.endpoint)),
+            // A redirect and a forwarded write go here rather than to the peer
+            // door above, so a row that names it is worth showing (ADR-0101).
+            fact(
+              "clients reach it at",
+              typeof peer.clients === "string" ? peer.clients : null
+            ),
             fact("id", told2(peer.node)),
             fact("replicates", told2(peer.replicates)),
             fact("leads", told2(peer.leads))

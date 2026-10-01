@@ -39,49 +39,62 @@ import { made } from "./dom.js";
 import { show, type Subject } from "./drawer.js";
 
 /** The three bits, in the order the engine defines them. */
-const BITS: readonly { readonly name: string; readonly letter: string; readonly means: string }[] =
-  [
+const BITS: readonly {
+    readonly name: string;
+    readonly letter: string;
+    readonly means: string;
+}[] = [
     { name: "serving", letter: "S", means: "answers client requests" },
-    { name: "writable", letter: "W", means: "accepts writes rather than forwarding them" },
-    { name: "coordinating", letter: "C", means: "takes part in deciding, not only in storing" },
-  ];
+    {
+        name: "writable",
+        letter: "W",
+        means: "accepts writes rather than forwarding them",
+    },
+    {
+        name: "coordinating",
+        letter: "C",
+        means: "takes part in deciding, not only in storing",
+    },
+];
 
 /** One peer, as `cluster.peers[]` carries it. */
 export interface Peer {
-  readonly name?: string;
-  readonly endpoint?: string;
-  readonly node?: string;
-  readonly replicates?: string;
-  readonly leads?: string | null;
-  readonly roles?: readonly string[];
+    readonly name?: string;
+    readonly endpoint?: string;
+    /** Where a client reaches it (`CLIENTS AT`), `null` when the row does not say. */
+    readonly clients?: string | null;
+    readonly node?: string;
+    readonly replicates?: string;
+    readonly leads?: string | null;
+    readonly roles?: readonly string[];
 }
 
 /** Where this node stands against the peer it collects from (ADR-0094 D4). */
 interface Upstream {
-  readonly state?: string;
-  readonly copied_records?: unknown;
-  readonly copies?: unknown;
+    readonly state?: string;
+    readonly copied_records?: unknown;
+    readonly copies?: unknown;
 }
 
 /** One follower this node has served, as `cluster.followers` reports it. */
 interface Follower {
-  readonly behind?: unknown;
+    readonly behind?: unknown;
 }
 
 /** What `INFO FOR NODE` answered, in the shape the map reads. */
 export interface Seen {
-  readonly id?: string;
-  readonly roles?: readonly string[];
-  readonly endpoints?: readonly string[];
-  readonly cluster?: {
-    readonly lease?: unknown;
-    readonly epoch?: unknown;
-    readonly campaigns?: unknown;
-    readonly desired?: readonly string[] | null;
-    readonly followers?: readonly Follower[];
-    readonly upstream?: Upstream | null;
-    readonly peers?: readonly Peer[];
-  };
+    readonly id?: string;
+    readonly roles?: readonly string[];
+    readonly endpoints?: readonly string[];
+    readonly cluster?: {
+        readonly lease?: unknown;
+        readonly epoch?: unknown;
+        readonly campaigns?: unknown;
+        readonly desired?: readonly string[] | null;
+        readonly followers?: readonly Follower[];
+        readonly upstream?: Upstream | null;
+        readonly peers?: readonly Peer[];
+    };
 }
 
 type Lamp = "held" | "wanted" | "off";
@@ -94,46 +107,55 @@ type Lamp = "held" | "wanted" | "off";
  * draw a failover while it is happening; `off` is neither.
  */
 function lamp(letter: string, state: Lamp, title: string): HTMLElement {
-  const one = made("span", "lamp " + state);
-  one.textContent = letter;
-  one.title = title;
-  // The state in words as well as in the class, because a lamp is a graphic and
-  // a screen reader is owed the same three answers a sighted reader gets.
-  one.setAttribute(
-    "aria-label",
-    `${title} — ${state === "held" ? "held" : state === "wanted" ? "declared, not yet held" : "not held"}`,
-  );
-  return one;
+    const one = made("span", "lamp " + state);
+    one.textContent = letter;
+    one.title = title;
+    // The state in words as well as in the class, because a lamp is a graphic and
+    // a screen reader is owed the same three answers a sighted reader gets.
+    one.setAttribute(
+        "aria-label",
+        `${title} — ${state === "held" ? "held" : state === "wanted" ? "declared, not yet held" : "not held"}`,
+    );
+    return one;
 }
 
 /** The three lamps for one node, given what it reports and what is wanted of it. */
-function lamps(has: readonly string[], wanted: readonly string[] | null): HTMLElement {
-  const row = made("div", "lamps");
-  for (const bit of BITS) {
-    const held = has.includes(bit.name);
-    const asked = wanted !== null && wanted.includes(bit.name);
-    row.appendChild(lamp(bit.letter, held ? "held" : asked ? "wanted" : "off", bit.means));
-  }
-  return row;
+function lamps(
+    has: readonly string[],
+    wanted: readonly string[] | null,
+): HTMLElement {
+    const row = made("div", "lamps");
+    for (const bit of BITS) {
+        const held = has.includes(bit.name);
+        const asked = wanted !== null && wanted.includes(bit.name);
+        row.appendChild(
+            lamp(
+                bit.letter,
+                held ? "held" : asked ? "wanted" : "off",
+                bit.means,
+            ),
+        );
+    }
+    return row;
 }
 
 /** A labelled value, or nothing at all when there is nothing to say. */
 function fact(label: string, said: string | null): HTMLElement | null {
-  if (said === null) {
-    return null;
-  }
-  const line = made("div", "fact");
-  const name = made("span", "faint");
-  name.textContent = label;
-  const value = made("span", "fact-value");
-  value.textContent = said;
-  line.append(name, value);
-  return line;
+    if (said === null) {
+        return null;
+    }
+    const line = made("div", "fact");
+    const name = made("span", "faint");
+    name.textContent = label;
+    const value = made("span", "fact-value");
+    value.textContent = said;
+    line.append(name, value);
+    return line;
 }
 
 /** A string, or `null` when the node answered nothing — never an invented word. */
 const told = (value: unknown): string | null =>
-  value === undefined || value === null ? null : String(value);
+    value === undefined || value === null ? null : String(value);
 
 /**
  * The lease, with its expiry.
@@ -144,140 +166,160 @@ const told = (value: unknown): string | null =>
  * this node cannot make — it knows only about itself.
  */
 function lease(held: unknown): HTMLElement | null {
-  if (held === undefined || held === null) {
-    return null;
-  }
-  const badge = made("div", "lease");
-  const held_ = held as { until?: unknown; expires?: unknown };
-  const until = told(held_.until ?? held_.expires ?? held);
-  badge.textContent = until === null ? "holds the lease" : `holds the lease until ${until}`;
-  return badge;
+    if (held === undefined || held === null) {
+        return null;
+    }
+    const badge = made("div", "lease");
+    const held_ = held as { until?: unknown; expires?: unknown };
+    const until = told(held_.until ?? held_.expires ?? held);
+    badge.textContent =
+        until === null ? "holds the lease" : `holds the lease until ${until}`;
+    return badge;
 }
 
 /** Three unlit lamps is a state with a name, and the name belongs on screen. */
 const drained = (has: readonly string[]): boolean => has.length === 0;
 
 function figure(
-  title: string,
-  has: readonly string[],
-  wanted: readonly string[] | null,
-  facts: readonly (HTMLElement | null)[],
-  kind: "self" | "peer",
-  subject: Subject,
+    title: string,
+    has: readonly string[],
+    wanted: readonly string[] | null,
+    facts: readonly (HTMLElement | null)[],
+    kind: "self" | "peer",
+    subject: Subject,
 ): HTMLElement {
-  // A figure is a button, not a div with a click handler: the drawer is reached
-  // by keyboard and named to a screen reader for the same reason every other
-  // control on this page is, and the map is the one place where "it is just a
-  // diagram" would have been the excuse for skipping it.
-  const box = made("article", "node " + kind);
-  box.tabIndex = 0;
-  box.setAttribute("role", "button");
-  box.setAttribute("aria-label", `${title} — open its drawer`);
-  box.addEventListener("click", () => show(subject));
-  box.addEventListener("keydown", (pressed) => {
-    if (pressed.key === "Enter" || pressed.key === " ") {
-      pressed.preventDefault();
-      show(subject);
+    // A figure is a button, not a div with a click handler: the drawer is reached
+    // by keyboard and named to a screen reader for the same reason every other
+    // control on this page is, and the map is the one place where "it is just a
+    // diagram" would have been the excuse for skipping it.
+    const box = made("article", "node " + kind);
+    box.tabIndex = 0;
+    box.setAttribute("role", "button");
+    box.setAttribute("aria-label", `${title} — open its drawer`);
+    box.addEventListener("click", () => show(subject));
+    box.addEventListener("keydown", (pressed) => {
+        if (pressed.key === "Enter" || pressed.key === " ") {
+            pressed.preventDefault();
+            show(subject);
+        }
+    });
+    const head = made("div", "node-head");
+    const name = made("h3");
+    name.textContent = title;
+    head.append(name, lamps(has, wanted));
+    box.appendChild(head);
+    if (drained(has)) {
+        const note = made("p", "note warn");
+        note.textContent =
+            kind === "self"
+                ? "Drained — it holds its data and answers nothing."
+                : "Declared with no roles — drained.";
+        box.appendChild(note);
     }
-  });
-  const head = made("div", "node-head");
-  const name = made("h3");
-  name.textContent = title;
-  head.append(name, lamps(has, wanted));
-  box.appendChild(head);
-  if (drained(has)) {
-    const note = made("p", "note warn");
-    note.textContent =
-      kind === "self"
-        ? "Drained — it holds its data and answers nothing."
-        : "Declared with no roles — drained.";
-    box.appendChild(note);
-  }
-  if (kind === "peer") {
-    const note = made("p", "faint");
-    note.textContent = "lamps as declared here; this node has not asked it";
-    box.appendChild(note);
-  }
-  for (const one of facts) {
-    if (one !== null) {
-      box.appendChild(one);
+    if (kind === "peer") {
+        const note = made("p", "faint");
+        note.textContent = "lamps as declared here; this node has not asked it";
+        box.appendChild(note);
     }
-  }
-  return box;
+    for (const one of facts) {
+        if (one !== null) {
+            box.appendChild(one);
+        }
+    }
+    return box;
 }
 
 /** How far the furthest follower is behind, or `null` when none has collected. */
 function furthest(followers: readonly Follower[]): string | null {
-  let most: number | null = null;
-  for (const one of followers) {
-    if (typeof one.behind === "number" && (most === null || one.behind > most)) {
-      most = one.behind;
+    let most: number | null = null;
+    for (const one of followers) {
+        if (
+            typeof one.behind === "number" &&
+            (most === null || one.behind > most)
+        ) {
+            most = one.behind;
+        }
     }
-  }
-  return most === null ? null : `${most} record(s)`;
+    return most === null ? null : `${most} record(s)`;
 }
 
 /** What copies of the leader's state installed, or `null` before the first. */
 function copied(upstream: Upstream | null | undefined): string | null {
-  if (typeof upstream?.copies !== "number" || upstream.copies === 0) {
-    return null;
-  }
-  return `${told(upstream.copied_records)} record(s) in ${upstream.copies} cop${upstream.copies === 1 ? "y" : "ies"}`;
+    if (typeof upstream?.copies !== "number" || upstream.copies === 0) {
+        return null;
+    }
+    return `${told(upstream.copied_records)} record(s) in ${upstream.copies} cop${upstream.copies === 1 ? "y" : "ies"}`;
 }
 
 /** Draw the cluster as this node sees it. */
 export function draw(into: HTMLElement, seen: Seen): void {
-  const cluster = seen.cluster ?? {};
-  const mine = seen.roles ?? [];
-  const wanted = cluster.desired ?? null;
+    const cluster = seen.cluster ?? {};
+    const mine = seen.roles ?? [];
+    const wanted = cluster.desired ?? null;
 
-  const self = figure(
-    "This node",
-    mine,
-    wanted,
-    [
-      lease(cluster.lease),
-      fact("id", told(seen.id)),
-      fact("answers on", (seen.endpoints ?? []).join(", ") || null),
-      fact("epoch", told(cluster.epoch)),
-      fact("campaigns", told(cluster.campaigns)),
-      fact("collecting from here", String((cluster.followers ?? []).length)),
-      fact("furthest follower behind", furthest(cluster.followers ?? [])),
-      // Absent on a node that follows nobody: `in sync` there would be a
-      // state it has never been in.
-      fact("sync with its upstream", cluster.upstream?.state ?? null),
-      fact("copied from its upstream", copied(cluster.upstream)),
-      wanted === null ? null : fact("declared for it", wanted.join(", ")),
-    ],
-    "self",
-    { name: "This node", self: true, endpoint: null, node: null, roles: mine, declared: wanted },
-  );
-  into.appendChild(self);
-
-  for (const peer of cluster.peers ?? []) {
-    into.appendChild(
-      figure(
-        peer.name ?? "(unnamed peer)",
-        peer.roles ?? [],
-        null,
+    const self = figure(
+        "This node",
+        mine,
+        wanted,
         [
-          fact("answers on", told(peer.endpoint)),
-          fact("id", told(peer.node)),
-          fact("replicates", told(peer.replicates)),
-          fact("leads", told(peer.leads)),
+            lease(cluster.lease),
+            fact("id", told(seen.id)),
+            fact("answers on", (seen.endpoints ?? []).join(", ") || null),
+            fact("epoch", told(cluster.epoch)),
+            fact("campaigns", told(cluster.campaigns)),
+            fact(
+                "collecting from here",
+                String((cluster.followers ?? []).length),
+            ),
+            fact("furthest follower behind", furthest(cluster.followers ?? [])),
+            // Absent on a node that follows nobody: `in sync` there would be a
+            // state it has never been in.
+            fact("sync with its upstream", cluster.upstream?.state ?? null),
+            fact("copied from its upstream", copied(cluster.upstream)),
+            wanted === null ? null : fact("declared for it", wanted.join(", ")),
         ],
-        "peer",
+        "self",
         {
-          name: peer.name ?? "",
-          self: false,
-          endpoint: peer.endpoint ?? null,
-          node: peer.node ?? null,
-          roles: peer.roles ?? [],
-          // A peer's declaration is not this node's to read, and the drawer
-          // offers it no drain to qualify.
-          declared: null,
+            name: "This node",
+            self: true,
+            endpoint: null,
+            node: null,
+            roles: mine,
+            declared: wanted,
         },
-      ),
     );
-  }
+    into.appendChild(self);
+
+    for (const peer of cluster.peers ?? []) {
+        into.appendChild(
+            figure(
+                peer.name ?? "(unnamed peer)",
+                peer.roles ?? [],
+                null,
+                [
+                    fact("answers on", told(peer.endpoint)),
+                    // A redirect and a forwarded write go here rather than to the peer
+                    // door above, so a row that names it is worth showing (ADR-0101).
+                    fact(
+                        "clients reach it at",
+                        typeof peer.clients === "string" ? peer.clients : null,
+                    ),
+                    fact("id", told(peer.node)),
+                    fact("replicates", told(peer.replicates)),
+                    fact("leads", told(peer.leads)),
+                ],
+                "peer",
+                {
+                    name: peer.name ?? "",
+                    self: false,
+                    endpoint: peer.endpoint ?? null,
+                    node: peer.node ?? null,
+                    roles: peer.roles ?? [],
+                    // A peer's declaration is not this node's to read, and the drawer
+                    // offers it no drain to qualify.
+                    declared: null,
+                },
+            ),
+        );
+    }
 }

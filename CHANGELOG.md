@@ -32,6 +32,8 @@ compares carries no pre-release suffix.
   client of minor ≥ 1. With no such member, or over HTTP, it is the refusal it was.
   `ShardMapMoved` — a gathered read whose leader holds a different map of the
   table — names that member and leaves the wire the same way.
+- **`INFO FOR DATABASE` names the database's searches** under `searches`, where the
+  caller reads at least one of their tables — the console's database sheet shows them.
 - **`session::context()`** — `{ node, namespace, database }`: the node this
   session is talking to and the tenancy it selected. Open to every session; it is
   what a client following a redirect checks on arrival and selects again there.

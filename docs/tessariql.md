@@ -3189,7 +3189,8 @@ the same rule.
 the statistics a score is measured against are always the whole table's.
 
 `INFO FOR SEARCH knowledge` answers the analyzer, the stop words and, per member,
-the table, each field's weight and options and how many records it holds.
+the table, each field's weight and options and how many records it holds, and
+`INFO FOR DATABASE` names the database's searches under `searches`.
 `EXPLAIN` reports access `index` and shape `search`, or `scan` when a word could
 not be walked within its cap.
 
@@ -7917,7 +7918,8 @@ So four of the six subjects **narrow** rather than refuse:
 - `INFO FOR STORE` and `INFO FOR NAMESPACE` show a scoped user their own
   tenancy and no other.
 - `INFO FOR DATABASE` lists the tables the caller may read. A table they were
-  never granted is absent, exactly as its records are.
+  never granted is absent, exactly as its records are. Its `searches` are the
+  ones with at least one table the caller may read.
 - `INFO FOR TABLE` names its table, so a caller without that grant is **refused**
   — the same refusal a `SELECT` from it gives. What is left is the field grant,
   which edits rather than refuses (§4): a caller granted `FIELDS name` is not

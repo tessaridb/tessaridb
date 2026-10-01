@@ -275,9 +275,27 @@ fn tables_rank_together_and_each_answers_under_its_own_grants() {
          USE NAMESPACE prod; USE DATABASE shop;\n\
          GRANT read ON notes TO notes_only;\n\
          GRANT read ON notes FIELDS body TO half;\n\
-         GRANT read ON articles TO half;",
+         GRANT read ON articles TO half;\n\
+         DEFINE COLLECTION ledger;\n\
+         DEFINE USER ledger_only ON prod.shop ROLE viewer PASSWORD 'correct horse battery';\n\
+         GRANT read ON ledger TO ledger_only;",
     )
     .unwrap();
+    // A search is listed to a caller who reads one of its tables, and to nobody else.
+    let searches = |name: &str| {
+        let mut session = Session::new(&held);
+        session.sign_in(name, PASSWORD).unwrap();
+        let outcomes = session.run(&format!("{USE} INFO FOR DATABASE;")).unwrap();
+        let Some(Outcome::Value(Value::Object(info))) = outcomes.last() else {
+            panic!("{outcomes:?}");
+        };
+        info.get("searches").cloned()
+    };
+    assert_eq!(
+        searches("notes_only"),
+        Some(Value::Array(vec![Value::from("knowledge")]))
+    );
+    assert_eq!(searches("ledger_only"), Some(Value::Array(Vec::new())));
     let read = "SELECT search::table_name() AS source, search::score() AS score \
                 FROM SEARCH knowledge MATCHES 'lovelace';";
     let everything = ranked(&mut root, read);
@@ -402,6 +420,17 @@ fn the_definition_is_said_back_and_survives_a_script_and_a_reopen() {
         "{info:?}"
     );
     assert_eq!(documents(info), [("articles", 2), ("notes", 4)]);
+    // A database lists its searches by name, once each whatever their members
+    // — the one enumeration that reaches them, since INFO FOR TABLE skips members.
+    let outcomes = session(&held).run("INFO FOR DATABASE;").unwrap();
+    let Some(Outcome::Value(Value::Object(database))) = outcomes.last() else {
+        panic!("{outcomes:?}");
+    };
+    assert_eq!(
+        database.get("searches"),
+        Some(&Value::Array(vec![Value::from("knowledge")])),
+        "{database:?}"
+    );
 
     // On disk, closed and opened again.
     let directory = tempfile::tempdir().unwrap();
