@@ -54,6 +54,7 @@ impl Fixture {
                     search: false,
                     spatial: false,
                     vector: None,
+                    costs: tessari_storage::SearchCosts::default(),
                 },
             )
             .unwrap();
@@ -482,6 +483,7 @@ fn table_with_rows(unique: bool) -> Fixture {
             search: false,
             spatial: false,
             vector: None,
+            costs: tessari_storage::SearchCosts::default(),
         },
     };
     bare.write("u1", Some(Value::from("ada@example.com")))
@@ -507,6 +509,7 @@ fn indexed_after_the_fact(unique: bool) -> Fixture {
                 search: false,
                 spatial: false,
                 vector: None,
+                costs: tessari_storage::SearchCosts::default(),
             },
         )
         .unwrap();
@@ -604,6 +607,7 @@ fn defining_a_unique_index_over_rows_that_already_violate_it_is_refused() {
                 search: false,
                 spatial: false,
                 vector: None,
+                costs: tessari_storage::SearchCosts::default(),
             },
         )
         .unwrap();

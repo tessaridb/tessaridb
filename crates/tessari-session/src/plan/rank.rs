@@ -67,6 +67,7 @@ mod tests {
             unique,
             vector: None,
             spatial: false,
+            costs: tessari_storage::SearchCosts::default(),
         }
     }
 
@@ -78,6 +79,11 @@ mod tests {
             Shape::PrefixTerms => Served::PrefixTerms(vec![vec!["x".to_owned()]]),
             Shape::FuzzyTerms => Served::FuzzyTerms(vec![vec!["x".to_owned()]]),
             Shape::AnyTerms => Served::AnyTerms(vec![vec!["x".to_owned()]]),
+            Shape::Phrase => Served::Phrase {
+                groups: vec![vec!["x".to_owned()]],
+                words: vec![crate::search::Word::Term("x".to_owned())],
+                slop: 0,
+            },
             Shape::Range => Served::Range {
                 fixed: Vec::new(),
                 lower: Some(Value::from("a")),
@@ -98,7 +104,11 @@ mod tests {
                 shape == Shape::Equality && rows != Rows::Unknown,
                 matches!(
                     shape,
-                    Shape::Terms | Shape::PrefixTerms | Shape::FuzzyTerms | Shape::AnyTerms
+                    Shape::Terms
+                        | Shape::PrefixTerms
+                        | Shape::FuzzyTerms
+                        | Shape::AnyTerms
+                        | Shape::Phrase
                 ),
             ),
             rows,

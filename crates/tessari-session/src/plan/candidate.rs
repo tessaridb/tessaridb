@@ -51,6 +51,11 @@ pub(crate) enum Shape {
     /// difference is in the name so `EXPLAIN` does not report a walk that never
     /// ran.
     AnyTerms,
+    /// `<path> MATCHES '"<a> <b>"'` on an index keeping `POSITIONS` — the
+    /// intersection [`Shape::Terms`] reads, then the order decided from the
+    /// stored token ordinals (ADR-0100 D4). Beside the other term shapes: the
+    /// same postings and the same ceiling, and a smaller answer.
+    Phrase,
     /// `<path> LIKE '<literal>%'` — a range over the values beginning with it.
     Prefix,
     /// `<path> < <constant>`, and the other three orderings — a bounded scan.
@@ -132,6 +137,17 @@ pub(crate) enum Served {
     /// reach, which is a superset of the answer, and let the condition drop the
     /// rest — the refinement every candidate on this path already gets.
     AnyTerms(Vec<Vec<String>>),
+    /// A phrase on an index keeping positions: per word, the terms it reaches
+    /// (one for a whole word, the expansions for a starred last one), then the
+    /// words themselves and the slop the run is decided with.
+    Phrase {
+        /// What each word reaches in the dictionary, in phrase order.
+        groups: Vec<Vec<String>>,
+        /// The phrase's words, the run test's input.
+        words: Vec<crate::search::Word>,
+        /// How many extra tokens the run may absorb.
+        slop: usize,
+    },
     /// The two ends of an ordered scan, either of which may be absent.
     ///
     /// Both are carried as **values**, not as byte bounds, because the index
@@ -181,6 +197,7 @@ impl Served {
             Self::PrefixTerms(_) => Shape::PrefixTerms,
             Self::FuzzyTerms(_) => Shape::FuzzyTerms,
             Self::AnyTerms(_) => Shape::AnyTerms,
+            Self::Phrase { .. } => Shape::Phrase,
             Self::Range { .. } => Shape::Range,
             Self::Region { .. } => Shape::Region,
         }
@@ -203,6 +220,7 @@ impl Served {
             | Self::PrefixTerms(_)
             | Self::FuzzyTerms(_)
             | Self::AnyTerms(_)
+            | Self::Phrase { .. }
             | Self::Region { .. } => 1,
             Self::Range { fixed, .. } => fixed.len().saturating_add(1),
         }
@@ -318,6 +336,7 @@ impl Shape {
             Self::PrefixTerms => "prefix-terms",
             Self::FuzzyTerms => "fuzzy-terms",
             Self::AnyTerms => "any-terms",
+            Self::Phrase => "phrase",
         }
     }
 }

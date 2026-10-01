@@ -80,6 +80,7 @@ impl Session<'_> {
                 search: false,
                 spatial: true,
                 vector: None,
+                costs: tessari_storage::SearchCosts::default(),
             },
             if_not_exists,
         )?;

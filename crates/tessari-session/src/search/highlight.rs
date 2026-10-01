@@ -31,7 +31,7 @@ use tessari_ql::BinaryOp;
 use tessari_types::Analyzer;
 
 use super::matching::{begins, near, run_of};
-use super::query::{Asked, asked};
+use super::query::{Asked, Word, asked};
 
 /// The byte ranges of the tokens that answered what this read asked of the
 /// field: ordered by position, without duplicates, one per matched occurrence.
@@ -55,6 +55,37 @@ pub(crate) fn marked(
         .filter(|(_, hit)| *hit)
         .map(|(token, _)| token.bytes)
         .collect()
+}
+
+/// The terms a highlight marks every occurrence of, when that is all it marks.
+///
+/// True of a `MATCHES` with whole words and no phrase: the marks are then every
+/// token holding one of the required terms, which an index keeping `OFFSETS`
+/// stores the bytes of (ADR-0100 D4). `None` for anything else — a phrase marks
+/// a run, a prefix or fuzzy word marks terms nobody named — and those are
+/// marked by analysing the text, as they always were.
+pub(crate) fn whole_terms(
+    analyzer: &Analyzer,
+    wanted: &[(BinaryOp, String)],
+) -> Option<std::collections::BTreeSet<String>> {
+    let mut terms = std::collections::BTreeSet::new();
+    for (op, query) in wanted {
+        if *op != BinaryOp::Matches {
+            return None;
+        }
+        let Asked::Boolean { required, .. } = asked(analyzer, query) else {
+            return None;
+        };
+        for word in required.into_iter().flatten() {
+            match word {
+                Word::Term(term) => {
+                    terms.insert(term);
+                }
+                Word::Prefix(_) => return None,
+            }
+        }
+    }
+    Some(terms)
 }
 
 /// Mark the tokens one operator reached, leaving the ones already marked alone.

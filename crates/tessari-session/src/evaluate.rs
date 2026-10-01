@@ -41,6 +41,7 @@ mod latest;
 mod lent;
 mod ordered;
 mod partition;
+mod phrase;
 mod produce;
 mod projection;
 mod read;

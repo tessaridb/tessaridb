@@ -1,9 +1,9 @@
 //! An index's definition and shape, and the distances a vector index measures.
 
 use super::{
-    FIELD_DATABASE, FIELD_FIELDS, FIELD_ID, FIELD_NAME, FIELD_NAMESPACE, FIELD_SEARCH,
-    FIELD_SPATIAL, FIELD_TABLE, FIELD_UNIQUE, FIELD_VECTOR, field_id, field_name, flag, number,
-    object,
+    FIELD_DATABASE, FIELD_FIELDS, FIELD_ID, FIELD_NAME, FIELD_NAMESPACE, FIELD_OFFSETS,
+    FIELD_POSITIONS, FIELD_SEARCH, FIELD_SPATIAL, FIELD_TABLE, FIELD_UNIQUE, FIELD_UNSCORED,
+    FIELD_VECTOR, field_id, field_name, flag, number, object,
 };
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
@@ -25,6 +25,25 @@ pub struct IndexShape {
     pub vector: Option<VectorDistance>,
     /// Whether the index holds cells of each record's geometry.
     pub spatial: bool,
+    /// What a search index keeps beside its postings.
+    pub costs: SearchCosts,
+}
+
+/// What a search index keeps beside its postings (ADR-0100 D4).
+///
+/// Each one changes what a read costs and never what it answers. The default is
+/// what every search index held before these existed — counted postings and the
+/// collection's statistics, and neither positions nor offsets — so an index
+/// written before them reads back as exactly that and nothing on disk moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SearchCosts {
+    /// `POSITIONS`: each posting carries the term's token ordinals.
+    pub positions: bool,
+    /// `OFFSETS`: each posting carries the term's byte ranges.
+    pub offsets: bool,
+    /// `NO SCORE`: membership postings, no collection statistics, and a score
+    /// over the index refused as over no index at all.
+    pub unscored: bool,
 }
 
 /// Which distance a vector index's graph is built and searched with.
@@ -120,6 +139,8 @@ pub struct IndexDefinition {
     /// A cell match is therefore a **candidate and never a result** — the cells
     /// are coarser than the box and the box is coarser than the shape.
     pub spatial: bool,
+    /// What it keeps beside its postings, when it is a search index.
+    pub costs: SearchCosts,
 }
 
 impl IndexDefinition {
@@ -168,6 +189,12 @@ impl IndexDefinition {
             (FIELD_UNIQUE.to_owned(), Value::Bool(self.unique)),
             (FIELD_SEARCH.to_owned(), Value::Bool(self.search)),
             (FIELD_SPATIAL.to_owned(), Value::Bool(self.spatial)),
+            (
+                FIELD_POSITIONS.to_owned(),
+                Value::Bool(self.costs.positions),
+            ),
+            (FIELD_OFFSETS.to_owned(), Value::Bool(self.costs.offsets)),
+            (FIELD_UNSCORED.to_owned(), Value::Bool(self.costs.unscored)),
             (
                 FIELD_VECTOR.to_owned(),
                 self.vector
@@ -242,6 +269,14 @@ impl IndexDefinition {
             // An index written before spatial indexes existed holds no such
             // field and is not one, the same reading the two flags above get.
             spatial: flag(fields, FIELD_SPATIAL, "index")?,
+            // Written before the options existed: absent, so the default — a
+            // scored index with neither positions nor offsets, which is what it
+            // is.
+            costs: SearchCosts {
+                positions: flag(fields, FIELD_POSITIONS, "index")?,
+                offsets: flag(fields, FIELD_OFFSETS, "index")?,
+                unscored: flag(fields, FIELD_UNSCORED, "index")?,
+            },
         })
     }
 }

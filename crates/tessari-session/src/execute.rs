@@ -378,6 +378,7 @@ impl Session<'_> {
                 fields,
                 unique,
                 search,
+                costs,
                 spatial,
                 vector,
                 if_not_exists,
@@ -400,6 +401,11 @@ impl Session<'_> {
                             })?)
                         }
                         None => None,
+                    },
+                    costs: tessari_storage::SearchCosts {
+                        positions: costs.positions,
+                        offsets: costs.offsets,
+                        unscored: costs.unscored,
                     },
                 },
                 *if_not_exists,

@@ -73,6 +73,13 @@ compares carries no pre-release suffix.
   ADR-0100 D1.9). `ORDER BY search::score(…) DESC AFTER <record> LIMIT n` resumes
   below the anchor's score instead of scoring the whole table, and no longer
   carries the `cursor-walked` note.
+- **`DEFINE INDEX … SEARCH [POSITIONS] [OFFSETS] [NO SCORE]`** (G051 T7.6,
+  ADR-0100 D4) — what a search index keeps beside its postings. `POSITIONS`
+  decides a phrase from stored token ordinals (`EXPLAIN` shape `phrase`),
+  `OFFSETS` marks a whole-word highlight from stored byte ranges, `NO SCORE`
+  keeps membership alone and no statistics, and a score over it is refused as over
+  no index. No option changes an answer; an index written before them reads as a
+  scored index with neither.
 
 ### Fixed
 
@@ -117,7 +124,7 @@ compares carries no pre-release suffix.
 
 ### Changed
 
-- **1468 conformance cases** define the language and run in the build.
+- **1472 conformance cases** define the language and run in the build.
 - **`MATCHES FUZZY` counts swapping two adjacent letters as one edit** (G051
   T7.4, ADR-0100 D1.4), where it counted two, so it reaches a few more words —
   `vetcor` is now one edit from `vector`.

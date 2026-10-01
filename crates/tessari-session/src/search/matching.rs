@@ -58,7 +58,10 @@ pub(super) fn run_of(held: &[String], asked: &[Word], slop: usize) -> Option<Vec
 }
 
 /// Whether `asked` appears in `held` in order, within `slop` extra tokens.
-fn holds_run(held: &[String], asked: &[Word], slop: usize) -> bool {
+///
+/// The one test of a phrase, whether `held` is the record's analysed text or a
+/// token list rebuilt from the ordinals a `POSITIONS` index stored.
+pub(crate) fn holds_run(held: &[String], asked: &[Word], slop: usize) -> bool {
     run_of(held, asked, slop).is_some()
 }
 

@@ -173,6 +173,14 @@ impl Session<'_> {
                     // A starred word is a set of terms only once a dictionary
                     // has said which, so it is expanded per index below.
                     let prefixed = !asked.prefixes().is_empty();
+                    // A phrase keeps its words and slop: an index storing
+                    // positions decides the order itself (ADR-0100 D4).
+                    let phrase = match &asked {
+                        crate::search::Asked::Phrase { words, slop } => {
+                            Some((words.clone(), *slop))
+                        }
+                        crate::search::Asked::Boolean { .. } => None,
+                    };
                     let words: Vec<Vec<crate::search::Word>> = match asked {
                         // A phrase's terms all have to be present before their
                         // order can matter, so the candidate set is the same
@@ -217,10 +225,15 @@ impl Session<'_> {
                             }
                             smallest = smallest.min(reach);
                         }
-                        let served = if plain {
-                            Served::Terms(groups.iter().flatten().cloned().collect())
-                        } else {
-                            Served::AnyTerms(groups)
+                        let positioned = index.costs.positions && phrase.is_some();
+                        let served = match &phrase {
+                            Some((words, slop)) if positioned => Served::Phrase {
+                                groups,
+                                words: words.clone(),
+                                slop: *slop,
+                            },
+                            _ if plain => Served::Terms(groups.iter().flatten().cloned().collect()),
+                            _ => Served::AnyTerms(groups),
                         };
                         offered.push(Candidate {
                             served,
@@ -233,7 +246,9 @@ impl Session<'_> {
                             // exactly "holds all of these terms" — the
                             // predicate's own question, asked of the same
                             // analyzer over the same field.
-                            answers: (plain && complete).then_some(seek.span),
+                            // A phrase decided from stored positions is the
+                            // predicate's own run test over the same tokens.
+                            answers: ((plain && complete) || positioned).then_some(seek.span),
                         });
                     }
                 }

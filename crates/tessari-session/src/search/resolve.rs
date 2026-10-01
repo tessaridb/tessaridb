@@ -51,6 +51,7 @@ pub(crate) struct Searched {
     corpora: BTreeMap<Path, Ranked>,
     wanted: BTreeMap<Path, Vec<(BinaryOp, String)>>,
     suggestion: Option<Suggestion>,
+    offsets: BTreeMap<Path, IndexDefinition>,
 }
 
 impl Searched {
@@ -80,6 +81,12 @@ impl Searched {
     /// come to depend on which candidate the planner picked.
     pub(crate) fn suggestion(&self) -> Option<Suggestion> {
         self.suggestion.clone()
+    }
+
+    /// The search index keeping byte offsets for this path, when a highlight
+    /// may be marked from it rather than by analysing the text (ADR-0100 D4).
+    pub(crate) fn offsets(&self, path: &Path) -> Option<&IndexDefinition> {
+        self.offsets.get(path)
     }
 }
 
@@ -237,6 +244,23 @@ impl Session<'_> {
                 .is_some_and(|fields| !fields.contains(path.root()))
         };
 
+        // Where a highlight may read stored offsets: an index keeping them on a
+        // field this session may read, current at this snapshot, and holding
+        // no posting this transaction has written past.
+        let mut offsets = BTreeMap::new();
+        if let Some(definition) = Catalog::new(transaction).table(table)?
+            && !transaction.writes_in(definition.namespace, definition.database, table)
+        {
+            for path in asked_of.keys().filter(|path| !hidden(path)) {
+                if let Some(index) = self.index_on_path(transaction, table, path)?
+                    && index.search
+                    && index.costs.offsets
+                {
+                    offsets.insert(path.clone(), index);
+                }
+            }
+        }
+
         let mut corpora = BTreeMap::new();
         for (path, query) in ranked {
             let Some(analyzer) = analyzers.get(path) else {
@@ -245,7 +269,9 @@ impl Session<'_> {
             let Some(index) = self.index_on_path(transaction, table, path)? else {
                 continue;
             };
-            if !index.search {
+            // An unscored index keeps no statistics to measure against, so a
+            // score over it is refused exactly as over no index (ADR-0100 D4).
+            if !index.search || index.costs.unscored {
                 continue;
             }
             // A hidden field ranks as a field the record does not hold: every
@@ -373,6 +399,7 @@ impl Session<'_> {
             corpora,
             wanted: asked_of,
             suggestion,
+            offsets,
         })
     }
 }

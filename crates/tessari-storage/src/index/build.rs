@@ -12,8 +12,8 @@ use crate::store::Store;
 use crate::transaction::Transaction;
 use std::collections::{BTreeMap, BTreeSet};
 use tessari_encoding::{
-    IndexAddress, IndexValues, KeyKind, LogRecord, Posting, PostingKey, RecordValue, StoreKey,
-    StoreValue, decode_payload,
+    IndexAddress, IndexValues, KeyKind, LogRecord, PostingKey, RecordValue, StoreKey,
+    decode_payload,
 };
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::RecordId;
@@ -128,7 +128,8 @@ pub(crate) fn build(
             let analysed = terms_of(definition, analyzer, &decode_payload(payload)?);
             counted.added(analysed.tokens);
             let length = analysed.length();
-            for (term, frequency) in analysed.postings {
+            for ((term, frequency), located) in analysed.postings.into_iter().zip(&analysed.located)
+            {
                 dictionary
                     .entry(term.clone())
                     .or_default()
@@ -136,11 +137,13 @@ pub(crate) fn build(
                 batch = batch.put(
                     PostingKey::keyspace(),
                     PostingKey::new(address, term, id.clone()).encode(),
-                    Posting::Counted { frequency, length }.encode(),
+                    super::posted(definition, frequency, length, located),
                 );
             }
         }
-        *pending.moved.entry(address).or_default() = counted;
+        if !definition.costs.unscored {
+            *pending.moved.entry(address).or_default() = counted;
+        }
         pending.terms.insert(address, dictionary);
         return Ok(batch);
     }

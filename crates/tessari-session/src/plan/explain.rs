@@ -136,6 +136,7 @@ impl Session<'_> {
                     let (context, id) = self.resolve_table(transaction, table)?;
                     if let Some(index) = self.index_on_path(transaction, id, read.field)?
                         && index.search
+                        && !index.costs.unscored
                         && self
                             .index_serving_score(transaction, context, id, read.field)?
                             .is_some()

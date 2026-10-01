@@ -11,9 +11,9 @@ use std::collections::BTreeSet;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{
-    IndexAddress, IndexTarget, IndexValues, KeyKind, Posting, PostingKey, SearchStatistics,
-    SearchStatisticsKey, SearchTermKey, SecondaryIndexKey, StoreKey, StoreValue, TermStatistics,
-    UniqueIndexKey, decode_payload,
+    IndexAddress, IndexTarget, IndexValues, KeyKind, Located, Posting, PostingKey,
+    SearchStatistics, SearchStatisticsKey, SearchTermKey, SecondaryIndexKey, StoreKey, StoreValue,
+    TermStatistics, UniqueIndexKey, decode_payload,
 };
 use tessari_kv::{Key, KeyRange, Keyspace, ScanDirection, ScanRequest, Value as KvValue};
 use tessari_types::{Analyzer, RecordId, Value};
@@ -432,6 +432,29 @@ impl Transaction<'_> {
         let key = PostingKey::new(address, encoded, id.clone()).encode();
         match self.store.backend().get(PostingKey::keyspace(), &key)? {
             Some(bytes) => Ok(Some(Posting::decode(bytes.as_slice())?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Where one term sits in one record, as a `POSITIONS` / `OFFSETS` index
+    /// stored it — `None` when the record holds no posting for the term, and
+    /// empty lists when the index keeps neither (ADR-0100 D4).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or the stored value cannot be
+    /// decoded.
+    pub fn located(
+        &self,
+        index: &IndexDefinition,
+        term: &str,
+        id: &RecordId,
+    ) -> Result<Option<Located>> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let encoded = IndexValues::of(&[Value::from(term)]);
+        let key = PostingKey::new(address, encoded, id.clone()).encode();
+        match self.store.backend().get(PostingKey::keyspace(), &key)? {
+            Some(bytes) => Ok(Some(Posting::located(bytes.as_slice())?)),
             None => Ok(None),
         }
     }

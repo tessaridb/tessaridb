@@ -10,7 +10,7 @@ use tessari_types::{RecordId, Value};
 use crate::error::{Error, Result};
 use crate::noticed::Noticed;
 use crate::rank::{Held, explain, score};
-use crate::search::{Searched, marked};
+use crate::search::{Searched, marked, whole_terms};
 use crate::session::Session;
 
 use super::{Scope, Shaped, at, omit_within, omits};
@@ -157,11 +157,30 @@ impl Session<'_> {
         let Some(analyzer) = scope.analyzer(&field.path) else {
             return none;
         };
+        // Evaluated first, whatever marks it: a field this session may not read
+        // resolves to nothing here, and nothing is marked.
         let Value::String(text) = self.evaluate_in(transaction, first, scope)? else {
             return none;
         };
+        let wanted = scope.wanted(&field.path);
+        // An index keeping `OFFSETS` holds the bytes of every occurrence of a
+        // term, so a whole-word query is marked from them without analysing the
+        // text (ADR-0100 D4); anything else, or a posting without them, is
+        // marked the way it always was.
+        let stored = match (
+            scope.offsets(&field.path),
+            scope.id,
+            whole_terms(analyzer, wanted),
+        ) {
+            (Some(index), Some(id), Some(terms)) => stored_marks(transaction, index, &terms, id)?,
+            _ => None,
+        };
+        let marks = match stored {
+            Some(marks) => marks,
+            None => marked(analyzer, &text, wanted),
+        };
         Ok(Value::Array(
-            marked(analyzer, &text, scope.wanted(&field.path))
+            marks
                 .into_iter()
                 .map(|bytes| {
                     Value::Object(BTreeMap::from([
@@ -270,4 +289,33 @@ impl Session<'_> {
             &Held::analysed(analyzer, &text, &corpus.counted()),
         ))
     }
+}
+
+/// The byte ranges of every occurrence of these terms in one record, from an
+/// index keeping `OFFSETS` — in text order, as `marked` returns them.
+///
+/// `None` when a posting of this record carries no offsets, so the caller
+/// analyses the text instead of marking from a partial list.
+fn stored_marks(
+    transaction: &Transaction<'_>,
+    index: &tessari_storage::IndexDefinition,
+    terms: &std::collections::BTreeSet<String>,
+    id: &tessari_types::RecordId,
+) -> Result<Option<Vec<core::ops::Range<usize>>>> {
+    let mut marks = Vec::new();
+    for term in terms {
+        let Some(located) = transaction.located(index, term, id)? else {
+            continue;
+        };
+        if located.offsets.is_empty() {
+            return Ok(None);
+        }
+        for (start, end) in located.offsets {
+            let widen = |byte: u32| usize::try_from(byte).unwrap_or(usize::MAX);
+            marks.push(widen(start)..widen(end));
+        }
+    }
+    marks.sort_by_key(|bytes| bytes.start);
+    marks.dedup();
+    Ok(Some(marks))
 }

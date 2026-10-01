@@ -64,7 +64,7 @@ pub use definition::{
     CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, DatabaseDefinition, EdgeDeclaration, EdgeOrder,
     GEO_FIELD, IndexDefinition, IndexShape, NamespaceDefinition, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY,
     QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, RollupCompute, RollupDeclaration,
-    RollupFold, SeriesDeclaration, StoredKind, TableDefinition, TableKind, TableShape,
+    RollupFold, SearchCosts, SeriesDeclaration, StoredKind, TableDefinition, TableKind, TableShape,
     VECTOR_FIELD, VaultCustody, VaultDeclaration, VectorDeclaration, VectorDistance,
     ViewDeclaration,
 };

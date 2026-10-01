@@ -26,7 +26,7 @@ pub use declarations::{
     EdgeDeclaration, EdgeOrder, QueueDeclaration, SeriesDeclaration, VaultCustody,
     VaultDeclaration, VectorDeclaration, ViewDeclaration,
 };
-pub use indexes::{IndexDefinition, IndexShape, VectorDistance};
+pub use indexes::{IndexDefinition, IndexShape, SearchCosts, VectorDistance};
 pub use kinds::{StoredKind, TableKind};
 pub(crate) use reading::{
     ceiling, count_of, field_id, field_name, flag, id_of, identity_kind, object,
@@ -44,6 +44,9 @@ const FIELD_UNIQUE: &str = "unique";
 const FIELD_SEARCH: &str = "search";
 const FIELD_VECTOR: &str = "vector";
 const FIELD_SPATIAL: &str = "spatial";
+const FIELD_POSITIONS: &str = "positions";
+const FIELD_OFFSETS: &str = "offsets";
+const FIELD_UNSCORED: &str = "unscored";
 const FIELD_SCHEMAFULL: &str = "schemafull";
 const FIELD_EDGE: &str = "edge";
 const FIELD_BUCKET: &str = "bucket";
@@ -794,6 +797,7 @@ mod tests {
             search: false,
             spatial: false,
             vector: None,
+            costs: crate::catalog::SearchCosts::default(),
         };
         assert_eq!(
             IndexDefinition::from_value(&index.to_value()).unwrap(),

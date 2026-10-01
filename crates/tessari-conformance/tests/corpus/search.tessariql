@@ -463,3 +463,26 @@ DEFINE INDEX by_marked ON marked FIELDS body SEARCH;
 --- case: the same read, now with an index under it
 SELECT search::highlight(body) AS marks FROM marked WHERE body MATCHES 'run';
 --- expect: rows 1
+
+# What a search index keeps beside its postings — POSITIONS, OFFSETS, NO SCORE —
+# changes what a read costs and never what it answers (ADR-0100 D4).
+
+--- case: an index keeping positions and offsets and no statistics is declared like any other
+DEFINE TABLE costed SCHEMALESS;
+DEFINE FIELD body ON costed TYPE string ANALYZER simple;
+CREATE costed:1 = { body: 'Ada Lovelace wrote the first program' };
+CREATE costed:2 = { body: 'Lovelace Ada reversed' };
+DEFINE INDEX by_costed_body ON costed FIELDS body SEARCH POSITIONS OFFSETS NO SCORE;
+--- expect: ok
+
+--- case: and a phrase is answered from the positions it stored, in order
+SELECT * FROM costed WHERE body MATCHES '"ada lovelace"';
+--- expect: rows 1
+
+--- case: an index keeping no statistics cannot score, exactly as no index cannot
+SELECT search::score(body, 'ada') AS s FROM costed WHERE body MATCHES 'ada';
+--- expect: error NoSearchIndex
+
+--- case: an option belongs to a search index
+DEFINE INDEX by_title ON costed FIELDS title POSITIONS;
+--- expect: error UnexpectedToken

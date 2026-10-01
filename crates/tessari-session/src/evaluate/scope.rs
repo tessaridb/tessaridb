@@ -194,4 +194,9 @@ impl<'a> Scope<'a> {
     pub(crate) fn wanted(self, path: &Path) -> &'a [(BinaryOp, String)] {
         self.searched.map_or(&[], |held| held.wanted(path))
     }
+
+    /// The index keeping byte offsets for this path, if a highlight may use it.
+    pub(crate) fn offsets(self, path: &Path) -> Option<&'a tessari_storage::IndexDefinition> {
+        self.searched.and_then(|held| held.offsets(path))
+    }
 }

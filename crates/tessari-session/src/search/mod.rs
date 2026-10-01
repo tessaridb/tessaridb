@@ -40,7 +40,7 @@ mod query;
 mod resolve;
 mod suggest;
 
-pub(crate) use highlight::marked;
-pub(crate) use matching::{matches_fuzzy_terms, matches_prefix_terms, matches_terms};
+pub(crate) use highlight::{marked, whole_terms};
+pub(crate) use matching::{holds_run, matches_fuzzy_terms, matches_prefix_terms, matches_terms};
 pub(crate) use query::{Asked, Word, asked};
 pub(crate) use resolve::{Ranked, Searched};

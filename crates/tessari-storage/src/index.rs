@@ -74,8 +74,8 @@ mod settling;
 use std::collections::{BTreeMap, BTreeSet};
 
 use tessari_encoding::{
-    IndexAddress, IndexValues, LogRecord, Mutation, Posting, PostingKey, RecordValue, StoreKey,
-    StoreValue, decode_payload, encode_payload,
+    IndexAddress, IndexValues, Located, LogRecord, Mutation, Posting, PostingKey, RecordValue,
+    StoreKey, StoreValue, decode_payload, encode_payload,
 };
 use tessari_kv::WriteBatch;
 use tessari_types::{Analyzer, DatabaseId, NamespaceId, TableId, Value};
@@ -369,7 +369,10 @@ fn apply_one(
 
     if definition.search {
         let analyzer = search_analyzer(definition, analyzers);
-        let counted = pending.moved.entry(address).or_default();
+        // An unscored index keeps no collection statistics (ADR-0100 D4): it
+        // is never scored, so there is nothing for them to describe.
+        let mut counted =
+            (!definition.costs.unscored).then(|| pending.moved.entry(address).or_default());
         let dictionary = pending.terms.entry(address).or_default();
         // The old side first, and both sides of the same change: a record whose
         // text changed leaves the index at its former length and re-enters at
@@ -382,7 +385,9 @@ fn apply_one(
         // of every other word in the document.
         if let Some(bytes) = previous {
             let analysed = terms_of(definition, analyzer, &decode_payload(bytes)?);
-            counted.removed(analysed.tokens);
+            if let Some(counted) = counted.as_mut() {
+                counted.removed(analysed.tokens);
+            }
             for (term, _) in analysed.postings {
                 dictionary.entry(term.clone()).or_default().left();
                 batch = batch.delete(
@@ -393,9 +398,12 @@ fn apply_one(
         }
         if let RecordValue::Present(payload) = mutation.value.value() {
             let analysed = terms_of(definition, analyzer, &decode_payload(payload)?);
-            counted.added(analysed.tokens);
+            if let Some(counted) = counted.as_mut() {
+                counted.added(analysed.tokens);
+            }
             let length = analysed.length();
-            for (term, frequency) in analysed.postings {
+            for ((term, frequency), located) in analysed.postings.into_iter().zip(&analysed.located)
+            {
                 dictionary
                     .entry(term.clone())
                     .or_default()
@@ -403,7 +411,7 @@ fn apply_one(
                 batch = batch.put(
                     PostingKey::keyspace(),
                     PostingKey::new(address, term, mutation.id.clone()).encode(),
-                    Posting::Counted { frequency, length }.encode(),
+                    posted(definition, frequency, length, located),
                 );
             }
         }
@@ -485,6 +493,29 @@ impl Unchanged {
     }
 }
 
+/// What one posting stores, as the index declares (ADR-0100 D4).
+///
+/// An unscored index stores membership alone — the format every index wrote
+/// before postings carried a payload, which every reader already understands as
+/// "the term is here, and a score must come from somewhere else".
+/// A `POSITIONS` or `OFFSETS` index writes the lists after the counted payload,
+/// unscored or not — the score is refused where it is resolved, not by what a
+/// posting holds.
+pub(crate) fn posted(
+    definition: &IndexDefinition,
+    frequency: u32,
+    length: u32,
+    located: &Located,
+) -> tessari_kv::Value {
+    if definition.costs.positions || definition.costs.offsets {
+        Posting::encode_located(frequency, length, located)
+    } else if definition.costs.unscored {
+        Posting::Membership.encode()
+    } else {
+        Posting::Counted { frequency, length }.encode()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::panic, clippy::unwrap_used)]
@@ -506,6 +537,7 @@ mod tests {
             unique: false,
             vector: None,
             spatial: false,
+            costs: crate::catalog::SearchCosts::default(),
         }
     }
 

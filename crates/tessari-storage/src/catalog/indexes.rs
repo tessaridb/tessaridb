@@ -80,6 +80,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             search: shape.search,
             vector: shape.vector,
             spatial: shape.spatial,
+            costs: shape.costs,
         };
         self.write(system::INDEXES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());

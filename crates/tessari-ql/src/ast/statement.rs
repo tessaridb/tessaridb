@@ -418,6 +418,10 @@ pub enum StatementKind {
         unique: bool,
         /// Whether the index holds terms rather than whole values.
         search: bool,
+        /// What a search index stores beside its postings: `POSITIONS`,
+        /// `OFFSETS`, `NO SCORE` (ADR-0100 D4). Each changes what a read costs
+        /// and never what it answers.
+        costs: SearchCosts,
         /// Whether the index holds the cells covering each record's geometry.
         spatial: bool,
         /// The distance a vector index's graph is built with, when it is one.
@@ -1838,4 +1842,15 @@ pub enum BackupForm {
     State,
     /// `BACKUP SCRIPT` — the store's current state as TessariQL that rebuilds it.
     Script,
+}
+
+/// What a `SEARCH` index keeps beside its postings, as the statement said it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SearchCosts {
+    /// `POSITIONS`: each posting carries the term's token ordinals.
+    pub positions: bool,
+    /// `OFFSETS`: each posting carries the term's byte ranges.
+    pub offsets: bool,
+    /// `NO SCORE`: no collection statistics, and a score over it is refused.
+    pub unscored: bool,
 }

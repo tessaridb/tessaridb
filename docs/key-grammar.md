@@ -574,6 +574,23 @@ lets the parser find where the list ends and the record id begins.
 A full-text posting is `0x12` with the same shape as a secondary entry, its term
 in the value position.
 
+Its value is a stored-value header followed by one of three payloads, told apart
+by their length and a flags byte, never by the index definition:
+
+```
+membership   (empty)                                  -- NO SCORE, and indexes written before counts
+counted      <frequency:u32> <length:u32>             -- the default
+located      <frequency:u32> <length:u32> <flags:u8>
+             [<ordinal:u32> × frequency]              -- flags & 1: POSITIONS
+             [<start:u32> <end:u32> × frequency]      -- flags & 2: OFFSETS
+```
+
+`frequency` is the term's occurrences in the record and `length` the record's
+token count, both with repeats. An ordinal is the token's index in the field's
+analysed token list, ascending; a range is the token's half-open byte span in the
+text. A flags byte of zero, a bit other than these two, or a list that is not
+exactly `frequency` entries long is refused as malformed rather than read past.
+
 ### 6.2b `SearchStatistics` — keyspace `index`
 
 ```

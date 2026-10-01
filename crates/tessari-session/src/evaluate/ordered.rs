@@ -354,6 +354,33 @@ impl Session<'_> {
             // arrived at — a prefix walk, a fuzzy walk, or the `OR`s somebody
             // wrote. They stay separate variants so `EXPLAIN` can still say
             // which question produced them.
+            // The conjunction's candidates, then each record's run decided from
+            // the ordinals the index stored (ADR-0100 D4).
+            plan::Served::Phrase {
+                groups,
+                words,
+                slop,
+            } => {
+                let mut rows = Vec::new();
+                for id in transaction.records_by_expansions(&chosen.index, analyzer, groups)? {
+                    let at = RecordAddress::new(context.namespace, context.database, table, id);
+                    let Some(payload) = transaction.get(&at)? else {
+                        continue;
+                    };
+                    let asked = (groups.as_slice(), words.as_slice(), *slop);
+                    if super::phrase::holds_phrase(
+                        transaction,
+                        &chosen.index,
+                        analyzer,
+                        asked,
+                        &at.id,
+                        &payload,
+                    )? {
+                        rows.push((at.id, payload));
+                    }
+                }
+                Ok(rows)
+            }
             plan::Served::PrefixTerms(expansions)
             | plan::Served::FuzzyTerms(expansions)
             | plan::Served::AnyTerms(expansions) => {

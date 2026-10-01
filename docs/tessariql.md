@@ -2637,6 +2637,26 @@ equality or a prefix and nothing else. Asking the wrong one would return the
 wrong rows rather than none, so the shape of the test is checked against the
 index before either is used.
 
+**What the index keeps beside its postings is a cost, and it is declared:**
+
+```
+DEFINE INDEX by_body ON notes FIELDS body SEARCH POSITIONS OFFSETS;
+DEFINE INDEX by_code ON parts FIELDS code SEARCH NO SCORE;
+```
+
+| Option | Stores | What it buys |
+|---|---|---|
+| `POSITIONS` | each occurrence's token ordinal | a quoted phrase — with slop, or ending in a starred word — is decided from the index rather than by re-reading each candidate's text; `EXPLAIN` reports shape `phrase` |
+| `OFFSETS` | each occurrence's byte range | `search::highlight` over a whole-word query marks from the stored ranges rather than by analysing the text; a phrase, prefix or fuzzy query still analyses |
+| `NO SCORE` | membership alone, and no collection statistics | a smaller index; `search::score` and `search::explain` over it are refused with `NoSearchIndex`, exactly as over no index |
+
+**None of them changes an answer** — each is proven by asking every form of the
+language, records and highlight marks alike, of the same rows with the option
+and with no index at all. Each word comes after `SEARCH`, at most once, in any
+order; `INFO` and the script writer say them back as `POSITIONS OFFSETS NO
+SCORE`. An index written before they existed holds none of the first two and is
+scored, which is what it always was.
+
 #### A quoted phrase — the words in that order
 
 ```
