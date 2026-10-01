@@ -694,7 +694,9 @@ impl Db {
             .tables_in(namespace, database)?
             .into_iter()
             .filter_map(|table| {
-                let shards = table.shards?.spans().map(|span| span.id).collect();
+                // Every log that may hold its records — a retired shard's
+                // included, since a split stops writes to it and not reads.
+                let shards = table.shards?.logs().collect();
                 Some((table.name, table.id, shards))
             })
             .collect())

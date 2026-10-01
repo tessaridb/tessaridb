@@ -1493,6 +1493,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_follower_still_asks_for_a_shard_a_split_retired() {
+        // ADR-0095 D3: a retired shard's log holds what was written to it before
+        // the split, and a follower that had not collected all of it yet when it
+        // applied the split would otherwise never ask for the rest.
+        let db = Db::in_memory().expect("an in-memory store");
+        db.session()
+            .run(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+                 USE DATABASE shop; DEFINE TABLE orders (n int) IDENTITY uuid SPLIT AT 'g'; \
+                 ALTER TABLE orders SPLIT AT 'm';",
+            )
+            .expect("a split table, split again");
+        let shards: Vec<u32> = logs_to_collect(db.store())
+            .expect("this node's own logs")
+            .into_iter()
+            .filter_map(|home| match home {
+                Reach::Shard(_, _, _, shard) => Some(shard.get()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            shards,
+            vec![1, 2, 3, 4],
+            "shard 2 is retired and still a log"
+        );
+    }
+
     /// G034 S1.2 over the peer door (Q-796): a record written by a
     /// one-database commit and then by a two-database one ends at the leader's
     /// value on a follower that collects every log in one round. Collected a

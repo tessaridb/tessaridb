@@ -167,7 +167,15 @@ impl Gathers for Gathering {
                 &said,
                 Ask::Gather(&page),
             )
-            .map_err(|why| Unanswered::Refused(format!("{endpoint}: {why}")))?;
+            .map_err(|why| match why {
+                // The leader's map differs from the one this ask was built
+                // from: said as itself, so the asker reads its map again
+                // rather than looking for a leader that did not answer.
+                crate::Error::NotGathered(crate::gathering::Ungathered::MapMoved) => {
+                    Unanswered::Moved
+                }
+                other => Unanswered::Refused(format!("{endpoint}: {other}")),
+            })?;
             let Answered::Gathered(answered) = answered else {
                 return Err(Unanswered::Refused(format!(
                     "{endpoint} answered something other than a page"

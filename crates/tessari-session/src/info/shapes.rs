@@ -75,6 +75,31 @@ pub(crate) fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> 
         let bound = |at: Option<&tessari_types::RecordId>| {
             at.map_or(Value::None, |id| Value::from(id.to_literal().as_str()))
         };
+        // ADR-0095: how many splits and merges made the map, and what they
+        // retired — a retired shard's log still holds what was written to it, so
+        // a reader of the logs needs its id as much as a writer needs the spans.
+        let shard = |id: tessari_types::ShardId| Value::from(i64::from(id.get()));
+        shape.insert(
+            "version".to_owned(),
+            Value::from(i64::try_from(shards.version()).unwrap_or(i64::MAX)),
+        );
+        shape.insert(
+            "retired".to_owned(),
+            Value::Array(
+                shards
+                    .retired()
+                    .map(|(id, into)| {
+                        Value::Object(BTreeMap::from([
+                            ("id".to_owned(), shard(id)),
+                            (
+                                "into".to_owned(),
+                                Value::Array(into.iter().copied().map(shard).collect()),
+                            ),
+                        ]))
+                    })
+                    .collect(),
+            ),
+        );
         shape.insert(
             "shards".to_owned(),
             Value::Array(

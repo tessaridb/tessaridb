@@ -198,6 +198,14 @@ impl ShardMap {
             .unwrap_or_default()
     }
 
+    /// Every retired shard and the shards that replaced it, in the order they
+    /// were retired.
+    pub fn retired(&self) -> impl Iterator<Item = (ShardId, &[ShardId])> {
+        self.retired
+            .iter()
+            .map(|retired| (retired.id, retired.into.as_slice()))
+    }
+
     /// Every shard whose log may hold records — live and retired — by id.
     pub fn logs(&self) -> impl Iterator<Item = ShardId> {
         let mut ids: Vec<ShardId> = self

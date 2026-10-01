@@ -78,6 +78,10 @@ pub enum Ungathered {
     NotHeld,
     /// This node's catalog has no such table or shard.
     NoSuchTable,
+    /// This node's map of the table no longer has — or does not yet have — the
+    /// shard asked for: one of the two maps moved, and the asker reads its own
+    /// again (ADR-0095 D4).
+    MapMoved,
 }
 
 impl Ungathered {
@@ -87,6 +91,7 @@ impl Ungathered {
             Self::NotEntitled => 1,
             Self::NotHeld => 2,
             Self::NoSuchTable => 3,
+            Self::MapMoved => 4,
         }
     }
 
@@ -96,6 +101,7 @@ impl Ungathered {
             1 => Ok(Self::NotEntitled),
             2 => Ok(Self::NotHeld),
             3 => Ok(Self::NoSuchTable),
+            4 => Ok(Self::MapMoved),
             _ => Err(Error::Malformed),
         }
     }
@@ -107,6 +113,7 @@ impl core::fmt::Display for Ungathered {
             Self::NotEntitled => "the asking node's subscription holds no part of this table",
             Self::NotHeld => "the node asked does not hold this shard",
             Self::NoSuchTable => "the node asked has no such table or shard",
+            Self::MapMoved => "the node asked holds a different map of this table's shards",
         })
     }
 }
@@ -234,8 +241,11 @@ pub(crate) fn serve(
     let Some(map) = definition.and_then(|found| found.shards) else {
         return Err(Error::NotGathered(Ungathered::NoSuchTable));
     };
+    // The table is here and split, so a shard missing from its live spans is a
+    // map that moved on one side or the other — retired here, or minted by a
+    // change this node has not applied yet (ADR-0095 D4).
     let Some(span) = map.spans().find(|span| span.id == asked.shard) else {
-        return Err(Error::NotGathered(Ungathered::NoSuchTable));
+        return Err(Error::NotGathered(Ungathered::MapMoved));
     };
     let shard_of = |shard| Reach::Shard(asked.namespace, asked.database, asked.table, shard);
     let entitled = granted.granted(asker)?.is_some_and(|over| {
@@ -420,11 +430,12 @@ mod tests {
             Ungathered::NotEntitled,
             Ungathered::NotHeld,
             Ungathered::NoSuchTable,
+            Ungathered::MapMoved,
         ] {
             assert_eq!(Ungathered::from_byte(reason.byte()).unwrap(), reason);
         }
         assert!(matches!(Ungathered::from_byte(0), Err(Error::Malformed)));
-        assert!(matches!(Ungathered::from_byte(4), Err(Error::Malformed)));
+        assert!(matches!(Ungathered::from_byte(5), Err(Error::Malformed)));
     }
 }
 
@@ -636,6 +647,25 @@ mod door {
         assert!(
             matches!(no_table, Err(Error::NotGathered(Ungathered::NoSuchTable))),
             "{no_table:?}"
+        );
+    }
+
+    #[test]
+    fn a_shard_the_answerers_map_has_moved_past_is_refused_as_moved() {
+        // ADR-0095 D4: an asker holding an older map names a shard the answerer
+        // has retired. *No such table* would send it looking for a table; the
+        // repair is to read the map again, so the refusal says the map moved.
+        let authority = Authority::new();
+        let (db, table) = leader();
+        db.session()
+            .run("USE NAMESPACE prod; USE DATABASE shop; ALTER TABLE ledger SPLIT AT 'c';")
+            .unwrap();
+        let (address, handle) = door(&authority, &db, Some(Reach::Store), 1 << 20, 1);
+        let retired = ask(&authority, address, &asking(table, 1));
+        handle.join().unwrap();
+        assert!(
+            matches!(retired, Err(Error::NotGathered(Ungathered::MapMoved))),
+            "{retired:?}"
         );
     }
 }

@@ -70,6 +70,9 @@ pub enum Unanswered {
     Ceiling,
     /// Nobody could answer, in the words of whatever refused.
     Refused(String),
+    /// The leader's map of the table no longer has the shard asked for, or does
+    /// not have it yet (ADR-0095 D4).
+    Moved,
 }
 
 /// Who fetches a shard's records for this node.
@@ -216,6 +219,12 @@ impl Session<'_> {
                 match gatherer.gather(&asked) {
                     Ok(gathered) => gathered.records,
                     Err(Unanswered::Ceiling) => return Err(too_much()),
+                    Err(Unanswered::Moved) => {
+                        return Err(Error::ShardMapMoved {
+                            table: missing.table.clone(),
+                            shard: span.id.get(),
+                        });
+                    }
                     Err(Unanswered::Refused(why)) => {
                         return Err(Error::NotGathered {
                             table: missing.table.clone(),

@@ -154,6 +154,16 @@ impl Gather for Unreachable {
     }
 }
 
+/// A gatherer whose leader holds a different map of the table.
+#[derive(Debug)]
+struct Moved;
+
+impl Gather for Moved {
+    fn gather(&self, _: &Asked<'_>) -> Result<Gathered, Unanswered> {
+        Err(Unanswered::Moved)
+    }
+}
+
 /// A gatherer that ignores the ceiling it was given and hands back more.
 #[derive(Debug)]
 struct Flooding;
@@ -364,6 +374,17 @@ fn a_read_that_cannot_be_gathered_whole_is_refused_and_never_answered_in_part() 
             assert!(why.contains("nobody answered"), "{why}");
         }
         other => panic!("expected NotGathered, got {other:?}"),
+    }
+
+    // ADR-0095 D4: a leader holding a different map is a reason to read the map
+    // again, and is said as one rather than as a leader that did not answer.
+    let mut moved = signed_in(&pair.follower, "reader").gathering(Arc::new(Moved));
+    moved.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
+    match refused(&mut moved, "SELECT * FROM ledger;") {
+        tessari_session::Error::ShardMapMoved { table, shard } => {
+            assert_eq!((table.as_str(), shard), ("ledger", 1));
+        }
+        other => panic!("expected ShardMapMoved, got {other:?}"),
     }
 
     let mut flooded = signed_in(&pair.follower, "reader").gathering(Arc::new(Flooding));
