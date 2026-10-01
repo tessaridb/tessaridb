@@ -462,6 +462,49 @@ fn a_fold_over_a_real_shard_past_the_ceiling_answers() {
     }
 }
 
+/// ADR-0096 D3 — a read naming a partition asks only for the shard holding
+/// it, and only for that partition's identities.
+#[test]
+fn a_read_naming_a_partition_asks_only_its_shard() {
+    // Declared beside `ledger` before the follower is copied, so it knows the
+    // table; it was served only `ledger`'s middle shard, so it holds none of
+    // `customers` and gathers every read of it.
+    let leader = leader();
+    signed_in(&leader, "root")
+        .run(
+            "USE NAMESPACE prod; USE DATABASE shop;\n\
+             DEFINE TABLE customers (region string, name string) IDENTITY uuid \
+             PARTITION BY region SPLIT AT 'de', 'fr';\n\
+             CREATE customers:'at:1' = { region: 'at', name: 'cy' };\n\
+             CREATE customers:'de:1' = { region: 'de', name: 'ada' };\n\
+             CREATE customers:'fr:1' = { region: 'fr', name: 'bo' };",
+        )
+        .unwrap();
+    let follower = follower_of_the_middle(&leader);
+    let gatherer = Arc::new(FromTheLeader {
+        leader: Arc::clone(&leader),
+        asked: Mutex::new(Vec::new()),
+        pushed: Mutex::new(Vec::new()),
+        sent: Mutex::new(0),
+    });
+    let pair = Pair {
+        leader,
+        follower,
+        gatherer,
+    };
+    let mut follower = pair.on_the_follower("reader");
+    let mut whole = pair.on_the_leader("reader");
+    let read = "SELECT * FROM customers WHERE region = 'de';";
+    let (gathered, _) = answer(&mut follower, read);
+    assert_eq!(gathered, answer(&mut whole, read).0);
+    assert_eq!(gathered.len(), 1, "{gathered:?}");
+    let id = |text: &str| RecordId::from(text);
+    assert_eq!(
+        pair.asked(),
+        vec![(2, Some(id("de:")), Some((id("de;"), false)))]
+    );
+}
+
 /// ADR-0097 D2 — a bounded read stops asking once it has enough: shard 1 holds
 /// three records, this node holds shard 2's two, and shard 3 is asked only when
 /// those five are not enough.

@@ -417,7 +417,7 @@ impl Session<'_> {
 }
 
 /// The part of `span` that `part` needs, or `None` when they do not meet.
-fn window_of<'a>(span: &ShardSpan<'a>, part: Part<'a>) -> Option<Window<'a>> {
+pub(crate) fn window_of<'a>(span: &ShardSpan<'a>, part: Part<'a>) -> Option<Window<'a>> {
     let inside =
         |id: &RecordId| span.from.is_none_or(|from| from <= id) && span.to.is_none_or(|to| id < to);
     match part {

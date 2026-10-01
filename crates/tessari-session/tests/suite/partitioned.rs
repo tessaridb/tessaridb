@@ -168,3 +168,75 @@ fn the_report_names_the_partition_and_its_definition_re_creates_it() {
         "the restored table is not partitioned: {script}"
     );
 }
+
+/// The plan a value reports, as `access` and the shards it names.
+fn access_and_shards(plan: &Value) -> (String, Option<Vec<i64>>) {
+    let Value::Object(fields) = plan else {
+        panic!("{plan:?}");
+    };
+    let Some(Value::String(access)) = fields.get("access") else {
+        panic!("{plan:?}");
+    };
+    let shards = fields.get("shards").map(|held| match held {
+        Value::Array(ids) => ids
+            .iter()
+            .map(|id| match id {
+                Value::Number(number) => number.as_exact_integer().unwrap(),
+                other => panic!("{other:?}"),
+            })
+            .collect(),
+        other => panic!("{other:?}"),
+    });
+    (access.clone(), shards)
+}
+
+/// ADR-0096 D3 — a read whose condition fixes the partition reads the span of
+/// that partition's identities, in the one shard that holds them, and both its
+/// plan and `EXPLAIN` say which shard.
+#[test]
+fn a_read_naming_a_partition_reads_its_span_in_one_shard() {
+    let store = store();
+    let mut session = customers(&store);
+    session
+        .run(
+            "CREATE customers = { region: 'at', name: 'cy' }; \
+             CREATE customers = { region: 'de', name: 'ada' }; \
+             CREATE customers = { region: 'de', name: 'eve' }; \
+             CREATE customers = { region: 'dk', name: 'bo' };",
+        )
+        .unwrap();
+    let read = "SELECT * FROM customers WHERE region = 'de' AND name != 'eve';";
+    let explained = match session.run(&format!("EXPLAIN {read}")).unwrap().last() {
+        Some(Outcome::Value(plan)) => plan.clone(),
+        other => panic!("{other:?}"),
+    };
+    // Shard 2 runs from 'de' to 'fr', and holds 'dk' too.
+    assert_eq!(
+        access_and_shards(&explained),
+        ("span".to_owned(), Some(vec![2]))
+    );
+    let (records, plan) = match session.run(read).unwrap().last() {
+        Some(Outcome::Records { records, plan, .. }) => (records.clone(), plan.clone()),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        access_and_shards(&plan.to_value()),
+        access_and_shards(&explained)
+    );
+    let names: Vec<String> = records
+        .iter()
+        .map(|(_, record)| format!("{record:?}"))
+        .collect();
+    assert_eq!(names.len(), 1, "{names:?}");
+    assert!(names[0].contains("ada"), "{names:?}");
+    // A condition that does not fix the partition reads the table.
+    let explained = match session
+        .run("EXPLAIN SELECT * FROM customers WHERE name = 'ada';")
+        .unwrap()
+        .last()
+    {
+        Some(Outcome::Value(plan)) => plan.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(access_and_shards(&explained), ("scan".to_owned(), None));
+}

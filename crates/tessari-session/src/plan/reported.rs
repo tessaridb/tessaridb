@@ -63,6 +63,9 @@ pub struct Plan {
     pub cells: Option<u64>,
     /// The ceiling the choice promises, where it promises one.
     pub at_most: Option<u64>,
+    /// The shards of a split table a span read touches, in key order
+    /// (ADR-0096 D3) — so a read naming one partition says it reads one shard.
+    pub shards: Option<Box<[u32]>>,
     /// Whether the records are provably the ones the question names.
     ///
     /// Derived from [`Self::access`] rather than set here, so that `EXPLAIN` and
@@ -84,6 +87,7 @@ impl Plan {
             columns: None,
             cells: None,
             at_most: None,
+            shards: None,
             exact: access.exactness(),
         }
     }
@@ -93,6 +97,15 @@ impl Plan {
     pub fn on(self, table: &str) -> Self {
         Self {
             table: Some(table.to_owned()),
+            ..self
+        }
+    }
+
+    /// The same plan, touching these shards.
+    #[must_use]
+    pub fn touching(self, shards: Option<Vec<u32>>) -> Self {
+        Self {
+            shards: shards.map(Vec::into_boxed_slice),
             ..self
         }
     }
@@ -145,6 +158,17 @@ impl Plan {
                     Value::Number(Number::Integer(i64::try_from(held).unwrap_or(i64::MAX))),
                 );
             }
+        }
+        if let Some(shards) = &self.shards {
+            plan.insert(
+                "shards".to_owned(),
+                Value::Array(
+                    shards
+                        .iter()
+                        .map(|shard| Value::Number(Number::Integer(i64::from(*shard))))
+                        .collect(),
+                ),
+            );
         }
         Value::Object(plan)
     }

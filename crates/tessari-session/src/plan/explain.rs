@@ -60,10 +60,23 @@ impl Session<'_> {
             // The span is decided by the statement and not by what exists, so
             // the plan is known without asking anything — which is the same
             // reason `Source::Record` above needs no enumeration.
-            Source::Range { table, .. } => {
+            Source::Range {
+                table,
+                lower,
+                upper,
+                inclusive,
+                span,
+            } => {
                 let (_, id) = self.resolve_table(transaction, table)?;
                 self.refuse_reading_a_vault(transaction, id, table)?;
-                Ok(Plan::new(AccessPath::Span).on(table.name.text.as_str()))
+                let part = crate::evaluate::Part::Span {
+                    lower: lower.fixed(*span)?,
+                    upper: upper.fixed(*span)?,
+                    inclusive: *inclusive,
+                };
+                Ok(Plan::new(AccessPath::Span)
+                    .on(table.name.text.as_str())
+                    .touching(self.shards_touched(transaction, id, part)?))
             }
             Source::Table(table) => {
                 let named = table.name.text.as_str();
@@ -163,6 +176,18 @@ impl Session<'_> {
                 let (context, id) = self.resolve_table(transaction, table)?;
                 self.refuse_reading_a_vault(transaction, id, table)?;
                 let named = table.name.text.as_str();
+                // A condition fixing the partition reads that partition's span,
+                // asked first because the read asks it first (ADR-0096 D3).
+                if let Some((lower, upper)) = self.partition_span(transaction, id, condition)? {
+                    let part = crate::evaluate::Part::Span {
+                        lower: &lower,
+                        upper: &upper,
+                        inclusive: false,
+                    };
+                    return Ok(Plan::new(AccessPath::Span)
+                        .on(named)
+                        .touching(self.shards_touched(transaction, id, part)?));
+                }
                 // Asked before the candidates, because the read asks it before
                 // the candidates — and from the same function, so the two cannot
                 // come to disagree. As in the unconditioned case, whether the
