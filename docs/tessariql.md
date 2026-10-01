@@ -7791,6 +7791,13 @@ INFO FOR HISTORY OF person:1;
  "complete": true, "walked": "12"}
 ```
 
+`at` is the write's position in its database's **log** — the number a replica
+resumes from — and not the record version `VERSION` takes. The log counts that
+database's commits; the version counts every commit the store made, definitions
+and other databases included, so the two differ as soon as anything else has been
+written (Q-875). A history says what happened and in what order; it does not say
+which version to read at.
+
 `change` is `written` or `removed`, and a `written` entry carries the `value` the
 record became. It is deliberately not *created* / *updated* / *deleted*: the log
 carries what a record became and not what stood there before, so calling the
