@@ -152,6 +152,14 @@ SELECT * FROM notes WHERE search::score(body, 'unheardof') > 0;
 SELECT search::score(body) AS relevance FROM notes;
 --- expect: error WrongArity
 
+--- case: an explanation is the score with its parts, answered for every record
+SELECT search::explain(body, 'hopper') AS why FROM notes;
+--- expect: rows 5
+
+--- case: and it is refused without its query exactly as the score is
+SELECT search::explain(body) AS why FROM notes;
+--- expect: error WrongArity
+
 --- case: a score over a field with no search index is refused, naming the field
 SELECT search::score(title, 'ada') AS relevance FROM notes;
 --- expect: error NoSearchIndex

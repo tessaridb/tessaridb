@@ -320,7 +320,7 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         // A score needs the record's analyzer and the collection it is measured
         // against, and neither is a value — so it is answered in the evaluator,
         // where the scope is, and never reaches here.
-        Function::SearchScore => Ok(Value::None),
+        Function::SearchScore | Function::SearchExplain => Ok(Value::None),
         // A highlight needs the field's analyzer and what the read asked of that
         // field, for the same reason and by the same route.
         Function::SearchHighlight => Ok(Value::None),

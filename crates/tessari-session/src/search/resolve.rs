@@ -410,7 +410,7 @@ fn searched_paths<'a>(
             }
         }
         ExprKind::Call {
-            function: Function::SearchScore,
+            function: Function::SearchScore | Function::SearchExplain,
             arguments,
             ..
         } => {
@@ -498,6 +498,7 @@ fn blended(
     ranked.sort_by(|(left, one), (right, other)| right.cmp(left).then_with(|| one.cmp(other)));
     ranked.truncate(SEARCH_PREFIX_EXPANSION_CAP);
     Ok(Blend {
+        prefix: alternatives.first().cloned().unwrap_or_default(),
         documents: ranked.first().map_or(0, |(held, _)| *held),
         expansions: ranked.into_iter().map(|(_, term)| term).collect(),
     })

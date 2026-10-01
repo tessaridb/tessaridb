@@ -83,6 +83,7 @@ impl Function {
             | Self::VectorEuclidean
             | Self::VectorDot
             | Self::SearchScore
+            | Self::SearchExplain
             | Self::TimeBucket
             | Self::GeoIntersects
             | Self::GeoDisjoint
@@ -184,6 +185,7 @@ impl Function {
             | Self::VectorEuclidean
             | Self::VectorDot
             | Self::SearchScore
+            | Self::SearchExplain
             | Self::TimeBucket
             | Self::GeoIntersects
             | Self::GeoDisjoint

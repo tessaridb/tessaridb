@@ -4658,6 +4658,7 @@ how the read says so rather than getting quietly slower page by page.
 | `FROM users AFTER users:1042` | a seek | nothing — this is the cheap page |
 | `FROM users WHERE … AFTER users:1042` | a walk in identity order | `cursor-walked` |
 | `FROM users ORDER BY joined AFTER users:1042` | a walk in the named order | `cursor-walked` |
+| `FROM notes ORDER BY search::score(body, 'q') DESC AFTER notes:7 LIMIT 10` | the ranked walk, resumed below the anchor's score | nothing |
 
 **A walked page buys correctness and not speed, and the note says so precisely
 because the two are easy to confuse.** What every cursor gives — sought or
@@ -5689,7 +5690,7 @@ and the answer is the same one.
 Everything else is the scan, and answers identically: a second sort key, an
 **ascending** order (a bound of this shape keeps the highest-scoring records, and
 the lowest-scoring ones are overwhelmingly the records the index does not post at
-all), no `LIMIT`, a `GROUP BY`, a `FETCH`, a resumed page, `APPROXIMATE`, a `[*]`
+all), no `LIMIT`, a `GROUP BY`, a `FETCH`, `APPROXIMATE`, a `[*]`
 route into the searched field, and a query argument that reads the record being
 scored — which would make the collection the score is measured against depend on
 the record, so there is no one term set to bound.
@@ -5710,6 +5711,49 @@ tail, and when the postings run out before the bound is filled — a shortfall m
 the answer is filled out with records holding none of the query's words, and
 their order among themselves is the scan's. **The path reported is always the one
 that ran.**
+
+**A page after the first is the same walk, resumed below its anchor:**
+
+```
+SELECT title FROM notes ORDER BY search::score(body, 'lock contention') DESC
+AFTER notes:7 LIMIT 10;
+```
+
+The walk scores the anchor, and only records scoring **strictly below** it count
+towards the page and set the threshold the walk prunes by — a record tying the
+anchor may sit on either side of the cursor, so it is never what fills a page.
+That threshold is never above the true one, so the walk can only read more than it
+needs. The cursor itself is then applied exactly as for a scan, and the pages put
+together are the ranking, ties at a page boundary included. So a later page of a
+search costs what the first did — the postings of the query's words — rather than
+the table, and carries no `cursor-walked` note. An anchor scoring zero is past
+every record holding a word, and the scan reads the rest.
+
+There is no seek here in the sense an identity cursor has one: a score is a
+property of the query, so no structure stores records in its order. What the
+anchor buys is the threshold, which is what makes the page cheap.
+
+#### `search::explain` — what a score is made of
+
+```
+SELECT title, search::explain(body, 'lock contention conten*') AS why
+FROM notes WHERE body MATCHES 'lock' LIMIT 3;
+```
+
+The score `search::score` answers, with what it was made of: `score`, the
+collection's `documents` and `average_length`, the record's `length` in tokens,
+and one entry under `terms` per word asked — repeats included, because a word
+written twice weighs twice — giving the `term`, how often the record `held` it,
+how many `documents` hold it, its `weight` (rarity) and its `contribution`. A
+starred word is one entry under `prefixes`, naming the words of this record it
+blended. A word the record does not hold is listed with `held: 0` and contributes
+nothing, which is the answer to "why did this not rank".
+
+The contributions add up to the score **exactly** — the same numbers added in the
+same order — so an explanation cannot describe a different score than the one
+the read ordered by. It needs what a score needs, a search index on the field,
+and is refused without one in the same words. Over a field a grant hides it
+explains a zero and names nothing.
 
 ### Nearest neighbours
 

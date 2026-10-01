@@ -331,3 +331,38 @@ fn a_hidden_field_marks_nothing() {
     assert_ne!(marks(&mut signed_in(&store, "wide")), "Array([])");
     assert_eq!(marks(&mut signed_in(&store, "narrow")), "Array([])");
 }
+
+/// An explanation is a score with its parts, and the parts are the leak a score
+/// already was: a word's document count and a record's occurrences of it, read
+/// from the index of a field the caller cannot read. Over a hidden field it
+/// explains a zero and names nothing.
+#[test]
+fn a_hidden_field_explains_nothing() {
+    let store = store();
+    ready(&store);
+    let read = "SELECT search::explain(notes, 'compiler pars*') AS e FROM staff;";
+    let explained = |session: &mut Session<'_>| {
+        let outcomes = session.run(read).unwrap();
+        outcomes
+            .last()
+            .unwrap()
+            .records()
+            .unwrap()
+            .iter()
+            .map(|(_, record)| format!("{record:?}"))
+            .collect::<Vec<_>>()
+    };
+    let wide = explained(&mut signed_in(&store, "wide"));
+    assert!(
+        wide.iter().any(|one| one.contains("\"compil\"")),
+        "the control explained nothing: {wide:?}"
+    );
+    let narrow = explained(&mut signed_in(&store, "narrow"));
+    assert!(!narrow.is_empty());
+    for one in &narrow {
+        assert!(
+            !one.contains("compil") && !one.contains("pars"),
+            "a caller who cannot read `notes` was told what it holds: {one}"
+        );
+    }
+}

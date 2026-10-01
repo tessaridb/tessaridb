@@ -58,6 +58,10 @@ use tessari_constants::{BM25_B, BM25_K1};
 use tessari_encoding::TermStatistics;
 use tessari_types::{Analyzer, Number, Value};
 
+mod explain;
+
+pub(crate) use explain::explain;
+
 /// What one searched field's collection looks like, resolved once per read.
 ///
 /// The `terms` map holds only the terms the statement actually asks about —
@@ -96,6 +100,8 @@ pub(crate) struct Corpus {
 /// because the rarer a term the more each occurrence of it is worth.
 #[derive(Debug, Clone)]
 pub(crate) struct Blend {
+    /// The prefix as it was typed.
+    pub(crate) prefix: String,
     /// The terms it reaches, at most the expansion cap of them, the most-held
     /// first.
     pub(crate) expansions: Vec<String>,

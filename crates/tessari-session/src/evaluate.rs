@@ -186,8 +186,10 @@ impl Session<'_> {
                 // than its arguments — the field's analyzer, and what the
                 // collection looks like. `call` takes values, and neither of
                 // those is one, so it is answered here where the scope is.
-                if *function == Function::SearchScore {
-                    return self.rank(transaction, arguments, scope, *span);
+                // An explanation is the same score, answered with its parts.
+                if matches!(function, Function::SearchScore | Function::SearchExplain) {
+                    let explaining = *function == Function::SearchExplain;
+                    return self.rank(transaction, arguments, scope, *span, explaining);
                 }
                 // And the third. A highlight needs the field's analyzer and what
                 // this read asked of that field — neither of which is a value,

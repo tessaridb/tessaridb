@@ -65,6 +65,14 @@ compares carries no pre-release suffix.
   pages; `cargo run --release -p tessari-bench --example relevance` reports
   NDCG@10, MRR@10 and cold and warm latency. Type-ahead queries moved from
   NDCG@10 0.219 to 0.802 with the starred word, the whole set from 0.603 to 0.695.
+- **`search::explain(field, query)`** (G051 T7.5, ADR-0100 D1.8) — the score
+  `search::score` answers, with the collection's numbers and one entry per asked
+  word and per starred word: how often the record holds it, how many records do,
+  its weight and its contribution. The contributions add up to the score exactly.
+- **A ranked page after the first is read by the pruned walk** (G051 T7.5,
+  ADR-0100 D1.9). `ORDER BY search::score(…) DESC AFTER <record> LIMIT n` resumes
+  below the anchor's score instead of scoring the whole table, and no longer
+  carries the `cursor-walked` note.
 
 ### Fixed
 
@@ -109,7 +117,7 @@ compares carries no pre-release suffix.
 
 ### Changed
 
-- **1466 conformance cases** define the language and run in the build.
+- **1468 conformance cases** define the language and run in the build.
 - **`MATCHES FUZZY` counts swapping two adjacent letters as one edit** (G051
   T7.4, ADR-0100 D1.4), where it counted two, so it reaches a few more words —
   `vetcor` is now one edit from `vector`.

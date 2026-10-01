@@ -354,6 +354,8 @@ pub(crate) struct Scored<'a> {
     pub(crate) field: &'a Path,
     /// How many records the bound needs, `START` included.
     pub(crate) wanted: usize,
+    /// The record the page resumes after, when it is not the first page.
+    pub(crate) after: Option<&'a tessari_ql::RecordTarget>,
 }
 
 /// Whether this projection puts something else under the name a score reads.
@@ -404,11 +406,10 @@ pub(crate) fn scored(select: &Select) -> Option<Scored<'_>> {
     if select.latest.is_some() {
         return None;
     }
-    if select.approximate.is_some()
-        || !select.group.is_empty()
-        || !select.fetch.is_empty()
-        || resumes(select)
-    {
+    // A cursor is allowed: the walk resumes below the anchor's score
+    // (ADR-0100 D1.9), and the ordering stage applies the cursor exactly as it
+    // does to a scan's records.
+    if select.approximate.is_some() || !select.group.is_empty() || !select.fetch.is_empty() {
         return None;
     }
     let [ordering] = select.order.as_slice() else {
@@ -456,6 +457,7 @@ pub(crate) fn scored(select: &Select) -> Option<Scored<'_>> {
     Some(Scored {
         field: &field.path,
         wanted: usize::try_from(wanted).unwrap_or(usize::MAX),
+        after: select.after.as_deref(),
     })
 }
 

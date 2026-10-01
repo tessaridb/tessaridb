@@ -9,7 +9,7 @@ use tessari_types::{RecordId, Value};
 
 use crate::error::{Error, Result};
 use crate::noticed::Noticed;
-use crate::rank::{Held, score};
+use crate::rank::{Held, explain, score};
 use crate::search::{Searched, marked};
 use crate::session::Session;
 
@@ -179,7 +179,15 @@ impl Session<'_> {
         arguments: &[Expr],
         scope: Scope<'_>,
         span: Span,
+        explaining: bool,
     ) -> Result<Value> {
+        let answer = |corpus: &crate::rank::Corpus, held: &Held| {
+            if explaining {
+                explain(corpus, held)
+            } else {
+                score(corpus, held)
+            }
+        };
         // The query is the second argument and it is deliberately **not**
         // evaluated here. It was evaluated and analysed once, while the corpus
         // was resolved, and doing it again per scored record is half of the cost
@@ -248,16 +256,16 @@ impl Session<'_> {
             }
         }
         if !membership {
-            return Ok(score(corpus, &Held::counted(occurrences, length)));
+            return Ok(answer(corpus, &Held::counted(occurrences, length)));
         }
         let held = self.evaluate_in(transaction, first, scope)?;
         let Value::String(text) = held else {
             // Not text: it holds none of the words, which scores zero. The same
             // answer a document of the wrong shape gets from `MATCHES`, in the
             // ranking's own terms.
-            return Ok(score(corpus, &Held::default()));
+            return Ok(answer(corpus, &Held::default()));
         };
-        Ok(score(
+        Ok(answer(
             corpus,
             &Held::analysed(analyzer, &text, &corpus.counted()),
         ))

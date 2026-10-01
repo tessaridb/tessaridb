@@ -193,6 +193,9 @@ pub enum Function {
     /// `search::score(field, 'query')` — how well this record answers the query,
     /// measured against the collection the field's search index summarises.
     SearchScore,
+    /// `search::explain(field, 'query')` — the score `search::score` answers,
+    /// with the collection's numbers and what each asked word contributed to it.
+    SearchExplain,
     /// `search::highlight(field)` — where in this record's text the read's own
     /// query matched, as `{ start, end }` byte ranges.
     ///
@@ -481,6 +484,7 @@ impl Function {
         VectorEuclidean => "vector::euclidean",
         VectorDot => "vector::dot",
         SearchScore => "search::score",
+        SearchExplain => "search::explain",
         SearchHighlight => "search::highlight",
         SearchRanks => "search::ranks",
         TimeBucket => "time::bucket",
@@ -542,7 +546,7 @@ impl Function {
     /// - [`Function::SearchScore`] answers `0`: a record with no text in the
     ///   field holds none of the query's words, and a document holding none of
     ///   them scores zero. That is the computed answer and not a stand-in for
-    ///   one.
+    ///   one. [`Function::SearchExplain`] answers the explanation of that zero.
     ///
     /// The `type::` **casts** are deliberately not in the list, though
     /// [`Function::TypeOf`] beside them is. `type::of` asks what a value is, and
@@ -567,6 +571,7 @@ impl Function {
                 | Self::VectorEuclidean
                 | Self::VectorDot
                 | Self::SearchScore
+                | Self::SearchExplain
                 | Self::SearchHighlight
                 | Self::GeoDistance
         )
