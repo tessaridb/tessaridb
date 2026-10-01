@@ -45,11 +45,14 @@ compares carries no pre-release suffix.
 - **A snapshot of one place**: `BACKUP STATE OF NAMESPACE n` or `OF n.d` (also bare
   `BACKUP OF …`) carries that place's records and the catalog that defines it, with
   the store's users, and restores into an empty store. Two places are two snapshots.
-- **A snapshot leaves the node as it is read** (ADR-0094 D6): `GET /backup` streams it
-  and `BACKUP … TO` writes it straight into the file. Measured on a debug build, the
-  node's peak memory during a streamed backup was 29.6 MB for a 21.8 MB snapshot and
-  31.0 MB for an 87.0 MB one, against 160 MB and 553 MB when the same snapshot is
-  answered whole over `POST /script` — use `GET /backup` or `TO` for a large store.
+- **A snapshot is never held in memory** (ADR-0094 D6): `GET /backup` writes it to an
+  unlinked file in the node's temporary folder and sends it from there with its exact
+  `Content-Length` (the protocol forbids chunked framing), and `BACKUP … TO` writes it
+  straight into the file. Measured on a debug build, the node's peak memory during
+  `GET /backup` was 25.9 MB for a 21.8 MB snapshot and 28.5 MB for an 87.0 MB one
+  (idle 20.4 and 21.3 MB), against 160 MB and 553 MB when the same snapshot is answered
+  whole over `POST /script` — use `GET /backup` or `TO` for a large store, and leave the
+  node's temporary folder room for one snapshot.
 - **A snapshot on a cluster** is taken on any node holding the whole place, a
   follower included; a node holding part of it — some shards of a split table —
   refuses with `NotHeldHere`, naming the shards it lacks.

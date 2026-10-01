@@ -165,8 +165,8 @@ impl<'a> Session<'a> {
     /// The statement still decides who may take it: this only changes where the
     /// file goes once the statement has been allowed. The answer is then a
     /// summary — the form, the records and the version — since the file has
-    /// already left. Used by a surface that streams, so a node's memory does not
-    /// grow with the store it backs up.
+    /// already left. Used by a surface that writes the file somewhere other than
+    /// memory, so a node's memory does not grow with the store it backs up.
     #[must_use]
     pub fn snapshot_into(mut self, out: Box<dyn std::io::Write + Send>) -> Self {
         self.sink = crate::backup_to::Sink::to(out);
