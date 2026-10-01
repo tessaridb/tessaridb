@@ -50,7 +50,7 @@ use crate::directory::{Destination, Directory};
 use crate::joining::Seed;
 pub use leadership::{
     Renewing, heard_a_leader, heard_a_leader_on, heard_a_newer_policy, leader_of_range, stands,
-    stands_for, voters,
+    stands_for, stands_for_the_store, voters,
 };
 
 /// How long to wait before the next pass, given when the last one started.
@@ -493,7 +493,7 @@ mod tests {
     use super::{
         Collecting, Published, Renewing, Seed, bootstrap_from, due_in, every, heard_a_leader,
         heard_a_leader_on, heard_a_newer_policy, leader_of_range, names_a_peer, stands, stands_for,
-        upstream, voters,
+        stands_for_the_store, upstream, voters,
     };
     use crate::campaign::Stood;
     use crate::directory::Directory;
@@ -1721,6 +1721,31 @@ mod tests {
         let declared = [placed, named("b", "10.0.0.2:9000", ANOTHER)];
         assert_eq!(stands_for(&declared, &NODE), Some(shard(2)));
         assert_eq!(stands_for(&declared, &ANOTHER), None);
+    }
+
+    /// Q-857. A node subscribed to one shard won the store line, answered a
+    /// read of the split table from its one shard, and said nothing: a leader
+    /// never collects, so nothing on it says it holds less than everything.
+    #[test]
+    fn a_node_subscribed_to_less_than_the_store_does_not_stand_for_the_store() {
+        let mut narrow = named("a", "10.0.0.1:9000", NODE);
+        narrow.replicates = Some(shard(3));
+        narrow.leads = Some(shard(3));
+        let mut whole = named("b", "10.0.0.2:9000", ANOTHER);
+        whole.replicates = Some(Reach::Store);
+        let declared = [narrow, whole];
+        assert!(!stands_for_the_store(&declared, &NODE));
+        assert_eq!(stands_for(&declared, &NODE), Some(shard(3)));
+        assert!(stands_for_the_store(&declared, &ANOTHER));
+        // A namespace is narrower than the store too.
+        let mut namespace = named("a", "10.0.0.1:9000", NODE);
+        namespace.replicates = Some(Reach::Namespace(NamespaceId::new(1)));
+        assert!(!stands_for_the_store(&[namespace], &NODE));
+        // A row with no subscription stands as it always has.
+        assert!(stands_for_the_store(
+            &[named("a", "10.0.0.1:9000", NODE)],
+            &NODE
+        ));
     }
 
     /// G034 S3.2 (Q-797). Two rows bound to one node, each placing a range:

@@ -3226,6 +3226,130 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
     );
 }
 
+// ---- G050 C3: one table partitioned by region, each region led on its node --
+
+/// G050 C3's addresses: the last free pairs below the hand-run floor.
+const REGIONS: Band = [
+    ("127.0.0.1:47905", "127.0.0.1:47906"),
+    ("127.0.0.1:47907", "127.0.0.1:47908"),
+    ("127.0.0.1:47909", "127.0.0.1:47880"),
+];
+
+/// `customers`, partitioned by region and split so 'at', 'de' and 'fr' each
+/// have a shard of their own, declared on every node before the membership.
+const PARTITIONED: &str = "DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
+                           DEFINE DATABASE shop; USE DATABASE shop; \
+                           DEFINE TABLE customers (region string, name string) IDENTITY uuid \
+                           PARTITION BY region SPLIT AT 'de', 'fr';";
+
+/// One answer's value at `surface`, rendered, or the refusal.
+fn value_at(surface: &str, read: &str) -> Result<String, String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    let script = format!("USE NAMESPACE prod; USE DATABASE shop; {read}");
+    match client.run(&script, None) {
+        Ok(answers) => Ok(format!("{:?}", answers.last())),
+        Err(why) => Err(why.to_string()),
+    }
+}
+
+#[test]
+#[ignore = "real cadences across three processes — three shard lines and the \
+            store line have to be elected. G050 C3's own validation, run \
+            explicitly: cargo test -p tessari-cli --test serving \
+            a_table_partitioned_by_region -- --ignored"]
+fn a_table_partitioned_by_region_is_led_region_by_region() {
+    let leads = |shard: u32, holds: &str| {
+        format!(
+            "ROLES serving, writable, coordinating REPLICATES {holds} \
+             LEADS SHARD prod.shop.customers {shard}"
+        )
+    };
+    let cluster = a_cluster_of_rows(
+        &REGIONS,
+        PARTITIONED,
+        [
+            leads(1, "STORE"),
+            leads(2, "STORE"),
+            leads(3, "SHARD prod.shop.customers 3"),
+        ],
+    );
+    let logs = cluster.logs.clone();
+    // Each region written through the node placed to lead its shard, until that
+    // node holds the shard's lease and takes it.
+    for (index, region) in [(0, "at"), (1, "de"), (2, "fr")] {
+        let began = Instant::now();
+        let mut last = String::from("never connected");
+        loop {
+            if let Ok(mut client) = Client::connect(REGIONS[index].0) {
+                match client.run(
+                    &format!(
+                        "USE NAMESPACE prod; USE DATABASE shop; \
+                         CREATE customers = {{ region: '{region}', name: 'n' }};"
+                    ),
+                    None,
+                ) {
+                    Ok(_) => break,
+                    Err(why) => last = why.to_string(),
+                }
+            }
+            assert!(
+                began.elapsed() < Duration::from_secs(120),
+                "node {index} never took region {region}; last: {last}{}",
+                what_the_nodes_said(&REGIONS, &logs)
+            );
+            std::thread::sleep(POLL);
+        }
+    }
+    // The catalog says how the table is partitioned and where each region leads.
+    let table = value_at(REGIONS[0].0, "INFO FOR TABLE customers;").unwrap();
+    assert!(table.contains("\"partition\""), "{table}");
+    let node = value_at(REGIONS[0].0, "INFO FOR NODE;").unwrap();
+    for shard in 1..=3 {
+        assert!(
+            node.contains(&format!("SHARD prod.shop.customers {shard}")),
+            "no peer leads shard {shard}: {node}"
+        );
+    }
+    // A region read names one shard, and node 2 — holding only 'fr' — answers
+    // a read of 'de' from the one shard that holds it.
+    let explained = value_at(
+        REGIONS[2].0,
+        "EXPLAIN SELECT * FROM customers WHERE region = 'de';",
+    )
+    .unwrap();
+    assert!(
+        explained.contains("\"span\"") && explained.contains("shards"),
+        "{explained}"
+    );
+    let began = Instant::now();
+    let regional = loop {
+        match read_at(REGIONS[2].0, "SELECT * FROM customers WHERE region = 'de';") {
+            Ok(ids) if !ids.is_empty() => break ids,
+            other => {
+                assert!(
+                    began.elapsed() < Duration::from_secs(60),
+                    "node 2 never answered the 'de' region; last: {other:?}{}",
+                    what_the_nodes_said(&REGIONS, &logs)
+                );
+                std::thread::sleep(POLL);
+            }
+        }
+    };
+    assert!(
+        regional.iter().all(|id| id.starts_with("de:")),
+        "{regional:?}"
+    );
+    // Q-857. Node 2 holds one shard, so it never stands for the store line: a
+    // store-line leader never collects, and would answer a read of the table
+    // from its one shard as if it were the whole.
+    let second = value_at(REGIONS[2].0, "INFO FOR NODE;").unwrap();
+    assert!(
+        second.contains("\"campaigns\": Number(Integer(0))") && second.contains("\"lease\": Null"),
+        "node 2, holding one shard, stood for the store line: {second}"
+    );
+    eprintln!("REGIONS table={table}\nnode={node}\nexplained={explained}");
+}
+
 // ---- G034 S3.1: one writer's logs, applied in its order, across three processes
 
 /// G034 S3.1's addresses: the three pairs the band had left.
