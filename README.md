@@ -22,8 +22,8 @@ written in Rust, for AI applications and the products built around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is a beta — `0.18.0-beta` on `dev`; the latest release is `0.17.1-beta`.** It is
-> released and tested, published as a container image (`tessaridb/tessaridb:0.17.1-beta`; the image tracks the
+> **TessariDB is a beta — `0.18.0-beta`.** It is released and tested, published as
+> a container image (`tessaridb/tessaridb:0.18.0-beta`; the image tracks the
 > larger releases), and the licence makes production use free, including inside
 > a commercial company.
 > What a beta does not promise yet is permanence of shape: before 1.0 the query
