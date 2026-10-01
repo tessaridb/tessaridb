@@ -39,11 +39,18 @@ compares carries no pre-release suffix.
   `EXPLAIN` names the one shard. Refused: `PartitionNeedsGeneratedUuid`,
   `PartitionMismatch` (also for an `UPDATE` changing the region).
 - **A placement moves**: `ALTER REPLICA b LEADS SHARD …` / `… LEADS NONE` (ADR-0098).
-  A row that is not a range's last candidate can be moved or dropped; the last one
-  is still refused `PlacementCannotBeDropped`.
+  The node a range is taken from stops standing for it, and a voter that has applied
+  the move refuses it a ballot there, so its lease runs out and the new candidate is
+  elected; writes into the range continue except while that election runs. A row that
+  is not a range's last candidate can be moved or dropped; the last one is still
+  refused `PlacementCannotBeDropped`.
 
 ### Fixed
 
+- **A range placed on a node that follows the store's leader never took a write**:
+  the store leader's leadership row was taken to cover the placed range, so the
+  range's own leader could neither record its win nor write. A leadership row now
+  governs only the ranges on its own line.
 - **A node subscribed to one shard could lead the whole store** and then answer a
   read of a split table from its one shard as if it were the whole. A node whose
   own row replicates less than `STORE` now stands only for the range it is placed

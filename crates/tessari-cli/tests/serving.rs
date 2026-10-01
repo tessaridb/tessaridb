@@ -3350,6 +3350,151 @@ fn a_table_partitioned_by_region_is_led_region_by_region() {
     eprintln!("REGIONS table={table}\nnode={node}\nexplained={explained}");
 }
 
+// ---- G050 C5: a placement handed to another node while writes continue -----
+
+/// The hand-over cluster's addresses — the free pairs below the suite's band.
+const HANDING: Band = [
+    ("127.0.0.1:47810", "127.0.0.1:47811"),
+    ("127.0.0.1:47812", "127.0.0.1:47813"),
+    ("127.0.0.1:47814", "127.0.0.1:47815"),
+];
+
+/// The epochs a node's log says it led shard 2 under.
+fn shard_two_epochs(log: &std::path::Path) -> Vec<u64> {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.contains("leading Shard(") && line.contains("ShardId(2)"))
+        .filter_map(|line| line.rsplit("at epoch ").next()?.trim().parse().ok())
+        .collect()
+}
+
+#[test]
+#[ignore = "real cadences across three processes — a placed shard's lease has to \
+            lapse and its new candidate be elected. G050 C5's own validation, run \
+            explicitly: cargo test -p tessari-cli --test serving \
+            a_placement_is_handed_over -- --ignored"]
+fn a_placement_is_handed_over_while_writes_continue() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    // Every node declares the membership and nothing else, so each follows the
+    // store line: the schema and the placement are then written through the
+    // store's leader and reach every node, as a move must.
+    let cluster = a_cluster_declared(&HANDING, "", ["", "", ""]);
+    let logs = cluster.logs.clone();
+    let on_the_store_leader = |script: &str| {
+        let began = Instant::now();
+        loop {
+            let done = HANDING.iter().any(|(surface, _)| {
+                Client::connect(surface).is_ok_and(|mut client| client.run(script, None).is_ok())
+            });
+            if done {
+                return Instant::now();
+            }
+            assert!(
+                began.elapsed() < Duration::from_secs(120),
+                "no node took `{script}`{}",
+                what_the_nodes_said(&HANDING, &logs)
+            );
+            std::thread::sleep(POLL);
+        }
+    };
+    on_the_store_leader(PLACED);
+    on_the_store_leader("ALTER REPLICA n0 LEADS SHARD prod.shop.orders 2;");
+    if let Err(last) = until_taken(HANDING[0].0, "h", Duration::from_secs(120)) {
+        panic!(
+            "node 0 never took shard 2; last: {last}{}",
+            what_the_nodes_said(&HANDING, &logs)
+        );
+    }
+    // One writer into shard 2 throughout, through whichever of the two nodes
+    // takes it: every write it was told was taken, and the longest stretch in
+    // which none was.
+    let stop = Arc::new(AtomicBool::new(false));
+    let taken = Arc::new(Mutex::new(Vec::<String>::new()));
+    let writer = {
+        let (stop, taken) = (Arc::clone(&stop), Arc::clone(&taken));
+        std::thread::spawn(move || {
+            let mut longest = Duration::ZERO;
+            let mut last = Instant::now();
+            let mut attempt = 0_u32;
+            while !stop.load(Ordering::Relaxed) {
+                attempt = attempt.saturating_add(1);
+                let key = format!("hw{attempt:06}");
+                let took = [HANDING[0].0, HANDING[1].0].iter().any(|surface| {
+                    Client::connect(surface)
+                        .is_ok_and(|mut client| client.run(&into_orders(&key), None).is_ok())
+                });
+                if took {
+                    longest = longest.max(last.elapsed());
+                    last = Instant::now();
+                    taken.lock().unwrap().push(key);
+                }
+                std::thread::sleep(POLL);
+            }
+            longest
+        })
+    };
+    // The move, committed by whichever node leads the store.
+    let moved = on_the_store_leader(
+        "ALTER REPLICA n1 LEADS SHARD prod.shop.orders 2; ALTER REPLICA n0 LEADS NONE;",
+    );
+    match until_taken(HANDING[1].0, "hz", Duration::from_secs(120)) {
+        Ok(_) => eprintln!("node 1 took shard 2 {:?} after the move", moved.elapsed()),
+        Err(last) => panic!(
+            "node 1 never took shard 2 after the move; last: {last}{}",
+            what_the_nodes_said(&HANDING, &logs)
+        ),
+    }
+    let before = taken.lock().unwrap().len();
+    let began = Instant::now();
+    while taken.lock().unwrap().len() < before + 5 {
+        assert!(
+            began.elapsed() < Duration::from_secs(30),
+            "the writer stopped"
+        );
+        std::thread::sleep(POLL);
+    }
+    stop.store(true, Ordering::Relaxed);
+    let longest = writer.join().unwrap();
+    let taken = taken.lock().unwrap().clone();
+    eprintln!(
+        "HANDOVER {} writes taken, the longest stretch with none taken {longest:?}",
+        taken.len()
+    );
+    // Node 0 now sends a write into shard 2 to node 1.
+    if let Err(last) = until_sent_to(
+        HANDING[0].0,
+        "hy1",
+        cluster.ids[1],
+        HANDING[1].1,
+        Duration::from_secs(60),
+    ) {
+        panic!(
+            "node 0 still takes shard 2; last: {last}{}",
+            what_the_nodes_said(&HANDING, &logs)
+        );
+    }
+    // Every write the writer was told was taken is on the new leader, once.
+    let mut held = read_at(HANDING[1].0, "SELECT * FROM orders:'hw'..'hx';").unwrap();
+    held.sort();
+    assert_eq!(
+        held, taken,
+        "every write taken, held once by the new leader"
+    );
+    // The new leader leads under a later epoch than the old one did.
+    let (old, new) = (shard_two_epochs(&logs[0]), shard_two_epochs(&logs[1]));
+    assert!(
+        new.iter().max() > old.iter().max() && !old.is_empty(),
+        "shard 2 led at {old:?} on node 0 and {new:?} on node 1"
+    );
+    // The stated bound: the old lease running out, plus an election.
+    assert!(
+        longest < Duration::from_secs(25),
+        "writes into shard 2 were refused for {longest:?}"
+    );
+}
+
 // ---- G034 S3.1: one writer's logs, applied in its order, across three processes
 
 /// G034 S3.1's addresses: the three pairs the band had left.

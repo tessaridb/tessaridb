@@ -329,7 +329,7 @@ mod tests {
     use crate::link::tests::{Authority, THERE, hello, settled, voted};
     use crate::link::{Ask, Credential, call};
     use crate::peer::Purpose;
-    use tessari_types::Epoch;
+    use tessari_types::{Epoch, Reach};
 
     const HERE: [u8; NODE_ID_LEN] = [7_u8; NODE_ID_LEN];
 
@@ -345,6 +345,10 @@ mod tests {
 
         fn gathered(&self, asker: [u8; NODE_ID_LEN], asked: &Gather) -> Result<Page> {
             NoLog.gathered(asker, asked)
+        }
+
+        fn places(&self, candidate: [u8; NODE_ID_LEN], range: Reach) -> bool {
+            NoLog.places(candidate, range)
         }
 
         fn copied(

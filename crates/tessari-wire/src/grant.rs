@@ -232,6 +232,12 @@ pub enum Refused {
         /// How far this voter's own committed log reaches.
         tail: Sequence,
     },
+    /// The ballot is for a placed range, and this voter's catalog does not
+    /// place the candidate on it (ADR-0098).
+    ///
+    /// What makes a placement move: once a voter has applied the change, the
+    /// node it took the range from can no longer renew its lease there.
+    NotPlaced,
 }
 
 /// A voting member's answer to one ballot.
@@ -272,6 +278,7 @@ impl Vote {
                 frame::put_u64(&mut body, leadership.get());
                 frame::put_u64(&mut body, tail.get());
             }
+            Self::Refused(Refused::NotPlaced) => body.push(5),
         }
         body
     }
@@ -314,6 +321,7 @@ impl Vote {
                     tail: Sequence::new(tail),
                 }))
             }
+            5 => Ok(Self::Refused(Refused::NotPlaced)),
             tag => Err(Error::UnknownFrame { tag }),
         }
     }

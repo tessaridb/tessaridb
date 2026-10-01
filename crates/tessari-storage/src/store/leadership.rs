@@ -220,6 +220,14 @@ impl Store {
             let Some(leader) = crate::catalog::covering(&held, *range) else {
                 continue;
             };
+            // A row on another line says nothing about this range (Q-858): a
+            // placement carves its range out of every coarser line, so the
+            // store leader's row — the only one a placed range's first leader
+            // holds until its own win is recorded — must not send it elsewhere.
+            let line = crate::catalog::governing(&placed, *range);
+            if crate::catalog::governing(&placed, leader.range) != line {
+                continue;
+            }
             // Per line (ADR-0082): a row's epoch is on the line its range is
             // governed by, and only this node's epoch on that same line orders
             // against it. Two lines' epochs are two unrelated counters.

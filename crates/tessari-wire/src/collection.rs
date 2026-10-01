@@ -299,6 +299,13 @@ pub trait Origin {
         follower: [u8; NODE_ID_LEN],
         write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
     ) -> Result<()>;
+
+    /// Whether this node's catalog places `candidate` on `range` — what a
+    /// voter asks before granting a ballot on a placed range's line (ADR-0098).
+    ///
+    /// No default, for [`Self::copied`]'s reason: a door that forgot it would
+    /// grant every range ballot.
+    fn places(&self, candidate: [u8; NODE_ID_LEN], range: Reach) -> bool;
 }
 
 /// A door with no log behind it.
@@ -336,6 +343,12 @@ impl Origin for NoLog {
 
     fn gathered(&self, _asker: [u8; NODE_ID_LEN], _asked: &Gather) -> Result<Page> {
         Err(Error::NotGathered(Ungathered::NotHeld))
+    }
+
+    // A door with no catalog cannot vouch for any placement, so it grants no
+    // range ballot.
+    fn places(&self, _candidate: [u8; NODE_ID_LEN], _range: Reach) -> bool {
+        false
     }
 
     // A door with no log has no state to give, which is the refusal a node
@@ -478,6 +491,17 @@ impl<'a> Serving<'a> {
 }
 
 impl Origin for Serving<'_> {
+    // The rule a candidate stands by (`stands_for`), read from this node's own
+    // catalog. A catalog that cannot be read vouches for nothing.
+    fn places(&self, candidate: [u8; NODE_ID_LEN], range: Reach) -> bool {
+        let Ok(mut transaction) = self.log.begin() else {
+            return false;
+        };
+        let declared = Catalog::new(&mut transaction).replicas();
+        transaction.rollback();
+        declared.is_ok_and(|declared| crate::stands_for(&declared, &candidate) == Some(range))
+    }
+
     fn gathered(&self, asker: [u8; NODE_ID_LEN], asked: &Gather) -> Result<Page> {
         crate::gathering::serve(
             self.log,
@@ -1008,6 +1032,22 @@ mod tests {
             ))
             .expect("the leader's own statements run");
         db
+    }
+
+    #[test]
+    fn a_door_places_a_candidate_only_where_its_own_row_leads() {
+        // ADR-0098. The voter's half of a placement move: the node's catalog,
+        // read by the rule a candidate stands by.
+        let db = granting(" LEADS NAMESPACE prod");
+        use super::Origin;
+        let serving = Serving::declared(db.store());
+        let mut transaction = db.store().begin().expect("a transaction");
+        let declared = Catalog::new(&mut transaction).replicas().expect("the rows");
+        transaction.rollback();
+        let placed = declared[0].leads.expect("the row places a namespace");
+        assert!(serving.places(THERE, placed));
+        assert!(!serving.places(LEADER, placed), "a node no row places");
+        assert!(!serving.places(THERE, Reach::Store));
     }
 
     /// A node id as a `NODE` clause takes it: thirty-two hex digits.
@@ -2320,6 +2360,10 @@ mod tests {
             asked: &crate::gathering::Gather,
         ) -> Result<crate::gathering::Page> {
             Serving::declared(self.db.store()).gathered(asker, asked)
+        }
+
+        fn places(&self, candidate: [u8; NODE_ID_LEN], range: Reach) -> bool {
+            Serving::declared(self.db.store()).places(candidate, range)
         }
 
         fn copied(

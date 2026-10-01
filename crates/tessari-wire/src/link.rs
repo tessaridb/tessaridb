@@ -53,7 +53,7 @@ use crate::credential;
 use crate::error::{Error, Result};
 use crate::frame;
 use crate::gathering::{Gather, Page, Ungathered};
-use crate::grant::{Ballot, Deciding, Vote};
+use crate::grant::{Ballot, Deciding, Refused, Vote};
 use crate::peer::{Hello, PeerFrame, Purpose, admit};
 
 /// What this node shows a peer, and the key that proves it is ours.
@@ -301,6 +301,13 @@ pub(crate) fn answering(
             // line above gives about its identity: a position a
             // candidate writes into the ballot being judged is a
             // position it can choose.
+            // ADR-0098. A placed range's ballot is granted only to a node
+            // this catalog places on it, so a node a placement was taken
+            // from cannot renew there once this voter has applied the move.
+            if asked.range != tessari_types::Reach::Store && !log.places(said.node, asked.range) {
+                let vote = Vote::Refused(Refused::NotPlaced);
+                return Ok((PeerFrame::Vote.tag(), vote.encode(), Some(vote)));
+            }
             // On the ballot's own line (ADR-0082): a range ballot is
             // judged on both greetings' positions for that range, the
             // store ballot on the store's exactly as before.
@@ -569,7 +576,7 @@ pub(crate) fn greeting(tag: u8, body: &[u8]) -> Result<Hello> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::{Answered, Ask, Credential, Met, Peers, Result, call};
-    use crate::collection::{Collect, NoLog};
+    use crate::collection::{Collect, Collected, NoLog, Origin};
     use crate::credential::names;
     use crate::error::Error;
     use crate::grant::{Ballot, Deciding, Refused, Round, Vote, Voter};
@@ -1440,7 +1447,14 @@ pub(crate) mod tests {
         let deciding = Deciding::holding(settled());
         let answering = std::thread::spawn(move || {
             (0..3)
-                .map(|_| peers.greet(|| Ok(mine), &HERE, &deciding, &NoLog))
+                .map(|_| {
+                    peers.greet(
+                        || Ok(mine),
+                        &HERE,
+                        &deciding,
+                        &Placing(vec![shard(2), shard(3)]),
+                    )
+                })
                 .collect::<Vec<_>>()
         });
         let mut candidate = hello(THERE);
@@ -1468,6 +1482,79 @@ pub(crate) mod tests {
             Vote::Granted,
             "the voter never stood for shard 3"
         );
+        drop(answering.join().expect("the door's thread"));
+    }
+
+    /// A door with no log whose catalog places `THERE` on the ranges it holds.
+    struct Placing(Vec<tessari_types::Reach>);
+
+    impl Origin for Placing {
+        fn collected(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
+            NoLog.collected(follower, asked)
+        }
+
+        fn gathered(
+            &self,
+            asker: [u8; NODE_ID_LEN],
+            asked: &crate::gathering::Gather,
+        ) -> Result<crate::gathering::Page> {
+            NoLog.gathered(asker, asked)
+        }
+
+        fn copied(
+            &self,
+            follower: [u8; NODE_ID_LEN],
+            write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
+        ) -> Result<()> {
+            NoLog.copied(follower, write)
+        }
+
+        fn places(&self, candidate: [u8; NODE_ID_LEN], range: tessari_types::Reach) -> bool {
+            candidate == THERE && self.0.contains(&range)
+        }
+    }
+
+    #[test]
+    fn a_range_ballot_from_a_candidate_not_placed_on_it_is_refused() {
+        // ADR-0098. Once this voter's catalog no longer places the candidate on
+        // shard 3, the candidate cannot renew there; its store ballot and its
+        // ballot on the shard it is placed on are judged as before.
+        use tessari_types::{DatabaseId, NamespaceId, Reach, ShardId, TableId};
+        let shard = |n: u32| {
+            Reach::Shard(
+                NamespaceId::new(1),
+                DatabaseId::new(1),
+                TableId::new(1),
+                ShardId::new(n),
+            )
+        };
+        let authority = Authority::new();
+        let (peers, mine) = door(&authority);
+        let address = peers.address().expect("the door's address");
+        let deciding = Deciding::holding(settled());
+        let placing = Placing(vec![shard(2)]);
+        let answering = std::thread::spawn(move || {
+            (0..3)
+                .map(|_| peers.greet(|| Ok(mine), &HERE, &deciding, &placing))
+                .collect::<Vec<_>>()
+        });
+        let candidate = hello(THERE);
+        let ask = |range: Reach| {
+            let ballot = Round::opened(Epoch::new(1), THERE, 3).over(range).ballot();
+            let (_, answered) = call(
+                address,
+                authority.issue(THERE, Purpose::Peer),
+                &authority.der(),
+                HERE,
+                &candidate,
+                Ask::Ballot(&ballot),
+            )
+            .expect("the door is up");
+            voted(&answered).expect("a door that was asked answers")
+        };
+        assert_eq!(ask(shard(3)), Vote::Refused(Refused::NotPlaced));
+        assert_eq!(ask(shard(2)), Vote::Granted, "placed on shard 2");
+        assert_eq!(ask(Reach::Store), Vote::Granted, "the store is not placed");
         drop(answering.join().expect("the door's thread"));
     }
 

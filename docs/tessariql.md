@@ -8080,9 +8080,16 @@ ALTER REPLICA b LEADS NONE;
 ```
 
 The first makes `c` a candidate beside `b`; the second takes `b`'s placement
-away, and `b` stops standing for the range at once. The range stays on its own
-line throughout, so the store's leader never writes it. A row that is no longer
-a range's last candidate can also be dropped.
+away. Each node acts on the change once it has applied it: `b` stops standing
+for the range, and a voter refuses `b` a ballot on it, so `b` cannot renew its
+lease even where it has not heard of the move yet. When `b`'s lease runs out,
+`c` is elected under a later epoch. Writes into the range go on being taken by
+`b` until then, are refused while `c` is elected, and are taken by `c`
+afterwards. The range stays on its own line throughout, so the store's leader
+never writes it. Measured on three local processes with a writer running
+throughout: the move completed 11–20 s after it committed — one collection of
+the store's log plus one 10-second lease — and no write was taken for at most
+6.2 s. A row that is no longer a range's last candidate can also be dropped.
 
 **The last row placing a range is not taken away** — neither by `LEADS NONE`,
 by `LEADS` naming another range, nor by `DROP REPLICA`

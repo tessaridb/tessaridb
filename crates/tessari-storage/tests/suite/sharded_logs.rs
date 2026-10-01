@@ -479,6 +479,27 @@ fn a_store_epoch_never_supersedes_a_placed_ranges_row() {
     );
 }
 
+/// Q-858. A node following the store line holds the store leader's row, and
+/// until this node's first win on shard 2 is recorded that is the only row
+/// covering shard 2. It is on another line: the placement carved shard 2 out of
+/// the store, so it must not send this node's own range elsewhere — or the
+/// first win can never be recorded and the range never takes a write.
+#[test]
+fn the_store_leaders_row_does_not_govern_a_range_placed_on_its_own_line() {
+    let split = Split::new();
+    split.placed(&[(split.shard(2), ME)], &[(Reach::Store, THEM, 40)]);
+    split
+        .store
+        .hold_range(split.shard(2), Epoch::new(1), Split::live());
+    split.write(&[split.order("h")]).unwrap();
+    // An unplaced range is still the store leader's.
+    let refused = split.write(&[split.order("a")]).unwrap_err();
+    assert!(
+        matches!(refused, Error::WriteIsElsewhere { node, .. } if node == THEM),
+        "{refused:?}"
+    );
+}
+
 // ---- G050 W-G050-3: a split moves where the NEXT write is filed ------------
 
 impl Split {
