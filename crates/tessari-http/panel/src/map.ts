@@ -56,6 +56,18 @@ export interface Peer {
   readonly roles?: readonly string[];
 }
 
+/** Where this node stands against the peer it collects from (ADR-0094 D4). */
+interface Upstream {
+  readonly state?: string;
+  readonly copied_records?: unknown;
+  readonly copies?: unknown;
+}
+
+/** One follower this node has served, as `cluster.followers` reports it. */
+interface Follower {
+  readonly behind?: unknown;
+}
+
 /** What `INFO FOR NODE` answered, in the shape the map reads. */
 export interface Seen {
   readonly id?: string;
@@ -66,7 +78,8 @@ export interface Seen {
     readonly epoch?: unknown;
     readonly campaigns?: unknown;
     readonly desired?: readonly string[] | null;
-    readonly followers?: readonly unknown[];
+    readonly followers?: readonly Follower[];
+    readonly upstream?: Upstream | null;
     readonly peers?: readonly Peer[];
   };
 }
@@ -193,6 +206,25 @@ function figure(
   return box;
 }
 
+/** How far the furthest follower is behind, or `null` when none has collected. */
+function furthest(followers: readonly Follower[]): string | null {
+  let most: number | null = null;
+  for (const one of followers) {
+    if (typeof one.behind === "number" && (most === null || one.behind > most)) {
+      most = one.behind;
+    }
+  }
+  return most === null ? null : `${most} record(s)`;
+}
+
+/** What copies of the leader's state installed, or `null` before the first. */
+function copied(upstream: Upstream | null | undefined): string | null {
+  if (typeof upstream?.copies !== "number" || upstream.copies === 0) {
+    return null;
+  }
+  return `${told(upstream.copied_records)} record(s) in ${upstream.copies} cop${upstream.copies === 1 ? "y" : "ies"}`;
+}
+
 /** Draw the cluster as this node sees it. */
 export function draw(into: HTMLElement, seen: Seen): void {
   const cluster = seen.cluster ?? {};
@@ -210,6 +242,11 @@ export function draw(into: HTMLElement, seen: Seen): void {
       fact("epoch", told(cluster.epoch)),
       fact("campaigns", told(cluster.campaigns)),
       fact("collecting from here", String((cluster.followers ?? []).length)),
+      fact("furthest follower behind", furthest(cluster.followers ?? [])),
+      // Absent on a node that follows nobody: `in sync` there would be a
+      // state it has never been in.
+      fact("sync with its upstream", cluster.upstream?.state ?? null),
+      fact("copied from its upstream", copied(cluster.upstream)),
       wanted === null ? null : fact("declared for it", wanted.join(", ")),
     ],
     "self",

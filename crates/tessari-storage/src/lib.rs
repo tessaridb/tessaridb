@@ -83,7 +83,7 @@ pub use catalog::{
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.
 pub use catalog::VaultRoot;
-pub use collections::{Collection, Collections, Currency};
+pub use collections::{Collection, Collections, Currency, Upstream, UpstreamReport};
 pub use covering::MEASURED_RELATION;
 pub use expiry::Expired;
 pub use lapse::Lapsed;

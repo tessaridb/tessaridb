@@ -346,6 +346,14 @@ mod tests {
         fn gathered(&self, asker: [u8; NODE_ID_LEN], asked: &Gather) -> Result<Page> {
             NoLog.gathered(asker, asked)
         }
+
+        fn copied(
+            &self,
+            follower: [u8; NODE_ID_LEN],
+            write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
+        ) -> Result<()> {
+            NoLog.copied(follower, write)
+        }
     }
 
     impl Holding for Holder {

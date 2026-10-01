@@ -801,7 +801,9 @@ pub enum Error {
     #[error(
         "sequence {asked} is below the start of this log, which begins at \
          {start}; the records that answered there have been pruned, so this \
-         reader cannot catch up and needs a fresh copy of the state"
+         reader cannot catch up and needs a fresh copy of the state: a follower \
+         node copies its leader's state by itself, and a client re-reads what it \
+         follows and follows again from the current tail"
     )]
     BelowLogStart {
         /// The sequence the read asked for.

@@ -215,15 +215,15 @@
     why.hidden = one2.why === void 0;
     const actions = made("div", "row tight");
     const told3 = made("span", "status");
-    const copied = made("button", "quiet");
-    copied.type = "button";
-    copied.textContent = "Copy";
-    copied.addEventListener("click", () => copy(one2.what, what, told3));
+    const copied2 = made("button", "quiet");
+    copied2.type = "button";
+    copied2.textContent = "Copy";
+    copied2.addEventListener("click", () => copy(one2.what, what, told3));
     const opened = made("button", "quiet");
     opened.type = "button";
     opened.textContent = "Open in Run";
     opened.addEventListener("click", () => reopen(one2.what));
-    actions.append(copied, opened, told3);
+    actions.append(copied2, opened, told3);
     row.append(head, what, said3, why, actions);
     return row;
   }
@@ -1687,6 +1687,21 @@
     }
     return box;
   }
+  function furthest(followers) {
+    let most = null;
+    for (const one2 of followers) {
+      if (typeof one2.behind === "number" && (most === null || one2.behind > most)) {
+        most = one2.behind;
+      }
+    }
+    return most === null ? null : `${most} record(s)`;
+  }
+  function copied(upstream) {
+    if (typeof upstream?.copies !== "number" || upstream.copies === 0) {
+      return null;
+    }
+    return `${told2(upstream.copied_records)} record(s) in ${upstream.copies} cop${upstream.copies === 1 ? "y" : "ies"}`;
+  }
   function draw2(into, seen) {
     const cluster = seen.cluster ?? {};
     const mine = seen.roles ?? [];
@@ -1702,6 +1717,11 @@
         fact("epoch", told2(cluster.epoch)),
         fact("campaigns", told2(cluster.campaigns)),
         fact("collecting from here", String((cluster.followers ?? []).length)),
+        fact("furthest follower behind", furthest(cluster.followers ?? [])),
+        // Absent on a node that follows nobody: `in sync` there would be a
+        // state it has never been in.
+        fact("sync with its upstream", cluster.upstream?.state ?? null),
+        fact("copied from its upstream", copied(cluster.upstream)),
         wanted2 === null ? null : fact("declared for it", wanted2.join(", "))
       ],
       "self",

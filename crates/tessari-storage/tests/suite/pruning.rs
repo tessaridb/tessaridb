@@ -112,6 +112,13 @@ fn a_read_below_the_start_is_refused_in_words_that_name_the_repair() {
         "a reader below the start cannot catch up, and the refusal has to say so \
          rather than leave it to be discovered: {said}"
     );
+    // And it names who does what (ADR-0094 D3): a follower node repairs itself,
+    // a client has to re-read.
+    assert!(
+        said.contains("a follower node copies its leader's state by itself")
+            && said.contains("a client re-reads what it follows"),
+        "the refusal must name the repair for both kinds of reader: {said}"
+    );
 }
 
 /// The failure this refusal exists to prevent, stated as its own case.

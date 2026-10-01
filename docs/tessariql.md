@@ -7561,9 +7561,9 @@ reversible:
 
 | what reads the log | what a prune below its position does |
 |---|---|
-| a follower catching up | its next collect is **refused**, naming the horizon; it needs a fresh copy of the state rather than a retry |
+| a follower catching up | its next collect is **refused**, naming the horizon, and the node copies its leader's state and follows again from there by itself — unless it leads a range of its own, when it reports `stranded` and is restored from a snapshot |
 | a backup taken as a replay | begins at the horizon instead of at the beginning |
-| a subscriber holding a position | the same refusal, for the same reason |
+| a subscriber holding a position | the same refusal, for the same reason; a client re-reads what it follows and follows again from the current tail |
 | `INFO FOR HISTORY OF` | answers what survives, and stops reporting itself `complete` |
 
 **The count is the whole bound, deliberately.** A reader inside the window is

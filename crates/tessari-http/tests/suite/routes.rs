@@ -1015,3 +1015,51 @@ fn a_body_that_declares_no_length_is_read_only_to_the_ceiling() {
         413
     );
 }
+
+#[test]
+fn a_scrape_says_where_a_follower_stands_and_how_far_behind_its_followers_are() {
+    let db = Arc::new(Db::in_memory().unwrap());
+    let node = Arc::new(Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap());
+    let address = node.address();
+    let serving = Arc::clone(&node);
+    std::thread::spawn(move || crate::serve_until_the_test_ends(&serving));
+
+    // Absent rather than zero on a node that follows nobody and that nobody
+    // follows: a series that always reads zero teaches whoever watches it to
+    // stop looking.
+    let (_, _, quiet) = send(&address, "GET", "/metrics", "", None);
+    assert!(!quiet.contains("tessari_replica_state"), "{quiet}");
+    assert!(
+        !quiet.contains("tessari_follower_behind_records"),
+        "{quiet}"
+    );
+
+    let (_, _, _) = send(&address, "POST", "/script", "DEFINE NAMESPACE prod;", None);
+    let follower = [7_u8; 16];
+    db.store().follower_served(
+        follower,
+        tessari_types::Reach::Store,
+        tessari_types::Sequence::new(0),
+    );
+    db.store().upstream_is(tessari_storage::Upstream::Copying);
+    db.store().replica_copied(40);
+
+    let (_, _, scrape) = send(&address, "GET", "/metrics", "", None);
+    assert_eq!(
+        counter(&scrape, "tessari_replica_state{state=\"catching up\"}"),
+        1
+    );
+    assert_eq!(
+        counter(&scrape, "tessari_replica_state{state=\"in sync\"}"),
+        0
+    );
+    assert_eq!(counter(&scrape, "tessari_replica_copied_records"), 40);
+    let behind = counter(
+        &scrape,
+        "tessari_follower_behind_records{node=\"07070707-0707-0707-0707-070707070707\"}",
+    );
+    assert!(
+        behind > 0,
+        "the follower was given nothing, so it is behind: {scrape}"
+    );
+}

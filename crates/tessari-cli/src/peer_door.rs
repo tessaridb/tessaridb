@@ -27,6 +27,14 @@ impl tessari_wire::Origin for PeerDoor {
     ) -> tessari_wire::Result<tessari_wire::Page> {
         tessari_wire::Serving::declared(self.db.store()).gathered(asker, asked)
     }
+
+    fn copied(
+        &self,
+        follower: [u8; tessari_storage::NODE_ID_LEN],
+        write: &mut dyn FnMut(u8, Vec<u8>) -> tessari_wire::Result<()>,
+    ) -> tessari_wire::Result<()> {
+        tessari_wire::Serving::declared(self.db.store()).copied(follower, write)
+    }
 }
 
 impl tessari_wire::Holding for PeerDoor {

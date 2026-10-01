@@ -48,6 +48,7 @@ mod maintenance;
 mod peer_door;
 mod peers;
 mod raw;
+mod reseeding;
 /// How a value is written back as TessariQL — the language's own, so a state
 /// script and this command line write one value the same way.
 use tessari_ql::literal as render;

@@ -286,8 +286,9 @@ pub trait Origin {
     /// Stream this node's state, as the follower's subscription is given it,
     /// through `write` — a head, the chunks, an end (ADR-0094 D3).
     ///
-    /// A door with no log has no state to give, which is the refusal a node
-    /// nobody subscribed gets.
+    /// No default: a door that forgot this would refuse every copy as
+    /// unsubscribed and still compile, which is how the node's own door first
+    /// shipped it.
     ///
     /// # Errors
     ///
@@ -297,10 +298,7 @@ pub trait Origin {
         &self,
         follower: [u8; NODE_ID_LEN],
         write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
-    ) -> Result<()> {
-        let _ = (follower, write);
-        Err(Error::Unsubscribed)
-    }
+    ) -> Result<()>;
 }
 
 /// A door with no log behind it.
@@ -338,6 +336,16 @@ impl Origin for NoLog {
 
     fn gathered(&self, _asker: [u8; NODE_ID_LEN], _asked: &Gather) -> Result<Page> {
         Err(Error::NotGathered(Ungathered::NotHeld))
+    }
+
+    // A door with no log has no state to give, which is the refusal a node
+    // nobody subscribed gets.
+    fn copied(
+        &self,
+        _follower: [u8; NODE_ID_LEN],
+        _write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
+    ) -> Result<()> {
+        Err(Error::Unsubscribed)
     }
 }
 
@@ -2070,6 +2078,14 @@ mod tests {
             asked: &crate::gathering::Gather,
         ) -> Result<crate::gathering::Page> {
             Serving::declared(self.db.store()).gathered(asker, asked)
+        }
+
+        fn copied(
+            &self,
+            follower: [u8; NODE_ID_LEN],
+            write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
+        ) -> Result<()> {
+            Serving::declared(self.db.store()).copied(follower, write)
         }
     }
 

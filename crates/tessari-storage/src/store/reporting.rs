@@ -89,6 +89,27 @@ impl Store {
         self.collections.last()
     }
 
+    /// Record where this node now stands against the peer it collects from.
+    ///
+    /// Set by the node's collection round when it starts a copy, when one
+    /// fails, and when it finds itself stranded; a collection that lands sets
+    /// it through [`Self::collected`].
+    pub fn upstream_is(&self, state: crate::collections::Upstream) {
+        self.collections.upstream_is(state);
+    }
+
+    /// Record a copy of the leader's state that installed `records` records.
+    pub fn replica_copied(&self, records: u64) {
+        self.collections.copied(records);
+    }
+
+    /// Where this node stands against its upstream, or `None` on a node that
+    /// has never collected nor copied.
+    #[must_use]
+    pub fn upstream(&self) -> Option<crate::collections::UpstreamReport> {
+        self.collections.upstream()
+    }
+
     /// How far behind every follower this process has served is.
     ///
     /// Measured against this leader's own committed tail, from what it handed

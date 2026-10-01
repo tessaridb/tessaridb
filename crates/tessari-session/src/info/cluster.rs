@@ -97,6 +97,19 @@ impl Session<'_> {
             None => Value::Null,
             Some(held) => described_failover(&held),
         };
+        let upstream = self.store.upstream().map_or(Value::Null, |held| {
+            Value::Object(BTreeMap::from([
+                ("state".to_owned(), Value::from(held.state.name())),
+                (
+                    "copied_records".to_owned(),
+                    Value::from(i64::try_from(held.copied_records).unwrap_or(i64::MAX)),
+                ),
+                (
+                    "copies".to_owned(),
+                    Value::from(i64::try_from(held.copies).unwrap_or(i64::MAX)),
+                ),
+            ]))
+        });
         let followers = self
             .store
             .follower_lag()?
@@ -175,6 +188,11 @@ impl Session<'_> {
                     // what was declared. Joining them would put a lag figure on
                     // a peer that has never asked for anything.
                     ("followers".to_owned(), Value::Array(followers)),
+                    // The follower's own side (ADR-0094 D4): where this node
+                    // stands against the peer it collects from. `null` on a
+                    // node that has never collected nor copied, which is a
+                    // node that follows nobody rather than one in sync.
+                    ("upstream".to_owned(), upstream),
                     // `null` on a node nobody made a leader, which is a
                     // different statement from zero: a store standing alone is
                     // not a leader whose time has run out. When it is a

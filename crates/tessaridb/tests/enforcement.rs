@@ -834,7 +834,18 @@ const TABLES: &[Table] = &[
         // the first not reachable from a session or a route. Their
         // re-classification trigger is unchanged: any caller reachable from a
         // session or a route.
-        expected: 50,
+        //
+        // 51-53 since a follower reports where it stands (G049, ADR-0094 D4):
+        // `Store::upstream_is`, `Store::replica_copied` and `Store::upstream`.
+        // Classified **exempt, on `follower_served`'s ground**: they write and
+        // read a process-local report and nothing else — no record, catalog
+        // entry or grant — and the writers' one caller is the node's own
+        // collection round. The reader reaches a caller only through
+        // `INFO FOR NODE` (`Administer`) and `/metrics`, which already publish
+        // the follower rows beside it. Re-classification trigger: a writer
+        // reachable from a session or a route, which would let a caller report
+        // a node in sync that is not.
+        expected: 53,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -987,7 +998,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // 121 since a follower copies its leader's state (G049, ADR-0094 D3):
     // `Store::read_state_within`, enforced, and `Store::sweep_unreplaced`,
     // exempt — classified above.
-    assert_eq!(total, 121, "the counted tables no longer sum to 121");
+    //
+    // 124 since a follower reports where it stands (G049, ADR-0094 D4): three
+    // on `Store`, exempt, classified above.
+    assert_eq!(total, 124, "the counted tables no longer sum to 124");
 }
 
 /// Every `.rs` file under a directory.

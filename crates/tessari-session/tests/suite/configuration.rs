@@ -1106,3 +1106,30 @@ fn a_node_reports_its_retention_and_who_decided_it() {
     assert_eq!(chosen.get("retain"), Some(&Value::Null));
     assert_eq!(chosen.get("retain_source"), Some(&Value::from("statement")));
 }
+
+#[test]
+fn a_follower_reports_where_it_stands_against_its_upstream() {
+    let store = closed(&backend());
+    let cluster = |report: &std::collections::BTreeMap<String, Value>| match report.get("cluster") {
+        Some(Value::Object(cluster)) => cluster.get("upstream").cloned(),
+        other => panic!("no cluster group: {other:?}"),
+    };
+    // A node that has never collected follows nobody, and says so with `null`
+    // rather than with a state it has not been in.
+    assert_eq!(cluster(&reported(&store)), Some(Value::Null));
+
+    store.upstream_is(tessari_storage::Upstream::Copying);
+    store.replica_copied(40);
+    let Some(Value::Object(upstream)) = cluster(&reported(&store)) else {
+        panic!("no upstream after a copy");
+    };
+    assert_eq!(upstream.get("state"), Some(&Value::from("catching up")));
+    assert_eq!(upstream.get("copied_records"), Some(&Value::from(40_i64)));
+    assert_eq!(upstream.get("copies"), Some(&Value::from(1_i64)));
+
+    store.upstream_is(tessari_storage::Upstream::Stranded);
+    let Some(Value::Object(upstream)) = cluster(&reported(&store)) else {
+        panic!("no upstream once stranded");
+    };
+    assert_eq!(upstream.get("state"), Some(&Value::from("stranded")));
+}
