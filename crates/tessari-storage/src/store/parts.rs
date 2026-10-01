@@ -111,6 +111,11 @@ impl Store {
         &self.retention
     }
 
+    /// The positions held against pruning while followers are copied.
+    pub(crate) fn log_holds(&self) -> &Arc<crate::log_holds::LogHolds> {
+        &self.log_holds
+    }
+
     /// Whether this process can open what the store's vaults hold.
     ///
     /// Sealed after every restart, deliberately: unsealing is the one thing

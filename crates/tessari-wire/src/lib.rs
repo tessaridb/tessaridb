@@ -64,6 +64,7 @@ mod client;
 mod collection;
 #[cfg(feature = "server")]
 mod conversation;
+mod copying;
 #[cfg(feature = "server")]
 mod credential;
 #[cfg(feature = "server")]
@@ -110,6 +111,7 @@ pub use crate::collection::{
     Collect, Collected, Collector, NoLog, Origin, Serving, Subscriptions, logs_to_collect,
 };
 #[cfg(feature = "server")]
+pub use crate::copying::{Copied, copy};
 pub use crate::credential::{fingerprint, names, presented};
 #[cfg(feature = "server")]
 pub use crate::directory::{Destination, Directory, Heard};

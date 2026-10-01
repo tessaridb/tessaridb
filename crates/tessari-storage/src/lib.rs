@@ -46,6 +46,7 @@ mod lapse;
 mod lease;
 mod lines;
 mod log;
+mod log_holds;
 mod node;
 mod ordering;
 mod pruning;
@@ -86,6 +87,7 @@ pub use collections::{Collection, Collections, Currency};
 pub use covering::MEASURED_RELATION;
 pub use expiry::Expired;
 pub use lapse::Lapsed;
+pub use log_holds::LogHold;
 pub use retention::{Retention, RetentionSource};
 pub use topic::{Message, Messages};
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read

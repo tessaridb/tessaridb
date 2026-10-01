@@ -14,6 +14,7 @@ mod catch_up;
 mod from_a_running_node;
 mod gap;
 mod produced_identity;
+mod reseed;
 mod restore;
 mod state;
 mod vault_restore;

@@ -70,6 +70,7 @@ impl Store {
             discarded: Arc::new(AtomicU64::new(0)),
             campaigns: Arc::new(AtomicU64::new(0)),
             retention: crate::retention::ProcessRetention::shared(),
+            log_holds: crate::log_holds::LogHolds::shared(),
             followers: Arc::new(Followers::default()),
             collections: Arc::new(crate::collections::Collections::default()),
             lease: Arc::new(crate::lease::Held::default()),

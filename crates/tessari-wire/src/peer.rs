@@ -86,6 +86,15 @@ pub enum PeerFrame {
     /// The leader declining, with the reason — its own tag for the reason
     /// [`Self::Unsubscribed`] has one.
     NotGathered,
+    /// A follower asking for its leader's state, because the log it would
+    /// collect from has been pruned past it (ADR-0094 D3).
+    State,
+    /// The first frame of a copy: the reach, the version, each log's position.
+    StateHead,
+    /// One chunk of the copied state, in the store's own log-record encoding.
+    StateChunk,
+    /// The last frame of a copy: the counts and the topic heads.
+    StateEnd,
 }
 
 impl PeerFrame {
@@ -117,6 +126,11 @@ impl PeerFrame {
             Self::Gather => 14,
             Self::Gathered => 15,
             Self::NotGathered => 16,
+            // 17 is the client's `Vault`.
+            Self::State => 18,
+            Self::StateHead => 19,
+            Self::StateChunk => 20,
+            Self::StateEnd => 21,
         }
     }
 
@@ -134,6 +148,10 @@ impl PeerFrame {
             14 => Some(Self::Gather),
             15 => Some(Self::Gathered),
             16 => Some(Self::NotGathered),
+            18 => Some(Self::State),
+            19 => Some(Self::StateHead),
+            20 => Some(Self::StateChunk),
+            21 => Some(Self::StateEnd),
             _ => None,
         }
     }
@@ -608,6 +626,10 @@ mod tests {
             PeerFrame::Gather,
             PeerFrame::Gathered,
             PeerFrame::NotGathered,
+            PeerFrame::State,
+            PeerFrame::StateHead,
+            PeerFrame::StateChunk,
+            PeerFrame::StateEnd,
         ] {
             assert!(
                 frame::Kind::from_tag(kind.tag()).is_none(),
@@ -631,6 +653,10 @@ mod tests {
             (PeerFrame::Gather, 14),
             (PeerFrame::Gathered, 15),
             (PeerFrame::NotGathered, 16),
+            (PeerFrame::State, 18),
+            (PeerFrame::StateHead, 19),
+            (PeerFrame::StateChunk, 20),
+            (PeerFrame::StateEnd, 21),
         ];
         for (kind, tag) in expected {
             assert_eq!(kind.tag(), tag, "{kind:?}");

@@ -197,6 +197,15 @@ impl Peers {
         };
         let voted = match asked {
             None => None,
+            // A copy is the one follow-up answered by more than one frame
+            // (ADR-0094 D3), so it is written here rather than by `answering`.
+            Some((tag, _)) if tag == PeerFrame::State.tag() => {
+                log.copied(said.node, &mut |tag, body| {
+                    frame::write_tagged(&mut link, tag, &body)
+                })
+                .or_else(|why| refusal_frame(&mut link, why))?;
+                None
+            }
             Some((tag, body)) => {
                 let (tag, reply, voted) = answering(tag, &body, &said, &mine, voter, log)?;
                 frame::write_tagged(&mut link, tag, &reply)?;
@@ -204,6 +213,15 @@ impl Peers {
             }
         };
         Ok(Met { said, voted })
+    }
+}
+
+/// A copy's refusal, written as the frame it crosses the wire as: the
+/// subscription's, for a node nobody subscribed, or the failure itself.
+pub(crate) fn refusal_frame(link: &mut impl std::io::Write, why: Error) -> Result<()> {
+    match why {
+        Error::Unsubscribed => frame::write_tagged(link, PeerFrame::Unsubscribed.tag(), &[]),
+        other => Err(other),
     }
 }
 
@@ -395,6 +413,26 @@ pub fn call(
     said: &Hello,
     asking: Ask<'_>,
 ) -> Result<(Hello, Answered)> {
+    let (mut session, mut socket) = open(address, mine, authority, at)?;
+    let exchanged = exchange(&mut session, &mut socket, said, asking);
+
+    // Say goodbye properly even when the exchange failed. A TLS peer that just
+    // drops the socket makes the other end's next read an error rather than an
+    // end, so a caller that skipped this would leave every door it spoke to
+    // reporting a fault it did not have.
+    session.send_close_notify();
+    drop(session.write_tls(&mut socket));
+    exchanged
+}
+
+/// Reach the peer `at` on `address` and open the TLS session a conversation
+/// rides, with every read and write bounded by the greeting's deadline.
+pub(crate) fn open(
+    address: impl ToSocketAddrs,
+    mine: Credential,
+    authority: &CertificateDer<'_>,
+    at: [u8; NODE_ID_LEN],
+) -> Result<(ClientConnection, TcpStream)> {
     let mut roots = RootCertStore::empty();
     roots
         .add(authority.clone().into_owned())
@@ -405,22 +443,14 @@ pub fn call(
         .map_err(|why| Error::Transport(why.to_string()))?;
     let expected = credential::names(at, Purpose::Peer);
     let name = ServerName::try_from(expected).map_err(|why| Error::Transport(why.to_string()))?;
-    let mut session = ClientConnection::new(Arc::new(settings), name)
+    let session = ClientConnection::new(Arc::new(settings), name)
         .map_err(|why| Error::Transport(why.to_string()))?;
 
-    let mut socket = connect(address, Duration::from_secs(GREETING_SECONDS))?;
+    let socket = connect(address, Duration::from_secs(GREETING_SECONDS))?;
     let bound = Some(Duration::from_secs(GREETING_SECONDS));
     socket.set_read_timeout(bound)?;
     socket.set_write_timeout(bound)?;
-    let exchanged = exchange(&mut session, &mut socket, said, asking);
-
-    // Say goodbye properly even when the exchange failed. A TLS peer that just
-    // drops the socket makes the other end's next read an error rather than an
-    // end, so a caller that skipped this would leave every door it spoke to
-    // reporting a fault it did not have.
-    session.send_close_notify();
-    drop(session.write_tls(&mut socket));
-    exchanged
+    Ok((session, socket))
 }
 
 /// Open the connection a call rides, giving up after `bound` per address.
@@ -513,12 +543,12 @@ fn answer(link: &mut rustls::Stream<'_, ClientConnection, TcpStream>) -> Result<
 }
 
 /// Put one greeting on the link.
-fn say(link: &mut impl std::io::Write, hello: &Hello) -> Result<()> {
+pub(crate) fn say(link: &mut impl std::io::Write, hello: &Hello) -> Result<()> {
     frame::write_tagged(link, PeerFrame::Hello.tag(), &hello.encode())
 }
 
 /// Take one greeting off the link, and refuse anything else.
-fn hear(link: &mut impl std::io::Read) -> Result<Hello> {
+pub(crate) fn hear(link: &mut impl std::io::Read) -> Result<Hello> {
     let Some((tag, body)) = frame::read_tagged(link)? else {
         return Err(Error::Truncated);
     };

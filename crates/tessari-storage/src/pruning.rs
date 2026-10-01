@@ -196,7 +196,12 @@ impl Store {
             // Everything at or below this is older than the window. A tail that
             // has not yet reached the window subtracts to zero, and `prune_log`
             // treats zero as *nothing to do*.
-            let upto = Sequence::new(tail.get().saturating_sub(keep.get()));
+            let mut upto = Sequence::new(tail.get().saturating_sub(keep.get()));
+            // A follower being copied collects from just past a held position,
+            // and reads the record AT it for the leadership that precedes.
+            if let Some(held) = self.log_holds().floor(log) {
+                upto = upto.min(Sequence::new(held.get().saturating_sub(1)));
+            }
             let pruned = self.prune_log(log, upto)?;
             trimmed.records = trimmed.records.saturating_add(pruned.records);
         }

@@ -436,6 +436,14 @@ pub const AWARENESS_SECONDS: u64 = 10;
 /// meet even when everything is working.
 pub const COLLECTION_SECONDS: u64 = AWARENESS_SECONDS;
 
+/// How long a leader keeps the positions it copied a follower to, after the copy
+/// ended, against its own retention window (ADR-0094 D3).
+///
+/// Unit: seconds. Twelve collection intervals: the follower's first collect after
+/// a copy is due within one, and a follower that has not asked by then is not
+/// coming soon enough to be worth a disk that keeps growing for it.
+pub const REPLICA_COPY_GRACE_SECONDS: u64 = COLLECTION_SECONDS * 12;
+
 /// The most records one collection carries.
 ///
 /// Unit: records.

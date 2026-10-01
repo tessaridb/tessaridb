@@ -404,3 +404,38 @@ fn a_window_wider_than_the_log_removes_nothing() {
         "and a read from the beginning is still answered"
     );
 }
+
+/// A follower being copied collects from just past the position it was handed,
+/// so that position is held against the window until the copy ends (ADR-0094
+/// D3) — and released at once if the copy failed, so nobody pins the disk.
+#[test]
+fn a_held_position_is_not_pruned_past_until_its_hold_is_released() {
+    let (store, _, log) = logged(10);
+    store.set_log_retention(Some(Sequence::new(2))).unwrap();
+    let hold = store.hold_logs(&[(log, Sequence::new(5))]);
+    store.trim_logs().unwrap();
+    assert_eq!(
+        store.log_start(log).unwrap(),
+        Sequence::new(5),
+        "the held position and everything after it survive the window"
+    );
+    drop(hold);
+    store.trim_logs().unwrap();
+    assert_eq!(
+        store.log_start(log).unwrap(),
+        Sequence::new(9),
+        "a released hold leaves the window to decide"
+    );
+
+    let (store, _, log) = logged(10);
+    store.set_log_retention(Some(Sequence::new(2))).unwrap();
+    store
+        .hold_logs(&[(log, Sequence::new(5))])
+        .keep_for(std::time::Duration::from_secs(3600));
+    store.trim_logs().unwrap();
+    assert_eq!(
+        store.log_start(log).unwrap(),
+        Sequence::new(5),
+        "a finished copy keeps its hold for the follower's first collect"
+    );
+}
