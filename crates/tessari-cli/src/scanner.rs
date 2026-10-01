@@ -91,6 +91,14 @@ pub(crate) struct Scanner {
     substantial: bool,
     open_transaction: bool,
     closed: bool,
+    /// Something besides whitespace and comments has been read since the last
+    /// `;` that closed a statement.
+    ///
+    /// What makes `closed` true is a `;`, but what makes the text safe to submit
+    /// is that nothing was begun after it: `A; SELECT x` closed `A` and opened a
+    /// read whose `FROM` is on the next line, and submitting there sent half a
+    /// statement (Q-872).
+    tail: bool,
     /// A `-` that has been read while the character after it has not.
     ///
     /// Only a doubled dash opens a comment, so a `-` at the very end of a piece
@@ -119,7 +127,7 @@ impl Scanner {
             boundary(&self.word, &mut open_transaction);
         }
         Scan {
-            closed: self.closed,
+            closed: self.closed && !self.tail && !self.held_dash,
             substantial: self.substantial || self.held_dash,
             open_transaction,
         }
@@ -134,10 +142,12 @@ impl Scanner {
     /// line went over as one script ending with a transaction open, and the
     /// store discarded the read nobody was told about (Q-370).
     ///
-    /// So `closed` means *a statement ended somewhere in what has been fed*, and
-    /// it is sticky; `open_transaction` describes the end of everything fed. A
-    /// caller submits when a statement has closed **and** no transaction is
-    /// still open, which is the pair of facts it actually needs.
+    /// So `closed` means *a statement ended in what has been fed and nothing was
+    /// begun after it*, and `open_transaction` describes the end of everything
+    /// fed. A caller submits when a statement has closed **and** no transaction
+    /// is still open, which is the pair of facts it actually needs. A `closed`
+    /// that stayed true once any `;` had been read was the same prefix answer
+    /// one step later: `A; SELECT x` went over before its `FROM` (Q-872).
     pub(crate) fn feed(&mut self, text: &str) {
         if !self.started {
             self.started = true;
@@ -149,6 +159,7 @@ impl Scanner {
         let mut substantial = self.substantial;
         let mut open_transaction = self.open_transaction;
         let mut closed = self.closed;
+        let mut tail = self.tail;
         let mut at_statement_start = self.at_statement_start;
         let mut word = core::mem::take(&mut self.word);
         let mut characters = text.chars().peekable();
@@ -161,6 +172,7 @@ impl Scanner {
                 commented = true;
             } else {
                 substantial = true;
+                tail = true;
             }
         }
         while let Some(character) = characters.next() {
@@ -187,6 +199,7 @@ impl Scanner {
                 (Some(_), _) => {}
                 (None, '\'' | '"') => {
                     substantial = true;
+                    tail = true;
                     at_statement_start = false;
                     quote = Some(character);
                 }
@@ -209,13 +222,20 @@ impl Scanner {
                     // to commit by itself.
                     if !open_transaction {
                         closed = true;
+                        tail = false;
                     }
                 }
                 (None, held) if held.is_alphanumeric() || held == '_' => {
                     substantial = true;
+                    tail = true;
                     word.push(held);
                 }
-                (None, held) => substantial = substantial || !held.is_whitespace(),
+                (None, held) => {
+                    if !held.is_whitespace() {
+                        substantial = true;
+                        tail = true;
+                    }
+                }
             }
         }
         self.quote = quote;
@@ -224,6 +244,7 @@ impl Scanner {
         self.substantial = substantial;
         self.open_transaction = open_transaction;
         self.closed = closed;
+        self.tail = tail;
         self.at_statement_start = at_statement_start;
         // The word is NOT terminated here — it may continue into the next piece.
         // Its effect on a transaction boundary is applied provisionally by

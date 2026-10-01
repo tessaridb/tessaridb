@@ -375,7 +375,13 @@ impl Parser<'_> {
     }
 
     fn error_here(&self, expected: &'static str) -> Error {
-        let Some(spanned) = self.tokens.get(self.position) else {
+        self.error_at(self.position, expected)
+    }
+
+    /// The refusal for the token at `position`, which a rule that has already
+    /// read past a word uses to point back at it.
+    fn error_at(&self, position: usize, expected: &'static str) -> Error {
+        let Some(spanned) = self.tokens.get(position) else {
             return Error::UnexpectedEnd {
                 expected,
                 span: self.end_of_source(),

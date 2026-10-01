@@ -1696,7 +1696,8 @@ pub enum Error {
 
     /// An `ORDER BY` on an ungrouped `FROM SEARCH`, whose order is its ranking.
     #[error(
-        "a search answers in the order it ranks its records; write the ordering          over a grouped read, or rank by `search::score()` (at {span})"
+        "a search answers in the order it ranks its records; write the ordering \
+         over a grouped read, or rank by `search::score()` (at {span})"
     )]
     SearchIsItsOwnOrder {
         /// The ordering.
@@ -1706,7 +1707,8 @@ pub enum Error {
     /// `search::score()`, `search::table_name()` or `search::snippet()` outside a
     /// `FROM SEARCH`, where there is no ranked record to answer about.
     #[error(
-        "this function answers about a record a `FROM SEARCH` ranked, and this          read is not one (at {span})"
+        "this function answers about a record a `FROM SEARCH` ranked, and this \
+         read is not one (at {span})"
     )]
     NotSearched {
         /// The call.

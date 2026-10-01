@@ -644,6 +644,34 @@ DEFINE COLLECTION sessions IDENTITY uuid;
     }
 
     #[test]
+    fn a_statement_begun_after_a_semicolon_may_continue_on_the_next_line() {
+        // A line that closes one statement and opens another is not a closed
+        // line: submitted there, the second statement went over half-written and
+        // was refused as a script that ran out (Q-872). Every documentation page
+        // that shows a read wrapped over two lines beside a write hit it.
+        assert!(!closed(
+            "CREATE notes:1 = { body: 'a' }; SELECT body AS r\n"
+        ));
+        assert!(closed(
+            "CREATE notes:1 = { body: 'a' }; SELECT body AS r\nFROM notes;"
+        ));
+        // Only what follows the last `;` is judged: a note or blank space there
+        // leaves nothing unfinished.
+        assert!(closed("SELECT 1; -- a note\n"));
+        assert!(closed("SELECT 1;   \n"));
+
+        let (out, ended) = ran(
+            &format!(
+                "{READY}CREATE users:1 = {{ name: 'ada' }}; SELECT name AS r\n\
+                 FROM users;\n"
+            ),
+            Mode::Script,
+        );
+        assert_eq!(ended, Ended::Fine, "{out}");
+        assert!(out.contains("r: 'ada'"), "the read did not run\n{out}");
+    }
+
+    #[test]
     fn a_transaction_read_from_a_file_is_one_transaction() {
         // The defect this pins was silent and total: split at every `;`, a
         // `BEGIN;` arrived as a script of its own, was discarded for ending

@@ -256,7 +256,27 @@ fn a_stemmers_language_is_declared_and_an_unknown_one_is_refused() {
     assert_eq!(found(&mut session, "важный"), 1);
     match session.run("DEFINE ANALYZER other FILTERS lowercase, stemmer(klingon);") {
         Err(tessari_session::Error::Script(why)) => {
-            assert!(why.to_string().contains("filter"), "{why}");
+            // The refusal points at the language and says which ones exist —
+            // it used to point at the `;` after the call and ask for a filter
+            // name, which named neither the word nor the choice (Q-873).
+            let why = why.to_string();
+            assert!(why.contains("the name `klingon`"), "{why}");
+            assert!(
+                why.contains("a stemmer language: english, russian, german, french or spanish"),
+                "{why}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    // A word that is no filter at all is pointed at, not the token after it.
+    match session.run("DEFINE ANALYZER third FILTERS lowercase, uppercase;") {
+        Err(tessari_session::Error::Script(why)) => {
+            let why = why.to_string();
+            assert!(why.contains("the name `uppercase`"), "{why}");
+            assert!(
+                why.contains("a filter: lowercase, ascii or stemmer"),
+                "{why}"
+            );
         }
         other => panic!("{other:?}"),
     }

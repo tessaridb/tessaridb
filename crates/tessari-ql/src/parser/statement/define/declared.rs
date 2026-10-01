@@ -6,6 +6,15 @@ use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
 use tessari_types::Filter;
 
+/// What a refusal of a filter name offers instead. Spelled out because a
+/// refusal's expectation is static text; the test below holds it to
+/// [`Filter::ALL`], so a filter added there cannot be missing here.
+const FILTER_NAMES: &str = "a filter: lowercase, ascii or stemmer";
+
+/// What a refusal of a stemmer's language offers instead, held to
+/// [`Filter::ALL`] by the same test.
+const STEMMER_LANGUAGES: &str = "a stemmer language: english, russian, german, french or spanish";
+
 impl Parser<'_> {
     /// `DEFINE VECTOR embeddings DIMENSION 768 DISTANCE cosine`
     ///
@@ -329,23 +338,56 @@ impl Parser<'_> {
     }
 
     /// One named filter.
+    ///
+    /// A word that names no filter is refused AT that word, saying which
+    /// filters and languages exist. It used to be refused at the token after
+    /// the call, asking for "a filter name" — so `stemmer(dutch)` was reported
+    /// as a fault in the `;` and never named the language (Q-873).
     pub(crate) fn filter(&mut self) -> Result<Filter> {
         let Some(Token::Ident(word)) = self.peek() else {
-            return Err(self.error_here("a filter name"));
+            return Err(self.error_here(FILTER_NAMES));
         };
+        let named_at = self.position;
         let mut word = word.clone();
         self.advance();
+        let mut language_at = None;
         // `stemmer(russian)`: a filter's one argument, its language.
         if self.eat_punct(Punct::ParenOpen) {
             let Some(Token::Ident(argument)) = self.peek() else {
                 return Err(self.error_here("a language"));
             };
+            language_at = Some(self.position);
             word = format!("{word}({argument})");
             self.advance();
             if !self.eat_punct(Punct::ParenClose) {
                 return Err(self.error_here("`)`"));
             }
         }
-        Filter::parse(&word).ok_or_else(|| self.error_here("a filter name"))
+        Filter::parse(&word).ok_or_else(|| match language_at {
+            Some(at) if word.to_ascii_lowercase().starts_with("stemmer(") => {
+                self.error_at(at, STEMMER_LANGUAGES)
+            }
+            _ => self.error_at(named_at, FILTER_NAMES),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FILTER_NAMES, STEMMER_LANGUAGES};
+    use tessari_types::Filter;
+
+    #[test]
+    fn the_refusals_offer_every_filter_and_every_language() {
+        for filter in Filter::ALL {
+            let name = filter.name();
+            let (offered, word) = match name.split_once('(') {
+                Some((_, language)) => (STEMMER_LANGUAGES, language.trim_end_matches(')')),
+                None => (FILTER_NAMES, name),
+            };
+            assert!(offered.contains(word), "{word} is missing from {offered:?}");
+        }
+        // English is spelled as the bare `stemmer`, so its language is held here.
+        assert!(STEMMER_LANGUAGES.contains("english"));
     }
 }

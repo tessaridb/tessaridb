@@ -687,3 +687,85 @@ fn no_security_path_computes_a_broken_digest() {
         "a broken digest reached a path where a collision is a vulnerability: {found:#?}"
     );
 }
+
+/// Every `.rs` file under a directory.
+fn rust_sources(directory: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = fs::read_dir(directory) else {
+        panic!("{} is not readable", directory.display());
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            found.extend(rust_sources(&path));
+        } else if path.extension().is_some_and(|kind| kind == "rs") {
+            found.push(path);
+        }
+    }
+    found
+}
+
+/// The text an `#[error("…")]` literal renders, read from where it begins.
+///
+/// Only what decides the rendered spacing is interpreted: a `\` before a line
+/// break drops the break and the indentation after it, as the compiler does,
+/// and any other escape is kept as written.
+fn rendered_literal(source: &str) -> String {
+    let mut text = String::new();
+    let mut characters = source.chars().peekable();
+    while let Some(character) = characters.next() {
+        match character {
+            '"' => break,
+            '\\' if characters.peek() == Some(&'\n') => {
+                while characters.peek().is_some_and(|next| next.is_whitespace()) {
+                    let _ = characters.next();
+                }
+            }
+            '\\' => {
+                text.push(character);
+                if let Some(escaped) = characters.next() {
+                    text.push(escaped);
+                }
+            }
+            other => text.push(other),
+        }
+    }
+    text
+}
+
+#[test]
+fn no_refusal_message_carries_a_run_of_spaces_or_a_line_break() {
+    // A message wrapped across lines without a `\` continuation keeps the
+    // indentation of its second line, and every client shows it mid-sentence
+    // (Q-874: two search refusals carried ten spaces each). Nothing else fails
+    // on it, because the message still names the refusal and still parses.
+    let mut found = Vec::new();
+    let mut seen = 0_usize;
+    // Production sources only: a refusal is declared there, and a test file
+    // that mentions the attribute (this one does) is not a refusal.
+    let crates = fs::read_dir(repo().join("crates")).expect("the crates directory");
+    let production = crates
+        .flatten()
+        .map(|entry| entry.path().join("src"))
+        .filter(|source| source.is_dir())
+        .flat_map(|source| rust_sources(&source));
+    for path in production {
+        let text = fs::read_to_string(&path).expect("a source file");
+        for (offset, _) in text.match_indices("#[error(") {
+            // Only an attribute whose argument is a literal.
+            let argument = text[offset + "#[error(".len()..].trim_start();
+            let Some(literal) = argument.strip_prefix('"') else {
+                continue;
+            };
+            seen += 1;
+            let message = rendered_literal(literal);
+            if message.contains("  ") || message.contains('\n') {
+                let line = text[..offset].matches('\n').count() + 1;
+                found.push(format!("{}:{line}: {message}", path.display()));
+            }
+        }
+    }
+    // The walk found the messages it is about; an empty walk passes vacuously.
+    assert!(seen > 200, "only {seen} error messages were found");
+    assert!(found.is_empty(), "{found:#?}");
+}
