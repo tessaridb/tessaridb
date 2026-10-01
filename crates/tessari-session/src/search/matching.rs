@@ -9,7 +9,7 @@ use tessari_types::{Analyzer, Value, within_edits};
 
 use tessari_constants::{SEARCH_FUZZY_MAX_EDITS, SEARCH_FUZZY_PREFIX};
 
-use super::query::{Asked, asked};
+use super::query::{Asked, Word, asked};
 
 /// The ordinals of the tokens that answer `asked`, in order, within `slop`
 /// extra tokens — or `None` when no run of them does.
@@ -36,11 +36,11 @@ use super::query::{Asked, asked};
 /// answered twice. The walk already knows which ordinals it stepped through, so
 /// the alternative is a second walk computing the same thing — and one question
 /// computed in two places is precisely what this module exists to prevent.
-pub(super) fn run_of(held: &[String], asked: &[String], slop: usize) -> Option<Vec<usize>> {
+pub(super) fn run_of(held: &[String], asked: &[Word], slop: usize) -> Option<Vec<usize>> {
     let first = asked.first()?;
     let limit = asked.len().saturating_sub(1).saturating_add(slop);
     held.iter().enumerate().find_map(|(start, token)| {
-        if token != first {
+        if !first.answers(token) {
             return None;
         }
         let mut at = start;
@@ -49,7 +49,7 @@ pub(super) fn run_of(held: &[String], asked: &[String], slop: usize) -> Option<V
             let found = held
                 .iter()
                 .skip(at.saturating_add(1))
-                .position(|held| held == term)?;
+                .position(|held| term.answers(held))?;
             at = at.saturating_add(1).saturating_add(found);
             walked.push(at);
         }
@@ -58,7 +58,7 @@ pub(super) fn run_of(held: &[String], asked: &[String], slop: usize) -> Option<V
 }
 
 /// Whether `asked` appears in `held` in order, within `slop` extra tokens.
-fn holds_run(held: &[String], asked: &[String], slop: usize) -> bool {
+fn holds_run(held: &[String], asked: &[Word], slop: usize) -> bool {
     run_of(held, asked, slop).is_some()
 }
 
@@ -121,13 +121,12 @@ pub(crate) fn matches_terms(analyzer: Option<&Analyzer>, held: &Value, wanted: &
     };
     let terms = analyzer.terms(text);
     match asked(analyzer, query) {
-        Asked::Phrase { terms: run, slop } => holds_run(&terms, &run, slop),
+        Asked::Phrase { words, slop } => holds_run(&terms, &words, slop),
         Asked::Boolean { required, excluded } => {
+            let held = |word: &Word| terms.iter().any(|term| word.answers(term));
             !required.is_empty()
-                && required
-                    .iter()
-                    .all(|group| group.iter().any(|term| terms.contains(term)))
-                && !excluded.iter().any(|term| terms.contains(term))
+                && required.iter().all(|group| group.iter().any(held))
+                && !excluded.iter().any(held)
         }
     }
 }

@@ -2651,6 +2651,17 @@ record reading `lovelace ada` answers the first and not the second, which is the
 whole of the difference — the two hold the same words with the same frequencies,
 so nothing but order separates them.
 
+A trailing `*` makes the phrase's **last word a prefix** — the phrase a reader
+is still typing:
+
+```
+SELECT * FROM notes WHERE body MATCHES '"ada lov"*';     -- ada, then lovelace
+```
+
+`ada` must be followed by a word beginning with `lov`, in that order, adjacent.
+The last word carries the three-character minimum of a prefix, and a highlight
+marks the run, `ada` and `lovelace`. A starred phrase takes no slop marker.
+
 A trailing `~n` declares **slop**: how many extra words the run may absorb while
 staying in order.
 
@@ -2794,9 +2805,9 @@ words: a conjunction across what was typed, a disjunction within each word. So
 `'vecto'` reaches `vector`, `vectors` and `vectorised`, and `'vecto sea'` reaches
 only the documents that hold something from each.
 
-A separate operator rather than a wildcard inside the string. `'vecto*'` would
-make every query a parse of the caller's own data, and a reader searching for a
-literal asterisk would have to know that before they could ask for one.
+The same question can be asked of **one word** of an ordinary `MATCHES` query by
+ending it with `*` — see [A starred word](#a-starred-word--the-word-being-typed-ranked)
+below. `MATCHES PREFIX` is the form where every word is a prefix.
 
 **A prefix is folded but not stemmed — and the query is tried both ways.** The
 beginning of a word cannot be stemmed: `runni` stems to `runni`, which is the
@@ -2839,6 +2850,59 @@ thousand and one hundred thousand distinct terms, the same query reads three
 entries in one scan. Without an index the scan analyses each record and compares,
 and the two are asserted to agree record for record.
 
+#### A starred word — the word being typed, ranked
+
+```
+SELECT id, search::score(body, 'vector sea*') AS relevance
+  FROM notes
+ WHERE body MATCHES 'vector sea*'
+ ORDER BY search::score(body, 'vector sea*') DESC
+ LIMIT 10;
+```
+
+A word of a `MATCHES` query ending in `*` means **a term beginning with it**;
+every other word keeps its meaning. `'vector sea*'` is the word `vector` and a
+word beginning with `sea` — what a reader part-way through their second word is
+asking. `OR` and `NOT` work around it as around any word (`'vecto* OR lock*'`,
+`'vecto* NOT search'`), and a quoted phrase may end in one: see
+[A quoted phrase](#a-quoted-phrase--the-words-in-that-order).
+
+The starred word is read exactly as `MATCHES PREFIX` reads a word — folded, tried
+as typed and as stemmed — and carries the same **three-character minimum**, a
+`PrefixTooShort` refusal raised before any access path is chosen. With a `SEARCH`
+index it is expanded from the term dictionary; past sixty-four terms the scan
+answers instead. Both paths answer the same records.
+
+The asterisk was not something a query could ask for before: the tokenizer keeps
+letters and digits only, so `sea*` used to mean the word `sea`. A query string
+holding a starred word therefore answers **more** than it did before `0.20.0`.
+
+**It is scored, which `MATCHES PREFIX` is not.** `search::score` reads the same
+string, and weighs the starred word as **one** term over the words it begins:
+
+- the words it blends are the sixty-four the most records hold — ranked by that
+  count, never by spelling, so the common word being typed is kept and a run of
+  rare ones that happen to sort first is not;
+- they share **one** rarity, the largest document frequency among them, and a
+  record's count is the sum of its occurrences of all of them.
+
+So the record using the word more, in a shorter text, ranks higher, and a rare
+misspelling under the prefix cannot outrank the common word on rarity alone —
+which is what weighing each word by its own frequency would do. Over the
+documentation site's own pages, ranking the word being typed this way moved the
+type-ahead queries of the judgment set from NDCG@10 0.219, when they came back
+unranked, to 0.802 (`benchmarks/2026-10-01-macos-aarch64-relevance.md` records the
+second run).
+
+Two limits. A `LIMIT` over a score holding a starred word is answered by scoring
+every candidate rather than by the pruned walk a whole-word score takes, because
+the blended term has no stored bound to prune by; the answer is the same. And on
+a node holding **part** of a split table the score is refused with
+`NotHeldHere`: which words the prefix blends is a question about the whole
+collection's dictionary, and that node holds part of it. Matching on a starred
+word is not refused there — whether one record holds a word beginning with `sea`
+is a question about that record alone.
+
 #### `MATCHES FUZZY` — the word a reader meant rather than the one they typed
 
 ```
@@ -2855,9 +2919,13 @@ as a fuzzy one behind your back. A reader who asked for `vector` and was shown
 `vectors`, `vectr` and `victor` cannot tell which of the three the store decided
 they meant, and a store that guesses is worse than one that answers nothing.
 
-**Two edits, counted as insertions, deletions and substitutions.** A
-transposition therefore costs **two**, not one: `vectro` is two edits from
-`vector` and is reached. Three edits is not offered —
+**Two edits, counted as insertions, deletions, substitutions and
+transpositions.** Swapping two adjacent letters is **one** edit — `vetcor` is one
+edit from `vector` — because it is the commonest slip of a typing hand and it is
+one mistake. Until `0.20.0` it cost two, so `MATCHES FUZZY` now reaches a few
+more words than it did. A swapped pair is not edited again (optimal string
+alignment), which differs from the unrestricted count only on strings nobody
+types. Three edits is not offered —
 past two the neighbourhood of a word is larger than most vocabularies, so every
 query would match something and the operator would have stopped discriminating
 rather than started being generous. `cat` and `dog` are three edits apart.

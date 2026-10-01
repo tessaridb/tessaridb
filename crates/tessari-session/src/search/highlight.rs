@@ -68,8 +68,8 @@ fn mark(analyzer: &Analyzer, op: BinaryOp, query: &str, terms: &[String], reache
             // A phrase marks its **run**. A record holding `lovelace ada … ada
             // lovelace` answers `"ada lovelace"` once, and marking all four
             // tokens would claim it answered twice.
-            Asked::Phrase { terms: run, slop } => {
-                for at in run_of(terms, &run, slop).unwrap_or_default() {
+            Asked::Phrase { words, slop } => {
+                for at in run_of(terms, &words, slop).unwrap_or_default() {
                     if let Some(hit) = reached.get_mut(at) {
                         *hit = true;
                     }
@@ -81,7 +81,9 @@ fn mark(analyzer: &Analyzer, op: BinaryOp, query: &str, terms: &[String], reache
             // it was returned.
             Asked::Boolean { required, .. } => {
                 for (hit, term) in reached.iter_mut().zip(terms) {
-                    *hit |= required.iter().any(|group| group.contains(term));
+                    *hit |= required
+                        .iter()
+                        .any(|group| group.iter().any(|word| word.answers(term)));
                 }
             }
         },

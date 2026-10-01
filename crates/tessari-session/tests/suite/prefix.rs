@@ -280,3 +280,193 @@ fn the_index_serves_a_prefix_and_the_scan_serves_it_when_there_is_none() {
     assert_eq!(path, AccessPath::Scan, "a table with no index used one");
     assert_eq!(found.len(), 3);
 }
+
+/// A trailing `*` makes one word of a `MATCHES` query a prefix (ADR-0104), and
+/// the rest of the query keeps its meaning: whole words, `OR`, `NOT`. Every
+/// form is asked of both fixtures, and then pinned to what it should be.
+#[test]
+fn a_starred_word_in_matches_is_a_prefix_on_both_paths() {
+    assert_eq!(
+        both("SELECT id FROM notes WHERE body MATCHES 'vecto*';"),
+        vec!["1".to_owned(), "2".to_owned(), "4".to_owned()]
+    );
+    // A whole word beside it is still a whole word.
+    assert_eq!(
+        both("SELECT id FROM notes WHERE body MATCHES 'search vecto*';"),
+        vec!["1".to_owned()]
+    );
+    assert_eq!(
+        both("SELECT id FROM notes WHERE body MATCHES 'vecto* OR lock*';"),
+        vec![
+            "1".to_owned(),
+            "2".to_owned(),
+            "3".to_owned(),
+            "4".to_owned()
+        ]
+    );
+    assert_eq!(
+        both("SELECT id FROM notes WHERE body MATCHES 'vecto* NOT search';"),
+        vec!["2".to_owned(), "4".to_owned()]
+    );
+    // The control: the same letters without the star are a word nobody wrote.
+    assert!(both("SELECT id FROM notes WHERE body MATCHES 'vecto';").is_empty());
+}
+
+#[test]
+fn a_starred_word_is_served_by_the_index() {
+    let indexed = peopled(true);
+    let mut session = Session::new(&indexed);
+    session
+        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    let (_, path) = answered(
+        &mut session,
+        "SELECT id FROM notes WHERE body MATCHES 'search vecto*';",
+    );
+    assert_ne!(
+        path,
+        AccessPath::Scan,
+        "a starred word fell back to the scan"
+    );
+}
+
+#[test]
+fn a_starred_word_shorter_than_three_letters_is_refused_on_both_paths() {
+    for indexed in [false, true] {
+        let held = peopled(indexed);
+        let mut session = Session::new(&held);
+        session
+            .run("USE NAMESPACE prod; USE DATABASE shop;")
+            .unwrap();
+        let refused = session.run("SELECT id FROM notes WHERE body MATCHES 'search ve*';");
+        assert!(
+            matches!(refused, Err(Error::PrefixTooShort { ref prefix, .. }) if prefix == "ve"),
+            "indexed {indexed}: {refused:?}"
+        );
+    }
+}
+
+/// Words that share a beginning, one of them rarer: `vectorz` is held by two
+/// records, `vector` by three. Every record is three tokens long. `notes:6`
+/// holds only `vectorz`, three times, so it leads — and a walk that pruned by
+/// whole-term bounds would abandon `vectorz`'s postings and lose it.
+fn blended() -> Store {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
+             DEFINE COLLECTION notes;\n\
+             DEFINE FIELD body ON notes TYPE string ANALYZER english;\n\
+             DEFINE INDEX by_body ON notes FIELDS body SEARCH;\n\
+             CREATE notes:1 = { body: 'vector vector alpha' };\n\
+             CREATE notes:2 = { body: 'vector beta gamma' };\n\
+             CREATE notes:3 = { body: 'vector delta zeta' };\n\
+             CREATE notes:4 = { body: 'vectorz eta theta' };\n\
+             CREATE notes:5 = { body: 'nothing here either' };\n\
+             CREATE notes:6 = { body: 'vectorz vectorz vectorz' };",
+        )
+        .unwrap();
+    store
+}
+
+fn ranked(session: &mut Session<'_>, read: &str) -> Vec<(String, f64)> {
+    let outcomes = session.run(read).unwrap();
+    let Some(Outcome::Records { records, .. }) = outcomes.last() else {
+        panic!("a read answered with {:?}", outcomes.last());
+    };
+    records
+        .iter()
+        .map(|(id, value)| {
+            let tessari_types::Value::Object(fields) = value else {
+                panic!("{value:?}");
+            };
+            let Some(tessari_types::Value::Number(score)) = fields.get("score") else {
+                panic!("{fields:?}");
+            };
+            (id.to_string(), score.as_float().unwrap())
+        })
+        .collect()
+}
+
+/// A starred word is scored as **one** term (ADR-0104 D4): every expansion
+/// shares the largest document frequency among them, and a record's frequency
+/// is the sum of its occurrences. So the records using the word most lead, the
+/// rest tie and fall to identity order — and the record holding the rarer
+/// `vectorz` does **not** jump the queue on its rarity, which is what scoring
+/// each expansion by its own frequency would do.
+#[test]
+fn a_starred_word_is_scored_as_one_blended_term() {
+    let held = blended();
+    let mut session = Session::new(&held);
+    session
+        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    // The last form has no `WHERE`: it is the read the pruned top-k walk serves.
+    for (filter, limit) in [
+        ("WHERE body MATCHES 'vecto*' ", ""),
+        ("WHERE body MATCHES 'vecto*' ", " LIMIT 2"),
+        ("", " LIMIT 2"),
+    ] {
+        let found = ranked(
+            &mut session,
+            &format!(
+                "SELECT id, search::score(body, 'vecto*') AS score FROM notes \
+                 {filter}ORDER BY search::score(body, 'vecto*') DESC{limit};"
+            ),
+        );
+        let order: Vec<&str> = found.iter().map(|(id, _)| id.as_str()).collect();
+        let expected: &[&str] = if limit.is_empty() {
+            &["6", "1", "2", "3", "4"]
+        } else {
+            &["6", "1"]
+        };
+        assert_eq!(order, expected, "{filter}{limit}");
+        assert!(found[0].1 > found[1].1, "{found:?}");
+        assert!(found[1].1 > 0.0, "a prefix scored nothing: {found:?}");
+        if limit.is_empty() {
+            assert!(
+                (found[2].1 - found[4].1).abs() < 1e-12,
+                "the rare expansion was weighed on its own: {found:?}"
+            );
+        }
+    }
+}
+
+/// The expansions a score blends are the most-held ones, not the first ones in
+/// the dictionary (search-engine-developer ref 04 M9): with more words under the
+/// prefix than the cap, a lexicographic cut keeps the 64 rare `pfx00`…`pfx63`
+/// and drops `pfxcommon`, and the records holding it would score nothing.
+#[test]
+fn a_blended_prefix_keeps_its_most_held_expansions() {
+    let held = store();
+    let mut session = Session::new(&held);
+    let mut script = String::from(
+        "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
+         DEFINE ANALYZER plain FILTERS lowercase;\n\
+         DEFINE COLLECTION notes;\n\
+         DEFINE FIELD body ON notes TYPE string ANALYZER plain;\n\
+         DEFINE INDEX by_body ON notes FIELDS body SEARCH;\n",
+    );
+    for rare in 0..70 {
+        script.push_str(&format!(
+            "CREATE notes:{rare} = {{ body: 'pfx{rare:02}' }};\n"
+        ));
+    }
+    for common in 100..103 {
+        script.push_str(&format!(
+            "CREATE notes:{common} = {{ body: 'pfxcommon' }};\n"
+        ));
+    }
+    session.run(&script).unwrap();
+    let found = ranked(
+        &mut session,
+        "SELECT id, search::score(body, 'pfx*') AS score FROM notes WHERE body MATCHES 'pfxcommon';",
+    );
+    assert!(
+        found[0].1 > 0.0,
+        "the most-held expansion was cut: {found:?}"
+    );
+}

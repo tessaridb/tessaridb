@@ -75,6 +75,12 @@ impl Session<'_> {
             return Ok(Walked::NotServed);
         };
         let corpus = &ranked.corpus;
+        // A starred word's expansions have no bound of their own to prune by —
+        // they are weighed as one term (ADR-0104) — so the read goes back to the
+        // scan, which scores every record exactly.
+        if !corpus.blends.is_empty() {
+            return Ok(Walked::NotServed);
+        }
 
         // A term written twice in a query weighs twice, so its bound is twice as
         // large. Counting the multiset here rather than deduplicating it keeps

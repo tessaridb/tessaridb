@@ -259,7 +259,7 @@ impl Session<'_> {
         };
         Ok(score(
             corpus,
-            &Held::analysed(analyzer, &text, &corpus.asked),
+            &Held::analysed(analyzer, &text, &corpus.counted()),
         ))
     }
 }

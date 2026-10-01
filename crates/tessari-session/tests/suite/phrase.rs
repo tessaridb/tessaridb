@@ -389,3 +389,79 @@ fn a_negative_slop_is_refused() {
 
     assert!(refused.contains("not a slop marker"), "got {refused:?}");
 }
+
+/// A phrase whose last word is still being typed: `"ada lov"*` is `ada`
+/// followed by a word beginning with `lov` (ADR-0104). The order still decides —
+/// `notes:2` holds both words reversed — and the star is what makes `lov` reach
+/// `lovelace`: without it the phrase asks for a word `lov` nobody wrote.
+#[test]
+fn a_starred_phrase_ends_in_a_prefix_and_keeps_its_order() {
+    for indexed in [false, true] {
+        let held = phrases(indexed);
+        let mut session = Session::new(&held);
+        session.run(USE).unwrap();
+
+        let typed = ids(
+            &mut session,
+            "SELECT * FROM notes WHERE body MATCHES '\"ada lov\"*';",
+        );
+        assert_eq!(typed, vec!["1".to_owned()], "indexed {indexed}");
+
+        let reversed = ids(
+            &mut session,
+            "SELECT * FROM notes WHERE body MATCHES '\"lovelace ada\"*';",
+        );
+        assert_eq!(reversed, vec!["2".to_owned()], "indexed {indexed}");
+
+        let unstarred = ids(
+            &mut session,
+            "SELECT * FROM notes WHERE body MATCHES '\"ada lov\"';",
+        );
+        assert!(unstarred.is_empty(), "indexed {indexed}: {unstarred:?}");
+
+        let marked = session
+            .run(
+                "SELECT search::highlight(body) AS marks FROM notes \
+                 WHERE body MATCHES '\"ada lov\"*';",
+            )
+            .unwrap();
+        let Some(Outcome::Records { records, .. }) = marked.last() else {
+            panic!("{marked:?}");
+        };
+        // `ada` and `lovelace`, the run and nothing else in the record.
+        assert_eq!(
+            format!("{:?}", records[0].1),
+            format!(
+                "{:?}",
+                tessari_types::Value::Object(std::collections::BTreeMap::from([(
+                    "marks".to_owned(),
+                    tessari_types::Value::Array(vec![span(0, 3), span(4, 12)])
+                )]))
+            ),
+            "indexed {indexed}"
+        );
+    }
+}
+
+/// A prefix shorter than three typed letters is refused inside a phrase as it is
+/// outside one, on both paths.
+#[test]
+fn a_starred_phrase_with_a_short_last_word_is_refused() {
+    for indexed in [false, true] {
+        let held = phrases(indexed);
+        let mut session = Session::new(&held);
+        session.run(USE).unwrap();
+        let refused = session.run("SELECT * FROM notes WHERE body MATCHES '\"ada lo\"*';");
+        assert!(
+            matches!(refused, Err(tessari_session::Error::PrefixTooShort { ref prefix, .. }) if prefix == "lo"),
+            "indexed {indexed}: {refused:?}"
+        );
+    }
+}
+
+fn span(start: i64, end: i64) -> tessari_types::Value {
+    tessari_types::Value::Object(std::collections::BTreeMap::from([
+        ("start".to_owned(), tessari_types::Value::from(start)),
+        ("end".to_owned(), tessari_types::Value::from(end)),
+    ]))
+}

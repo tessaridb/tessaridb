@@ -52,6 +52,19 @@ compares carries no pre-release suffix.
   each checked against its whole published vocabulary (134 869 words, every one
   stemmed as published). `stemmer` stays English and is stored as it was, so an
   existing analyzer reads back unchanged.
+- **A starred word in a query string is a prefix, and it is scored** (G051 T7.4,
+  ADR-0104). `body MATCHES 'vector sea*'` is the word `vector` and a word
+  beginning with `sea`, with `OR`, `NOT` and the index working around it; a
+  quoted phrase may end in one, `'"ada lov"*'`. `search::score` weighs a starred
+  word as one term over the sixty-four most-held words it begins, sharing the
+  largest of their document frequencies — so type-ahead can be ranked by the
+  store. A score holding a starred word is refused with `NotHeldHere` on a node
+  holding part of a split table.
+- **A judgment set and a relevance harness** (G051 T9.0, ADR-0100 D3).
+  `benchmarks/judgments/docs.tsv` grades 81 queries over the documentation site's
+  pages; `cargo run --release -p tessari-bench --example relevance` reports
+  NDCG@10, MRR@10 and cold and warm latency. Type-ahead queries moved from
+  NDCG@10 0.219 to 0.802 with the starred word, the whole set from 0.603 to 0.695.
 
 ### Fixed
 
@@ -97,6 +110,12 @@ compares carries no pre-release suffix.
 ### Changed
 
 - **1466 conformance cases** define the language and run in the build.
+- **`MATCHES FUZZY` counts swapping two adjacent letters as one edit** (G051
+  T7.4, ADR-0100 D1.4), where it counted two, so it reaches a few more words —
+  `vetcor` is now one edit from `vector`.
+- **A query string holding `word*` now means words beginning with it.** The
+  asterisk used to be dropped by the tokenizer, leaving the word itself, so such
+  a query answers more records than it did.
 
 
 ## 0.19.0-beta — 2026-10-01

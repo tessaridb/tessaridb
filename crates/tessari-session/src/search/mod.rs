@@ -42,5 +42,5 @@ mod suggest;
 
 pub(crate) use highlight::marked;
 pub(crate) use matching::{matches_fuzzy_terms, matches_prefix_terms, matches_terms};
-pub(crate) use query::{Asked, asked};
+pub(crate) use query::{Asked, Word, asked};
 pub(crate) use resolve::{Ranked, Searched};

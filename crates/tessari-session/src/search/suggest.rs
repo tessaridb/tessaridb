@@ -42,7 +42,7 @@ use tessari_constants::{SEARCH_FUZZY_EXPANSION_CAP, SEARCH_FUZZY_MAX_EDITS, SEAR
 use tessari_storage::{IndexDefinition, Transaction};
 use tessari_types::{Analyzer, Path};
 
-use super::query::{Asked, asked};
+use super::query::{Asked, Word, asked};
 use crate::error::Result;
 use crate::outcome::{Nearest, Suggestion};
 
@@ -77,10 +77,15 @@ pub(crate) fn suggested(
         // The same function the predicate and candidate generation read the
         // query with, so a suggestion cannot come to be about a different set of
         // terms than the read was about.
-        let terms = match asked(analyzer, text) {
-            Asked::Phrase { terms, .. } => terms,
+        // A prefix is not a misspelling of anything: it is suggested nothing.
+        let words = match asked(analyzer, text) {
+            Asked::Phrase { words, .. } => words,
             Asked::Boolean { required, .. } => required.into_iter().flatten().collect(),
         };
+        let terms = words.into_iter().filter_map(|word| match word {
+            Word::Term(term) => Some(term),
+            Word::Prefix(_) => None,
+        });
         for term in terms {
             if transaction.document_frequency(index, &term)? > 0 {
                 continue;

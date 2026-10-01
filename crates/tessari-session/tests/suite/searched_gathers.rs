@@ -183,3 +183,30 @@ fn counting_every_record_agrees_with_the_index_it_stands_in_for() {
     assert_eq!(counted.documents, 8);
     assert_eq!(counted.holding, [6, 3, 2, 0]);
 }
+
+/// A starred word is scored against the terms the **collection** holds under it
+/// (ADR-0104 D5), and a node holding part of the table holds part of the
+/// dictionary — the shards it lacks hold words of their own beginning with
+/// `fox`, which it cannot rank. So the score is refused with
+/// the refusal a part-holder gives, and the same read on the whole node scores;
+/// matching on the starred word still gathers, because whether a record holds
+/// a word beginning with `fox` is a question about that record alone.
+#[test]
+fn a_starred_word_is_not_scored_on_a_part_of_the_dictionary() {
+    let pair = searched();
+    let mut follower = pair.on_the_follower("reader");
+    let mut whole = pair.on_the_leader("reader");
+    let scored = "SELECT id, search::score(body, 'fox*') AS s FROM docs ORDER BY s DESC, id;";
+    let refused = follower.run(scored);
+    assert!(
+        matches!(refused, Err(tessari_session::Error::NotHeldHere { ref table, .. }) if table == "docs"),
+        "{refused:?}"
+    );
+    assert_eq!(records(&mut whole, scored).len(), 8);
+
+    let matched = "SELECT id FROM docs WHERE body MATCHES 'fox*' ORDER BY id;";
+    let found = records(&mut follower, matched);
+    assert_eq!(found, records(&mut whole, matched));
+    let ids: Vec<&str> = found.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, ["a", "b", "c", "k", "q", "z"]);
+}

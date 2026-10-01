@@ -9,19 +9,22 @@
 use std::collections::BTreeMap;
 
 use tessari_encoding::{SearchStatistics, TermStatistics};
-use tessari_ql::{BinaryOp, Expr, ExprKind, Function};
+use tessari_ql::{BinaryOp, Expr, ExprKind, Function, Span};
 use tessari_storage::{Catalog, IndexDefinition, Transaction};
 use tessari_types::{Analyzer, Path, TableId, Value};
 
-use tessari_constants::{SEARCH_FUZZY_PREFIX, SEARCH_PREFIX_MINIMUM};
+use tessari_constants::{
+    SEARCH_FUZZY_PREFIX, SEARCH_PREFIX_EXPANSION_CAP, SEARCH_PREFIX_MINIMUM,
+    SEARCH_PREFIX_SCORE_EXAMINATION_CAP,
+};
 
 use crate::error::{Error, Result};
 use crate::evaluate::Part;
 use crate::outcome::Suggestion;
-use crate::rank::Corpus;
+use crate::rank::{Blend, Corpus};
 use crate::session::Session;
 
-use super::query::{malformed_slop, negation_without_term};
+use super::query::{Word, asked, malformed_slop, negation_without_term, scored_words};
 use super::suggest::suggested;
 
 /// What one ranked path was resolved against.
@@ -117,6 +120,7 @@ impl Session<'_> {
         // checked as one thing and suggested against as another.
         let mut asked_of: BTreeMap<Path, Vec<(BinaryOp, String)>> = BTreeMap::new();
         let mut matched: Vec<(Path, String)> = Vec::with_capacity(phrased.len());
+        let mut matched_at: Vec<Span> = Vec::with_capacity(phrased.len());
         for (path, query) in phrased {
             let Value::String(text) = self.evaluate(transaction, query)? else {
                 continue;
@@ -131,6 +135,7 @@ impl Session<'_> {
                 return Err(Error::NegationWithoutTerm { span: query.span });
             }
             matched.push((path.clone(), text));
+            matched_at.push(query.span);
         }
 
         if wanted.is_empty() {
@@ -200,6 +205,14 @@ impl Session<'_> {
             }
         }
 
+        // A starred word is a prefix and carries the prefix floor, checked here
+        // for the same reason as the loop above (ADR-0104 D2).
+        for ((path, text), span) in matched.iter().zip(&matched_at) {
+            if let Some(analyzer) = analyzers.get(path) {
+                too_short(&asked(analyzer, text).prefixes(), *span)?;
+            }
+        }
+
         // What each field was asked, kept so a highlight marks against the
         // query this read actually ran rather than a copy of it. Built from the
         // texts the two loops above already evaluated — the prefix loop records
@@ -249,6 +262,7 @@ impl Session<'_> {
                             average_length: 0.0,
                             terms: BTreeMap::new(),
                             asked: Vec::new(),
+                            blends: Vec::new(),
                         },
                         index,
                         from_text: false,
@@ -258,10 +272,25 @@ impl Session<'_> {
             }
             // Only the terms this statement asks about: counting the rest would
             // be reading the index to answer a question nobody put.
-            let asked = match self.evaluate(transaction, query)? {
-                Value::String(text) => analyzer.terms(&text),
+            let words = match self.evaluate(transaction, query)? {
+                Value::String(text) => scored_words(analyzer, &text),
                 _ => Vec::new(),
             };
+            let mut asked = Vec::with_capacity(words.len());
+            let mut starred = Vec::new();
+            for word in words {
+                match word {
+                    Word::Term(term) => asked.push(term),
+                    Word::Prefix(alternatives) => starred.push(alternatives),
+                }
+            }
+            let floors: Vec<&[String]> = starred.iter().map(Vec::as_slice).collect();
+            too_short(&floors, query.span)?;
+            // ADR-0104 D5: which terms a prefix blends is a question about the
+            // whole collection's dictionary, and this node may hold part of it.
+            if !starred.is_empty() {
+                self.refuse_reading_a_part(transaction, table, Part::Whole)?;
+            }
             let statistics = transaction.search_statistics(&index)?;
             let mut terms = BTreeMap::new();
             for term in &asked {
@@ -270,6 +299,17 @@ impl Session<'_> {
                 }
                 let held = transaction.term_statistics(&index, term)?;
                 terms.insert(term.clone(), held);
+            }
+            let mut blends = Vec::with_capacity(starred.len());
+            for alternatives in &starred {
+                let blend = blended(transaction, &index, alternatives)?;
+                for term in &blend.expansions {
+                    if !terms.contains_key(term) {
+                        let held = transaction.term_statistics(&index, term)?;
+                        terms.insert(term.clone(), held);
+                    }
+                }
+                blends.push(blend);
             }
             // ADR-0103: this node's index describes the shards it holds, and the
             // leaders of the others count theirs. A term's figure is then a
@@ -299,6 +339,7 @@ impl Session<'_> {
                         average_length: statistics.average_length().unwrap_or_default(),
                         terms,
                         asked,
+                        blends,
                     },
                     index,
                     from_text: elsewhere.is_some(),
@@ -411,4 +452,53 @@ fn searched_paths<'a>(
         }
         _ => {}
     }
+}
+
+/// `PrefixTooShort` for the first prefix typed shorter than the floor.
+///
+/// The **typed** spelling decides, which is the first of the alternatives — the
+/// rule the `MATCHES PREFIX` loop above states.
+fn too_short(prefixes: &[&[String]], span: Span) -> Result<()> {
+    for alternatives in prefixes {
+        if let Some(prefix) = alternatives.first()
+            && prefix.chars().count() < SEARCH_PREFIX_MINIMUM
+        {
+            return Err(Error::PrefixTooShort {
+                prefix: prefix.clone(),
+                minimum: SEARCH_PREFIX_MINIMUM,
+                span,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The terms one starred word blends, the most-held first (ADR-0104 D4).
+///
+/// Every term beginning with either spelling, up to the examination ceiling,
+/// ranked by how many records hold it and cut at the expansion cap by that rank
+/// — never in dictionary order, which would keep whichever rare words sort first
+/// and drop the common one being typed. Ties fall to the term, so the same
+/// dictionary always blends the same terms.
+fn blended(
+    transaction: &Transaction<'_>,
+    index: &IndexDefinition,
+    alternatives: &[String],
+) -> Result<Blend> {
+    let mut reached = std::collections::BTreeSet::new();
+    for spelling in alternatives {
+        let found =
+            transaction.terms_with_prefix(index, spelling, SEARCH_PREFIX_SCORE_EXAMINATION_CAP)?;
+        reached.extend(found.terms);
+    }
+    let mut ranked = Vec::with_capacity(reached.len());
+    for term in reached {
+        ranked.push((transaction.document_frequency(index, &term)?, term));
+    }
+    ranked.sort_by(|(left, one), (right, other)| right.cmp(left).then_with(|| one.cmp(other)));
+    ranked.truncate(SEARCH_PREFIX_EXPANSION_CAP);
+    Ok(Blend {
+        documents: ranked.first().map_or(0, |(held, _)| *held),
+        expansions: ranked.into_iter().map(|(_, term)| term).collect(),
+    })
 }
