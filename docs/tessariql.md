@@ -6691,9 +6691,12 @@ GET /backup?from=4096
 Same identity rules, because they are the statement's. The body is the file: a
 snapshot unless the query asks for the log.
 
-The cost is stated rather than discovered: the whole file is materialised,
-because a statement answers with a value. `FROM` is what bounds it, and a
-streaming answer is named in §8.
+A snapshot is **streamed**: it leaves the node chunk by chunk as it is read, so
+the node's memory does not grow with the store, and a body cut off halfway does
+not verify, because a snapshot's last frame counts what came before it. The log
+and the script are still answered whole, as is any `BACKUP` run over
+`POST /script` or the wire, because a statement answers with a value — for a
+large store use `GET /backup` or `BACKUP … TO`.
 
 ### The store's current state, as a snapshot or as a script
 
@@ -6750,10 +6753,24 @@ keeps its own). It carries **no users and no grants** — they belong to the
 store, not to a namespace — and its header says so and names the places it
 holds. A place the store does not hold is refused as `Unknown`.
 
-A part is a **script** only. A log of one database holds its records and none of
+### A part of the store, as a snapshot
+
+```
+BACKUP STATE OF NAMESPACE crm;
+BACKUP OF prod.orders TO 'orders.tessarisnap';
+```
+
+A snapshot is of **one place** — two places are two snapshots, and a list is
+refused saying so. It carries what a follower subscribed at that place is given:
+the place's records, the catalog that defines it, and the store's users and
+grants, so a store restored from it is as closed as the one it was taken of. A
+database's sibling databases come with their definitions and none of their
+records, because a database is defined in its namespace's catalog. It restores
+into an **empty** store, like a whole snapshot.
+
+A log of a part is refused: a log of one database holds its records and none of
 the definitions of the namespace and database it lives in, so it would restore
-nowhere on its own; a snapshot keeps the catalog as the store keeps it, so it is
-taken of the whole store. Both are refused with that reason.
+nowhere on its own.
 
 ### Written by the node, into its backup folder
 
@@ -8368,8 +8385,8 @@ be, because it is confined to the run its fixed values name.
 | **an index serving a branch of a fused read** (`ORDER BY FUSE`) | every branch is ranked over every record that passed the `WHERE`, which is exact and costs the filtered read. A branch served from the search walk or the vector graph would stop early, and a fused order needs each branch's places down to its depth — the bound is the depth, not the `LIMIT`, and proving the walk answers the same places is its own piece of work. §5 |
 | a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |
 | a bucket narrowed by **content type** — `HOLDS image/png` | the store has no content type for a file. A file's record holds its size, its chunk count and when it was written, and nothing anywhere reads the bytes to decide what they are — so the clause could only enforce the caller's own claim about the caller's own bytes, which is the assertion §6a refuses `CREATE`, `UPDATE` and `SET` in order to avoid, wearing a constraint's clothes. The honest version detects the type by reading the leading bytes against a table of signatures, which is real work with a real failure mode of its own: plain text, CSV and SVG have no signature, and a `HOLDS text/plain` that cannot be checked is worse than no clause at all. The ceiling shipped without it because `MAX` compares against a number the store computes itself. §6a |
-| a **streaming** backup answer | `BACKUP` answers with a value, so the file is materialised. `FROM` bounds it, and the real fix is an answer shape that streams — which is the wall a **whole-file** `READ` still meets even now that a ranged one exists, and worth crossing once for both. §7a |
-| a backup of **one namespace** | the file is the log, and the log is the store; selecting part of it means replaying with a filter, which is a different reader and a different restore story. §7a |
+| a **streaming** log or script backup | a snapshot streams over `GET /backup` and into `BACKUP … TO`; the log and the script are still answered whole, as is any `BACKUP` answered as a statement's value — the wall a **whole-file** `READ` still meets too. §7a |
+| a **log** of one namespace | a part is a snapshot (`BACKUP STATE OF`) or a script (`BACKUP SCRIPT OF`); a log of a part holds none of the definitions above it and would restore nowhere on its own. §7a |
 | an index on a **later** field of a composite index, with nothing fixing the fields before it | the entries for one value of a later field are scattered across every value of the fields ahead of it, so reaching them means visiting each leading run's slice in turn. A different traversal of the same key order, and worth building when a read wants it rather than in anticipation. Its sibling — a range on a later field **under equalities fixing every field before it** — is no longer here: it walks one contiguous run and is served. §4 |
 | `INFO FOR` on a **named** namespace, database or user's own account | the tenancy subjects report the **selected** namespace and database, because `USE` is where this store already answers "which tenancy", and a second way to name one is a second place for that check to be got wrong. A caller wanting another says `USE` and asks again. `INFO FOR USER` needs an owner, so a non-owner cannot read even their own grants — the smaller, safe rule while nothing has asked for the other; a self-form is a different permission question and would be built as one. §7c |
 | an analyzer's own **definition** in a report — its name and the filters it applies | a field's report already names the analyzer attached to it, so a caller can see *which* one is used; what no subject holds is the analyzer itself. It is declared store-wide rather than under a namespace, a database or a table, so there is nowhere in these five subjects for its filter list to appear. A real gap and a small one: the catalog reader exists, and what is missing is the decision about where it belongs. §7c |

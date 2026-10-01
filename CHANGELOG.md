@@ -28,6 +28,29 @@ compares carries no pre-release suffix.
   (`statement`, `environment`, `default`). A store upgraded from an earlier version
   starts pruning at its first housekeeping pass — take a snapshot first if its
   history matters, or start it with `TESSARIDB_RETAIN_RECORDS=none`.
+- **The refusal for a read below a pruned log names its repair**: a follower node
+  copies its leader's state by itself; a client re-reads what it follows and follows
+  again from the current tail.
+
+### Added
+
+- **A follower below its leader's pruned log re-seeds itself** (ADR-0094 D3). A node
+  that leads nothing copies its leader's state over one peer connection, then follows
+  again from where the copy stood; a node that leads a range reports `stranded` and is
+  restored from a snapshot. `INFO FOR NODE` answers `cluster.upstream` (`state`,
+  `copied_records`, `copies`); `/metrics` adds `tessari_replica_state{state}`,
+  `tessari_replica_copied_records` and `tessari_follower_behind_records{node}`; the
+  console's cluster map shows the sync state and how far the furthest follower is
+  behind.
+- **A snapshot of one place**: `BACKUP STATE OF NAMESPACE n` or `OF n.d` (also bare
+  `BACKUP OF …`) carries that place's records and the catalog that defines it, with
+  the store's users, and restores into an empty store. Two places are two snapshots.
+- **A snapshot leaves the node as it is read** (ADR-0094 D6): `GET /backup` streams it
+  and `BACKUP … TO` writes it straight into the file. Measured on a debug build, the
+  node's peak memory during a streamed backup was 29.6 MB for a 21.8 MB snapshot and
+  31.0 MB for an 87.0 MB one, against 160 MB and 553 MB when the same snapshot is
+  answered whole over `POST /script` — use `GET /backup` or `TO` for a large store.
+- **1463 conformance cases** define the language and run in the build.
 
 ## 0.17.1-beta — 2026-10-01
 

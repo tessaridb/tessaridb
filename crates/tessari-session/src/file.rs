@@ -219,7 +219,11 @@ impl Session<'_> {
             return Ok(Outcome::Value(Value::String(taken.text)));
         }
         if form == tessari_ql::BackupForm::State {
-            tessari_backup::write_state(self.store, &mut held).map_err(|error| {
+            let within = self.state_scope(of)?;
+            if let Some(out) = self.sink.take() {
+                return self.snapshot_streamed(within, out);
+            }
+            tessari_backup::write_state_within(self.store, within, &mut held).map_err(|error| {
                 Error::BackupFailed {
                     reason: error.to_string(),
                 }
@@ -250,6 +254,36 @@ impl Session<'_> {
             reason: error.to_string(),
         })?;
         Ok(Outcome::Value(Value::Bytes(held)))
+    }
+
+    /// Write the snapshot of `within` into the caller's sink, and answer what
+    /// it holds rather than its bytes.
+    fn snapshot_streamed(
+        &self,
+        within: tessari_types::Reach,
+        mut out: Box<dyn std::io::Write + Send>,
+    ) -> Result<Outcome> {
+        let failed = |reason: String| Error::BackupFailed { reason };
+        let taken = tessari_backup::write_state_within(self.store, within, &mut out)
+            .map_err(|error| failed(error.to_string()))?;
+        out.flush().map_err(|error| failed(error.to_string()))?;
+        let count = |held: u64| Value::from(i64::try_from(held).unwrap_or(i64::MAX));
+        Ok(Outcome::Value(Value::Object(
+            std::collections::BTreeMap::from([
+                ("form".to_owned(), Value::from("state")),
+                ("records".to_owned(), count(taken.records)),
+                ("version".to_owned(), count(taken.version.get())),
+            ]),
+        )))
+    }
+
+    /// The place a snapshot is of: the one `OF` names, which the parser holds
+    /// to one (ADR-0094 D5), or the whole store.
+    pub(crate) fn state_scope(&self, of: &[tessari_ql::ReachRef]) -> Result<tessari_types::Reach> {
+        match of.first() {
+            Some(named) => self.reach_of(&mut self.store.begin()?, named),
+            None => Ok(tessari_types::Reach::Store),
+        }
     }
 
     /// Remove a file's chunks, given what its metadata says it has.

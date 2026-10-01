@@ -66,7 +66,31 @@ fn send_bytes(
     }
     let mut held = Vec::new();
     reader.read_to_end(&mut held).unwrap();
+    // A snapshot is streamed, so its body arrives chunked (RFC 9112 §7.1) and is
+    // read as any HTTP/1.1 client reads one.
+    if headers
+        .iter()
+        .any(|header| header.eq_ignore_ascii_case("transfer-encoding: chunked"))
+    {
+        held = unchunked(&held);
+    }
     (status, headers, held)
+}
+
+/// A chunked body's bytes, without its framing.
+fn unchunked(mut framed: &[u8]) -> Vec<u8> {
+    let mut body = Vec::new();
+    loop {
+        let line = framed.iter().position(|byte| *byte == b'\n').unwrap();
+        let size = std::str::from_utf8(&framed[..line]).unwrap().trim();
+        let size = usize::from_str_radix(size, 16).unwrap();
+        framed = &framed[line.checked_add(1).unwrap()..];
+        if size == 0 {
+            return body;
+        }
+        body.extend_from_slice(&framed[..size]);
+        framed = &framed[size.checked_add(2).unwrap()..];
+    }
 }
 
 /// One request, and the status and body it answers with.
@@ -761,8 +785,16 @@ fn the_backup_route_hands_over_a_file_the_verifier_reads() {
             .contains("application/octet-stream")),
         "{headers:?}"
     );
-    // A snapshot unless the caller asks for the log (ADR-0094 D1).
+    // A snapshot unless the caller asks for the log (ADR-0094 D1), and sent as
+    // it is read rather than built whole first (D6): a body with no length,
+    // chunked, is what a stream looks like on the wire.
     tessari_backup::verify_state(&mut held.as_slice()).unwrap();
+    assert!(
+        headers
+            .iter()
+            .any(|line| line.eq_ignore_ascii_case("transfer-encoding: chunked")),
+        "the snapshot was answered whole rather than streamed: {headers:?}"
+    );
 
     let (status, _, held) = send_bytes(&address, "GET", "/backup?as=log", None);
     assert_eq!(status, 200);

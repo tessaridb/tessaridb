@@ -8,8 +8,9 @@ use crate::error::Result;
 use crate::token::{Keyword, Punct, Token};
 
 impl Parser<'_> {
-    /// `BACKUP [STATE | SCRIPT] [OF <place>, …] [TO '<name>']`, or `BACKUP [LOG]
-    /// [FROM n] [TO '<name>']`, from just after `BACKUP`.
+    /// `BACKUP [STATE] [OF <place>] [TO '<name>']`, `BACKUP SCRIPT [OF <place>, …]
+    /// [TO '<name>']`, or `BACKUP [LOG] [FROM n] [TO '<name>']`, from just after
+    /// `BACKUP`.
     ///
     /// A bare `BACKUP` is the state snapshot (ADR-0094 D1): the routine backup of
     /// a store whose log is bounded. The log is asked for by name, `LOG`, or by
@@ -35,10 +36,12 @@ impl Parser<'_> {
                 ));
             }
             let of = self.backup_of()?;
-            if form == crate::ast::BackupForm::State && !of.is_empty() {
+            // A snapshot is one place read at one version (ADR-0094 D5); two
+            // places are two snapshots, each restorable on its own.
+            if form == crate::ast::BackupForm::State && of.len() > 1 {
                 return Err(self.error_here(
-                    "`BACKUP SCRIPT OF` for a part; a snapshot carries the store's catalog as \
-                     it is kept, so it is taken of the whole store",
+                    "the end of the statement; a snapshot is of one place, so two places \
+                     are two `BACKUP STATE OF` statements",
                 ));
             }
             StatementKind::Backup {

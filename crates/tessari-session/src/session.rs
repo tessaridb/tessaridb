@@ -85,6 +85,9 @@ pub struct Session<'a> {
     /// A fact about the process, like `gather`, so it is taken at the session;
     /// `None` refuses every `TO` rather than writing somewhere nobody chose.
     pub(crate) backups: Option<Arc<Path>>,
+    /// Where a `BACKUP STATE` answered here writes its snapshot instead of
+    /// answering with it (ADR-0094 D6), when the caller is streaming.
+    pub(crate) sink: crate::backup_to::Sink,
 }
 
 /// Who a session is, to a queue.
@@ -118,6 +121,7 @@ impl<'a> Session<'a> {
             elsewhere: None,
             gather: None,
             backups: None,
+            sink: crate::backup_to::Sink::none(),
         }
     }
 
@@ -152,6 +156,20 @@ impl<'a> Session<'a> {
     #[must_use]
     pub fn backing_up_into(mut self, folder: Arc<Path>) -> Self {
         self.backups = Some(folder);
+        self
+    }
+
+    /// Open this session writing the snapshot its next `BACKUP STATE` takes
+    /// into `out`, chunk by chunk, rather than answering with the bytes.
+    ///
+    /// The statement still decides who may take it: this only changes where the
+    /// file goes once the statement has been allowed. The answer is then a
+    /// summary — the form, the records and the version — since the file has
+    /// already left. Used by a surface that streams, so a node's memory does not
+    /// grow with the store it backs up.
+    #[must_use]
+    pub fn snapshot_into(mut self, out: Box<dyn std::io::Write + Send>) -> Self {
+        self.sink = crate::backup_to::Sink::to(out);
         self
     }
 
@@ -449,6 +467,7 @@ impl<'a> Session<'a> {
             gather: self.gather.clone(),
             // A probe answers who may do what and never writes a file.
             backups: None,
+            sink: crate::backup_to::Sink::none(),
         };
         probe.acting_as(id)?;
         Ok(probe)

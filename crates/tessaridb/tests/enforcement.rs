@@ -921,7 +921,15 @@ const TABLES: &[Table] = &[
         // or a file and no identity; `verify_state` and `is_state` touch no
         // store at all. The surfaces that reach a node go through
         // `BACKUP STATE`, whose authority is the statement's.
-        expected: 11,
+        //
+        // 12 since a snapshot of one place (G049, ADR-0094 D5):
+        // `write_state_within`. Classified **exempt on `write_state`'s ground**
+        // — it takes a store, a reach and a sink and no identity, and
+        // `write_state` is now this with the whole store. Its node callers are
+        // `BACKUP STATE OF` and the streamed `GET /backup`, both through the
+        // statement, which only a store-wide owner runs; the reach is resolved
+        // from names the statement carries, never from the caller's grant.
+        expected: 12,
         count: module_functions,
     },
     Table {
@@ -1001,7 +1009,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 124 since a follower reports where it stands (G049, ADR-0094 D4): three
     // on `Store`, exempt, classified above.
-    assert_eq!(total, 124, "the counted tables no longer sum to 124");
+    //
+    // 125 since a snapshot of one place (G049, ADR-0094 D5):
+    // `backup::write_state_within`, exempt, classified above.
+    assert_eq!(total, 125, "the counted tables no longer sum to 125");
 }
 
 /// Every `.rs` file under a directory.
