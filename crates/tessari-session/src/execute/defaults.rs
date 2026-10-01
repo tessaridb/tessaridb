@@ -114,7 +114,7 @@ impl Session<'_> {
         name: &Name,
     ) -> Result<IndexDefinition> {
         Catalog::new(transaction)
-            .indexes_on(table)?
+            .field_indexes_on(table)?
             .into_iter()
             .find(|index| index.name == name.text)
             .ok_or_else(|| Error::Unknown {

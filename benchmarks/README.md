@@ -17,6 +17,11 @@ two runs compare query by query, and cold and warm latency. Its corpus is the
 documentation site's `content/`, named by the fingerprint the first line prints —
 two runs over different fingerprints are not a comparison.
 
+`--engine flat` or `--engine weighted` runs the same judgments through a
+`DEFINE SEARCH` over each fragment's title, heading and body (weights 1, or 2, 3
+and 1) instead of the field index over the combined text, so the two engines
+compare query by query on one corpus.
+
 ## What a baseline is, and what it is not
 
 **Comparable with another taken on the same machine and the same build profile,

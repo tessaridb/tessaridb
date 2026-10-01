@@ -70,7 +70,7 @@ pub(crate) fn holds_run(held: &[String], asked: &[Word], slop: usize) -> bool {
 /// The disjunction within a word: the two spellings [`Analyzer::prefixes`]
 /// produces are alternatives, and a term beginning with either satisfies the
 /// word.
-pub(super) fn begins(alternatives: &[String], term: &str) -> bool {
+pub(crate) fn begins(alternatives: &[String], term: &str) -> bool {
     alternatives
         .iter()
         .any(|prefix| term.starts_with(prefix.as_str()))
@@ -83,7 +83,7 @@ pub(super) fn begins(alternatives: &[String], term: &str) -> bool {
 /// the same question. `SEARCH_FUZZY_PREFIX` is part of what the operator
 /// *means*, not an optimisation, so a caller that skipped it would mark a token
 /// the operator did not reach.
-pub(super) fn near(alternatives: &[String], term: &str) -> bool {
+pub(crate) fn near(alternatives: &[String], term: &str) -> bool {
     alternatives.iter().any(|spelling| {
         let leading: String = spelling.chars().take(SEARCH_FUZZY_PREFIX).collect();
         term.starts_with(&leading) && within_edits(spelling, term, SEARCH_FUZZY_MAX_EDITS)
@@ -208,4 +208,32 @@ pub(crate) fn matches_fuzzy_terms(
         && asked
             .iter()
             .all(|alternatives| terms.iter().any(|term| near(alternatives, term)))
+}
+
+/// Whether analyzed text holds, for **every** word typed, a term containing
+/// that word's typed spelling (`MATCHES INFIX`, ADR-0105 D9).
+///
+/// The typed spelling, folded and unstemmed — the first of the alternatives
+/// [`Analyzer::prefixes`] produces — because a piece of a word stems into
+/// nothing. This is the **scan**'s answer; the index reaches the same set
+/// through its suffix keyspace, and the two are asserted to agree.
+pub(crate) fn matches_infix_terms(
+    analyzer: Option<&Analyzer>,
+    held: &Value,
+    wanted: &Value,
+) -> bool {
+    let (Some(analyzer), Value::String(text), Value::String(query)) = (analyzer, held, wanted)
+    else {
+        return false;
+    };
+    let terms = analyzer.terms(text);
+    let pieces: Vec<String> = analyzer
+        .prefixes(query)
+        .into_iter()
+        .filter_map(|alternatives| alternatives.into_iter().next())
+        .collect();
+    !pieces.is_empty()
+        && pieces
+            .iter()
+            .all(|piece| terms.iter().any(|term| term.contains(piece.as_str())))
 }

@@ -115,6 +115,9 @@ fn erase_statement(statement: &mut Statement) {
         | StatementKind::DropGraph { name }
         | StatementKind::DropUser { name }
         | StatementKind::DropAnalyzer { name }
+        | StatementKind::DropSearch { name }
+        | StatementKind::DropSynonyms { name }
+        | StatementKind::DropStopwords { name }
         | StatementKind::DropReplica { name }
         | StatementKind::DropDatabase { name }
         | StatementKind::DropNamespace { name } => erase_name(name),
@@ -190,6 +193,7 @@ fn erase_statement(statement: &mut Statement) {
             | InfoSubject::TopicConsumer(name)
             | InfoSubject::Graph(name)
             | InfoSubject::Vector(name)
+            | InfoSubject::Search(name)
             | InfoSubject::Geo(name)
             | InfoSubject::Vault(name)
             | InfoSubject::Bucket(name) => {
@@ -210,7 +214,31 @@ fn erase_statement(statement: &mut Statement) {
             erase_name(name);
             erase_name(distance);
         }
-        StatementKind::DefineAnalyzer { name, .. } => erase_name(name),
+        StatementKind::DefineAnalyzer { name, .. }
+        | StatementKind::DefineSynonyms { name, .. }
+        | StatementKind::DefineStopwords { name, .. } => erase_name(name),
+        StatementKind::DefineSearch {
+            name,
+            members,
+            analyzer,
+            stopwords,
+            ..
+        } => {
+            erase_name(name);
+            erase_name(analyzer);
+            if let Some(stopwords) = stopwords {
+                erase_name(stopwords);
+            }
+            for member in members {
+                erase_table(&mut member.table);
+                for field in &mut member.fields {
+                    erase_path(&mut field.path);
+                    if let Some(synonyms) = &mut field.synonyms {
+                        erase_name(synonyms);
+                    }
+                }
+            }
+        }
         StatementKind::DefineUser {
             name, scope, role, ..
         } => {
@@ -635,6 +663,20 @@ fn erase_source(source: &mut Source) {
         }
         Source::Subquery { read, condition } => {
             erase_select(read);
+            if let Some(condition) = condition {
+                erase_expr(condition);
+            }
+        }
+        Source::Search {
+            name,
+            ask,
+            condition,
+        } => {
+            erase_name(name);
+            match ask {
+                crate::ast::SearchAsk::Matches { query, .. } => erase_expr(query),
+                crate::ast::SearchAsk::Complete { beginning } => erase_expr(beginning),
+            }
             if let Some(condition) = condition {
                 erase_expr(condition);
             }

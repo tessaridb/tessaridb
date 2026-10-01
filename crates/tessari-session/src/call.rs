@@ -326,6 +326,9 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         Function::SearchHighlight => Ok(Value::None),
         // A rank is the fusion's, answered where the scope carries it.
         Function::SearchRanks => Ok(Value::None),
+        // A search's own answers about its record, answered in the evaluator
+        // where the record's hit is in scope (ADR-0105).
+        Function::SearchTable | Function::SearchSnippet => Ok(Value::None),
         // The one function that makes a window sayable, and the reason
         // `GROUP BY` takes an expression: without it a caller would have to
         // store the bucket alongside the instant and keep the two in step.

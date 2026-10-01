@@ -137,7 +137,7 @@ pub(super) fn phrase_of(query: &str) -> Option<(&str, usize, bool)> {
 /// Separate from [`phrase_of`] because the two answer different questions: that
 /// one asks *is this a phrase*, this one asks *did somebody mean one and get the
 /// marker wrong*. A string with no opening quote is not an attempt at either.
-pub(super) fn malformed_slop(query: &str) -> Option<&str> {
+pub(crate) fn malformed_slop(query: &str) -> Option<&str> {
     let trimmed = query.trim();
     let (_, tail) = trimmed.strip_prefix('"')?.rsplit_once('"')?;
     if tail.is_empty() || tail == STAR {
@@ -262,7 +262,7 @@ pub(crate) fn scored_words(analyzer: &Analyzer, query: &str) -> Vec<Word> {
 /// a way it would not be for [`asked`]: this asks whether the query is
 /// well-formed, which no index can answer differently, rather than what the
 /// query means, which both access paths must answer the same way.
-pub(super) fn negation_without_term(query: &str) -> bool {
+pub(crate) fn negation_without_term(query: &str) -> bool {
     if phrase_of(query).is_some() {
         return false;
     }

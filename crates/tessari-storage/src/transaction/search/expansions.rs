@@ -6,8 +6,8 @@ use crate::error::Result;
 use std::collections::{BTreeMap, BTreeSet};
 use tessari_constants::SEARCH_FUZZY_EXAMINATION_CAP;
 use tessari_encoding::{
-    IndexAddress, IndexTarget, IndexValues, KeyKind, PostingKey, SearchTermKey, SecondaryIndexKey,
-    StoreKey, StoreValue, decode_payload,
+    IndexAddress, IndexTarget, IndexValues, KeyKind, PostingKey, SearchSuffixKey, SearchTermKey,
+    SecondaryIndexKey, StoreKey, StoreValue, decode_payload,
 };
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{RecordId, Value, within_edits};
@@ -140,6 +140,53 @@ impl Transaction<'_> {
     }
 
     /// The records one term is posted against.
+    /// The dictionary terms containing `piece`, read from the suffix keyspace
+    /// (ADR-0105 D9) — `None` when this index was built before suffixes
+    /// existed, so the caller scans rather than trusting a partial walk.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a key cannot be decoded.
+    pub fn terms_with_infix(
+        &self,
+        index: &IndexDefinition,
+        piece: &str,
+        cap: usize,
+    ) -> Result<Option<Expansion>> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let marker = SearchSuffixKey::new(address, String::new(), String::new()).encode();
+        if self
+            .store
+            .backend()
+            .get(SearchSuffixKey::keyspace(), &marker)?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let request = ScanRequest {
+            keyspace: SearchSuffixKey::keyspace(),
+            range: KeyRange::prefix(&SearchSuffixKey::piece_prefix(&address, piece)),
+            direction: ScanDirection::Forward,
+            limit: Some(SEARCH_FUZZY_EXAMINATION_CAP.saturating_add(1)),
+        };
+        let found = self.store.backend().scan(&request)?;
+        let mut capped = found.len() > SEARCH_FUZZY_EXAMINATION_CAP;
+        let mut terms = BTreeSet::new();
+        for (key, _) in found.iter().take(SEARCH_FUZZY_EXAMINATION_CAP) {
+            terms.insert(SearchSuffixKey::decode(key.as_slice())?.term);
+            if terms.len() > cap {
+                capped = true;
+                break;
+            }
+        }
+        let examined = terms.len();
+        Ok(Some(Expansion {
+            terms: terms.into_iter().collect(),
+            capped,
+            examined,
+        }))
+    }
+
     pub(crate) fn postings(
         &self,
         address: &IndexAddress,

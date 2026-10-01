@@ -2997,6 +2997,30 @@ value is found, and a declaration is a statement about what a record may be.
 Making declarations reach into a path needs a rule for what declaring a leaf says
 about its parents, and §8 keeps that as its own row.
 
+#### `MATCHES INFIX` — a piece of a word
+
+```
+SELECT * FROM notes WHERE body MATCHES INFIX 'ovela';
+```
+
+The analyzed text holds, for **every** piece typed, a term containing it: `ovela`
+reaches `lovelace`, and `gine` reaches `engine`. Each piece is the typed spelling
+folded by the field's analyzer and **not stemmed**, because a piece of a word
+stems into nothing. It is looked for inside the terms the field holds, so with a
+stemming analyzer it is looked for inside stems: `ovelace` does not reach the
+stem `lovelac`. A field meant for this kind of search is better analyzed without
+a stemmer.
+
+The floor is the prefix floor: under three characters is `PrefixTooShort`.
+
+**No n-gram ever enters the analysis.** A `SEARCH` index keeps every suffix of
+every term in its dictionary, of at least three characters, in the same batch as
+the term itself (key kind `0x1f`). An infix is then a range read over suffixes,
+and the index grows with the dictionary rather than with the text. `EXPLAIN`
+reports shape `infix-terms`. Past 64 terms, or on an index built before this
+structure existed (rebuild it with `REBUILD INDEX`), the scan answers, with the
+same records.
+
 #### `search::highlight` — where in the text the query matched
 
 ```
@@ -3056,11 +3080,122 @@ nothing to measure against, because there is no honest number for it to return.
 document rather than about a document relative to a collection, so it is
 answered from the record's text on either access path.
 
-**The store marks; it does not render.** There is no snippet, no fragment
-selection, no marker string and nothing to configure. How much surrounding text
+**The store marks; it does not render.** There is no marker string and
+nothing to configure, and the one fragment the store chooses — `search::snippet()`
+over a [`DEFINE SEARCH`](#a-search-over-several-fields-and-tables) — is a byte
+range too. How much surrounding text
 to show and what to wrap the marks in are the caller's decisions, and a database
 that inserted `<mark>` would have taken a position on somebody's markup — and
 could not un-take it for a text that contains the marker already.
+
+### A search over several fields and tables
+
+```
+DEFINE ANALYZER plain FILTERS lowercase, ascii;
+DEFINE SYNONYMS machines { engine: ['loom', 'machine'] };
+DEFINE STOPWORDS common ['the', 'a', 'of'];
+DEFINE SEARCH knowledge
+  ON notes    FIELDS title WEIGHT 3 SNIPPET, body SYNONYMS machines
+  ON articles FIELDS headline WEIGHT 2, text, code NO FUZZY NO PREFIX
+  ANALYZER plain STOPWORDS common;
+
+SELECT id, search::table_name() AS source, search::score() AS score,
+       search::snippet() AS snippet
+FROM SEARCH knowledge MATCHES 'ada lovelace' LIMIT 10;
+```
+
+A field index searches one field of one table. `DEFINE SEARCH` searches several
+fields of several tables **as one collection**: one ranking, one set of
+statistics, one query language. Its name is unique within the database.
+
+**What it holds.** One member per table, kept with the table's records in their
+own write batch, so a search is current when the write that changed it commits
+and a transaction's own writes are answered inside it. Declaring it builds it
+from the records already there.
+
+**One analyzer.** Every member field and every query is read with the search's
+`ANALYZER`, not with each field's own, because a ranking across fields needs one
+vocabulary.
+
+**Ranking is BM25F.** Each field's occurrences are normalised by that field's
+own length against its own average and multiplied by its `WEIGHT` (default 1,
+above 0, at most 1000, to three places) **before** the saturation, so a word
+spread over two fields is not counted as two words. One field of weight 1 ranks
+exactly as `search::score` over a field index. Records are answered best first,
+ties broken by table name and then by id. A prefix, a misspelling and a synonym
+are each one blended word: the document frequency of the most-held of its terms,
+and the occurrences of all of them.
+
+**The query is `MATCHES`'s own** — quoted phrases with slop, `OR`, `NOT`, starred
+words — with `MATCHES PREFIX`, `MATCHES FUZZY` and `MATCHES INFIX` reading every
+word one way. A conjunction is over the record **as one document**: `lovelace
+notes` holds when one field has each word. A phrase must sit inside one field.
+
+**Per-field options.** `NO FUZZY`, `NO PREFIX` and `NO PHRASE` say a field does
+not answer that operator (an identifier field should not answer a misspelling;
+`NO PREFIX` also refuses infix). `SYNONYMS <set>` answers a word in that field by
+its alternatives too. `SNIPPET` makes the field one `search::snippet()` may take
+its window from. Each option is said once.
+
+**Synonyms and stop words are query-time.** Both are store-wide names, like an
+analyzer, read when a search runs and never by the index, so changing one never
+needs a rebuild. A synonym set maps a word to alternatives, one word each (a
+multi-word entry is refused, so a phrase across a synonym is the same length
+either way). `STOPWORDS` is per search: a stop word is dropped from the query
+outside a quoted phrase, and a query of stop words alone answers nothing. Neither
+can be dropped while a search names it, and neither can an analyzer.
+
+**What a record answers with.**
+
+| Call | Answers |
+|---|---|
+| `search::score()` | the record's BM25F score |
+| `search::table_name()` | the table it came from |
+| `search::snippet()` | `{ field, start, end }`: the 24-token window of its `SNIPPET` fields holding the most distinct query words, then the most matches, then the earliest — or nothing when no such field holds one |
+| `search::highlight(field)` | the byte ranges of the words the query reached in that field — through synonyms and expansions too, and a phrase's runs only |
+
+Each refuses with `NotSearched` outside a `FROM SEARCH`. Offsets are bytes; the
+store does not render.
+
+**Type-ahead.** `SELECT term, documents FROM SEARCH knowledge COMPLETE 'lov'`
+answers the search's words beginning with what was typed, as rows, ranked by how
+many records hold them. The floor is three characters. With a stemming analyzer
+the words are stems, so a type-ahead box wants a search over an unstemmed one.
+
+**Facets** are a grouping over the same source:
+
+```
+SELECT kind, count(*) AS n FROM SEARCH knowledge MATCHES 'ada' GROUP BY kind;
+```
+
+counts every answered record, not one page. In one transaction with the ranked
+read it describes the same snapshot. An ungrouped search answers in its own order
+and refuses `ORDER BY` with `SearchIsItsOwnOrder`; `AFTER`, `VERSION`, `FETCH`
+and `ORDER BY FUSE` are refused over a search.
+
+**Grants.** A table the reader may not read is not searched, and neither is a
+member with a field the reader may not read: its statistics and dictionary cannot
+say which field a word came from, so a partial view would leak through the
+numbers. The collection the reader is ranked against is the members they reach,
+so another table's statistics never reach a reader of one. Type-ahead follows
+the same rule.
+
+**On a cluster** a node holding part of a split member table refuses with
+`NotHeldHere`, and the client is redirected to a node holding the whole table, so
+the statistics a score is measured against are always the whole table's.
+
+`INFO FOR SEARCH knowledge` answers the analyzer, the stop words and, per member,
+the table, each field's weight and options and how many records it holds.
+`EXPLAIN` reports access `index` and shape `search`, or `scan` when a word could
+not be walked within its cap.
+
+```
+DROP SEARCH knowledge;
+DROP SYNONYMS machines;
+DROP STOPWORDS common;
+```
+
+`DROP SEARCH` removes every member. A word set goes only once no search names it.
 
 ### Edge tables
 

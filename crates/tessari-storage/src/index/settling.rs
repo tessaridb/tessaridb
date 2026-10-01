@@ -3,8 +3,10 @@
 use super::Pending;
 use crate::error::Result;
 use crate::store::Store;
+use tessari_constants::SEARCH_PREFIX_MINIMUM;
 use tessari_encoding::{
-    SearchStatistics, SearchStatisticsKey, SearchTermKey, StoreKey, StoreValue, TermStatistics,
+    IndexAddress, SearchStatistics, SearchStatisticsKey, SearchSuffixKey, SearchTermKey, StoreKey,
+    StoreValue, TermStatistics,
 };
 use tessari_kv::WriteBatch;
 
@@ -63,7 +65,10 @@ pub(crate) fn settle(
     let (moved, built) = (&pending.moved, &pending.built);
     let keyspace = SearchStatisticsKey::keyspace();
     for (address, delta) in moved {
-        if delta.is_zero() {
+        // A member's field totals can move while its two counts net to zero —
+        // text moved from one field to another — so both are asked.
+        let lengths = pending.lengths.get(address);
+        if delta.is_zero() && lengths.is_none_or(|moved| moved.iter().all(|held| *held == 0)) {
             continue;
         }
         let key = SearchStatisticsKey::new(*address).encode();
@@ -72,19 +77,32 @@ pub(crate) fn settle(
         // movement, and starts from what is stored. Reading the stored figure
         // for a build would count every document twice — silently, since a
         // collection statistic has no reader who would notice it drifting.
-        let held = if built.contains(address) {
-            SearchStatistics::default()
+        let (held, fields) = if built.contains(address) {
+            (SearchStatistics::default(), Vec::new())
         } else {
             match store.backend().get(keyspace, &key)? {
-                Some(bytes) => SearchStatistics::decode(bytes.as_slice())?,
-                None => SearchStatistics::default(),
+                Some(bytes) => SearchStatistics::fielded(bytes.as_slice())?,
+                None => (SearchStatistics::default(), Vec::new()),
             }
         };
         let updated = SearchStatistics::new(
             shift(held.documents, delta.documents),
             shift(held.terms, delta.tokens),
         );
-        batch = batch.put(keyspace, key, updated.encode());
+        let value = match lengths {
+            Some(moved) => {
+                let totals: Vec<u64> = moved
+                    .iter()
+                    .enumerate()
+                    .map(|(at, delta)| shift(fields.get(at).copied().unwrap_or(0), *delta))
+                    .collect();
+                updated.encode_fielded(&totals)
+            }
+            // A member this batch did not move a field of keeps its totals.
+            None if !fields.is_empty() => updated.encode_fielded(&fields),
+            None => updated.encode(),
+        };
+        batch = batch.put(keyspace, key, value);
     }
     settle_terms(store, batch, pending)
 }
@@ -133,6 +151,14 @@ pub(crate) fn settle_terms(
                 }
             };
             let documents = shift(held.documents, moved.delta);
+            // The term entering or leaving the dictionary is what moves its
+            // suffixes, in this same batch, so an infix walk never reaches a
+            // term the dictionary does not hold (ADR-0105 D9).
+            if let Some(text) = term.as_text()
+                && (documents == 0) != (held.documents == 0)
+            {
+                batch = suffixes(batch, address, &text, documents > 0);
+            }
             batch = if documents == 0 {
                 // The extremes leave with the entry, which is the one place they
                 // are allowed to move inward. A term no record holds has no
@@ -159,6 +185,32 @@ pub(crate) fn settle_terms(
         }
     }
     Ok(batch)
+}
+
+/// Write or delete every suffix of `term` at least the prefix floor long.
+fn suffixes(
+    mut batch: WriteBatch,
+    address: &IndexAddress,
+    term: &str,
+    arriving: bool,
+) -> WriteBatch {
+    let keyspace = SearchSuffixKey::keyspace();
+    let length = term.chars().count();
+    for (skipped, (at, _)) in term.char_indices().enumerate() {
+        if length.saturating_sub(skipped) < SEARCH_PREFIX_MINIMUM {
+            break;
+        }
+        let Some(suffix) = term.get(at..) else {
+            continue;
+        };
+        let key = SearchSuffixKey::new(*address, suffix.to_owned(), term.to_owned()).encode();
+        batch = if arriving {
+            batch.put(keyspace, key, SearchSuffixKey::empty())
+        } else {
+            batch.delete(keyspace, key)
+        };
+    }
+    batch
 }
 
 /// A count moved by a signed amount, without wrapping below zero.

@@ -315,6 +315,75 @@ impl Transaction<'_> {
         }
     }
 
+    /// A search member's statistics: the collection's two numbers and each
+    /// field's token total, in the member's field order (ADR-0105).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or the stored value cannot be
+    /// decoded.
+    pub fn member_statistics(
+        &self,
+        index: &IndexDefinition,
+    ) -> Result<(SearchStatistics, Vec<u64>)> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let key = SearchStatisticsKey::new(address).encode();
+        match self
+            .store
+            .backend()
+            .get(SearchStatisticsKey::keyspace(), &key)?
+        {
+            Some(bytes) => Ok(SearchStatistics::fielded(bytes.as_slice())?),
+            None => Ok((SearchStatistics::default(), Vec::new())),
+        }
+    }
+
+    /// The records a search member nominates: for every group, a record posted
+    /// against at least one of its terms — and every record this transaction
+    /// wrote on the member's table, whose postings do not exist yet.
+    ///
+    /// A **candidate set and nothing more** (ADR-0105): the caller re-tests each
+    /// record against the whole query on the text it may read, so a pending
+    /// write nominated here that no longer matches is dropped there, and a
+    /// deleted one is not found to test.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a key cannot be decoded.
+    pub fn member_candidates(
+        &self,
+        index: &IndexDefinition,
+        groups: &[Vec<String>],
+    ) -> Result<BTreeSet<RecordId>> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let mut holding: Option<BTreeSet<RecordId>> = None;
+        for group in groups {
+            let found = self.union(&address, group)?;
+            let narrowed = match holding {
+                None => found,
+                Some(mut held) => {
+                    held.retain(|id| found.contains(id));
+                    held
+                }
+            };
+            let empty = narrowed.is_empty();
+            holding = Some(narrowed);
+            if empty {
+                break;
+            }
+        }
+        let mut holding = holding.unwrap_or_default();
+        for pending in self.writes.keys() {
+            if pending.namespace == index.namespace
+                && pending.database == index.database
+                && pending.table == index.table
+            {
+                holding.insert(pending.id.clone());
+            }
+        }
+        Ok(holding)
+    }
+
     /// How many documents this index posts the term against.
     ///
     /// The number a ranking weighs a term by. It is read from the term's

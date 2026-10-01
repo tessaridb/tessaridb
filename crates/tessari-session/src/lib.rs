@@ -39,6 +39,7 @@ mod digest;
 mod effect;
 mod elsewhere;
 mod encoding;
+mod engine;
 mod error;
 mod evaluate;
 mod execute;

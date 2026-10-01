@@ -170,12 +170,47 @@ impl StoreValue for SearchStatistics {
     }
 
     fn decode(bytes: &[u8]) -> Result<Self> {
+        let (statistics, _) = Self::fielded(bytes)?;
+        Ok(statistics)
+    }
+}
+
+impl SearchStatistics {
+    /// The value a search member stores: the two numbers, then each field's
+    /// token total in the member's field order (ADR-0105).
+    ///
+    /// A field index stores no field totals, so its value is byte-identical to
+    /// [`StoreValue::encode`]'s and the two forms are told apart by length.
+    #[must_use]
+    pub fn encode_fielded(&self, fields: &[u64]) -> Value {
+        let mut writer = KeyWriter::new();
+        writer.put_u64(self.documents).put_u64(self.terms);
+        for terms in fields {
+            writer.put_u64(*terms);
+        }
+        let body = writer.finish();
+        let mut buffer = with_header(0, body.len());
+        buffer.extend_from_slice(&body);
+        Value::from(buffer)
+    }
+
+    /// The two numbers and each field's token total — none for a field index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a payload that is not two counts followed by whole
+    /// field totals.
+    pub fn fielded(bytes: &[u8]) -> Result<(Self, Vec<u64>)> {
         let (_, payload) = split_header(bytes, 0)?;
         let mut reader = KeyReader::new(KeyKind::SearchStatistics, payload);
         let documents = reader.take_u64()?;
         let terms = reader.take_u64()?;
+        let mut fields = Vec::new();
+        while reader.remaining() > 0 {
+            fields.push(reader.take_u64()?);
+        }
         reader.finish()?;
-        Ok(Self { documents, terms })
+        Ok((Self { documents, terms }, fields))
     }
 }
 
@@ -447,5 +482,105 @@ impl StoreKey for SearchTermKey {
         let term = take_values(&mut reader)?;
         reader.finish()?;
         Ok(Self { address, term })
+    }
+}
+
+/// One suffix of one dictionary term (ADR-0105 D9, key kind `0x1f`).
+///
+/// ```text
+/// <0x1f> <address> <suffix, variable> <term, variable>
+/// ```
+///
+/// Every suffix of a term at least the prefix floor long has one entry, written
+/// when the term enters the dictionary and deleted when it leaves, in the same
+/// batch as the dictionary entry — so an infix is a **range read over
+/// suffixes**: the suffixes beginning with the piece name exactly the terms
+/// containing it, and no n-gram ever enters the analysis chain. The growth is
+/// bounded by the dictionary, not by the text.
+///
+/// Both strings are the order-preserving variable encoding, so a walk bounded
+/// by [`Self::piece_prefix`] reaches every suffix beginning with the piece and
+/// nothing else. The value is empty: the entry's presence is the whole fact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchSuffixKey {
+    /// Which index the term belongs to.
+    pub address: IndexAddress,
+    /// The suffix.
+    pub suffix: String,
+    /// The term it is a suffix of.
+    pub term: String,
+}
+
+impl SearchSuffixKey {
+    /// Name one suffix of one term.
+    #[must_use]
+    pub const fn new(address: IndexAddress, suffix: String, term: String) -> Self {
+        Self {
+            address,
+            suffix,
+            term,
+        }
+    }
+
+    /// Where an index's suffixes live.
+    #[must_use]
+    pub const fn keyspace() -> tessari_kv::Keyspace {
+        KeyKind::SearchSuffix.keyspace()
+    }
+
+    /// The bytes every suffix beginning with `piece` starts with.
+    #[must_use]
+    pub fn piece_prefix(address: &IndexAddress, piece: &str) -> Vec<u8> {
+        let mut writer = KeyWriter::new();
+        writer.put_variable_unterminated(piece.as_bytes());
+        let mut bytes = address.prefix(KeyKind::SearchSuffix);
+        bytes.extend_from_slice(&writer.finish());
+        bytes
+    }
+
+    /// The key.
+    #[must_use]
+    pub fn encode(&self) -> Key {
+        let mut writer = KeyWriter::new();
+        writer
+            .put_variable(self.suffix.as_bytes())
+            .put_variable(self.term.as_bytes());
+        let mut bytes = self.address.prefix(KeyKind::SearchSuffix);
+        bytes.extend_from_slice(&writer.finish());
+        Key::from(bytes)
+    }
+
+    /// Read a key back.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for bytes that are not a suffix key, or whose strings
+    /// are not text.
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(KeyKind::SearchSuffix, bytes);
+        reader.expect_kind()?;
+        let address = IndexAddress::read(&mut reader)?;
+        let suffix = String::from_utf8(reader.take_variable()?).map_err(|_| {
+            crate::error::Error::InvalidUtf8 {
+                kind: KeyKind::SearchSuffix,
+            }
+        })?;
+        let term = String::from_utf8(reader.take_variable()?).map_err(|_| {
+            crate::error::Error::InvalidUtf8 {
+                kind: KeyKind::SearchSuffix,
+            }
+        })?;
+        reader.finish()?;
+        Ok(Self {
+            address,
+            suffix,
+            term,
+        })
+    }
+
+    /// The value every suffix entry holds: nothing beyond the header.
+    #[must_use]
+    pub fn empty() -> Value {
+        Value::from(with_header(0, 0))
     }
 }

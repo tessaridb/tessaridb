@@ -162,6 +162,12 @@ impl Session<'_> {
         if let Some(latest) = &select.latest {
             self.check_latest(transaction, select, latest)?;
         }
+        // A search ranks its records itself and projects them with what it
+        // ranked them by; only a grouped read takes them through the stages
+        // below, as an already-held source (ADR-0105 D6).
+        if matches!(select.from, tessari_ql::Source::Search { .. }) && !groups(select) {
+            return self.search_answer(transaction, select, &noticed, notes);
+        }
         // A grouping read of a table this node holds only part of is folded on
         // the leaders when it can be (ADR-0097 D2): its groups stand in for the
         // records, and every stage after the fold runs below as it always has.
@@ -421,7 +427,7 @@ impl Session<'_> {
     /// constant parts are constant across every record it is applied to.
     /// Rebuilding them per record is what the benchmark harness once found
     /// dominating a nearest-neighbour read.
-    pub(super) fn shaped(
+    pub(crate) fn shaped(
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,

@@ -272,7 +272,7 @@ impl Session<'_> {
         path: &tessari_types::Path,
     ) -> Result<Option<(tessari_storage::IndexDefinition, crate::redact::Visible)>> {
         let Some(index) = Catalog::new(transaction)
-            .indexes_on(table)?
+            .field_indexes_on(table)?
             .into_iter()
             .find(|index| index.spatial && index.fields.first() == Some(path))
         else {

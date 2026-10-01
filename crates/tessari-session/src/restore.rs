@@ -174,6 +174,7 @@ const fn placed(kind: &StatementKind) -> bool {
             | StatementKind::DefineGeo { .. }
             | StatementKind::DefineVault { .. }
             | StatementKind::DefineIndex { .. }
+            | StatementKind::DefineSearch { .. }
             | StatementKind::DefineField { .. }
             | StatementKind::DefineQueue { .. }
             | StatementKind::DefineSeries { .. }
@@ -254,7 +255,9 @@ fn vetted(session: &Session<'_>, script: Script, text: &str) -> Result<(Script, 
             // The script batches its records between these; the restore is
             // one transaction already, so the batches fold into it.
             StatementKind::Begin | StatementKind::Commit => continue,
-            StatementKind::DefineAnalyzer { .. } => {}
+            StatementKind::DefineAnalyzer { .. }
+            | StatementKind::DefineSynonyms { .. }
+            | StatementKind::DefineStopwords { .. } => {}
             kind if placed(kind) => {
                 if database.is_none() {
                     return Err(refused(&format!(

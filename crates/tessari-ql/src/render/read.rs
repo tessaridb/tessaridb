@@ -177,6 +177,7 @@ pub(crate) fn write_source(out: &mut String, source: &Source, span: Span) -> Res
         Source::Traverse { .. } => unwritten("a traversal"),
         Source::Join { .. } => unwritten("a join"),
         Source::Subquery { .. } => unwritten("a materialised read"),
+        Source::Search { .. } => unwritten("a read of a search"),
     }
 }
 

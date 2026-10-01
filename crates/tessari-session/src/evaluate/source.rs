@@ -126,6 +126,14 @@ impl Session<'_> {
         within: Option<Deadline>,
     ) -> Result<(Prepared<'a>, Searched)> {
         match &select.from {
+            // A grouped read of a search: the ranked records, held, and folded
+            // below like any other source (ADR-0105 D6). An ungrouped one never
+            // reaches here — it answers through `search_answer`.
+            Source::Search { .. } => {
+                let (records, plan) =
+                    self.search_records(transaction, select, reporting.noticed)?;
+                Ok((Prepared::Held(records, plan), Searched::default()))
+            }
             // Resolved from `meta` rather than read from a table, because that
             // is where it is: the identity is deliberately outside the log
             // (ADR-0018 §1). It needs no tenancy, so `$node` answers without a

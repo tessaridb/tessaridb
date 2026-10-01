@@ -57,6 +57,16 @@ impl Parser<'_> {
                 self.advance();
                 Ok(StatementKind::DropAnalyzer { name: self.name()? })
             }
+            Some(Keyword::Search) => {
+                self.advance();
+                Ok(StatementKind::DropSearch { name: self.name()? })
+            }
+            _ if self.eat_word("synonyms") => {
+                Ok(StatementKind::DropSynonyms { name: self.name()? })
+            }
+            _ if self.eat_word("stopwords") => {
+                Ok(StatementKind::DropStopwords { name: self.name()? })
+            }
             Some(Keyword::Database) => {
                 self.advance();
                 Ok(StatementKind::DropDatabase { name: self.name()? })

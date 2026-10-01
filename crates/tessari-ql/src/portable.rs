@@ -97,7 +97,10 @@ fn reads_only_the_record(expr: &Expr) -> bool {
         ExprKind::Binary { op, left, right } => {
             !matches!(
                 op,
-                BinaryOp::Matches | BinaryOp::MatchesPrefix | BinaryOp::MatchesFuzzy
+                BinaryOp::Matches
+                    | BinaryOp::MatchesPrefix
+                    | BinaryOp::MatchesFuzzy
+                    | BinaryOp::MatchesInfix
             ) && reads_only_the_record(left)
                 && reads_only_the_record(right)
         }

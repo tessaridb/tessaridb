@@ -390,7 +390,7 @@ impl Session<'_> {
         let suggestion = if self.missing(transaction, table, Part::Whole)?.is_some() {
             None
         } else {
-            let indexes = Catalog::new(transaction).indexes_on(table)?;
+            let indexes = Catalog::new(transaction).field_indexes_on(table)?;
             suggested(transaction, &indexes, &analyzers, &matched)?
         };
 
@@ -427,7 +427,7 @@ fn searched_paths<'a>(
             }
         }
         ExprKind::Binary {
-            op: op @ (BinaryOp::MatchesPrefix | BinaryOp::MatchesFuzzy),
+            op: op @ (BinaryOp::MatchesPrefix | BinaryOp::MatchesFuzzy | BinaryOp::MatchesInfix),
             left,
             right,
         } => {

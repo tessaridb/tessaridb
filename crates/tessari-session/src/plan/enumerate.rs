@@ -252,14 +252,26 @@ impl Session<'_> {
                         });
                     }
                 }
-                Comparison::PrefixTerms | Comparison::FuzzyTerms => {
+                Comparison::PrefixTerms | Comparison::FuzzyTerms | Comparison::InfixTerms => {
                     let (Value::String(query), Some(analyzer)) =
                         (bound, searched.analyzer(seek.path))
                     else {
                         continue;
                     };
                     let fuzzy = seek.comparison == Comparison::FuzzyTerms;
-                    let asked = analyzer.prefixes(query);
+                    let infix = seek.comparison == Comparison::InfixTerms;
+                    // An infix is the typed spelling alone: a piece of a word
+                    // stems into nothing (ADR-0105 D9).
+                    let asked: Vec<Vec<String>> = if infix {
+                        analyzer
+                            .prefixes(query)
+                            .into_iter()
+                            .filter_map(|alternatives| alternatives.into_iter().next())
+                            .map(|piece| vec![piece])
+                            .collect()
+                    } else {
+                        analyzer.prefixes(query)
+                    };
                     if asked.is_empty() {
                         continue;
                     }
@@ -288,7 +300,22 @@ impl Session<'_> {
                                 // expansion's size is chosen by the reader
                                 // typing fewer letters, a fuzzy one's by the
                                 // corpus.
-                                let found = if fuzzy {
+                                let found = if infix {
+                                    // An index built before the suffix
+                                    // keyspace existed cannot enumerate, and
+                                    // the scan answers instead.
+                                    match transaction.terms_with_infix(
+                                        index,
+                                        spelling,
+                                        SEARCH_PREFIX_EXPANSION_CAP,
+                                    )? {
+                                        Some(found) => found,
+                                        None => {
+                                            serviceable = false;
+                                            break;
+                                        }
+                                    }
+                                } else if fuzzy {
                                     transaction.terms_within_distance(
                                         index,
                                         spelling,
@@ -349,7 +376,9 @@ impl Session<'_> {
                             continue;
                         }
                         offered.push(Candidate {
-                            served: if fuzzy {
+                            served: if infix {
+                                Served::InfixTerms(expansions)
+                            } else if fuzzy {
                                 Served::FuzzyTerms(expansions)
                             } else {
                                 Served::PrefixTerms(expansions)

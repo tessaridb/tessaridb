@@ -1,9 +1,9 @@
 //! An index's definition and shape, and the distances a vector index measures.
 
 use super::{
-    FIELD_DATABASE, FIELD_FIELDS, FIELD_ID, FIELD_NAME, FIELD_NAMESPACE, FIELD_OFFSETS,
-    FIELD_POSITIONS, FIELD_SEARCH, FIELD_SPATIAL, FIELD_TABLE, FIELD_UNIQUE, FIELD_UNSCORED,
-    FIELD_VECTOR, field_id, field_name, flag, number, object,
+    EngineMember, FIELD_DATABASE, FIELD_ENGINE, FIELD_FIELDS, FIELD_ID, FIELD_NAME,
+    FIELD_NAMESPACE, FIELD_OFFSETS, FIELD_POSITIONS, FIELD_SEARCH, FIELD_SPATIAL, FIELD_TABLE,
+    FIELD_UNIQUE, FIELD_UNSCORED, FIELD_VECTOR, field_id, field_name, flag, number, object,
 };
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
@@ -141,6 +141,13 @@ pub struct IndexDefinition {
     pub spatial: bool,
     /// What it keeps beside its postings, when it is a search index.
     pub costs: SearchCosts,
+    /// The search this index is a member of, when it is one (ADR-0105).
+    ///
+    /// A member holds postings over **several** fields analysed with the
+    /// search's own analyzer, so no field-index reader may take it for one of
+    /// its own: `search` is false on a member and [`Self::is_ordered`] answers
+    /// no for it.
+    pub engine: Option<EngineMember>,
 }
 
 impl IndexDefinition {
@@ -165,13 +172,13 @@ impl IndexDefinition {
     /// a kind that forgets to update it is excluded rather than admitted.
     #[must_use]
     pub const fn is_ordered(&self) -> bool {
-        !self.search && !self.spatial && self.vector.is_none()
+        !self.search && !self.spatial && self.vector.is_none() && self.engine.is_none()
     }
 
     /// The value written to the catalog.
     #[must_use]
     pub fn to_value(&self) -> Value {
-        Value::Object(BTreeMap::from([
+        let mut value = BTreeMap::from([
             (FIELD_ID.to_owned(), number(self.id.get())),
             (FIELD_NAMESPACE.to_owned(), number(self.namespace.get())),
             (FIELD_DATABASE.to_owned(), number(self.database.get())),
@@ -200,7 +207,13 @@ impl IndexDefinition {
                 self.vector
                     .map_or(Value::None, |held| Value::from(held.name())),
             ),
-        ]))
+        ]);
+        // Written only on a member, so every other index's entry keeps the
+        // bytes it always had.
+        if let Some(engine) = &self.engine {
+            value.insert(FIELD_ENGINE.to_owned(), engine.to_value());
+        }
+        Value::Object(value)
     }
 
     /// Read a definition back.
@@ -277,6 +290,10 @@ impl IndexDefinition {
                 offsets: flag(fields, FIELD_OFFSETS, "index")?,
                 unscored: flag(fields, FIELD_UNSCORED, "index")?,
             },
+            engine: fields
+                .get(FIELD_ENGINE)
+                .map(EngineMember::from_value)
+                .transpose()?,
         })
     }
 }

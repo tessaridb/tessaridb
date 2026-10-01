@@ -89,6 +89,7 @@ because renumbering after data exists is a full rebuild.
 | `0x1c` | `TopicOffset` | `index` | implemented — see §6.2d |
 | `0x1d` | `TopicEntry` | `index` | implemented — see §6.2d |
 | `0x1e` | `TopicHead` | `index` | implemented — see §6.2d |
+| `0x1f` | `SearchSuffix` (suffixes of dictionary terms) | `index` | implemented — see §6.2b-5 |
 | `0x20` | `LogEntry` | `log` | implemented |
 | `0x30` | `FormatVersion` | `meta` | implemented |
 | `0x31` | `AppliedPosition` | `meta` | implemented |
@@ -609,6 +610,20 @@ divided by `documents` and yield an average document *length*. The postings
 deduplicate and this does not; both come from one analyzer pass over the same
 text, so they cannot drift apart.
 
+A **search member** (`DEFINE SEARCH`, ADR-0105) uses the same key and appends
+each of its fields' token totals, in the member's field order:
+
+```
+value  <documents:u64> <terms:u64> [<field terms:u64> × fields]
+```
+
+The two forms are told apart by length — 16 bytes for a field index, 16 + 8 per
+field for a member — and a payload that is not a whole number of totals is
+refused. `terms` is still the sum. A member's postings (§6.2a) are the counted
+form, its frequency and length totals over all its fields, so every posting
+reader reads them unchanged; the per-field numbers a BM25F score needs are taken
+from the record's text when the record is scored.
+
 ### 6.2b-4 `SearchTerm` — keyspace `index`
 
 ```
@@ -653,6 +668,25 @@ until there is a pruning evaluator, and a maintained bound with no reader is a
 number free to drift. The value dispatches on its own length, so adding it is a
 value-codec bump under §8 rather than a redesign, and a payload longer than this
 build knows is refused rather than half-read.
+
+### 6.2b-5 `SearchSuffix` — keyspace `index`
+
+```
+key    <0x1f> <namespace:u32> <database:u32> <table:u32> <index:u32> <suffix:variable> <term:variable>
+value  (header only)
+```
+
+One entry per suffix of at least three characters of every term the dictionary
+(§6.2b-4) holds, written when the term's entry is created and deleted when it is
+deleted, in the same batch. An infix (`MATCHES INFIX`) is a range read bounded by
+the piece written unterminated, which reaches exactly the suffixes beginning with
+it and so exactly the terms containing it. The growth is bounded by the
+dictionary rather than by the text, and no n-gram token exists anywhere.
+
+The entry with an **empty** suffix and an empty term is a marker the index build
+writes: it says the suffixes are complete for this index. An index built before
+this kind existed has none, and an infix over it is answered by the scan rather
+than by a walk that would miss its older terms. `REBUILD INDEX` writes it.
 
 ### 6.2b-2 `VectorRecall` — keyspace `index`
 

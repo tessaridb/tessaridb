@@ -7,7 +7,7 @@ use tessari_ql::{
 };
 use tessari_storage::{
     Catalog, FieldShape, IndexShape, QueueDeclaration, SeriesDeclaration, TableKind, TableShape,
-    Transaction, VectorDistance, ViewDeclaration, violations,
+    Transaction, VectorDistance, ViewDeclaration, WordSetKind, violations,
 };
 
 use tessari_types::{IdentityKind, ShardId, Value};
@@ -235,6 +235,43 @@ impl Session<'_> {
                 filters,
                 if_not_exists,
             } => self.define_analyzer(transaction, name, filters, *if_not_exists),
+            StatementKind::DefineSearch {
+                name,
+                members,
+                analyzer,
+                stopwords,
+                if_not_exists,
+            } => self.define_search(
+                transaction,
+                (name, members, analyzer, stopwords.as_ref()),
+                *if_not_exists,
+                span,
+            ),
+            StatementKind::DefineSynonyms {
+                name,
+                entries,
+                if_not_exists,
+            } => self.define_word_set(
+                transaction,
+                WordSetKind::Synonyms,
+                name,
+                entries.iter().cloned().collect(),
+                *if_not_exists,
+            ),
+            StatementKind::DefineStopwords {
+                name,
+                words,
+                if_not_exists,
+            } => self.define_word_set(
+                transaction,
+                WordSetKind::Stopwords,
+                name,
+                words
+                    .iter()
+                    .map(|word| (word.clone(), Vec::new()))
+                    .collect(),
+                *if_not_exists,
+            ),
             StatementKind::DefineUser {
                 name,
                 scope,
@@ -470,6 +507,13 @@ impl Session<'_> {
                 Ok(Outcome::Done)
             }
             StatementKind::DropAnalyzer { name } => self.drop_analyzer(transaction, name, span),
+            StatementKind::DropSearch { name } => self.drop_search(transaction, name, span),
+            StatementKind::DropSynonyms { name } => {
+                self.drop_word_set(transaction, WordSetKind::Synonyms, name)
+            }
+            StatementKind::DropStopwords { name } => {
+                self.drop_word_set(transaction, WordSetKind::Stopwords, name)
+            }
             StatementKind::DropReplica { name } => self.drop_replica(transaction, name, span),
             StatementKind::AlterReplica { name, leads } => {
                 self.alter_replica(transaction, name, leads.as_ref(), span)

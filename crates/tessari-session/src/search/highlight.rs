@@ -130,6 +130,17 @@ fn mark(analyzer: &Analyzer, op: BinaryOp, query: &str, terms: &[String], reache
                 *hit |= asked.iter().any(|word| near(word, term));
             }
         }
+        // The typed spelling of each word, found inside the term (ADR-0105 D9).
+        BinaryOp::MatchesInfix => {
+            let pieces: Vec<String> = analyzer
+                .prefixes(query)
+                .into_iter()
+                .filter_map(|alternatives| alternatives.into_iter().next())
+                .collect();
+            for (hit, term) in reached.iter_mut().zip(terms) {
+                *hit |= pieces.iter().any(|piece| term.contains(piece.as_str()));
+            }
+        }
         _ => {}
     }
 }

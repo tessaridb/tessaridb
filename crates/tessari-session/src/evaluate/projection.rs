@@ -37,10 +37,18 @@ impl Session<'_> {
         searched: &Searched,
         noticed: &Noticed,
     ) -> Result<Value> {
-        self.project_with(transaction, id, record, wanted, (searched, noticed), None)
+        self.project_with(
+            transaction,
+            id,
+            record,
+            wanted,
+            (searched, noticed),
+            (None, None),
+        )
     }
 
-    /// [`Self::project`], with the record's ranks when a fused read projects it.
+    /// [`Self::project`], with the record's ranks when a fused read projects
+    /// it, or its hit when a `FROM SEARCH` does.
     pub(crate) fn project_with(
         &self,
         transaction: &mut Transaction<'_>,
@@ -48,7 +56,7 @@ impl Session<'_> {
         record: &Value,
         wanted: &Shaped,
         (searched, noticed): (&Searched, &Noticed),
-        ranks: Option<&[Option<u64>]>,
+        (ranks, hit): (Option<&[Option<u64>]>, Option<&crate::engine::Hit<'_>>),
     ) -> Result<Value> {
         // The star first, so a value written out by name is written **over** the
         // field it shares a name with. `SELECT *, upper(name) AS name` answers
@@ -105,10 +113,11 @@ impl Session<'_> {
             let scope = Scope::searching(record, searched)
                 .identified(id)
                 .noticing(noticed);
+            let scope = ranks.map_or(scope, |ranks| scope.with_ranks(ranks));
             let held = self.evaluate_in(
                 transaction,
                 &value.value,
-                ranks.map_or(scope, |ranks| scope.with_ranks(ranks)),
+                hit.map_or(scope, |hit| scope.with_hit(hit)),
             )?;
             if held.is_present() {
                 projected.insert(value.name.text.clone(), held);

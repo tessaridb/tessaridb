@@ -1,6 +1,7 @@
 //! DEFINE, and the kinds of table and index it declares.
 
 mod declared;
+mod search;
 use super::Parser;
 use tessari_types::{ConflictPolicy, IdentityKind, RecordId};
 
@@ -209,6 +210,11 @@ impl Parser<'_> {
             Some(Keyword::Index) => self.define_index(),
             Some(Keyword::Field) => self.define_field(),
             Some(Keyword::Analyzer) => self.define_analyzer(),
+            Some(Keyword::Search) => self.define_search(),
+            // Contextual, like `NODE` below: a table called `synonyms` keeps
+            // its name everywhere but directly after `DEFINE`.
+            _ if self.eat_word("synonyms") => self.define_synonyms(),
+            _ if self.eat_word("stopwords") => self.define_stopwords(),
             Some(Keyword::User) => self.define_user(),
             // `NODE` and `REPLICA` are read as contextual words, for the reason
             // `INFO FOR STORE` gives: reserving a word takes a perfectly good

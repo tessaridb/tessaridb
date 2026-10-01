@@ -1055,3 +1055,12 @@ pub const GATHER_PAGE_RECORDS: usize = 1024;
 /// is bounded at all so that one page is read and folded well inside the
 /// peer link's read deadline (`GREETING_SECONDS`).
 pub const GATHER_FOLD_RECORDS: usize = 65_536;
+
+/// How many tokens a `search::snippet()` window spans (ADR-0105).
+///
+/// Unit: tokens of the field's analysed text. The window is chosen by how many
+/// **distinct** query words it holds, then by how many matches, then by being
+/// earliest — so a passage covering the whole query beats one repeating a
+/// single word. Long enough to read a sentence around a match, short enough to
+/// sit in a result list.
+pub const SEARCH_SNIPPET_TOKENS: usize = 24;

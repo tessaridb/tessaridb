@@ -16,7 +16,9 @@ use crate::arithmetic::{arithmetic, negate};
 use crate::call::call;
 use crate::condition::boolean;
 use crate::error::{Error, Result};
-use crate::search::{matches_fuzzy_terms, matches_prefix_terms, matches_terms};
+use crate::search::{
+    matches_fuzzy_terms, matches_infix_terms, matches_prefix_terms, matches_terms,
+};
 use crate::session::Session;
 
 pub(crate) use keys::{collect_by_key, key_bound, listed, ordered_index_on};
@@ -183,6 +185,13 @@ impl Session<'_> {
                 arguments,
                 span,
             } => {
+                // A `FROM SEARCH` record answers its own score, table, snippet
+                // and marks, from what the search ranked it with (ADR-0105).
+                if let Some(answer) =
+                    self.answered_by_hit(transaction, *function, arguments, scope, *span)?
+                {
+                    return Ok(answer);
+                }
                 // A score is the second thing in this language that needs more
                 // than its arguments — the field's analyzer, and what the
                 // collection looks like. `call` takes values, and neither of
@@ -255,6 +264,7 @@ impl Session<'_> {
                         BinaryOp::Matches => matches_terms(analyzer, value, &other),
                         BinaryOp::MatchesPrefix => matches_prefix_terms(analyzer, value, &other),
                         BinaryOp::MatchesFuzzy => matches_fuzzy_terms(analyzer, value, &other),
+                        BinaryOp::MatchesInfix => matches_infix_terms(analyzer, value, &other),
                         held_op => {
                             scope.compared(value, &other);
                             apply(held_op, value, &other)
@@ -268,7 +278,10 @@ impl Session<'_> {
                 // question of it.
                 if matches!(
                     *op,
-                    BinaryOp::Matches | BinaryOp::MatchesPrefix | BinaryOp::MatchesFuzzy
+                    BinaryOp::Matches
+                        | BinaryOp::MatchesPrefix
+                        | BinaryOp::MatchesFuzzy
+                        | BinaryOp::MatchesInfix
                 ) {
                     let analyzer = match &left.kind {
                         ExprKind::Path(field) => scope.analyzer(&field.path),
@@ -277,6 +290,7 @@ impl Session<'_> {
                     return Ok(Value::Bool(match *op {
                         BinaryOp::MatchesPrefix => matches_prefix_terms(analyzer, &held, &other),
                         BinaryOp::MatchesFuzzy => matches_fuzzy_terms(analyzer, &held, &other),
+                        BinaryOp::MatchesInfix => matches_infix_terms(analyzer, &held, &other),
                         _ => matches_terms(analyzer, &held, &other),
                     }));
                 }

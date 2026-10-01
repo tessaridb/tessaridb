@@ -175,6 +175,9 @@ pub const TOPIC_POSITIONS: TableId = TableId::new(21);
 /// cost ADR-0086 accepts for keeping the in-flight set in one bounded record.
 pub const TOPIC_GROUPS: TableId = TableId::new(22);
 
+/// Synonym and stop-word sets, keyed by kind and name (ADR-0105).
+pub const WORD_SETS: TableId = TableId::new(23);
+
 /// The one record [`VAULT_ROOT`] holds.
 pub const VAULT_ROOT_ID: u32 = 1;
 
@@ -330,6 +333,7 @@ mod tests {
             FAILOVER,
             TOPIC_POSITIONS,
             TOPIC_GROUPS,
+            WORD_SETS,
         ];
         for (index, table) in ids.iter().enumerate() {
             assert!(

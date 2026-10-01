@@ -383,6 +383,7 @@ impl Session<'_> {
             }
             plan::Served::PrefixTerms(expansions)
             | plan::Served::FuzzyTerms(expansions)
+            | plan::Served::InfixTerms(expansions)
             | plan::Served::AnyTerms(expansions) => {
                 let mut rows = Vec::new();
                 for id in transaction.records_by_expansions(&chosen.index, analyzer, expansions)? {

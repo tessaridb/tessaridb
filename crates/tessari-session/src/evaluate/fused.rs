@@ -65,7 +65,7 @@ impl Session<'_> {
                     &record,
                     wanted,
                     (searched, noticed),
-                    Some(&ranks),
+                    (Some(&ranks), None),
                 )?,
                 None => record,
             };

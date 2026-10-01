@@ -1,7 +1,7 @@
 //! Binding the parameters inside identities, reads and expressions.
 
 use super::{Binding, bind_join_side, bind_range, bind_target};
-use crate::ast::{Expr, ExprKind, Identity, Projection, Select, Source};
+use crate::ast::{Expr, ExprKind, Identity, Projection, SearchAsk, Select, Source};
 use crate::error::{Error, Result};
 use crate::token::Span;
 use tessari_types::Value;
@@ -88,6 +88,16 @@ pub(crate) fn bind_select(select: &mut Select, binding: &Binding<'_>) -> Result<
         }
         Source::Subquery { read, condition } => {
             bind_select(read, binding)?;
+            if let Some(condition) = condition {
+                bind_expr(condition, binding)?;
+            }
+        }
+        // The query and the condition are values; the search is a name.
+        Source::Search { ask, condition, .. } => {
+            match ask {
+                SearchAsk::Matches { query, .. } => bind_expr(query, binding)?,
+                SearchAsk::Complete { beginning } => bind_expr(beginning, binding)?,
+            }
             if let Some(condition) = condition {
                 bind_expr(condition, binding)?;
             }

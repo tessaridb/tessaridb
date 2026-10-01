@@ -109,7 +109,7 @@ impl Parser<'_> {
             }
             self.expect_punct(Punct::ParenClose, "`)` after the arguments")?;
         }
-        if arguments.len() != function.arity() {
+        if !function.accepts(arguments.len()) {
             return Err(Error::WrongArity {
                 function,
                 expected: function.arity(),

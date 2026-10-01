@@ -8,8 +8,8 @@ use super::{
 };
 use crate::token::Span;
 use tessari_types::{
-    Assertion, ConflictPolicy, Duration, FieldKind, Filter, IdentityKind, RecordId, Replication,
-    ReplicationClass,
+    Assertion, ConflictPolicy, Duration, FieldKind, Filter, IdentityKind, Number, RecordId,
+    Replication, ReplicationClass,
 };
 
 /// The statement forms this milestone accepts.
@@ -523,6 +523,39 @@ pub enum StatementKind {
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
+    /// `DEFINE SEARCH knowledge ON notes FIELDS title WEIGHT 3, body ANALYZER english`
+    /// — several fields of several tables ranked as one collection (ADR-0105).
+    DefineSearch {
+        /// The search's name, unique within the database.
+        name: Name,
+        /// The tables and the fields each contributes. Never empty.
+        members: Vec<SearchMember>,
+        /// The analyzer every member field and every query is read with.
+        analyzer: Name,
+        /// `STOPWORDS <set>`: words a query drops outside a quoted phrase.
+        stopwords: Option<Name>,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DEFINE SYNONYMS tech { db: ['database'] }` — query-time alternatives,
+    /// a store-wide name like an analyzer's.
+    DefineSynonyms {
+        /// The set's name.
+        name: Name,
+        /// Each word and what else answers it, as written.
+        entries: Vec<(String, Vec<String>)>,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DEFINE STOPWORDS common ['the', 'a']` — words a query drops.
+    DefineStopwords {
+        /// The set's name.
+        name: Name,
+        /// The words, as written.
+        words: Vec<String>,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
     /// `DEFINE USER ada ON prod.orders ROLE editor PASSWORD '…'`
     ///
     /// The password reaches this tree and goes no further: what is stored is a
@@ -895,6 +928,21 @@ pub enum StatementKind {
         name: Name,
         /// The table it indexes.
         table: TableRef,
+    },
+    /// `DROP SEARCH knowledge` — its member indexes go with it.
+    DropSearch {
+        /// The search to undeclare.
+        name: Name,
+    },
+    /// `DROP SYNONYMS tech` — refused while a search names it.
+    DropSynonyms {
+        /// The set to undeclare.
+        name: Name,
+    },
+    /// `DROP STOPWORDS common` — refused while a search names it.
+    DropStopwords {
+        /// The set to undeclare.
+        name: Name,
     },
     /// `DROP ANALYZER simple` — refused while a field still names it.
     ///
@@ -1853,4 +1901,64 @@ pub struct SearchCosts {
     pub offsets: bool,
     /// `NO SCORE`: no collection statistics, and a score over it is refused.
     pub unscored: bool,
+}
+
+/// One table of a `DEFINE SEARCH` and the fields it contributes (ADR-0105).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchMember {
+    /// The table.
+    pub table: TableRef,
+    /// Its fields, in the order written — the order a field's statistics are
+    /// stored in.
+    pub fields: Vec<SearchField>,
+}
+
+/// One field of a search, with what it allows and how much it weighs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchField {
+    /// The field, possibly nested.
+    pub path: FieldPath,
+    /// `WEIGHT w`, when written: the field's BM25F weight. Absent is one.
+    pub weight: Option<Number>,
+    /// Whether a `MATCHES FUZZY` word may be answered here (`NO FUZZY` clears it).
+    pub fuzzy: bool,
+    /// Whether a prefix word may be answered here (`NO PREFIX` clears it).
+    pub prefix: bool,
+    /// Whether a quoted phrase may be answered here (`NO PHRASE` clears it).
+    pub phrase: bool,
+    /// `SYNONYMS <set>`: alternatives a word is also answered by, in this field.
+    pub synonyms: Option<Name>,
+    /// `SNIPPET`: the field a best window may be taken from.
+    pub snippet: bool,
+}
+
+/// What a `FROM SEARCH` asks of the search.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchAsk {
+    /// `MATCHES [PREFIX | FUZZY | INFIX] <query>` — the records, ranked.
+    Matches {
+        /// How the query's words are read.
+        operator: SearchOperator,
+        /// The query string.
+        query: Box<Expr>,
+    },
+    /// `COMPLETE <beginning>` — the words the search holds that begin with it,
+    /// ranked by how many records hold them.
+    Complete {
+        /// What was typed.
+        beginning: Box<Expr>,
+    },
+}
+
+/// How the words of a search query are read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchOperator {
+    /// `MATCHES`: whole words, `OR`, `NOT`, quoted phrases and starred words.
+    Words,
+    /// `MATCHES PREFIX`: every word a beginning.
+    Prefix,
+    /// `MATCHES FUZZY`: every word within the edit budget.
+    Fuzzy,
+    /// `MATCHES INFIX`: every word a piece of a held word.
+    Infix,
 }

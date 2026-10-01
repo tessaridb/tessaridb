@@ -109,6 +109,7 @@ mod scan_wins;
 mod scoring_source;
 mod scripts;
 mod search_costs;
+mod search_engine;
 mod search_field_grants;
 mod searched_gathers;
 mod selective_stream;

@@ -11,6 +11,7 @@
 //! came from.
 
 mod declarations;
+mod engine;
 mod indexes;
 mod kinds;
 mod reading;
@@ -26,6 +27,7 @@ pub use declarations::{
     EdgeDeclaration, EdgeOrder, QueueDeclaration, SeriesDeclaration, VaultCustody,
     VaultDeclaration, VectorDeclaration, ViewDeclaration,
 };
+pub use engine::{EngineField, EngineMember, UNIT_WEIGHT};
 pub use indexes::{IndexDefinition, IndexShape, SearchCosts, VectorDistance};
 pub use kinds::{StoredKind, TableKind};
 pub(crate) use reading::{
@@ -47,6 +49,7 @@ const FIELD_SPATIAL: &str = "spatial";
 const FIELD_POSITIONS: &str = "positions";
 const FIELD_OFFSETS: &str = "offsets";
 const FIELD_UNSCORED: &str = "unscored";
+const FIELD_ENGINE: &str = "engine";
 const FIELD_SCHEMAFULL: &str = "schemafull";
 const FIELD_EDGE: &str = "edge";
 const FIELD_BUCKET: &str = "bucket";
@@ -798,6 +801,7 @@ mod tests {
             spatial: false,
             vector: None,
             costs: crate::catalog::SearchCosts::default(),
+            engine: None,
         };
         assert_eq!(
             IndexDefinition::from_value(&index.to_value()).unwrap(),

@@ -208,6 +208,12 @@ pub enum Function {
     /// order that answered it (`ORDER BY FUSE`), `none` where a branch did not
     /// place it within its depth.
     SearchRanks,
+    /// `search::table_name()` — the name of the table a `FROM SEARCH` record came from
+    /// (ADR-0105).
+    SearchTable,
+    /// `search::snippet()` — the best window of a `FROM SEARCH` record's
+    /// `SNIPPET` fields, as `{ field, start, end }` byte offsets.
+    SearchSnippet,
     /// `time::bucket(instant, 1h)` — the start of the window that instant is in.
     TimeBucket,
     /// `geo::intersects(a, b)` — whether the two shapes share any position,
@@ -487,6 +493,8 @@ impl Function {
         SearchExplain => "search::explain",
         SearchHighlight => "search::highlight",
         SearchRanks => "search::ranks",
+        SearchTable => "search::table_name",
+        SearchSnippet => "search::snippet",
         TimeBucket => "time::bucket",
         GeoIntersects => "geo::intersects",
         GeoDisjoint => "geo::disjoint",
@@ -632,7 +640,18 @@ mod tests {
             .collect();
         // `search::ranks` joined in G038: it reads no argument and no record, so
         // it looks constant, and folded it would hand every row one row's ranks.
-        assert_eq!(afresh, ["rand::uuid", "search::ranks"]);
+        // The three a `FROM SEARCH` record answers joined in G051 (ADR-0105) for
+        // the same reason: `search::score()` takes no argument there.
+        assert_eq!(
+            afresh,
+            [
+                "rand::uuid",
+                "search::score",
+                "search::ranks",
+                "search::table_name",
+                "search::snippet"
+            ]
+        );
     }
 
     #[test]
@@ -640,7 +659,11 @@ mod tests {
         for function in Function::ALL {
             let expected = match function {
                 Function::TimeNow => Purity::PerStatement,
-                Function::RandUuid | Function::SearchRanks => Purity::PerCall,
+                Function::RandUuid
+                | Function::SearchRanks
+                | Function::SearchScore
+                | Function::SearchTable
+                | Function::SearchSnippet => Purity::PerCall,
                 _ => Purity::Pure,
             };
             assert_eq!(function.purity(), expected, "{function} is misclassified");

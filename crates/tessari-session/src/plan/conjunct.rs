@@ -228,6 +228,8 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::SearchScore
         | Function::SearchExplain
         | Function::SearchRanks
+        | Function::SearchTable
+        | Function::SearchSnippet
         | Function::CryptoMd5
         | Function::CryptoSha1
         | Function::EncodingBase64
@@ -291,6 +293,9 @@ pub(super) enum Comparison {
     /// budget, so what it reads and what it returns are two numbers rather than
     /// one.
     FuzzyTerms,
+    /// `<path> MATCHES INFIX '<text>'` — the suffix keyspace walked for the
+    /// terms containing each piece (ADR-0105 D9).
+    InfixTerms,
     /// `<path> < <constant>`, and the other three orderings.
     Range,
 }
@@ -353,6 +358,7 @@ pub(super) fn seekable(condition: &Expr) -> Vec<Seek<'_>> {
                 BinaryOp::Matches => Comparison::Terms,
                 BinaryOp::MatchesPrefix => Comparison::PrefixTerms,
                 BinaryOp::MatchesFuzzy => Comparison::FuzzyTerms,
+                BinaryOp::MatchesInfix => Comparison::InfixTerms,
                 // The four orderings are a bounded scan over the ordered index,
                 // which is safe because byte order **is** value order
                 // (`docs/key-grammar.md` §1).

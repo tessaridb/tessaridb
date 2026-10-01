@@ -422,6 +422,12 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // `bind_target` states for a table. `ALTER TABLE`'s change is a word the
         // statement was written with, not a value.
         | StatementKind::DropAnalyzer { .. }
+        | StatementKind::DefineSearch { .. }
+        | StatementKind::DefineSynonyms { .. }
+        | StatementKind::DefineStopwords { .. }
+        | StatementKind::DropSearch { .. }
+        | StatementKind::DropSynonyms { .. }
+        | StatementKind::DropStopwords { .. }
         | StatementKind::DropReplica { .. }
         | StatementKind::AlterReplica { .. }
         | StatementKind::DropDatabase { .. }

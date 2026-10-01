@@ -246,6 +246,13 @@ impl Session<'_> {
                 span,
             });
         }
+        crate::engine::refuse_named_by_a_search(
+            transaction,
+            Depended::AnalyzerBySearch,
+            &name.text,
+            span,
+            |engine| engine.analyzer == name.text,
+        )?;
         Catalog::new(transaction).drop_analyzer(analyzer.id)?;
         Ok(Outcome::Done)
     }

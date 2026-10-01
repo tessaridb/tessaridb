@@ -204,6 +204,10 @@ impl Parser<'_> {
             if self.eat_keyword(Keyword::Fuzzy) {
                 return Some(BinaryOp::MatchesFuzzy);
             }
+            // Contextual, so `infix` stays a name everywhere but here.
+            if self.eat_word("infix") {
+                return Some(BinaryOp::MatchesInfix);
+            }
             return Some(BinaryOp::Matches);
         }
         None

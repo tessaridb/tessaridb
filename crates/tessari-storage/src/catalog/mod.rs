@@ -50,6 +50,7 @@ pub(crate) mod system;
 mod topic;
 mod user;
 mod vault;
+mod words;
 
 use tessari_encoding::{decode_payload, encode_payload};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId, Value};
@@ -62,11 +63,11 @@ pub use consumer::{ConsumerDefinition, Feed, Mapped, OnFailure};
 pub(crate) use decoded::DecodedTables;
 pub use definition::{
     CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, DatabaseDefinition, EdgeDeclaration, EdgeOrder,
-    GEO_FIELD, IndexDefinition, IndexShape, NamespaceDefinition, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY,
-    QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, RollupCompute, RollupDeclaration,
-    RollupFold, SearchCosts, SeriesDeclaration, StoredKind, TableDefinition, TableKind, TableShape,
-    VECTOR_FIELD, VaultCustody, VaultDeclaration, VectorDeclaration, VectorDistance,
-    ViewDeclaration,
+    EngineField, EngineMember, GEO_FIELD, IndexDefinition, IndexShape, NamespaceDefinition,
+    QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL,
+    RollupCompute, RollupDeclaration, RollupFold, SearchCosts, SeriesDeclaration, StoredKind,
+    TableDefinition, TableKind, TableShape, UNIT_WEIGHT, VECTOR_FIELD, VaultCustody,
+    VaultDeclaration, VectorDeclaration, VectorDistance, ViewDeclaration,
 };
 pub use edge_kind::EdgeKindDefinition;
 pub use failover::{FailoverDefinition, FailoverStamp};
@@ -87,6 +88,7 @@ pub use system::{SYSTEM_DATABASE, SYSTEM_NAMESPACE};
 pub use topic::{PublicAppend, TopicDeclaration};
 pub use user::{Role, UserDefinition, Verb};
 pub use vault::VaultRoot;
+pub use words::{WordSet, WordSetKind};
 
 use crate::error::Result;
 use crate::transaction::{RecordAddress, Transaction};

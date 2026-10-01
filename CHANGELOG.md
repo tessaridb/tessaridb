@@ -81,6 +81,25 @@ compares carries no pre-release suffix.
   no index. No option changes an answer; an index written before them reads as a
   scored index with neither.
 
+- **`DEFINE SEARCH`: several fields of several tables ranked as one collection**
+  (G051 C9, ADR-0105). `SELECT … FROM SEARCH <name> MATCHES [PREFIX | FUZZY |
+  INFIX] '<query>' [WHERE …]` ranks every member table's records by BM25F, with a
+  `WEIGHT` per field, `NO FUZZY` / `NO PREFIX` / `NO PHRASE` per field, and
+  `SYNONYMS <set>` per field. `search::score()`, `search::table_name()`,
+  `search::snippet()` (the best 24-token window of the `SNIPPET` fields, as byte
+  offsets) and `search::highlight(field)` answer about each record; `COMPLETE
+  '<beginning>'` answers ranked type-ahead; `GROUP BY` over the source answers
+  facet counts. A table the reader may not read, or whose member fields they may
+  not all read, is not searched. `INFO FOR SEARCH`, `DROP SEARCH`, and the state
+  script carry it.
+- **`DEFINE SYNONYMS <name> { word: ['alternative'] }` and `DEFINE STOPWORDS
+  <name> ['word']`** — query-time word sets, store-wide names a search reads when
+  it runs, so changing one never rebuilds an index.
+- **`MATCHES INFIX '<piece>'`** — a field's text holds a term containing every
+  piece typed. A `SEARCH` index now keeps every suffix of its dictionary's terms
+  (key kind `0x1f`) and serves it as `infix-terms`; an index built by an earlier
+  release has no suffixes and is answered by the scan until `REBUILD INDEX`.
+
 ### Fixed
 
 - **A `SEARCH`, `SPATIAL` or `VECTOR` index over several fields indexed the
@@ -124,7 +143,7 @@ compares carries no pre-release suffix.
 
 ### Changed
 
-- **1472 conformance cases** define the language and run in the build.
+- **1485 conformance cases** define the language and run in the build.
 - **`MATCHES FUZZY` counts swapping two adjacent letters as one edit** (G051
   T7.4, ADR-0100 D1.4), where it counted two, so it reaches a few more words —
   `vetcor` is now one edit from `vector`.

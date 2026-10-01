@@ -68,6 +68,7 @@ mod tests {
             vector: None,
             spatial: false,
             costs: tessari_storage::SearchCosts::default(),
+            engine: None,
         }
     }
 
@@ -78,6 +79,7 @@ mod tests {
             Shape::Terms => Served::Terms(vec!["x".to_owned()]),
             Shape::PrefixTerms => Served::PrefixTerms(vec![vec!["x".to_owned()]]),
             Shape::FuzzyTerms => Served::FuzzyTerms(vec![vec!["x".to_owned()]]),
+            Shape::InfixTerms => Served::InfixTerms(vec![vec!["x".to_owned()]]),
             Shape::AnyTerms => Served::AnyTerms(vec![vec!["x".to_owned()]]),
             Shape::Phrase => Served::Phrase {
                 groups: vec![vec!["x".to_owned()]],
@@ -107,6 +109,7 @@ mod tests {
                     Shape::Terms
                         | Shape::PrefixTerms
                         | Shape::FuzzyTerms
+                        | Shape::InfixTerms
                         | Shape::AnyTerms
                         | Shape::Phrase
                 ),

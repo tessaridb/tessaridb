@@ -190,7 +190,7 @@ impl Session<'_> {
             return Ok(None);
         }
         Ok(Catalog::new(transaction)
-            .indexes_on(table)?
+            .field_indexes_on(table)?
             .into_iter()
             .find(|index| index.fields.as_slice() == [path.clone()]))
     }
@@ -224,7 +224,7 @@ impl Session<'_> {
         if !transaction.indexes_are_current()? {
             return Ok(None);
         }
-        let indexes = Catalog::new(transaction).indexes_on(table)?;
+        let indexes = Catalog::new(transaction).field_indexes_on(table)?;
         if let Some(exact) = indexes
             .iter()
             .find(|index| index.fields.as_slice() == [path.clone()])

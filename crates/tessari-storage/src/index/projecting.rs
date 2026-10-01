@@ -66,6 +66,8 @@ pub(crate) struct Analysed {
     /// How many tokens the text holds, **with** repeats — this is a length, and
     /// a length that collapsed repeats would not be one.
     pub(crate) tokens: u64,
+    /// Each field's token count, for a search member; empty for a field index.
+    pub(crate) fields: Vec<u64>,
 }
 
 impl Analysed {
@@ -166,6 +168,7 @@ pub(crate) fn terms_of(
         located: vec![Located::default(); postings.len()],
         postings,
         tokens,
+        fields: Vec::new(),
     }
 }
 
@@ -218,6 +221,7 @@ fn located_terms_of(definition: &IndexDefinition, analyzer: &Analyzer, text: &st
         postings,
         located,
         tokens,
+        fields: Vec::new(),
     }
 }
 
@@ -277,4 +281,76 @@ pub(crate) fn project(definition: &IndexDefinition, value: &Value) -> Vec<IndexV
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+/// The analyzer an index reads its text with: a member's is the search's,
+/// named; a field index's is its field's declaration.
+pub(crate) fn analyzer_for<'a>(
+    definition: &IndexDefinition,
+    declared: &'a BTreeMap<String, Analyzer>,
+    named: &'a BTreeMap<String, Analyzer>,
+) -> Option<&'a Analyzer> {
+    match &definition.engine {
+        Some(engine) => named.get(&engine.analyzer),
+        None => search_analyzer(definition, declared),
+    }
+}
+
+/// Every analyzer the store declares, by name — what a search member resolves
+/// its analyzer against.
+pub(crate) fn analyzers_named(view: &mut Transaction<'_>) -> Result<BTreeMap<String, Analyzer>> {
+    Ok(Catalog::new(view)
+        .analyzers()?
+        .into_iter()
+        .map(|definition| (definition.name, definition.analyzer))
+        .collect())
+}
+
+/// What one record posts to an index: [`terms_of`] for a field index, and for
+/// a search member every field's terms together (ADR-0105).
+///
+/// A member's posting is the record's **total** over its fields — one
+/// frequency and one length, the counted form every reader already knows — and
+/// its per-field token counts travel beside it for the statistics, which are
+/// what a BM25F field average is measured against.
+pub(crate) fn analysed(
+    definition: &IndexDefinition,
+    analyzer: Option<&Analyzer>,
+    value: &Value,
+) -> Analysed {
+    if definition.engine.is_none() {
+        return terms_of(definition, analyzer, value);
+    }
+    let Some(analyzer) = analyzer else {
+        return Analysed::default();
+    };
+    let mut terms: Vec<String> = Vec::new();
+    let mut fields = Vec::with_capacity(definition.fields.len());
+    for path in &definition.fields {
+        let held = match path.resolve(value) {
+            Some(Value::String(text)) => analyzer.terms(text),
+            _ => Vec::new(),
+        };
+        fields.push(u64::try_from(held.len()).unwrap_or(u64::MAX));
+        terms.extend(held);
+    }
+    let tokens = u64::try_from(terms.len()).unwrap_or(u64::MAX);
+    if tokens == 0 {
+        return Analysed::default();
+    }
+    terms.sort_unstable();
+    let postings: Vec<(IndexValues, u32)> = terms
+        .chunk_by(|held, next| held == next)
+        .filter_map(|run| {
+            let term = run.first()?;
+            let frequency = u32::try_from(run.len()).unwrap_or(u32::MAX);
+            Some((IndexValues::of(&[Value::from(term.as_str())]), frequency))
+        })
+        .collect();
+    Analysed {
+        located: vec![Located::default(); postings.len()],
+        postings,
+        tokens,
+        fields,
+    }
 }

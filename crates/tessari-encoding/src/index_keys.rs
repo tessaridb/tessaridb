@@ -36,8 +36,8 @@ use crate::order::{KeyReader, KeyWriter};
 use crate::record_id;
 use crate::value::{StoreValue, split_header, with_header};
 pub use search::{
-    PostingKey, SearchStatistics, SearchStatisticsKey, SearchTermKey, TermStatistics,
-    UniqueIndexKey,
+    PostingKey, SearchStatistics, SearchStatisticsKey, SearchSuffixKey, SearchTermKey,
+    TermStatistics, UniqueIndexKey,
 };
 pub use vectors::{
     SpatialRefinement, SpatialRefinementKey, VectorNode, VectorNodeKey, VectorRecall,

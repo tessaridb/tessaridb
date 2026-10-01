@@ -54,7 +54,9 @@ DEFINE INDEX by_text ON fragment FIELDS text SEARCH;";
 
 struct Fragment {
     page: String,
+    title: String,
     heading: String,
+    body: String,
     text: String,
 }
 
@@ -90,7 +92,9 @@ fn fragments_of(page: &str, source: &str, into: &mut Vec<Fragment>) {
         if !lines.iter().all(|line| line.trim().is_empty()) || heading != title {
             into.push(Fragment {
                 page: page.to_owned(),
+                title: title.clone(),
                 heading: heading.to_owned(),
+                body: lines.join("\n"),
                 text: format!("{title}\n{heading}\n{}", lines.join("\n")),
             });
         }
@@ -180,7 +184,19 @@ fn judgments(path: &Path, held: &BTreeSet<String>) -> Result<Vec<Judged>, Box<dy
     Ok(judged)
 }
 
-fn statement(kind: &str) -> String {
+/// The searches the `--engine` mode reads (ADR-0105): the fragment's title,
+/// heading and body as three fields of one document, weighed equally or with
+/// the two short fields above the body.
+const ENGINE: &str = "DEFINE SEARCH flat ON fragment FIELDS title, heading, body ANALYZER english;
+DEFINE SEARCH weighted ON fragment FIELDS title WEIGHT 2, heading WEIGHT 3, body ANALYZER english;";
+
+fn statement(kind: &str, engine: Option<&str>) -> String {
+    if let Some(search) = engine {
+        return match kind {
+            "fuzzy" => format!("SELECT page FROM SEARCH {search} MATCHES FUZZY $q LIMIT {READ};"),
+            _ => format!("SELECT page FROM SEARCH {search} MATCHES $q LIMIT {READ};"),
+        };
+    }
     match kind {
         "word" => format!(
             "SELECT page FROM fragment WHERE text MATCHES $q ORDER BY search::score(text, $q) DESC LIMIT {READ};"
@@ -198,6 +214,7 @@ fn statement(kind: &str) -> String {
 fn ranked_pages(
     session: &mut tessaridb::Session<'_>,
     judged: &Judged,
+    engine: Option<&str>,
 ) -> Result<Vec<String>, Box<dyn Error>> {
     let mut parameters = Parameters::new();
     let query = if judged.kind == "prefix" {
@@ -206,7 +223,7 @@ fn ranked_pages(
         judged.query.clone()
     };
     parameters.insert("q".to_owned(), Value::String(query));
-    let outcomes = session.run_with(&statement(&judged.kind), &parameters)?;
+    let outcomes = session.run_with(&statement(&judged.kind, engine), &parameters)?;
     let records = outcomes
         .last()
         .and_then(|outcome| outcome.records())
@@ -280,12 +297,29 @@ fn milliseconds(duration: Duration) -> f64 {
 fn main() -> Result<(), Box<dyn Error>> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let (Some(content), Some(judged_at)) = (arguments.first(), arguments.get(1)) else {
-        return Err("usage: relevance <content dir> <judgments.tsv> [--repeat n]".into());
+        return Err(
+            "usage: relevance <content dir> <judgments.tsv> [--repeat n] [--engine flat|weighted]"
+                .into(),
+        );
     };
-    let repeat: usize = match arguments.get(2).map(String::as_str) {
-        Some("--repeat") => arguments.get(3).ok_or("--repeat takes a count")?.parse()?,
-        _ => 5,
+    let option = |name: &str| {
+        arguments
+            .iter()
+            .position(|held| held == name)
+            .and_then(|at| arguments.get(at.saturating_add(1)))
+            .cloned()
     };
+    let repeat: usize = match option("--repeat") {
+        Some(count) => count.parse()?,
+        None => 5,
+    };
+    let engine = option("--engine");
+    if engine
+        .as_deref()
+        .is_some_and(|search| !matches!(search, "flat" | "weighted"))
+    {
+        return Err("--engine is `flat` or `weighted`".into());
+    }
 
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     let mut fragments = Vec::new();
@@ -311,10 +345,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             Value::String(fragment.heading.clone()),
         );
         parameters.insert("text".to_owned(), Value::String(fragment.text.clone()));
+        parameters.insert("title".to_owned(), Value::String(fragment.title.clone()));
+        parameters.insert("body".to_owned(), Value::String(fragment.body.clone()));
         session.run_with(
-            "CREATE fragment:$id = { page: $page, heading: $heading, text: $text };",
+            "CREATE fragment:$id = { page: $page, title: $title, heading: $heading, \
+             body: $body, text: $text };",
             &parameters,
         )?;
+    }
+    if engine.is_some() {
+        session.run(ENGINE)?;
     }
 
     let build = if cfg!(debug_assertions) {
@@ -323,14 +363,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         "release"
     };
     println!(
-        "build {} {build} · {}-{} · memory store · corpus {:016x}: {} pages, {} fragments · {} queries",
+        "build {} {build} · {}-{} · memory store · corpus {:016x}: {} pages, {} fragments · {} queries · {}",
         tessaridb::BUILD_VERSION,
         std::env::consts::OS,
         std::env::consts::ARCH,
         hash,
         held.len(),
         fragments.len(),
-        judged.len()
+        judged.len(),
+        engine.as_deref().map_or_else(
+            || "field index".to_owned(),
+            |search| format!("DEFINE SEARCH {search}")
+        )
     );
 
     let mut by_kind: BTreeMap<&str, (f64, f64, u32)> = BTreeMap::new();
@@ -338,11 +382,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut warm = Vec::new();
     for query in &judged {
         let started = Instant::now();
-        let pages = ranked_pages(&mut session, query)?;
+        let pages = ranked_pages(&mut session, query, engine.as_deref())?;
         cold.push(started.elapsed());
         for _ in 0..repeat {
             let started = Instant::now();
-            let again = ranked_pages(&mut session, query)?;
+            let again = ranked_pages(&mut session, query, engine.as_deref())?;
             warm.push(started.elapsed());
             if again != pages {
                 return Err(format!("{} answered two orders on two runs", query.query).into());

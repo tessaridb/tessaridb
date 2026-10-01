@@ -89,6 +89,7 @@ impl Session<'_> {
             InfoSubject::Table(table) => self.info_table(transaction, table)?,
             InfoSubject::Graph(name) => self.info_graph(transaction, name, span)?,
             InfoSubject::Vector(name) => self.info_vector(transaction, name, span)?,
+            InfoSubject::Search(name) => self.info_search(transaction, name, span)?,
             InfoSubject::Geo(name) => self.info_geo(transaction, name, span)?,
             InfoSubject::Vault(name) => self.info_vault(transaction, name, span)?,
             InfoSubject::VaultRecords {

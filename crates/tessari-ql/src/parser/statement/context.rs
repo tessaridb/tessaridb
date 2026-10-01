@@ -95,6 +95,7 @@ impl Parser<'_> {
                 ));
             }
             _ if self.eat_word("vector") => InfoSubject::Vector(self.name()?),
+            _ if self.eat_keyword(Keyword::Search) => InfoSubject::Search(self.name()?),
             _ if self.eat_word("geo") => InfoSubject::Geo(self.name()?),
             _ if self.eat_word("vault") => {
                 let table = self.table_ref()?;

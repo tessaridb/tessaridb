@@ -40,6 +40,9 @@ impl Parser<'_> {
         if self.peek() == Some(&Token::Punct(Punct::ParenOpen)) {
             return self.subquery_source();
         }
+        if self.eat_keyword(Keyword::Search) {
+            return self.search_source();
+        }
         let table = self.table_ref()?;
         if self.peek() == Some(&Token::Punct(Punct::Colon)) {
             let record = self.record_target_after(table)?;
@@ -301,6 +304,28 @@ impl Parser<'_> {
                 condition: Some(condition),
                 ..
             } => crate::parser::shape::check_several(condition)?,
+            // A ranking across tables has no key order to seek in and no one
+            // table's history, so a cursor, a version, a fused order and a
+            // fetch are refused rather than given a meaning here.
+            Source::Search { condition, .. } => {
+                if let Some(condition) = condition {
+                    crate::parser::shape::check_several(condition)?;
+                }
+                if after.is_some()
+                    || version.is_some()
+                    || fusion.is_some()
+                    || !fetch.is_empty()
+                    || split.is_some()
+                    || latest.is_some()
+                    || timeout.is_some()
+                {
+                    return Err(Error::Unsupported {
+                        feature: "`AFTER`, `VERSION`, `ORDER BY FUSE`, `FETCH`, `SPLIT ON`, \
+                                  `LATEST BY` or `TIMEOUT` over a search",
+                        span: start.to(self.span_behind()),
+                    });
+                }
+            }
             Source::Node
             | Source::Record(_)
             | Source::Table(_)

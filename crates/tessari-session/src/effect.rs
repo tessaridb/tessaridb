@@ -148,6 +148,12 @@ impl Effect {
             | StatementKind::DropIndex { .. }
             | StatementKind::DropField { .. }
             | StatementKind::DropAnalyzer { .. }
+            | StatementKind::DefineSearch { .. }
+            | StatementKind::DropSearch { .. }
+            | StatementKind::DefineSynonyms { .. }
+            | StatementKind::DropSynonyms { .. }
+            | StatementKind::DefineStopwords { .. }
+            | StatementKind::DropStopwords { .. }
             | StatementKind::DropDatabase { .. }
             | StatementKind::DropNamespace { .. }
             | StatementKind::AlterNamespace { .. }

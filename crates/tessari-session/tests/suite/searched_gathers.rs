@@ -14,6 +14,12 @@ use crate::gathered_reads::{Pair, answer, follower_of_the_middle_of, leader, pai
 /// A word that is rare in the middle shard and common in the others, so a
 /// score measured against the middle alone weighs it differently.
 fn searched() -> Pair {
+    searched_with("")
+}
+
+/// [`searched`], with `extra` declared on the leader before the follower is
+/// made from it.
+fn searched_with(extra: &str) -> Pair {
     let leader = leader();
     let mut root = crate::gathered_reads::signed_in(&leader, "root");
     root.run(
@@ -31,6 +37,9 @@ fn searched() -> Pair {
          CREATE docs:'z' = { body: 'the end of the fox story', at: geometry { type: 'Point', coordinates: [7, 7] } };",
     )
     .unwrap();
+    if !extra.is_empty() {
+        root.run(extra).unwrap();
+    }
     let follower = follower_of_the_middle_of(&leader, "docs");
     pair_of(Arc::clone(&leader), follower)
 }
@@ -209,4 +218,21 @@ fn a_starred_word_is_not_scored_on_a_part_of_the_dictionary() {
     assert_eq!(found, records(&mut whole, matched));
     let ids: Vec<&str> = found.iter().map(|(id, _)| id.as_str()).collect();
     assert_eq!(ids, ["a", "b", "c", "k", "q", "z"]);
+}
+
+/// G051 C9 — a search over a split table is measured against the whole
+/// table's statistics or not at all: a partial holder refuses (ADR-0105 D8),
+/// and the whole node answers.
+#[test]
+fn a_search_over_a_split_table_is_not_ranked_on_a_part_of_it() {
+    let pair = searched_with("DEFINE SEARCH tales ON docs FIELDS body ANALYZER english;");
+    let mut follower = pair.on_the_follower("reader");
+    let read = "SELECT search::score() AS s FROM SEARCH tales MATCHES 'fox';";
+    let refused = follower.run(read);
+    assert!(
+        matches!(refused, Err(tessari_session::Error::NotHeldHere { ref table, .. }) if table == "docs"),
+        "{refused:?}"
+    );
+    let mut whole = pair.on_the_leader("reader");
+    assert_eq!(records(&mut whole, read).len(), 6);
 }

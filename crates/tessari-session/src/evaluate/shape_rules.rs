@@ -187,9 +187,11 @@ pub(crate) fn table_named(source: &Source) -> Option<&str> {
             Some(table.name.text.as_str())
         }
         Source::Record(target) => Some(target.table.name.text.as_str()),
-        Source::Node | Source::Traverse { .. } | Source::Join { .. } | Source::Subquery { .. } => {
-            None
-        }
+        Source::Node
+        | Source::Traverse { .. }
+        | Source::Join { .. }
+        | Source::Subquery { .. }
+        | Source::Search { .. } => None,
     }
 }
 
