@@ -72,6 +72,10 @@ RUN chmod +x /usr/local/bin/tessaridb-entrypoint /usr/local/bin/tessaridb-health
 #                             itself, as a TessariQL duration (`10m`, `1h`).
 #                             Read by the node itself, so it works outside a
 #                             container too; `--unseal-for` wins over it.
+#   TESSARIDB_RETAIN_RECORDS  how many records each log keeps (default 100000),
+#                             or `none` for an unbounded log. Read by the node
+#                             itself; `DEFINE NODE RETAIN` wins over it. Not
+#                             set here, so the engine's own default applies.
 #
 # `0.0.0.0` rather than a loopback address, because a container's loopback is
 # reachable from nothing outside it and a node bound there would answer no

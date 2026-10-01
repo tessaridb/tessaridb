@@ -72,8 +72,10 @@ fn each_form_lands_in_the_folder_with_the_bytes_the_statement_answers() {
     let mut root = owner(&store, folder.path());
 
     for (form, statement, name) in [
-        ("log", "BACKUP", "nightly.tessarilog"),
+        ("log", "BACKUP LOG", "nightly.tessarilog"),
         ("state", "BACKUP STATE", "nightly.tessarisnap"),
+        // No form named is the snapshot (ADR-0094 D1).
+        ("state", "BACKUP", "default.tessarisnap"),
         ("script", "BACKUP SCRIPT", "nightly.tessariql"),
     ] {
         let written = answer(&mut root, &format!("{statement} TO '{name}';"));
@@ -112,6 +114,7 @@ fn each_form_lands_in_the_folder_with_the_bytes_the_statement_answers() {
     assert_eq!(
         names,
         [
+            "default.tessarisnap",
             "nightly.tessarilog",
             "nightly.tessariql",
             "nightly.tessarisnap"

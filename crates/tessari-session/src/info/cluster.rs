@@ -51,6 +51,7 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
     ) -> Result<BTreeMap<String, Value>> {
         let identity = self.store.node_identity()?;
+        let (retention, retained_by) = self.store.effective_retention()?;
         let catalog = Catalog::new(transaction);
         let peers = catalog
             .replicas()?
@@ -145,18 +146,21 @@ impl Session<'_> {
             (
                 // Beside `endpoints` rather than under `cluster`, because it is
                 // on the local side of ADR-0018's line: a disk budget describes
-                // this machine and does not travel. `null` is *unbounded*, which
-                // is what every store holds until an operator sets a number —
-                // and reporting it as a number would make *nobody asked for
-                // retention* indistinguishable from a very large window.
+                // this machine and does not travel. `null` is *unbounded* — a
+                // choice now, since the default is a window (ADR-0094 D2) —
+                // and `retain_source` beside it says who made it.
                 "retain".to_owned(),
-                self.store.log_retention()?.map_or(Value::Null, |keep| {
-                    // Saturating rather than an `as` cast: the report is a
-                    // number a person reads, and a width that wrapped would
-                    // print a negative retention rather than fail.
-                    Value::from(i64::try_from(keep.get()).unwrap_or(i64::MAX))
-                }),
+                match retention {
+                    tessari_storage::Retention::Keep(keep) => {
+                        // Saturating rather than an `as` cast: the report is a
+                        // number a person reads, and a width that wrapped would
+                        // print a negative retention rather than fail.
+                        Value::from(i64::try_from(keep.get()).unwrap_or(i64::MAX))
+                    }
+                    tessari_storage::Retention::Unbounded => Value::Null,
+                },
             ),
+            ("retain_source".to_owned(), Value::from(retained_by.name())),
             (
                 "cluster".to_owned(),
                 Value::Object(BTreeMap::from([

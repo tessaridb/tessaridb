@@ -699,6 +699,16 @@ pub const MAX_SIGN_IN_VERIFICATIONS: usize = 24;
 /// revoked.
 pub const SESSION_TOKEN_SECONDS: u64 = 12 * 60 * 60;
 
+/// How many records each log keeps when nobody configured a number (ADR-0094 D2).
+///
+/// Unit: log records, per log. Overridden per node by `TESSARIDB_RETAIN_RECORDS`
+/// (a number, or `none` for unbounded) and per store by `DEFINE NODE RETAIN`.
+///
+/// The owner's figure (G049): a bounded log is the default because an unbounded
+/// one is a disk that fills, and the routine backup is a state snapshot, which
+/// does not need the history below the window.
+pub const DEFAULT_LOG_RETENTION_RECORDS: u64 = 100_000;
+
 /// How long an unseal lasts before the store seals itself again (ADR-0092 D4).
 ///
 /// Unit: seconds. Overridden per node by `--unseal-for` / `TESSARIDB_UNSEAL_FOR`.

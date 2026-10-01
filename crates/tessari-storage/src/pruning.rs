@@ -43,7 +43,7 @@
 //! separate decision with separate evidence, and it is the thing that must never
 //! be guessed.
 
-use tessari_encoding::{LogId, LogKey, LogRetentionKey, LogStartKey, StoreKey, StoreValue};
+use tessari_encoding::{LogId, LogKey, LogStartKey, StoreKey, StoreValue};
 use tessari_kv::{KeyRange, WriteBatch};
 use tessari_types::Sequence;
 
@@ -155,49 +155,10 @@ pub struct Trimmed {
 }
 
 impl Store {
-    /// How many log records this node keeps, when it keeps a bounded number.
-    ///
-    /// `None` is **unbounded**, which is what every store held before retention
-    /// existed and what every store holds until an operator sets a number. The
-    /// default that changes nothing is the only safe default for an operation
-    /// that cannot be undone.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the backend fails or the stored value cannot be
-    /// decoded.
-    pub fn log_retention(&self) -> Result<Option<Sequence>> {
-        let key = LogRetentionKey.encode();
-        match self.backend().get(LogRetentionKey::keyspace(), &key)? {
-            Some(value) => Ok(Some(Sequence::decode(value.as_slice())?)),
-            None => Ok(None),
-        }
-    }
-
-    /// Set — or clear — how many log records this node keeps.
-    ///
-    /// Written outside any transaction, because it is a fact about this machine
-    /// rather than about the data, and the log does not carry it (ADR-0018). A
-    /// retention that replicated would be inherited by whoever restored a backup
-    /// and adopted by every follower of whoever set it.
-    ///
-    /// # Errors
-    ///
-    /// Returns the backend's own failure.
-    pub fn set_log_retention(&self, keep: Option<Sequence>) -> Result<()> {
-        let key = LogRetentionKey.encode();
-        let batch = match keep {
-            Some(keep) => WriteBatch::new().put(LogRetentionKey::keyspace(), key, keep.encode()),
-            None => WriteBatch::new().delete(LogRetentionKey::keyspace(), key),
-        };
-        self.backend().apply(batch)?;
-        Ok(())
-    }
-
     /// Prune every log this node holds down to the retained record count.
     ///
-    /// Answers `None` when no retention is set, which is not the same as
-    /// answering zero: *nobody asked for this* and *there was nothing to do* are
+    /// Answers `None` when the effective retention is unbounded, which is not
+    /// the same as answering zero: *nobody asked for this* and *there was nothing to do* are
     /// different facts, and a caller that logged the second every cadence would
     /// bury the first.
     ///
@@ -225,7 +186,7 @@ impl Store {
     /// Returns an error when the backend fails or a stored value cannot be
     /// decoded.
     pub fn trim_logs(&self) -> Result<Option<Trimmed>> {
-        let Some(keep) = self.log_retention()? else {
+        let (crate::Retention::Keep(keep), _) = self.effective_retention()? else {
             return Ok(None);
         };
         let mut trimmed = Trimmed::default();

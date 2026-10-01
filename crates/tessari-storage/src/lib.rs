@@ -50,6 +50,7 @@ mod node;
 mod ordering;
 mod pruning;
 mod reclaim;
+mod retention;
 mod running;
 mod schema;
 mod sealing;
@@ -85,6 +86,7 @@ pub use collections::{Collection, Collections, Currency};
 pub use covering::MEASURED_RELATION;
 pub use expiry::Expired;
 pub use lapse::Lapsed;
+pub use retention::{Retention, RetentionSource};
 pub use topic::{Message, Messages};
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
 // the field but cannot name its type has a public API it cannot use.

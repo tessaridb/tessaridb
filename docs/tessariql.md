@@ -6650,12 +6650,16 @@ nothing, and re-running it needs a fresh read, not a repeat.
 
 ```
 BACKUP;
+BACKUP LOG;
 BACKUP FROM 4096;
 ```
 
-`BACKUP` answers with the store's **log**, as the file the backup reader and the
-verifier already read. `FROM` makes it incremental — the records at or after that
-sequence — and a base plus its increments answers what the original answers.
+`BACKUP` answers with a **snapshot** of the store's current state — the routine
+backup, and the one a store whose log is bounded can always take (ADR-0094; the
+snapshot is described below). `BACKUP LOG` answers with the store's **log**, as
+the file the backup reader and the verifier already read. `FROM` names a position
+in a log, so it means the log: the records at or after that sequence — and a base
+plus its increments answers what the original answers.
 
 **It is a statement because a serving node is the only thing that can take one.**
 This store is single-writer, so a node that is up holds the store and no second
@@ -6680,10 +6684,12 @@ Over HTTP:
 
 ```text
 GET /backup
+GET /backup?as=log
 GET /backup?from=4096
 ```
 
-Same identity rules, because they are the statement's. The body is the file.
+Same identity rules, because they are the statement's. The body is the file: a
+snapshot unless the query asks for the log.
 
 The cost is stated rather than discovered: the whole file is materialised,
 because a statement answers with a value. `FROM` is what bounds it, and a
@@ -6697,10 +6703,10 @@ BACKUP SCRIPT;
 ```
 
 The log grows with history, and once a retained-record window has pruned it
-`BACKUP` is refused — its file starts at the first record, and that record is
-gone. Two more forms answer with the **state** instead (ADR-0091):
+`BACKUP LOG` is refused — its file starts at the first record, and that record is
+gone. Two forms answer with the **state** instead (ADR-0091):
 
-- `BACKUP STATE` — a snapshot: every live record at one version of the store, in
+- `BACKUP STATE` — the default `BACKUP` spelled out — a snapshot: every live record at one version of the store, in
   the file `--verify` and `--restore` read by its opening bytes. A restore
   writes the records and rebuilds every index from them, then stands exactly
   where the snapshot was taken, so the log after it applies on top. A snapshot
@@ -6714,8 +6720,10 @@ gone. Two more forms answer with the **state** instead (ADR-0091):
 
 Both read at one moment with writes running, need an owner for `BACKUP`'s
 reason, and take no `FROM`. Over HTTP they are `GET /backup?as=state` and
-`GET /backup?as=script`; on the command line, `--snapshot <file>` and
-`--dump <file>` for a store the process opens itself.
+`GET /backup?as=script`; on the command line, `--backup <file>` (or
+`--snapshot <file>`) and `--dump <file>` for a store the process opens itself.
+`--backup <file> --from <n>` writes the log from `n`, and `--from 1` the whole
+log.
 
 A script brings a user back with the hash the store holds, since nobody knows the
 password:
@@ -6751,7 +6759,7 @@ taken of the whole store. Both are refused with that reason.
 
 ```
 BACKUP STATE TO 'weekly/state.tessarisnap';
-BACKUP TO 'nightly.tessarilog';
+BACKUP LOG TO 'nightly.tessarilog';
 BACKUP SCRIPT TO 'dump.tessariql';
 ```
 
@@ -7522,18 +7530,26 @@ which is where a replicated membership belongs.
 
 ### Bounding the log
 
-Every commit is a log record, and nothing removes one unless you say so:
+Every commit is a log record, and a serving node keeps the newest **100 000** of
+each log and prunes the rest (ADR-0094):
 
 ```
-DEFINE NODE RETAIN 100000 RECORDS;
-INFO FOR NODE;              -- retain: 100000
-DEFINE NODE RETAIN NONE;    -- back to keeping the whole log
+DEFINE NODE RETAIN 500000 RECORDS;
+INFO FOR NODE;              -- retain: 500000, retain_source: 'statement'
+DEFINE NODE RETAIN NONE;    -- keep the whole log
 ```
 
-**The default is to keep everything**, which is what every store held before this
-clause existed. `retain` reads `null` until a number is set, and `null` is
-*unbounded* rather than *very large* — the two are different answers and an
-operator has to be able to tell them apart.
+**Three places can say, and the most specific wins**: `DEFINE NODE RETAIN`,
+stored on the node; `TESSARIDB_RETAIN_RECORDS`, which a serving node is started
+with — a count, or `none`; and the engine's own 100 000. `INFO FOR NODE` reports
+the window it applies as `retain` and who decided it as `retain_source` —
+`statement`, `environment` or `default`. `retain` is `null` for an unbounded log,
+and `RETAIN NONE` is **remembered** as a choice, so a node restarted with another
+default keeps the whole log it was told to keep.
+
+The routine backup is a state snapshot (`BACKUP`), which does not need the history
+below the window; take one before turning a long-unbounded store over to the
+default, if its history is worth keeping.
 
 **It is local**, like `ROLES` and for the same reason: a disk budget describes
 this machine. It does not replicate, a restored backup does not inherit it, and
@@ -8109,7 +8125,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.17.1", "build": "0.17.1-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.18.0", "build": "0.18.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],
@@ -8473,7 +8489,7 @@ be, because it is confined to the run its fixed values name.
 | `START` and `LIMIT` on a file are the row rule over bytes, and a range past the end is empty | **contract** |
 | A ranged write is one commit, and leaving `START` out replaces the file | **contract** — an offset writes at it and keeps what lies beyond |
 | A write that would leave a hole is refused, never zero-filled | **contract** — the store does not invent bytes nobody wrote |
-| `BACKUP` answers with the log as the file the verifier reads | **contract** — a surface that rendered it instead would be a second format |
+| `BACKUP` answers with the file the verifier reads — a snapshot, or with `LOG` the log | **contract** — a surface that rendered it instead would be a second format |
 | A backup is fixed at the log's tail when it began | **contract** — a write landing mid-backup is outside it, and the header says where "outside" starts |
 | A backup needs an owner, and no grant can permit one | **contract** — it is every table at once, so an empty list of named tables must not read as permission |
 | `ASSERT` constrains a present, non-null value, and `REQUIRED` is the one constraint about absence | **contract** — otherwise `REQUIRED` would mean two things depending on what stood beside it |

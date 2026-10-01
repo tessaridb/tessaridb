@@ -1075,3 +1075,34 @@ fn a_policy_whose_periods_do_not_hold_together_is_refused_with_the_direction_nam
         "refused without naming the relation: {said}"
     );
 }
+
+/// The retention a node reports is the one it applies, with who decided it
+/// (ADR-0094 D2): the engine's window until somebody says otherwise, and a
+/// `RETAIN NONE` reported as the operator's choice rather than as silence.
+#[test]
+fn a_node_reports_its_retention_and_who_decided_it() {
+    let store = closed(&backend());
+    let fresh = reported(&store);
+    assert_eq!(
+        fresh.get("retain"),
+        Some(&Value::from(
+            i64::try_from(tessari_constants::DEFAULT_LOG_RETENTION_RECORDS).unwrap()
+        ))
+    );
+    assert_eq!(fresh.get("retain_source"), Some(&Value::from("default")));
+
+    store.retain_by_default(tessari_storage::Retention::Keep(
+        tessari_types::Sequence::new(500),
+    ));
+    let started = reported(&store);
+    assert_eq!(started.get("retain"), Some(&Value::from(500_i64)));
+    assert_eq!(
+        started.get("retain_source"),
+        Some(&Value::from("environment"))
+    );
+
+    owner(&store).run("DEFINE NODE RETAIN NONE;").unwrap();
+    let chosen = reported(&store);
+    assert_eq!(chosen.get("retain"), Some(&Value::Null));
+    assert_eq!(chosen.get("retain_source"), Some(&Value::from("statement")));
+}

@@ -2779,7 +2779,7 @@
       says: "every live record at one moment; restores whole, and a pruned log does not stop it"
     },
     log: {
-      statement: "BACKUP",
+      statement: "BACKUP LOG",
       suffix: "tessarilog",
       says: "every commit in order; a restore can stop at any point in it"
     },

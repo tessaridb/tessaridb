@@ -8,19 +8,24 @@ use crate::error::Result;
 use crate::token::{Keyword, Punct, Token};
 
 impl Parser<'_> {
-    /// `BACKUP [STATE | SCRIPT] [OF <place>, …] [TO '<name>']`, or `BACKUP [FROM n]
-    /// [TO '<name>']`, from just after `BACKUP`.
+    /// `BACKUP [STATE | SCRIPT] [OF <place>, …] [TO '<name>']`, or `BACKUP [LOG]
+    /// [FROM n] [TO '<name>']`, from just after `BACKUP`.
+    ///
+    /// A bare `BACKUP` is the state snapshot (ADR-0094 D1): the routine backup of
+    /// a store whose log is bounded. The log is asked for by name, `LOG`, or by
+    /// `FROM`, which only a log has.
     pub(in crate::parser) fn backup_statement(&mut self) -> Result<StatementKind> {
         self.advance();
-        // `STATE` is contextual, as every word a statement's head adds
-        // is: it is an ordinary field name everywhere else, and after
-        // `BACKUP` nothing but this word or `FROM` can stand.
+        // `STATE`, `SCRIPT` and `LOG` are contextual, as every word a
+        // statement's head adds is: ordinary field names everywhere else.
         let form = if self.eat_word("state") {
             Some(crate::ast::BackupForm::State)
         } else if self.eat_word("script") {
             Some(crate::ast::BackupForm::Script)
-        } else {
+        } else if self.eat_word("log") || self.peek_keyword() == Some(Keyword::From) {
             None
+        } else {
+            Some(crate::ast::BackupForm::State)
         };
         Ok(if let Some(form) = form {
             if self.eat_keyword(Keyword::From) {

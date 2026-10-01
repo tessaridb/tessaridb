@@ -12,6 +12,23 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.18.0-beta — 2026-10-01
+
+### Changed
+
+- **A backup is a snapshot unless the log is asked for** (G049, ADR-0094). `BACKUP`,
+  `BACKUP … TO`, `GET /backup`, `--backup <file>` and the console now write a state
+  snapshot. The log is `BACKUP LOG`, `GET /backup?as=log`, or any form with a
+  position (`BACKUP FROM n`, `?from=n`, `--backup <file> --from n`; `--from 1` is
+  the whole log). A client's `backup()` with no position now receives a snapshot.
+- **A serving node bounds its log by default**: the newest 100 000 records of each
+  log are kept and the rest pruned. `TESSARIDB_RETAIN_RECORDS` sets another count
+  or `none`; `DEFINE NODE RETAIN` stored on the node wins over both, and `RETAIN
+  NONE` is now remembered as a choice. `INFO FOR NODE` reports `retain_source`
+  (`statement`, `environment`, `default`). A store upgraded from an earlier version
+  starts pruning at its first housekeeping pass — take a snapshot first if its
+  history matters, or start it with `TESSARIDB_RETAIN_RECORDS=none`.
+
 ## 0.17.1-beta — 2026-10-01
 
 - **The console's Vault tab reads and writes records** (G048). A **Records** pane

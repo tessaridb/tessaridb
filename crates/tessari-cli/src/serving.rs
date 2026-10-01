@@ -12,6 +12,9 @@ use tessaridb::Db;
 /// How long an unseal lasts, when `--unseal-for` does not say (ADR-0092 D4).
 const UNSEAL_FOR: &str = "TESSARIDB_UNSEAL_FOR";
 
+/// How many log records each log keeps where no statement said (ADR-0094 D2).
+const RETAIN_RECORDS: &str = "TESSARIDB_RETAIN_RECORDS";
+
 /// Be the node the other half of this program connects to.
 ///
 /// The same binary rather than a second one: what changes is where the store is,
@@ -153,6 +156,16 @@ pub(crate) fn serve(
     };
     if let Some(period) = period {
         db.unseal_for(period);
+    }
+    // The variable, else the engine's constant, which the store applies on its
+    // own. Read before the housekeeping cadence starts, so the first pass prunes
+    // to the window this node was started with.
+    match std::env::var(RETAIN_RECORDS) {
+        Ok(written) if !written.is_empty() => db.store().retain_by_default(
+            crate::arguments::retained_records(&written)
+                .map_err(|why| format!("{RETAIN_RECORDS} {why}"))?,
+        ),
+        _ => {}
     }
     // Both are bound before either serves, so an address that cannot be taken
     // is a failure to start rather than a surface that quietly went missing

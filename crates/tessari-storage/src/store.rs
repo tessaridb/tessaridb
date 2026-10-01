@@ -207,6 +207,10 @@ pub struct Store {
     discarded: Arc<AtomicU64>,
     /// Leadership rounds stood since this process opened the store.
     campaigns: Arc<AtomicU64>,
+    /// How many log records this process keeps where no statement said
+    /// (ADR-0094 D2). Shared with every handle for the reason the counters
+    /// beside it are.
+    retention: Arc<crate::retention::ProcessRetention>,
     /// What this process has given each follower, and when.
     ///
     /// Shared with every handle for the reason the registries above it are, and

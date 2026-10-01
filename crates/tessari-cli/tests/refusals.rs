@@ -325,3 +325,52 @@ fn a_snapshot_that_is_not_whole_is_refused_and_leaves_nothing() {
         "a whole snapshot did not restore into the store a cut one was refused by: {said}"
     );
 }
+
+/// `--backup` writes a snapshot unless a position asks for the log
+/// (ADR-0094 D1), and `--from 1` is the whole log.
+#[test]
+fn a_backup_is_a_snapshot_unless_a_position_asks_for_the_log() {
+    let path = store("default-backup");
+    let (ok, said) = run(
+        &path,
+        None,
+        &[
+            "-e",
+            "DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; DEFINE COLLECTION t; CREATE t:1 = { n: 1 };",
+        ],
+        "",
+    );
+    assert!(ok, "the store was not made: {said}");
+    let files = std::env::temp_dir().join("tessaridb-cli-refusals-default-backup-files");
+    drop(std::fs::remove_dir_all(&files));
+    std::fs::create_dir_all(&files).unwrap();
+
+    let snapshot = files.join("default");
+    let (ok, said) = run(&path, None, &["--backup", snapshot.to_str().unwrap()], "");
+    assert!(ok, "the default backup failed: {said}");
+    assert!(
+        std::fs::read(&snapshot)
+            .unwrap()
+            .starts_with(b"TESSARISNAP"),
+        "a backup with no position is not a snapshot"
+    );
+
+    let log = files.join("whole-log");
+    let (ok, said) = run(
+        &path,
+        None,
+        &["--backup", log.to_str().unwrap(), "--from", "1"],
+        "",
+    );
+    assert!(ok, "the whole-log backup failed: {said}");
+    let held = std::fs::read(&log).unwrap();
+    assert!(
+        !held.starts_with(b"TESSARISNAP"),
+        "a backup with a position is not the log"
+    );
+    let (ok, said) = run(&path, None, &["--verify", log.to_str().unwrap()], "");
+    assert!(
+        ok && said.contains("record"),
+        "the log did not verify: {said}"
+    );
+}

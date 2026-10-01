@@ -761,6 +761,11 @@ fn the_backup_route_hands_over_a_file_the_verifier_reads() {
             .contains("application/octet-stream")),
         "{headers:?}"
     );
+    // A snapshot unless the caller asks for the log (ADR-0094 D1).
+    tessari_backup::verify_state(&mut held.as_slice()).unwrap();
+
+    let (status, _, held) = send_bytes(&address, "GET", "/backup?as=log", None);
+    assert_eq!(status, 200);
     let verified = tessari_backup::verify(&mut held.as_slice()).unwrap();
     assert!(verified.records > 0, "{verified:?}");
     assert!(!verified.truncated, "{verified:?}");
@@ -791,7 +796,7 @@ fn the_backup_route_takes_one_query_and_names_the_mistake_of_any_other() {
 
     let (status, body) = request(&address, "GET", "/backup?since=1", "");
     assert_eq!(status, 400, "{body}");
-    let (status, body) = request(&address, "GET", "/backup?as=log", "");
+    let (status, body) = request(&address, "GET", "/backup?as=logs", "");
     assert_eq!(status, 400, "{body}");
     let (status, body) = request(&address, "GET", "/backup?from=later", "");
     assert_eq!(status, 400, "{body}");
@@ -807,7 +812,7 @@ fn the_backup_route_adds_no_permission_of_its_own() {
     assert!(status >= 400, "a viewer downloaded the whole store: {body}");
     let (status, _, held) = send_bytes(&address, "GET", "/backup", Some(ROOT));
     assert_eq!(status, 200);
-    assert!(tessari_backup::verify(&mut held.as_slice()).is_ok());
+    assert!(tessari_backup::verify_state(&mut held.as_slice()).is_ok());
 }
 
 /// A JSON body, sent with the content type that says so.

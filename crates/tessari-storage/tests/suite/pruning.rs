@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use tessari_encoding::{LogId, encode_payload};
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_storage::{Catalog, Error, RecordAddress, Store, TableShape};
+use tessari_storage::{
+    Catalog, Error, RecordAddress, Retention, RetentionSource, Store, TableShape,
+};
 use tessari_types::{RecordId, Sequence, Value};
 
 use crate::{FIXTURE_HOME, fixture_log};
@@ -231,19 +233,101 @@ fn a_prune_is_bounded_to_the_log_it_names() {
 }
 
 #[test]
-fn a_store_nobody_configured_keeps_the_whole_log() {
+fn a_store_nobody_configured_keeps_the_default_window() {
     let (store, _, log) = logged(5);
     assert_eq!(
         store.log_retention().unwrap(),
         None,
-        "unbounded is the default, because the default for an irreversible \
-         operation has to be the one that changes nothing"
+        "nothing is stored until somebody says DEFINE NODE RETAIN"
+    );
+    assert_eq!(
+        store.effective_retention().unwrap(),
+        (
+            Retention::Keep(Sequence::new(
+                tessari_constants::DEFAULT_LOG_RETENTION_RECORDS
+            )),
+            RetentionSource::Default
+        ),
+        "a bounded log is the default (owner, G049): an unbounded one is a disk \
+         that fills"
+    );
+    let trimmed = store
+        .trim_logs()
+        .unwrap()
+        .expect("the default window applies");
+    assert_eq!(trimmed.records, 0, "five records are inside the window");
+    assert_eq!(store.log_start(log).unwrap(), Sequence::ZERO);
+}
+
+#[test]
+fn the_process_default_overrides_the_constant() {
+    let (store, _, log) = logged(10);
+    store.retain_by_default(Retention::Keep(Sequence::new(4)));
+    assert_eq!(
+        store.effective_retention().unwrap(),
+        (
+            Retention::Keep(Sequence::new(4)),
+            RetentionSource::Environment
+        )
+    );
+    let trimmed = store
+        .trim_logs()
+        .unwrap()
+        .expect("the process default applies");
+    assert_eq!(trimmed.records, 6);
+    assert_eq!(store.log_start(log).unwrap(), Sequence::new(7));
+}
+
+#[test]
+fn an_unbounded_process_default_trims_nothing() {
+    let (store, _, log) = logged(10);
+    store.retain_by_default(Retention::Unbounded);
+    assert_eq!(
+        store.effective_retention().unwrap(),
+        (Retention::Unbounded, RetentionSource::Environment)
     );
     assert!(
         store.trim_logs().unwrap().is_none(),
-        "and *nobody asked for this* is a different answer from *there was \
-         nothing to do*"
+        "*nobody wants a bound* is a different answer from *there was nothing to do*"
     );
+    assert_eq!(store.log_start(log).unwrap(), Sequence::ZERO);
+}
+
+#[test]
+fn a_statement_overrides_the_process_default() {
+    let (store, _, log) = logged(10);
+    store.retain_by_default(Retention::Unbounded);
+    store.set_log_retention(Some(Sequence::new(4))).unwrap();
+    assert_eq!(
+        store.effective_retention().unwrap(),
+        (
+            Retention::Keep(Sequence::new(4)),
+            RetentionSource::Statement
+        )
+    );
+    store
+        .trim_logs()
+        .unwrap()
+        .expect("the statement's window applies");
+    assert_eq!(store.log_start(log).unwrap(), Sequence::new(7));
+}
+
+#[test]
+fn retain_none_is_remembered_as_a_choice_and_beats_the_default() {
+    let (store, _, log) = logged(10);
+    store.retain_by_default(Retention::Keep(Sequence::new(4)));
+    store.set_log_retention(None).unwrap();
+    assert_eq!(
+        store.log_retention().unwrap(),
+        Some(Retention::Unbounded),
+        "RETAIN NONE is stored, so an operator's unbounded log is not mistaken \
+         for one nobody configured"
+    );
+    assert_eq!(
+        store.effective_retention().unwrap(),
+        (Retention::Unbounded, RetentionSource::Statement)
+    );
+    assert!(store.trim_logs().unwrap().is_none());
     assert_eq!(store.log_start(log).unwrap(), Sequence::ZERO);
 }
 
@@ -251,7 +335,10 @@ fn a_store_nobody_configured_keeps_the_whole_log() {
 fn a_retained_count_is_what_the_log_is_trimmed_to() {
     let (store, _, log) = logged(10);
     store.set_log_retention(Some(Sequence::new(4))).unwrap();
-    assert_eq!(store.log_retention().unwrap(), Some(Sequence::new(4)));
+    assert_eq!(
+        store.log_retention().unwrap(),
+        Some(Retention::Keep(Sequence::new(4)))
+    );
 
     let trimmed = store.trim_logs().unwrap().expect("retention is set");
     assert!(trimmed.logs >= 1, "every log this node holds is looked at");
@@ -288,7 +375,7 @@ fn clearing_the_retention_stops_the_trimming_without_restoring_anything() {
     store.trim_logs().unwrap();
     store.set_log_retention(None).unwrap();
 
-    assert_eq!(store.log_retention().unwrap(), None);
+    assert_eq!(store.log_retention().unwrap(), Some(Retention::Unbounded));
     assert!(store.trim_logs().unwrap().is_none());
     assert_eq!(
         store.log_start(log).unwrap(),

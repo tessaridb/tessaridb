@@ -71,7 +71,7 @@ fn a_backup_taken_through_the_language_verifies_and_restores() {
     // shape to read.
     let source = store();
     let mut session = ready(&source);
-    let held = taken(&mut session, "BACKUP;");
+    let held = taken(&mut session, "BACKUP LOG;");
 
     let verified = tessari_backup::verify(&mut held.as_slice()).unwrap();
     assert!(verified.records > 0, "{verified:?}");
@@ -102,7 +102,7 @@ fn an_increment_through_the_language_is_refused_where_a_sequence_names_no_log() 
     // `catch_up.rs` — until the statement can name one too.
     let source = store();
     let mut session = ready(&source);
-    let base = taken(&mut session, "BACKUP;");
+    let base = taken(&mut session, "BACKUP LOG;");
     assert!(
         tessari_backup::verify(&mut base.as_slice())
             .unwrap()
@@ -140,7 +140,7 @@ fn a_write_that_lands_after_the_backup_began_is_outside_it_and_does_not_damage_i
     // "outside" checkable rather than a claim.
     let source = store();
     let mut session = ready(&source);
-    let held = taken(&mut session, "BACKUP;");
+    let held = taken(&mut session, "BACKUP LOG;");
     session.run("CREATE orders:99 = { total: 1000 };").unwrap();
 
     // The file is whole, and the late write is simply not in it.
@@ -241,7 +241,7 @@ fn a_backup_is_the_whole_store_and_not_the_selected_namespace() {
              USE NAMESPACE prod; USE DATABASE shop;",
         )
         .unwrap();
-    let held = taken(&mut session, "BACKUP;");
+    let held = taken(&mut session, "BACKUP LOG;");
 
     let restored_store = store();
     tessari_backup::read(&restored_store, &mut held.as_slice()).unwrap();

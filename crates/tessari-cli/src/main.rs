@@ -152,7 +152,15 @@ fn run(asked: Asked) -> Result<Ended, String> {
     // session at all — and an operator rehearses a restore with a command, which
     // is what "rehearsed" in the readiness checklist means.
     match &asked.source {
-        Source::Backup(path) => return backup(&db, path, sequence).map(|()| Ended::Fine),
+        // A snapshot unless a position asks for the log (ADR-0094 D1): only a log
+        // has a `--from`, and `--from 1` is the whole of it.
+        Source::Backup(path) => {
+            return match sequence {
+                None => snapshot(&db, path),
+                Some(_) => backup(&db, path, sequence),
+            }
+            .map(|()| Ended::Fine);
+        }
         Source::Snapshot(path) => return snapshot(&db, path).map(|()| Ended::Fine),
         Source::Dump(path) => return dump(&db, path).map(|()| Ended::Fine),
         Source::Restore(path) => return restore(&db, path, sequence).map(|()| Ended::Fine),
