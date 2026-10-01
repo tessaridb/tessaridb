@@ -7,7 +7,7 @@ import { el, type Node } from "./html.js";
 import { to } from "./destinations.js";
 import {
   answer, behindDisclosure, button, field, note, pane, paneHead, panel, row,
-  says, status, text, warning,
+  says, status, text,
 } from "./ui.js";
 
 export const cluster = (): Node =>
@@ -45,9 +45,12 @@ export const cluster = (): Node =>
           // one now, so the note keeps only the half still true and says nothing
           // about draining — the radius line does that, where the operator is
           // standing when it matters, and a 40-word note has no room for both.
-          "Handing leadership over is the other thing you would come here for, and " +
-            "it has no statement behind it yet — so this drawer does not offer a " +
-            "control that would compose nothing.",
+          // ALTER REPLICA is a store-line write, so it succeeds only on the
+          // store's leader; a control here would compose a statement that fails
+          // on every other node, so the note names it instead.
+          "Handing the store's leadership over has no statement yet, so no control " +
+            "is offered for it. A placed range moves with ALTER REPLICA <peer> LEADS " +
+            "<range> or LEADS NONE, run on the store's leader from the query tab.",
         ),
       ),
       behindDisclosure("The answer this was drawn from", answer("cluster-facts", "small")),
@@ -109,12 +112,11 @@ export const cluster = (): Node =>
             "refused at the first divergent record and counted, never silently ranked.",
         ),
       ),
-      warning(
-        el("strong", {}, "A table's shards are fixed when it is declared."),
-        " A table split with SPLIT AT is logged, led and replicated shard by shard, " +
-          "and a peer's LEADS names the one range it stands to lead. Splitting a " +
-          "table that already exists, merging shards and moving a placement are " +
-          "not done by this engine.",
+      note(
+        el("strong", {}, "A split table's shards and placements change while it serves."),
+        " ALTER TABLE … SPLIT AT and MERGE SHARD change the map in place, " +
+          "PARTITION BY gives each region its shard, and ALTER REPLICA … LEADS " +
+          "moves a placement.",
       ),
       note(el("strong", {}, "No lag figure, and no leadership for other nodes.")),
       behindDisclosure(

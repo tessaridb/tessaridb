@@ -589,8 +589,8 @@ const ACCEPTED_NEGATIONS: &[(&str, &str)] = &[
     // still true is recorded below on its own, and the drain is gone from the
     // page because the control exists, never because it was blessed here.
     (
-        "Handing leadership over is the other thing you would come here for, and it has no statement behind it yet — so this drawer does not offer a control that would compose nothing.",
-        "True, and measured (Q-683): the grammar carries no HANDOVER, STEP DOWN or YIELD, so there is no statement a control could compose. Delete when one of those verbs exists. The drain half of this sentence was deleted in W371, when `DEFINE NODE ROLES NONE` gave it one.",
+        "Handing the store's leadership over has no statement yet, so no control is offered for it.",
+        "True, and measured (Q-683): the grammar carries no HANDOVER, STEP DOWN or YIELD for the store line, so there is no statement a control could compose. Delete when one exists. A placed range's hand-over has one since 0.19.0-beta (`ALTER REPLICA … LEADS`), and the note names it; it is a store-line write, so a drawer control would fail on every node but the store's leader.",
     ),
     // The six below arrived together in W371, when the corpus grew to every
     // delivered asset and the vocabulary grew by `role` and `statement`. None

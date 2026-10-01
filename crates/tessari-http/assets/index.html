@@ -303,7 +303,7 @@
               <button id="drawer-apply" type="button" class="primary">Declare it</button>
               <span id="drawer-status" class="status" role="status"></span>
             </div>
-            <p class="note">Handing leadership over is the other thing you would come here for, and it has no statement behind it yet — so this drawer does not offer a control that would compose nothing.</p>
+            <p class="note">Handing the store's leadership over has no statement yet, so no control is offered for it. A placed range moves with ALTER REPLICA &lt;peer&gt; LEADS &lt;range&gt; or LEADS NONE, run on the store's leader from the query tab.</p>
           </div>
           <details class="tucked">
             <summary>The answer this was drawn from</summary>
@@ -374,7 +374,7 @@
             <summary>How membership works</summary>
             <p class="note">Membership is a record and not a control plane: a node learns its peers through the same log it replicates data with, so there is nothing to stand up beside the database. A namespace declares how many copies the cluster keeps, and a peer's subscription decides which of them it receives. A leader holds a renewable lease granted by a majority and stops writing before that lease expires, measured on elapsed time rather than on the clock. A read may name the staleness it will accept, and a bound tighter than the cluster can know about itself is refused with the floor named. A write sent to the wrong node comes back as a redirect carrying the endpoint, the node and the epoch it was decided under. A divergence is refused at the first divergent record and counted, never silently ranked.</p>
           </details>
-          <p class="note warn"><strong>A table's shards are fixed when it is declared.</strong> A table split with SPLIT AT is logged, led and replicated shard by shard, and a peer's LEADS names the one range it stands to lead. Splitting a table that already exists, merging shards and moving a placement are not done by this engine.</p>
+          <p class="note"><strong>A split table's shards and placements change while it serves.</strong> ALTER TABLE … SPLIT AT and MERGE SHARD change the map in place, PARTITION BY gives each region its shard, and ALTER REPLICA … LEADS moves a placement.</p>
           <p class="note"><strong>No lag figure, and no leadership for other nodes.</strong></p>
           <details class="tucked">
             <summary>Why neither is drawn</summary>
