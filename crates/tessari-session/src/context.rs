@@ -10,9 +10,11 @@
 //! `USE`, so the only check that covers every path is the one at the resolution
 //! every path performs.
 
+use std::collections::BTreeMap;
 use tessari_ql::{Span, TableRef};
 use tessari_storage::{Catalog, IndexDefinition, TableKind, Transaction};
-use tessari_types::{DatabaseId, NamespaceId, Path, TableId};
+
+use tessari_types::{DatabaseId, NamespaceId, Path, TableId, Value};
 
 use crate::error::{Error, Result};
 use crate::session::Session;
@@ -25,6 +27,24 @@ pub(crate) struct Context {
 }
 
 impl Session<'_> {
+    /// `session::context()`: this node's identity and the tenancy this session
+    /// selected, `null` where it selected nothing (G051 SG3).
+    ///
+    /// Open to every session. The node id is what every redirect frame already
+    /// discloses, and the names are the caller's own `USE`; `$node`, which
+    /// carries roles and endpoints, stays behind its authority.
+    pub(crate) fn session_context(&self) -> Result<Value> {
+        let named = |name: Option<&str>| name.map_or(Value::Null, Value::from);
+        Ok(Value::Object(BTreeMap::from([
+            (
+                "node".to_owned(),
+                Value::Uuid(self.store.node_identity()?.id),
+            ),
+            ("namespace".to_owned(), named(self.namespace())),
+            ("database".to_owned(), named(self.database())),
+        ])))
+    }
+
     /// The namespace the session selected.
     pub(crate) fn namespace_id(
         &self,
@@ -190,7 +210,7 @@ impl Session<'_> {
             return Ok(None);
         }
         Ok(Catalog::new(transaction)
-            .indexes_on(table)?
+            .field_indexes_on(table)?
             .into_iter()
             .find(|index| index.fields.as_slice() == [path.clone()]))
     }
@@ -224,7 +244,7 @@ impl Session<'_> {
         if !transaction.indexes_are_current()? {
             return Ok(None);
         }
-        let indexes = Catalog::new(transaction).indexes_on(table)?;
+        let indexes = Catalog::new(transaction).field_indexes_on(table)?;
         if let Some(exact) = indexes
             .iter()
             .find(|index| index.fields.as_slice() == [path.clone()])

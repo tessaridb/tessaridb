@@ -946,9 +946,13 @@ pub enum Error {
     /// whole with nothing in an error state, so the read is refused and the
     /// shards it lacks are named. An empty list means it holds none of the
     /// table at all.
+    ///
+    /// When this node knows a peer holding the whole table it names it, and a
+    /// surface that can redirect turns the refusal into one (G051 C4,
+    /// ADR-0101) — to a client that greeted minor 0 it stays this refusal.
     #[error(
         "this node does not hold all of `{table}`{} — read it on a node that holds \
-         the whole table, or name a span of identities inside what this one holds",
+         the whole table{}, or name a span of identities inside what this one holds",
         if shards.is_empty() {
             String::new()
         } else {
@@ -958,13 +962,17 @@ pub enum Error {
                 shards.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "),
                 if shards.len() == 1 { "is" } else { "are" }
             )
-        }
+        },
+        holder.as_ref().map_or_else(String::new, |peer| format!(" ({} does)", peer.endpoint))
     )]
     NotHeldHere {
         /// The table asked for.
         table: String,
         /// The shards the read needs and this node does not hold.
         shards: Vec<u32>,
+        /// A peer holding the whole table that this node has heard serving, when
+        /// it knows one.
+        holder: Option<crate::Peer>,
     },
 
     /// A shard this node lacks could not be fetched from its leader (G033).
@@ -999,6 +1007,9 @@ pub enum Error {
         table: String,
         /// The shard asked for.
         shard: u32,
+        /// A peer holding the whole table that this node has heard serving, when
+        /// it knows one — the node a surface redirects the read to (G051 SG3).
+        holder: Option<crate::Peer>,
     },
 
     /// A gathered read would hold more records than a node holds in memory (G033).
@@ -1671,6 +1682,77 @@ pub enum Error {
     )]
     NegationWithoutTerm {
         /// Where the query was written.
+        span: Span,
+    },
+
+    /// `FROM SEARCH` was asked something that is not text.
+    #[error("a search is asked text, and this is {found} (at {span})")]
+    SearchNeedsText {
+        /// What it was.
+        found: &'static str,
+        /// Where.
+        span: Span,
+    },
+
+    /// An `ORDER BY` on an ungrouped `FROM SEARCH`, whose order is its ranking.
+    #[error(
+        "a search answers in the order it ranks its records; write the ordering          over a grouped read, or rank by `search::score()` (at {span})"
+    )]
+    SearchIsItsOwnOrder {
+        /// The ordering.
+        span: Span,
+    },
+
+    /// `search::score()`, `search::table_name()` or `search::snippet()` outside a
+    /// `FROM SEARCH`, where there is no ranked record to answer about.
+    #[error(
+        "this function answers about a record a `FROM SEARCH` ranked, and this          read is not one (at {span})"
+    )]
+    NotSearched {
+        /// The call.
+        span: Span,
+    },
+
+    /// A search of this name already exists in the database.
+    #[error("a search named `{name}` already exists (at {span})")]
+    SearchExists {
+        /// The name.
+        name: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A search named one table twice: its fields are listed once, together.
+    #[error("the search names `{table}` twice; list its fields once, after one `ON` (at {span})")]
+    SearchNamesTableTwice {
+        /// The table.
+        table: String,
+        /// The second naming.
+        span: Span,
+    },
+
+    /// A search named one field of a table twice.
+    #[error("the search names the field `{field}` twice (at {span})")]
+    SearchNamesFieldTwice {
+        /// The field.
+        field: String,
+        /// The second naming.
+        span: Span,
+    },
+
+    /// A synonym or stop word that is not one word once tokenised.
+    #[error("`{word}` is not one word; a set holds single words (at {span})")]
+    NotOneWord {
+        /// The entry.
+        word: String,
+        /// The set.
+        span: Span,
+    },
+
+    /// A field weight at or below zero, or above a thousand.
+    #[error("a field's weight is above zero and at most 1000, to three places (at {span})")]
+    WeightOutOfRange {
+        /// The field.
         span: Span,
     },
 
@@ -2430,13 +2512,21 @@ pub enum Depended {
     GraphByTable,
     /// A graph that edge kinds still belong to.
     GraphByEdgeKind,
+    /// An analyzer a search still reads with (ADR-0105).
+    AnalyzerBySearch,
+    /// A synonym set a search's field still names.
+    SynonymsBySearch,
+    /// A stop-word set a search still names.
+    StopwordsBySearch,
 }
 
 impl Depended {
     /// What was asked to go.
     pub(crate) const fn entity(self) -> &'static str {
         match self {
-            Self::AnalyzerByField => "analyzer",
+            Self::AnalyzerByField | Self::AnalyzerBySearch => "analyzer",
+            Self::SynonymsBySearch => "synonym set",
+            Self::StopwordsBySearch => "stop-word set",
             Self::DatabaseByTable => "database",
             Self::NamespaceByDatabase => "namespace",
             Self::GraphByTable | Self::GraphByEdgeKind => "graph",
@@ -2446,7 +2536,10 @@ impl Depended {
     /// How the dependants stand to it, as the sentence needs it.
     pub(crate) const fn relation(self) -> &'static str {
         match self {
-            Self::AnalyzerByField => "is named by",
+            Self::AnalyzerByField
+            | Self::AnalyzerBySearch
+            | Self::SynonymsBySearch
+            | Self::StopwordsBySearch => "is named by",
             Self::DatabaseByTable | Self::NamespaceByDatabase => "holds",
             // Not "holds": a graph does not contain its tables the way a
             // database contains them — they belong to it while living in the
@@ -2468,6 +2561,12 @@ impl Depended {
             (Self::GraphByTable, _) => "tables",
             (Self::GraphByEdgeKind, 1) => "edge kind",
             (Self::GraphByEdgeKind, _) => "edge kinds",
+            (Self::AnalyzerBySearch | Self::SynonymsBySearch | Self::StopwordsBySearch, 1) => {
+                "search"
+            }
+            (Self::AnalyzerBySearch | Self::SynonymsBySearch | Self::StopwordsBySearch, _) => {
+                "searches"
+            }
         }
     }
 }

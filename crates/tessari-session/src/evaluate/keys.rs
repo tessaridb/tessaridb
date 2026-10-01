@@ -79,7 +79,7 @@ pub(crate) fn ordered_index_on(
         return Ok(None);
     }
     Ok(Catalog::new(transaction)
-        .indexes_on(table)?
+        .field_indexes_on(table)?
         .into_iter()
         .find(|held| {
             held.is_ordered() && held.fields.len() == 1 && held.fields.first() == Some(&key.path)

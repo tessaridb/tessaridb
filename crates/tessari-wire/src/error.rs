@@ -466,16 +466,18 @@ pub enum Error {
         held: tessari_types::Epoch,
     },
 
-    /// A read this node declined, answered by a caller that cannot follow it.
+    /// A request this node sent elsewhere — a read beyond its bound or a write
+    /// into a range another node leads (ADR-0101) — answered by a caller that
+    /// cannot follow it.
     ///
     /// Not what the redirect IS — it is an instruction and
     /// [`crate::Client::run_routed`] hands it over intact. This is what becomes
     /// of one when the caller asked for answers and has no way to act on being
     /// sent elsewhere: a genuine failure, and one that says where the read
     /// belonged rather than reporting an unknown frame.
-    #[error("that read belongs at {endpoint}, which this caller cannot follow")]
+    #[error("that request belongs at {endpoint}, which this caller cannot follow")]
     Redirected {
-        /// The address the read belonged at.
+        /// The address the request belonged at.
         endpoint: String,
         /// Who was expected there.
         node: [u8; tessari_encoding::NODE_ID_LEN],

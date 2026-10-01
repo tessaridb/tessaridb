@@ -74,8 +74,8 @@ mod settling;
 use std::collections::{BTreeMap, BTreeSet};
 
 use tessari_encoding::{
-    IndexAddress, IndexValues, LogRecord, Mutation, Posting, PostingKey, RecordValue, StoreKey,
-    StoreValue, decode_payload, encode_payload,
+    IndexAddress, IndexValues, Located, LogRecord, Mutation, Posting, PostingKey, RecordValue,
+    StoreKey, StoreValue, decode_payload, encode_payload,
 };
 use tessari_kv::WriteBatch;
 use tessari_types::{Analyzer, DatabaseId, NamespaceId, TableId, Value};
@@ -88,7 +88,8 @@ use crate::transaction::RecordAddress;
 pub(crate) use build::build;
 pub(crate) use entries::{displace, insert, place, place_cells, remove};
 pub(crate) use projecting::{
-    analyzers_on, covering_of, project, projected_vector, search_analyzer, terms_of,
+    analysed, analyzer_for, analyzers_named, analyzers_on, covering_of, project, projected_vector,
+    search_analyzer, terms_of,
 };
 pub(crate) use settling::{Delta, settle};
 
@@ -110,6 +111,12 @@ pub(crate) struct Pending {
     claimed: BTreeSet<Vec<u8>>,
     /// How each search index's statistics move, written once at the end.
     moved: BTreeMap<IndexAddress, Delta>,
+    /// How each search member's per-field token totals move (ADR-0105).
+    ///
+    /// Beside [`Self::moved`] rather than inside it, because only a member has
+    /// fields to total and a field index's statistics keep the value they
+    /// always had. Signed for the reason the document count is.
+    lengths: BTreeMap<IndexAddress, Vec<i64>>,
     /// How each term's document count moves, per search index.
     ///
     /// Accumulated for the reason [`Self::moved`] is, and it matters more here:
@@ -226,6 +233,10 @@ pub(crate) fn maintain_from(
     // once per record. That is what makes a scan and an index answer the same
     // question; see `tessari_types::Analyzer`.
     let mut analyzers: BTreeMap<TableId, BTreeMap<String, Analyzer>> = BTreeMap::new();
+    // A search member reads with the search's analyzer, which is named rather
+    // than declared on a field; read once, and only when a member is written.
+    let mut named: Option<BTreeMap<String, Analyzer>> = None;
+    let unnamed = BTreeMap::new();
     let mut pending = Pending::default();
 
     for mutation in record.mutations() {
@@ -256,6 +267,10 @@ pub(crate) fn maintain_from(
                 found
             }
         };
+        if named.is_none() && definitions.iter().any(|held| held.engine.is_some()) {
+            named = Some(analyzers_named(&mut view)?);
+        }
+        let named_now = named.as_ref().unwrap_or(&unnamed);
 
         let address = RecordAddress::new(
             mutation.namespace,
@@ -276,7 +291,7 @@ pub(crate) fn maintain_from(
                 definition,
                 mutation,
                 previous.as_deref(),
-                &declared,
+                (&declared, named_now),
                 &mut pending,
             )?;
         }
@@ -299,7 +314,7 @@ fn apply_one(
     definition: &IndexDefinition,
     mutation: &Mutation,
     previous: Option<&[u8]>,
-    analyzers: &BTreeMap<String, Analyzer>,
+    (analyzers, named): (&BTreeMap<String, Analyzer>, &BTreeMap<String, Analyzer>),
     pending: &mut Pending,
 ) -> Result<WriteBatch> {
     let address = IndexAddress::new(
@@ -367,9 +382,12 @@ fn apply_one(
         return Ok(batch);
     }
 
-    if definition.search {
-        let analyzer = search_analyzer(definition, analyzers);
-        let counted = pending.moved.entry(address).or_default();
+    if definition.search || definition.engine.is_some() {
+        let analyzer = analyzer_for(definition, analyzers, named);
+        // An unscored index keeps no collection statistics (ADR-0100 D4): it
+        // is never scored, so there is nothing for them to describe.
+        let mut counted =
+            (!definition.costs.unscored).then(|| pending.moved.entry(address).or_default());
         let dictionary = pending.terms.entry(address).or_default();
         // The old side first, and both sides of the same change: a record whose
         // text changed leaves the index at its former length and re-enters at
@@ -381,8 +399,11 @@ fn apply_one(
         // so a rewrite that changed one sentence does not disturb the frequency
         // of every other word in the document.
         if let Some(bytes) = previous {
-            let analysed = terms_of(definition, analyzer, &decode_payload(bytes)?);
-            counted.removed(analysed.tokens);
+            let analysed = analysed(definition, analyzer, &decode_payload(bytes)?);
+            if let Some(counted) = counted.as_mut() {
+                counted.removed(analysed.tokens);
+            }
+            lengthen(&mut pending.lengths, address, &analysed.fields, false);
             for (term, _) in analysed.postings {
                 dictionary.entry(term.clone()).or_default().left();
                 batch = batch.delete(
@@ -392,10 +413,14 @@ fn apply_one(
             }
         }
         if let RecordValue::Present(payload) = mutation.value.value() {
-            let analysed = terms_of(definition, analyzer, &decode_payload(payload)?);
-            counted.added(analysed.tokens);
+            let analysed = analysed(definition, analyzer, &decode_payload(payload)?);
+            if let Some(counted) = counted.as_mut() {
+                counted.added(analysed.tokens);
+            }
+            lengthen(&mut pending.lengths, address, &analysed.fields, true);
             let length = analysed.length();
-            for (term, frequency) in analysed.postings {
+            for ((term, frequency), located) in analysed.postings.into_iter().zip(&analysed.located)
+            {
                 dictionary
                     .entry(term.clone())
                     .or_default()
@@ -403,7 +428,7 @@ fn apply_one(
                 batch = batch.put(
                     PostingKey::keyspace(),
                     PostingKey::new(address, term, mutation.id.clone()).encode(),
-                    Posting::Counted { frequency, length }.encode(),
+                    posted(definition, frequency, length, located),
                 );
             }
         }
@@ -485,6 +510,54 @@ impl Unchanged {
     }
 }
 
+/// Move a member's per-field token totals by one record's field counts.
+///
+/// Nothing for a field index, whose record carries no field counts.
+pub(crate) fn lengthen(
+    lengths: &mut BTreeMap<IndexAddress, Vec<i64>>,
+    address: IndexAddress,
+    fields: &[u64],
+    arriving: bool,
+) {
+    if fields.is_empty() {
+        return;
+    }
+    let moved = lengths
+        .entry(address)
+        .or_insert_with(|| vec![0; fields.len()]);
+    for (total, count) in moved.iter_mut().zip(fields) {
+        let count = i64::try_from(*count).unwrap_or(i64::MAX);
+        *total = if arriving {
+            total.saturating_add(count)
+        } else {
+            total.saturating_sub(count)
+        };
+    }
+}
+
+/// What one posting stores, as the index declares (ADR-0100 D4).
+///
+/// An unscored index stores membership alone — the format every index wrote
+/// before postings carried a payload, which every reader already understands as
+/// "the term is here, and a score must come from somewhere else".
+/// A `POSITIONS` or `OFFSETS` index writes the lists after the counted payload,
+/// unscored or not — the score is refused where it is resolved, not by what a
+/// posting holds.
+pub(crate) fn posted(
+    definition: &IndexDefinition,
+    frequency: u32,
+    length: u32,
+    located: &Located,
+) -> tessari_kv::Value {
+    if definition.costs.positions || definition.costs.offsets {
+        Posting::encode_located(frequency, length, located)
+    } else if definition.costs.unscored {
+        Posting::Membership.encode()
+    } else {
+        Posting::Counted { frequency, length }.encode()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::panic, clippy::unwrap_used)]
@@ -506,6 +579,8 @@ mod tests {
             unique: false,
             vector: None,
             spatial: false,
+            costs: crate::catalog::SearchCosts::default(),
+            engine: None,
         }
     }
 

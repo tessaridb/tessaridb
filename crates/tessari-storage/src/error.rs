@@ -472,6 +472,26 @@ pub enum Error {
         name: String,
     },
 
+    /// A `SEARCH`, `SPATIAL` or `VECTOR` index was declared over more than one
+    /// field (G051 T7.2).
+    ///
+    /// Each of those reads exactly one field, and until this refusal existed
+    /// the declaration was accepted and indexed the first field alone — so a
+    /// read of the second answered as though no index existed, and a score over
+    /// it was refused for an index the catalog said was there.
+    #[error(
+        "index {name} is a {kind} index and reads one field, and {fields} were named: \
+         declare one index per field"
+    )]
+    IndexReadsOneField {
+        /// The name the index was to be created under.
+        name: String,
+        /// `SEARCH`, `SPATIAL` or `VECTOR`.
+        kind: &'static str,
+        /// How many fields the declaration named.
+        fields: usize,
+    },
+
     /// A space declared `MAX n EVICT NONE` already holds `n` keys and this
     /// commit would add more (G036).
     ///
@@ -989,6 +1009,7 @@ impl Error {
             | Self::NameTaken { .. }
             | Self::NoSuchParent { .. }
             | Self::EmptyIndex { .. }
+            | Self::IndexReadsOneField { .. }
             | Self::UniqueViolation { .. }
             | Self::SpaceFull { .. }
             | Self::TopicIsAppendOnly { .. }

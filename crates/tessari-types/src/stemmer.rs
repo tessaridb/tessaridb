@@ -37,13 +37,50 @@
 //! chain that wants stemming therefore declares `lowercase` before `stemmer`,
 //! and one that forgets gets its words back intact rather than mangled.
 //!
-//! Only English. A language filter that silently applied English rules to German
-//! would do the same damage across a whole corpus, so the filter is named for
-//! what it does and another language would be another filter.
+//! English rules are never applied to another language: a filter that did so
+//! would do the same damage across a whole corpus. Russian, German, French and
+//! Spanish are their own Snowball algorithms, named by the filter
+//! (`stemmer(russian)`), each in a module of its own and each checked against
+//! its project's whole published vocabulary ([`golden`]).
 
+mod french;
+mod german;
+#[cfg(test)]
+mod golden;
+mod russian;
+mod spanish;
 mod suffixes;
+mod word;
 
 use suffixes::{step_2, step_3, step_4, step_5};
+
+use crate::analyzer::Language;
+
+/// The stem of one word of `language`.
+///
+/// Returns the word unchanged when it holds a letter that language's stemmer
+/// does not read — upper case, a digit, another script — for the reason this
+/// module gives for English: half-stemming is worse than not stemming.
+#[must_use]
+pub fn stem_in(language: Language, word: &str) -> String {
+    let reads: fn(char) -> bool = match language {
+        Language::English => return stem(word),
+        Language::Russian => russian::reads,
+        Language::German => german::reads,
+        Language::Spanish => spanish::reads,
+        Language::French => french::reads,
+    };
+    if word.is_empty() || !word.chars().all(reads) {
+        return word.to_owned();
+    }
+    match language {
+        Language::Russian => russian::stem(word),
+        Language::German => german::stem(word),
+        Language::Spanish => spanish::stem(word),
+        Language::French => french::stem(word),
+        Language::English => word.to_owned(),
+    }
+}
 
 /// The stem of one word.
 ///

@@ -244,6 +244,24 @@ impl tessari_session::Elsewhere for Published {
             epoch,
         })
     }
+
+    /// The named node, if the last round heard it at that address carrying
+    /// `SERVING` — a drained node still greets, and sending a client to it is
+    /// what draining exists to prevent, exactly as [`Directory::read_within`]
+    /// decides. The node id is compared because the address alone is not the
+    /// node: a row naming one node at an address another answers from is not a
+    /// place this node can vouch for.
+    fn serving(&self, endpoint: &str, node: &[u8; NODE_ID_LEN]) -> Option<tessari_session::Peer> {
+        let directory = self.current();
+        let heard = directory.at(endpoint)?;
+        (heard.said.node == *node && heard.said.roles.has(Roles::SERVING)).then(|| {
+            tessari_session::Peer {
+                endpoint: endpoint.to_owned(),
+                node: *node,
+                epoch: heard.said.epoch,
+            }
+        })
+    }
 }
 
 /// How far this node has collected in each log, and what a failure does to it.
@@ -578,6 +596,8 @@ mod tests {
             // was deciding its own subscription.
             replicates: None,
             leads: None,
+            clients: None,
+            http: None,
         }
     }
 

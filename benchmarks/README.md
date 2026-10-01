@@ -7,7 +7,20 @@ writes it and nobody edits it, so a number in one is a number something produced
 cargo run -p tessari-bench --release -- --list
 cargo run -p tessari-bench --release -- --baseline benchmarks/<date>-<machine>-memory.md
 cargo run -p tessari-bench --release -- --backend disk --baseline benchmarks/<date>-<machine>-disk.md
+cargo run -p tessari-bench --release --example relevance -- <docs content dir> benchmarks/judgments/docs.tsv \
+  > benchmarks/<date>-<machine>-relevance.md
 ```
+
+The relevance run measures **ranking**, not throughput: NDCG@10 and MRR@10 over
+the graded judgments in `judgments/docs.tsv` (ADR-0100 D3), a line per query so
+two runs compare query by query, and cold and warm latency. Its corpus is the
+documentation site's `content/`, named by the fingerprint the first line prints —
+two runs over different fingerprints are not a comparison.
+
+`--engine flat` or `--engine weighted` runs the same judgments through a
+`DEFINE SEARCH` over each fragment's title, heading and body (weights 1, or 2, 3
+and 1) instead of the field index over the combined text, so the two engines
+compare query by query on one corpus.
 
 ## What a baseline is, and what it is not
 

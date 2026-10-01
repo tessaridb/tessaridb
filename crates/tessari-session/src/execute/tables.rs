@@ -239,6 +239,7 @@ impl Session<'_> {
                 search: false,
                 spatial: false,
                 vector: Some(distance),
+                costs: tessari_storage::SearchCosts::default(),
             },
             if_not_exists,
         )?;

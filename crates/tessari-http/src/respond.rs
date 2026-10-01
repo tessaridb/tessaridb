@@ -458,7 +458,8 @@ pub(crate) fn failure(error: &Error) -> Answer {
         // worse outcome than the refusal this used to be. Not `301` or `308`
         // either — both say *permanently*, and a redirect taken on how stale a
         // copy is right now is the least permanent fact this store holds.
-        Error::ReadIsElsewhere { .. } => 307,
+        Error::ReadIsElsewhere { .. }
+        | Error::Store(tessaridb::StoreError::WriteIsElsewhere { .. }) => 307,
         // The caller wrote it right and the data says no. Retriable after a
         // change, which is the whole reason this is not a 400.
         //
@@ -497,8 +498,51 @@ pub(crate) fn failure(error: &Error) -> Answer {
     // The address travels in the header rather than only in the prose, for the
     // same reason the challenge travels beside a `401`: a redirect whose target
     // a client has to parse out of an error message is not a redirect.
-    if let Error::ReadIsElsewhere { endpoint, .. } = error {
-        answer.location = Some(endpoint.clone());
+    if let Some((endpoint, _)) = elsewhere(error) {
+        answer.location = Some(endpoint.to_owned());
+    }
+    answer
+}
+
+/// The address and the node a refusal sends the caller to, when it is one of
+/// the two that mean *go there* — a read beyond its bound, or a write into a
+/// range another node leads (ADR-0101).
+pub(crate) fn elsewhere(error: &Error) -> Option<(&str, &[u8; tessaridb::NODE_ID_LEN])> {
+    match error {
+        Error::ReadIsElsewhere { endpoint, node, .. }
+        | Error::Store(tessaridb::StoreError::WriteIsElsewhere { endpoint, node, .. }) => {
+            Some((endpoint.as_str(), node))
+        }
+        _ => None,
+    }
+}
+
+/// A failure of a script that may have run part of itself before it failed.
+///
+/// A redirect invites the caller to send the same request to another node,
+/// which is safe only while nothing in it has committed (ADR-0101 D3). A script
+/// that has is answered `409` with the refusal's own words instead. A redirect
+/// that is safe names the node's HTTP base plus `path` when its member row
+/// declares one (`HTTP AT`), and the address the refusal carried otherwise.
+pub(crate) fn script_failure(db: &Db, error: &Error, landed: bool, path: &str) -> Answer {
+    let Some((_, node)) = elsewhere(error) else {
+        return failure(error);
+    };
+    if landed {
+        let mut body = String::from(r#"{"error":"#);
+        json::string(
+            &mut body,
+            &format!(
+                "{error} — not redirected, because part of this script had already \
+                 committed here; send the rest to that node"
+            ),
+        );
+        body.push('}');
+        return Answer::new(409, body);
+    }
+    let mut answer = failure(error);
+    if let Some(base) = db.member(node).ok().flatten().and_then(|row| row.http) {
+        answer.location = Some(format!("{}{path}", base.trim_end_matches('/')));
     }
     answer
 }

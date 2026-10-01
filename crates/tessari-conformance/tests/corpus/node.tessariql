@@ -176,3 +176,15 @@ DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 0s CAMPAIGN 1s LEASE 30s;
 --- case: a campaign outpacing its round is refused rather than accepted
 DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s CAMPAIGN 9s LEASE 30s;
 --- expect: error FailoverRefused
+
+--- case: a session reads the node it is talking to and its own tenancy
+RETURN object::keys(session::context());
+--- expect: value ['database', 'namespace', 'node']
+
+--- case: the node is named by its identity, which a redirect frame also carries
+RETURN type::of(array::last(object::values(session::context())));
+--- expect: value 'uuid'
+
+--- case: it takes nothing, because what it answers is the session's
+RETURN session::context(1);
+--- expect: error WrongArity

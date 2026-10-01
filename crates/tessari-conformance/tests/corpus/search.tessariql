@@ -152,6 +152,14 @@ SELECT * FROM notes WHERE search::score(body, 'unheardof') > 0;
 SELECT search::score(body) AS relevance FROM notes;
 --- expect: error WrongArity
 
+--- case: an explanation is the score with its parts, answered for every record
+SELECT search::explain(body, 'hopper') AS why FROM notes;
+--- expect: rows 5
+
+--- case: and it is refused without its query exactly as the score is
+SELECT search::explain(body) AS why FROM notes;
+--- expect: error WrongArity
+
 --- case: a score over a field with no search index is refused, naming the field
 SELECT search::score(title, 'ada') AS relevance FROM notes;
 --- expect: error NoSearchIndex
@@ -455,3 +463,85 @@ DEFINE INDEX by_marked ON marked FIELDS body SEARCH;
 --- case: the same read, now with an index under it
 SELECT search::highlight(body) AS marks FROM marked WHERE body MATCHES 'run';
 --- expect: rows 1
+
+# What a search index keeps beside its postings — POSITIONS, OFFSETS, NO SCORE —
+# changes what a read costs and never what it answers (ADR-0100 D4).
+
+--- case: an index keeping positions and offsets and no statistics is declared like any other
+DEFINE TABLE costed SCHEMALESS;
+DEFINE FIELD body ON costed TYPE string ANALYZER simple;
+CREATE costed:1 = { body: 'Ada Lovelace wrote the first program' };
+CREATE costed:2 = { body: 'Lovelace Ada reversed' };
+DEFINE INDEX by_costed_body ON costed FIELDS body SEARCH POSITIONS OFFSETS NO SCORE;
+--- expect: ok
+
+--- case: and a phrase is answered from the positions it stored, in order
+SELECT * FROM costed WHERE body MATCHES '"ada lovelace"';
+--- expect: rows 1
+
+--- case: an index keeping no statistics cannot score, exactly as no index cannot
+SELECT search::score(body, 'ada') AS s FROM costed WHERE body MATCHES 'ada';
+--- expect: error NoSearchIndex
+
+--- case: an option belongs to a search index
+DEFINE INDEX by_title ON costed FIELDS title POSITIONS;
+--- expect: error UnexpectedToken
+
+# A dedicated search (ADR-0105): several fields of several tables ranked as one
+# collection, with query-time synonyms and stop words.
+
+--- case: synonym and stop-word sets are store-wide names, like an analyzer
+DEFINE SYNONYMS writers { wrote: ['authored'] };
+DEFINE STOPWORDS common ['the', 'a'];
+--- expect: ok
+
+--- case: a set entry is one word
+DEFINE SYNONYMS phrases { 'first program': ['code'] };
+--- expect: error NotOneWord
+
+--- case: a search names its tables, their fields and one analyzer
+CREATE costed:3 = { body: 'Babbage authored the engine' };
+DEFINE SEARCH works ON costed FIELDS body SYNONYMS writers SNIPPET ON notes FIELDS title WEIGHT 2, body ANALYZER simple STOPWORDS common;
+--- expect: ok
+
+--- case: a search ranks the records of every member that holds the query
+SELECT search::table_name() AS source, search::score() AS score FROM SEARCH works MATCHES 'ada';
+--- expect: rows 3
+
+--- case: a field's synonyms answer a word in that field
+SELECT search::snippet() AS snippet FROM SEARCH works MATCHES 'wrote';
+--- expect: rows 3
+
+--- case: a word every member lacks answers nothing
+SELECT * FROM SEARCH works MATCHES 'zyzzyva';
+--- expect: rows 0
+
+--- case: facets are a grouping over the search, one row per value
+SELECT body, count(*) AS n FROM SEARCH works MATCHES 'ada' GROUP BY body;
+--- expect: rows 3
+
+--- case: a search answers in the order it ranks
+SELECT * FROM SEARCH works MATCHES 'ada' ORDER BY body;
+--- expect: error SearchIsItsOwnOrder
+
+--- case: completions are the search's words, ranked
+SELECT term, documents FROM SEARCH works COMPLETE 'lov';
+--- expect: rows 2
+
+--- case: an infix is a piece of a held word
+SELECT * FROM costed WHERE body MATCHES INFIX 'ovela';
+--- expect: rows 2
+
+--- case: a set a search names stays while it does
+DROP STOPWORDS common;
+--- expect: error StillDepended
+
+--- case: a search goes, and then its sets may
+DROP SEARCH works;
+DROP STOPWORDS common;
+DROP SYNONYMS writers;
+--- expect: ok
+
+--- case: and a search that is gone is not read
+SELECT * FROM SEARCH works MATCHES 'ada';
+--- expect: error Unknown

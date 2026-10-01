@@ -95,6 +95,14 @@ fn names(client: &mut Client, script: &str) -> Vec<String> {
 /// the way it learns everything else. Only then does it drop the role, which is
 /// the local half and travels nowhere (ADR-0020 §3).
 fn two_nodes() -> (Arc<Db>, String, Arc<Db>, String, Arc<Node>, Arc<Node>) {
+    two_nodes_declared(|address| format!("AT '{address}'"))
+}
+
+/// [`two_nodes`], with the leader's member row saying where it is reached as
+/// `at` does with the leader's wire address.
+fn two_nodes_declared(
+    at: impl Fn(&str) -> String,
+) -> (Arc<Db>, String, Arc<Db>, String, Arc<Node>, Arc<Node>) {
     let leader = Arc::new(Db::in_memory().unwrap());
     let (leader_node, leader_address) = serving(&leader);
 
@@ -104,7 +112,8 @@ fn two_nodes() -> (Arc<Db>, String, Arc<Db>, String, Arc<Node>, Arc<Node>) {
             "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; \
              USE DATABASE orders; DEFINE COLLECTION users; \
              CREATE users:1 = {{ name: 'ada' }}; \
-             DEFINE REPLICA first AT '{leader_address}' ROLES serving, writable;"
+             DEFINE REPLICA first {} ROLES serving, writable;",
+            at(&leader_address)
         ))
         .unwrap();
 
@@ -167,6 +176,29 @@ fn a_write_sent_to_a_follower_commits_on_the_leader_and_is_visible_on_both() {
         names(&mut to_follower, "SELECT * FROM users;"),
         vec!["ada".to_owned(), "grace".to_owned()],
         "the follower does not hold what the leader committed",
+    );
+}
+
+/// G051 SG3 — in a cluster run with peer credentials a member row's `AT` is the
+/// peer door, which speaks TLS and not this protocol, and `CLIENTS AT` is where
+/// a client reaches the node. A forwarded write is a client of the leader, so it
+/// goes where a client goes: here `AT` names a port nothing listens on.
+#[test]
+fn a_write_is_forwarded_to_where_a_client_reaches_the_leader() {
+    let (_leader, leader_address, _follower, follower_address, _leader_node, _follower_node) =
+        two_nodes_declared(|address| format!("AT '127.0.0.1:1' CLIENTS AT '{address}'"));
+    let mut to_follower = Client::connect(&follower_address).unwrap();
+    to_follower
+        .run(
+            &format!("{READY} CREATE users:2 = {{ name: 'grace' }};"),
+            None,
+        )
+        .unwrap();
+    let mut to_leader = Client::connect(&leader_address).unwrap();
+    assert_eq!(
+        names(&mut to_leader, "SELECT * FROM users;"),
+        vec!["ada".to_owned(), "grace".to_owned()],
+        "the forwarded write did not reach the leader at its client address",
     );
 }
 

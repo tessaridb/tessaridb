@@ -34,7 +34,9 @@ pub use select::{
     Admitted, AnsweredBy, Approximation, Fill, FillMode, Fusion, Hop, JoinSide, Ordering,
     Projected, Projection, Select, Source, Staleness, Timeout, Using, Version,
 };
-pub use statement::{BackupForm, StatementKind};
+pub use statement::{
+    BackupForm, SearchAsk, SearchCosts, SearchField, SearchMember, SearchOperator, StatementKind,
+};
 
 /// A parsed script: statements in the order they were written.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +90,9 @@ pub enum InfoSubject {
     /// a graph you have just declared exists, and reporting it as absent would
     /// make the first thing anyone does after declaring one look like a failure.
     Graph(Name),
+    /// `INFO FOR SEARCH knowledge` — a declared search, its members and their
+    /// statistics.
+    Search(Name),
     /// `INFO FOR VECTOR embeddings` — one vector store's width, distance and
     /// measured recall.
     ///

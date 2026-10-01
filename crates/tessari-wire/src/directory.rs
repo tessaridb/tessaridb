@@ -375,6 +375,8 @@ mod tests {
             // rows deliberately grant nothing.
             replicates: None,
             leads: None,
+            clients: None,
+            http: None,
         }
     }
 

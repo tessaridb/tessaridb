@@ -73,6 +73,8 @@ pub(crate) struct Scope<'a> {
     /// it, when it is being projected by a fused read — what `search::ranks()`
     /// answers, and the reason it answers nowhere else.
     pub(crate) ranks: Option<&'a [Option<u64>]>,
+    /// What a `FROM SEARCH` knows about the record it ranked (ADR-0105).
+    pub(crate) hit: Option<&'a crate::engine::Hit<'a>>,
 }
 
 impl<'a> Scope<'a> {
@@ -89,6 +91,7 @@ impl<'a> Scope<'a> {
             searched: None,
             noticed: None,
             ranks: None,
+            hit: None,
         }
     }
 
@@ -100,6 +103,7 @@ impl<'a> Scope<'a> {
             searched: None,
             noticed: None,
             ranks: None,
+            hit: None,
         }
     }
 
@@ -111,6 +115,7 @@ impl<'a> Scope<'a> {
             searched: Some(searched),
             noticed: None,
             ranks: None,
+            hit: None,
         }
     }
 
@@ -162,6 +167,7 @@ impl<'a> Scope<'a> {
             searched: Some(searched),
             noticed: Some(noticed),
             ranks: None,
+            hit: None,
         }
     }
 
@@ -169,6 +175,13 @@ impl<'a> Scope<'a> {
     pub(crate) const fn with_ranks(self, ranks: &'a [Option<u64>]) -> Self {
         Self {
             ranks: Some(ranks),
+            ..self
+        }
+    }
+
+    pub(crate) const fn with_hit(self, hit: &'a crate::engine::Hit<'a>) -> Self {
+        Self {
+            hit: Some(hit),
             ..self
         }
     }
@@ -193,5 +206,10 @@ impl<'a> Scope<'a> {
     /// What this read asked of this path, as the rewrite recorded it.
     pub(crate) fn wanted(self, path: &Path) -> &'a [(BinaryOp, String)] {
         self.searched.map_or(&[], |held| held.wanted(path))
+    }
+
+    /// The index keeping byte offsets for this path, if a highlight may use it.
+    pub(crate) fn offsets(self, path: &Path) -> Option<&'a tessari_storage::IndexDefinition> {
+        self.searched.and_then(|held| held.offsets(path))
     }
 }

@@ -153,7 +153,9 @@ pub(crate) fn carried_to(mutation: &Mutation) -> Result<Carried> {
         return Ok(named(mutation, present.as_ref()));
     }
     Ok(match (table, present) {
-        (t, _) if t == system::ANALYZERS => Carried::Everywhere,
+        // A synonym or stop-word set is a store-wide name like an analyzer, and
+        // a search in any namespace may read it (ADR-0105).
+        (t, _) if t == system::ANALYZERS || t == system::WORD_SETS => Carried::Everywhere,
         (t, Some(value)) if t == system::NAMESPACES => Carried::Schema(Reach::Namespace(
             definition::NamespaceDefinition::from_value(&value)?.id,
         )),

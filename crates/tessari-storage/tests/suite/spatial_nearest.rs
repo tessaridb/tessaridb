@@ -67,6 +67,7 @@ impl Fixture {
                     search: false,
                     spatial: true,
                     vector: None,
+                    costs: tessari_storage::SearchCosts::default(),
                 },
             )
             .unwrap();

@@ -31,7 +31,7 @@ use tessari_ql::BinaryOp;
 use tessari_types::Analyzer;
 
 use super::matching::{begins, near, run_of};
-use super::query::{Asked, asked};
+use super::query::{Asked, Word, asked};
 
 /// The byte ranges of the tokens that answered what this read asked of the
 /// field: ordered by position, without duplicates, one per matched occurrence.
@@ -57,6 +57,37 @@ pub(crate) fn marked(
         .collect()
 }
 
+/// The terms a highlight marks every occurrence of, when that is all it marks.
+///
+/// True of a `MATCHES` with whole words and no phrase: the marks are then every
+/// token holding one of the required terms, which an index keeping `OFFSETS`
+/// stores the bytes of (ADR-0100 D4). `None` for anything else — a phrase marks
+/// a run, a prefix or fuzzy word marks terms nobody named — and those are
+/// marked by analysing the text, as they always were.
+pub(crate) fn whole_terms(
+    analyzer: &Analyzer,
+    wanted: &[(BinaryOp, String)],
+) -> Option<std::collections::BTreeSet<String>> {
+    let mut terms = std::collections::BTreeSet::new();
+    for (op, query) in wanted {
+        if *op != BinaryOp::Matches {
+            return None;
+        }
+        let Asked::Boolean { required, .. } = asked(analyzer, query) else {
+            return None;
+        };
+        for word in required.into_iter().flatten() {
+            match word {
+                Word::Term(term) => {
+                    terms.insert(term);
+                }
+                Word::Prefix(_) => return None,
+            }
+        }
+    }
+    Some(terms)
+}
+
 /// Mark the tokens one operator reached, leaving the ones already marked alone.
 ///
 /// Several predicates may name the same field — `body MATCHES 'ada' OR body
@@ -68,8 +99,8 @@ fn mark(analyzer: &Analyzer, op: BinaryOp, query: &str, terms: &[String], reache
             // A phrase marks its **run**. A record holding `lovelace ada … ada
             // lovelace` answers `"ada lovelace"` once, and marking all four
             // tokens would claim it answered twice.
-            Asked::Phrase { terms: run, slop } => {
-                for at in run_of(terms, &run, slop).unwrap_or_default() {
+            Asked::Phrase { words, slop } => {
+                for at in run_of(terms, &words, slop).unwrap_or_default() {
                     if let Some(hit) = reached.get_mut(at) {
                         *hit = true;
                     }
@@ -81,7 +112,9 @@ fn mark(analyzer: &Analyzer, op: BinaryOp, query: &str, terms: &[String], reache
             // it was returned.
             Asked::Boolean { required, .. } => {
                 for (hit, term) in reached.iter_mut().zip(terms) {
-                    *hit |= required.iter().any(|group| group.contains(term));
+                    *hit |= required
+                        .iter()
+                        .any(|group| group.iter().any(|word| word.answers(term)));
                 }
             }
         },
@@ -95,6 +128,17 @@ fn mark(analyzer: &Analyzer, op: BinaryOp, query: &str, terms: &[String], reache
             let asked = analyzer.prefixes(query);
             for (hit, term) in reached.iter_mut().zip(terms) {
                 *hit |= asked.iter().any(|word| near(word, term));
+            }
+        }
+        // The typed spelling of each word, found inside the term (ADR-0105 D9).
+        BinaryOp::MatchesInfix => {
+            let pieces: Vec<String> = analyzer
+                .prefixes(query)
+                .into_iter()
+                .filter_map(|alternatives| alternatives.into_iter().next())
+                .collect();
+            for (hit, term) in reached.iter_mut().zip(terms) {
+                *hit |= pieces.iter().any(|piece| term.contains(piece.as_str()));
             }
         }
         _ => {}

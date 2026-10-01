@@ -234,3 +234,135 @@ fn the_hidden_field_is_absent_from_what_the_caller_gets_back() {
         "a field outside the grant reached the caller"
     );
 }
+
+/// Every `s` a ranked read answered with, in the order it answered.
+fn scores(session: &mut Session<'_>, script: &str) -> Vec<f64> {
+    let outcomes = session.run(script).unwrap();
+    outcomes
+        .last()
+        .unwrap()
+        .records()
+        .unwrap()
+        .iter()
+        .map(|(_, record)| {
+            let Value::Object(fields) = record else {
+                panic!("expected a record, got {record:?}");
+            };
+            match fields.get("s") {
+                Some(Value::Number(number)) => number.as_float().unwrap(),
+                other => panic!("expected a score, got {other:?}"),
+            }
+        })
+        .collect()
+}
+
+/// The suggestion a read answered with — `None` when no dictionary was asked.
+fn suggestion(session: &mut Session<'_>, script: &str) -> Option<tessari_session::Suggestion> {
+    let outcomes = session.run(script).unwrap();
+    outcomes.last().unwrap().suggestion().unwrap().clone()
+}
+
+const RANKED: &str =
+    "SELECT name, search::score(notes, 'compiler') AS s FROM staff ORDER BY s DESC LIMIT 3;";
+const MISSPELT: &str = "SELECT name FROM staff WHERE notes MATCHES 'compilr';";
+
+#[test]
+fn a_score_over_a_hidden_field_ranks_nothing() {
+    // A score is read from the postings by identity and never touches the
+    // record, so the redaction that hides `notes` from the condition did not
+    // reach it: the narrow caller could order the table by text it cannot read
+    // and learn which record holds a word one bit at a time (Q-861).
+    let store = store();
+    ready(&store);
+
+    // The control: the score is real for the caller who holds the field.
+    let wide = scores(&mut signed_in(&store, "wide"), RANKED);
+    assert!(
+        wide.first().is_some_and(|best| *best > 0.0),
+        "the control did not score the record holding `compiler`: {wide:?}"
+    );
+
+    let narrow = scores(&mut signed_in(&store, "narrow"), RANKED);
+    assert_eq!(narrow.len(), 3);
+    assert!(
+        narrow.iter().all(|score| *score == 0.0),
+        "a caller who cannot read `notes` was ranked by it: {narrow:?}"
+    );
+}
+
+#[test]
+fn a_hidden_field_earns_no_suggestion() {
+    // A suggestion is read from the field's term dictionary, so a dictionary of a
+    // field the caller cannot read would spell its contents back to them. Not even
+    // `NothingNearer`: that says "every word you typed is in there".
+    let store = store();
+    ready(&store);
+
+    let wide = suggestion(&mut signed_in(&store, "wide"), MISSPELT);
+    let Some(tessari_session::Suggestion::DidYouMean(nearest)) = wide else {
+        panic!("the control earned no correction: {wide:?}");
+    };
+    assert_eq!(nearest[0].instead, "compil");
+
+    assert_eq!(
+        suggestion(&mut signed_in(&store, "narrow"), MISSPELT),
+        None,
+        "a caller who cannot read `notes` was told what it holds"
+    );
+}
+
+#[test]
+fn a_hidden_field_marks_nothing() {
+    // The third output a search derives from the field. The record reaches the
+    // narrow caller through `name`, and the marks must not say where in `notes`
+    // the query landed.
+    let store = store();
+    ready(&store);
+    let read = "SELECT search::highlight(notes) AS m FROM staff \
+                WHERE notes MATCHES 'compiler' OR name = 'grace';";
+    let marks = |session: &mut Session<'_>| {
+        let outcomes = session.run(read).unwrap();
+        let records = outcomes.last().unwrap().records().unwrap();
+        let Some((_, Value::Object(fields))) = records.first() else {
+            panic!("expected the record reached through `name`, got {records:?}");
+        };
+        format!("{:?}", fields.get("m").unwrap_or(&Value::None))
+    };
+    assert_ne!(marks(&mut signed_in(&store, "wide")), "Array([])");
+    assert_eq!(marks(&mut signed_in(&store, "narrow")), "Array([])");
+}
+
+/// An explanation is a score with its parts, and the parts are the leak a score
+/// already was: a word's document count and a record's occurrences of it, read
+/// from the index of a field the caller cannot read. Over a hidden field it
+/// explains a zero and names nothing.
+#[test]
+fn a_hidden_field_explains_nothing() {
+    let store = store();
+    ready(&store);
+    let read = "SELECT search::explain(notes, 'compiler pars*') AS e FROM staff;";
+    let explained = |session: &mut Session<'_>| {
+        let outcomes = session.run(read).unwrap();
+        outcomes
+            .last()
+            .unwrap()
+            .records()
+            .unwrap()
+            .iter()
+            .map(|(_, record)| format!("{record:?}"))
+            .collect::<Vec<_>>()
+    };
+    let wide = explained(&mut signed_in(&store, "wide"));
+    assert!(
+        wide.iter().any(|one| one.contains("\"compil\"")),
+        "the control explained nothing: {wide:?}"
+    );
+    let narrow = explained(&mut signed_in(&store, "narrow"));
+    assert!(!narrow.is_empty());
+    for one in &narrow {
+        assert!(
+            !one.contains("compil") && !one.contains("pars"),
+            "a caller who cannot read `notes` was told what it holds: {one}"
+        );
+    }
+}

@@ -2913,7 +2913,10 @@ const SHARD_FAILOVER: Band = [
 /// `LEADS SHARD` resolves in the transaction that declares it.
 const PLACED: &str = "DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
                       DEFINE DATABASE shop; USE DATABASE shop; \
-                      DEFINE TABLE orders (n int) IDENTITY uuid SPLIT AT 'g', 'p';";
+                      DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer; \
+                      DEFINE TABLE orders (n int, note string ANALYZER english) IDENTITY uuid \
+                      SPLIT AT 'g', 'p'; \
+                      DEFINE INDEX by_note ON orders FIELDS note SEARCH;";
 
 /// A write into `orders` at `key`, which names its shard by its first letter.
 fn into_orders(key: &str) -> String {
@@ -2940,12 +2943,11 @@ fn until_taken(surface: &str, prefix: &str, patience: Duration) -> Result<Durati
 }
 
 /// Keep writing into another node's shard through `surface` until it is
-/// refused naming `leader` and `at` — or the last answer, after `patience`.
+/// redirected to `leader` at `at` — or the last answer, after `patience`.
 ///
-/// A write is redirected by REFUSAL (ADR-0070): the node refuses rather than
-/// forwarding, and the refusal names the endpoint and the node to expect. The
-/// `Elsewhere` frame is the read router's, so asserting it here would be
-/// asserting a mechanism this path never used.
+/// A misrouted write leaves as the `Elsewhere` frame (ADR-0101), `settled`
+/// because it names a leadership. These rows declare no `CLIENTS AT`, so the
+/// frame names the member row's own address, which is `at`.
 fn until_sent_to(
     surface: &str,
     key: &str,
@@ -2953,15 +2955,15 @@ fn until_sent_to(
     at: &str,
     patience: Duration,
 ) -> Result<(), String> {
-    let expected: String = leader.iter().map(|byte| format!("{byte:02x}")).collect();
     let began = Instant::now();
     let mut last = String::from("never connected");
     while began.elapsed() < patience {
         if let Ok(mut client) = Client::connect(surface) {
-            match client.run(&into_orders(key), None) {
-                Err(why)
-                    if why.to_string().contains(&format!("write it at {at}"))
-                        && why.to_string().contains(&expected) =>
+            match client.run_routed(&into_orders(key), None, &tessaridb::Parameters::new()) {
+                Ok(Served::Elsewhere(sent))
+                    if sent.endpoint == at
+                        && sent.node == leader
+                        && sent.settlement == tessari_wire::Settlement::Settled =>
                 {
                     return Ok(());
                 }
@@ -3201,6 +3203,107 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
         vec![in_the_middle.clone()]
     );
 
+    // G051 C4: inside a transaction node 2 may not gather, so the read is sent
+    // to a node holding the whole table — 0 and 1 replicate the store — as a
+    // transient redirect naming that node at its own address (no `CLIENTS AT`).
+    let began = Instant::now();
+    let mut last = String::from("never connected");
+    'sent: loop {
+        if let Ok(mut client) = Client::connect(GATHERING[2].0) {
+            match client.run_routed(
+                "USE NAMESPACE prod; USE DATABASE shop; BEGIN; SELECT * FROM orders; COMMIT;",
+                None,
+                &tessaridb::Parameters::new(),
+            ) {
+                Ok(Served::Elsewhere(sent))
+                    if sent.settlement == tessari_wire::Settlement::Transient
+                        && [0, 1].iter().any(|whole| {
+                            sent.endpoint == GATHERING[*whole].1 && sent.node == cluster.ids[*whole]
+                        }) =>
+                {
+                    break 'sent;
+                }
+                other => last = format!("{other:?}"),
+            }
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "node 2 never sent a transaction it cannot gather to a whole holder; \
+             last: {last}{}",
+            what_the_nodes_said(&GATHERING, &logs)
+        );
+        std::thread::sleep(POLL);
+    }
+
+    // G051 C6 (ADR-0103): a score on node 2 is measured against all three
+    // shards — node 2 counts its own, the leaders count theirs — so it is the
+    // score a node holding the whole store gives. One annotated record per
+    // shard, each through whichever node takes it.
+    for (key, note) in [
+        ("af", "fox fox"),
+        ("hf", "a fox among the dogs"),
+        ("xf", "dogs"),
+    ] {
+        let began = Instant::now();
+        while ![0, 1].into_iter().any(|index| {
+            Client::connect(GATHERING[index].0).is_ok_and(|mut client| {
+                client
+                    .run(
+                        &format!(
+                            "USE NAMESPACE prod; USE DATABASE shop; \
+                             CREATE orders:'{key}' = {{ n: 1, note: '{note}' }};"
+                        ),
+                        None,
+                    )
+                    .is_ok()
+            })
+        }) {
+            assert!(
+                began.elapsed() < Duration::from_secs(60),
+                "nobody took {key}{}",
+                what_the_nodes_said(&GATHERING, &logs)
+            );
+            std::thread::sleep(POLL);
+        }
+    }
+    let scored = "SELECT id, search::score(note, 'fox') AS s FROM orders \
+                  WHERE note MATCHES 'fox' ORDER BY s DESC;";
+    let scores_at = |surface: &str| -> Result<Vec<String>, String> {
+        let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+        match client.run(
+            &format!("USE NAMESPACE prod; USE DATABASE shop; {scored}"),
+            None,
+        ) {
+            Ok(answers) => match answers.last() {
+                Some(Answer::Records { records, .. }) => {
+                    Ok(records.iter().map(|record| format!("{record:?}")).collect())
+                }
+                other => Err(format!("{other:?}")),
+            },
+            Err(why) => Err(why.to_string()),
+        }
+    };
+    let began = Instant::now();
+    loop {
+        let (partial, whole) = (scores_at(GATHERING[2].0), scores_at(GATHERING[0].0));
+        if let (Ok(partial), Ok(whole)) = (&partial, &whole)
+            && whole.len() == 2
+            && partial == whole
+        {
+            assert!(
+                whole.first().is_some_and(|first| first.contains("af")),
+                "{whole:?}"
+            );
+            break;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(90),
+            "node 2's scores never matched a whole node's: {partial:?} against {whole:?}{}",
+            what_the_nodes_said(&GATHERING, &logs)
+        );
+        std::thread::sleep(POLL);
+    }
+
     // Shard 2's leader stops: a read needing shard 2 is refused naming it —
     // never answered without it — and a read inside what node 2 holds answers.
     cluster.running[1] = None;
@@ -3208,7 +3311,8 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
     loop {
         match read_at(GATHERING[2].0, "SELECT * FROM orders;") {
             Err(why) if why.contains("shard 2") => break,
-            Ok(ids) if ids.len() == 3 => {}
+            // The three first records and the three annotated for C6.
+            Ok(ids) if ids.len() == 6 => {}
             other => panic!("a partial or wrong answer while shard 2's leader is gone: {other:?}"),
         }
         assert!(
@@ -3221,8 +3325,8 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
         read_at(GATHERING[2].0, "SELECT * FROM orders:'p'..'zz';")
             .unwrap()
             .len(),
-        1,
-        "a span inside the shard node 2 holds"
+        2,
+        "a span inside the shard node 2 holds: its first record and `xf`"
     );
 }
 

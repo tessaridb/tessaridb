@@ -655,7 +655,7 @@ fn a_shard_follower_refuses_a_read_that_needs_what_it_does_not_hold() {
         .unwrap();
 
     let refused = |reader: &mut Session<'_>, read: &str| match reader.run(read) {
-        Err(tessari_session::Error::NotHeldHere { table, shards }) => (table, shards),
+        Err(tessari_session::Error::NotHeldHere { table, shards, .. }) => (table, shards),
         other => panic!("{read}: expected NotHeldHere, got {other:?}"),
     };
     assert_eq!(

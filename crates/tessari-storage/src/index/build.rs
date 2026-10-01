@@ -1,8 +1,8 @@
 //! Building an index over what a table already holds, and clearing one.
 
 use super::{
-    Delta, Moved, Pending, analyzers_on, covering_of, insert, place_cells, project,
-    projected_vector, search_analyzer, terms_of,
+    Delta, Moved, Pending, analysed, analyzer_for, analyzers_named, analyzers_on, covering_of,
+    insert, lengthen, place_cells, project, projected_vector,
 };
 use crate::catalog::IndexDefinition;
 use crate::covering;
@@ -12,8 +12,8 @@ use crate::store::Store;
 use crate::transaction::Transaction;
 use std::collections::{BTreeMap, BTreeSet};
 use tessari_encoding::{
-    IndexAddress, IndexValues, KeyKind, LogRecord, Posting, PostingKey, RecordValue, StoreKey,
-    StoreValue, decode_payload,
+    IndexAddress, IndexValues, KeyKind, LogRecord, PostingKey, RecordValue, SearchSuffixKey,
+    StoreKey, decode_payload,
 };
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::RecordId;
@@ -61,6 +61,7 @@ pub(crate) fn build(
     // so counting them again is counting them twice.
     pending.moved.insert(address, Delta::default());
     pending.terms.insert(address, BTreeMap::new());
+    pending.lengths.remove(&address);
     let mut rows: BTreeMap<RecordId, Vec<u8>> = view
         .sweep_table(definition.namespace, definition.database, definition.table)?
         .into_iter()
@@ -119,16 +120,23 @@ pub(crate) fn build(
         return Ok(covering::measure(batch, &address, &placed));
     }
 
-    if definition.search {
+    if definition.search || definition.engine.is_some() {
         let declared = analyzers_on(view, definition.table)?;
-        let analyzer = search_analyzer(definition, &declared);
+        let named = if definition.engine.is_some() {
+            analyzers_named(view)?
+        } else {
+            BTreeMap::new()
+        };
+        let analyzer = analyzer_for(definition, &declared, &named);
         let mut counted = Delta::default();
         let mut dictionary: BTreeMap<IndexValues, Moved> = BTreeMap::new();
         for (id, payload) in &rows {
-            let analysed = terms_of(definition, analyzer, &decode_payload(payload)?);
+            let analysed = analysed(definition, analyzer, &decode_payload(payload)?);
             counted.added(analysed.tokens);
+            lengthen(&mut pending.lengths, address, &analysed.fields, true);
             let length = analysed.length();
-            for (term, frequency) in analysed.postings {
+            for ((term, frequency), located) in analysed.postings.into_iter().zip(&analysed.located)
+            {
                 dictionary
                     .entry(term.clone())
                     .or_default()
@@ -136,13 +144,22 @@ pub(crate) fn build(
                 batch = batch.put(
                     PostingKey::keyspace(),
                     PostingKey::new(address, term, id.clone()).encode(),
-                    Posting::Counted { frequency, length }.encode(),
+                    super::posted(definition, frequency, length, located),
                 );
             }
         }
-        *pending.moved.entry(address).or_default() = counted;
+        if !definition.costs.unscored {
+            *pending.moved.entry(address).or_default() = counted;
+        }
         pending.terms.insert(address, dictionary);
-        return Ok(batch);
+        // The suffixes of every term are written as the dictionary settles; this
+        // marker says they are complete for this index, which an index built
+        // before suffixes existed cannot say (ADR-0105 D9).
+        return Ok(batch.put(
+            SearchSuffixKey::keyspace(),
+            SearchSuffixKey::new(address, String::new(), String::new()).encode(),
+            SearchSuffixKey::empty(),
+        ));
     }
 
     // A claim set of this build's own. The per-mutation pass may have claimed
@@ -198,6 +215,7 @@ pub(crate) fn clear(
         KeyKind::VectorRecall,
         KeyKind::SpatialRefinement,
         KeyKind::SearchTerm,
+        KeyKind::SearchSuffix,
     ] {
         let keyspace = kind.keyspace();
         let prefix = address.prefix(kind);

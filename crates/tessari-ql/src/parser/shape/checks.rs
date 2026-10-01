@@ -54,7 +54,11 @@ pub(crate) fn check_cursor(
             &table.name
         }
         Source::Record(target) => &target.table.name,
-        Source::Node | Source::Traverse { .. } | Source::Join { .. } | Source::Subquery { .. } => {
+        Source::Node
+        | Source::Traverse { .. }
+        | Source::Join { .. }
+        | Source::Subquery { .. }
+        | Source::Search { .. } => {
             return Ok(());
         }
     };
@@ -234,6 +238,10 @@ pub(crate) fn check_fold_positions(
         | Source::Subquery {
             condition: Some(condition),
             ..
+        }
+        | Source::Search {
+            condition: Some(condition),
+            ..
         } => no_fold(condition)?,
         // The inner read was checked as it was parsed, so there is nothing left
         // to say about it here.
@@ -243,7 +251,8 @@ pub(crate) fn check_fold_positions(
         | Source::Range { .. }
         | Source::Traverse { .. }
         | Source::Join { .. }
-        | Source::Subquery { .. } => {}
+        | Source::Subquery { .. }
+        | Source::Search { .. } => {}
     }
     for key in group {
         no_fold(key)?;

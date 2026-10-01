@@ -60,6 +60,9 @@ pub enum KeyKind {
     /// The last position one topic has given, kept when retention removes
     /// every message (G037).
     TopicHead,
+    /// One suffix of one dictionary term, so an infix is a range read over
+    /// suffixes (ADR-0105 D9).
+    SearchSuffix,
     /// One entry in the ordered log.
     LogEntry,
     /// The store's own on-disk format version.
@@ -146,6 +149,7 @@ impl KeyKind {
         Self::TopicOffset,
         Self::TopicEntry,
         Self::TopicHead,
+        Self::SearchSuffix,
         Self::LogEntry,
         Self::FormatVersion,
         Self::AppliedPosition,
@@ -190,6 +194,7 @@ impl KeyKind {
             Self::TopicOffset => 0x1c,
             Self::TopicEntry => 0x1d,
             Self::TopicHead => 0x1e,
+            Self::SearchSuffix => 0x1f,
             Self::LogEntry => 0x20,
             Self::FormatVersion => 0x30,
             Self::AppliedPosition => 0x31,
@@ -229,7 +234,8 @@ impl KeyKind {
             | Self::ModifiedOrder
             | Self::TopicOffset
             | Self::TopicEntry
-            | Self::TopicHead => Keyspace::INDEX,
+            | Self::TopicHead
+            | Self::SearchSuffix => Keyspace::INDEX,
             Self::LogEntry => Keyspace::LOG,
             Self::FormatVersion
             | Self::AppliedPosition
@@ -273,6 +279,7 @@ impl KeyKind {
             Self::TopicOffset => "topic-offset",
             Self::TopicEntry => "topic-entry",
             Self::TopicHead => "topic-head",
+            Self::SearchSuffix => "search-suffix",
             Self::LogEntry => "log-entry",
             Self::FormatVersion => "format-version",
             Self::AppliedPosition => "applied-position",
@@ -365,6 +372,7 @@ mod tests {
             (KeyKind::TopicOffset, 0x1c),
             (KeyKind::TopicEntry, 0x1d),
             (KeyKind::TopicHead, 0x1e),
+            (KeyKind::SearchSuffix, 0x1f),
             (KeyKind::LogEntry, 0x20),
             (KeyKind::FormatVersion, 0x30),
             (KeyKind::AppliedPosition, 0x31),

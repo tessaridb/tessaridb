@@ -431,6 +431,45 @@ fn a_peer_placed_to_lead_a_range_reports_it_in_the_clauses_spelling() {
 }
 
 #[test]
+fn a_peer_row_reports_where_clients_reach_it() {
+    // ADR-0101: a redirect names these, so an operator must be able to read
+    // back what a redirect will say — and a row that said nothing reads `null`,
+    // which is the row whose redirects still name its peer door.
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run(
+            "DEFINE REPLICA b AT 'b:9180' CLIENTS AT 'b.example:9080' \
+                 HTTP AT 'https://b.example:8000'; \
+             DEFINE REPLICA d AT 'd:9180';",
+        )
+        .unwrap();
+    assert_eq!(
+        peer_field(&mut session, "clients"),
+        vec![
+            ("b".to_owned(), Some("b.example:9080".to_owned())),
+            ("d".to_owned(), None),
+        ]
+    );
+    assert_eq!(
+        peer_field(&mut session, "http"),
+        vec![
+            ("b".to_owned(), Some("https://b.example:8000".to_owned())),
+            ("d".to_owned(), None),
+        ]
+    );
+    let refused = session
+        .run("DEFINE REPLICA e AT 'e:9180' CLIENTS 'e:9080';")
+        .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("where a client reaches the peer"),
+        "{refused}"
+    );
+}
+
+#[test]
 fn a_placement_on_a_shard_the_table_lacks_is_refused() {
     let store = store();
     let mut session = tenancy(&store);

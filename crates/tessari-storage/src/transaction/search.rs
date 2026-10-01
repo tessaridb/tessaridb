@@ -4,14 +4,16 @@
 //! through a bounded walk of the term dictionary. Both confirm against the
 //! record, because an index entry is derived and the record is the fact.
 
+mod counts;
 mod expansions;
+pub use counts::SearchCounts;
 use std::collections::BTreeSet;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;
 use tessari_encoding::{
-    IndexAddress, IndexTarget, IndexValues, KeyKind, Posting, PostingKey, SearchStatistics,
-    SearchStatisticsKey, SearchTermKey, SecondaryIndexKey, StoreKey, StoreValue, TermStatistics,
-    UniqueIndexKey, decode_payload,
+    IndexAddress, IndexTarget, IndexValues, KeyKind, Located, Posting, PostingKey,
+    SearchStatistics, SearchStatisticsKey, SearchTermKey, SecondaryIndexKey, StoreKey, StoreValue,
+    TermStatistics, UniqueIndexKey, decode_payload,
 };
 use tessari_kv::{Key, KeyRange, Keyspace, ScanDirection, ScanRequest, Value as KvValue};
 use tessari_types::{Analyzer, RecordId, Value};
@@ -313,6 +315,75 @@ impl Transaction<'_> {
         }
     }
 
+    /// A search member's statistics: the collection's two numbers and each
+    /// field's token total, in the member's field order (ADR-0105).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or the stored value cannot be
+    /// decoded.
+    pub fn member_statistics(
+        &self,
+        index: &IndexDefinition,
+    ) -> Result<(SearchStatistics, Vec<u64>)> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let key = SearchStatisticsKey::new(address).encode();
+        match self
+            .store
+            .backend()
+            .get(SearchStatisticsKey::keyspace(), &key)?
+        {
+            Some(bytes) => Ok(SearchStatistics::fielded(bytes.as_slice())?),
+            None => Ok((SearchStatistics::default(), Vec::new())),
+        }
+    }
+
+    /// The records a search member nominates: for every group, a record posted
+    /// against at least one of its terms — and every record this transaction
+    /// wrote on the member's table, whose postings do not exist yet.
+    ///
+    /// A **candidate set and nothing more** (ADR-0105): the caller re-tests each
+    /// record against the whole query on the text it may read, so a pending
+    /// write nominated here that no longer matches is dropped there, and a
+    /// deleted one is not found to test.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a key cannot be decoded.
+    pub fn member_candidates(
+        &self,
+        index: &IndexDefinition,
+        groups: &[Vec<String>],
+    ) -> Result<BTreeSet<RecordId>> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let mut holding: Option<BTreeSet<RecordId>> = None;
+        for group in groups {
+            let found = self.union(&address, group)?;
+            let narrowed = match holding {
+                None => found,
+                Some(mut held) => {
+                    held.retain(|id| found.contains(id));
+                    held
+                }
+            };
+            let empty = narrowed.is_empty();
+            holding = Some(narrowed);
+            if empty {
+                break;
+            }
+        }
+        let mut holding = holding.unwrap_or_default();
+        for pending in self.writes.keys() {
+            if pending.namespace == index.namespace
+                && pending.database == index.database
+                && pending.table == index.table
+            {
+                holding.insert(pending.id.clone());
+            }
+        }
+        Ok(holding)
+    }
+
     /// How many documents this index posts the term against.
     ///
     /// The number a ranking weighs a term by. It is read from the term's
@@ -430,6 +501,29 @@ impl Transaction<'_> {
         let key = PostingKey::new(address, encoded, id.clone()).encode();
         match self.store.backend().get(PostingKey::keyspace(), &key)? {
             Some(bytes) => Ok(Some(Posting::decode(bytes.as_slice())?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Where one term sits in one record, as a `POSITIONS` / `OFFSETS` index
+    /// stored it — `None` when the record holds no posting for the term, and
+    /// empty lists when the index keeps neither (ADR-0100 D4).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or the stored value cannot be
+    /// decoded.
+    pub fn located(
+        &self,
+        index: &IndexDefinition,
+        term: &str,
+        id: &RecordId,
+    ) -> Result<Option<Located>> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let encoded = IndexValues::of(&[Value::from(term)]);
+        let key = PostingKey::new(address, encoded, id.clone()).encode();
+        match self.store.backend().get(PostingKey::keyspace(), &key)? {
+            Some(bytes) => Ok(Some(Posting::located(bytes.as_slice())?)),
             None => Ok(None),
         }
     }

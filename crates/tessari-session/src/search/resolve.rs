@@ -8,18 +8,23 @@
 
 use std::collections::BTreeMap;
 
-use tessari_ql::{BinaryOp, Expr, ExprKind, Function};
+use tessari_encoding::{SearchStatistics, TermStatistics};
+use tessari_ql::{BinaryOp, Expr, ExprKind, Function, Span};
 use tessari_storage::{Catalog, IndexDefinition, Transaction};
 use tessari_types::{Analyzer, Path, TableId, Value};
 
-use tessari_constants::{SEARCH_FUZZY_PREFIX, SEARCH_PREFIX_MINIMUM};
+use tessari_constants::{
+    SEARCH_FUZZY_PREFIX, SEARCH_PREFIX_EXPANSION_CAP, SEARCH_PREFIX_MINIMUM,
+    SEARCH_PREFIX_SCORE_EXAMINATION_CAP,
+};
 
 use crate::error::{Error, Result};
+use crate::evaluate::Part;
 use crate::outcome::Suggestion;
-use crate::rank::Corpus;
+use crate::rank::{Blend, Corpus};
 use crate::session::Session;
 
-use super::query::{malformed_slop, negation_without_term};
+use super::query::{Word, asked, malformed_slop, negation_without_term, scored_words};
 use super::suggest::suggested;
 
 /// What one ranked path was resolved against.
@@ -33,6 +38,10 @@ pub(crate) struct Ranked {
     pub(crate) corpus: Corpus,
     /// The search index this path's statistics were read from.
     pub(crate) index: IndexDefinition,
+    /// Whether a record's own text is what it is scored by, rather than this
+    /// node's postings: the read gathers records this node's index does not
+    /// hold (ADR-0103 D2).
+    pub(crate) from_text: bool,
 }
 
 /// What the searched fields of one read need, resolved before any record is.
@@ -42,6 +51,7 @@ pub(crate) struct Searched {
     corpora: BTreeMap<Path, Ranked>,
     wanted: BTreeMap<Path, Vec<(BinaryOp, String)>>,
     suggestion: Option<Suggestion>,
+    offsets: BTreeMap<Path, IndexDefinition>,
 }
 
 impl Searched {
@@ -71,6 +81,12 @@ impl Searched {
     /// come to depend on which candidate the planner picked.
     pub(crate) fn suggestion(&self) -> Option<Suggestion> {
         self.suggestion.clone()
+    }
+
+    /// The search index keeping byte offsets for this path, when a highlight
+    /// may be marked from it rather than by analysing the text (ADR-0100 D4).
+    pub(crate) fn offsets(&self, path: &Path) -> Option<&IndexDefinition> {
+        self.offsets.get(path)
     }
 }
 
@@ -111,6 +127,7 @@ impl Session<'_> {
         // checked as one thing and suggested against as another.
         let mut asked_of: BTreeMap<Path, Vec<(BinaryOp, String)>> = BTreeMap::new();
         let mut matched: Vec<(Path, String)> = Vec::with_capacity(phrased.len());
+        let mut matched_at: Vec<Span> = Vec::with_capacity(phrased.len());
         for (path, query) in phrased {
             let Value::String(text) = self.evaluate(transaction, query)? else {
                 continue;
@@ -125,6 +142,7 @@ impl Session<'_> {
                 return Err(Error::NegationWithoutTerm { span: query.span });
             }
             matched.push((path.clone(), text));
+            matched_at.push(query.span);
         }
 
         if wanted.is_empty() {
@@ -194,6 +212,14 @@ impl Session<'_> {
             }
         }
 
+        // A starred word is a prefix and carries the prefix floor, checked here
+        // for the same reason as the loop above (ADR-0104 D2).
+        for ((path, text), span) in matched.iter().zip(&matched_at) {
+            if let Some(analyzer) = analyzers.get(path) {
+                too_short(&asked(analyzer, text).prefixes(), *span)?;
+            }
+        }
+
         // What each field was asked, kept so a highlight marks against the
         // query this read actually ran rather than a copy of it. Built from the
         // texts the two loops above already evaluated — the prefix loop records
@@ -206,6 +232,35 @@ impl Session<'_> {
                 .push((BinaryOp::Matches, text.clone()));
         }
 
+        // What this session may read of the table, asked once per read. A score
+        // and a suggestion are both read from the index by identity or by term,
+        // and neither ever touches the record the grant redacted — so the field
+        // the grant hides has to be hidden here as well, or a caller who cannot
+        // read it could rank the table by it and be told the words it holds.
+        let visible = self.visible_in(transaction, table)?;
+        let hidden = |path: &Path| {
+            visible
+                .as_ref()
+                .is_some_and(|fields| !fields.contains(path.root()))
+        };
+
+        // Where a highlight may read stored offsets: an index keeping them on a
+        // field this session may read, current at this snapshot, and holding
+        // no posting this transaction has written past.
+        let mut offsets = BTreeMap::new();
+        if let Some(definition) = Catalog::new(transaction).table(table)?
+            && !transaction.writes_in(definition.namespace, definition.database, table)
+        {
+            for path in asked_of.keys().filter(|path| !hidden(path)) {
+                if let Some(index) = self.index_on_path(transaction, table, path)?
+                    && index.search
+                    && index.costs.offsets
+                {
+                    offsets.insert(path.clone(), index);
+                }
+            }
+        }
+
         let mut corpora = BTreeMap::new();
         for (path, query) in ranked {
             let Some(analyzer) = analyzers.get(path) else {
@@ -214,15 +269,54 @@ impl Session<'_> {
             let Some(index) = self.index_on_path(transaction, table, path)? else {
                 continue;
             };
-            if !index.search {
+            // An unscored index keeps no statistics to measure against, so a
+            // score over it is refused exactly as over no index (ADR-0100 D4).
+            if !index.search || index.costs.unscored {
+                continue;
+            }
+            // A hidden field ranks as a field the record does not hold: every
+            // record scores `0`, which is what the redacted record would earn by
+            // the missing-field rule. Not a refusal — "this field has no search
+            // index" would be false, and a refusal of its own would say the
+            // field is there. No statistic of the collection is read either.
+            if hidden(path) {
+                corpora.insert(
+                    path.clone(),
+                    Ranked {
+                        corpus: Corpus {
+                            documents: 0,
+                            average_length: 0.0,
+                            terms: BTreeMap::new(),
+                            asked: Vec::new(),
+                            blends: Vec::new(),
+                        },
+                        index,
+                        from_text: false,
+                    },
+                );
                 continue;
             }
             // Only the terms this statement asks about: counting the rest would
             // be reading the index to answer a question nobody put.
-            let asked = match self.evaluate(transaction, query)? {
-                Value::String(text) => analyzer.terms(&text),
+            let words = match self.evaluate(transaction, query)? {
+                Value::String(text) => scored_words(analyzer, &text),
                 _ => Vec::new(),
             };
+            let mut asked = Vec::with_capacity(words.len());
+            let mut starred = Vec::new();
+            for word in words {
+                match word {
+                    Word::Term(term) => asked.push(term),
+                    Word::Prefix(alternatives) => starred.push(alternatives),
+                }
+            }
+            let floors: Vec<&[String]> = starred.iter().map(Vec::as_slice).collect();
+            too_short(&floors, query.span)?;
+            // ADR-0104 D5: which terms a prefix blends is a question about the
+            // whole collection's dictionary, and this node may hold part of it.
+            if !starred.is_empty() {
+                self.refuse_reading_a_part(transaction, table, Part::Whole)?;
+            }
             let statistics = transaction.search_statistics(&index)?;
             let mut terms = BTreeMap::new();
             for term in &asked {
@@ -232,6 +326,37 @@ impl Session<'_> {
                 let held = transaction.term_statistics(&index, term)?;
                 terms.insert(term.clone(), held);
             }
+            let mut blends = Vec::with_capacity(starred.len());
+            for alternatives in &starred {
+                let blend = blended(transaction, &index, alternatives)?;
+                for term in &blend.expansions {
+                    if !terms.contains_key(term) {
+                        let held = transaction.term_statistics(&index, term)?;
+                        terms.insert(term.clone(), held);
+                    }
+                }
+                blends.push(blend);
+            }
+            // ADR-0103: this node's index describes the shards it holds, and the
+            // leaders of the others count theirs. A term's figure is then a
+            // count alone — the bounds a pruned walk reads describe this node's
+            // postings, and a gathered read walks none of them.
+            let distinct: Vec<String> = terms.keys().cloned().collect();
+            let elsewhere = self.counted_elsewhere(transaction, table, &index, &distinct)?;
+            let statistics = match &elsewhere {
+                Some(counted) => {
+                    for (term, more) in distinct.iter().zip(&counted.holding) {
+                        if let Some(held) = terms.get_mut(term) {
+                            *held = TermStatistics::new(held.documents.saturating_add(*more));
+                        }
+                    }
+                    SearchStatistics::new(
+                        statistics.documents.saturating_add(counted.documents),
+                        statistics.terms.saturating_add(counted.tokens),
+                    )
+                }
+                None => statistics,
+            };
             corpora.insert(
                 path.clone(),
                 Ranked {
@@ -240,8 +365,10 @@ impl Session<'_> {
                         average_length: statistics.average_length().unwrap_or_default(),
                         terms,
                         asked,
+                        blends,
                     },
                     index,
+                    from_text: elsewhere.is_some(),
                 },
             );
         }
@@ -252,14 +379,27 @@ impl Session<'_> {
         // property that matters: the suggestion is a fact about the query and
         // the collection, so a read must not be able to earn a different one by
         // being planned differently.
-        let indexes = Catalog::new(transaction).indexes_on(table)?;
-        let suggestion = suggested(transaction, &indexes, &analyzers, &matched)?;
+        //
+        // A hidden field consults no dictionary at all — not even to say
+        // `NothingNearer`, which would tell the caller every word they typed is
+        // in a field they cannot read.
+        matched.retain(|(path, _)| !hidden(path));
+        // ADR-0103 D3: on a node holding part of the table, its dictionary is
+        // part of the collection's, and "nothing nearer" from it is false
+        // whenever the nearer word sits in a shard it lacks.
+        let suggestion = if self.missing(transaction, table, Part::Whole)?.is_some() {
+            None
+        } else {
+            let indexes = Catalog::new(transaction).field_indexes_on(table)?;
+            suggested(transaction, &indexes, &analyzers, &matched)?
+        };
 
         Ok(Searched {
             analyzers,
             corpora,
             wanted: asked_of,
             suggestion,
+            offsets,
         })
     }
 }
@@ -287,7 +427,7 @@ fn searched_paths<'a>(
             }
         }
         ExprKind::Binary {
-            op: op @ (BinaryOp::MatchesPrefix | BinaryOp::MatchesFuzzy),
+            op: op @ (BinaryOp::MatchesPrefix | BinaryOp::MatchesFuzzy | BinaryOp::MatchesInfix),
             left,
             right,
         } => {
@@ -297,7 +437,7 @@ fn searched_paths<'a>(
             }
         }
         ExprKind::Call {
-            function: Function::SearchScore,
+            function: Function::SearchScore | Function::SearchExplain,
             arguments,
             ..
         } => {
@@ -339,4 +479,54 @@ fn searched_paths<'a>(
         }
         _ => {}
     }
+}
+
+/// `PrefixTooShort` for the first prefix typed shorter than the floor.
+///
+/// The **typed** spelling decides, which is the first of the alternatives — the
+/// rule the `MATCHES PREFIX` loop above states.
+fn too_short(prefixes: &[&[String]], span: Span) -> Result<()> {
+    for alternatives in prefixes {
+        if let Some(prefix) = alternatives.first()
+            && prefix.chars().count() < SEARCH_PREFIX_MINIMUM
+        {
+            return Err(Error::PrefixTooShort {
+                prefix: prefix.clone(),
+                minimum: SEARCH_PREFIX_MINIMUM,
+                span,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The terms one starred word blends, the most-held first (ADR-0104 D4).
+///
+/// Every term beginning with either spelling, up to the examination ceiling,
+/// ranked by how many records hold it and cut at the expansion cap by that rank
+/// — never in dictionary order, which would keep whichever rare words sort first
+/// and drop the common one being typed. Ties fall to the term, so the same
+/// dictionary always blends the same terms.
+fn blended(
+    transaction: &Transaction<'_>,
+    index: &IndexDefinition,
+    alternatives: &[String],
+) -> Result<Blend> {
+    let mut reached = std::collections::BTreeSet::new();
+    for spelling in alternatives {
+        let found =
+            transaction.terms_with_prefix(index, spelling, SEARCH_PREFIX_SCORE_EXAMINATION_CAP)?;
+        reached.extend(found.terms);
+    }
+    let mut ranked = Vec::with_capacity(reached.len());
+    for term in reached {
+        ranked.push((transaction.document_frequency(index, &term)?, term));
+    }
+    ranked.sort_by(|(left, one), (right, other)| right.cmp(left).then_with(|| one.cmp(other)));
+    ranked.truncate(SEARCH_PREFIX_EXPANSION_CAP);
+    Ok(Blend {
+        prefix: alternatives.first().cloned().unwrap_or_default(),
+        documents: ranked.first().map_or(0, |(held, _)| *held),
+        expansions: ranked.into_iter().map(|(_, term)| term).collect(),
+    })
 }

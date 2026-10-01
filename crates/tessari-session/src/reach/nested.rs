@@ -113,6 +113,10 @@ pub(crate) fn in_source(from: &Source) -> Vec<&TableRef> {
         // before this list is consulted, and `within_grants` refuses a
         // grant-governed user by role rather than by an empty answer.
         Source::Node => Vec::new(),
+        // A search names no table: each member is read under its own table's
+        // grants when the search runs (ADR-0105), so a member nobody granted is
+        // left out rather than refused. Only its condition can hold a read.
+        Source::Search { condition, .. } => condition.as_deref().map(in_expr).unwrap_or_default(),
         Source::Record(target) => vec![&target.table],
         Source::Table(table) | Source::Range { table, .. } => vec![table],
         // The condition is an expression, and an expression may hold a read.

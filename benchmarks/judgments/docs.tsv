@@ -1,0 +1,92 @@
+# Graded judgments over the documentation site's pages (ADR-0100 D3).
+#
+# kind <TAB> query <TAB> page=grade ...   grades: 3 the page that answers it, 2 substantially
+# about it, 1 mentions it usefully; a page not listed is 0. Pages are paths under content/
+# without `.md`. One assessor, graded from each page's title, summary and section headings —
+# a limit worth stating: a second assessor would disagree on some 1s and 2s.
+#
+# `word` queries are what a reader types and finishes; `prefix` the word they are part-way
+# through; `fuzzy` a word typed wrongly. Four fuzzy queries carry two adjacent transpositions
+# (`trasnactoin`, `subscirptoin`, `replciatoin`) or a typo inside the exact leading run
+# (`anlayzer`), so a change to how transpositions are counted or to that run shows here.
+word	analyzer	query-language/full-text-search=3 query-language/definitions=1 reference/statements=1 reference/refusals=1
+word	stemmer	query-language/full-text-search=3
+word	full text search	query-language/full-text-search=3 overview/how-this-site-works=2 overview/engines=1
+word	vector index	query-language/vectors=3 overview/engines=2 overview/what-it-is=1
+word	approximate	query-language/vectors=3 overview/engines=2 overview/what-it-is=2
+word	backup	operations/backup-and-restore=3 reference/command-line=2 operations/bounding-the-log=1 start/in-a-container=1 clients/http=1
+word	restore	operations/backup-and-restore=3 reference/command-line=2
+word	snapshot	operations/backup-and-restore=3 query-language/transactions=1 query-language/paging-and-history=1
+word	transaction	query-language/transactions=3 reference/command-line=2 query-language/writing-safely=1
+word	failover	cluster/leadership-and-failover=3 cluster/what-a-cluster-is=1
+word	leader lease	cluster/leadership-and-failover=3 cluster/what-a-cluster-is=1
+word	staleness	cluster/reads-routing-and-staleness=3 clients/rust=1
+word	shard	cluster/splitting-a-table=3 cluster/what-replicates-where=1
+word	replication	cluster/what-replicates-where=3 cluster/adding-a-node=1 cluster/what-a-cluster-is=1
+word	password	security/users=3 reference/command-line=1 start/connecting=1 query-language/vaults=1
+word	grant	security/grants=3 security/authority=2 security/users=1
+word	token	clients/http=3 security/users=2 start/connecting=1
+word	queue claim	query-language/queues=3
+word	dead letter	query-language/queues=3
+word	topic consumer	query-language/topics=3 query-language/stream-ingestion=2
+word	kafka	query-language/stream-ingestion=3
+word	expiry	key-value/expiry-and-counters=3 key-value/a-cache-over-http-and-in-the-clients=2 key-value/spaces=1
+word	counter	key-value/expiry-and-counters=3 key-value/a-cache-over-http-and-in-the-clients=2 query-language/time-series=1
+word	lock	key-value/expiry-and-counters=3 key-value/a-cache-over-http-and-in-the-clients=2
+word	bucket file	key-value/files=3
+word	polygon	query-language/geometry=3 reference/data-types=1
+word	geometry distance	query-language/geometry=3 query-language/several-orders-at-once=1 reference/functions=1
+word	graph edge	query-language/graphs=3
+word	relate	query-language/graphs=3 reference/statements=1
+word	join	query-language/joins=3 query-language/subqueries=2
+word	subquery	query-language/subqueries=3
+word	view	query-language/views=3
+word	materialized view	query-language/views=3 query-language/time-series=1
+word	vault secret	query-language/vaults=3 operations/the-console=1
+word	unseal	query-language/vaults=3 operations/the-console=1
+word	time series window	query-language/time-series=3
+word	parameter	query-language/parameters=3 query-language/bindings=2 clients/python=1
+word	explain	query-language/what-a-read-reports=3 query-language/conditions=2
+word	paging	query-language/paging-and-history=3
+word	version history	query-language/paging-and-history=3
+word	container	start/in-a-container=3 operations/serving=2
+word	install	start/install=3
+word	console	operations/the-console=3
+word	health probe	operations/serving=3 clients/http=2 start/in-a-container=1
+word	refusal	reference/refusals=3
+word	null none	reference/data-types=3 query-language/expressions=2 key-value/spaces=1
+word	fuse	query-language/several-orders-at-once=3
+word	highlight	query-language/full-text-search=3 reference/functions=2
+word	prune log	operations/bounding-the-log=3 operations/backup-and-restore=1
+word	websocket	clients/protocol=2 clients/http=2 clients/javascript=2
+word	python	clients/python=3 clients/choosing=1
+word	drain	operations/serving=3
+word	multi master conflict	cluster/two-writers-on-one-range=3
+word	agent memory	overview/agent-memory=3
+prefix	vect	query-language/vectors=3 overview/engines=1
+prefix	analy	query-language/full-text-search=3
+prefix	replica	cluster/what-replicates-where=3 cluster/adding-a-node=2
+prefix	transac	query-language/transactions=3 reference/command-line=1
+prefix	backu	operations/backup-and-restore=3 reference/command-line=1
+prefix	geom	query-language/geometry=3 reference/data-types=1
+prefix	queu	query-language/queues=3
+prefix	stale	cluster/reads-routing-and-staleness=3
+prefix	subscr	cluster/what-replicates-where=3 cluster/adding-a-node=2
+prefix	hist	query-language/paging-and-history=3
+prefix	seri	query-language/time-series=3
+prefix	unsea	query-language/vaults=3
+fuzzy	transcation	query-language/transactions=3 reference/command-line=2 query-language/writing-safely=1
+fuzzy	replciation	cluster/what-replicates-where=3 cluster/adding-a-node=1
+fuzzy	geomtery	query-language/geometry=3 reference/data-types=1
+fuzzy	snapshto	operations/backup-and-restore=3
+fuzzy	vecotrs	query-language/vectors=3 overview/engines=1
+fuzzy	failvoer	cluster/leadership-and-failover=3
+fuzzy	pasword	security/users=3 reference/command-line=1 start/connecting=1 query-language/vaults=1
+fuzzy	vaulst	query-language/vaults=3
+fuzzy	unsael	query-language/vaults=3
+fuzzy	consoel	operations/the-console=3
+fuzzy	backpu	operations/backup-and-restore=3 reference/command-line=1
+fuzzy	trasnactoin	query-language/transactions=3 reference/command-line=2
+fuzzy	subscirptoin	cluster/what-replicates-where=3 cluster/adding-a-node=2
+fuzzy	replciatoin	cluster/what-replicates-where=3 cluster/adding-a-node=1
+fuzzy	anlayzer	query-language/full-text-search=3

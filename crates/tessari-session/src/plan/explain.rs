@@ -46,6 +46,10 @@ impl Session<'_> {
     /// The plan, before it is a value.
     fn plan_of(&self, transaction: &mut Transaction<'_>, select: &Select) -> Result<Plan> {
         match &select.from {
+            // Planned from the dictionary alone: whether every word can be
+            // walked decides between the postings and a scan, and no record is
+            // read to say so.
+            Source::Search { .. } => self.explain_search(transaction, select),
             // One value out of `meta`, with no table, no index and no choice.
             Source::Node => Ok(Plan {
                 source: Some("node"),
@@ -136,6 +140,7 @@ impl Session<'_> {
                     let (context, id) = self.resolve_table(transaction, table)?;
                     if let Some(index) = self.index_on_path(transaction, id, read.field)?
                         && index.search
+                        && !index.costs.unscored
                         && self
                             .index_serving_score(transaction, context, id, read.field)?
                             .is_some()
@@ -210,7 +215,7 @@ impl Session<'_> {
                     });
                 }
                 let searched = self.searched_for(transaction, id, &[condition])?;
-                let declared = Catalog::new(transaction).indexes_on(id)?;
+                let declared = Catalog::new(transaction).field_indexes_on(id)?;
                 let offered = self.enumerate(transaction, condition, &declared, &searched)?;
                 // The same guard the read applies, from the same function: a
                 // winner that does not beat reading the table is not the path
@@ -224,10 +229,21 @@ impl Session<'_> {
                     }
                     _ => None,
                 };
-                Ok(match chosen {
-                    Some(chosen) => chosen.plan(Some(named)),
-                    None => Plan::new(AccessPath::Scan).on(named),
-                })
+                if let Some(chosen) = chosen {
+                    return Ok(chosen.plan(Some(named)));
+                }
+                Ok(
+                    match self.union_of(
+                        transaction,
+                        id,
+                        condition,
+                        (&declared, &searched),
+                        select.lift_scan_guard,
+                    )? {
+                        Some(sides) => super::union_plan(&sides, Some(named)),
+                        None => Plan::new(AccessPath::Scan).on(named),
+                    },
+                )
             }
             // A walk reads an index per step, and which index is not a choice:
             // an edge table is given one on each endpoint when it is declared.

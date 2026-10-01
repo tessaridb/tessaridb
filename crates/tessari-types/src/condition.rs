@@ -118,6 +118,15 @@ pub enum BinaryOp {
     /// than discovered, and the price of not walking a whole dictionary per
     /// word.
     MatchesFuzzy,
+    /// `MATCHES INFIX`: every word typed is a piece of some held term
+    /// (ADR-0100 D5, ADR-0105 D9).
+    ///
+    /// The piece is the typed spelling, folded and **not** stemmed — a piece of
+    /// a word stems into nothing — and it is looked for inside the terms the
+    /// field holds, so with a stemming analyzer it is found inside stems. The
+    /// prefix floor applies to it, and an index serves it through a suffix
+    /// structure over its dictionary rather than through n-gram tokens.
+    MatchesInfix,
 }
 
 impl BinaryOp {
@@ -138,6 +147,7 @@ impl BinaryOp {
             Self::Matches => "MATCHES",
             Self::MatchesPrefix => "MATCHES PREFIX",
             Self::MatchesFuzzy => "MATCHES FUZZY",
+            Self::MatchesInfix => "MATCHES INFIX",
         }
     }
 
@@ -163,6 +173,7 @@ impl BinaryOp {
             Self::Matches,
             Self::MatchesPrefix,
             Self::MatchesFuzzy,
+            Self::MatchesInfix,
         ]
         .into_iter()
         .find(|held| held.spelling() == spelling)
@@ -210,7 +221,10 @@ pub fn apply(op: BinaryOp, left: &Value, right: &Value) -> bool {
         // stated `false` rather than an `unreachable!()`: this project has none,
         // and "no analyzer, no terms, no match" is the same answer a field with
         // no analyzer gets anyway.
-        BinaryOp::Matches | BinaryOp::MatchesPrefix | BinaryOp::MatchesFuzzy => false,
+        BinaryOp::Matches
+        | BinaryOp::MatchesPrefix
+        | BinaryOp::MatchesFuzzy
+        | BinaryOp::MatchesInfix => false,
     }
 }
 

@@ -6,7 +6,7 @@ use crate::graph;
 use crate::transaction::Transaction;
 use std::collections::{BTreeMap, BTreeSet};
 use tessari_constants::SPATIAL_INDEX_CELLS_PER_RECORD;
-use tessari_encoding::IndexValues;
+use tessari_encoding::{IndexValues, Located};
 use tessari_geo::{Bounds, Cell, Shape};
 use tessari_types::{Analyzer, TableId, Value};
 
@@ -60,9 +60,14 @@ pub(crate) struct Analysed {
     /// way there. It is what a relevance score means by *how often*, and it can
     /// only be taken here, from the same analyzer pass that produced the terms.
     pub(crate) postings: Vec<(IndexValues, u32)>,
+    /// Where each of those terms sits, entry for entry — the ordinals and byte
+    /// ranges a `POSITIONS` / `OFFSETS` index stores, empty lists otherwise.
+    pub(crate) located: Vec<Located>,
     /// How many tokens the text holds, **with** repeats — this is a length, and
     /// a length that collapsed repeats would not be one.
     pub(crate) tokens: u64,
+    /// Each field's token count, for a search member; empty for a field index.
+    pub(crate) fields: Vec<u64>,
 }
 
 impl Analysed {
@@ -142,22 +147,81 @@ pub(crate) fn terms_of(
     let Some(Value::String(text)) = path.resolve(value) else {
         return Analysed::default();
     };
+    if definition.costs.positions || definition.costs.offsets {
+        return located_terms_of(definition, analyzer, text);
+    }
     let mut terms: Vec<String> = analyzer.terms(text);
     let tokens = u64::try_from(terms.len()).unwrap_or(u64::MAX);
     terms.sort_unstable();
     // Sorting puts equal terms next to each other, so a run *is* the count. This
     // replaces a `dedup()` that threw the run length away — the same pass, one
     // number further.
+    let postings: Vec<(IndexValues, u32)> = terms
+        .chunk_by(|held, next| held == next)
+        .filter_map(|run| {
+            let term = run.first()?;
+            let frequency = u32::try_from(run.len()).unwrap_or(u32::MAX);
+            Some((IndexValues::of(&[Value::from(term.as_str())]), frequency))
+        })
+        .collect();
     Analysed {
-        postings: terms
-            .chunk_by(|held, next| held == next)
-            .filter_map(|run| {
-                let term = run.first()?;
-                let frequency = u32::try_from(run.len()).unwrap_or(u32::MAX);
-                Some((IndexValues::of(&[Value::from(term.as_str())]), frequency))
-            })
-            .collect(),
+        located: vec![Located::default(); postings.len()],
+        postings,
         tokens,
+        fields: Vec::new(),
+    }
+}
+
+/// [`terms_of`] for an index keeping positions or offsets: the same terms and
+/// counts, from the analyzer's spans so each occurrence keeps its ordinal and
+/// its bytes (ADR-0100 D4).
+///
+/// The spans are the tokens [`Analyzer::terms`] produces, in the same order and
+/// with the same empty tokens dropped, so an ordinal here is an index into the
+/// list the scan's phrase test walks — which is what makes a phrase decided from
+/// stored ordinals the same answer.
+fn located_terms_of(definition: &IndexDefinition, analyzer: &Analyzer, text: &str) -> Analysed {
+    let narrow = |value: usize| u32::try_from(value).unwrap_or(u32::MAX);
+    let mut held: Vec<(String, u32, (u32, u32))> = analyzer
+        .spans(text)
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, token)| {
+            let bytes = (narrow(token.bytes.start), narrow(token.bytes.end));
+            (token.term, narrow(ordinal), bytes)
+        })
+        .collect();
+    let tokens = u64::try_from(held.len()).unwrap_or(u64::MAX);
+    // By term, then by ordinal, so each run lists its occurrences in order.
+    held.sort_unstable_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+    let mut postings = Vec::new();
+    let mut located = Vec::new();
+    for run in held.chunk_by(|left, right| left.0 == right.0) {
+        let Some((term, _, _)) = run.first() else {
+            continue;
+        };
+        postings.push((
+            IndexValues::of(&[Value::from(term.as_str())]),
+            narrow(run.len()),
+        ));
+        located.push(Located {
+            positions: if definition.costs.positions {
+                run.iter().map(|(_, ordinal, _)| *ordinal).collect()
+            } else {
+                Vec::new()
+            },
+            offsets: if definition.costs.offsets {
+                run.iter().map(|(_, _, bytes)| *bytes).collect()
+            } else {
+                Vec::new()
+            },
+        });
+    }
+    Analysed {
+        postings,
+        located,
+        tokens,
+        fields: Vec::new(),
     }
 }
 
@@ -217,4 +281,76 @@ pub(crate) fn project(definition: &IndexDefinition, value: &Value) -> Vec<IndexV
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
+}
+
+/// The analyzer an index reads its text with: a member's is the search's,
+/// named; a field index's is its field's declaration.
+pub(crate) fn analyzer_for<'a>(
+    definition: &IndexDefinition,
+    declared: &'a BTreeMap<String, Analyzer>,
+    named: &'a BTreeMap<String, Analyzer>,
+) -> Option<&'a Analyzer> {
+    match &definition.engine {
+        Some(engine) => named.get(&engine.analyzer),
+        None => search_analyzer(definition, declared),
+    }
+}
+
+/// Every analyzer the store declares, by name — what a search member resolves
+/// its analyzer against.
+pub(crate) fn analyzers_named(view: &mut Transaction<'_>) -> Result<BTreeMap<String, Analyzer>> {
+    Ok(Catalog::new(view)
+        .analyzers()?
+        .into_iter()
+        .map(|definition| (definition.name, definition.analyzer))
+        .collect())
+}
+
+/// What one record posts to an index: [`terms_of`] for a field index, and for
+/// a search member every field's terms together (ADR-0105).
+///
+/// A member's posting is the record's **total** over its fields — one
+/// frequency and one length, the counted form every reader already knows — and
+/// its per-field token counts travel beside it for the statistics, which are
+/// what a BM25F field average is measured against.
+pub(crate) fn analysed(
+    definition: &IndexDefinition,
+    analyzer: Option<&Analyzer>,
+    value: &Value,
+) -> Analysed {
+    if definition.engine.is_none() {
+        return terms_of(definition, analyzer, value);
+    }
+    let Some(analyzer) = analyzer else {
+        return Analysed::default();
+    };
+    let mut terms: Vec<String> = Vec::new();
+    let mut fields = Vec::with_capacity(definition.fields.len());
+    for path in &definition.fields {
+        let held = match path.resolve(value) {
+            Some(Value::String(text)) => analyzer.terms(text),
+            _ => Vec::new(),
+        };
+        fields.push(u64::try_from(held.len()).unwrap_or(u64::MAX));
+        terms.extend(held);
+    }
+    let tokens = u64::try_from(terms.len()).unwrap_or(u64::MAX);
+    if tokens == 0 {
+        return Analysed::default();
+    }
+    terms.sort_unstable();
+    let postings: Vec<(IndexValues, u32)> = terms
+        .chunk_by(|held, next| held == next)
+        .filter_map(|run| {
+            let term = run.first()?;
+            let frequency = u32::try_from(run.len()).unwrap_or(u32::MAX);
+            Some((IndexValues::of(&[Value::from(term.as_str())]), frequency))
+        })
+        .collect();
+    Analysed {
+        located: vec![Located::default(); postings.len()],
+        postings,
+        tokens,
+        fields,
+    }
 }

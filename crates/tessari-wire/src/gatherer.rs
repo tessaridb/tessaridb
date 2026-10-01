@@ -159,9 +159,12 @@ impl Gathers for Gathering {
             pushed: asked.pushed.cloned(),
             enough: asked.enough.and_then(|enough| u64::try_from(enough).ok()),
             reduce: asked.reduce.cloned(),
+            ordered: asked.ordered.cloned(),
+            counting: asked.counting.cloned(),
         };
         let mut records = Vec::new();
         let mut partials = Vec::new();
+        let mut counted: Option<tessari_storage::SearchCounts> = None;
         loop {
             let (_, answered) = call(
                 address,
@@ -185,6 +188,43 @@ impl Gathers for Gathering {
                     "{endpoint} answered something other than a page"
                 )));
             };
+            // Counted: figures rather than records, summed page by page; a
+            // leader that sent no count fails the read rather than leaving the
+            // score measured against part of the collection (ADR-0103).
+            if let Some(counting) = asked.counting {
+                let Some(page_counted) = answered
+                    .counted
+                    .filter(|page| page.holding.len() == counting.terms.len())
+                else {
+                    return Err(Unanswered::Refused(format!(
+                        "{endpoint} did not count the shard it was asked to count"
+                    )));
+                };
+                let total = counted.get_or_insert_with(|| tessari_storage::SearchCounts {
+                    holding: vec![0; counting.terms.len()],
+                    ..tessari_storage::SearchCounts::default()
+                });
+                total.documents = total.documents.saturating_add(page_counted.documents);
+                total.tokens = total.tokens.saturating_add(page_counted.tokens);
+                for (held, more) in total.holding.iter_mut().zip(page_counted.holding) {
+                    *held = held.saturating_add(more);
+                }
+                if !answered.more {
+                    return Ok(Gathered {
+                        records: Vec::new(),
+                        node,
+                        reduced: None,
+                        counted,
+                    });
+                }
+                let Some(resume) = answered.resume else {
+                    return Err(Unanswered::Refused(format!(
+                        "{endpoint} said more records follow and gave no place to resume"
+                    )));
+                };
+                page.after = Some(resume);
+                continue;
+            }
             // Folded: groups rather than records, each page resuming where
             // the leader's read stopped. A page that declined, or a leader that
             // sent records when it was asked for folds, sends the asker back to
@@ -195,6 +235,7 @@ impl Gathers for Gathering {
                         records: Vec::new(),
                         node,
                         reduced: Some(tessari_session::Reduced::Declined),
+                        counted: None,
                     });
                 };
                 partials.extend(folded);
@@ -206,6 +247,7 @@ impl Gathers for Gathering {
                         records: Vec::new(),
                         node,
                         reduced: Some(tessari_session::Reduced::Partials(partials)),
+                        counted: None,
                     });
                 }
                 let Some(resume) = answered.resume else {
@@ -231,6 +273,7 @@ impl Gathers for Gathering {
                     records,
                     node,
                     reduced: None,
+                    counted: None,
                 });
             }
             if !more {
@@ -238,6 +281,7 @@ impl Gathers for Gathering {
                     records,
                     node,
                     reduced: None,
+                    counted: None,
                 });
             }
             // A narrowed page may keep none of what it read, and says where it

@@ -51,10 +51,10 @@ pub use causal::{CausalOrder, CausalStamp, CausalVersions};
 pub use error::{Error, Result};
 pub use expiry_key::{ExpiryKey, ExpiryMark};
 pub use index_keys::{
-    INDEX_PREFIX_LEN, IndexAddress, IndexTarget, IndexValues, NoPayload, Posting, PostingKey,
-    SearchStatistics, SearchStatisticsKey, SearchTermKey, SecondaryIndexKey, SpatialRefinement,
-    SpatialRefinementKey, TermStatistics, UniqueIndexKey, VectorNode, VectorNodeKey, VectorRecall,
-    VectorRecallKey,
+    INDEX_PREFIX_LEN, IndexAddress, IndexTarget, IndexValues, Located, NoPayload, Posting,
+    PostingKey, SearchStatistics, SearchStatisticsKey, SearchSuffixKey, SearchTermKey,
+    SecondaryIndexKey, SpatialRefinement, SpatialRefinementKey, TermStatistics, UniqueIndexKey,
+    VectorNode, VectorNodeKey, VectorRecall, VectorRecallKey,
 };
 pub use keys::{
     AppliedPositionKey, FormatVersionKey, LogKey, LogRetentionKey, LogStartKey, NodeIdentityKey,

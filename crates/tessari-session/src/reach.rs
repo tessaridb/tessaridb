@@ -92,6 +92,14 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // and listing it here would make a grant on that table a condition of
         // removing a store-wide name.
         | StatementKind::DropAnalyzer { .. }
+        // A word set is a store-wide name like an analyzer, and dropping a
+        // search names none of its tables in the statement: whether a grant
+        // reaches each member is not what removing the name asks.
+        | StatementKind::DefineSynonyms { .. }
+        | StatementKind::DropSynonyms { .. }
+        | StatementKind::DefineStopwords { .. }
+        | StatementKind::DropStopwords { .. }
+        | StatementKind::DropSearch { .. }
         // A tenancy is not a table. Whether either still holds anything is,
         // again, a question the statement asks itself.
         | StatementKind::DropDatabase { .. }
@@ -233,6 +241,10 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::AlterField { table, .. }
         | StatementKind::RebuildIndex { table, .. }
         | StatementKind::CheckTable { table } => vec![table],
+        // A search is declared over tables, and each is one it reaches.
+        StatementKind::DefineSearch { members, .. } => {
+            members.iter().map(|member| &member.table).collect()
+        }
 
         // The condition is walked for the same reason a read's is: a subquery
         // inside it reaches a table this statement does not name.

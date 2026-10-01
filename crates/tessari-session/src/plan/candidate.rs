@@ -41,6 +41,9 @@ pub(crate) enum Shape {
     /// claim about how many rows it returns, which is a different quantity and
     /// one this store keeps no statistics to support.
     FuzzyTerms,
+    /// `<path> MATCHES INFIX '<text>'` — for each piece, the postings of every
+    /// term containing it, found through the suffix keyspace (ADR-0105 D9).
+    InfixTerms,
     /// `<path> MATCHES '<a> OR <b> <c>'` — for each `OR`-joined group, the
     /// postings of its terms, unioned; then those intersected across the groups.
     ///
@@ -51,6 +54,11 @@ pub(crate) enum Shape {
     /// difference is in the name so `EXPLAIN` does not report a walk that never
     /// ran.
     AnyTerms,
+    /// `<path> MATCHES '"<a> <b>"'` on an index keeping `POSITIONS` — the
+    /// intersection [`Shape::Terms`] reads, then the order decided from the
+    /// stored token ordinals (ADR-0100 D4). Beside the other term shapes: the
+    /// same postings and the same ceiling, and a smaller answer.
+    Phrase,
     /// `<path> LIKE '<literal>%'` — a range over the values beginning with it.
     Prefix,
     /// `<path> < <constant>`, and the other three orderings — a bounded scan.
@@ -123,6 +131,9 @@ pub(crate) enum Served {
     /// does not, and must not: telling a reader `prefix-terms` when a fuzzy walk
     /// ran would misreport which question the index answered.
     FuzzyTerms(Vec<Vec<String>>),
+    /// The terms each infix piece reached — the shape of the two above, kept
+    /// apart so `EXPLAIN` says which walk ran.
+    InfixTerms(Vec<Vec<String>>),
     /// The terms of each `OR`-joined group — the same shape again, and again a
     /// separate variant so `EXPLAIN` reports which question the index answered.
     ///
@@ -132,6 +143,17 @@ pub(crate) enum Served {
     /// reach, which is a superset of the answer, and let the condition drop the
     /// rest — the refinement every candidate on this path already gets.
     AnyTerms(Vec<Vec<String>>),
+    /// A phrase on an index keeping positions: per word, the terms it reaches
+    /// (one for a whole word, the expansions for a starred last one), then the
+    /// words themselves and the slop the run is decided with.
+    Phrase {
+        /// What each word reaches in the dictionary, in phrase order.
+        groups: Vec<Vec<String>>,
+        /// The phrase's words, the run test's input.
+        words: Vec<crate::search::Word>,
+        /// How many extra tokens the run may absorb.
+        slop: usize,
+    },
     /// The two ends of an ordered scan, either of which may be absent.
     ///
     /// Both are carried as **values**, not as byte bounds, because the index
@@ -180,7 +202,9 @@ impl Served {
             Self::Terms(_) => Shape::Terms,
             Self::PrefixTerms(_) => Shape::PrefixTerms,
             Self::FuzzyTerms(_) => Shape::FuzzyTerms,
+            Self::InfixTerms(_) => Shape::InfixTerms,
             Self::AnyTerms(_) => Shape::AnyTerms,
+            Self::Phrase { .. } => Shape::Phrase,
             Self::Range { .. } => Shape::Range,
             Self::Region { .. } => Shape::Region,
         }
@@ -202,7 +226,9 @@ impl Served {
             | Self::Terms(_)
             | Self::PrefixTerms(_)
             | Self::FuzzyTerms(_)
+            | Self::InfixTerms(_)
             | Self::AnyTerms(_)
+            | Self::Phrase { .. }
             | Self::Region { .. } => 1,
             Self::Range { fixed, .. } => fixed.len().saturating_add(1),
         }
@@ -317,7 +343,9 @@ impl Shape {
             Self::Terms => "terms",
             Self::PrefixTerms => "prefix-terms",
             Self::FuzzyTerms => "fuzzy-terms",
+            Self::InfixTerms => "infix-terms",
             Self::AnyTerms => "any-terms",
+            Self::Phrase => "phrase",
         }
     }
 }

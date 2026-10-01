@@ -20,6 +20,16 @@ pub(crate) fn described_replica(
             "endpoint".to_owned(),
             Value::from(replica.endpoint.as_str()),
         ),
+        // Where a redirect sends a client (ADR-0101). `null` when unsaid, which
+        // is the row whose redirects still name the peer door above.
+        (
+            "clients".to_owned(),
+            replica.clients.as_deref().map_or(Value::Null, Value::from),
+        ),
+        (
+            "http".to_owned(),
+            replica.http.as_deref().map_or(Value::Null, Value::from),
+        ),
         // Reported because it is now *routing*, not decoration: this is the
         // field that decides where a forwarded write lands, and a setting an
         // operator can write but cannot read back is one they cannot check

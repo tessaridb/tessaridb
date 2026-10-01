@@ -72,3 +72,100 @@ pub fn keeping(
     transaction.rollback();
     Ok(kept)
 }
+
+/// What a node asks a shard's leader to rank its records by, and how many of
+/// them to send (ADR-0102).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ordered {
+    /// The fields the asker may read; `None` for all of them.
+    pub visible: Visible,
+    /// The keys, in the statement's order.
+    pub keys: Vec<OrderKey>,
+    /// How many records the asker's answer can take from one shard — the
+    /// statement's `LIMIT` plus its `START`.
+    pub most: u64,
+}
+
+/// One key of an [`Ordered`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct OrderKey {
+    /// The key, as [`tessari_ql::portable`] wrote it.
+    pub key: String,
+    /// The values its parameters stand for.
+    pub parameters: tessari_ql::Parameters,
+    /// Whether the order is reversed.
+    pub descending: bool,
+}
+
+/// The records `ordered` puts first, out of every page `pages` hands over, in
+/// identity order.
+///
+/// Ranked by the same collector and comparator the asker's `ORDER BY` uses,
+/// over the record with the asker's hidden fields removed, so the first
+/// `most` here are the first `most` the asker would rank of this shard. Ties
+/// fall to the identity, which is what makes the asker's merge of every
+/// shard's first `most` the whole table's.
+///
+/// A record whose payload or key does not evaluate is kept beside the ranked
+/// ones, for the asker to meet the same failure and refuse in its own words.
+///
+/// # Errors
+///
+/// A key that does not read back, a page that could not be read, or a store
+/// that cannot be read.
+pub fn leading(
+    store: &Store,
+    ordered: &Ordered,
+    mut pages: impl FnMut() -> Result<Option<Vec<(RecordId, Vec<u8>)>>>,
+) -> Result<Vec<(RecordId, Vec<u8>)>> {
+    let order = ordered
+        .keys
+        .iter()
+        .map(|key| {
+            Ok(tessari_ql::Ordering {
+                key: tessari_ql::bound_condition(&key.key, &key.parameters)?,
+                descending: key.descending,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let most = usize::try_from(ordered.most).unwrap_or(usize::MAX);
+    let session = Session::new(store);
+    let mut transaction = store.begin()?;
+    let mut topmost = crate::shape::Topmost::keeping(&order, Some(most));
+    let mut unranked = Vec::new();
+    while let Some(page) = pages()? {
+        for (id, payload) in page {
+            let Ok(record) = decode_payload(&payload) else {
+                unranked.push((id, payload));
+                continue;
+            };
+            let record = seen(record, &ordered.visible);
+            let keys: Result<Vec<Value>> = order
+                .iter()
+                .map(|key| {
+                    session.evaluate_in(
+                        &mut transaction,
+                        &key.key,
+                        Scope::of(&record).identified(&id),
+                    )
+                })
+                .collect();
+            match keys {
+                Ok(keys) => topmost.offer(keys, id, Value::Bytes(payload)),
+                Err(_) => unranked.push((id, payload)),
+            }
+        }
+    }
+    transaction.rollback();
+    let mut kept: Vec<(RecordId, Vec<u8>)> = topmost
+        .finish()
+        .into_iter()
+        .filter_map(|(id, payload)| match payload {
+            Value::Bytes(payload) => Some((id, payload)),
+            _ => None,
+        })
+        .collect();
+    kept.extend(unranked);
+    kept.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(kept)
+}

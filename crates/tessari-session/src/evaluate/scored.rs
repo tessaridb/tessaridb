@@ -75,6 +75,39 @@ impl Session<'_> {
             return Ok(Walked::NotServed);
         };
         let corpus = &ranked.corpus;
+        // A starred word's expansions have no bound of their own to prune by —
+        // they are weighed as one term (ADR-0104) — so the read goes back to the
+        // scan, which scores every record exactly.
+        if !corpus.blends.is_empty() {
+            return Ok(Walked::NotServed);
+        }
+        // A page after the first resumes below its anchor's score (ADR-0100
+        // D1.9). Only a record scoring strictly below the anchor is certainly
+        // past the cursor — a tie may sit on either side of it — so only those
+        // set the pruning threshold and count towards filling the page. That
+        // threshold is never above the true one, so the walk can only read more
+        // than it needs, never less; the ordering stage then applies the cursor
+        // to the candidates exactly as it does to a scan's records.
+        let ceiling = match wanted.after {
+            None => None,
+            Some(anchor) => {
+                let (_, address) = self.address(transaction, anchor)?;
+                // An anchor in another table, or gone, is the scan's to judge:
+                // it raises the refusal that says so.
+                if address.table != table || transaction.get(&address)?.is_none() {
+                    return Ok(Walked::NotServed);
+                }
+                let Some(held) =
+                    self.scored_from_postings(transaction, ranked, corpus, &address.id)?
+                else {
+                    return Ok(Walked::NotServed);
+                };
+                // An anchor scoring zero leaves nothing strictly below it, so the
+                // walk declines and the scan reads the records holding none of
+                // the words.
+                Some(rank::scored(corpus, &held))
+            }
+        };
 
         // A term written twice in a query weighs twice, so its bound is twice as
         // large. Counting the multiset here rather than deduplicating it keeps
@@ -108,6 +141,7 @@ impl Session<'_> {
 
         let mut candidates = BTreeMap::new();
         let mut best: Vec<f64> = Vec::new();
+        let mut past = 0_usize;
         for (at, (term, _)) in terms.iter().enumerate() {
             if best.len() >= wanted.wanted && suffix[at] < best[0] {
                 break;
@@ -130,10 +164,14 @@ impl Session<'_> {
                 else {
                     return Ok(Walked::NotServed);
                 };
-                keep_best(&mut best, rank::scored(corpus, &held), wanted.wanted);
+                let score = rank::scored(corpus, &held);
+                if ceiling.is_none_or(|anchor| score < anchor) {
+                    past = past.saturating_add(1);
+                    keep_best(&mut best, score, wanted.wanted);
+                }
             }
         }
-        if candidates.len() < wanted.wanted {
+        if past < wanted.wanted {
             return Ok(Walked::Declined);
         }
         Ok(Walked::Served {
@@ -234,7 +272,7 @@ impl Session<'_> {
         path: &tessari_types::Path,
     ) -> Result<Option<(tessari_storage::IndexDefinition, crate::redact::Visible)>> {
         let Some(index) = Catalog::new(transaction)
-            .indexes_on(table)?
+            .field_indexes_on(table)?
             .into_iter()
             .find(|index| index.spatial && index.fields.first() == Some(path))
         else {

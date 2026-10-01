@@ -64,6 +64,7 @@ impl Detached {
             // A sink belongs to the request that streams, never to state
             // carried to a later one.
             sink: crate::backup_to::Sink::none(),
+            landed: false,
         }
     }
 }

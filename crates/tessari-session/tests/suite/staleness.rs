@@ -97,6 +97,10 @@ impl Elsewhere for OnePeer {
     /// lead would let an `ANSWERED BY LEADER` slip into one of them and be
     /// answered by the other axis' machinery. `None` keeps each file asserting
     /// the thing it is named after.
+    fn serving(&self, _endpoint: &str, _node: &[u8; NODE_ID_LEN]) -> Option<Peer> {
+        None
+    }
+
     fn writable(&self) -> Option<Peer> {
         None
     }

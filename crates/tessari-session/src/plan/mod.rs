@@ -32,6 +32,7 @@
 //! | [`statement`] | what shape of read a whole statement is — nearest, ordered, bounded |
 //! | [`reported`] | the one structure both `EXPLAIN` and an answer report |
 //! | [`explain`] | reporting the plan a read would take, without taking it |
+//! | [`union`] | serving an `OR` whose every side an index serves |
 //!
 //! The dependency runs one way: `reads` → `conjunct` → `enumerate` → `rank`,
 //! with `serving` and `candidate` beneath the middle of it and `explain` on top
@@ -117,6 +118,7 @@ mod serving;
 mod statement;
 #[cfg(test)]
 mod tests;
+mod union;
 mod worth;
 
 pub(crate) use candidate::{Candidate, Served};
@@ -126,4 +128,5 @@ pub use reported::Plan;
 pub(crate) use statement::{
     Bounded, Closest, Nearest, Scored, answers, bound, closest, nearest, ordered, scored,
 };
+pub(crate) use union::union_plan;
 pub(crate) use worth::worth_serving;

@@ -361,6 +361,7 @@ fn an_index_is_created_on_a_table_and_found_by_it() {
                 search: false,
                 spatial: false,
                 vector: None,
+                costs: tessari_storage::SearchCosts::default(),
             },
         )
         .unwrap();
@@ -433,6 +434,7 @@ fn two_indexes_on_one_table_cannot_share_a_name_but_two_tables_can() {
                 search: false,
                 spatial: false,
                 vector: None,
+                costs: tessari_storage::SearchCosts::default(),
             },
         )
         .unwrap();
@@ -457,6 +459,7 @@ fn two_indexes_on_one_table_cannot_share_a_name_but_two_tables_can() {
                 search: false,
                 spatial: false,
                 vector: None,
+                costs: tessari_storage::SearchCosts::default(),
             },
         )
         .unwrap();

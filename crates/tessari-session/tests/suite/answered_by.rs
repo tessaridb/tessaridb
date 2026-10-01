@@ -64,6 +64,10 @@ impl Elsewhere for OnePeer {
         None
     }
 
+    fn serving(&self, _endpoint: &str, _node: &[u8; NODE_ID_LEN]) -> Option<Peer> {
+        None
+    }
+
     fn writable(&self) -> Option<Peer> {
         self.leads.then(|| Peer {
             endpoint: self.endpoint.clone(),

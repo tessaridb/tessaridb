@@ -36,6 +36,9 @@ use crate::noticed::Noticed;
 use crate::outcome::Note;
 use crate::session::Session;
 
+mod counting;
+pub use counting::Counting;
+
 /// Stored records, each with its identity, in identity order.
 pub(crate) type Stored = Vec<(RecordId, Vec<u8>)>;
 
@@ -65,6 +68,13 @@ pub struct Asked<'a> {
     /// The folds the leader may answer instead of the records (ADR-0097 D2);
     /// `None` to be sent the records.
     pub reduce: Option<&'a crate::Reduce>,
+    /// The order whose first [`crate::Ordered::most`] records are all this
+    /// shard need send, ranked under the asker's visibility (ADR-0102); `None`
+    /// for all of them.
+    pub ordered: Option<&'a crate::Ordered>,
+    /// The search index this shard's figures are wanted for, instead of its
+    /// records (ADR-0103); `None` for the records.
+    pub counting: Option<&'a Counting>,
 }
 
 /// What a shard's leader answered.
@@ -77,6 +87,8 @@ pub struct Gathered {
     /// What the leader folded the records into, when it was asked to; `None`
     /// from a leader that was not asked, and read as declined from one that was.
     pub reduced: Option<crate::Reduced>,
+    /// What the leader counted, when it was asked to count (ADR-0103).
+    pub counted: Option<tessari_storage::SearchCounts>,
 }
 
 /// Why a shard's records did not arrive.
@@ -119,12 +131,16 @@ pub(crate) struct Missing {
 
 impl Missing {
     /// The refusal a shard that did not answer gives.
-    fn unanswered(&self, shard: ShardId, why: Unanswered) -> Error {
+    ///
+    /// `holder` is named only by a moved map, the one of the three a node
+    /// holding the whole table answers in its stead.
+    fn unanswered(&self, shard: ShardId, why: Unanswered, holder: Option<crate::Peer>) -> Error {
         match why {
             Unanswered::Ceiling => self.too_much(),
             Unanswered::Moved => Error::ShardMapMoved {
                 table: self.table.clone(),
                 shard: shard.get(),
+                holder,
             },
             Unanswered::Refused(why) => Error::NotGathered {
                 table: self.table.clone(),
@@ -150,16 +166,67 @@ impl Missing {
         }
     }
 
-    /// The refusal a node with no way to gather gives.
-    pub(crate) fn refusal(&self) -> Error {
+    /// The refusal a node with no way to gather gives, naming `holder` when a
+    /// peer holding the whole table is known.
+    pub(crate) fn refusal(&self, holder: Option<crate::Peer>) -> Error {
         Error::NotHeldHere {
             table: self.table.clone(),
             shards: self.lacking.iter().map(|shard| shard.get()).collect(),
+            holder,
         }
     }
 }
 
 impl Session<'_> {
+    /// The refusal for `missing`, naming a peer that holds the whole table when
+    /// this node knows one (G051 C4, ADR-0101).
+    ///
+    /// *Holds the whole table* is asked of a peer's declared subscription
+    /// exactly as [`Self::missing`] asks it of this node's served reach: a reach
+    /// containing the table's database. The catalog says what a peer collects
+    /// and only the directory says whether it answered, as that node, serving —
+    /// so a session among no peers names nobody, and neither does a row the
+    /// directory has not heard from. This node's own row is never named, since
+    /// a redirect to the node refusing would send the client round in a loop.
+    ///
+    /// Membership is read from the store as it is NOW, in a transaction of its
+    /// own, and never through the read's: under `VERSION` that one is the
+    /// catalog as it stood, and a peer declared since would be invisible.
+    pub(crate) fn not_held_here(&self, missing: &Missing) -> Result<Error> {
+        Ok(missing.refusal(self.whole_holder(missing)?))
+    }
+
+    /// The refusal a shard that did not answer gives; a moved map names the
+    /// whole holder as [`Self::not_held_here`] does (G051 SG3).
+    fn unanswered(&self, missing: &Missing, shard: ShardId, why: Unanswered) -> Result<Error> {
+        let holder = match why {
+            Unanswered::Moved => self.whole_holder(missing)?,
+            Unanswered::Ceiling | Unanswered::Refused(_) => None,
+        };
+        Ok(missing.unanswered(shard, why, holder))
+    }
+
+    /// A serving peer holding the whole of `missing`'s table, when this node
+    /// knows one.
+    fn whole_holder(&self, missing: &Missing) -> Result<Option<crate::Peer>> {
+        let Some(known) = self.elsewhere.as_ref() else {
+            return Ok(None);
+        };
+        let me = self.store.node_identity()?.id;
+        let whole = tessari_storage::Reach::Database(missing.namespace, missing.database);
+        let mut now = self.store.begin()?;
+        let holder = Catalog::new(&mut now)
+            .replicas()?
+            .into_iter()
+            .filter(|row| row.replicates.is_some_and(|reach| reach.contains(whole)))
+            .find_map(|row| {
+                row.node
+                    .filter(|node| *node != me)
+                    .and_then(|node| known.serving(&row.endpoint, &node))
+            });
+        Ok(holder)
+    }
+
     /// What of `part` of table `id` this node was not served, or `None` when it
     /// holds all of it (G031 S3.3).
     ///
@@ -240,12 +307,13 @@ impl Session<'_> {
         part: Part<'_>,
         pushed: Option<&crate::Pushed>,
         enough: Option<usize>,
+        ordered: Option<&crate::Ordered>,
     ) -> Result<Option<(Stored, Note)>> {
         let Some(missing) = self.missing(transaction, id, part)? else {
             return Ok(None);
         };
         let (Some(gatherer), Some(map)) = (self.gather.as_ref(), missing.map.as_ref()) else {
-            return Err(missing.refusal());
+            return Err(self.not_held_here(&missing)?);
         };
         let too_much = || missing.too_much();
         let mut found: Stored = Vec::new();
@@ -272,11 +340,17 @@ impl Session<'_> {
                     pushed,
                     enough: remaining,
                     reduce: None,
+                    ordered,
+                    counting: None,
                 };
                 match gatherer.gather(&asked) {
                     Ok(gathered) => gathered.records,
-                    Err(why) => return Err(missing.unanswered(span.id, why)),
+                    Err(why) => return Err(self.unanswered(&missing, span.id, why)?),
                 }
+            } else if let Some(ordered) = ordered {
+                // Ranked exactly as a leader ranks its shard, a page at a time,
+                // so what this node holds of its own span is its first `n` too.
+                self.leading_of_span(transaction, &missing, id, window, pushed, ordered)?
             } else {
                 // This node's own span is narrowed by the same condition before
                 // it counts towards `enough`: a record the condition will drop
@@ -313,6 +387,40 @@ impl Session<'_> {
         Ok(Some((found, missing.note())))
     }
 
+    /// This node's own span of table `id`, narrowed by `pushed` and ranked by
+    /// `ordered` — its first `n`, in identity order (ADR-0102).
+    fn leading_of_span(
+        &self,
+        transaction: &mut Transaction<'_>,
+        missing: &Missing,
+        id: TableId,
+        window: Window<'_>,
+        pushed: Option<&crate::Pushed>,
+        ordered: &crate::Ordered,
+    ) -> Result<Stored> {
+        let mut after: Option<RecordId> = None;
+        let mut done = false;
+        crate::leading(self.store, ordered, || {
+            if done {
+                return Ok(None);
+            }
+            let page = transaction.records_between(
+                missing.namespace,
+                missing.database,
+                id,
+                window,
+                after.as_ref(),
+                GATHER_PAGE_RECORDS,
+            )?;
+            done = page.len() < GATHER_PAGE_RECORDS;
+            after = page.last().map(|(id, _)| id.clone());
+            Ok(Some(match pushed {
+                Some(pushed) => crate::keeping(self.store, pushed, page)?,
+                None => page,
+            }))
+        })
+    }
+
     /// The groups a grouping read of the whole of table `id` folds into, this
     /// node's records offered and the leaders' partials merged, in key order
     /// (ADR-0097 D2) — or `None` when this node holds the whole table, or a
@@ -333,7 +441,7 @@ impl Session<'_> {
             return Ok(None);
         };
         let (Some(gatherer), Some(map)) = (self.gather.as_ref(), missing.map.as_ref()) else {
-            return Err(missing.refusal());
+            return Err(self.not_held_here(&missing)?);
         };
         let occurrences = occurrences(select.projection.written());
         let mut groups = Groups::new();
@@ -352,6 +460,8 @@ impl Session<'_> {
                     pushed: None,
                     enough: None,
                     reduce: Some(reduce),
+                    ordered: None,
+                    counting: None,
                 };
                 let partials = match gatherer.gather(&asked) {
                     Ok(Gathered {
@@ -359,7 +469,7 @@ impl Session<'_> {
                         ..
                     }) => partials,
                     Ok(_) => return Ok(None),
-                    Err(why) => return Err(missing.unanswered(span.id, why)),
+                    Err(why) => return Err(self.unanswered(&missing, span.id, why)?),
                 };
                 if !merge_partials(&mut groups, &occurrences, partials)? {
                     return Ok(None);

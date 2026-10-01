@@ -55,7 +55,7 @@ impl Session<'_> {
         // keeps the reason in the one place that asks the catalog rather than
         // spread across every candidate that could have been built from it.
         let declared = if transaction.indexes_are_current()? {
-            Catalog::new(transaction).indexes_on(table)?
+            Catalog::new(transaction).field_indexes_on(table)?
         } else {
             Vec::new()
         };
@@ -118,6 +118,31 @@ impl Session<'_> {
                 records,
                 plan,
                 answered,
+            }));
+        }
+        // No conjunct serves the condition; every side of an `OR` may
+        // (G051 T7.2). The union is deduplicated in identity order, the order a
+        // scan would meet the same records in.
+        if let Some(sides) = self.union_of(
+            transaction,
+            table,
+            condition,
+            (&declared, searched),
+            asked.lift_scan_guard,
+        )? {
+            let mut found = std::collections::BTreeMap::new();
+            for side in &sides {
+                let analyzer = side
+                    .index
+                    .fields
+                    .first()
+                    .and_then(|path| searched.analyzer(path));
+                found.extend(self.serve(transaction, context, table, side, analyzer)?);
+            }
+            return Ok(Some(Reached {
+                records: Candidates::Held(self.records_of(found.into_iter().collect(), &visible)?),
+                plan: plan::union_plan(&sides, asked.named),
+                answered: false,
             }));
         }
         // Nothing serves the condition. The caller scans, and it walks the table

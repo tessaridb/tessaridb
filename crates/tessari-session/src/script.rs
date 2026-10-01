@@ -103,7 +103,7 @@ impl Session<'_> {
 /// One namespace and the tables of each of its databases.
 struct Placed {
     namespace: String,
-    databases: Vec<(String, Vec<TableDefinition>)>,
+    databases: Vec<(String, Vec<TableDefinition>, String)>,
 }
 
 /// Whether a database is carried: every one when `part` is empty, else those
@@ -142,7 +142,8 @@ fn written(reader: &mut Session<'_>, part: &[Reach]) -> Result<ScriptTaken> {
                 for table in &tables {
                     names.insert(table.id, table.name.clone());
                 }
-                databases.push((database.name, tables));
+                let searches = crate::engine::searches_script(&catalog, namespace.id, database.id)?;
+                databases.push((database.name, tables, searches));
             }
             if part.is_empty() || whole || !databases.is_empty() {
                 placed.push(Placed {
@@ -154,7 +155,8 @@ fn written(reader: &mut Session<'_>, part: &[Reach]) -> Result<ScriptTaken> {
         (
             placed,
             names,
-            access::analyzers(&catalog, part)?,
+            access::analyzers(&catalog, part)?
+                + &crate::engine::word_sets_script(&catalog, !part.is_empty())?,
             access::uncarried(&catalog, part)?,
         )
     };
@@ -168,7 +170,7 @@ fn written(reader: &mut Session<'_>, part: &[Reach]) -> Result<ScriptTaken> {
             "DEFINE NAMESPACE {0}; USE NAMESPACE {0};",
             namespace.namespace
         );
-        for (database, tables) in &namespace.databases {
+        for (database, tables, searches) in &namespace.databases {
             let place = format!("{}.{database}", namespace.namespace);
             let selection = format!(
                 "USE NAMESPACE {}; USE DATABASE {database};\n",
@@ -198,6 +200,9 @@ fn written(reader: &mut Session<'_>, part: &[Reach]) -> Result<ScriptTaken> {
                     records = records.saturating_add(written);
                 }
             }
+            if !searches.is_empty() {
+                let _ = write!(indexes, "{selection}{searches}");
+            }
         }
     }
     body.push_str(&indexes);
@@ -220,7 +225,7 @@ fn written(reader: &mut Session<'_>, part: &[Reach]) -> Result<ScriptTaken> {
                 namespace
                     .databases
                     .iter()
-                    .map(move |(database, _)| format!("{}.{database}", namespace.namespace))
+                    .map(move |(database, ..)| format!("{}.{database}", namespace.namespace))
             })
             .collect();
         let _ = writeln!(

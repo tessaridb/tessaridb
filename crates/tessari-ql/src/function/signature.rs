@@ -4,6 +4,16 @@ use super::{Function, Purity};
 
 impl Function {
     /// How many arguments it takes.
+    /// Whether a call with this many arguments is well formed.
+    ///
+    /// The declared [`Self::arity`], and one exception: `search::score()` with
+    /// no argument is the score a `FROM SEARCH` read gave its record
+    /// (ADR-0105), where the two-argument form measures one field.
+    #[must_use]
+    pub const fn accepts(self, count: usize) -> bool {
+        count == self.arity() || matches!((self, count), (Self::SearchScore, 0))
+    }
+
     #[must_use]
     /// # Every function is named, and there is no catch-all
     ///
@@ -19,7 +29,12 @@ impl Function {
     /// how many arguments it takes.
     pub const fn arity(self) -> usize {
         match self {
-            Self::TimeNow | Self::RandUuid | Self::SearchRanks => 0,
+            Self::TimeNow
+            | Self::RandUuid
+            | Self::SearchRanks
+            | Self::SearchTable
+            | Self::SearchSnippet
+            | Self::SessionContext => 0,
             Self::StringLen
             | Self::StringLower
             | Self::StringUpper
@@ -83,6 +98,7 @@ impl Function {
             | Self::VectorEuclidean
             | Self::VectorDot
             | Self::SearchScore
+            | Self::SearchExplain
             | Self::TimeBucket
             | Self::GeoIntersects
             | Self::GeoDisjoint
@@ -130,6 +146,9 @@ impl Function {
             // The clock moves while a statement runs; the statement should not
             // see it move.
             Self::TimeNow => Purity::PerStatement,
+            // The node and the session's tenancy cannot change while one
+            // statement runs: a `USE` is a statement of its own.
+            Self::SessionContext => Purity::PerStatement,
             // The one function the fold may not touch. Reading no record makes
             // it *look* constant, and a `SELECT rand::uuid() AS id` evaluated
             // once above the records hands every row the same id.
@@ -138,6 +157,11 @@ impl Function {
             // call is given: folded above the records it would answer one row's
             // ranks for every row.
             Self::SearchRanks => Purity::PerCall,
+            // A search's record is not an argument either: what the read ranked
+            // it, and where it came from, are answers per record (ADR-0105) —
+            // and `search::score()` takes no argument there, so folding it as a
+            // constant would hand every row the first one's score.
+            Self::SearchTable | Self::SearchSnippet | Self::SearchScore => Purity::PerCall,
             Self::StringLen
             | Self::StringLower
             | Self::StringUpper
@@ -183,7 +207,7 @@ impl Function {
             | Self::VectorCosine
             | Self::VectorEuclidean
             | Self::VectorDot
-            | Self::SearchScore
+            | Self::SearchExplain
             | Self::TimeBucket
             | Self::GeoIntersects
             | Self::GeoDisjoint

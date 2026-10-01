@@ -99,6 +99,7 @@ pub(crate) fn declaration(
     for index in indexes {
         if declared_by_the_word == Some(index.name.as_str())
             || made_by_the_edge_word(definition, &index.name)
+            || index.engine.is_some()
         {
             continue;
         }

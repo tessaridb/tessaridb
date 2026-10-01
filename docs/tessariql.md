@@ -589,6 +589,11 @@ index path as to the scan. A **search** index on a plain conjunction of terms is
 the exception — its postings answer the clause exactly, so the read may skip that
 re-test — and it is therefore not taken when the indexed field is one this
 session may not read. The permission decides before the optimisation does. A
+score and a suggestion read the index by identity and by term rather than reading
+the record, so they are held to the same rule separately: over a hidden field
+every record scores `0` — what a record without the field earns — and the field
+consults no dictionary, so it yields no `did you mean` and not even the "nothing
+nearer" that would say every typed word is in it. A
 join hides it on whichever side
 declared it, `FETCH` hides it in the table it lands on, and the change feed hides
 it too.
@@ -2176,7 +2181,11 @@ retired: [ { id: 2, into: [4, 5] } ]
 A node gathering a shard it lacks from another node whose map differs — the
 shard retired there, or minted by a change this node has not applied yet — is
 refused with **`ShardMapMoved`**, naming the table and the shard. It is
-retriable: read again once the change has reached this node.
+retriable: read again once the change has reached this node. From
+`0.20.0-beta` it also names a node holding the whole table when this node knows
+one, exactly as `NotHeldHere` does (§7d), and over the wire leaves as a
+`transient` `Elsewhere` frame to that node: the maps come back into agreement on
+their own, and the whole holder answers in the meantime.
 
 **What a shard is, underneath.** A split table's records are stored exactly
 where an unsplit table's are; nothing is rewritten. What changes is the log: a
@@ -2191,6 +2200,17 @@ writing both is refused with **`SpansLeaderships`**, naming both nodes. It is no
 a redirect: the node it would send you to leads only part of the transaction
 too, and would refuse it back. Write each leader's part as its own transaction.
 A transaction that one other node leads entirely is still redirected there.
+
+**A write sent to the wrong leader is redirected, not refused** (from
+`0.20.0-beta`). Over the wire it is the `Elsewhere` frame, marked `settled`
+because it names a leadership that holds until its epoch moves, and over HTTP it
+is a `307` with a `Location`; a client built before redirects existed still gets
+the refusal naming the address. **A redirect is sent only when nothing in the
+script has committed**: a client follows one by sending the whole script to the
+other node, so a script that already wrote something here — `CREATE` in `mine`,
+then a write into `theirs` — is refused instead, and the part that ran stays
+written. A whole `BEGIN … COMMIT` refused for its leader rolled back at `COMMIT`
+and is redirected whole.
 
 **A split table's record history reads two logs.** A record is written in its
 shard's log by a commit touching one shard and in its database's by a commit
@@ -2551,6 +2571,15 @@ what exists; the answer is not.** An analyzer on an index would make
 after, or different things under two indexes. On the field, an index can only
 make the same question faster.
 
+**A `SEARCH` index reads one field**, and so do a `SPATIAL` and a `VECTOR`
+index. Naming several — `DEFINE INDEX by_both ON notes FIELDS title, body
+SEARCH` — is refused with `IndexReadsOneField` (from `0.20.0-beta`; before, the
+declaration was accepted and indexed `title` alone). Declare one index per field;
+a query over several of them is served by their union, as described under
+"Which index runs". A space whose values are objects is searched through a field's
+index like a table; a value that is not an object has no field to name and is
+not.
+
 The query is analyzed by the same analyzer as the field, so searching for
 `Lovelace` finds a document that stored `lovelace` — which is the entire point
 of having one. **Several terms mean all of them**: "find me documents about X Y"
@@ -2565,6 +2594,7 @@ nobody should have to read about. The filters are the part that differs:
 | `lowercase` | folds case, so `Lovelace` and `lovelace` are one term |
 | `ascii` | folds the common accented Latin letters, so `café` and `cafe` are one term |
 | `stemmer` | reduces an English word to the form its relatives share, so `running`, `runs` and `run` are one term |
+| `stemmer(russian)`, `stemmer(german)`, `stemmer(french)`, `stemmer(spanish)` | the same for that language (from `0.20.0-beta`): `важные` and `важный`, `Häuser` and `Haus`, `chevaux` and `cheval`, `canciones` and `canción` meet |
 
 A letter the fold does not know passes through rather than being dropped — a
 letter it has no opinion about is still a letter.
@@ -2577,6 +2607,17 @@ Snowball) and it stems only lower-case ASCII words, so a chain that wants it
 writes `lowercase` first — `FILTERS stemmer, lowercase` compiles, runs, and does
 nothing, because the stemmer declines a word it does not recognise as one rather
 than half-stemming it.
+
+**The other languages are their Snowball algorithms**, written from the
+published descriptions and checked against each project's whole published
+vocabulary — 49 785 Russian, 35 053 German, 21 653 French and 28 378 Spanish
+words, every one stemmed as published. Each stems only lower-case words of its
+own alphabet, accents included (`ё` is read as `е`), and passes anything else
+through. Their rules read the accents, so fold accents **after** them rather than
+before: `FILTERS lowercase, stemmer(french), ascii` stems `chevaux` with the
+French rules and then lets `cafe` meet `café`. Russian needs no fold:
+`FILTERS lowercase, stemmer(russian)`. `stemmer(english)` is a second spelling
+of `stemmer`, and an unknown language is refused rather than read as English.
 
 **A chain is part of the analyzer's identity, and an analyzer cannot be
 redefined.** A name already declared is refused — the postings on disk were
@@ -2600,6 +2641,26 @@ equality or a prefix and nothing else. Asking the wrong one would return the
 wrong rows rather than none, so the shape of the test is checked against the
 index before either is used.
 
+**What the index keeps beside its postings is a cost, and it is declared:**
+
+```
+DEFINE INDEX by_body ON notes FIELDS body SEARCH POSITIONS OFFSETS;
+DEFINE INDEX by_code ON parts FIELDS code SEARCH NO SCORE;
+```
+
+| Option | Stores | What it buys |
+|---|---|---|
+| `POSITIONS` | each occurrence's token ordinal | a quoted phrase — with slop, or ending in a starred word — is decided from the index rather than by re-reading each candidate's text; `EXPLAIN` reports shape `phrase` |
+| `OFFSETS` | each occurrence's byte range | `search::highlight` over a whole-word query marks from the stored ranges rather than by analysing the text; a phrase, prefix or fuzzy query still analyses |
+| `NO SCORE` | membership alone, and no collection statistics | a smaller index; `search::score` and `search::explain` over it are refused with `NoSearchIndex`, exactly as over no index |
+
+**None of them changes an answer** — each is proven by asking every form of the
+language, records and highlight marks alike, of the same rows with the option
+and with no index at all. Each word comes after `SEARCH`, at most once, in any
+order; `INFO` and the script writer say them back as `POSITIONS OFFSETS NO
+SCORE`. An index written before they existed holds none of the first two and is
+scored, which is what it always was.
+
 #### A quoted phrase — the words in that order
 
 ```
@@ -2613,6 +2674,17 @@ lovelace"'` finds only the ones holding them side by side, in that order. A
 record reading `lovelace ada` answers the first and not the second, which is the
 whole of the difference — the two hold the same words with the same frequencies,
 so nothing but order separates them.
+
+A trailing `*` makes the phrase's **last word a prefix** — the phrase a reader
+is still typing:
+
+```
+SELECT * FROM notes WHERE body MATCHES '"ada lov"*';     -- ada, then lovelace
+```
+
+`ada` must be followed by a word beginning with `lov`, in that order, adjacent.
+The last word carries the three-character minimum of a prefix, and a highlight
+marks the run, `ada` and `lovelace`. A starred phrase takes no slop marker.
 
 A trailing `~n` declares **slop**: how many extra words the run may absorb while
 staying in order.
@@ -2757,9 +2829,9 @@ words: a conjunction across what was typed, a disjunction within each word. So
 `'vecto'` reaches `vector`, `vectors` and `vectorised`, and `'vecto sea'` reaches
 only the documents that hold something from each.
 
-A separate operator rather than a wildcard inside the string. `'vecto*'` would
-make every query a parse of the caller's own data, and a reader searching for a
-literal asterisk would have to know that before they could ask for one.
+The same question can be asked of **one word** of an ordinary `MATCHES` query by
+ending it with `*` — see [A starred word](#a-starred-word--the-word-being-typed-ranked)
+below. `MATCHES PREFIX` is the form where every word is a prefix.
 
 **A prefix is folded but not stemmed — and the query is tried both ways.** The
 beginning of a word cannot be stemmed: `runni` stems to `runni`, which is the
@@ -2802,6 +2874,59 @@ thousand and one hundred thousand distinct terms, the same query reads three
 entries in one scan. Without an index the scan analyses each record and compares,
 and the two are asserted to agree record for record.
 
+#### A starred word — the word being typed, ranked
+
+```
+SELECT id, search::score(body, 'vector sea*') AS relevance
+  FROM notes
+ WHERE body MATCHES 'vector sea*'
+ ORDER BY search::score(body, 'vector sea*') DESC
+ LIMIT 10;
+```
+
+A word of a `MATCHES` query ending in `*` means **a term beginning with it**;
+every other word keeps its meaning. `'vector sea*'` is the word `vector` and a
+word beginning with `sea` — what a reader part-way through their second word is
+asking. `OR` and `NOT` work around it as around any word (`'vecto* OR lock*'`,
+`'vecto* NOT search'`), and a quoted phrase may end in one: see
+[A quoted phrase](#a-quoted-phrase--the-words-in-that-order).
+
+The starred word is read exactly as `MATCHES PREFIX` reads a word — folded, tried
+as typed and as stemmed — and carries the same **three-character minimum**, a
+`PrefixTooShort` refusal raised before any access path is chosen. With a `SEARCH`
+index it is expanded from the term dictionary; past sixty-four terms the scan
+answers instead. Both paths answer the same records.
+
+The asterisk was not something a query could ask for before: the tokenizer keeps
+letters and digits only, so `sea*` used to mean the word `sea`. A query string
+holding a starred word therefore answers **more** than it did before `0.20.0`.
+
+**It is scored, which `MATCHES PREFIX` is not.** `search::score` reads the same
+string, and weighs the starred word as **one** term over the words it begins:
+
+- the words it blends are the sixty-four the most records hold — ranked by that
+  count, never by spelling, so the common word being typed is kept and a run of
+  rare ones that happen to sort first is not;
+- they share **one** rarity, the largest document frequency among them, and a
+  record's count is the sum of its occurrences of all of them.
+
+So the record using the word more, in a shorter text, ranks higher, and a rare
+misspelling under the prefix cannot outrank the common word on rarity alone —
+which is what weighing each word by its own frequency would do. Over the
+documentation site's own pages, ranking the word being typed this way moved the
+type-ahead queries of the judgment set from NDCG@10 0.219, when they came back
+unranked, to 0.802 (`benchmarks/2026-10-01-macos-aarch64-relevance.md` records the
+second run).
+
+Two limits. A `LIMIT` over a score holding a starred word is answered by scoring
+every candidate rather than by the pruned walk a whole-word score takes, because
+the blended term has no stored bound to prune by; the answer is the same. And on
+a node holding **part** of a split table the score is refused with
+`NotHeldHere`: which words the prefix blends is a question about the whole
+collection's dictionary, and that node holds part of it. Matching on a starred
+word is not refused there — whether one record holds a word beginning with `sea`
+is a question about that record alone.
+
 #### `MATCHES FUZZY` — the word a reader meant rather than the one they typed
 
 ```
@@ -2818,9 +2943,13 @@ as a fuzzy one behind your back. A reader who asked for `vector` and was shown
 `vectors`, `vectr` and `victor` cannot tell which of the three the store decided
 they meant, and a store that guesses is worse than one that answers nothing.
 
-**Two edits, counted as insertions, deletions and substitutions.** A
-transposition therefore costs **two**, not one: `vectro` is two edits from
-`vector` and is reached. Three edits is not offered —
+**Two edits, counted as insertions, deletions, substitutions and
+transpositions.** Swapping two adjacent letters is **one** edit — `vetcor` is one
+edit from `vector` — because it is the commonest slip of a typing hand and it is
+one mistake. Until `0.20.0` it cost two, so `MATCHES FUZZY` now reaches a few
+more words than it did. A swapped pair is not edited again (optimal string
+alignment), which differs from the unrestricted count only on strings nobody
+types. Three edits is not offered —
 past two the neighbourhood of a word is larger than most vocabularies, so every
 query would match something and the operator would have stopped discriminating
 rather than started being generous. `cat` and `dog` are three edits apart.
@@ -2871,6 +3000,30 @@ deeper than declaring, which is deliberate: an index is a statement about how a
 value is found, and a declaration is a statement about what a record may be.
 Making declarations reach into a path needs a rule for what declaring a leaf says
 about its parents, and §8 keeps that as its own row.
+
+#### `MATCHES INFIX` — a piece of a word
+
+```
+SELECT * FROM notes WHERE body MATCHES INFIX 'ovela';
+```
+
+The analyzed text holds, for **every** piece typed, a term containing it: `ovela`
+reaches `lovelace`, and `gine` reaches `engine`. Each piece is the typed spelling
+folded by the field's analyzer and **not stemmed**, because a piece of a word
+stems into nothing. It is looked for inside the terms the field holds, so with a
+stemming analyzer it is looked for inside stems: `ovelace` does not reach the
+stem `lovelac`. A field meant for this kind of search is better analyzed without
+a stemmer.
+
+The floor is the prefix floor: under three characters is `PrefixTooShort`.
+
+**No n-gram ever enters the analysis.** A `SEARCH` index keeps every suffix of
+every term in its dictionary, of at least three characters, in the same batch as
+the term itself (key kind `0x1f`). An infix is then a range read over suffixes,
+and the index grows with the dictionary rather than with the text. `EXPLAIN`
+reports shape `infix-terms`. Past 64 terms, or on an index built before this
+structure existed (rebuild it with `REBUILD INDEX`), the scan answers, with the
+same records.
 
 #### `search::highlight` — where in the text the query matched
 
@@ -2931,11 +3084,123 @@ nothing to measure against, because there is no honest number for it to return.
 document rather than about a document relative to a collection, so it is
 answered from the record's text on either access path.
 
-**The store marks; it does not render.** There is no snippet, no fragment
-selection, no marker string and nothing to configure. How much surrounding text
+**The store marks; it does not render.** There is no marker string and
+nothing to configure, and the one fragment the store chooses — `search::snippet()`
+over a [`DEFINE SEARCH`](#a-search-over-several-fields-and-tables) — is a byte
+range too. How much surrounding text
 to show and what to wrap the marks in are the caller's decisions, and a database
 that inserted `<mark>` would have taken a position on somebody's markup — and
 could not un-take it for a text that contains the marker already.
+
+### A search over several fields and tables
+
+```
+DEFINE ANALYZER plain FILTERS lowercase, ascii;
+DEFINE SYNONYMS machines { engine: ['loom', 'machine'] };
+DEFINE STOPWORDS common ['the', 'a', 'of'];
+DEFINE SEARCH knowledge
+  ON notes    FIELDS title WEIGHT 3 SNIPPET, body SYNONYMS machines
+  ON articles FIELDS headline WEIGHT 2, text, code NO FUZZY NO PREFIX
+  ANALYZER plain STOPWORDS common;
+
+SELECT id, search::table_name() AS source, search::score() AS score,
+       search::snippet() AS snippet
+FROM SEARCH knowledge MATCHES 'ada lovelace' LIMIT 10;
+```
+
+A field index searches one field of one table. `DEFINE SEARCH` searches several
+fields of several tables **as one collection**: one ranking, one set of
+statistics, one query language. Its name is unique within the database.
+
+**What it holds.** One member per table, kept with the table's records in their
+own write batch, so a search is current when the write that changed it commits
+and a transaction's own writes are answered inside it. Declaring it builds it
+from the records already there.
+
+**One analyzer.** Every member field and every query is read with the search's
+`ANALYZER`, not with each field's own, because a ranking across fields needs one
+vocabulary.
+
+**Ranking is BM25F.** Each field's occurrences are normalised by that field's
+own length against its own average and multiplied by its `WEIGHT` (default 1,
+above 0, at most 1000, to three places) **before** the saturation, so a word
+spread over two fields is not counted as two words. One field of weight 1 ranks
+exactly as `search::score` over a field index. Records are answered best first,
+ties broken by table name and then by id. A prefix, a misspelling and a synonym
+are each one blended word: the document frequency of the most-held of its terms,
+and the occurrences of all of them.
+
+**The query is `MATCHES`'s own** — quoted phrases with slop, `OR`, `NOT`, starred
+words — with `MATCHES PREFIX`, `MATCHES FUZZY` and `MATCHES INFIX` reading every
+word one way. A conjunction is over the record **as one document**: `lovelace
+notes` holds when one field has each word. A phrase must sit inside one field.
+
+**Per-field options.** `NO FUZZY`, `NO PREFIX` and `NO PHRASE` say a field does
+not answer that operator (an identifier field should not answer a misspelling;
+`NO PREFIX` also refuses infix). `SYNONYMS <set>` answers a word in that field by
+its alternatives too. `SNIPPET` makes the field one `search::snippet()` may take
+its window from. Each option is said once.
+
+**Synonyms and stop words are query-time.** Both are store-wide names, like an
+analyzer, read when a search runs and never by the index, so changing one never
+needs a rebuild. A synonym set maps a word to alternatives, one word each (a
+multi-word entry is refused, so a phrase across a synonym is the same length
+either way). `STOPWORDS` is per search: a stop word is dropped from the query
+outside a quoted phrase, and a query of stop words alone answers nothing. Neither
+can be dropped while a search names it, and neither can an analyzer.
+
+**What a record answers with.**
+
+| Call | Answers |
+|---|---|
+| `search::score()` | the record's BM25F score |
+| `search::table_name()` | the table it came from |
+| `search::snippet()` | `{ field, start, end }`: the 24-token window of its `SNIPPET` fields holding the most distinct query words, then the most matches, then the earliest — or nothing when no such field holds one |
+| `search::highlight(field)` | the byte ranges of the words the query reached in that field — through synonyms and expansions too, and a phrase's runs only |
+
+Each refuses with `NotSearched` outside a `FROM SEARCH`. Offsets are bytes; the
+store does not render.
+
+**Type-ahead.** `SELECT term, documents FROM SEARCH knowledge COMPLETE 'lov'`
+answers the search's words beginning with what was typed, as rows, ranked by how
+many records hold them. The floor is three characters. With a stemming analyzer
+the words are stems, so a type-ahead box wants a search over an unstemmed one.
+
+**Facets** are a grouping over the same source:
+
+```
+SELECT kind, count(*) AS n FROM SEARCH knowledge MATCHES 'ada' GROUP BY kind;
+```
+
+counts every answered record, not one page. In one transaction with the ranked
+read it describes the same snapshot. An ungrouped search answers in its own order
+and refuses `ORDER BY` with `SearchIsItsOwnOrder`; `AFTER`, `VERSION`, `FETCH`
+and `ORDER BY FUSE` are refused over a search.
+
+**Grants.** A table the reader may not read is not searched, and neither is a
+member with a field the reader may not read: its statistics and dictionary cannot
+say which field a word came from, so a partial view would leak through the
+numbers. The collection the reader is ranked against is the members they reach,
+so another table's statistics never reach a reader of one. Type-ahead follows
+the same rule.
+
+**On a cluster** a node holding part of a split member table refuses with
+`NotHeldHere`, and the client is redirected to a node holding the whole table, so
+the statistics a score is measured against are always the whole table's.
+
+`INFO FOR SEARCH knowledge` answers the analyzer, the stop words and, per member,
+the table, each field's weight and options and how many records it holds, and
+`INFO FOR DATABASE` names the database's searches under `searches`.
+`EXPLAIN` reports access `index` and shape `search`, or `scan` when a word could
+not be walked within its cap.
+
+```
+DROP SEARCH knowledge;
+DROP SYNONYMS machines;
+DROP STOPWORDS common;
+```
+
+`DROP SEARCH` removes every member. A word set goes only once no search names it.
 
 ### Edge tables
 
@@ -3918,6 +4183,22 @@ cannot follow — a `LIKE 'a%'` prefix, a `MATCHES` expansion, a geometric regio
 the comparison says nothing and the ranking decides alone. A missing measurement
 never overrules a declared index.
 
+**An `OR` is served when every side of it is** (from `0.20.0-beta`). A
+condition written `title MATCHES 'ada' OR body MATCHES 'lovelace'` offers no
+conjunct either index can serve alone — a candidate from one side would leave out
+the records only the other reaches — so until then it read the whole table. Now
+each side is planned on its own, by the same ranking and the same half-the-table
+measure, and when every side has an index worth reading the read is served by the
+union of their records, each tested again against the whole condition. One side
+with no index leaves the read a scan, because a union missing a side is not a
+superset of the answer. The plan names every index read, in the order the sides
+were written, under the shape `union`:
+
+```tessariql
+EXPLAIN SELECT * FROM papers WHERE title MATCHES 'ada' OR body MATCHES 'lovelace';
+-- { access: 'index', index: 'by_title, by_body', shape: 'union', … }
+```
+
 `EXPLAIN` (§7b) asks the same question the read asks, so it reports the path the
 read takes rather than the one the ranking preferred. `USING INDEX <name>`
 (§7b″) is how a script says out loud that it expects a particular index — and
@@ -4537,6 +4818,7 @@ how the read says so rather than getting quietly slower page by page.
 | `FROM users AFTER users:1042` | a seek | nothing — this is the cheap page |
 | `FROM users WHERE … AFTER users:1042` | a walk in identity order | `cursor-walked` |
 | `FROM users ORDER BY joined AFTER users:1042` | a walk in the named order | `cursor-walked` |
+| `FROM notes ORDER BY search::score(body, 'q') DESC AFTER notes:7 LIMIT 10` | the ranked walk, resumed below the anchor's score | nothing |
 
 **A walked page buys correctness and not speed, and the note says so precisely
 because the two are easy to confuse.** What every cursor gives — sought or
@@ -5048,6 +5330,25 @@ sentence for `from_unix`, and there is no `time::unix_millis` to be the one
 here. `time::now()` carries a remainder nearly always, so a strict `time::unix`
 would fail the pairing everybody writes. The remainder is still on the instant
 when the whole value is kept.
+
+### The session
+
+| Written | What it answers |
+|---|---|
+| `session::context()` | `{ node, namespace, database }` — the identity of the node this session is talking to, and the namespace and database the session selected, `null` where it selected none |
+
+```
+RETURN session::context();
+```
+
+It is what a client following a redirect asks at both ends: on the node it is
+leaving, which tenancy to select again after the move, and on the node it
+arrives at, whether that is the node the redirect named — the `node` here is
+the identity an `Elsewhere` frame carries. **Every session may ask**, a reader
+with one grant included: the node identity is what every redirect already
+discloses, and the names are the session's own `USE`. `$node`, which carries the
+node's roles and endpoints, stays behind its authority. The answer is fixed for
+a statement, since a `USE` is a statement of its own.
 
 ### Generated identifiers
 
@@ -5568,7 +5869,7 @@ and the answer is the same one.
 Everything else is the scan, and answers identically: a second sort key, an
 **ascending** order (a bound of this shape keeps the highest-scoring records, and
 the lowest-scoring ones are overwhelmingly the records the index does not post at
-all), no `LIMIT`, a `GROUP BY`, a `FETCH`, a resumed page, `APPROXIMATE`, a `[*]`
+all), no `LIMIT`, a `GROUP BY`, a `FETCH`, `APPROXIMATE`, a `[*]`
 route into the searched field, and a query argument that reads the record being
 scored — which would make the collection the score is measured against depend on
 the record, so there is no one term set to bound.
@@ -5589,6 +5890,49 @@ tail, and when the postings run out before the bound is filled — a shortfall m
 the answer is filled out with records holding none of the query's words, and
 their order among themselves is the scan's. **The path reported is always the one
 that ran.**
+
+**A page after the first is the same walk, resumed below its anchor:**
+
+```
+SELECT title FROM notes ORDER BY search::score(body, 'lock contention') DESC
+AFTER notes:7 LIMIT 10;
+```
+
+The walk scores the anchor, and only records scoring **strictly below** it count
+towards the page and set the threshold the walk prunes by — a record tying the
+anchor may sit on either side of the cursor, so it is never what fills a page.
+That threshold is never above the true one, so the walk can only read more than it
+needs. The cursor itself is then applied exactly as for a scan, and the pages put
+together are the ranking, ties at a page boundary included. So a later page of a
+search costs what the first did — the postings of the query's words — rather than
+the table, and carries no `cursor-walked` note. An anchor scoring zero is past
+every record holding a word, and the scan reads the rest.
+
+There is no seek here in the sense an identity cursor has one: a score is a
+property of the query, so no structure stores records in its order. What the
+anchor buys is the threshold, which is what makes the page cheap.
+
+#### `search::explain` — what a score is made of
+
+```
+SELECT title, search::explain(body, 'lock contention conten*') AS why
+FROM notes WHERE body MATCHES 'lock' LIMIT 3;
+```
+
+The score `search::score` answers, with what it was made of: `score`, the
+collection's `documents` and `average_length`, the record's `length` in tokens,
+and one entry under `terms` per word asked — repeats included, because a word
+written twice weighs twice — giving the `term`, how often the record `held` it,
+how many `documents` hold it, its `weight` (rarity) and its `contribution`. A
+starred word is one entry under `prefixes`, naming the words of this record it
+blended. A word the record does not hold is listed with `held: 0` and contributes
+nothing, which is the answer to "why did this not rank".
+
+The contributions add up to the score **exactly** — the same numbers added in the
+same order — so an explanation cannot describe a different score than the one
+the read ordered by. It needs what a score needs, a search index on the field,
+and is refused without one in the same words. Over a field a grant hides it
+explains a zero and names nothing.
 
 ### Nearest neighbours
 
@@ -5921,9 +6265,11 @@ Two rules make the composition mean something:
   neither, because both live under one database and a database is the unit a
   transaction may not leave (ADR-0008 §4).
 
-A space is not indexed by value. A record whose payload is not an object projects
-to no fields, so an index over a space holds nothing. Searching a space by its
-values is a separate feature and is not claimed here.
+A space whose values are objects is indexed by their fields like a table, and a
+`MATCHES` over one of them is served by its `SEARCH` index. A value that is not
+an object projects to no fields, so an index over a space holds nothing for it.
+Searching scalar values needs a way to name the value itself in a condition and is
+a separate feature, not claimed here.
 
 ## 6a. Files
 
@@ -7572,7 +7918,8 @@ So four of the six subjects **narrow** rather than refuse:
 - `INFO FOR STORE` and `INFO FOR NAMESPACE` show a scoped user their own
   tenancy and no other.
 - `INFO FOR DATABASE` lists the tables the caller may read. A table they were
-  never granted is absent, exactly as its records are.
+  never granted is absent, exactly as its records are. Its `searches` are the
+  ones with at least one table the caller may read.
 - `INFO FOR TABLE` names its table, so a caller without that grant is **refused**
   — the same refusal a `SELECT` from it gives. What is left is the field grant,
   which edits rather than refuses (§4): a caller granted `FIELDS name` is not
@@ -7638,6 +7985,26 @@ DEFINE NODE ROLES serving, writable ENDPOINTS 'db-1.internal:9000';
 DEFINE REPLICA second AT 'db-2.internal:9000' ROLES serving, writable;
 INFO FOR NODE;
 ```
+
+**Say where clients reach each member, beside where peers do.** `AT` is the
+address other nodes dial — in a cluster run with peer credentials it is the peer
+door, which a client cannot speak to. A redirect names a node to go to, and it
+names the address the member row gives for clients:
+
+```
+DEFINE REPLICA second AT 'db-2.internal:9180'
+    CLIENTS AT 'db-2.example:9080' HTTP AT 'https://db-2.example:8000'
+    NODE '9f2c4e1a70bb43d5a1c6e2f480937d55' ROLES serving, writable, coordinating;
+```
+
+`CLIENTS AT` is the wire address and `HTTP AT` the base an HTTP `307` puts in
+front of the request's path. Both are optional and replicate with the row, so a
+node can say where to go from what it has applied, with the peer link down. A row
+that names neither keeps redirects naming `AT`, as they did before the clauses
+existed. `INFO FOR NODE` reports both for each peer (`null` when unsaid).
+A write a node that may not write forwards to the writable peer goes to
+`CLIENTS AT` too (from `0.20.0-beta`): the forward is a client of that node, and
+in a cluster run with peer credentials `AT` is a door that speaks TLS.
 
 **Declare every peer in one transaction.** A store is on its own until its
 catalog names somebody else, and from the moment the first `DEFINE REPLICA`
@@ -7980,7 +8347,7 @@ touches, and a span inside what the node holds asks nothing.
 visibility.** The fields the caller may read travel with the question, and a
 leader takes every other field away before it evaluates anything — so a grant
 hiding a field hides it from work done on the leader exactly as from a local
-read, and a condition on that field matches nothing there either. Three kinds of
+read, and a condition on that field matches nothing there either. Four kinds of
 work travel, and only when the expression reads nothing but the record in hand
 (no subquery, no other record, no clock or generator, no full-text match); every
 value in one travels as a value, never as statement text:
@@ -7992,6 +8359,15 @@ value in one travels as a value, never as statement text:
   grouping, `SPLIT` or `FETCH`), and behind a `WHERE` only when that `WHERE`
   travelled too: the shards are asked in key order and a shard past the bound is
   not asked at all;
+- an **`ORDER BY … LIMIT`** (from `0.20.0-beta`) whose keys read only the record
+  — a field, an expression over fields, a vector distance such as
+  `vector::euclidean(at, [0, 0])` — with no `FUSE`, cursor, grouping, `SPLIT`,
+  `FETCH` or `LATEST`, no key naming a value the projection renames, and behind a
+  `WHERE` only when that `WHERE` travelled too: each leader ranks its shard and
+  sends its first `LIMIT + START`, and this node orders them together. Ties fall
+  to the record's identity on every node, so the answer is the whole table's,
+  and an exact nearest-neighbour read over a split table past 100 000 records
+  answers rather than being refused;
 - a **grouping read** whose folds are `count`, `sum`, `mean`, `min` and `max`
   and whose `GROUP BY` keys read only the record: each leader sends one state per
   group rather than the records, and this node merges them in key order with its
@@ -8001,13 +8377,44 @@ value in one travels as a value, never as statement text:
   fold refuses, a comparison across two kinds — declines, and the read gathers
   the records instead and answers, refuses or notes exactly as before.
 
+**Search over a gathered read answers what the whole table answers** (from
+`0.20.0-beta`). `MATCHES` and its `PREFIX`, `FUZZY`, phrase and `NOT` forms,
+`search::highlight` and the `geo::` predicates and distances judge each record by
+its own text or shape, so a gathered record is judged exactly as a held one.
+`search::score` — and `ORDER BY FUSE` through it — is measured against the
+**whole collection**: this node's index describes the shards it holds, and the
+leader of every shard it lacks counts that shard's documents, tokens and the
+documents holding each asked word, through the same analysis its index is
+written with. Each record of the read is then scored from its own text. That
+count reads every record of the lacked shards on their leaders once per scored
+read; a node holding the whole table pays nothing for it. A leader that cannot
+count refuses the read with `NotGathered` rather than leaving the score measured
+against part of the collection. The **suggestion** an answer carries ("did you
+mean") is withheld on a node holding part of the table: its dictionary is part of
+the collection's, and "nothing nearer" from it would be false whenever the nearer
+word sits in a shard it lacks.
+
 **The answer is complete and it is not one snapshot.** Each fetched shard is its
 leader's state when it was asked, beside this node's own. The answer says so
 with the note **`gathered`**, naming the shards fetched. For the same reason a
 read **inside a transaction** or under **`VERSION`** is not gathered — a snapshot
 is what those promise — and stays refused with `NotHeldHere`, as do a join side,
 a `FETCH` into a shard the node lacks, and the read an `UPDATE` or `DELETE`
-makes.
+makes: a conditional or span `DELETE` over the table, and an `UPDATE` or
+`DELETE` of one record in a shard the node lacks. Until `0.20.0-beta` those
+writes were not refused — they found only this node's records, so a `DELETE`
+removed that part and reported it as the whole, and a record held elsewhere
+answered `NoSuchRecord` or was deleted as though it had been there.
+
+**`NotHeldHere` names a node holding the whole table when this node knows one**
+(from `0.20.0-beta`): a member whose `REPLICATES` covers the table's database —
+`REPLICATES STORE`, the namespace or the database — and which this node has
+heard serving. Over the wire, to a client of protocol minor ≥ 1, the refusal
+leaves as the `Elsewhere` frame marked `transient` — it answers this request,
+since the same read outside a transaction is one this node gathers — and only
+when nothing in the script has committed. A node knowing no such member refuses
+as before. The HTTP surface carries no peer directory, so there the refusal is
+unchanged.
 
 **Nothing is answered in part.** A shard whose leader is not known, cannot be
 reached or declines refuses the whole read with **`NotGathered`**, naming the
@@ -8321,7 +8728,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.19.0", "build": "0.19.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.20.0", "build": "0.20.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "desired": ["serving", "writable"],
@@ -8557,7 +8964,7 @@ be, because it is confined to the run its fixed values name.
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
 | **hash** sharding | shards are spans of identities, which is what keeps a span read one walk. Spreading writes by hash forfeits that order and is a second method the map can carry later, not a change to the first. §4 |
-| more of a gathered read **pushed to the shards' leaders** | a `WHERE`, an unordered `LIMIT` and the folds that merge exactly (`count`, `sum`, `mean`, `min`, `max`) travel; an `ORDER BY … LIMIT`, `variance`, `stddev`, `median`, `collect`, the counter folds and a fold over floats gather the records and run here. Merging those exactly is each its own piece of work. A join side and a `FETCH` are not gathered at all. §7d |
+| more of a gathered read **pushed to the shards' leaders** | a `WHERE`, a `LIMIT`, an `ORDER BY … LIMIT` over record-only keys and the folds that merge exactly (`count`, `sum`, `mean`, `min`, `max`) travel; `variance`, `stddev`, `median`, `collect`, the counter folds and a fold over floats gather the records and run here, and a suggestion is withheld on a node holding part of the table. Merging those exactly is each its own piece of work. A join side and a `FETCH` are not gathered at all. §7d |
 | **choosing among a range's candidates, and giving a range back to the store** | `LEADS` elects a leader per placed range and `ALTER REPLICA` moves a placement between rows, but there is no preference among candidates and no rebalancing, and a range's last placement cannot be removed: that needs every lease on the range to have lapsed first. §7d |
 | a change feed over a split table **on a node that does not write all of it** | a feed merges one writer's logs in that writer's order, and two writers' orders are unrelated counters — so a shard led elsewhere, or a follower, is refused by name rather than merged by a guess. Following it there needs an order across writers. §4 |
 | **an index serving a branch of a fused read** (`ORDER BY FUSE`) | every branch is ranked over every record that passed the `WHERE`, which is exact and costs the filtered read. A branch served from the search walk or the vector graph would stop early, and a fused order needs each branch's places down to its depth — the bound is the depth, not the `LIMIT`, and proving the walk answers the same places is its own piece of work. §5 |

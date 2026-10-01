@@ -24,6 +24,10 @@ DEFINE INDEX by_email ON users FIELDS email UNIQUE;
 DEFINE INDEX by_name ON users FIELDS last, first;
 --- expect: ok
 
+--- case: a search index reads one field and refuses several
+DEFINE INDEX by_both ON users FIELDS last, first SEARCH;
+--- expect: error IndexReadsOneField
+
 --- case: a name is unique within its parent
 DEFINE TABLE users SCHEMALESS;
 --- expect: error NameTaken

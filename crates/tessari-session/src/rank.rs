@@ -58,6 +58,10 @@ use tessari_constants::{BM25_B, BM25_K1};
 use tessari_encoding::TermStatistics;
 use tessari_types::{Analyzer, Number, Value};
 
+mod explain;
+
+pub(crate) use explain::explain;
+
 /// What one searched field's collection looks like, resolved once per read.
 ///
 /// The `terms` map holds only the terms the statement actually asks about —
@@ -83,6 +87,38 @@ pub(crate) struct Corpus {
     /// the records that hold it and not at all for the ones that do not — so
     /// deduplicating here would not rescale the scores, it would reorder them.
     pub(crate) asked: Vec<String>,
+    /// Each starred word of the query, weighed as one term (ADR-0104).
+    pub(crate) blends: Vec<Blend>,
+}
+
+/// A starred word, scored as **one** term over the terms it begins.
+///
+/// The blended-frequency rewrite: every expansion shares the largest document
+/// frequency among them, and a record's frequency is the sum of its occurrences
+/// of all of them. Weighing each by its own frequency instead would rank a rare
+/// misspelling under the prefix above the common word the reader was typing,
+/// because the rarer a term the more each occurrence of it is worth.
+#[derive(Debug, Clone)]
+pub(crate) struct Blend {
+    /// The prefix as it was typed.
+    pub(crate) prefix: String,
+    /// The terms it reaches, at most the expansion cap of them, the most-held
+    /// first.
+    pub(crate) expansions: Vec<String>,
+    /// The largest document frequency among them.
+    pub(crate) documents: u64,
+}
+
+impl Corpus {
+    /// Every term a record's occurrences are counted for: the asked ones and
+    /// every expansion of a starred word.
+    pub(crate) fn counted(&self) -> Vec<String> {
+        let mut terms = self.asked.clone();
+        for blend in &self.blends {
+            terms.extend(blend.expansions.iter().cloned());
+        }
+        terms
+    }
 }
 
 /// What one record holds of a query's terms, and how long it is.
@@ -154,7 +190,7 @@ pub(crate) fn score(corpus: &Corpus, held: &Held) -> Value {
 /// absence standing in for one. It also sorts where it belongs under the `DESC`
 /// a ranked read is written with.
 pub(crate) fn scored(corpus: &Corpus, held: &Held) -> f64 {
-    if corpus.asked.is_empty() || corpus.documents == 0 {
+    if (corpus.asked.is_empty() && corpus.blends.is_empty()) || corpus.documents == 0 {
         return 0.0;
     }
     let Some(average) = positive(corpus.average_length) else {
@@ -176,6 +212,18 @@ pub(crate) fn scored(corpus: &Corpus, held: &Held) -> f64 {
         let frequency = as_float(corpus.terms.get(term).map_or(0, |held| held.documents));
         sum +=
             inverse_document_frequency(total, frequency) * saturation(occurrences, length, average);
+    }
+    for blend in &corpus.blends {
+        let occurrences = blend
+            .expansions
+            .iter()
+            .filter_map(|term| held.occurrences.get(term))
+            .fold(0_u64, |total, one| total.saturating_add(u64::from(*one)));
+        if occurrences == 0 {
+            continue;
+        }
+        sum += inverse_document_frequency(total, as_float(blend.documents))
+            * saturation(as_float(occurrences), length, average);
     }
     sum
 }
@@ -293,6 +341,7 @@ mod tests {
                 .map(|(term, held)| ((*term).to_owned(), TermStatistics::new(*held)))
                 .collect(),
             asked: Vec::new(),
+            blends: Vec::new(),
         }
     }
 
@@ -311,6 +360,7 @@ mod tests {
         let held = Held::analysed(&analyzer(), text, &asked);
         let corpus = Corpus {
             asked,
+            blends: Vec::new(),
             ..corpus.clone()
         };
         number(&score(&corpus, &held))
@@ -325,6 +375,7 @@ mod tests {
             .collect();
         let corpus = Corpus {
             asked: analyzer().terms(query),
+            blends: Vec::new(),
             ..corpus.clone()
         };
         number(&score(&corpus, &Held::counted(counted, length)))

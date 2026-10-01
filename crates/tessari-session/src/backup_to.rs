@@ -114,7 +114,7 @@ impl Session<'_> {
             if let Some(missing) =
                 self.missing(&mut transaction, table.id, crate::evaluate::Part::Whole)?
             {
-                lacking.push(missing.refusal());
+                lacking.push(missing.refusal(None));
             }
         }
         lacking.sort_by_key(

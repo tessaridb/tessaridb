@@ -9,11 +9,15 @@
 
 /// Whether `candidate` is within `budget` single-character edits of `typed`.
 ///
-/// Edits are insertion, deletion and substitution — Levenshtein. A transposition
-/// therefore costs two, not one: `hte` is two edits from `the`. Damerau's
-/// variant charges one for that case and would be a defensible choice, but it is
-/// not the one made here, and the difference is stated in `docs/tessariql.md`
-/// rather than left for a reader to discover from a miss.
+/// Edits are insertion, deletion, substitution and the **transposition of two
+/// adjacent characters** — optimal string alignment, the restricted form of
+/// Damerau's distance. `hte` is one edit from `the`, because swapping two
+/// letters is the commonest slip of a typing hand and it is one mistake, not
+/// two. Restricted means a transposed pair is not edited again: `ca` is three
+/// edits from `abc`, where the unrestricted distance would say two. That is
+/// the form a dynamic programme over one previous row pair computes, and the
+/// only cases it differs on are ones nobody types. Until G051 a transposition
+/// cost two (Levenshtein); `docs/tessariql.md` states the change.
 ///
 /// # Why this is not a distance function with a comparison afterwards
 ///
@@ -33,8 +37,10 @@
 /// linear.
 ///
 /// A third bound falls out of the second: if every cell in a completed row
-/// exceeds the budget, no later row can come back under it, since a row's values
-/// never decrease by more than one per step down. The walk stops there.
+/// exceeds the budget, no later row can come back under it, since no cell is
+/// smaller than the smallest cell of the row above it — a transposition included,
+/// which costs one more than a cell two rows up that the row above already
+/// bounds. The walk stops there.
 ///
 /// # Characters, not bytes
 ///
@@ -67,9 +73,11 @@ pub fn within(typed: &str, candidate: &str, budget: usize) -> bool {
     // holding `over`, and the next row reads it as the rejection it is.
     let over = budget.saturating_add(1);
 
-    // One row of the matrix, held as the previous row while the next is built.
-    // The full matrix is never materialised: nothing here asks for the path, and
-    // the answer needs only the last cell.
+    // Two rows of the matrix behind the one being built: the row above, and the
+    // one above that, which is where a transposition reaches back to. The full
+    // matrix is never materialised: nothing here asks for the path, and the
+    // answer needs only the last cell.
+    let mut before: Vec<usize> = vec![over; right.len().saturating_add(1)];
     let mut previous: Vec<usize> = (0..=right.len()).map(|column| column.min(over)).collect();
     let mut current: Vec<usize> = vec![over; right.len().saturating_add(1)];
 
@@ -85,7 +93,8 @@ pub fn within(typed: &str, candidate: &str, budget: usize) -> bool {
         // the budget, so the row is computed across a window rather than across
         // the whole word. When the window is empty — which happens when the
         // right-hand word has run out — the range is simply empty and the row is
-        // decided by column zero alone.
+        // decided by column zero alone. A transposition keeps both lengths, so
+        // it does not widen the band.
         let first = index.saturating_sub(budget).max(1);
         let last = index.saturating_add(budget).min(right.len());
 
@@ -96,17 +105,31 @@ pub fn within(typed: &str, candidate: &str, budget: usize) -> bool {
             let substitution = previous[previous_column].saturating_add(usize::from(*from != to));
             let deletion = previous[column].saturating_add(1);
             let insertion = current[previous_column].saturating_add(1);
-            let cell = substitution.min(deletion).min(insertion).min(over);
+            let mut cell = substitution.min(deletion).min(insertion);
+            // `…ab` against `…ba`: the pair costs one edit from the cell two rows
+            // and two columns back. A cell outside last row's band reads as
+            // `over`, which is the rejection it stands for.
+            if row > 0
+                && column > 1
+                && left[row.saturating_sub(1)] == to
+                && *from == right[column.saturating_sub(2)]
+            {
+                cell = cell.min(before[column.saturating_sub(2)].saturating_add(1));
+            }
+            let cell = cell.min(over);
             current[column] = cell;
             best = best.min(cell);
         }
 
-        // Every cell in this row is already over budget, and a row's values fall
-        // by at most one per step down, so no later row returns under it.
+        // Every cell in this row is already over budget, and no later row can
+        // come back under it: a step down costs at least what the row above's
+        // smallest cell did, and a transposition costs one more than a cell two
+        // rows up, which the row above already bounds from below.
         if best > budget {
             return false;
         }
 
+        std::mem::swap(&mut before, &mut previous);
         std::mem::swap(&mut previous, &mut current);
     }
 
@@ -126,13 +149,23 @@ mod tests {
         assert!(within("vectir", "vector", 1), "a wrong letter");
     }
 
-    /// A transposition costs **two** under Levenshtein. Asserted rather than
-    /// left implicit, because it is the one place a reader's intuition and this
-    /// function disagree, and `docs/tessariql.md` states it for that reason.
+    /// A transposition of two adjacent letters costs **one** — the commonest
+    /// slip of a typing hand, charged as the one mistake it is (optimal string
+    /// alignment). Two transpositions are two edits, and a letter cannot be
+    /// transposed and then edited again: `ca` → `abc` is three, not two.
     #[test]
-    fn a_transposition_costs_two() {
-        assert!(!within("vetcor", "vector", 1));
-        assert!(within("vetcor", "vector", 2));
+    fn a_transposition_costs_one() {
+        assert!(within("vetcor", "vector", 1));
+        assert!(!within("vetcor", "vector", 0));
+        assert!(
+            within("trasnactoin", "transaction", 2),
+            "two transpositions"
+        );
+        assert!(!within("trasnactoin", "transaction", 1));
+        assert!(
+            !within("ca", "abc", 2),
+            "optimal string alignment, not unrestricted Damerau"
+        );
     }
 
     /// The budget is a ceiling that actually holds — the interesting half is the
@@ -183,19 +216,35 @@ mod tests {
         fn full(left: &str, right: &str) -> usize {
             let left: Vec<char> = left.chars().collect();
             let right: Vec<char> = right.chars().collect();
-            let mut row: Vec<usize> = (0..=right.len()).collect();
-            for (index, from) in left.iter().enumerate() {
-                let mut previous = row[0];
-                row[0] = index.saturating_add(1);
-                for (column, to) in right.iter().enumerate() {
-                    let substitution = previous.saturating_add(usize::from(from != to));
-                    previous = row[column.saturating_add(1)];
-                    row[column.saturating_add(1)] = substitution
-                        .min(row[column].saturating_add(1))
-                        .min(previous.saturating_add(1));
+            let width = right.len().saturating_add(1);
+            let at = |row: usize, column: usize| row.saturating_mul(width).saturating_add(column);
+            let mut cells = vec![0_usize; left.len().saturating_add(1).saturating_mul(width)];
+            for row in 0..=left.len() {
+                for column in 0..=right.len() {
+                    let cell = if row == 0 || column == 0 {
+                        row.saturating_add(column)
+                    } else {
+                        let (up, back) = (row.saturating_sub(1), column.saturating_sub(1));
+                        let cost = usize::from(left[up] != right[back]);
+                        let mut best = cells[at(up, back)]
+                            .saturating_add(cost)
+                            .min(cells[at(up, column)].saturating_add(1))
+                            .min(cells[at(row, back)].saturating_add(1));
+                        if row > 1
+                            && column > 1
+                            && left[up] == right[column.saturating_sub(2)]
+                            && left[row.saturating_sub(2)] == right[back]
+                        {
+                            let swapped =
+                                cells[at(row.saturating_sub(2), column.saturating_sub(2))];
+                            best = best.min(swapped.saturating_add(1));
+                        }
+                        best
+                    };
+                    cells[at(row, column)] = cell;
                 }
             }
-            row[right.len()]
+            cells[at(left.len(), right.len())]
         }
 
         let words = [
@@ -215,6 +264,12 @@ mod tests {
             "banana",
             "bananas",
             "ananab",
+            "trasnactoin",
+            "transaction",
+            "ca",
+            "abc",
+            "acb",
+            "bca",
         ];
         for left in words {
             for right in words {

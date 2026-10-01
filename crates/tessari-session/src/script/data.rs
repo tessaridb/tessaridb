@@ -42,8 +42,11 @@ pub(super) fn declared(
     };
     let mut after = String::new();
     for index in &indexes {
+        // A search's member is written as the `DEFINE SEARCH` it belongs to,
+        // once per database, after every table it reads (ADR-0105).
         if declared_by_the_word == Some(index.name.as_str())
             || crate::describe::made_by_the_edge_word(table, &index.name)
+            || index.engine.is_some()
         {
             continue;
         }

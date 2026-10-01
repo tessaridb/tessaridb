@@ -131,10 +131,29 @@ impl Session<'_> {
             }
             names.push(table.name);
         }
+        // And the searches (ADR-0105), once each, where the caller reads at least
+        // one of their tables: `INFO FOR TABLE` skips a search's members, so this
+        // is the one enumeration that reaches them.
+        let searches: std::collections::BTreeSet<String> = Catalog::new(transaction)
+            .engine_members()?
+            .into_iter()
+            .filter(|member| {
+                member.namespace == context.namespace
+                    && member.database == context.database
+                    && readable
+                        .as_ref()
+                        .is_none_or(|granted| granted.contains(&member.table))
+            })
+            .filter_map(|member| member.engine.map(|engine| engine.search))
+            .collect();
         Ok(BTreeMap::from([
             ("tables".to_owned(), by_name(names)),
             ("topics".to_owned(), by_name(topics)),
             ("vaults".to_owned(), by_name(vaults)),
+            (
+                "searches".to_owned(),
+                by_name(searches.into_iter().collect()),
+            ),
         ]))
     }
 
@@ -170,7 +189,7 @@ impl Session<'_> {
             });
         };
         let mut fields = catalog.fields_on(id)?;
-        let mut indexes = catalog.indexes_on(id)?;
+        let mut indexes = catalog.field_indexes_on(id)?;
         fields.sort_by(|left, right| left.name.cmp(&right.name));
         indexes.sort_by(|left, right| left.name.cmp(&right.name));
         let declared = (fields.len(), indexes.len());
@@ -305,7 +324,7 @@ impl Session<'_> {
         // by the name the desugaring gave it — a name is a spelling and this is
         // the thing itself.
         let index = Catalog::new(transaction)
-            .indexes_on(id)?
+            .field_indexes_on(id)?
             .into_iter()
             .find(|index| index.vector.is_some());
         let measured = match index {
@@ -349,7 +368,7 @@ impl Session<'_> {
         // the name the desugaring gave it, for the reason the vector store gives:
         // a name is a spelling, and this is the thing itself.
         let index = Catalog::new(transaction)
-            .indexes_on(id)?
+            .field_indexes_on(id)?
             .into_iter()
             .find(|index| index.spatial);
         let measured = match &index {

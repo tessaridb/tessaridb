@@ -512,3 +512,185 @@ fn a_record_with_no_text_in_the_field_scores_zero_rather_than_none() {
         "an absent field scored something other than zero",
     );
 }
+
+/// The integer a field of an explanation holds.
+fn count(value: &Value) -> i64 {
+    match value {
+        Value::Number(Number::Integer(held)) => *held,
+        other => panic!("not a count: {other:?}"),
+    }
+}
+
+fn strings(value: &Value) -> Vec<String> {
+    let Value::Array(items) = value else {
+        panic!("not an array: {value:?}");
+    };
+    items
+        .iter()
+        .map(|item| match item {
+            Value::String(text) => text.clone(),
+            other => panic!("not a string: {other:?}"),
+        })
+        .collect()
+}
+
+/// `search::explain` answers the score `search::score` answers, built from parts
+/// that add up to it in the order the score adds them: one per word asked —
+/// repeats included, because a repeated word weighs twice — then one per
+/// starred word, naming the terms of the record it blended (ADR-0100 D1.8).
+#[test]
+fn an_explanation_adds_up_to_the_score_and_names_what_it_weighed() {
+    let store = store();
+    let mut session = searchable(&store);
+    write(&mut session, 1, "the quick fox and the vector");
+    write(&mut session, 2, "a fox a fox vectors and vectorised");
+    write(&mut session, 3, "nothing to see");
+    write(&mut session, 4, "vector vector");
+    for query in ["fox", "quick fox", "fox fox", "vecto*", "quick vecto* fox"] {
+        let outcomes = session
+            .run_with(
+                "SELECT id, search::score(body, $q) AS s, search::explain(body, $q) AS e FROM notes;",
+                &[("q".to_owned(), Value::String(query.to_owned()))]
+                    .into_iter()
+                    .collect(),
+            )
+            .unwrap();
+        for (id, record) in outcomes[0].records().unwrap() {
+            let (score, explained) = (number(field(record, "s")), field(record, "e"));
+            assert_eq!(number(field(explained, "score")), score, "{query} {id}");
+            let mut total = 0.0_f64;
+            for part in ["terms", "prefixes"] {
+                let Value::Array(parts) = field(explained, part) else {
+                    panic!("{part}");
+                };
+                for one in parts {
+                    total += number(field(one, "contribution"));
+                }
+            }
+            assert_eq!(total, score, "{query} {id}: the parts do not add up");
+        }
+    }
+
+    // What the parts say, pinned for one record and one query.
+    let outcomes = session
+        .run(
+            "SELECT search::explain(body, 'fox fox quick vecto*') AS e FROM notes \
+             WHERE body MATCHES 'vectorised';",
+        )
+        .unwrap();
+    let explained = field(&outcomes[0].records().unwrap()[0].1, "e");
+    assert_eq!(count(field(explained, "documents")), 4);
+    assert_eq!(count(field(explained, "length")), 7);
+    let Value::Array(terms) = field(explained, "terms") else {
+        panic!("terms");
+    };
+    let named: Vec<&Value> = terms.iter().map(|one| field(one, "term")).collect();
+    let named = strings(&Value::Array(named.into_iter().cloned().collect()));
+    assert_eq!(named, ["fox", "fox", "quick"]);
+    assert_eq!(count(field(&terms[0], "held")), 2);
+    assert_eq!(count(field(&terms[0], "documents")), 2);
+    // `quick` is asked and not held here: it weighs nothing for this record.
+    assert_eq!(count(field(&terms[2], "held")), 0);
+    assert_eq!(number(field(&terms[2], "contribution")), 0.0);
+    let Value::Array(prefixes) = field(explained, "prefixes") else {
+        panic!("prefixes");
+    };
+    assert_eq!(
+        field(&prefixes[0], "prefix"),
+        &Value::String("vecto".to_owned())
+    );
+    assert_eq!(
+        strings(field(&prefixes[0], "terms")),
+        ["vectorised", "vectors"]
+    );
+    assert_eq!(count(field(&prefixes[0], "held")), 2);
+    // The blend's rarity is its most-held word's — `vector`, in two records —
+    // and not that of the words this record happens to hold, each in one.
+    assert_eq!(count(field(&prefixes[0], "documents")), 2);
+    assert!(number(field(&prefixes[0], "contribution")) > 0.0);
+}
+
+#[test]
+fn an_explanation_without_a_search_index_is_refused_like_a_score() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders; USE DATABASE orders;\n\
+             DEFINE ANALYZER simple FILTERS lowercase;\n\
+             DEFINE TABLE notes SCHEMALESS;\n\
+             DEFINE FIELD body ON notes TYPE string ANALYZER simple;\n\
+             CREATE notes:1 = { body: 'fox' };",
+        )
+        .unwrap();
+    let refused = session.run("SELECT search::explain(body, 'fox') AS e FROM notes;");
+    assert!(
+        matches!(refused, Err(Error::NoSearchIndex { ref field, .. }) if field == "body"),
+        "{refused:?}"
+    );
+}
+
+/// A ranked page after the first is read by the pruned walk, resumed below the
+/// anchor's score (ADR-0100 D1.9), and the pages put together are the ranking.
+///
+/// `alpha` is rare and lifts three records to the first page; `beta` is common
+/// and fills every page after it, with ties straddling page boundaries. A walk
+/// that let the first page's records set its pruning threshold would abandon
+/// `beta` — the word every later page is made of — and answer them empty.
+#[test]
+fn a_ranked_page_after_the_first_is_read_by_the_walk_and_the_pages_are_the_ranking() {
+    let store = store();
+    let mut session = searchable(&store);
+    for id in 1..=3 {
+        write(&mut session, id, "alpha beta");
+    }
+    for id in 4..=20 {
+        // Lengths repeat, so several records tie on every score.
+        let filler = " pad".repeat(usize::try_from(id % 4).unwrap());
+        write(&mut session, id, &format!("beta{filler}"));
+    }
+    write(&mut session, 21, "nothing here");
+    let whole = ordered(
+        &mut session,
+        "SELECT id FROM notes WHERE body MATCHES 'alpha OR beta' \
+         ORDER BY search::score(body, 'alpha beta') DESC;",
+    );
+    assert_eq!(whole.len(), 20);
+    let mut paged = Vec::new();
+    let mut anchor: Option<RecordId> = None;
+    loop {
+        let after = anchor
+            .as_ref()
+            .map_or_else(String::new, |id| format!(" AFTER notes:{id}"));
+        let read = format!(
+            "SELECT * FROM notes ORDER BY search::score(body, 'alpha beta') DESC{after} LIMIT 3;"
+        );
+        let outcomes = session.run(&read).unwrap();
+        let tessari_session::Outcome::Records {
+            records,
+            plan,
+            notes,
+            ..
+        } = &outcomes[0]
+        else {
+            panic!("{read}");
+        };
+        if anchor.is_some() && paged.len() + 3 <= 20 {
+            assert_eq!(plan.shape, Some("scored"), "{read}: {plan:?}");
+            assert!(
+                !notes.contains(&tessari_session::Note::CursorWalked),
+                "{read}: {notes:?}"
+            );
+        }
+        let page: Vec<RecordId> = records.iter().map(|(id, _)| id.clone()).collect();
+        if page.is_empty() {
+            break;
+        }
+        paged.extend(page.iter().cloned());
+        anchor = page.last().cloned();
+        assert!(paged.len() <= 21, "the pages never ended: {paged:?}");
+    }
+    // The zero-score record comes last, after every record holding a word.
+    assert_eq!(paged[..20], whole[..], "the pages are not the ranking");
+    assert_eq!(paged.len(), 21);
+}

@@ -493,7 +493,13 @@ impl Needs {
             | StatementKind::AlterTable { .. }
             | StatementKind::AlterField { .. }
             | StatementKind::DefineAnalyzer { .. }
-            | StatementKind::DropAnalyzer { .. } => Self::MANAGE,
+            | StatementKind::DropAnalyzer { .. }
+            | StatementKind::DefineSearch { .. }
+            | StatementKind::DropSearch { .. }
+            | StatementKind::DefineSynonyms { .. }
+            | StatementKind::DropSynonyms { .. }
+            | StatementKind::DefineStopwords { .. }
+            | StatementKind::DropStopwords { .. } => Self::MANAGE,
             // **The writes that are also reads**, and the classification is
             // measured rather than reasoned. `CREATE t:1` on an existing
             // record refuses with *record 1 already exists* and `UPDATE t:99` on

@@ -12,6 +12,157 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.20.0-beta — 2026-10-01
+
+### Added
+
+- **A write sent to the wrong leader is redirected** (G051, ADR-0101).
+  `WriteIsElsewhere` now leaves the wire as the `Elsewhere` frame, `settled`, to a
+  client that greeted protocol minor ≥ 1, and HTTP `POST /script` as `307` with a
+  `Location`, where it used to be a refusal and a `409`. `SpansLeaderships` stays
+  a refusal. A client of minor 0 still gets the refusal.
+- **`DEFINE REPLICA … CLIENTS AT '<host:port>' HTTP AT '<url>'`** — where a client
+  reaches each member, so a redirect names an address a client can speak to
+  rather than the peer door. Optional; `INFO FOR NODE` reports both per peer.
+- **A node holding part of a split table sends what it cannot gather to a node
+  holding all of it** (G051 C4). `NotHeldHere` — a read inside a transaction,
+  under `VERSION`, a join side, a `FETCH`, an `UPDATE` or `DELETE` — names a
+  member whose `REPLICATES` covers the table's database and which this node has
+  heard serving, and leaves the wire as the `Elsewhere` frame, `transient`, to a
+  client of minor ≥ 1. With no such member, or over HTTP, it is the refusal it was.
+  `ShardMapMoved` — a gathered read whose leader holds a different map of the
+  table — names that member and leaves the wire the same way.
+- **`INFO FOR DATABASE` names the database's searches** under `searches`, where the
+  caller reads at least one of their tables — the console's database sheet shows them.
+- **`session::context()`** — `{ node, namespace, database }`: the node this
+  session is talking to and the tenancy it selected. Open to every session; it is
+  what a client following a redirect checks on arrival and selects again there.
+- **An ordered `LIMIT` over a split table ranks on the leaders** (G051 C5,
+  ADR-0102). `ORDER BY … LIMIT n` whose keys read only the record — vector
+  distances included — sends each lacking shard's first `n` rather than all of its
+  records, so an exact nearest-neighbour read or a top-n over shards past 100 000
+  records answers instead of `GatheredTooMuch`. Every node in a cluster must run
+  this build: an older leader refuses the new gather section, and the read is
+  `NotGathered` until it is upgraded.
+- **A score over a split table is measured against the whole collection on a
+  node holding part of it** (G051 C6, ADR-0103). The leader of each lacking shard
+  counts its documents, tokens and the documents holding each asked word, and
+  every record of the read is scored from its own text, so `search::score` and
+  `ORDER BY FUSE` answer what a node holding every shard answers.
+- **An `OR` whose every side an index serves is read through those indexes**
+  (G051 T7.2). `title MATCHES 'ada' OR body MATCHES 'lovelace'`, or any mix of
+  searched and valued sides, is the union of each side's candidates, tested again
+  against the whole condition; `EXPLAIN` reports the shape `union` and every index
+  read. A side with no index leaves the read a scan.
+- **`stemmer(russian)`, `stemmer(german)`, `stemmer(french)` and
+  `stemmer(spanish)`** (G051 T7.3) — the Snowball algorithms for those languages,
+  each checked against its whole published vocabulary (134 869 words, every one
+  stemmed as published). `stemmer` stays English and is stored as it was, so an
+  existing analyzer reads back unchanged.
+- **A starred word in a query string is a prefix, and it is scored** (G051 T7.4,
+  ADR-0104). `body MATCHES 'vector sea*'` is the word `vector` and a word
+  beginning with `sea`, with `OR`, `NOT` and the index working around it; a
+  quoted phrase may end in one, `'"ada lov"*'`. `search::score` weighs a starred
+  word as one term over the sixty-four most-held words it begins, sharing the
+  largest of their document frequencies — so type-ahead can be ranked by the
+  store. A score holding a starred word is refused with `NotHeldHere` on a node
+  holding part of a split table.
+- **A judgment set and a relevance harness** (G051 T9.0, ADR-0100 D3).
+  `benchmarks/judgments/docs.tsv` grades 81 queries over the documentation site's
+  pages; `cargo run --release -p tessari-bench --example relevance` reports
+  NDCG@10, MRR@10 and cold and warm latency. Type-ahead queries moved from
+  NDCG@10 0.219 to 0.802 with the starred word, the whole set from 0.603 to 0.695.
+- **`search::explain(field, query)`** (G051 T7.5, ADR-0100 D1.8) — the score
+  `search::score` answers, with the collection's numbers and one entry per asked
+  word and per starred word: how often the record holds it, how many records do,
+  its weight and its contribution. The contributions add up to the score exactly.
+- **A ranked page after the first is read by the pruned walk** (G051 T7.5,
+  ADR-0100 D1.9). `ORDER BY search::score(…) DESC AFTER <record> LIMIT n` resumes
+  below the anchor's score instead of scoring the whole table, and no longer
+  carries the `cursor-walked` note.
+- **`DEFINE INDEX … SEARCH [POSITIONS] [OFFSETS] [NO SCORE]`** (G051 T7.6,
+  ADR-0100 D4) — what a search index keeps beside its postings. `POSITIONS`
+  decides a phrase from stored token ordinals (`EXPLAIN` shape `phrase`),
+  `OFFSETS` marks a whole-word highlight from stored byte ranges, `NO SCORE`
+  keeps membership alone and no statistics, and a score over it is refused as over
+  no index. No option changes an answer; an index written before them reads as a
+  scored index with neither.
+
+- **`DEFINE SEARCH`: several fields of several tables ranked as one collection**
+  (G051 C9, ADR-0105). `SELECT … FROM SEARCH <name> MATCHES [PREFIX | FUZZY |
+  INFIX] '<query>' [WHERE …]` ranks every member table's records by BM25F, with a
+  `WEIGHT` per field, `NO FUZZY` / `NO PREFIX` / `NO PHRASE` per field, and
+  `SYNONYMS <set>` per field. `search::score()`, `search::table_name()`,
+  `search::snippet()` (the best 24-token window of the `SNIPPET` fields, as byte
+  offsets) and `search::highlight(field)` answer about each record; `COMPLETE
+  '<beginning>'` answers ranked type-ahead; `GROUP BY` over the source answers
+  facet counts. A table the reader may not read, or whose member fields they may
+  not all read, is not searched. `INFO FOR SEARCH`, `DROP SEARCH`, and the state
+  script carry it.
+- **`DEFINE SYNONYMS <name> { word: ['alternative'] }` and `DEFINE STOPWORDS
+  <name> ['word']`** — query-time word sets, store-wide names a search reads when
+  it runs, so changing one never rebuilds an index.
+- **`MATCHES INFIX '<piece>'`** — a field's text holds a term containing every
+  piece typed. A `SEARCH` index now keeps every suffix of its dictionary's terms
+  (key kind `0x1f`) and serves it as `infix-terms`; an index built by an earlier
+  release has no suffixes and is answered by the scan until `REBUILD INDEX`.
+
+### Fixed
+
+- **A write a follower forwards reaches the leader in a cluster run with peer
+  credentials.** The forward dialled the leader's `AT` address, which is the peer
+  door and speaks TLS, so every such write was refused with *that is not a
+  TessariDB node*; it now dials `CLIENTS AT` when the row declares one.
+- **A `SEARCH`, `SPATIAL` or `VECTOR` index over several fields indexed the
+  first alone** (G051 T7.2). `DEFINE INDEX … FIELDS title, body SEARCH` was
+  accepted, and a search of `body` then answered as though no index existed. It is
+  now refused with `IndexReadsOneField`; declare one index per field. A store that
+  already holds such an index keeps it as an index over its first field.
+- **`search::score` on a node holding part of a split table was silently
+  wrong** (G051 C6). A gathered record scored `0` and a held one was measured
+  against this node's shards alone, so the order differed from the whole table's
+  with no refusal and no note. The "did you mean" suggestion there came from the
+  node's own dictionary and could say nothing was nearer when a shard it lacked
+  held the word; it is now withheld on such a node.
+- **A `DELETE` on a node holding part of a split table no longer removes only
+  that part.** A conditional or span `DELETE` read just the shards this node
+  holds, removed what matched there and reported that count as the statement's;
+  `DELETE` of one record held elsewhere answered as though it had removed it, and
+  `UPDATE` of one answered `NoSuchRecord`. Each is now refused `NotHeldHere`, as
+  the docs already said.
+
+- **A redirect is no longer sent after part of the script committed.** A client
+  follows a redirect by sending the script again, and a script is not a
+  transaction: `CREATE …; SELECT … STALENESS 1s` had committed its `CREATE`
+  before the read was redirected, and following it would have written twice. A
+  read or a write redirect is now sent only when nothing in the script committed;
+  otherwise the refusal (wire) or `409` (HTTP) answers. Present for reads since
+  the frame existed.
+
+### Security
+
+- **A field grant now hides a searched field from the score and the suggestion as
+  well as from the match** (G051, Q-861). A caller granted `read ON t FIELDS a`
+  already got no records from `b MATCHES …`, but `search::score(b, …)` still ranked
+  records by `b`'s text and a misspelt `b MATCHES …` still answered `did you mean`
+  with a word `b` holds — both are read from the index by identity or by term and
+  never touched the record the grant redacted. A hidden field now scores `0` for
+  every record, as a field the record does not hold, and earns no suggestion at all.
+  Every release up to and including `0.19.0-beta` has this leak: text that a field
+  grant hides on those builds should be treated as having been probe-able by a
+  caller who could search the table.
+
+### Changed
+
+- **1488 conformance cases** define the language and run in the build.
+- **`MATCHES FUZZY` counts swapping two adjacent letters as one edit** (G051
+  T7.4, ADR-0100 D1.4), where it counted two, so it reaches a few more words —
+  `vetcor` is now one edit from `vector`.
+- **A query string holding `word*` now means words beginning with it.** The
+  asterisk used to be dropped by the tokenizer, leaving the word itself, so such
+  a query answers more records than it did.
+
+
 ## 0.19.0-beta — 2026-10-01
 
 ### Added

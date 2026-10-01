@@ -9,8 +9,8 @@ use tessari_types::{RecordId, Value};
 
 use crate::error::{Error, Result};
 use crate::noticed::Noticed;
-use crate::rank::{Held, score};
-use crate::search::{Searched, marked};
+use crate::rank::{Held, explain, score};
+use crate::search::{Searched, marked, whole_terms};
 use crate::session::Session;
 
 use super::{Scope, Shaped, at, omit_within, omits};
@@ -37,10 +37,18 @@ impl Session<'_> {
         searched: &Searched,
         noticed: &Noticed,
     ) -> Result<Value> {
-        self.project_with(transaction, id, record, wanted, (searched, noticed), None)
+        self.project_with(
+            transaction,
+            id,
+            record,
+            wanted,
+            (searched, noticed),
+            (None, None),
+        )
     }
 
-    /// [`Self::project`], with the record's ranks when a fused read projects it.
+    /// [`Self::project`], with the record's ranks when a fused read projects
+    /// it, or its hit when a `FROM SEARCH` does.
     pub(crate) fn project_with(
         &self,
         transaction: &mut Transaction<'_>,
@@ -48,7 +56,7 @@ impl Session<'_> {
         record: &Value,
         wanted: &Shaped,
         (searched, noticed): (&Searched, &Noticed),
-        ranks: Option<&[Option<u64>]>,
+        (ranks, hit): (Option<&[Option<u64>]>, Option<&crate::engine::Hit<'_>>),
     ) -> Result<Value> {
         // The star first, so a value written out by name is written **over** the
         // field it shares a name with. `SELECT *, upper(name) AS name` answers
@@ -105,10 +113,11 @@ impl Session<'_> {
             let scope = Scope::searching(record, searched)
                 .identified(id)
                 .noticing(noticed);
+            let scope = ranks.map_or(scope, |ranks| scope.with_ranks(ranks));
             let held = self.evaluate_in(
                 transaction,
                 &value.value,
-                ranks.map_or(scope, |ranks| scope.with_ranks(ranks)),
+                hit.map_or(scope, |hit| scope.with_hit(hit)),
             )?;
             if held.is_present() {
                 projected.insert(value.name.text.clone(), held);
@@ -157,11 +166,30 @@ impl Session<'_> {
         let Some(analyzer) = scope.analyzer(&field.path) else {
             return none;
         };
+        // Evaluated first, whatever marks it: a field this session may not read
+        // resolves to nothing here, and nothing is marked.
         let Value::String(text) = self.evaluate_in(transaction, first, scope)? else {
             return none;
         };
+        let wanted = scope.wanted(&field.path);
+        // An index keeping `OFFSETS` holds the bytes of every occurrence of a
+        // term, so a whole-word query is marked from them without analysing the
+        // text (ADR-0100 D4); anything else, or a posting without them, is
+        // marked the way it always was.
+        let stored = match (
+            scope.offsets(&field.path),
+            scope.id,
+            whole_terms(analyzer, wanted),
+        ) {
+            (Some(index), Some(id), Some(terms)) => stored_marks(transaction, index, &terms, id)?,
+            _ => None,
+        };
+        let marks = match stored {
+            Some(marks) => marks,
+            None => marked(analyzer, &text, wanted),
+        };
         Ok(Value::Array(
-            marked(analyzer, &text, scope.wanted(&field.path))
+            marks
                 .into_iter()
                 .map(|bytes| {
                     Value::Object(BTreeMap::from([
@@ -179,7 +207,15 @@ impl Session<'_> {
         arguments: &[Expr],
         scope: Scope<'_>,
         span: Span,
+        explaining: bool,
     ) -> Result<Value> {
+        let answer = |corpus: &crate::rank::Corpus, held: &Held| {
+            if explaining {
+                explain(corpus, held)
+            } else {
+                score(corpus, held)
+            }
+        };
         // The query is the second argument and it is deliberately **not**
         // evaluated here. It was evaluated and analysed once, while the corpus
         // was resolved, and doing it again per scored record is half of the cost
@@ -224,8 +260,10 @@ impl Session<'_> {
         // nothing: with no occurrences there is no term for the length to divide.
         let mut occurrences = BTreeMap::new();
         let mut length = 0_u32;
-        let mut membership = false;
-        for term in corpus.terms.keys() {
+        // A gathered read's records are not in this node's postings, so every
+        // one of them is scored from its text (ADR-0103 D2).
+        let mut membership = ranked.from_text;
+        for term in corpus.terms.keys().filter(|_| !ranked.from_text) {
             match transaction.posting(&ranked.index, term, id)? {
                 None => {}
                 Some(Posting::Counted {
@@ -246,18 +284,47 @@ impl Session<'_> {
             }
         }
         if !membership {
-            return Ok(score(corpus, &Held::counted(occurrences, length)));
+            return Ok(answer(corpus, &Held::counted(occurrences, length)));
         }
         let held = self.evaluate_in(transaction, first, scope)?;
         let Value::String(text) = held else {
             // Not text: it holds none of the words, which scores zero. The same
             // answer a document of the wrong shape gets from `MATCHES`, in the
             // ranking's own terms.
-            return Ok(score(corpus, &Held::default()));
+            return Ok(answer(corpus, &Held::default()));
         };
-        Ok(score(
+        Ok(answer(
             corpus,
-            &Held::analysed(analyzer, &text, &corpus.asked),
+            &Held::analysed(analyzer, &text, &corpus.counted()),
         ))
     }
+}
+
+/// The byte ranges of every occurrence of these terms in one record, from an
+/// index keeping `OFFSETS` — in text order, as `marked` returns them.
+///
+/// `None` when a posting of this record carries no offsets, so the caller
+/// analyses the text instead of marking from a partial list.
+fn stored_marks(
+    transaction: &Transaction<'_>,
+    index: &tessari_storage::IndexDefinition,
+    terms: &std::collections::BTreeSet<String>,
+    id: &tessari_types::RecordId,
+) -> Result<Option<Vec<core::ops::Range<usize>>>> {
+    let mut marks = Vec::new();
+    for term in terms {
+        let Some(located) = transaction.located(index, term, id)? else {
+            continue;
+        };
+        if located.offsets.is_empty() {
+            return Ok(None);
+        }
+        for (start, end) in located.offsets {
+            let widen = |byte: u32| usize::try_from(byte).unwrap_or(usize::MAX);
+            marks.push(widen(start)..widen(end));
+        }
+    }
+    marks.sort_by_key(|bytes| bytes.start);
+    marks.dedup();
+    Ok(Some(marks))
 }

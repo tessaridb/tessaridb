@@ -193,6 +193,9 @@ pub enum Function {
     /// `search::score(field, 'query')` — how well this record answers the query,
     /// measured against the collection the field's search index summarises.
     SearchScore,
+    /// `search::explain(field, 'query')` — the score `search::score` answers,
+    /// with the collection's numbers and what each asked word contributed to it.
+    SearchExplain,
     /// `search::highlight(field)` — where in this record's text the read's own
     /// query matched, as `{ start, end }` byte ranges.
     ///
@@ -205,6 +208,12 @@ pub enum Function {
     /// order that answered it (`ORDER BY FUSE`), `none` where a branch did not
     /// place it within its depth.
     SearchRanks,
+    /// `search::table_name()` — the name of the table a `FROM SEARCH` record came from
+    /// (ADR-0105).
+    SearchTable,
+    /// `search::snippet()` — the best window of a `FROM SEARCH` record's
+    /// `SNIPPET` fields, as `{ field, start, end }` byte offsets.
+    SearchSnippet,
     /// `time::bucket(instant, 1h)` — the start of the window that instant is in.
     TimeBucket,
     /// `geo::intersects(a, b)` — whether the two shapes share any position,
@@ -394,6 +403,11 @@ pub enum Function {
     ObjectHas,
     /// `object::merge(a, b)` — both objects' fields, `b` winning a collision.
     ObjectMerge,
+    /// `session::context()` — `{ node, namespace, database }`: the node this
+    /// session is talking to and the tenancy the session has selected, `null`
+    /// where nothing is. What a client following a redirect checks on arrival
+    /// and replays from where it left (G051 SG3).
+    SessionContext,
 }
 
 /// The functions, declared once.
@@ -481,8 +495,11 @@ impl Function {
         VectorEuclidean => "vector::euclidean",
         VectorDot => "vector::dot",
         SearchScore => "search::score",
+        SearchExplain => "search::explain",
         SearchHighlight => "search::highlight",
         SearchRanks => "search::ranks",
+        SearchTable => "search::table_name",
+        SearchSnippet => "search::snippet",
         TimeBucket => "time::bucket",
         GeoIntersects => "geo::intersects",
         GeoDisjoint => "geo::disjoint",
@@ -525,6 +542,7 @@ impl Function {
         ObjectEntries => "object::entries",
         ObjectHas => "object::has",
         ObjectMerge => "object::merge",
+        SessionContext => "session::context",
     }
 
     /// Whether this function has an answer for an argument that holds nothing.
@@ -542,7 +560,7 @@ impl Function {
     /// - [`Function::SearchScore`] answers `0`: a record with no text in the
     ///   field holds none of the query's words, and a document holding none of
     ///   them scores zero. That is the computed answer and not a stand-in for
-    ///   one.
+    ///   one. [`Function::SearchExplain`] answers the explanation of that zero.
     ///
     /// The `type::` **casts** are deliberately not in the list, though
     /// [`Function::TypeOf`] beside them is. `type::of` asks what a value is, and
@@ -567,6 +585,7 @@ impl Function {
                 | Self::VectorEuclidean
                 | Self::VectorDot
                 | Self::SearchScore
+                | Self::SearchExplain
                 | Self::SearchHighlight
                 | Self::GeoDistance
         )
@@ -609,7 +628,9 @@ mod tests {
             .filter(|function| function.purity() == Purity::PerStatement)
             .map(|function| function.spelling())
             .collect();
-        assert_eq!(constant, ["time::now"]);
+        // `session::context` joined in G051 SG3: fixed for a statement, and
+        // folding it once above the records is exactly right.
+        assert_eq!(constant, ["time::now", "session::context"]);
     }
 
     /// The whole membership of [`Purity::PerCall`], asserted the same way.
@@ -627,15 +648,30 @@ mod tests {
             .collect();
         // `search::ranks` joined in G038: it reads no argument and no record, so
         // it looks constant, and folded it would hand every row one row's ranks.
-        assert_eq!(afresh, ["rand::uuid", "search::ranks"]);
+        // The three a `FROM SEARCH` record answers joined in G051 (ADR-0105) for
+        // the same reason: `search::score()` takes no argument there.
+        assert_eq!(
+            afresh,
+            [
+                "rand::uuid",
+                "search::score",
+                "search::ranks",
+                "search::table_name",
+                "search::snippet"
+            ]
+        );
     }
 
     #[test]
     fn every_function_is_classified_and_only_the_clock_and_the_generator_are_not_pure() {
         for function in Function::ALL {
             let expected = match function {
-                Function::TimeNow => Purity::PerStatement,
-                Function::RandUuid | Function::SearchRanks => Purity::PerCall,
+                Function::TimeNow | Function::SessionContext => Purity::PerStatement,
+                Function::RandUuid
+                | Function::SearchRanks
+                | Function::SearchScore
+                | Function::SearchTable
+                | Function::SearchSnippet => Purity::PerCall,
                 _ => Purity::Pure,
             };
             assert_eq!(function.purity(), expected, "{function} is misclassified");

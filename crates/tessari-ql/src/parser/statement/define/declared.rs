@@ -232,6 +232,43 @@ impl Parser<'_> {
             }
             kind = Some(held);
         }
+        // What a search index keeps beside its postings (ADR-0100 D4). Words
+        // after `SEARCH` only — on any other kind they would describe storage
+        // that kind does not have — each said at most once, so a declaration
+        // reads back the way it was meant.
+        let mut costs = crate::SearchCosts::default();
+        loop {
+            let word = |parser: &Self, word: &str| matches!(parser.peek(), Some(Token::Ident(found)) if found.eq_ignore_ascii_case(word));
+            let seen = if word(self, "positions") {
+                costs.positions
+            } else if word(self, "offsets") {
+                costs.offsets
+            } else if word(self, "no") {
+                costs.unscored
+            } else {
+                break;
+            };
+            // Judged before the word is taken, so the refusal points at it.
+            if !matches!(kind, Some(Marker::Search)) {
+                return Err(
+                    self.error_here("`POSITIONS`, `OFFSETS` and `NO SCORE` only after `SEARCH`")
+                );
+            }
+            if seen {
+                return Err(self.error_here("each of `POSITIONS`, `OFFSETS`, `NO SCORE` once"));
+            }
+            if self.eat_word("positions") {
+                costs.positions = true;
+            } else if self.eat_word("offsets") {
+                costs.offsets = true;
+            } else {
+                self.eat_word("no");
+                if !self.eat_word("score") {
+                    return Err(self.error_here("`SCORE` — the one option `NO` turns off"));
+                }
+                costs.unscored = true;
+            }
+        }
         // An index over `tags[*]` is a **multikey** index: one entry per element
         // rather than one per record. Three shapes are refused, each naming its
         // own reason — a caller told "unexpected token" would go looking for a
@@ -257,6 +294,7 @@ impl Parser<'_> {
             fields,
             unique: matches!(kind, Some(Marker::Unique)),
             search: matches!(kind, Some(Marker::Search)),
+            costs,
             spatial: matches!(kind, Some(Marker::Spatial)),
             vector: match kind {
                 Some(Marker::Vector(distance)) => Some(distance),
@@ -295,10 +333,19 @@ impl Parser<'_> {
         let Some(Token::Ident(word)) = self.peek() else {
             return Err(self.error_here("a filter name"));
         };
-        let Some(filter) = Filter::parse(word) else {
-            return Err(self.error_here("a filter name"));
-        };
+        let mut word = word.clone();
         self.advance();
-        Ok(filter)
+        // `stemmer(russian)`: a filter's one argument, its language.
+        if self.eat_punct(Punct::ParenOpen) {
+            let Some(Token::Ident(argument)) = self.peek() else {
+                return Err(self.error_here("a language"));
+            };
+            word = format!("{word}({argument})");
+            self.advance();
+            if !self.eat_punct(Punct::ParenClose) {
+                return Err(self.error_here("`)`"));
+            }
+        }
+        Filter::parse(&word).ok_or_else(|| self.error_here("a filter name"))
     }
 }

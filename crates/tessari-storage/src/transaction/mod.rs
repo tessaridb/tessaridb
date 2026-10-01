@@ -40,7 +40,7 @@ mod spatial;
 pub use address::{RecordAddress, StoredRecord};
 pub use adjacency::Neighbour;
 pub use scan::Window;
-pub use search::Expansion;
+pub use search::{Expansion, SearchCounts};
 pub use spatial::{Nearby, Region};
 
 use std::cell::{Cell, RefCell};

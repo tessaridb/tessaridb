@@ -84,7 +84,20 @@ pub(crate) fn write_index(
     match (index.unique, index.search, index.spatial, index.vector) {
         (false, false, false, None) => {}
         (true, false, false, None) => script.push_str(" UNIQUE"),
-        (false, true, false, None) => script.push_str(" SEARCH"),
+        (false, true, false, None) => {
+            script.push_str(" SEARCH");
+            // In one fixed order, whatever order they were declared in, so a
+            // definition reads back the same however it was written.
+            if index.costs.positions {
+                script.push_str(" POSITIONS");
+            }
+            if index.costs.offsets {
+                script.push_str(" OFFSETS");
+            }
+            if index.costs.unscored {
+                script.push_str(" NO SCORE");
+            }
+        }
         (false, false, true, None) => script.push_str(" SPATIAL"),
         (false, false, false, Some(distance)) => {
             let _ = write!(script, " VECTOR {}", distance.name());

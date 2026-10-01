@@ -28,7 +28,7 @@ mod vectors;
 use tessari_kv::{Key, Value};
 use tessari_types::{DatabaseId, IndexId, NamespaceId, RecordId, TableId};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::index_value;
 use crate::keys::StoreKey;
 use crate::kind::KeyKind;
@@ -36,8 +36,8 @@ use crate::order::{KeyReader, KeyWriter};
 use crate::record_id;
 use crate::value::{StoreValue, split_header, with_header};
 pub use search::{
-    PostingKey, SearchStatistics, SearchStatisticsKey, SearchTermKey, TermStatistics,
-    UniqueIndexKey,
+    PostingKey, SearchStatistics, SearchStatisticsKey, SearchSuffixKey, SearchTermKey,
+    TermStatistics, UniqueIndexKey,
 };
 pub use vectors::{
     SpatialRefinement, SpatialRefinementKey, VectorNode, VectorNodeKey, VectorRecall,
@@ -424,9 +424,112 @@ impl StoreValue for Posting {
         let mut reader = KeyReader::new(KeyKind::Posting, payload);
         let frequency = reader.take_u32()?;
         let length = reader.take_u32()?;
+        // Whatever lists follow are read — and so checked — here too, so a
+        // posting that decodes as counted is one whose whole payload is sound.
+        take_lists(&mut reader, frequency)?;
         reader.finish()?;
         Ok(Self::Counted { frequency, length })
     }
+}
+
+/// The positions flag: the posting lists the term's token ordinals.
+const LISTS_POSITIONS: u8 = 1;
+/// The offsets flag: the posting lists the term's byte ranges.
+const LISTS_OFFSETS: u8 = 2;
+
+/// Where one term sits in one record, as a `POSITIONS` / `OFFSETS` index keeps
+/// it (ADR-0100 D4).
+///
+/// Empty lists are what an index without those options holds, so a reader asks
+/// one question whatever the index declared.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Located {
+    /// The term's token ordinals in the record, ascending.
+    pub positions: Vec<u32>,
+    /// The term's byte ranges in the record's text, start inclusive and end
+    /// exclusive, in token order.
+    pub offsets: Vec<(u32, u32)>,
+}
+
+impl Posting {
+    /// A counted posting with the lists an option asked for.
+    ///
+    /// The payload is the counted one — frequency and length — then, only when
+    /// a list is present, a flags byte naming which follow and the lists
+    /// themselves, `frequency` entries each. A posting with neither list is
+    /// byte-identical to [`Posting::Counted`]'s encoding, so an index with no
+    /// option writes exactly what it always wrote.
+    #[must_use]
+    pub fn encode_located(frequency: u32, length: u32, located: &Located) -> Value {
+        let mut writer = KeyWriter::new();
+        writer.put_u32(frequency).put_u32(length);
+        let mut flags = 0_u8;
+        if !located.positions.is_empty() {
+            flags |= LISTS_POSITIONS;
+        }
+        if !located.offsets.is_empty() {
+            flags |= LISTS_OFFSETS;
+        }
+        if flags != 0 {
+            writer.put_u8(flags);
+            for position in &located.positions {
+                writer.put_u32(*position);
+            }
+            for (start, end) in &located.offsets {
+                writer.put_u32(*start).put_u32(*end);
+            }
+        }
+        let body = writer.finish();
+        let mut buffer = with_header(0, body.len());
+        buffer.extend_from_slice(&body);
+        Value::from(buffer)
+    }
+
+    /// The lists a stored posting carries — empty for one written without them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a payload that does not read whole: an unknown flag,
+    /// a list shorter or longer than the frequency says.
+    pub fn located(bytes: &[u8]) -> Result<Located> {
+        let (_, payload) = split_header(bytes, 0)?;
+        if payload.is_empty() {
+            return Ok(Located::default());
+        }
+        let mut reader = KeyReader::new(KeyKind::Posting, payload);
+        let frequency = reader.take_u32()?;
+        reader.take_u32()?;
+        let located = take_lists(&mut reader, frequency)?;
+        reader.finish()?;
+        Ok(located)
+    }
+}
+
+/// The optional lists after a counted payload, each `frequency` entries long.
+fn take_lists(reader: &mut KeyReader<'_>, frequency: u32) -> Result<Located> {
+    if reader.remaining() == 0 {
+        return Ok(Located::default());
+    }
+    let flags = reader.take_u8()?;
+    if flags & !(LISTS_POSITIONS | LISTS_OFFSETS) != 0 || flags == 0 {
+        return Err(Error::ReservedFlags { flags });
+    }
+    let count = usize::try_from(frequency).unwrap_or(usize::MAX);
+    let mut located = Located::default();
+    if flags & LISTS_POSITIONS != 0 {
+        located.positions.reserve(count.min(reader.remaining()));
+        for _ in 0..count {
+            located.positions.push(reader.take_u32()?);
+        }
+    }
+    if flags & LISTS_OFFSETS != 0 {
+        located.offsets.reserve(count.min(reader.remaining()));
+        for _ in 0..count {
+            let start = reader.take_u32()?;
+            located.offsets.push((start, reader.take_u32()?));
+        }
+    }
+    Ok(located)
 }
 
 /// Walk the field list and keep its bytes verbatim.
@@ -730,5 +833,80 @@ mod tests {
         let integer = IndexValues::of(&[Value::from(1_i64), Value::from("a")]);
         let float = IndexValues::of(&[Value::from(1.0_f64), Value::from("b")]);
         assert_eq!(integer.leading_of(1).unwrap(), float.leading_of(1).unwrap());
+    }
+
+    /// Every shape a posting's lists take, written and read back, and the plain
+    /// counted posting unchanged by the option machinery (G051 T7.6).
+    #[test]
+    fn a_posting_carries_its_lists_and_reads_them_back() {
+        use super::{Located, Posting};
+        let plain = Posting::Counted {
+            frequency: 2,
+            length: 9,
+        }
+        .encode();
+        assert_eq!(
+            Posting::encode_located(2, 9, &Located::default()),
+            plain,
+            "an index with no option writes exactly what it always wrote"
+        );
+        for located in [
+            Located {
+                positions: vec![1, 7],
+                offsets: Vec::new(),
+            },
+            Located {
+                positions: Vec::new(),
+                offsets: vec![(0, 3), (40, 44)],
+            },
+            Located {
+                positions: vec![1, 7],
+                offsets: vec![(0, 3), (40, 44)],
+            },
+        ] {
+            let stored = Posting::encode_located(2, 9, &located);
+            assert_eq!(Posting::located(stored.as_slice()).unwrap(), located);
+            assert_eq!(
+                Posting::decode(stored.as_slice()).unwrap(),
+                Posting::Counted {
+                    frequency: 2,
+                    length: 9
+                }
+            );
+        }
+        assert_eq!(
+            Posting::located(plain.as_slice()).unwrap(),
+            Located::default()
+        );
+    }
+
+    #[test]
+    fn a_posting_whose_lists_do_not_add_up_is_refused() {
+        use super::{Located, Posting};
+        let stored = Posting::encode_located(
+            2,
+            9,
+            &Located {
+                positions: vec![1, 7],
+                offsets: Vec::new(),
+            },
+        );
+        let bytes = stored.as_slice();
+        // One position short.
+        let short = &bytes[..bytes.len() - 4];
+        assert!(Posting::located(short).is_err());
+        assert!(Posting::decode(short).is_err());
+        // One byte too many.
+        let mut long = bytes.to_vec();
+        long.push(0);
+        assert!(Posting::located(&long).is_err());
+        // A flag this build does not know.
+        let mut unknown = bytes.to_vec();
+        let flags_at = unknown.len() - 9;
+        unknown[flags_at] |= 4;
+        assert!(matches!(
+            Posting::located(&unknown),
+            Err(crate::Error::ReservedFlags { .. })
+        ));
     }
 }

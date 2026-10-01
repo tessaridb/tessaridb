@@ -110,6 +110,14 @@ impl Session<'_> {
                 if let Some(scored) = plan::scored(select) {
                     match self.walk_scored(transaction, context, id, &scored, searched)? {
                         Walked::Served { found, index } => {
+                            // The page was found below its anchor's score rather
+                            // than by reading every record, so the note saying
+                            // otherwise — decided before the source ran — goes.
+                            if scored.after.is_some() {
+                                reporting
+                                    .collected
+                                    .retain(|note| *note != Note::CursorWalked);
+                            }
                             hand_over(found, transaction, consumer)?;
                             return Ok(Plan {
                                 shape: Some("scored"),

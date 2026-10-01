@@ -124,7 +124,7 @@
 //!
 //! # The second assertion is the one that protects an exemption
 //!
-//! Twenty-five paths are exempt under **E3**: the embedded facade is a boundary
+//! Twenty-six paths are exempt under **E3**: the embedded facade is a boundary
 //! the permission system deliberately does not defend, because a caller holding
 //! `&Store` holds every byte in it and no check stands between them. That
 //! exemption is sound exactly while the surfaces that *are* on the network do
@@ -425,7 +425,20 @@ const TABLES: &[Table] = &[
         // window an operator with `OPERATE_STORE` opens. Same
         // re-classification trigger: a caller other than the starting process
         // able to change it, which would let a caller keep a store open.
-        expected: 27,
+        //
+        // 28 since the write redirect (G051, ADR-0101): `Db::member` reads the
+        // member row naming a node, so the wire and HTTP doors can name where a
+        // CLIENT reaches the node a refusal sends it to. Classified **exempt on
+        // `writable_peer`'s and `leader_of`'s ground**: a read of what was
+        // applied, disclosing the topology a member row holds — addresses,
+        // roles, a node id — and no record, user or grant. Both doors call it
+        // only after the request was authorized and then refused at its commit
+        // or its read bound, so the address reaches a caller the statement's
+        // own checks already admitted. **Re-classification trigger:** a route or
+        // frame that answers it to a caller who was NOT authorized for the
+        // request that was redirected — the address of every member would then
+        // be readable without a sign-in.
+        expected: 28,
         count: |text| public_functions(&block(text, "impl Db")),
     },
     Table {
@@ -1012,7 +1025,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 125 since a snapshot of one place (G049, ADR-0094 D5):
     // `backup::write_state_within`, exempt, classified above.
-    assert_eq!(total, 125, "the counted tables no longer sum to 125");
+    //
+    // 126 since the write redirect (G051, ADR-0101): `Db::member`, exempt,
+    // classified above.
+    assert_eq!(total, 126, "the counted tables no longer sum to 126");
 }
 
 /// Every `.rs` file under a directory.

@@ -88,6 +88,14 @@ pub struct Session<'a> {
     /// Where a `BACKUP STATE` answered here writes its snapshot instead of
     /// answering with it (ADR-0094 D6), when the caller is streaming.
     pub(crate) sink: crate::backup_to::Sink,
+    /// Whether the script run last committed anything (ADR-0101 D3).
+    ///
+    /// A redirect invites the client to send the same script elsewhere, which
+    /// is safe only while none of it has taken effect: a script is not a
+    /// transaction, so `CREATE …; SELECT … STALENESS 1s` has committed its
+    /// `CREATE` by the time the read is redirected. The edge asks this before
+    /// turning a refusal into a redirect.
+    pub(crate) landed: bool,
 }
 
 /// Who a session is, to a queue.
@@ -122,6 +130,7 @@ impl<'a> Session<'a> {
             gather: None,
             backups: None,
             sink: crate::backup_to::Sink::none(),
+            landed: false,
         }
     }
 
@@ -265,6 +274,7 @@ impl<'a> Session<'a> {
         script: &mut tessari_ql::Script,
     ) -> Result<Vec<Outcome>> {
         let mut outcomes = Vec::with_capacity(script.statements.len());
+        self.landed = false;
 
         // By index rather than by iterator, because a `LET` reaches forward: the
         // value it produces is substituted into the statements that have not run
@@ -272,6 +282,16 @@ impl<'a> Session<'a> {
         let mut at = 0usize;
         while at < script.statements.len() {
             let outcome = self.step(store, open, &script.statements[at])?;
+            // A write outside a transaction committed as it ran, and a `COMMIT`
+            // committed what the transaction held. A write inside an open
+            // transaction has not landed yet: refused at its `COMMIT`, it rolls
+            // back with everything beside it.
+            let kind = &script.statements[at].kind;
+            if matches!(kind, StatementKind::Commit)
+                || (open.is_none() && Effect::of(kind) == Effect::Write)
+            {
+                self.landed = true;
+            }
             let outcome = match &script.statements[at].kind {
                 StatementKind::Let { name, .. } => {
                     // Substitution, not a lookup table — the same walk the
@@ -303,6 +323,17 @@ impl<'a> Session<'a> {
             at = at.saturating_add(1);
         }
         Ok(outcomes)
+    }
+
+    /// Whether the script run last committed anything before it ended.
+    ///
+    /// Read by the wire and HTTP surfaces before a refusal becomes a redirect
+    /// (ADR-0101 D3): a client told to go elsewhere sends the whole script
+    /// again, so a script that has already committed part of itself is answered
+    /// with the refusal instead.
+    #[must_use]
+    pub const fn landed(&self) -> bool {
+        self.landed
     }
 
     /// Sign in as `name`, if that password matches.
@@ -468,6 +499,7 @@ impl<'a> Session<'a> {
             // A probe answers who may do what and never writes a file.
             backups: None,
             sink: crate::backup_to::Sink::none(),
+            landed: false,
         };
         probe.acting_as(id)?;
         Ok(probe)

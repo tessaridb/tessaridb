@@ -130,6 +130,7 @@ impl Session<'_> {
         // with one built from it and a borrow of the old one cannot outlive that.
         let source = std::mem::replace(&mut read.from, Source::Node);
         let (source, changed) = match source {
+            Source::Search { .. } => (source, false),
             Source::Table(table) => match self.view_read(store, &table, chain)? {
                 Some(inner) => (
                     Source::Subquery {

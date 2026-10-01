@@ -134,9 +134,12 @@ pub use tessari_session::{
     AccessPath, Detached, Error, Exactness, Nearest, Note, Outcome, Parameters, Result, Session,
     Suggestion, Ticket, VaultAct, VaultTarget,
 };
+/// The store's own refusals, which [`Error::Store`] carries — named so a surface
+/// can tell the one that means *go there* (`WriteIsElsewhere`) from the rest.
+pub use tessari_storage::Error as StoreError;
 pub use tessari_storage::{
-    BUILD_VERSION, Change, ChangeKind, Changes, LeadershipDefinition, Lease, LogId, Reach,
-    Subscription, Upstream, Watch, Writer,
+    BUILD_VERSION, Change, ChangeKind, Changes, LeadershipDefinition, Lease, LogId, NODE_ID_LEN,
+    Reach, Subscription, Upstream, Watch, Writer,
 };
 pub use tessari_types::{
     DatabaseId, Datetime, Duration, FieldKind, Geometry, NamespaceId, Number, Path as FieldPath,
@@ -623,6 +626,24 @@ impl Db {
             });
         }
         Ok(Some(found))
+    }
+
+    /// The member row this store's catalog keeps for `node`, if any names it.
+    ///
+    /// What a redirect is resolved against (ADR-0101): an error names the node
+    /// to go to, and the row says where a **client** reaches that node — the
+    /// peer door it was declared at is not somewhere a client can speak. Read
+    /// from the catalog this node applied, so it answers with the peer link down.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the catalog cannot be read.
+    pub fn member(&self, node: &[u8; NODE_ID_LEN]) -> Result<Option<ReplicaDefinition>> {
+        let mut transaction = self.store.begin()?;
+        Ok(Catalog::new(&mut transaction)
+            .replicas()?
+            .into_iter()
+            .find(|peer| peer.node.as_ref() == Some(node)))
     }
 
     /// Resolve the namespace and database a session has selected.

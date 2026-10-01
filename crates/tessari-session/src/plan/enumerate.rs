@@ -170,13 +170,24 @@ impl Session<'_> {
                         &asked,
                         crate::search::Asked::Boolean { excluded, .. } if excluded.is_empty()
                     );
-                    let groups = match asked {
+                    // A starred word is a set of terms only once a dictionary
+                    // has said which, so it is expanded per index below.
+                    let prefixed = !asked.prefixes().is_empty();
+                    // A phrase keeps its words and slop: an index storing
+                    // positions decides the order itself (ADR-0100 D4).
+                    let phrase = match &asked {
+                        crate::search::Asked::Phrase { words, slop } => {
+                            Some((words.clone(), *slop))
+                        }
+                        crate::search::Asked::Boolean { .. } => None,
+                    };
+                    let words: Vec<Vec<crate::search::Word>> = match asked {
                         // A phrase's terms all have to be present before their
                         // order can matter, so the candidate set is the same
                         // intersection an unquoted conjunction asks for and the
                         // predicate settles the order.
-                        crate::search::Asked::Phrase { terms, .. } => {
-                            terms.into_iter().map(|term| vec![term]).collect()
+                        crate::search::Asked::Phrase { words, .. } => {
+                            words.into_iter().map(|word| vec![word]).collect()
                         }
                         // The excluded terms are dropped here on purpose: an
                         // index enumerates presence, so what it can produce is
@@ -185,14 +196,20 @@ impl Session<'_> {
                         // other candidate.
                         crate::search::Asked::Boolean { required, .. } => required,
                     };
-                    if groups.is_empty() {
+                    if words.is_empty() {
                         continue;
                     }
-                    // A query with no `OR` is a conjunction of single terms, and
-                    // saying so keeps `EXPLAIN` reporting `terms` for every query
-                    // that could be written before this one could.
-                    let plain = groups.iter().all(|group| group.len() == 1);
                     for index in serving(declared, seek.path, true) {
+                        // Past the expansion cap the candidate is not offered
+                        // and the scan answers, as for `MATCHES PREFIX`.
+                        let Some(groups) = expanded(transaction, index, &words)? else {
+                            continue;
+                        };
+                        // A query with no `OR` and no star is a conjunction of
+                        // single terms, and saying so keeps `EXPLAIN` reporting
+                        // `terms` for every query that could be written before
+                        // this one could.
+                        let plain = !prefixed && groups.iter().all(|group| group.len() == 1);
                         // The intersection cannot be larger than the smallest of
                         // the groups, and a group is no larger than the sum of
                         // its terms' postings. A document frequency is a count of
@@ -208,10 +225,15 @@ impl Session<'_> {
                             }
                             smallest = smallest.min(reach);
                         }
-                        let served = if plain {
-                            Served::Terms(groups.iter().flatten().cloned().collect())
-                        } else {
-                            Served::AnyTerms(groups.clone())
+                        let positioned = index.costs.positions && phrase.is_some();
+                        let served = match &phrase {
+                            Some((words, slop)) if positioned => Served::Phrase {
+                                groups,
+                                words: words.clone(),
+                                slop: *slop,
+                            },
+                            _ if plain => Served::Terms(groups.iter().flatten().cloned().collect()),
+                            _ => Served::AnyTerms(groups),
                         };
                         offered.push(Candidate {
                             served,
@@ -224,18 +246,32 @@ impl Session<'_> {
                             // exactly "holds all of these terms" — the
                             // predicate's own question, asked of the same
                             // analyzer over the same field.
-                            answers: (plain && complete).then_some(seek.span),
+                            // A phrase decided from stored positions is the
+                            // predicate's own run test over the same tokens.
+                            answers: ((plain && complete) || positioned).then_some(seek.span),
                         });
                     }
                 }
-                Comparison::PrefixTerms | Comparison::FuzzyTerms => {
+                Comparison::PrefixTerms | Comparison::FuzzyTerms | Comparison::InfixTerms => {
                     let (Value::String(query), Some(analyzer)) =
                         (bound, searched.analyzer(seek.path))
                     else {
                         continue;
                     };
                     let fuzzy = seek.comparison == Comparison::FuzzyTerms;
-                    let asked = analyzer.prefixes(query);
+                    let infix = seek.comparison == Comparison::InfixTerms;
+                    // An infix is the typed spelling alone: a piece of a word
+                    // stems into nothing (ADR-0105 D9).
+                    let asked: Vec<Vec<String>> = if infix {
+                        analyzer
+                            .prefixes(query)
+                            .into_iter()
+                            .filter_map(|alternatives| alternatives.into_iter().next())
+                            .map(|piece| vec![piece])
+                            .collect()
+                    } else {
+                        analyzer.prefixes(query)
+                    };
                     if asked.is_empty() {
                         continue;
                     }
@@ -264,7 +300,22 @@ impl Session<'_> {
                                 // expansion's size is chosen by the reader
                                 // typing fewer letters, a fuzzy one's by the
                                 // corpus.
-                                let found = if fuzzy {
+                                let found = if infix {
+                                    // An index built before the suffix
+                                    // keyspace existed cannot enumerate, and
+                                    // the scan answers instead.
+                                    match transaction.terms_with_infix(
+                                        index,
+                                        spelling,
+                                        SEARCH_PREFIX_EXPANSION_CAP,
+                                    )? {
+                                        Some(found) => found,
+                                        None => {
+                                            serviceable = false;
+                                            break;
+                                        }
+                                    }
+                                } else if fuzzy {
                                     transaction.terms_within_distance(
                                         index,
                                         spelling,
@@ -325,7 +376,9 @@ impl Session<'_> {
                             continue;
                         }
                         offered.push(Candidate {
-                            served: if fuzzy {
+                            served: if infix {
+                                Served::InfixTerms(expansions)
+                            } else if fuzzy {
                                 Served::FuzzyTerms(expansions)
                             } else {
                                 Served::PrefixTerms(expansions)
@@ -433,4 +486,48 @@ impl Session<'_> {
         }
         Ok(offered)
     }
+}
+
+/// Each group's words as the terms this index holds: a term as itself, a
+/// starred word as every term it begins (ADR-0104).
+///
+/// `None` when a starred word reaches past [`SEARCH_PREFIX_EXPANSION_CAP`]: the
+/// index cannot enumerate that part of the answer, so it serves none of it and
+/// the scan answers — not a refusal, for the reason `MATCHES PREFIX` gives.
+fn expanded(
+    transaction: &Transaction<'_>,
+    index: &IndexDefinition,
+    groups: &[Vec<crate::search::Word>],
+) -> Result<Option<Vec<Vec<String>>>> {
+    let mut terms = Vec::with_capacity(groups.len());
+    for group in groups {
+        let mut reached: BTreeSet<String> = BTreeSet::new();
+        for word in group {
+            match word {
+                crate::search::Word::Term(term) => {
+                    reached.insert(term.clone());
+                }
+                crate::search::Word::Prefix(alternatives) => {
+                    let mut beginning: BTreeSet<String> = BTreeSet::new();
+                    for spelling in alternatives {
+                        let found = transaction.terms_with_prefix(
+                            index,
+                            spelling,
+                            SEARCH_PREFIX_EXPANSION_CAP,
+                        )?;
+                        if found.capped {
+                            return Ok(None);
+                        }
+                        beginning.extend(found.terms);
+                    }
+                    if beginning.len() > SEARCH_PREFIX_EXPANSION_CAP {
+                        return Ok(None);
+                    }
+                    reached.extend(beginning);
+                }
+            }
+        }
+        terms.push(reached.into_iter().collect());
+    }
+    Ok(Some(terms))
 }

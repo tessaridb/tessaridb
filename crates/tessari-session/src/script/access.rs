@@ -25,6 +25,14 @@ pub(super) fn analyzers(catalog: &Catalog<'_, '_>, part: &[Reach]) -> Result<Str
                 .into_iter()
                 .filter(|field| super::carried(part, field.namespace, field.database))
                 .filter_map(|field| field.analyzer)
+                // A search reads with an analyzer no field may name.
+                .chain(
+                    catalog
+                        .engine_members()?
+                        .into_iter()
+                        .filter(|member| super::carried(part, member.namespace, member.database))
+                        .filter_map(|member| member.engine.map(|engine| engine.analyzer)),
+                )
                 .collect(),
         )
     };

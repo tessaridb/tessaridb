@@ -580,6 +580,16 @@ pub enum Source {
         /// *work* and not merely the number written down.
         depth: Option<u64>,
     },
+    /// `FROM SEARCH knowledge MATCHES 'ada lovelace'` — the records of every
+    /// member of a declared search, ranked as one collection (ADR-0105).
+    Search {
+        /// The search.
+        name: Name,
+        /// What is asked of it.
+        ask: super::SearchAsk,
+        /// `WHERE …` after the ask: what each answered record must also hold.
+        condition: Option<Box<Expr>>,
+    },
     /// The records a condition holds for.
     ///
     /// Which access path this becomes is decided when it runs, by what exists:

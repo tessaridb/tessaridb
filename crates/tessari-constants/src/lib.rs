@@ -874,6 +874,21 @@ pub const SEARCH_PREFIX_MINIMUM: usize = 3;
 /// stays cheaper than the scan it replaces.
 pub const SEARCH_PREFIX_EXPANSION_CAP: usize = 64;
 
+/// How many dictionary terms a scored prefix reads before it ranks them by
+/// document frequency and keeps the [`SEARCH_PREFIX_EXPANSION_CAP`] most held
+/// (ADR-0104).
+///
+/// Unit: terms examined.
+///
+/// The ranking is the point — a cut taken in dictionary order keeps the rare
+/// words that happen to sort first and drops the common one the reader was
+/// typing — and ranking needs the candidates in hand. A three-letter beginning
+/// reaching more than this many distinct words is past what anybody types, and
+/// the ranking is then over the first this-many in dictionary order: the score
+/// is still an exact function of the terms it names. Each one examined costs one count read, the same trade
+/// [`SEARCH_FUZZY_EXAMINATION_CAP`] makes.
+pub const SEARCH_PREFIX_SCORE_EXAMINATION_CAP: usize = 1024;
+
 /// The most edits `MATCHES FUZZY` will look through.
 ///
 /// Unit: single-character insertions, deletions and substitutions — Levenshtein,
@@ -1040,3 +1055,12 @@ pub const GATHER_PAGE_RECORDS: usize = 1024;
 /// is bounded at all so that one page is read and folded well inside the
 /// peer link's read deadline (`GREETING_SECONDS`).
 pub const GATHER_FOLD_RECORDS: usize = 65_536;
+
+/// How many tokens a `search::snippet()` window spans (ADR-0105).
+///
+/// Unit: tokens of the field's analysed text. The window is chosen by how many
+/// **distinct** query words it holds, then by how many matches, then by being
+/// earliest — so a passage covering the whole query beats one repeating a
+/// single word. Long enough to read a sentence around a match, short enough to
+/// sit in a result list.
+pub const SEARCH_SNIPPET_TOKENS: usize = 24;

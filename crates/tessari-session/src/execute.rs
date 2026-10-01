@@ -7,7 +7,7 @@ use tessari_ql::{
 };
 use tessari_storage::{
     Catalog, FieldShape, IndexShape, QueueDeclaration, SeriesDeclaration, TableKind, TableShape,
-    Transaction, VectorDistance, ViewDeclaration, violations,
+    Transaction, VectorDistance, ViewDeclaration, WordSetKind, violations,
 };
 
 use tessari_types::{IdentityKind, ShardId, Value};
@@ -53,6 +53,8 @@ const FORMAT_JSON: &str = "json";
 struct Peer<'a> {
     name: &'a Name,
     endpoint: &'a str,
+    clients: Option<&'a str>,
+    http: Option<&'a str>,
     roles: Option<&'a [Name]>,
     node: Option<[u8; NODE_ID_LEN]>,
     replicates: Option<&'a ReachRef>,
@@ -233,6 +235,43 @@ impl Session<'_> {
                 filters,
                 if_not_exists,
             } => self.define_analyzer(transaction, name, filters, *if_not_exists),
+            StatementKind::DefineSearch {
+                name,
+                members,
+                analyzer,
+                stopwords,
+                if_not_exists,
+            } => self.define_search(
+                transaction,
+                (name, members, analyzer, stopwords.as_ref()),
+                *if_not_exists,
+                span,
+            ),
+            StatementKind::DefineSynonyms {
+                name,
+                entries,
+                if_not_exists,
+            } => self.define_word_set(
+                transaction,
+                WordSetKind::Synonyms,
+                name,
+                entries.iter().cloned().collect(),
+                *if_not_exists,
+            ),
+            StatementKind::DefineStopwords {
+                name,
+                words,
+                if_not_exists,
+            } => self.define_word_set(
+                transaction,
+                WordSetKind::Stopwords,
+                name,
+                words
+                    .iter()
+                    .map(|word| (word.clone(), Vec::new()))
+                    .collect(),
+                *if_not_exists,
+            ),
             StatementKind::DefineUser {
                 name,
                 scope,
@@ -269,6 +308,8 @@ impl Session<'_> {
             StatementKind::DefineReplica {
                 name,
                 endpoint,
+                clients,
+                http,
                 roles,
                 node,
                 replicates,
@@ -279,6 +320,8 @@ impl Session<'_> {
                 &Peer {
                     name,
                     endpoint,
+                    clients: clients.as_deref(),
+                    http: http.as_deref(),
                     roles: roles.as_deref(),
                     node: *node,
                     replicates: replicates.as_ref(),
@@ -372,6 +415,7 @@ impl Session<'_> {
                 fields,
                 unique,
                 search,
+                costs,
                 spatial,
                 vector,
                 if_not_exists,
@@ -394,6 +438,11 @@ impl Session<'_> {
                             })?)
                         }
                         None => None,
+                    },
+                    costs: tessari_storage::SearchCosts {
+                        positions: costs.positions,
+                        offsets: costs.offsets,
+                        unscored: costs.unscored,
                     },
                 },
                 *if_not_exists,
@@ -458,6 +507,13 @@ impl Session<'_> {
                 Ok(Outcome::Done)
             }
             StatementKind::DropAnalyzer { name } => self.drop_analyzer(transaction, name, span),
+            StatementKind::DropSearch { name } => self.drop_search(transaction, name, span),
+            StatementKind::DropSynonyms { name } => {
+                self.drop_word_set(transaction, WordSetKind::Synonyms, name)
+            }
+            StatementKind::DropStopwords { name } => {
+                self.drop_word_set(transaction, WordSetKind::Stopwords, name)
+            }
             StatementKind::DropReplica { name } => self.drop_replica(transaction, name, span),
             StatementKind::AlterReplica { name, leads } => {
                 self.alter_replica(transaction, name, leads.as_ref(), span)
@@ -610,6 +666,12 @@ impl Session<'_> {
                 answer,
             } => {
                 let (_, address) = self.writable(transaction, target)?;
+                // A record in a shard this node lacks is not absent (G051 C4).
+                self.refuse_reading_a_part(
+                    transaction,
+                    address.table,
+                    crate::evaluate::Part::Record(&address.id),
+                )?;
                 let Some(existing) = transaction.get(&address)? else {
                     return Err(Error::NoSuchRecord {
                         id: address.id.to_string(),
@@ -729,6 +791,13 @@ impl Session<'_> {
                 // could ever find its way back to.
                 self.clear_file(transaction, target)?;
                 let (_, address) = self.address(transaction, target)?;
+                // Deleting a record held elsewhere would remove nothing and
+                // answer as though it had (G051 C4).
+                self.refuse_reading_a_part(
+                    transaction,
+                    address.table,
+                    crate::evaluate::Part::Record(&address.id),
+                )?;
                 let before = match transaction.get(&address)? {
                     Some(held) => decode_payload(&held)?,
                     None => Value::None,

@@ -13,6 +13,32 @@ const OR: &str = "OR";
 /// The word that excludes the term after it.
 const NOT: &str = "NOT";
 
+/// What ends a word, or a quoted phrase, whose last word is a prefix.
+const STAR: &str = "*";
+
+/// One word of a query: a term the record must hold, or the beginning of one.
+///
+/// A prefix carries its alternatives — the spelling as typed and its stem, from
+/// [`Analyzer::prefixes`] — because a stored term beginning with either answers
+/// it, exactly as for `MATCHES PREFIX` (ADR-0104).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Word {
+    /// This term, whole.
+    Term(String),
+    /// A term beginning with one of these.
+    Prefix(Vec<String>),
+}
+
+impl Word {
+    /// Whether one stored term answers this word.
+    pub(crate) fn answers(&self, held: &str) -> bool {
+        match self {
+            Self::Term(term) => term == held,
+            Self::Prefix(alternatives) => super::matching::begins(alternatives, held),
+        }
+    }
+}
+
 /// What one `MATCHES` query asks for.
 ///
 /// A **shape** rather than a list of terms, because an inverted index answers
@@ -26,12 +52,13 @@ const NOT: &str = "NOT";
 pub(crate) enum Asked {
     /// The words in this order, within `slop` extra tokens.
     Phrase {
-        /// The phrase's terms, in the order they were written.
-        terms: Vec<String>,
+        /// The phrase's words, in the order they were written. Only the last
+        /// can be a prefix, and only when the phrase was starred.
+        words: Vec<Word>,
         /// How many extra tokens the run may absorb.
         slop: usize,
     },
-    /// Every group answered by at least one of its terms, and no excluded term
+    /// Every group answered by at least one of its words, and no excluded word
     /// held.
     ///
     /// A plain conjunction is this with every group a single term, which is why
@@ -39,10 +66,29 @@ pub(crate) enum Asked {
     /// how the terms are grouped and in nothing else.
     Boolean {
         /// One group per `OR`-joined run; all groups must be answered.
-        required: Vec<Vec<String>>,
-        /// Terms no matching record may hold.
-        excluded: Vec<String>,
+        required: Vec<Vec<Word>>,
+        /// Words no matching record may hold.
+        excluded: Vec<Word>,
     },
+}
+
+impl Asked {
+    /// Every prefix this query holds, as its alternatives.
+    pub(crate) fn prefixes(&self) -> Vec<&[String]> {
+        let words: Vec<&Word> = match self {
+            Self::Phrase { words, .. } => words.iter().collect(),
+            Self::Boolean { required, excluded } => {
+                required.iter().flatten().chain(excluded).collect()
+            }
+        };
+        words
+            .into_iter()
+            .filter_map(|word| match word {
+                Word::Prefix(alternatives) => Some(alternatives.as_slice()),
+                Word::Term(_) => None,
+            })
+            .collect()
+    }
 }
 
 /// The inside of a quoted phrase, when the query is one.
@@ -65,19 +111,25 @@ pub(crate) enum Asked {
 /// and no marker at all are the same query, which is the property that makes
 /// "exact phrase is slop 0" true by construction rather than by convention.
 ///
+/// A trailing `*` instead makes the phrase's last word a prefix (ADR-0104).
+///
 /// A malformed marker — `~`, `~-1`, `~x` — is **not** silently treated as 0.
 /// It is not a phrase at all, so the query falls back to conjunction, which is
 /// what an unparseable phrase already meant before this wave.
-pub(super) fn phrase_of(query: &str) -> Option<(&str, usize)> {
+pub(super) fn phrase_of(query: &str) -> Option<(&str, usize, bool)> {
     let trimmed = query.trim();
     let rest = trimmed.strip_prefix('"')?;
     // Split at the LAST quote, so a phrase may contain one.
     let (inner, tail) = rest.rsplit_once('"')?;
     if tail.is_empty() {
-        return Some((inner, 0));
+        return Some((inner, 0, false));
+    }
+    // `"ada lov"*`: the phrase's last word is a prefix (ADR-0104).
+    if tail == STAR {
+        return Some((inner, 0, true));
     }
     let slop = tail.strip_prefix('~')?.parse::<usize>().ok()?;
-    Some((inner, slop))
+    Some((inner, slop, false))
 }
 
 /// The malformed slop marker in a query, when somebody tried to write one.
@@ -85,10 +137,10 @@ pub(super) fn phrase_of(query: &str) -> Option<(&str, usize)> {
 /// Separate from [`phrase_of`] because the two answer different questions: that
 /// one asks *is this a phrase*, this one asks *did somebody mean one and get the
 /// marker wrong*. A string with no opening quote is not an attempt at either.
-pub(super) fn malformed_slop(query: &str) -> Option<&str> {
+pub(crate) fn malformed_slop(query: &str) -> Option<&str> {
     let trimmed = query.trim();
     let (_, tail) = trimmed.strip_prefix('"')?.rsplit_once('"')?;
-    if tail.is_empty() {
+    if tail.is_empty() || tail == STAR {
         return None;
     }
     match tail.strip_prefix('~').map(str::parse::<usize>) {
@@ -122,13 +174,13 @@ pub(super) fn malformed_slop(query: &str) -> Option<&str> {
 /// A word that analyses to nothing contributes nothing and does not consume a
 /// pending operator, so `ada OR --- lovelace` is still one group.
 pub(crate) fn asked(analyzer: &Analyzer, query: &str) -> Asked {
-    if let Some((inner, slop)) = phrase_of(query) {
+    if let Some((inner, slop, starred)) = phrase_of(query) {
         return Asked::Phrase {
-            terms: analyzer.terms(inner),
+            words: words_of(analyzer, inner, starred),
             slop,
         };
     }
-    let mut required: Vec<Vec<String>> = Vec::new();
+    let mut required: Vec<Vec<Word>> = Vec::new();
     let mut excluded = Vec::new();
     let mut joining = false;
     let mut negating = false;
@@ -137,16 +189,16 @@ pub(crate) fn asked(analyzer: &Analyzer, query: &str) -> Asked {
             OR => joining = true,
             NOT => negating = true,
             _ => {
-                let terms = analyzer.terms(word);
-                if terms.is_empty() {
+                let words = typed(analyzer, word);
+                if words.is_empty() {
                     continue;
                 }
                 if negating {
-                    excluded.extend(terms);
+                    excluded.extend(words);
                 } else if let (true, Some(group)) = (joining, required.last_mut()) {
-                    group.extend(terms);
+                    group.extend(words);
                 } else {
-                    required.extend(terms.into_iter().map(|term| vec![term]));
+                    required.extend(words.into_iter().map(|word| vec![word]));
                 }
                 joining = false;
                 negating = false;
@@ -154,6 +206,45 @@ pub(crate) fn asked(analyzer: &Analyzer, query: &str) -> Asked {
         }
     }
     Asked::Boolean { required, excluded }
+}
+
+/// The words of one whitespace-separated piece of a query: its last token a
+/// prefix when the piece ends in `*`, whole terms otherwise.
+pub(crate) fn typed(analyzer: &Analyzer, piece: &str) -> Vec<Word> {
+    match piece.strip_suffix(STAR) {
+        Some(stem) => words_of(analyzer, stem, true),
+        None => words_of(analyzer, piece, false),
+    }
+}
+
+/// The tokens of `text` as words, the last one a prefix when `starred`.
+///
+/// Unstarred, this is [`Analyzer::terms`] and nothing else, so a query with no
+/// star asks exactly what it always asked. Starred, the last token is read the
+/// way `MATCHES PREFIX` reads a word ([`Analyzer::prefixes`]) and the ones
+/// before it stay terms.
+fn words_of(analyzer: &Analyzer, text: &str, starred: bool) -> Vec<Word> {
+    let mut words: Vec<Word> = analyzer.terms(text).into_iter().map(Word::Term).collect();
+    if starred
+        && let Some(alternatives) = analyzer.prefixes(text).pop()
+        && let Some(last) = words.last_mut()
+    {
+        *last = Word::Prefix(alternatives);
+    }
+    words
+}
+
+/// Every word of a query a score weighs, in the order written and with repeats.
+///
+/// The query read as words rather than as a shape: a score weighs what the
+/// record holds of every word written, whatever `OR` or quotes did to which
+/// records were matched — the rule `search::score` has always followed — and a
+/// starred word is weighed as the one prefix it is.
+pub(crate) fn scored_words(analyzer: &Analyzer, query: &str) -> Vec<Word> {
+    query
+        .split_whitespace()
+        .flat_map(|piece| typed(analyzer, piece))
+        .collect()
 }
 
 /// Whether the query excludes terms and requires none.
@@ -171,7 +262,7 @@ pub(crate) fn asked(analyzer: &Analyzer, query: &str) -> Asked {
 /// a way it would not be for [`asked`]: this asks whether the query is
 /// well-formed, which no index can answer differently, rather than what the
 /// query means, which both access paths must answer the same way.
-pub(super) fn negation_without_term(query: &str) -> bool {
+pub(crate) fn negation_without_term(query: &str) -> bool {
     if phrase_of(query).is_some() {
         return false;
     }

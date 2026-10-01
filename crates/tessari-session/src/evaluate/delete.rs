@@ -53,6 +53,11 @@ impl Session<'_> {
             DeleteBound::All => u64::MAX,
         };
         let (context, id) = self.resolve_table(transaction, table)?;
+        // A node holding part of a split table would find only its own part's
+        // records, remove them, and report the count as the statement's (G051
+        // C4): the condition is about the table, so the read refuses as a read
+        // of the whole table does.
+        self.refuse_reading_a_part(transaction, id, super::Part::Whole)?;
         let searched = self.searched_for(transaction, id, &[condition])?;
         // No plan is reported: a delete answers with a count and has no plan to
         // carry one on, so the table it would name is not asked for.
@@ -164,12 +169,25 @@ impl Session<'_> {
             DeleteBound::All => u64::MAX,
         };
         let (context, id) = self.resolve_table(transaction, table)?;
+        let lower = span.lower.fixed(span.at)?;
+        let upper = span.upper.fixed(span.at)?;
+        // As in `delete_where`: a span reaching a shard this node lacks would
+        // remove only the records it holds (G051 C4).
+        self.refuse_reading_a_part(
+            transaction,
+            id,
+            super::Part::Span {
+                lower,
+                upper,
+                inclusive: span.inclusive,
+            },
+        )?;
         let found = transaction.records_in_span(
             context.namespace,
             context.database,
             id,
-            span.lower.fixed(span.at)?,
-            span.upper.fixed(span.at)?,
+            lower,
+            upper,
             span.inclusive,
         )?;
 

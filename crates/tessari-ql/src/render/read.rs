@@ -177,6 +177,7 @@ pub(crate) fn write_source(out: &mut String, source: &Source, span: Span) -> Res
         Source::Traverse { .. } => unwritten("a traversal"),
         Source::Join { .. } => unwritten("a join"),
         Source::Subquery { .. } => unwritten("a materialised read"),
+        Source::Search { .. } => unwritten("a read of a search"),
     }
 }
 
@@ -233,7 +234,19 @@ pub(crate) fn write_expr(out: &mut String, expr: &Expr) -> Result<()> {
         }
         ExprKind::Table(_) => unwritten("a table in a value position"),
         ExprKind::Record(_) => unwritten("a record in a value position"),
-        ExprKind::Array(_) => unwritten("an array"),
+        // Its items written like a call's arguments, so a literal item is
+        // refused here like any literal and travels lifted (ADR-0102).
+        ExprKind::Array(items) => {
+            out.push('[');
+            for (position, item) in items.iter().enumerate() {
+                if position > 0 {
+                    out.push_str(", ");
+                }
+                write_expr(out, item)?;
+            }
+            out.push(']');
+            Ok(())
+        }
         ExprKind::Set(_) => unwritten("a set"),
         ExprKind::Object(_) => unwritten("an object"),
         ExprKind::Range(_) => unwritten("a range"),

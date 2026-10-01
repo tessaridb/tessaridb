@@ -26,7 +26,7 @@ fn store() -> Store {
     Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap()
 }
 
-fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
+pub(crate) fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
     let mut session = Session::new(store);
     session.sign_in(name, PASSWORD).unwrap();
     session
@@ -34,7 +34,7 @@ fn signed_in<'a>(store: &'a Store, name: &str) -> Session<'a> {
 
 /// A leader holding `ledger` split at 'g' and 'p', with records in all three
 /// shards, an owner, a reader, a reader who may see only `note`, and a node.
-fn leader() -> Arc<Store> {
+pub(crate) fn leader() -> Arc<Store> {
     let leader = store();
     Session::new(&leader)
         .run(
@@ -42,6 +42,11 @@ fn leader() -> Arc<Store> {
              DEFINE TABLE ledger (total int, note string, peer record) IDENTITY uuid \
              SPLIT AT 'g', 'p';\n\
              DEFINE TABLE other (total int) IDENTITY uuid;\n\
+             DEFINE TABLE points (at vector<2>) IDENTITY uuid SPLIT AT 'g', 'p';\n\
+             CREATE points:'a' = { at: [1, 1] }; CREATE points:'b' = { at: [5, 5] };\n\
+             CREATE points:'h' = { at: [2, 2] }; CREATE points:'k' = { at: [6, 6] };\n\
+             CREATE points:'q' = { at: [3, 3] }; CREATE points:'r' = { at: [3, 3] };\n\
+             CREATE points:'z' = { at: [9, 9] };\n\
              CREATE other:'x' = { total: 1 };\n\
              CREATE ledger:'a' = { total: 5, note: 'a' }; CREATE ledger:'b' = { total: 1, note: 'b' };\n\
              CREATE ledger:'c' = { total: 9, note: 'c' };\n\
@@ -64,26 +69,38 @@ fn leader() -> Arc<Store> {
     Arc::new(leader)
 }
 
-fn ledger(store: &Store) -> TableId {
+fn table(store: &Store, name: &str) -> TableId {
     let mut transaction = store.begin().unwrap();
     tessari_storage::Catalog::new(&mut transaction)
-        .table_id(NamespaceId::new(1), DatabaseId::new(1), "ledger")
+        .table_id(NamespaceId::new(1), DatabaseId::new(1), name)
         .unwrap()
         .unwrap()
 }
 
 fn shard(store: &Store, id: u32) -> Reach {
+    shard_of(store, "ledger", id)
+}
+
+fn shard_of(store: &Store, name: &str, id: u32) -> Reach {
     Reach::Shard(
         NamespaceId::new(1),
         DatabaseId::new(1),
-        ledger(store),
+        table(store, name),
         ShardId::new(id),
     )
 }
 
 /// A follower of shard 2 only, recorded as served that way.
-fn follower_of_the_middle(leader: &Store) -> Store {
-    let over = shard(leader, 2);
+pub(crate) fn follower_of_the_middle(leader: &Store) -> Store {
+    follower_of(leader, shard(leader, 2))
+}
+
+/// A follower of the middle shard of `name`, recorded as served that way.
+pub(crate) fn follower_of_the_middle_of(leader: &Store, name: &str) -> Store {
+    follower_of(leader, shard_of(leader, name, 2))
+}
+
+fn follower_of(leader: &Store, over: Reach) -> Store {
     let follower = store();
     let mut node = signed_in(leader, "node");
     for log in leader.logs().unwrap() {
@@ -136,9 +153,9 @@ impl Gather for FromTheLeader {
                 asked.table,
                 asked.window,
                 None,
-                match asked.reduce {
-                    Some(_) => usize::MAX,
-                    None => asked.most.saturating_add(1),
+                match (asked.reduce, asked.counting) {
+                    (None, None) => asked.most.saturating_add(1),
+                    _ => usize::MAX,
                 },
             )
             .unwrap();
@@ -152,12 +169,42 @@ impl Gather for FromTheLeader {
                 records: Vec::new(),
                 node: THE_LEADER,
                 reduced: Some(reduced),
+                counted: None,
+            });
+        }
+        // Counted as the peer door counts, through the analysis the leader's
+        // own index writer uses (ADR-0103).
+        if let Some(counting) = asked.counting {
+            let mut transaction = self.leader.begin().unwrap();
+            let index = tessari_storage::Catalog::new(&mut transaction)
+                .indexes_on(asked.table)
+                .unwrap()
+                .into_iter()
+                .find(|index| index.id == counting.index)
+                .unwrap();
+            let counted = transaction
+                .search_counts(&index, &records, &counting.terms)
+                .unwrap();
+            return Ok(Gathered {
+                records: Vec::new(),
+                node: THE_LEADER,
+                reduced: None,
+                counted: Some(counted),
             });
         }
         // Narrowed as the peer door narrows, so every equality below runs
         // with the leader's half of the pushdown in place.
         let records = match asked.pushed {
             Some(pushed) => tessari_session::keeping(&self.leader, pushed, records).unwrap(),
+            None => records,
+        };
+        // Ranked as the peer door ranks, so only the shard's first `n` is sent
+        // (ADR-0102).
+        let records = match asked.ordered {
+            Some(ordered) => {
+                let mut page = Some(records);
+                tessari_session::leading(&self.leader, ordered, || Ok(page.take())).unwrap()
+            }
             None => records,
         };
         if records.len() > asked.most {
@@ -170,6 +217,7 @@ impl Gather for FromTheLeader {
             records,
             node: THE_LEADER,
             reduced: None,
+            counted: None,
         })
     }
 }
@@ -186,7 +234,7 @@ impl Gather for Unreachable {
 
 /// A gatherer whose leader holds a different map of the table.
 #[derive(Debug)]
-struct Moved;
+pub(crate) struct Moved;
 
 impl Gather for Moved {
     fn gather(&self, _: &Asked<'_>) -> Result<Gathered, Unanswered> {
@@ -207,19 +255,25 @@ impl Gather for Flooding {
             records,
             node: THE_LEADER,
             reduced: None,
+            counted: None,
         })
     }
 }
 
-struct Pair {
+pub(crate) struct Pair {
     leader: Arc<Store>,
     follower: Store,
     gatherer: Arc<FromTheLeader>,
 }
 
-fn pair() -> Pair {
+pub(crate) fn pair() -> Pair {
     let leader = leader();
     let follower = follower_of_the_middle(&leader);
+    pair_of(leader, follower)
+}
+
+/// A leader and a follower of part of it, the follower gathering from it.
+pub(crate) fn pair_of(leader: Arc<Store>, follower: Store) -> Pair {
     let gatherer = Arc::new(FromTheLeader {
         leader: Arc::clone(&leader),
         asked: Mutex::new(Vec::new()),
@@ -234,7 +288,7 @@ fn pair() -> Pair {
 }
 
 impl Pair {
-    fn on_the_follower(&self, user: &str) -> Session<'_> {
+    pub(crate) fn on_the_follower(&self, user: &str) -> Session<'_> {
         let mut session = signed_in(&self.follower, user)
             .gathering(Arc::clone(&self.gatherer) as Arc<dyn Gather>);
         session
@@ -243,7 +297,7 @@ impl Pair {
         session
     }
 
-    fn on_the_leader(&self, user: &str) -> Session<'_> {
+    pub(crate) fn on_the_leader(&self, user: &str) -> Session<'_> {
         let mut session = signed_in(&self.leader, user);
         session
             .run("USE NAMESPACE prod; USE DATABASE shop;")
@@ -251,17 +305,21 @@ impl Pair {
         session
     }
 
+    pub(crate) fn leader(&self) -> &Store {
+        &self.leader
+    }
+
     fn asked(&self) -> Vec<Question> {
         std::mem::take(&mut *self.gatherer.asked.lock().unwrap())
     }
 
     /// How many records travelled since this was last asked.
-    fn sent(&self) -> usize {
+    pub(crate) fn sent(&self) -> usize {
         std::mem::take(&mut *self.gatherer.sent.lock().unwrap())
     }
 }
 
-fn answer(session: &mut Session<'_>, read: &str) -> (Vec<(RecordId, Value)>, Vec<Note>) {
+pub(crate) fn answer(session: &mut Session<'_>, read: &str) -> (Vec<(RecordId, Value)>, Vec<Note>) {
     match session.run(read) {
         Ok(outcomes) => match outcomes.last() {
             Some(Outcome::Records { records, notes, .. }) => (records.clone(), notes.clone()),
@@ -271,7 +329,7 @@ fn answer(session: &mut Session<'_>, read: &str) -> (Vec<(RecordId, Value)>, Vec
     }
 }
 
-fn refused(session: &mut Session<'_>, read: &str) -> tessari_session::Error {
+pub(crate) fn refused(session: &mut Session<'_>, read: &str) -> tessari_session::Error {
     match session.run(read) {
         Err(error) => error,
         Ok(outcomes) => panic!("{read}: expected a refusal, got {outcomes:?}"),
@@ -370,6 +428,7 @@ impl Gather for FoldingMany {
         Ok(Gathered {
             records: Vec::new(),
             node: THE_LEADER,
+            counted: None,
             reduced: Some(Reduced::Partials(vec![tessari_session::Partial {
                 key: vec![Value::from("many")],
                 first: asked
@@ -598,7 +657,7 @@ fn a_read_that_cannot_be_gathered_whole_is_refused_and_never_answered_in_part() 
     let pair = pair();
     let mut follower = pair.on_the_follower("reader");
     let not_held = |error: tessari_session::Error| match error {
-        tessari_session::Error::NotHeldHere { table, shards } => (table, shards),
+        tessari_session::Error::NotHeldHere { table, shards, .. } => (table, shards),
         other => panic!("expected NotHeldHere, got {other:?}"),
     };
     let held = ("ledger".to_owned(), vec![1, 3]);
@@ -648,7 +707,7 @@ fn a_read_that_cannot_be_gathered_whole_is_refused_and_never_answered_in_part() 
     let mut moved = signed_in(&pair.follower, "reader").gathering(Arc::new(Moved));
     moved.run("USE NAMESPACE prod; USE DATABASE shop;").unwrap();
     match refused(&mut moved, "SELECT * FROM ledger;") {
-        tessari_session::Error::ShardMapMoved { table, shard } => {
+        tessari_session::Error::ShardMapMoved { table, shard, .. } => {
             assert_eq!((table.as_str(), shard), ("ledger", 1));
         }
         other => panic!("expected ShardMapMoved, got {other:?}"),
@@ -770,7 +829,7 @@ fn a_node_holding_part_of_a_split_table_refuses_to_back_it_up() {
         "BACKUP OF NAMESPACE prod;",
     ] {
         match signed_in(&follower, "root").run(statement) {
-            Err(tessari_session::Error::NotHeldHere { table, shards }) => {
+            Err(tessari_session::Error::NotHeldHere { table, shards, .. }) => {
                 assert_eq!(
                     (table.as_str(), shards),
                     ("ledger", vec![1, 3]),
@@ -802,7 +861,8 @@ fn a_node_holding_every_shard_backs_the_database_up_complete() {
         .into_iter()
         .filter(|log| matches!(log.home, Reach::Shard(..)))
         .count();
-    assert_eq!(shards, 3, "the leader keeps a log per shard");
+    // Two split tables, `ledger` and `points`, of three shards each.
+    assert_eq!(shards, 6, "the leader keeps a log per shard");
     let recorded = taken
         .positions
         .iter()

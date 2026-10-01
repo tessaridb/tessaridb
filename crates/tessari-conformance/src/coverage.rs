@@ -89,6 +89,9 @@ forms! {
     DefineIndex => "DEFINE INDEX",
     DefineField => "DEFINE FIELD",
     DefineAnalyzer => "DEFINE ANALYZER",
+    DefineSearch => "DEFINE SEARCH",
+    DefineSynonyms => "DEFINE SYNONYMS",
+    DefineStopwords => "DEFINE STOPWORDS",
     DefineUser => "DEFINE USER",
     AlterUser => "ALTER USER",
     AlterNamespace => "ALTER NAMESPACE",
@@ -110,6 +113,9 @@ forms! {
     CheckTable => "CHECK TABLE",
     DropField => "DROP FIELD",
     DropAnalyzer => "DROP ANALYZER",
+    DropSearch => "DROP SEARCH",
+    DropSynonyms => "DROP SYNONYMS",
+    DropStopwords => "DROP STOPWORDS",
     DropReplica => "DROP REPLICA",
     AlterReplica => "ALTER REPLICA",
     DropDatabase => "DROP DATABASE",
@@ -275,6 +281,12 @@ mod tests {
              ALTER TABLE t SET SCHEMAFULL;\
              ALTER TABLE t ALTER FIELD f TYPE string;\
              DEFINE ANALYZER a FILTERS lowercase;\
+             DEFINE SEARCH s ON t FIELDS f ANALYZER a;\
+             DROP SEARCH s;\
+             DEFINE SYNONYMS y { a: ['b'] };\
+             DROP SYNONYMS y;\
+             DEFINE STOPWORDS w ['the'];\
+             DROP STOPWORDS w;\
              DEFINE USER u ROLE owner PASSWORD 'x';\
              DEFINE NODE ROLES serving;\
              DEFINE REPLICA second AT 'host:9001';\

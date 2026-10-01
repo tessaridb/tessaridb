@@ -9,7 +9,7 @@ use tessari_types::{Analyzer, Value, within_edits};
 
 use tessari_constants::{SEARCH_FUZZY_MAX_EDITS, SEARCH_FUZZY_PREFIX};
 
-use super::query::{Asked, asked};
+use super::query::{Asked, Word, asked};
 
 /// The ordinals of the tokens that answer `asked`, in order, within `slop`
 /// extra tokens — or `None` when no run of them does.
@@ -36,11 +36,11 @@ use super::query::{Asked, asked};
 /// answered twice. The walk already knows which ordinals it stepped through, so
 /// the alternative is a second walk computing the same thing — and one question
 /// computed in two places is precisely what this module exists to prevent.
-pub(super) fn run_of(held: &[String], asked: &[String], slop: usize) -> Option<Vec<usize>> {
+pub(super) fn run_of(held: &[String], asked: &[Word], slop: usize) -> Option<Vec<usize>> {
     let first = asked.first()?;
     let limit = asked.len().saturating_sub(1).saturating_add(slop);
     held.iter().enumerate().find_map(|(start, token)| {
-        if token != first {
+        if !first.answers(token) {
             return None;
         }
         let mut at = start;
@@ -49,7 +49,7 @@ pub(super) fn run_of(held: &[String], asked: &[String], slop: usize) -> Option<V
             let found = held
                 .iter()
                 .skip(at.saturating_add(1))
-                .position(|held| held == term)?;
+                .position(|held| term.answers(held))?;
             at = at.saturating_add(1).saturating_add(found);
             walked.push(at);
         }
@@ -58,7 +58,10 @@ pub(super) fn run_of(held: &[String], asked: &[String], slop: usize) -> Option<V
 }
 
 /// Whether `asked` appears in `held` in order, within `slop` extra tokens.
-fn holds_run(held: &[String], asked: &[String], slop: usize) -> bool {
+///
+/// The one test of a phrase, whether `held` is the record's analysed text or a
+/// token list rebuilt from the ordinals a `POSITIONS` index stored.
+pub(crate) fn holds_run(held: &[String], asked: &[Word], slop: usize) -> bool {
     run_of(held, asked, slop).is_some()
 }
 
@@ -67,7 +70,7 @@ fn holds_run(held: &[String], asked: &[String], slop: usize) -> bool {
 /// The disjunction within a word: the two spellings [`Analyzer::prefixes`]
 /// produces are alternatives, and a term beginning with either satisfies the
 /// word.
-pub(super) fn begins(alternatives: &[String], term: &str) -> bool {
+pub(crate) fn begins(alternatives: &[String], term: &str) -> bool {
     alternatives
         .iter()
         .any(|prefix| term.starts_with(prefix.as_str()))
@@ -80,7 +83,7 @@ pub(super) fn begins(alternatives: &[String], term: &str) -> bool {
 /// the same question. `SEARCH_FUZZY_PREFIX` is part of what the operator
 /// *means*, not an optimisation, so a caller that skipped it would mark a token
 /// the operator did not reach.
-pub(super) fn near(alternatives: &[String], term: &str) -> bool {
+pub(crate) fn near(alternatives: &[String], term: &str) -> bool {
     alternatives.iter().any(|spelling| {
         let leading: String = spelling.chars().take(SEARCH_FUZZY_PREFIX).collect();
         term.starts_with(&leading) && within_edits(spelling, term, SEARCH_FUZZY_MAX_EDITS)
@@ -121,13 +124,12 @@ pub(crate) fn matches_terms(analyzer: Option<&Analyzer>, held: &Value, wanted: &
     };
     let terms = analyzer.terms(text);
     match asked(analyzer, query) {
-        Asked::Phrase { terms: run, slop } => holds_run(&terms, &run, slop),
+        Asked::Phrase { words, slop } => holds_run(&terms, &words, slop),
         Asked::Boolean { required, excluded } => {
+            let held = |word: &Word| terms.iter().any(|term| word.answers(term));
             !required.is_empty()
-                && required
-                    .iter()
-                    .all(|group| group.iter().any(|term| terms.contains(term)))
-                && !excluded.iter().any(|term| terms.contains(term))
+                && required.iter().all(|group| group.iter().any(held))
+                && !excluded.iter().any(held)
         }
     }
 }
@@ -206,4 +208,32 @@ pub(crate) fn matches_fuzzy_terms(
         && asked
             .iter()
             .all(|alternatives| terms.iter().any(|term| near(alternatives, term)))
+}
+
+/// Whether analyzed text holds, for **every** word typed, a term containing
+/// that word's typed spelling (`MATCHES INFIX`, ADR-0105 D9).
+///
+/// The typed spelling, folded and unstemmed — the first of the alternatives
+/// [`Analyzer::prefixes`] produces — because a piece of a word stems into
+/// nothing. This is the **scan**'s answer; the index reaches the same set
+/// through its suffix keyspace, and the two are asserted to agree.
+pub(crate) fn matches_infix_terms(
+    analyzer: Option<&Analyzer>,
+    held: &Value,
+    wanted: &Value,
+) -> bool {
+    let (Some(analyzer), Value::String(text), Value::String(query)) = (analyzer, held, wanted)
+    else {
+        return false;
+    };
+    let terms = analyzer.terms(text);
+    let pieces: Vec<String> = analyzer
+        .prefixes(query)
+        .into_iter()
+        .filter_map(|alternatives| alternatives.into_iter().next())
+        .collect();
+    !pieces.is_empty()
+        && pieces
+            .iter()
+            .all(|piece| terms.iter().any(|term| term.contains(piece.as_str())))
 }
