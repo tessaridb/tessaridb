@@ -12,6 +12,17 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.18.1-beta — 2026-10-01
+
+### Fixed
+
+- **A log backup of a store written before each database had its own log
+  restores again.** Such a store keeps those records in its store log, and a
+  restore filed each record by what it touched rather than by the log the backup
+  read it from, so `--restore` into an empty store stopped at once with `log gap:
+  the next record must be 1, but N was offered` — while `--verify` passed the same
+  file. A restore now files every record in the log its section names.
+
 ## 0.18.0-beta — 2026-10-01
 
 ### Changed

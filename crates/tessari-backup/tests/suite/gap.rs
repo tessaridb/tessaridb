@@ -32,7 +32,7 @@
 
 use std::sync::Arc;
 
-use tessari_encoding::{LogId, LogKey, StoreKey};
+use tessari_encoding::{AppliedPositionKey, LogId, LogKey, StoreKey, StoreValue};
 use tessari_kv::{KvBackend, MemoryBackend, WriteBatch};
 use tessari_session::Session;
 use tessari_storage::Store;
@@ -285,5 +285,66 @@ fn the_same_truncated_log_is_refused_again_rather_than_accepted_on_retry() {
         follower.committed_tail(home).unwrap(),
         stopped_at,
         "the retry moved the follower"
+    );
+}
+
+/// Move every record of the data log to the end of the store's own log.
+///
+/// The layout a store keeps when its records were written before each database
+/// had a log of its own: the records are filed in the store log, where the
+/// writer of the day put them, while today each one derives a database home.
+fn file_the_data_in_the_store_log(backend: &Arc<dyn KvBackend>, store: &Store) {
+    let data = data_log(store);
+    let own = store.own_log(Reach::Store).unwrap();
+    let mut batch = WriteBatch::new();
+    for (at, _) in store.log_records(data, Sequence::new(1), 64).unwrap() {
+        let body = backend
+            .get(LogKey::keyspace(), &LogKey::new(data, at).encode())
+            .unwrap()
+            .unwrap();
+        let moved = Sequence::new(STORE_RECORDS.saturating_add(at.get()));
+        batch = batch
+            .put(LogKey::keyspace(), LogKey::new(own, moved).encode(), body)
+            .delete(LogKey::keyspace(), LogKey::new(data, at).encode());
+    }
+    let tail = Sequence::new(STORE_RECORDS.saturating_add(DATA_RECORDS));
+    batch = batch
+        .put(
+            AppliedPositionKey::keyspace(),
+            AppliedPositionKey::new(own).encode(),
+            tail.encode(),
+        )
+        .delete(
+            AppliedPositionKey::keyspace(),
+            AppliedPositionKey::new(data).encode(),
+        );
+    backend.apply(batch).unwrap();
+}
+
+#[test]
+fn a_record_is_restored_into_the_log_it_was_backed_up_from() {
+    let (backend, held) = leader();
+    file_the_data_in_the_store_log(&backend, &held);
+    let own = held.own_log(Reach::Store).unwrap();
+    // Vacuity guard: the store log must now carry records that derive a
+    // database home, or this restores nothing the old path refused.
+    assert_eq!(
+        crate::tails(&held),
+        vec![(
+            own,
+            Sequence::new(STORE_RECORDS.saturating_add(DATA_RECORDS))
+        )],
+        "the data was not re-filed into the store log"
+    );
+
+    let mut whole = Vec::new();
+    tessari_backup::write(&held, &mut whole).unwrap();
+    let (_backend, restored) = store();
+    tessari_backup::read(&restored, &mut whole.as_slice()).unwrap();
+
+    assert_eq!(crate::tails(&restored), crate::tails(&held));
+    assert_eq!(
+        answers(&restored, "SELECT * FROM people;"),
+        answers(&held, "SELECT * FROM people;"),
     );
 }
