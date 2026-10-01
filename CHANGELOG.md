@@ -14,6 +14,27 @@ compares carries no pre-release suffix.
 
 ## 0.20.0-beta — 2026-10-01
 
+### Added
+
+- **A write sent to the wrong leader is redirected** (G051, ADR-0101).
+  `WriteIsElsewhere` now leaves the wire as the `Elsewhere` frame, `settled`, to a
+  client that greeted protocol minor ≥ 1, and HTTP `POST /script` as `307` with a
+  `Location`, where it used to be a refusal and a `409`. `SpansLeaderships` stays
+  a refusal. A client of minor 0 still gets the refusal.
+- **`DEFINE REPLICA … CLIENTS AT '<host:port>' HTTP AT '<url>'`** — where a client
+  reaches each member, so a redirect names an address a client can speak to
+  rather than the peer door. Optional; `INFO FOR NODE` reports both per peer.
+
+### Fixed
+
+- **A redirect is no longer sent after part of the script committed.** A client
+  follows a redirect by sending the script again, and a script is not a
+  transaction: `CREATE …; SELECT … STALENESS 1s` had committed its `CREATE`
+  before the read was redirected, and following it would have written twice. A
+  read or a write redirect is now sent only when nothing in the script committed;
+  otherwise the refusal (wire) or `409` (HTTP) answers. Present for reads since
+  the frame existed.
+
 ### Security
 
 - **A field grant now hides a searched field from the score and the suggestion as

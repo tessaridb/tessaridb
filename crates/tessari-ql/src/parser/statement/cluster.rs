@@ -263,6 +263,25 @@ impl Parser<'_> {
             return Err(self.error_here("`AT` and where the peer is reached"));
         }
         let (endpoint, _) = self.text("the endpoint, as text")?;
+        // ADR-0101: where a client reaches the peer, beside where a peer does.
+        // Optional and in this order, so every declaration written before them
+        // reads exactly as it did.
+        let clients = if self.eat_word("clients") {
+            if !self.eat_word("at") {
+                return Err(self.error_here("`AT` and where a client reaches the peer"));
+            }
+            Some(self.text("the client address, as text")?.0)
+        } else {
+            None
+        };
+        let http = if self.eat_word("http") {
+            if !self.eat_word("at") {
+                return Err(self.error_here("`AT` and the peer's HTTP base"));
+            }
+            Some(self.text("the HTTP base, as text")?.0)
+        } else {
+            None
+        };
         let node = if self.eat_word("node") {
             let (written, at) = self.text("the node's id, as text")?;
             // The same refusal a `uuid` literal gets, from the same reader, so
@@ -318,6 +337,8 @@ impl Parser<'_> {
         Ok(StatementKind::DefineReplica {
             name,
             endpoint,
+            clients,
+            http,
             roles,
             node,
             replicates,

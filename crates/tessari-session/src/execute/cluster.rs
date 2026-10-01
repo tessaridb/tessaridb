@@ -2,7 +2,9 @@
 
 use tessari_encoding::Roles;
 use tessari_ql::{Name, ReachRef, Span};
-use tessari_storage::{Catalog, ConsumerDefinition, Feed, Mapped, OnFailure, Transaction};
+use tessari_storage::{
+    Catalog, ConsumerDefinition, Feed, Mapped, OnFailure, ReplicaDefinition, Transaction,
+};
 
 use crate::error::{Error, Result};
 use crate::outcome::Outcome;
@@ -151,14 +153,16 @@ impl Session<'_> {
             None => None,
             Some(named) => Some(self.reach_of(transaction, named)?),
         };
-        Catalog::new(transaction).create_replica(
-            &peer.name.text,
-            peer.endpoint,
+        Catalog::new(transaction).create_replica_with(ReplicaDefinition {
+            name: peer.name.text.clone(),
+            endpoint: peer.endpoint.to_owned(),
             roles,
-            peer.node,
+            node: peer.node,
             replicates,
             leads,
-        )?;
+            clients: peer.clients.map(str::to_owned),
+            http: peer.http.map(str::to_owned),
+        })?;
         Ok(Outcome::Done)
     }
 

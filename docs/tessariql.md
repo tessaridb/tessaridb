@@ -2197,6 +2197,17 @@ a redirect: the node it would send you to leads only part of the transaction
 too, and would refuse it back. Write each leader's part as its own transaction.
 A transaction that one other node leads entirely is still redirected there.
 
+**A write sent to the wrong leader is redirected, not refused** (from
+`0.20.0-beta`). Over the wire it is the `Elsewhere` frame, marked `settled`
+because it names a leadership that holds until its epoch moves, and over HTTP it
+is a `307` with a `Location`; a client built before redirects existed still gets
+the refusal naming the address. **A redirect is sent only when nothing in the
+script has committed**: a client follows one by sending the whole script to the
+other node, so a script that already wrote something here — `CREATE` in `mine`,
+then a write into `theirs` — is refused instead, and the part that ran stays
+written. A whole `BEGIN … COMMIT` refused for its leader rolled back at `COMMIT`
+and is redirected whole.
+
 **A split table's record history reads two logs.** A record is written in its
 shard's log by a commit touching one shard and in its database's by a commit
 touching two, so `INFO FOR HISTORY OF` one of its records reads both and merges
@@ -7643,6 +7654,23 @@ DEFINE NODE ROLES serving, writable ENDPOINTS 'db-1.internal:9000';
 DEFINE REPLICA second AT 'db-2.internal:9000' ROLES serving, writable;
 INFO FOR NODE;
 ```
+
+**Say where clients reach each member, beside where peers do.** `AT` is the
+address other nodes dial — in a cluster run with peer credentials it is the peer
+door, which a client cannot speak to. A redirect names a node to go to, and it
+names the address the member row gives for clients:
+
+```
+DEFINE REPLICA second AT 'db-2.internal:9180'
+    CLIENTS AT 'db-2.example:9080' HTTP AT 'https://db-2.example:8000'
+    NODE '9f2c4e1a70bb43d5a1c6e2f480937d55' ROLES serving, writable, coordinating;
+```
+
+`CLIENTS AT` is the wire address and `HTTP AT` the base an HTTP `307` puts in
+front of the request's path. Both are optional and replicate with the row, so a
+node can say where to go from what it has applied, with the peer link down. A row
+that names neither keeps redirects naming `AT`, as they did before the clauses
+existed. `INFO FOR NODE` reports both for each peer (`null` when unsaid).
 
 **Declare every peer in one transaction.** A store is on its own until its
 catalog names somebody else, and from the moment the first `DEFINE REPLICA`

@@ -1,6 +1,6 @@
 //! Answering a script: the listing, the run, and each outcome as JSON.
 
-use super::{Answer, failure, name_of, session_for};
+use super::{Answer, name_of, script_failure, session_for};
 use crate::basic::Presented;
 use crate::json;
 use crate::tokens::Tokens;
@@ -107,7 +107,7 @@ pub(crate) fn script(
             body.push_str("]}");
             Answer::new(200, body)
         }
-        Err(error) => failure(&error),
+        Err(error) => script_failure(db, &error, session.landed(), "/script"),
     }
 }
 

@@ -46,6 +46,8 @@ const FIELD_ROLES: &str = "roles";
 const FIELD_NODE: &str = "node";
 const FIELD_REPLICATES: &str = "replicates";
 const FIELD_LEADS: &str = "leads";
+const FIELD_CLIENTS: &str = "clients";
+const FIELD_HTTP: &str = "http";
 
 const ENTITY: &str = "replica";
 
@@ -142,6 +144,16 @@ pub struct ReplicaDefinition {
     /// moment this row commits — so the field is read by the write gate on
     /// every node and by the campaign only on the node the row names.
     pub leads: Option<Reach>,
+    /// Where a **client** reaches that peer over the wire, when somebody said
+    /// (`CLIENTS AT`, ADR-0101).
+    ///
+    /// [`Self::endpoint`] is the peer door, which speaks only to other nodes, so
+    /// a redirect that named it would send a client somewhere it cannot talk.
+    /// `None` keeps every redirect exactly as it was before this field existed.
+    pub clients: Option<String>,
+    /// The HTTP base a client reaches that peer at (`HTTP AT`), for the
+    /// `Location` of a `307`. `None` for the same reason as [`Self::clients`].
+    pub http: Option<String>,
 }
 
 impl ReplicaDefinition {
@@ -172,6 +184,14 @@ impl ReplicaDefinition {
         if let Some(reach) = self.leads {
             fields.insert(FIELD_LEADS.to_owned(), reach.to_value());
         }
+        // Written only when stated, so a row declared before ADR-0101 keeps its
+        // bytes and a reader of either age sees one spelling of "not said".
+        if let Some(clients) = &self.clients {
+            fields.insert(FIELD_CLIENTS.to_owned(), Value::from(clients.as_str()));
+        }
+        if let Some(http) = &self.http {
+            fields.insert(FIELD_HTTP.to_owned(), Value::from(http.as_str()));
+        }
         Value::Object(fields)
     }
 
@@ -200,7 +220,23 @@ impl ReplicaDefinition {
                 .get(FIELD_LEADS)
                 .map(|found| Reach::from_value(found, ENTITY, FIELD_LEADS))
                 .transpose()?,
+            clients: text_in(fields, FIELD_CLIENTS)?,
+            http: text_in(fields, FIELD_HTTP)?,
         })
+    }
+}
+
+/// An optional text field of a stored row: absent is `None`, and anything
+/// present that is not text is refused rather than read as absent.
+fn text_in(fields: &BTreeMap<String, Value>, field: &'static str) -> Result<Option<String>> {
+    match fields.get(field) {
+        None => Ok(None),
+        Some(Value::String(text)) => Ok(Some(text.clone())),
+        Some(other) => Err(Error::CatalogMalformed {
+            entity: ENTITY,
+            field,
+            found: other.type_name(),
+        }),
     }
 }
 
@@ -282,19 +318,33 @@ impl Catalog<'_, '_> {
         replicates: Option<Reach>,
         leads: Option<Reach>,
     ) -> Result<ReplicaDefinition> {
-        if self.replica_row(name)?.is_some() {
-            return Err(Error::NameTaken {
-                qualified: qualify(Level::Replica, &[], name),
-            });
-        }
-        let definition = ReplicaDefinition {
+        self.create_replica_with(ReplicaDefinition {
             name: name.to_owned(),
             endpoint: endpoint.to_owned(),
             roles,
             node,
             replicates,
             leads,
-        };
+            clients: None,
+            http: None,
+        })
+    }
+
+    /// Declare a peer from a whole definition — the form a declaration with
+    /// client addresses (ADR-0101) takes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NameTaken`] when the name is already declared.
+    pub fn create_replica_with(
+        &mut self,
+        definition: ReplicaDefinition,
+    ) -> Result<ReplicaDefinition> {
+        if self.replica_row(&definition.name)?.is_some() {
+            return Err(Error::NameTaken {
+                qualified: qualify(Level::Replica, &[], &definition.name),
+            });
+        }
         self.write_replica(&definition);
         Ok(definition)
     }
@@ -660,6 +710,8 @@ mod tests {
             node: None,
             replicates: None,
             leads: None,
+            clients: None,
+            http: None,
         }
     }
 

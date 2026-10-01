@@ -297,23 +297,14 @@ pub(crate) fn respond(
     // as a refusal carrying a hint (`redirect.rs`), gated on what the client
     // said at the greeting: a client built before tag 13 cannot name the frame,
     // and the refusal it has always received is the better answer for it.
-    if let Err(tessaridb::Error::ReadIsElsewhere {
-        endpoint,
-        node,
-        epoch,
-        ..
-    }) = &ran
-        && theirs >= frame::REDIRECTS
+    //
+    // And gated on nothing having landed (ADR-0101 D3): the client follows by
+    // sending this whole script again, so a script that already committed part
+    // of itself gets the refusal rather than an invitation to commit it twice.
+    if theirs >= frame::REDIRECTS
+        && !session.landed()
+        && let Some(sent) = redirected(db, &ran)
     {
-        let sent = redirect::Elsewhere {
-            endpoint: endpoint.clone(),
-            node: *node,
-            epoch: *epoch,
-            // This read, and not this arrangement: the bound that sent the
-            // client away is a bound on *currency*, and this node's own copy may
-            // satisfy the same bound at the next request.
-            settlement: redirect::Settlement::Transient,
-        };
         return Answer {
             kind: frame::Kind::Elsewhere,
             body: sent.encode(),
@@ -395,4 +386,44 @@ pub(crate) fn respond_vault(
         }
         Err(refused) => refusal(refused.to_string()),
     }
+}
+
+/// The redirect a refusal stands for, if it stands for one.
+///
+/// Two refusals mean *go there* and they differ in what they promise. A read
+/// beyond a bound is about **this read** — the node's own copy may satisfy the
+/// same bound at the next request — so it is `Transient`. A write into a range
+/// another node leads names a **leadership**, which holds until its epoch is
+/// superseded, so it is `Settled` and a client may remember it per range.
+///
+/// The address is the one a **client** reaches the node at when its member row
+/// says so (`CLIENTS AT`, ADR-0101); otherwise the address the refusal carried,
+/// which is what every redirect named before that clause existed.
+fn redirected(
+    db: &Db,
+    ran: &tessaridb::Result<Vec<tessaridb::Outcome>>,
+) -> Option<redirect::Elsewhere> {
+    let (endpoint, node, epoch, settlement) = match ran {
+        Err(tessaridb::Error::ReadIsElsewhere {
+            endpoint,
+            node,
+            epoch,
+            ..
+        }) => (endpoint, node, epoch, redirect::Settlement::Transient),
+        Err(tessaridb::Error::Store(tessari_storage::Error::WriteIsElsewhere {
+            endpoint,
+            node,
+            epoch,
+        })) => (endpoint, node, epoch, redirect::Settlement::Settled),
+        _ => return None,
+    };
+    // A catalog that cannot be read leaves the address the refusal carried: the
+    // redirect is still right about who leads, and a refusal would be worse.
+    let clients = db.member(node).ok().flatten().and_then(|row| row.clients);
+    Some(redirect::Elsewhere {
+        endpoint: clients.unwrap_or_else(|| endpoint.clone()),
+        node: *node,
+        epoch: *epoch,
+        settlement,
+    })
 }

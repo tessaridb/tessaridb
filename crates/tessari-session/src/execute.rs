@@ -53,6 +53,8 @@ const FORMAT_JSON: &str = "json";
 struct Peer<'a> {
     name: &'a Name,
     endpoint: &'a str,
+    clients: Option<&'a str>,
+    http: Option<&'a str>,
     roles: Option<&'a [Name]>,
     node: Option<[u8; NODE_ID_LEN]>,
     replicates: Option<&'a ReachRef>,
@@ -269,6 +271,8 @@ impl Session<'_> {
             StatementKind::DefineReplica {
                 name,
                 endpoint,
+                clients,
+                http,
                 roles,
                 node,
                 replicates,
@@ -279,6 +283,8 @@ impl Session<'_> {
                 &Peer {
                     name,
                     endpoint,
+                    clients: clients.as_deref(),
+                    http: http.as_deref(),
                     roles: roles.as_deref(),
                     node: *node,
                     replicates: replicates.as_ref(),

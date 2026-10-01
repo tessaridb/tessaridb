@@ -578,6 +578,8 @@ mod tests {
             // was deciding its own subscription.
             replicates: None,
             leads: None,
+            clients: None,
+            http: None,
         }
     }
 

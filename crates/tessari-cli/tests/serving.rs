@@ -2940,12 +2940,11 @@ fn until_taken(surface: &str, prefix: &str, patience: Duration) -> Result<Durati
 }
 
 /// Keep writing into another node's shard through `surface` until it is
-/// refused naming `leader` and `at` — or the last answer, after `patience`.
+/// redirected to `leader` at `at` — or the last answer, after `patience`.
 ///
-/// A write is redirected by REFUSAL (ADR-0070): the node refuses rather than
-/// forwarding, and the refusal names the endpoint and the node to expect. The
-/// `Elsewhere` frame is the read router's, so asserting it here would be
-/// asserting a mechanism this path never used.
+/// A misrouted write leaves as the `Elsewhere` frame (ADR-0101), `settled`
+/// because it names a leadership. These rows declare no `CLIENTS AT`, so the
+/// frame names the member row's own address, which is `at`.
 fn until_sent_to(
     surface: &str,
     key: &str,
@@ -2953,15 +2952,15 @@ fn until_sent_to(
     at: &str,
     patience: Duration,
 ) -> Result<(), String> {
-    let expected: String = leader.iter().map(|byte| format!("{byte:02x}")).collect();
     let began = Instant::now();
     let mut last = String::from("never connected");
     while began.elapsed() < patience {
         if let Ok(mut client) = Client::connect(surface) {
-            match client.run(&into_orders(key), None) {
-                Err(why)
-                    if why.to_string().contains(&format!("write it at {at}"))
-                        && why.to_string().contains(&expected) =>
+            match client.run_routed(&into_orders(key), None, &tessaridb::Parameters::new()) {
+                Ok(Served::Elsewhere(sent))
+                    if sent.endpoint == at
+                        && sent.node == leader
+                        && sent.settlement == tessari_wire::Settlement::Settled =>
                 {
                     return Ok(());
                 }

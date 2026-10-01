@@ -643,6 +643,12 @@ pub enum StatementKind {
         name: Name,
         /// Where it answers, as written.
         endpoint: String,
+        /// Where a client reaches it over the wire (`CLIENTS AT`), when said —
+        /// the address a redirect names (ADR-0101). `endpoint` is the peer
+        /// door, which a client cannot speak to.
+        clients: Option<String>,
+        /// Its HTTP base (`HTTP AT`), when said — the `Location` a `307` names.
+        http: Option<String>,
         /// What that peer is for, as the words a statement wrote.
         ///
         /// `None` when the declaration did not say, which reads as no roles: a
