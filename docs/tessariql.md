@@ -8080,9 +8080,9 @@ front of the request's path. Both are optional and replicate with the row, so a
 node can say where to go from what it has applied, with the peer link down. A row
 that names neither keeps redirects naming `AT`, as they did before the clauses
 existed. `INFO FOR NODE` reports both for each peer (`null` when unsaid).
-A write a node that may not write forwards to the writable peer goes to
-`CLIENTS AT` too (from `0.20.0-beta`): the forward is a client of that node, and
-in a cluster run with peer credentials `AT` is a door that speaks TLS.
+A write a node may not take is carried over the peer link to the writable peer
+(from `0.21.0-beta`), and a node with no peer link refuses it naming where that
+peer takes writes.
 
 **Declare every peer in one transaction.** A store is on its own until its
 catalog names somebody else, and from the moment the first `DEFINE REPLICA`
@@ -8097,10 +8097,10 @@ nobody:
 BEGIN;
 DEFINE REPLICA second AT 'db-2.internal:9000'
     NODE '9f2c4e1a70bb43d5a1c6e2f480937d55'
-    ROLES serving, coordinating;
+    ROLES serving, coordinating REPLICATES STORE;
 DEFINE REPLICA third AT 'db-3.internal:9000'
     NODE 'c81b0f37a4e94a6f8d2e5417b90c3f26'
-    ROLES serving, coordinating;
+    ROLES serving, coordinating REPLICATES STORE;
 COMMIT;
 DEFINE NODE ROLES serving, writable, coordinating;
 ```
