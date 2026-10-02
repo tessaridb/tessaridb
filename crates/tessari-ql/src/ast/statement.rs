@@ -1372,15 +1372,16 @@ pub enum StatementKind {
         /// What a value must satisfy.
         assert: Option<Assertion>,
     },
-    /// `ALTER REPLICA b LEADS SHARD prod.shop.orders 2` · `… LEADS NONE`
+    /// `ALTER REPLICA b LEADS SHARD prod.shop.orders 2` · `… LEADS NONE` ·
+    /// `… AT '…'` · `… ROLES …` · `… CLIENTS AT '…'` · `… HTTP AT '…'`
     ///
-    /// Moves a placement (ADR-0098): the row's `LEADS` is replaced, and `NONE`
-    /// removes it. The other half of the row stays as declared.
+    /// Amends one clause of a peer's row (ADR-0098, Q-892); the rest of the row
+    /// stays as declared, the node it is bound to included.
     AlterReplica {
         /// The peer whose row changes.
         name: Name,
-        /// The range it now stands to lead, or `None` for none.
-        leads: Option<ReachRef>,
+        /// What changes.
+        change: super::ReplicaChange,
     },
     /// `ALTER TABLE users SET SCHEMAFULL` · `… SET SCHEMALESS`
     ///

@@ -34,9 +34,10 @@ pub use ast::{
     EdgeClause, EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, Field, FieldMapping, FieldPath,
     Fill, FillMode, Fusion, GroupClauses, Hop, Identity, InfoSubject, JoinSide, Name,
     NamespaceChange, OnFailure, Ordering, Password, Projected, Projection, RangeExpr, ReachRef,
-    RecordTarget, Retention, Script, SearchAsk, SearchCosts, SearchField, SearchMember,
-    SearchOperator, Select, SetCondition, Source, SpaceBound, Statement, StatementKind,
-    TableChange, TableRef, Timeout, TopicClauses, UserChange, UserGrant, Using, Version, Written,
+    RecordTarget, ReplicaChange, Retention, Script, SearchAsk, SearchCosts, SearchField,
+    SearchMember, SearchOperator, Select, SetCondition, Source, SpaceBound, Statement,
+    StatementKind, TableChange, TableRef, Timeout, TopicClauses, UserChange, UserGrant, Using,
+    Version, Written,
 };
 pub use bind::Parameters;
 pub use error::{Error, Result};

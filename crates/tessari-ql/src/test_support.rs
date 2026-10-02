@@ -288,10 +288,15 @@ fn erase_statement(statement: &mut Statement) {
                 erase_reach(reach);
             }
         }
-        StatementKind::AlterReplica { name, leads } => {
+        StatementKind::AlterReplica { name, change } => {
             erase_name(name);
-            if let Some(reach) = leads {
-                erase_reach(reach);
+            match change {
+                crate::ReplicaChange::Leads(Some(reach)) => erase_reach(reach),
+                crate::ReplicaChange::Roles(roles) => roles.iter_mut().for_each(erase_name),
+                crate::ReplicaChange::Leads(None)
+                | crate::ReplicaChange::At(_)
+                | crate::ReplicaChange::ClientsAt(_)
+                | crate::ReplicaChange::HttpAt(_) => {}
             }
         }
         StatementKind::DefineConsumer {

@@ -563,6 +563,31 @@ impl Catalog<'_, '_> {
         Ok(true)
     }
 
+    /// Amend the row named `name` in place with `amend`, and answer whether
+    /// there was one (Q-892).
+    ///
+    /// For the clauses no other row depends on — where the peer answers, what
+    /// it is for, where clients and HTTP reach it. The placement has a rule of
+    /// its own and goes through [`Self::alter_replica_leads`]. The node the row
+    /// is bound to, its subscription and its fingerprint are not offered to
+    /// `amend` by any caller, so a row keeps the identity it was bound to.
+    ///
+    /// # Errors
+    ///
+    /// The store's, reading or decoding the row.
+    pub fn amend_replica(
+        &mut self,
+        name: &str,
+        amend: impl FnOnce(&mut ReplicaDefinition),
+    ) -> Result<bool> {
+        let Some(mut definition) = self.replica_row(name)? else {
+            return Ok(false);
+        };
+        amend(&mut definition);
+        self.write_replica(&definition);
+        Ok(true)
+    }
+
     /// Refuses taking `row`'s placement when no other row places its range.
     ///
     /// Another candidate keeps the range on its own line, whose election

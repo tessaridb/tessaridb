@@ -559,8 +559,8 @@ impl Session<'_> {
                 self.drop_word_set(transaction, WordSetKind::Stopwords, name)
             }
             StatementKind::DropReplica { name } => self.drop_replica(transaction, name, span),
-            StatementKind::AlterReplica { name, leads } => {
-                self.alter_replica(transaction, name, leads.as_ref(), span)
+            StatementKind::AlterReplica { name, change } => {
+                self.alter_replica(transaction, name, change, span)
             }
             StatementKind::DropDatabase { name } => self.drop_database(transaction, name, span),
             StatementKind::DropNamespace { name } => self.drop_namespace(transaction, name, span),

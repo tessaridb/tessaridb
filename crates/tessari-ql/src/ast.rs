@@ -560,6 +560,26 @@ pub enum NamespaceChange {
     Acknowledge(tessari_types::Acknowledgement),
 }
 
+/// The one thing an [`AlterReplica`](StatementKind::AlterReplica) changes about
+/// a peer's row — one per statement, for [`UserChange`]'s reason (Q-892).
+///
+/// The row is amended in place, so what it does not name — the node it is
+/// bound to above all — stays as it was: dropping a bound row and declaring it
+/// again tombstones that node (ADR-0108 D9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplicaChange {
+    /// `LEADS SHARD prod.shop.orders 2`, or `LEADS NONE` (ADR-0098).
+    Leads(Option<ReachRef>),
+    /// `AT 'b2:9001'` — where its peer door answers now.
+    At(String),
+    /// `ROLES serving, writable` — what it is for, as the words written.
+    Roles(Vec<Name>),
+    /// `CLIENTS AT 'b2:9080'`, or `CLIENTS NONE` (ADR-0101).
+    ClientsAt(Option<String>),
+    /// `HTTP AT 'http://b2:8000'`, or `HTTP NONE`.
+    HttpAt(Option<String>),
+}
+
 /// One field declared inside a table's parentheses.
 ///
 /// Every field of [`DefineField`](StatementKind::DefineField) except the table,

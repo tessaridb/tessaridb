@@ -66,17 +66,12 @@ impl Parser<'_> {
         if self.eat_word("group") {
             return self.alter_group();
         }
-        // ADR-0098. The placement and nothing else: the rest of a member row is
-        // what the operator declared, and changes by declaring it again.
+        // ADR-0098, Q-892. One clause of a member row per statement, amended in
+        // place: declaring a bound row again would tombstone its node.
         if self.eat_word("replica") {
             let name = self.name()?;
-            self.expect_word("leads", "`LEADS` and the range, or `NONE`")?;
-            let leads = if self.eat_keyword(Keyword::None) {
-                None
-            } else {
-                Some(self.placed_range()?)
-            };
-            return Ok(StatementKind::AlterReplica { name, leads });
+            let change = self.replica_change()?;
+            return Ok(StatementKind::AlterReplica { name, change });
         }
         if self.eat_keyword(Keyword::Table) {
             let table = self.table_ref()?;

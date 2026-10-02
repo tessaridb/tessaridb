@@ -16,6 +16,11 @@ compares carries no pre-release suffix.
 
 ### Added
 
+- **`ALTER REPLICA` amends a peer's row one clause at a time** — `AT`, `ROLES`,
+  `CLIENTS AT` / `CLIENTS NONE` and `HTTP AT` / `HTTP NONE`, beside `LEADS`. The
+  row keeps the node it is bound to, its subscription and its fingerprint:
+  since a dropped row tombstones its node, declaring a moved peer again was no
+  longer a way to change where it answers.
 - **Clients are served over TLS 1.3, and a cluster serves them in the clear only
   when told to** (G054, ADR-0108 D4). `--tls-cert` and `--tls-key` (or
   `TESSARIDB_TLS_CERT` / `TESSARIDB_TLS_KEY`) put the wire port, HTTP and `/wire`

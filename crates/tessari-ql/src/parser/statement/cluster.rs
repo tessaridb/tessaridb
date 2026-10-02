@@ -7,7 +7,7 @@ use tessari_types::{
     Acknowledge, Acknowledgement, Duration, Number, Replication, ReplicationClass, parse_uuid,
 };
 
-use crate::ast::{ReachRef, StatementKind};
+use crate::ast::{ReachRef, ReplicaChange, StatementKind};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
 
@@ -474,6 +474,58 @@ impl Parser<'_> {
             fingerprint,
             if_not_exists,
         })
+    }
+
+    /// The one clause an `ALTER REPLICA` changes, read by the readers
+    /// `DEFINE REPLICA` uses for the same clause (Q-892).
+    pub(super) fn replica_change(&mut self) -> Result<ReplicaChange> {
+        if self.eat_word("leads") {
+            return Ok(ReplicaChange::Leads(if self.eat_keyword(Keyword::None) {
+                None
+            } else {
+                Some(self.placed_range()?)
+            }));
+        }
+        if self.eat_word("at") {
+            return Ok(ReplicaChange::At(self.text("the endpoint, as text")?.0));
+        }
+        if self.eat_word("roles") {
+            let mut named = vec![self.name()?];
+            while self.eat_punct(Punct::Comma) {
+                named.push(self.name()?);
+            }
+            return Ok(ReplicaChange::Roles(named));
+        }
+        if self.eat_word("clients") {
+            return Ok(ReplicaChange::ClientsAt(self.address_or_none(
+                "`AT` and where a client reaches the peer, or `NONE`",
+                "the client address, as text",
+            )?));
+        }
+        if self.eat_word("http") {
+            return Ok(ReplicaChange::HttpAt(self.address_or_none(
+                "`AT` and the peer's HTTP base, or `NONE`",
+                "the HTTP base, as text",
+            )?));
+        }
+        Err(self.error_here(
+            "`LEADS`, `AT`, `ROLES`, `CLIENTS AT` or `HTTP AT` — the one clause that changes",
+        ))
+    }
+
+    /// `AT '…'` or `NONE`, after `CLIENTS` or `HTTP`.
+    fn address_or_none(
+        &mut self,
+        expected: &'static str,
+        text: &'static str,
+    ) -> Result<Option<String>> {
+        if self.eat_keyword(Keyword::None) {
+            return Ok(None);
+        }
+        if !self.eat_word("at") {
+            return Err(self.error_here(expected));
+        }
+        Ok(Some(self.text(text)?.0))
     }
 
     /// The range after `LEADS`, read for `DEFINE REPLICA` and `ALTER REPLICA`.

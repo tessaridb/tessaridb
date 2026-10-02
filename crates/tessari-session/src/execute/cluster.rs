@@ -1,7 +1,7 @@
 //! Declaring nodes, failover, replicas and stream consumers.
 
 use tessari_encoding::Roles;
-use tessari_ql::{Name, ReachRef, Span};
+use tessari_ql::{Name, Span};
 use tessari_storage::{
     Catalog, ConsumerDefinition, Feed, Mapped, OnFailure, ReplicaDefinition, Transaction,
 };
@@ -263,14 +263,32 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
-        leads: Option<&ReachRef>,
+        change: &tessari_ql::ReplicaChange,
         span: Span,
     ) -> Result<Outcome> {
-        let leads = match leads {
-            None => None,
-            Some(named) => Some(self.reach_of(transaction, named)?),
+        use tessari_ql::ReplicaChange;
+        let amended = match change {
+            ReplicaChange::Leads(leads) => {
+                let leads = match leads {
+                    None => None,
+                    Some(named) => Some(self.reach_of(transaction, named)?),
+                };
+                Catalog::new(transaction).alter_replica_leads(&name.text, leads)?
+            }
+            // Read before the row is touched, so a misspelled role changes
+            // nothing — `DEFINE REPLICA`'s order.
+            ReplicaChange::Roles(words) => {
+                let roles = named_roles(words)?;
+                Catalog::new(transaction).amend_replica(&name.text, |row| row.roles = roles)?
+            }
+            ReplicaChange::At(endpoint) => Catalog::new(transaction)
+                .amend_replica(&name.text, |row| row.endpoint.clone_from(endpoint))?,
+            ReplicaChange::ClientsAt(clients) => Catalog::new(transaction)
+                .amend_replica(&name.text, |row| row.clients.clone_from(clients))?,
+            ReplicaChange::HttpAt(http) => Catalog::new(transaction)
+                .amend_replica(&name.text, |row| row.http.clone_from(http))?,
         };
-        if !Catalog::new(transaction).alter_replica_leads(&name.text, leads)? {
+        if !amended {
             return Err(Error::Unknown {
                 entity: "replica",
                 name: name.text.clone(),
