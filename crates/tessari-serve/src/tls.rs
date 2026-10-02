@@ -5,9 +5,10 @@
 //! here rather than once per surface. What each surface does with the result —
 //! the wire node wraps a socket, HTTP wraps a listener — stays with it.
 //!
-//! TLS 1.2 and 1.3 only, with rustls's own cipher suites: there is no setting
-//! that widens either, because a legacy suite enabled for one old client is
-//! offered to every client, including one that downgrades on purpose.
+//! TLS 1.3 only, with rustls's own cipher suites: these are external-facing
+//! surfaces, every client this project ships speaks 1.3, and there is no
+//! setting that widens either, because a legacy version enabled for one old
+//! client is offered to every client, including one that downgrades on purpose.
 
 use std::sync::Arc;
 
@@ -108,7 +109,7 @@ pub fn server_config(
         },
         why => key.unreadable("key", &why),
     })?;
-    let mut settings = ServerConfig::builder()
+    let mut settings = ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_no_client_auth()
         .with_single_cert(certificates, private)
         .map_err(|why| Refused::Mismatched {

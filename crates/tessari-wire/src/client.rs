@@ -97,9 +97,10 @@ impl Client {
     #[cfg(feature = "tls")]
     pub fn connect_tls(address: &str, roots: rustls::RootCertStore) -> Result<Self> {
         let name = crate::transport::server_name(address)?;
-        let settings = rustls::ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth();
+        let settings =
+            rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+                .with_root_certificates(roots)
+                .with_no_client_auth();
         let mut session = rustls::ClientConnection::new(Arc::new(settings), name)
             .map_err(|why| Error::Tls(why.to_string()))?;
         let mut socket = TcpStream::connect(address)?;

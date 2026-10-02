@@ -550,3 +550,27 @@ fn a_client_trusting_another_authority_is_refused_by_its_own_check() {
         .expect_err("a certificate from an authority the client does not trust");
     assert!(matches!(refused, tessari_wire::Error::Tls(_)), "{refused}");
 }
+
+#[test]
+fn a_node_with_a_certificate_refuses_a_client_that_offers_only_tls_1_2() {
+    let (_node, address, authority) = serving_tls();
+    let settings = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS12])
+        .with_root_certificates(trusting(&authority))
+        .with_no_client_auth();
+    let name = rustls::pki_types::ServerName::try_from("127.0.0.1").unwrap();
+    let mut session = rustls::ClientConnection::new(Arc::new(settings), name).unwrap();
+    let mut socket = TcpStream::connect(&address).unwrap();
+    let mut refused = None;
+    while session.is_handshaking() {
+        if let Err(why) = session.complete_io(&mut socket) {
+            refused = Some(why);
+            break;
+        }
+    }
+    let refused = refused.expect("a TLS 1.2 handshake completed");
+    assert!(
+        refused.to_string().contains("ProtocolVersion")
+            || refused.to_string().contains("protocol version"),
+        "{refused}"
+    );
+}
