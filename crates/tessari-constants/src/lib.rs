@@ -427,7 +427,7 @@ pub const SIGN_IN_ASK_MILLIS: u64 = 500;
 /// MongoDB's `heartbeatFrequencyMS` is: the number the floor below is derived
 /// from is configured, never observed.
 ///
-/// One second, which is the interval Cassandra gossips on (G053 C2b). Ten, the
+/// One second, the interval gossip-based clusters commonly refresh on (G053 C2b). Ten, the
 /// value until 0.21, made a follower that lost its leader wait up to ten seconds
 /// to learn who replaced it, and put the staleness floor at twenty. A round is
 /// one TLS handshake and one frame each way per declared peer — three to seven

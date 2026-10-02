@@ -147,8 +147,8 @@ pub(crate) fn namespace_named(namespace: NamespaceId, catalog: &Catalog<'_, '_>)
 /// stopped collecting while this leader was idle is behind by nothing at all —
 /// `behind` reads zero and it looks well, because in sequences it *is* well;
 /// only `quiet_for` grows. A follower collecting steadily but unable to keep up
-/// has almost no `quiet_for`; only `behind` grows. That is why PostgreSQL
-/// publishes positions and lags from the primary rather than either alone.
+/// has almost no `quiet_for`; only `behind` grows. That is why a primary
+/// worth monitoring publishes positions and lags rather than either alone.
 ///
 /// `quiet_for` is time since this follower last collected. `copy_age` is the
 /// other question — how old the data it holds is — and the two come apart on an

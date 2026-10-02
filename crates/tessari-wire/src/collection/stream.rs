@@ -6,7 +6,7 @@
 //! behind on a healthy link and a leader killed in that window took every write
 //! it had acknowledged with it — measured: 262 of 262 (G053 SG1). No database
 //! the design was compared with waits a period before moving a change: a
-//! PostgreSQL walsender and a MySQL binlog dump thread push as they write, a
+//! write-ahead-log sender and a binary-log dump thread push as they write, a
 //! Raft leader sends `AppendEntries` per commit.
 //!
 //! # The shape: a round, repeated, where the leader waits instead of answering empty
