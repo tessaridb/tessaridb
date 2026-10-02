@@ -3592,6 +3592,19 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
         std::thread::sleep(POLL);
     }
 
+    // Node 2 level with its shard before the stop, as before every kill here:
+    // the scores above were gathered on the leaders and say nothing about node
+    // 2's own copy, and a record it had not collected yet is not one it holds.
+    let began = Instant::now();
+    while read_at(GATHERING[2].0, "SELECT * FROM orders:'p'..'zz';").map(|ids| ids.len()) != Ok(2) {
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "node 2 never held both records of its shard{}",
+            what_the_nodes_said(&GATHERING, &logs)
+        );
+        std::thread::sleep(POLL);
+    }
+
     // Shard 2's leader stops: a read needing shard 2 is refused naming it —
     // never answered without it — and a read inside what node 2 holds answers.
     cluster.running[1] = None;
