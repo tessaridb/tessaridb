@@ -345,3 +345,70 @@ fn a_streamed_snapshot_is_the_answered_one_and_a_refused_caller_streams_nothing(
     assert!(nina.run("BACKUP STATE;").is_err());
     assert!(refused_sink.0.lock().unwrap().is_empty());
 }
+
+fn at_rest(byte: u8) -> Arc<tessari_vault::AtRestKey> {
+    Arc::new(
+        tessari_vault::AtRestKey::from_key(&tessari_vault::SecretBytes::adopt([byte; 32])).unwrap(),
+    )
+}
+
+/// Whether `bytes` holds `needle` anywhere.
+fn holds(bytes: &[u8], needle: &[u8]) -> bool {
+    bytes.windows(needle.len()).any(|window| window == needle)
+}
+
+/// Every backup a node with a key produces is sealed (ADR-0108 D7): written
+/// with `TO`, answered as a value, and streamed. The control is the same
+/// statement on a node without one, whose file shows the record.
+#[test]
+fn a_node_with_a_key_seals_every_backup_it_produces() {
+    let store = store();
+    let folder = tempfile::tempdir().unwrap();
+    let mut plain = owner(&store, folder.path());
+    answer(&mut plain, "BACKUP SCRIPT TO 'plain.tessariql';");
+    let shown = std::fs::read(folder.path().join("plain.tessariql")).unwrap();
+    assert!(
+        holds(&shown, b"kept"),
+        "the control holds no record to find"
+    );
+
+    let key = at_rest(7);
+    let mut root = owner(&store, folder.path()).sealing_backups(Arc::clone(&key));
+    for (statement, name) in [
+        ("BACKUP LOG", "sealed.tessarilog"),
+        ("BACKUP STATE", "sealed.tessarisnap"),
+        ("BACKUP SCRIPT", "sealed.tessariql"),
+    ] {
+        answer(&mut root, &format!("{statement} TO '{name}';"));
+        let written = std::fs::read(folder.path().join(name)).unwrap();
+        assert!(
+            written.starts_with(tessari_vault::at_rest::SEALED_MAGIC),
+            "{name}"
+        );
+        assert!(!holds(&written, b"kept"), "{name} shows a record");
+        let Value::Bytes(answered) = answer(&mut root, &format!("{statement};")) else {
+            panic!("{statement} answered with something other than bytes");
+        };
+        assert!(
+            answered.starts_with(tessari_vault::at_rest::SEALED_MAGIC),
+            "{statement}"
+        );
+        assert!(!holds(&answered, b"kept"), "{statement} answered a record");
+    }
+
+    let streamed = Shared::default();
+    let mut streaming = Session::new(&store)
+        .sealing_backups(key)
+        .snapshot_into(Box::new(streamed.clone()));
+    streaming.sign_in("root", PASSWORD).unwrap();
+    answer(&mut streaming, "BACKUP STATE;");
+    let sent = streamed.0.lock().unwrap().clone();
+    assert!(sent.starts_with(tessari_vault::at_rest::SEALED_MAGIC));
+    let mut opened = Vec::new();
+    std::io::Read::read_to_end(
+        &mut tessari_vault::at_rest::reading(Some(&at_rest(7)), sent.as_slice()).unwrap(),
+        &mut opened,
+    )
+    .unwrap();
+    tessari_backup::verify_state(&mut opened.as_slice()).unwrap();
+}

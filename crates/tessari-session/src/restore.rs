@@ -35,9 +35,15 @@ impl Session<'_> {
     pub(crate) fn restore(&self, name: &str) -> Result<Outcome> {
         let folder = self.backups.as_deref().ok_or(Error::NoBackupFolder)?;
         let path = crate::backup_to::readable(folder, name)?;
-        let text = fs::read_to_string(&path).map_err(|failure| Error::BackupFailed {
-            reason: format!("{}: {failure}", path.display()),
-        })?;
+        // A sealed script opens with this node's key and is read whole before
+        // any of it is vetted, so a file cut or altered refuses here.
+        let mut text = String::new();
+        fs::File::open(&path)
+            .and_then(|file| tessari_vault::at_rest::reading(self.at_rest.as_deref(), file))
+            .and_then(|mut opened| std::io::Read::read_to_string(&mut opened, &mut text))
+            .map_err(|failure| Error::BackupFailed {
+                reason: format!("{}: {failure}", path.display()),
+            })?;
         let script = tessari_ql::parse(&text)
             .and_then(|script| script.bind(&Parameters::new()))
             .map_err(|failure| {

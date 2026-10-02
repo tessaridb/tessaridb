@@ -85,6 +85,10 @@ pub struct Session<'a> {
     /// A fact about the process, like `gather`, so it is taken at the session;
     /// `None` refuses every `TO` rather than writing somewhere nobody chose.
     pub(crate) backups: Option<Arc<Path>>,
+    /// The key every backup this node produces is sealed under, and every
+    /// sealed backup it reads is opened with (ADR-0108 D7). A fact about the
+    /// process, like `backups`; `None` writes backups as they are.
+    pub(crate) at_rest: Option<Arc<tessari_vault::AtRestKey>>,
     /// The cluster's sign-in budget, when this node is part of one (ADR-0108
     /// D5). A fact about the process, like `gather`.
     pub(crate) budget: Option<Arc<dyn crate::throttle::Budget>>,
@@ -132,6 +136,7 @@ impl<'a> Session<'a> {
             elsewhere: None,
             gather: None,
             backups: None,
+            at_rest: None,
             budget: None,
             sink: crate::backup_to::Sink::none(),
             landed: false,
@@ -177,6 +182,14 @@ impl<'a> Session<'a> {
     #[must_use]
     pub fn backing_up_into(mut self, folder: Arc<Path>) -> Self {
         self.backups = Some(folder);
+        self
+    }
+
+    /// Open this session sealing every backup it produces under `key`, and
+    /// opening every sealed backup it reads with it (ADR-0108 D7).
+    #[must_use]
+    pub fn sealing_backups(mut self, key: Arc<tessari_vault::AtRestKey>) -> Self {
+        self.at_rest = Some(key);
         self
     }
 
@@ -593,6 +606,7 @@ impl<'a> Session<'a> {
             gather: self.gather.clone(),
             // A probe answers who may do what and never writes a file.
             backups: None,
+            at_rest: None,
             budget: self.budget.clone(),
             sink: crate::backup_to::Sink::none(),
             landed: false,

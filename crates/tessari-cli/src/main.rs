@@ -138,8 +138,18 @@ fn run(asked: Asked) -> Result<Ended, String> {
     // Verifying reads a file and touches no store, so it happens before one is
     // opened — which is what makes it usable on a machine that has nothing but
     // the backup.
+    let at_rest = encryption_key(
+        asked.encryption_key.as_deref(),
+        asked.store.is_some() || matches!(asked.source, Source::Verify(_)),
+    )?;
+    // The key a backup being read was sealed under: named, or the store's.
+    let backup_key = asked
+        .backup_key
+        .as_deref()
+        .map(|path| tessaridb::AtRestKey::read(path).map_err(|failure| failure.to_string()))
+        .transpose()?;
     if let Source::Verify(path) = &asked.source {
-        return verify(path);
+        return verify(path, backup_key.as_ref().or(at_rest.as_ref()));
     }
     if let Some(address) = &asked.at {
         // The flag, or the environment beside the other `--at` settings; given,
@@ -158,7 +168,8 @@ fn run(asked: Asked) -> Result<Ended, String> {
     }
 
     let db = match &asked.store {
-        Some(path) => Db::open(path).map_err(|failure| format!("{}: {failure}", path.display()))?,
+        Some(path) => Db::open_encrypted(path, tessaridb::StoreConfig::default(), at_rest)
+            .map_err(|failure| format!("{}: {failure}", path.display()))?,
         None => Db::in_memory().map_err(|failure| failure.to_string())?,
     };
 
@@ -177,7 +188,9 @@ fn run(asked: Asked) -> Result<Ended, String> {
         }
         Source::Snapshot(path) => return snapshot(&db, path).map(|()| Ended::Fine),
         Source::Dump(path) => return dump(&db, path).map(|()| Ended::Fine),
-        Source::Restore(path) => return restore(&db, path, sequence).map(|()| Ended::Fine),
+        Source::Restore(path) => {
+            return restore(&db, path, sequence, backup_key.as_ref()).map(|()| Ended::Fine);
+        }
         Source::Health => return health(&db),
         Source::Serve => return serve(db, &asked.serving, asked.cluster.as_ref(), started),
         Source::Verify(_)
@@ -280,4 +293,25 @@ fn greet(out: &mut impl Write, opened: Where<'_>) -> io::Result<()> {
         Where::Node(address) => writeln!(out, "tessaridb — {address}")?,
     }
     writeln!(out, "`.help` for the little there is of it")
+}
+
+/// Where the key to the data at rest is read from when the flag names none.
+const ENCRYPTION_KEY_FILE: &str = "TESSARIDB_ENCRYPTION_KEY_FILE";
+
+/// The key the store and its backups are encrypted under (ADR-0108 D7): the
+/// flag's file, else `TESSARIDB_ENCRYPTION_KEY_FILE` for a store on disk or a
+/// backup to verify, else none.
+fn encryption_key(
+    named: Option<&std::path::Path>,
+    writes_files: bool,
+) -> Result<Option<tessaridb::AtRestKey>, String> {
+    let file = match named {
+        Some(path) => Some(path.to_path_buf()),
+        // The variable stands for the flag only where the flag means
+        // something, so a container that sets it can still run `--at`.
+        None if writes_files => std::env::var_os(ENCRYPTION_KEY_FILE).map(std::path::PathBuf::from),
+        None => None,
+    };
+    file.map(|path| tessaridb::AtRestKey::read(&path).map_err(|failure| failure.to_string()))
+        .transpose()
 }

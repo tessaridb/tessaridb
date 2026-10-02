@@ -7309,6 +7309,77 @@ statements ran and the databases it created: `{ path, statements, databases }`.
 A log or a snapshot restores only into an empty store, with the node stopped:
 `tessaridb <store> --restore <file>`.
 
+### An encrypted store, and the backups it seals
+
+```text
+openssl rand 32 > store.key && chmod 600 store.key
+tessaridb ./data --encryption-key-file store.key --serve 0.0.0.0:9080
+```
+
+Given a key, a node encrypts **every file its storage engine writes** — the
+tables, the write-ahead log, the manifest, the engine's own options and log —
+and **seals every backup it produces**: a snapshot, a log or a script, answered
+by `BACKUP`, written by `BACKUP … TO`, streamed by `GET /backup`, or written by
+`--backup`, `--snapshot` and `--dump`. `TESSARIDB_ENCRYPTION_KEY_FILE` stands for
+the flag. The file holds exactly 32 bytes and, on Unix, must not be readable by
+its group or by others; any other file is refused, saying which check failed.
+
+The key is never used as it is: three subkeys are drawn from it, one for the
+engine's files, one for backups and one for a marker file, `ENCRYPTION`, that
+records which key the store was created under. The engine's files are XChaCha20
+with a random nonce per file; their integrity is the engine's own checksums. A
+sealed backup is ChaCha20-Poly1305 in 64 KiB chunks, each bound to its position
+and to whether it is the last, so a backup cut short, reordered, extended or
+altered does not open.
+
+**A store opens only the way it was created**, and says which way is wrong
+before the engine reads anything:
+
+- an encrypted store opened without a key — *"is encrypted; it opens only with
+  its key"*;
+- under another key — *"the encryption key does not open the store"*;
+- a plain store given a key — *"is not encrypted, and an encryption key was
+  given"*.
+
+**A sealed backup opens only where its key is.** `RESTORE SCRIPT FROM`,
+`--restore` and `--verify` open it with the node's key; on a node without one it
+is refused (*"this backup is sealed"*), and under another key it is refused
+(*"does not open under this key"*). A plain backup still restores into an
+encrypted store. `--backup-key-file` names the key a backup was sealed under
+when it is not the store's — which is how a store **moves to a new key**: back
+it up, then restore the backup into a new store under the new key, naming the old
+one:
+
+```text
+tessaridb ./data --encryption-key-file old.key --backup state.tessarisnap
+tessaridb ./renewed --encryption-key-file new.key \
+          --backup-key-file old.key --restore state.tessarisnap
+```
+
+Nothing rewrites a store in place, and a lost key is a lost store and a lost set
+of backups: keep it somewhere the store is not.
+
+**What is protected, and what is not.** The disk and the backups: a stolen
+volume, a discarded drive, a backup file left in a bucket. Not a running node —
+it holds the key in memory and answers anyone with a credential, and privileged
+code on the host can read both — and not the traffic, which is what TLS is for.
+Where data lives, and what each place holds:
+
+| where | holds | encrypted |
+|---|---|---|
+| the store's directory | every record, the catalog, the log | yes, under the engine subkey |
+| `ENCRYPTION` | a sealed constant that says which key | holds no data |
+| a backup file, wherever it is copied | every record of its part | sealed, under the backup subkey |
+| `<name>.partial` while `BACKUP … TO` writes | the same | sealed |
+| the node's temporary folder while `GET /backup` spools | the same | sealed |
+| the key file | the key | no — keep it apart from the store |
+| the node's memory | everything it has read | no |
+| the node's own log lines on standard error | events and failure reasons, which can name a table or an id | no |
+
+A node holding a vault keeps its sealed values sealed under the vault's own key
+whether or not the store is encrypted; the two are separate keys with separate
+custody.
+
 ## 7b. Looking at a plan
 
 ```

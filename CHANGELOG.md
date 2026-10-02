@@ -43,6 +43,14 @@ compares carries no pre-release suffix.
   handshake whatever certificate it presents, and no row may name it again
   (`NodeTombstoned`). `INFO FOR NODE` lists removed nodes under
   `cluster.tombstoned`.
+- **A store can be encrypted at rest** (ADR-0108 D7). `--encryption-key-file`
+  (or `TESSARIDB_ENCRYPTION_KEY_FILE`) names a private 32-byte key: every file the
+  storage engine writes is encrypted (XChaCha20, a random nonce per file), and
+  every backup the node produces — `BACKUP`, `BACKUP … TO`, `GET /backup`,
+  `--backup`, `--snapshot`, `--dump` — is sealed (ChaCha20-Poly1305, so a backup
+  cut or altered does not open). A store opens only the way it was created, and
+  the refusal names which key is missing or wrong; `--backup-key-file` restores a
+  backup sealed under another key, which is how a store moves to a new one.
 - **`/metrics` reports when each presented certificate expires**
   (`tessari_tls_certificate_expires_seconds`, by surface), to a caller who may
   read the node's topology.

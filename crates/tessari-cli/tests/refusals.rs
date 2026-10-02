@@ -61,6 +61,9 @@ fn run(store: &PathBuf, user: Option<&str>, arguments: &[&str], input: &str) -> 
             .arg(name)
             .env("TESSARIDB_PASSWORD", PASSWORD);
     }
+    // A key in the developer's environment would change what every store
+    // here is; the tests that want one name it.
+    command.env_remove("TESSARIDB_ENCRYPTION_KEY_FILE");
     let mut child = command
         .args(arguments)
         .stdin(Stdio::piped())
@@ -372,5 +375,192 @@ fn a_backup_is_a_snapshot_unless_a_position_asks_for_the_log() {
     assert!(
         ok && said.contains("record"),
         "the log did not verify: {said}"
+    );
+}
+
+/// Whether any file directly under `folder` holds `needle`.
+fn on_disk(folder: &std::path::Path, needle: &[u8]) -> bool {
+    std::fs::read_dir(folder).unwrap().any(|entry| {
+        let path = entry.unwrap().path();
+        path.is_file()
+            && std::fs::read(&path)
+                .unwrap()
+                .windows(needle.len())
+                .any(|window| window == needle)
+    })
+}
+
+/// An encrypted store from the command line (ADR-0108 D7): nothing it writes
+/// shows a record, it opens only with its key, and its backup is sealed —
+/// verified and restored with the key and refused without it. The control is
+/// the same script into a store with no key, whose files show the record.
+#[test]
+fn an_encrypted_store_keeps_its_records_and_its_backups_unreadable_without_its_key() {
+    use std::os::unix::fs::PermissionsExt as _;
+    const CANARY: &str = "canary-in-the-store-4417";
+    let script = format!(
+        "DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d; \
+         DEFINE COLLECTION t; CREATE t:1 = {{ said: '{CANARY}' }};"
+    );
+    let files = std::env::temp_dir().join("tessaridb-cli-refusals-encrypted-files");
+    drop(std::fs::remove_dir_all(&files));
+    std::fs::create_dir_all(&files).unwrap();
+    let key = files.join("key");
+    std::fs::write(&key, [5_u8; 32]).unwrap();
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let key = key.to_str().unwrap();
+
+    let control = store("encrypted-control");
+    let (ok, said) = run(&control, None, &["-e", &script], "");
+    assert!(ok, "the control was not made: {said}");
+    assert!(
+        on_disk(&control, CANARY.as_bytes()),
+        "the control shows no record to find"
+    );
+
+    let path = store("encrypted");
+    let (ok, said) = run(
+        &path,
+        None,
+        &["--encryption-key-file", key, "-e", &script],
+        "",
+    );
+    assert!(ok, "the encrypted store was not made: {said}");
+    assert!(
+        !on_disk(&path, CANARY.as_bytes()),
+        "an encrypted store shows a record"
+    );
+
+    let (ok, said) = run(&path, None, &["-e", "INFO FOR STORE;"], "");
+    assert!(
+        !ok && said.contains("is encrypted"),
+        "opened without its key: {said}"
+    );
+
+    let backup = files.join("store.tessarisnap");
+    let (ok, said) = run(
+        &path,
+        None,
+        &[
+            "--encryption-key-file",
+            key,
+            "--backup",
+            backup.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert!(ok, "the backup failed: {said}");
+    let sealed = std::fs::read(&backup).unwrap();
+    assert!(
+        sealed.starts_with(b"TESSARISEALED"),
+        "the backup is not sealed"
+    );
+    assert!(
+        !sealed
+            .windows(CANARY.len())
+            .any(|window| window == CANARY.as_bytes()),
+        "the backup shows a record"
+    );
+
+    let (ok, said) = run(&path, None, &["--verify", backup.to_str().unwrap()], "");
+    assert!(
+        !ok && said.contains("encryption key"),
+        "verified without the key: {said}"
+    );
+    let (ok, said) = run(
+        &path,
+        None,
+        &[
+            "--encryption-key-file",
+            key,
+            "--verify",
+            backup.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert!(
+        ok && said.contains("a snapshot of"),
+        "did not verify with the key: {said}"
+    );
+
+    let restored = store("encrypted-restored");
+    let (ok, said) = run(
+        &restored,
+        None,
+        &[
+            "--encryption-key-file",
+            key,
+            "--restore",
+            backup.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert!(ok, "the restore failed: {said}");
+    let (ok, said) = run(
+        &restored,
+        None,
+        &[
+            "--encryption-key-file",
+            key,
+            "-e",
+            "USE NAMESPACE n; USE DATABASE d; SELECT * FROM t;",
+        ],
+        "",
+    );
+    assert!(
+        ok && said.contains(CANARY),
+        "the restored store lost the record: {said}"
+    );
+    assert!(
+        !on_disk(&restored, CANARY.as_bytes()),
+        "the restored store shows a record"
+    );
+
+    // A new key: the backup restores into a store under it only when told the
+    // key it was sealed under, which is how a store moves to a new key.
+    let renewed = files.join("renewed");
+    std::fs::write(&renewed, [6_u8; 32]).unwrap();
+    std::fs::set_permissions(&renewed, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let renewed = renewed.to_str().unwrap();
+    let moved = store("encrypted-renewed");
+    let (ok, said) = run(
+        &moved,
+        None,
+        &[
+            "--encryption-key-file",
+            renewed,
+            "--restore",
+            backup.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert!(
+        !ok && said.contains("does not open under this key"),
+        "opened under another key: {said}"
+    );
+    let moved = store("encrypted-renewed");
+    let (ok, said) = run(
+        &moved,
+        None,
+        &[
+            "--encryption-key-file",
+            renewed,
+            "--backup-key-file",
+            key,
+            "--restore",
+            backup.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert!(ok, "the backup did not move to the new key: {said}");
+    let (ok, said) = run(
+        &moved,
+        None,
+        &["--encryption-key-file", key, "-e", "INFO FOR STORE;"],
+        "",
+    );
+    assert!(
+        !ok && said.contains("does not open the store"),
+        "the old key opened the new store: {said}"
     );
 }

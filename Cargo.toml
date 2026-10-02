@@ -77,6 +77,17 @@ getrandom = "0.4"
 # compiler is entitled to delete a wipe that nothing afterwards observes, and a
 # hand-written `for b in buf { *b = 0 }` is exactly that wipe.
 zeroize = { version = "1.9", features = ["zeroize_derive"] }
+# The engine files of an encrypted store (ADR-0108 D7): XChaCha20 keystream at a
+# file offset, so the engine can read any block of a file without the rest. The
+# crate is already in the tree under `chacha20poly1305`; this names the extended
+# nonce so every file can take a random one.
+chacha20 = { version = "0.10", default-features = false, features = ["cipher", "xchacha", "zeroize"] }
+# HKDF for the at-rest subkeys. `ring` is already in the tree as the TLS
+# provider below; this uses its HKDF and nothing else of it.
+ring = { version = "0.17", default-features = false }
+# Compiles the engine's encryption provider against the engine's own headers.
+# Already in the tree: every C/C++ dependency here builds with it.
+cc = "1"
 # TLS for the inter-node link, and nothing else in this workspace speaks it.
 # `rustls` with the `ring` provider rather than `aws-lc-rs`: the provider is the
 # whole build-system question, and `ring` asks only for the `cc` that

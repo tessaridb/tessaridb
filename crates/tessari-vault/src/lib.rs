@@ -74,12 +74,14 @@
 // `expect_used` and `as_conversions` govern production code; a test states its own expectations.
 #![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
+pub mod at_rest;
 pub mod envelope;
 pub mod error;
 pub mod keys;
 pub mod seal;
 pub mod secret;
 
+pub use at_rest::AtRestKey;
 pub use envelope::{Binding, Level};
 pub use error::{Error, Result};
 pub use keys::{Root, Wrapped};

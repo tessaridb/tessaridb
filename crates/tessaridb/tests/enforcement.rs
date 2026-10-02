@@ -472,7 +472,21 @@ const TABLES: &[Table] = &[
         // never admits anybody — the password is still verified here.
         // Re-classification trigger: an installed budget able to answer for a
         // sign-in rather than about one.
-        expected: 33,
+        //
+        // 35 since a store can be encrypted at rest (G054 W8, ADR-0108 D7):
+        //
+        //   * `Db::open_encrypted` opens a store on disk under a key. **Exempt
+        //     under E3**, with `open` and `open_with`: opening is holding the
+        //     store, and a caller who can open the directory holds every byte;
+        //     the key protects the disk from a caller who cannot, which is not
+        //     a permission. The refusals it adds (no key, another key, a key on
+        //     a plain store) are `encryption_tests::*` and CLI
+        //     `an_encrypted_store_keeps_its_records_*`.
+        //   * `Db::at_rest` hands the key to the command line's own backup and
+        //     restore; **exempt under E3** for the same reason — only the
+        //     process that opened the store with it can ask.
+        //     Re-classification trigger: any network surface reaching it.
+        expected: 35,
         count: |text| public_functions(&block(text, "impl Db")),
     },
     Table {
@@ -1106,7 +1120,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 139 since one sign-in budget for a cluster: `Db::budget_through`,
     // exempt, classified above.
-    assert_eq!(total, 139, "the counted tables no longer sum to 139");
+    //
+    // 141 since a store can be encrypted at rest (ADR-0108 D7):
+    // `Db::open_encrypted` and `Db::at_rest`, exempt, classified above.
+    assert_eq!(total, 141, "the counted tables no longer sum to 141");
 }
 
 /// Every `.rs` file under a directory.

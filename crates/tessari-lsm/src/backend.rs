@@ -42,6 +42,8 @@ use tessari_kv::{
 
 mod group;
 
+use crate::AtRestKey;
+use crate::encryption;
 use crate::error::{BACKEND_NAME, from_engine, from_open, missing_region};
 use crate::options::{Durability, StoreConfig, database_options, regions};
 
@@ -94,10 +96,38 @@ impl LsmBackend {
     /// another process, [`Error::Validation`] when an existing store is missing a
     /// region, and the mapped engine failure otherwise.
     pub fn open(path: impl AsRef<Path>, config: StoreConfig) -> Result<Self> {
+        Self::open_with_key(path, config, None)
+    }
+
+    /// Open the store at `path`, encrypted under `key` when one is given
+    /// (ADR-0108 D7).
+    ///
+    /// A new store given a key is created encrypted. An existing store opens
+    /// only the way it was created: an encrypted one refuses to open without
+    /// its key or under another, and a plain one refuses a key — each refusal
+    /// saying which, before the engine reads a byte.
+    ///
+    /// # Errors
+    ///
+    /// As [`LsmBackend::open`], and [`Error::Validation`] for a key that does
+    /// not match the store.
+    pub fn open_with_key(
+        path: impl AsRef<Path>,
+        config: StoreConfig,
+        key: Option<&AtRestKey>,
+    ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let cache = rocksdb::Cache::new_lru_cache(config.block_cache_bytes);
 
-        let existing = DB::list_cf(&Options::default(), &path).ok();
+        // `CURRENT` names the engine's live manifest, so it is there exactly
+        // when a store is.
+        encryption::admit(&path, key, path.join("CURRENT").exists())?;
+        let environment = key.map(encryption::environment).transpose()?;
+        let mut listing = Options::default();
+        if let Some(environment) = &environment {
+            listing.set_env(environment);
+        }
+        let existing = DB::list_cf(&listing, &path).ok();
         if let Some(found) = &existing {
             let missing: Vec<Keyspace> = Keyspace::ALL
                 .iter()
@@ -110,7 +140,10 @@ impl LsmBackend {
         }
 
         let create = existing.is_none();
-        let database_options = database_options(&config, create);
+        let mut database_options = database_options(&config, create);
+        if let Some(environment) = &environment {
+            database_options.set_env(environment);
+        }
         let descriptors = regions(&cache)
             .into_iter()
             .map(|(name, options)| rocksdb::ColumnFamilyDescriptor::new(name, options));

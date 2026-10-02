@@ -26,13 +26,18 @@
 //! Stated per level in [`Durability`] and proven by killing the writing process,
 //! not by assertion. The default is the level a system of record needs.
 
-#![forbid(unsafe_code)]
+// `deny`, not `forbid`: the encryption module is the one place allowed
+// `unsafe`, at the boundary to the engine's C++ encryption provider.
+#![deny(unsafe_code)]
 // `expect_used` and `as_conversions` govern production code; a test states its own expectations.
 #![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 mod backend;
 #[cfg(test)]
 mod cache_filling_tests;
+mod encryption;
+#[cfg(test)]
+mod encryption_tests;
 mod error;
 mod options;
 #[cfg(test)]
@@ -40,3 +45,4 @@ mod wal_tracking_tests;
 
 pub use backend::LsmBackend;
 pub use options::{Durability, StoreConfig, effective_options_files};
+pub use tessari_vault::AtRestKey;

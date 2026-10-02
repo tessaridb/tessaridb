@@ -213,12 +213,21 @@ fn large_payload(n: u64) -> Vec<u8> {
     payload
 }
 
-fn open_small_store(path: &std::path::Path) -> Store {
+/// Set in the flushing child's environment when its store is encrypted.
+const FLUSHED_ENCRYPTED: &str = "TESSARIDB_FLUSHED_ENCRYPTED";
+
+/// The key an encrypted flushing store runs under.
+fn at_rest() -> tessari_lsm::AtRestKey {
+    tessari_lsm::AtRestKey::from_key(&tessari_vault::SecretBytes::adopt([11; 32])).unwrap()
+}
+
+fn open_small_store(path: &std::path::Path, encrypted: bool) -> Store {
     let config = StoreConfig {
         memtable_bytes: SMALL_MEMTABLE_BYTES,
         ..StoreConfig::new(Durability::PowerLossSafe)
     };
-    let backend = LsmBackend::open(path, config).unwrap();
+    let key = encrypted.then(at_rest);
+    let backend = LsmBackend::open_with_key(path, config, key.as_ref()).unwrap();
     Store::open(Arc::new(backend) as Arc<dyn KvBackend>).unwrap()
 }
 
@@ -243,7 +252,8 @@ fn commit_large_until_killed() {
     let Ok(path) = std::env::var(FLUSHED_STORE_PATH) else {
         panic!("{FLUSHED_STORE_PATH} must name the store directory");
     };
-    let store = open_small_store(std::path::Path::new(&path));
+    let encrypted = std::env::var_os(FLUSHED_ENCRYPTED).is_some();
+    let store = open_small_store(std::path::Path::new(&path), encrypted);
 
     for n in 1..=CHILD_GIVES_UP_AFTER {
         let mut transaction = store.begin().unwrap();
@@ -261,10 +271,25 @@ fn an_acknowledged_commit_survives_a_kill_after_the_store_has_flushed() {
     // memory, so recovery is pure log replay and a batch is one record. Here
     // files exist before the kill, so recovery is mixed — part read from disk,
     // part replayed — and the same two invariants have to hold across the seam.
+    killed_after_a_flush(false);
+}
+
+/// The same kill on an encrypted store (ADR-0108 D7): recovery reads the
+/// encrypted log and tables back, and nothing on disk shows a record.
+#[test]
+fn an_acknowledged_commit_in_an_encrypted_store_survives_a_kill_after_a_flush() {
+    killed_after_a_flush(true);
+}
+
+fn killed_after_a_flush(encrypted: bool) {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("store");
 
-    let mut child = Command::new(std::env::current_exe().unwrap())
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    if encrypted {
+        command.env(FLUSHED_ENCRYPTED, "1");
+    }
+    let mut child = command
         .args([
             "--exact",
             "commit_large_until_killed",
@@ -312,7 +337,19 @@ fn an_acknowledged_commit_survives_a_kill_after_the_store_has_flushed() {
         sorted_files(&path)
     );
 
-    let reopened = open_small_store(&path);
+    if encrypted {
+        let shown = std::fs::read_dir(&path).unwrap().any(|entry| {
+            let file = entry.unwrap().path();
+            file.is_file()
+                && std::fs::read(&file)
+                    .unwrap()
+                    .windows(b"payload-".len())
+                    .any(|window| window == b"payload-")
+        });
+        assert!(!shown, "a record is readable in an encrypted store's files");
+    }
+
+    let reopened = open_small_store(&path, encrypted);
     let transaction = reopened.begin().unwrap();
     for (n, sequence) in &acknowledged {
         assert_eq!(

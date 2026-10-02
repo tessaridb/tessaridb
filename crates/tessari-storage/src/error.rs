@@ -1095,7 +1095,10 @@ impl Error {
                 tessari_vault::Error::WrongKey
                 | tessari_vault::Error::Sealed
                 | tessari_vault::Error::AlreadyUnsealed
-                | tessari_vault::Error::Derivation => ErrorCategory::Validation,
+                | tessari_vault::Error::Derivation
+                | tessari_vault::Error::KeyFile { .. }
+                | tessari_vault::Error::BackupSealed
+                | tessari_vault::Error::BackupDoesNotOpen => ErrorCategory::Validation,
             },
             Self::VaultUnavailable | Self::AuditUnavailable { .. } => ErrorCategory::Unavailable,
             // All three are the caller's statement being wrong about the store,

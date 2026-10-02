@@ -130,7 +130,7 @@ mod coordinate;
 pub mod feed;
 
 pub use coordinate::{Coordinate, Coordinated, Coordination, Surface};
-pub use tessari_lsm::{Durability, StoreConfig};
+pub use tessari_lsm::{AtRestKey, Durability, StoreConfig};
 pub use tessari_session::redact::{Visible, seen};
 pub use tessari_session::travels;
 pub use tessari_session::{
@@ -210,6 +210,9 @@ pub struct Db {
     /// The folder `BACKUP … TO` writes into, set once by the process that was
     /// given one; unset, every `TO` is refused rather than written anywhere.
     backups: std::sync::OnceLock<Arc<Path>>,
+    /// The key the store is encrypted under, which also seals every backup
+    /// this database produces (ADR-0108 D7). Fixed at open, like the store.
+    at_rest: Option<Arc<AtRestKey>>,
 }
 
 impl Db {
@@ -233,6 +236,7 @@ impl Db {
             budget: std::sync::OnceLock::new(),
             commits: std::sync::OnceLock::new(),
             backups: std::sync::OnceLock::new(),
+            at_rest: None,
         })
     }
 
@@ -256,7 +260,25 @@ impl Db {
     /// Returns an error when the engine cannot open the path, or when the store
     /// cannot be initialised on it.
     pub fn open_with(path: impl AsRef<Path>, config: StoreConfig) -> Result<Self> {
-        let backend = LsmBackend::open(path, config).map_err(tessari_storage::Error::from)?;
+        Self::open_encrypted(path, config, None)
+    }
+
+    /// Open a database at `path`, its files encrypted under `key` when one is
+    /// given (ADR-0108 D7) — and every backup it produces sealed under it.
+    ///
+    /// A store opens only the way it was created: an encrypted one refuses to
+    /// open without its key or under another, and a plain one refuses a key.
+    ///
+    /// # Errors
+    ///
+    /// As [`Db::open_with`], and a refusal naming which key is wrong.
+    pub fn open_encrypted(
+        path: impl AsRef<Path>,
+        config: StoreConfig,
+        key: Option<AtRestKey>,
+    ) -> Result<Self> {
+        let backend = LsmBackend::open_with_key(path, config, key.as_ref())
+            .map_err(tessari_storage::Error::from)?;
         let backend: Arc<dyn KvBackend> = Arc::new(backend);
         Ok(Self {
             store: Store::open(backend)?,
@@ -266,6 +288,7 @@ impl Db {
             budget: std::sync::OnceLock::new(),
             commits: std::sync::OnceLock::new(),
             backups: std::sync::OnceLock::new(),
+            at_rest: key.map(Arc::new),
         })
     }
 
@@ -289,10 +312,21 @@ impl Db {
             Some(budget) => session.budgeted(Arc::clone(budget)),
             None => session,
         };
+        let session = match &self.at_rest {
+            Some(key) => session.sealing_backups(Arc::clone(key)),
+            None => session,
+        };
         match self.backups.get() {
             Some(folder) => session.backing_up_into(Arc::clone(folder)),
             None => session,
         }
+    }
+
+    /// The key this database's store is encrypted under and its backups are
+    /// sealed with, when it has one.
+    #[must_use]
+    pub fn at_rest(&self) -> Option<&AtRestKey> {
+        self.at_rest.as_deref()
     }
 
     /// Every landing in this store, announced: a commit through any session or
@@ -533,6 +567,7 @@ impl Db {
             budget: std::sync::OnceLock::new(),
             commits: std::sync::OnceLock::new(),
             backups: std::sync::OnceLock::new(),
+            at_rest: None,
         }
     }
 

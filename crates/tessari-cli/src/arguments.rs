@@ -42,6 +42,13 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   --seed <node-id>@<host:port> a node to reach the cluster through; repeatable
   --join-token <token> a token from CREATE JOIN TOKEN, offered to the seeds until
                   a row names this node; default TESSARIDB_JOIN_TOKEN
+  --encryption-key-file <file> the store's files and every backup it writes are
+                  encrypted under the 32 bytes in <file> (`openssl rand 32`,
+                  mode 600); a store opens only the way it was created; default
+                  TESSARIDB_ENCRYPTION_KEY_FILE
+  --backup-key-file <file> with --restore or --verify: the key a sealed backup
+                  was sealed under, when it is not the store's — how a store
+                  moves to a new key
   --param <name>=<value> bind $name to <value>, written as TessariQL; repeatable
   -e, --execute <script> run this and exit
   -f, --file <file> run this file and exit
@@ -113,6 +120,11 @@ pub struct Asked {
     pub serving: Serving,
     /// The certificates `--at` trusts a node by; given, the client speaks TLS.
     pub authority: Option<PathBuf>,
+    /// The file holding the key the store and its backups are encrypted under
+    /// (ADR-0108 D7), when the flag named one.
+    pub encryption_key: Option<PathBuf>,
+    /// The key a sealed backup opens under, when it is not the store's.
+    pub backup_key: Option<PathBuf>,
     /// The cluster this node was told to join, when it was told about one.
     ///
     /// `None` is the single node every current deployment is, and is not a
@@ -214,6 +226,8 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
     let mut door = None;
     let mut seeds: Vec<String> = Vec::new();
     let mut trusted = None;
+    let mut encryption_key = None;
+    let mut backup_key = None;
     let mut arguments = arguments;
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
@@ -335,6 +349,18 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                         .next()
                         .ok_or_else(|| "--join-token wants the token".to_owned())?,
                 );
+            }
+            "--encryption-key-file" => {
+                let path = arguments
+                    .next()
+                    .ok_or_else(|| "--encryption-key-file wants a path".to_owned())?;
+                encryption_key = Some(PathBuf::from(path));
+            }
+            "--backup-key-file" => {
+                let path = arguments
+                    .next()
+                    .ok_or_else(|| "--backup-key-file wants a path".to_owned())?;
+                backup_key = Some(PathBuf::from(path));
             }
             "--tls-authority" => {
                 let path = arguments
@@ -495,6 +521,25 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
             "--tls-authority is what --at trusts a node by, and there is no --at".to_owned(),
         );
     }
+    // A key is for the files this process writes: a store on disk, or a backup
+    // to verify. Named for a store elsewhere or one in memory, it would encrypt
+    // nothing while somebody believed it did.
+    if encryption_key.is_some()
+        && (at.is_some() || store.is_none())
+        && !matches!(source, Source::Verify(_))
+    {
+        return Err(
+            "--encryption-key-file encrypts a store on disk this process opens, and none was named"
+                .to_owned(),
+        );
+    }
+    // The key a backup opens under is only ever asked for by reading one.
+    if backup_key.is_some() && !matches!(source, Source::Restore(_) | Source::Verify(_)) {
+        return Err(
+            "--backup-key-file opens a backup being restored or verified, and this reads none"
+                .to_owned(),
+        );
+    }
     // Same reason as the line above, and what the operator believes here is
     // stronger: not that a port is open, but that this node joined a cluster.
     let told_about_a_cluster = credential.is_some()
@@ -520,6 +565,8 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
         at_sequence: sequence,
         serving,
         authority: trusted,
+        encryption_key,
+        backup_key,
         cluster,
     })
 }

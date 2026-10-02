@@ -22,6 +22,7 @@ kafka = ["tessari-ingest/kafka"]
 [dependencies]
 tessaridb.workspace = true
 tessari-backup.workspace = true
+tessari-vault.workspace = true
 tessari-http.workspace = true
 tessari-ingest.workspace = true
 tessari-serve.workspace = true

@@ -13,6 +13,15 @@ publish.workspace = true
 tessari-kv.workspace = true
 thiserror.workspace = true
 rocksdb = { version = "0.25", default-features = false, features = ["lz4", "zstd", "bindgen-runtime"] }
+# Named directly so its build tells this one where the engine's headers are,
+# for the encryption provider; the same version the binding above links.
+librocksdb-sys = { version = "0.19", default-features = false }
+tessari-vault.workspace = true
+chacha20.workspace = true
+getrandom.workspace = true
+
+[build-dependencies]
+cc.workspace = true
 
 [dev-dependencies]
 # The index-format tests read an old index back through the language, so they

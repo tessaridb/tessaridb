@@ -311,6 +311,7 @@ dependencies = [
  "cfg-if",
  "cipher",
  "cpufeatures 0.3.1",
+ "zeroize",
 ]
 
 [[package]]
@@ -1650,6 +1651,7 @@ dependencies = [
  "tessari-session",
  "tessari-storage",
  "tessari-types",
+ "tessari-vault",
  "tessari-wire",
  "tessaridb",
  "tokio",
@@ -1746,6 +1748,10 @@ dependencies = [
 name = "tessari-lsm"
 version = "0.21.0-beta"
 dependencies = [
+ "cc",
+ "chacha20",
+ "getrandom 0.4.3",
+ "librocksdb-sys",
  "rocksdb",
  "tempfile",
  "tessari-encoding",
@@ -1753,6 +1759,7 @@ dependencies = [
  "tessari-session",
  "tessari-storage",
  "tessari-types",
+ "tessari-vault",
  "thiserror",
 ]
 
@@ -1842,6 +1849,8 @@ dependencies = [
  "argon2",
  "chacha20poly1305",
  "getrandom 0.4.3",
+ "ring",
+ "tempfile",
  "thiserror",
  "zeroize",
 ]

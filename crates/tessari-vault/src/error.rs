@@ -84,4 +84,32 @@ pub enum Error {
     /// memory and quietly change which values open.
     #[error("the vault is already unsealed")]
     AlreadyUnsealed,
+
+    /// The file meant to hold the key to the data at rest cannot be used.
+    ///
+    /// The reason names which check failed — unreadable, the wrong length, or
+    /// readable by others — so an operator fixes the file rather than guessing.
+    #[error("the encryption key file {path}: {reason}")]
+    KeyFile {
+        /// The file that was named.
+        path: String,
+        /// What is wrong with it.
+        reason: String,
+    },
+
+    /// A sealed backup was offered to something that holds no key.
+    #[error("this backup is sealed; it opens only on a node given its encryption key")]
+    BackupSealed,
+
+    /// A sealed backup did not open: the key is not the one it was sealed
+    /// under, or the bytes were cut, reordered or altered since.
+    ///
+    /// One answer for all of them, for the reason [`Error::WrongKey`] is one
+    /// answer — the authentication cannot tell them apart and a guess would
+    /// send an operator after the wrong problem.
+    #[error(
+        "this backup does not open under this key: the key is not the one it was sealed under, \
+         or the file was cut or altered"
+    )]
+    BackupDoesNotOpen,
 }
