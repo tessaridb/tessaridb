@@ -67,6 +67,17 @@ thread_local! {
     static HOLDING: Cell<usize> = const { Cell::new(0) };
 }
 
+/// How far an unstaged apply makes its batch durable before it answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Landing {
+    /// At the backend's own level, as every commit and restore lands.
+    Synced,
+    /// Surviving the process only, until the caller syncs: a follower applying
+    /// a leader's records pays one sync for the round and asks — acknowledges —
+    /// only after it (ADR-0106 D5).
+    Deferred,
+}
+
 /// The turn every in-process writer of log records takes.
 #[derive(Debug, Default)]
 pub(crate) struct WriteGate {
@@ -141,8 +152,12 @@ impl WriteGate {
         &self,
         batch: WriteBatch,
         backend: &dyn KvBackend,
+        landing: Landing,
     ) -> tessari_kv::Result<()> {
-        let applied = backend.apply(batch);
+        let applied = match landing {
+            Landing::Synced => backend.apply(batch),
+            Landing::Deferred => backend.apply_unsynced(batch),
+        };
         if applied.is_ok() {
             self.announce();
         }

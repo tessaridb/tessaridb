@@ -6,6 +6,7 @@ use tessari_encoding::{LogId, LogKey, LogRecord, StoreKey, StoreValue, Writer};
 use tessari_types::{Epoch, Sequence};
 
 use crate::error::{Error, Result};
+use crate::gate::Landing;
 
 use super::Store;
 
@@ -58,8 +59,22 @@ impl Store {
         previous: Epoch,
         record: &LogRecord,
     ) -> Result<()> {
+        self.land_from_stream(log, at, previous, record, Landing::Synced)
+    }
+
+    /// [`Self::apply_from_stream`], landed as `landing` says — `Deferred` only
+    /// for a caller that syncs before anything acknowledges the record
+    /// (`apply_in_writer_order`).
+    pub(crate) fn land_from_stream(
+        &self,
+        log: LogId,
+        at: Sequence,
+        previous: Epoch,
+        record: &LogRecord,
+        landing: Landing,
+    ) -> Result<()> {
         self.refuse_a_parted_history(log, at, previous)?;
-        self.apply_record_in(log, at, record)
+        self.apply_at(log, at, record, landing)
     }
 
     /// Apply one log record into a log the caller names.
@@ -80,7 +95,7 @@ impl Store {
     ///
     /// The same as [`Self::apply_record`].
     pub fn apply_record_in(&self, log: LogId, at: Sequence, record: &LogRecord) -> Result<()> {
-        self.apply_at(log, at, record)
+        self.apply_at(log, at, record, Landing::Synced)
     }
 
     /// Apply one log record, at the sequence it carries.
@@ -135,11 +150,18 @@ impl Store {
             LogId::new(crate::catalog::home_of(record)?, writer),
             at,
             record,
+            Landing::Synced,
         )
     }
 
     /// Apply one record into `home`, whatever named it.
-    pub(super) fn apply_at(&self, log: LogId, at: Sequence, record: &LogRecord) -> Result<()> {
+    pub(super) fn apply_at(
+        &self,
+        log: LogId,
+        at: Sequence,
+        record: &LogRecord,
+        landing: Landing,
+    ) -> Result<()> {
         // From the tail read to the apply, because the version this allocates is
         // the one a local commit allocates too (`crate::gate`).
         let _turn = self.writing.hold();
@@ -173,6 +195,7 @@ impl Store {
             record,
             crate::log::apply_batch(log, at, version, record),
             version,
+            landing,
         )
     }
 
@@ -186,6 +209,7 @@ impl Store {
         record: &LogRecord,
         batch: tessari_kv::WriteBatch,
         version: Sequence,
+        landing: Landing,
     ) -> Result<()> {
         let batch = crate::index::maintain(self, record, batch)?;
         // Derived here as well as in the commit, because that is the whole
@@ -220,7 +244,7 @@ impl Store {
             self.catalog_rows.changed(version);
             taught = self.shards.teach(&self.decoded_tables, record)?;
         }
-        if let Err(failed) = self.writing.apply(batch, self.backend.as_ref()) {
+        if let Err(failed) = self.writing.apply(batch, self.backend.as_ref(), landing) {
             self.shards.forget(&taught);
             return Err(failed.into());
         }

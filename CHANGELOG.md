@@ -109,6 +109,16 @@ compares carries no pre-release suffix.
   leadership finished is told so and re-seeds rather than reading itself level
   (Q-879).
 
+### Performance
+
+- **A follower syncs once per round, not once per record.** It applied every
+  record its leader sent as its own synced write, so a write waiting for a
+  majority waited for a device sync per record ahead of it on each follower.
+  Sixteen writers at `ACKNOWLEDGE MAJORITY` went from 175 to about 40 ms at p50
+  (p99 about 200 → 70 ms) on one macOS host, release build; the follower still
+  asks — acknowledges — only after the sync, so what a majority acknowledges is
+  as durable as before.
+
 ## 0.20.1-beta — 2026-10-02
 
 ### Fixed

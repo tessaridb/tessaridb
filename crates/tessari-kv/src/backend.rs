@@ -269,6 +269,40 @@ pub trait KvBackend: Send + Sync + std::fmt::Debug {
     /// does not hold.
     fn apply(&self, batch: WriteBatch) -> Result<()>;
 
+    /// [`Self::apply`], without making the write durable against power loss
+    /// yet: it survives the process being killed, and [`Self::sync_applied`]
+    /// makes it, and every write before it, survive the machine.
+    ///
+    /// For a writer landing many batches that each depend on the one before —
+    /// a follower applying the records its leader sent — which owes durability
+    /// only once the last has landed, and pays one device sync for all of them
+    /// instead of one each (ADR-0106 D5: a follower's ask is its
+    /// acknowledgement, and it asks only after the sync).
+    ///
+    /// **Defaulted to [`Self::apply`]**, which is right for a backend with no
+    /// sync to defer.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::apply`].
+    fn apply_unsynced(&self, batch: WriteBatch) -> Result<()> {
+        self.apply(batch)
+    }
+
+    /// Make every write landed so far durable to the level this backend
+    /// promises, including those landed by [`Self::apply_unsynced`].
+    ///
+    /// **Defaulted to nothing**, which is right for a backend whose `apply`
+    /// already lands at its level.
+    ///
+    /// # Errors
+    ///
+    /// The backend's own failure; a write it could not make durable is then
+    /// not to be acknowledged as durable by anyone.
+    fn sync_applied(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Apply several batches in order, each judged against the state the ones
     /// before it leave, and answer how many landed.
     ///

@@ -30,6 +30,7 @@ use std::collections::BTreeMap;
 use tessari_encoding::{LogId, LogRecord, Writer};
 use tessari_types::{Epoch, Sequence};
 
+use crate::gate::Landing;
 use crate::{Change, Result, Store, Subject};
 use tessari_constants::HISTORY_SCAN_RECORDS;
 
@@ -145,11 +146,25 @@ impl Store {
     /// page's chosen records are a prefix of it, applied in position order, so
     /// each record is preceded by the one applied before it in its own log.
     ///
+    /// Every record lands without its own sync and the round pays ONE, before
+    /// it answers — on a refusal too, so what was applied before the refused
+    /// record is durable before the follower asks past it. The ask is the
+    /// acknowledgement (ADR-0106 D5, D6), so nothing is acknowledged that a
+    /// power loss could take back, and a round of N records costs one device
+    /// sync rather than N (G054 W8e).
+    ///
     /// # Errors
     ///
     /// Returns the store's refusal of the first record that does not apply;
-    /// what was applied before it stays applied, as a log at a time did.
+    /// what was applied before it stays applied, as a log at a time did. A
+    /// failed sync is returned in place of the answer.
     pub fn apply_in_writer_order(&self, pages: &[Page<'_>]) -> Result<Vec<Option<Sequence>>> {
+        let applied = self.apply_pages(pages);
+        self.backend().sync_applied()?;
+        applied
+    }
+
+    fn apply_pages(&self, pages: &[Page<'_>]) -> Result<Vec<Option<Sequence>>> {
         // Every page proves its history continuous with this copy before any
         // record of the round applies — the empty page included. Raft checks
         // the previous entry on an AppendEntries carrying none for this reason:
@@ -169,7 +184,7 @@ impl Store {
             let Some((at, record)) = page.records.get(position) else {
                 continue;
             };
-            self.apply_from_stream(page.log, *at, *before, record)?;
+            self.land_from_stream(page.log, *at, *before, record, Landing::Deferred)?;
             *before = record.epoch();
             if let Some(slot) = reached.get_mut(index) {
                 *slot = Some(*at);

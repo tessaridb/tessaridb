@@ -299,6 +299,48 @@ impl LsmBackend {
             })
     }
 
+    /// Apply `batch` under `options`, subject to its preconditions — the one
+    /// write both [`KvBackend::apply`] and [`KvBackend::apply_unsynced`] make.
+    fn write(&self, batch: WriteBatch, options: &rocksdb::WriteOptions) -> Result<()> {
+        let _writer = self.writer();
+
+        // Every precondition is read here, under the lock, so nothing can move
+        // between the check and the write below.
+        for precondition in batch.preconditions() {
+            let region = self.region(precondition.keyspace())?;
+            let observed = self
+                .database
+                .get_cf(region, precondition.key().as_slice())
+                .map_err(|error| from_engine(&error))?
+                .map(Value::new);
+            if !precondition.is_satisfied_by(observed.as_ref()) {
+                return Err(Error::Conflict {
+                    keyspace: precondition.keyspace().name().to_owned(),
+                    key: precondition.key().clone(),
+                });
+            }
+        }
+
+        // Every region an operation names is resolved before any of them is
+        // written, so an unknown one fails the batch instead of splitting it.
+        let mut engine_batch = EngineBatch::default();
+        for op in batch.ops() {
+            let region = self.region(op.keyspace())?;
+            match op {
+                WriteOp::Put { key, value, .. } => {
+                    engine_batch.put_cf(region, key.as_slice(), value.as_slice());
+                }
+                WriteOp::Delete { key, .. } => {
+                    engine_batch.delete_cf(region, key.as_slice());
+                }
+            }
+        }
+
+        self.database
+            .write_opt(engine_batch, options)
+            .map_err(|error| from_engine(&error))
+    }
+
     /// The write lock, taken as found even after a panic elsewhere held it.
     ///
     /// It guards no data: what it orders is a precondition check and one engine
@@ -429,42 +471,24 @@ impl KvBackend for LsmBackend {
     }
 
     fn apply(&self, batch: WriteBatch) -> Result<()> {
-        let _writer = self.writer();
+        self.write(batch, &self.durability.write_options())
+    }
 
-        // Every precondition is read here, under the lock, so nothing can move
-        // between the check and the write below.
-        for precondition in batch.preconditions() {
-            let region = self.region(precondition.keyspace())?;
-            let observed = self
-                .database
-                .get_cf(region, precondition.key().as_slice())
-                .map_err(|error| from_engine(&error))?
-                .map(Value::new);
-            if !precondition.is_satisfied_by(observed.as_ref()) {
-                return Err(Error::Conflict {
-                    keyspace: precondition.keyspace().name().to_owned(),
-                    key: precondition.key().clone(),
-                });
-            }
+    fn apply_unsynced(&self, batch: WriteBatch) -> Result<()> {
+        // Written ahead and not synced: it survives the process, and
+        // `sync_applied` makes it survive the machine.
+        self.write(batch, &rocksdb::WriteOptions::default())
+    }
+
+    fn sync_applied(&self) -> Result<()> {
+        // One sync of the write-ahead log covers every write landed before it.
+        // A store that promises only process-crash safety owes no sync here,
+        // exactly as its own `apply` makes none.
+        if self.durability != Durability::PowerLossSafe {
+            return Ok(());
         }
-
-        // Every region an operation names is resolved before any of them is
-        // written, so an unknown one fails the batch instead of splitting it.
-        let mut engine_batch = EngineBatch::default();
-        for op in batch.ops() {
-            let region = self.region(op.keyspace())?;
-            match op {
-                WriteOp::Put { key, value, .. } => {
-                    engine_batch.put_cf(region, key.as_slice(), value.as_slice());
-                }
-                WriteOp::Delete { key, .. } => {
-                    engine_batch.delete_cf(region, key.as_slice());
-                }
-            }
-        }
-
         self.database
-            .write_opt(engine_batch, &self.durability.write_options())
+            .flush_wal(true)
             .map_err(|error| from_engine(&error))
     }
 
@@ -663,6 +687,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!(backend.get(Keyspace::INDEX, &key).unwrap(), None);
+    }
+
+    #[test]
+    fn writes_landed_unsynced_are_kept_once_synced_at_either_durability() {
+        for durability in [Durability::PowerLossSafe, Durability::ProcessCrashSafe] {
+            let dir = tempfile::tempdir().unwrap();
+            let backend = LsmBackend::open(dir.path(), StoreConfig::new(durability)).unwrap();
+            for n in 0..3_u8 {
+                let batch = WriteBatch::default().put(
+                    Keyspace::INDEX,
+                    Key::from_slice(&[n]),
+                    Value::new(vec![n]),
+                );
+                backend.apply_unsynced(batch).unwrap();
+            }
+            backend.sync_applied().unwrap();
+            backend.close().unwrap();
+
+            let reopened = LsmBackend::open(dir.path(), StoreConfig::new(durability)).unwrap();
+            for n in 0..3_u8 {
+                assert_eq!(
+                    reopened
+                        .get(Keyspace::INDEX, &Key::from_slice(&[n]))
+                        .unwrap(),
+                    Some(Value::new(vec![n])),
+                    "{durability:?}"
+                );
+            }
+        }
     }
 
     #[test]

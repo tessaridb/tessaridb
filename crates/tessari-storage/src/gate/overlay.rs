@@ -174,6 +174,16 @@ impl KvBackend for Overlaid {
         self.engine.apply(batch)
     }
 
+    // Forwarded, not defaulted: the defaults would sync every write and then
+    // sync nothing, which is the engine's cost with none of the saving.
+    fn apply_unsynced(&self, batch: tessari_kv::WriteBatch) -> Result<()> {
+        self.engine.apply_unsynced(batch)
+    }
+
+    fn sync_applied(&self) -> Result<()> {
+        self.engine.sync_applied()
+    }
+
     fn apply_group(&self, batches: Vec<tessari_kv::WriteBatch>) -> (usize, Result<()>) {
         self.engine.apply_group(batches)
     }

@@ -71,7 +71,12 @@ impl Store {
         self.writing.land_all(self.backend.as_ref());
         crate::schema::validate(self, record)?;
         let version = Sequence::new(self.committed_version()?.get().saturating_add(1));
-        self.derive_and_land(record, crate::log::state_batch(version, record), version)
+        self.derive_and_land(
+            record,
+            crate::log::state_batch(version, record),
+            version,
+            crate::gate::Landing::Synced,
+        )
     }
 
     /// Finish a restored state: where each log stood, where its history
@@ -129,7 +134,8 @@ impl Store {
             ReclaimFloorKey.encode(),
             self.committed_version()?.encode(),
         );
-        self.writing.apply(batch, self.backend.as_ref())?;
+        self.writing
+            .apply(batch, self.backend.as_ref(), crate::gate::Landing::Synced)?;
         Ok(())
     }
 }
