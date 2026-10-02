@@ -85,6 +85,13 @@ compares carries no pre-release suffix.
 
 ### Fixed
 
+- **A revoked certificate stops a stream that was already open.** A follower
+  holds one connection to its leader for as long as both run, and a revocation
+  was judged only at the next handshake — which a held stream never makes — so
+  a node whose certificate was revoked went on receiving every commit, and a
+  leader whose certificate was revoked went on being followed. Both ends now ask
+  again before every frame, and the stream ends once the certificate, or the
+  node, is refused.
 - **A node leading a placed range no longer loses that range's records.** A node
   that replicated the whole store collected every log from the store line's
   leader, including the logs of ranges placed on other lines — or on itself — and

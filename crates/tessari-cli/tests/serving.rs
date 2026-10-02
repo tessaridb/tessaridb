@@ -610,11 +610,18 @@ impl Minted {
 
     /// A credential naming `node` on the peer link, as PEM.
     fn issue(&self, node: [u8; 16]) -> (String, String) {
+        let (leaf, key, _) = self.issue_fingerprinted(node);
+        (leaf, key)
+    }
+
+    /// [`Self::issue`], and the fingerprint a `REVOKE CERTIFICATE` names it by.
+    fn issue_fingerprinted(&self, node: [u8; 16]) -> (String, String, String) {
         let name = tessari_wire::names(node, tessari_wire::Purpose::Peer);
         let params = rcgen::CertificateParams::new(vec![name]).unwrap();
         let key = rcgen::KeyPair::generate().unwrap();
         let leaf = params.signed_by(&key, &self.authority, &self.key).unwrap();
-        (leaf.pem(), key.serialize_pem())
+        let fingerprint = tessari_wire::fingerprint(leaf.der());
+        (leaf.pem(), key.serialize_pem(), fingerprint)
     }
 }
 
@@ -624,12 +631,21 @@ fn credentials(
     node: [u8; 16],
     into: &std::path::Path,
 ) -> (String, String, String) {
-    let (leaf, key) = minted.issue(node);
+    credentials_fingerprinted(minted, node, into).0
+}
+
+/// [`credentials`], and the fingerprint of the certificate it wrote.
+fn credentials_fingerprinted(
+    minted: &Minted,
+    node: [u8; 16],
+    into: &std::path::Path,
+) -> ((String, String, String), String) {
+    let (leaf, key, fingerprint) = minted.issue_fingerprinted(node);
     let at = |name: &str| into.join(name).to_string_lossy().into_owned();
     std::fs::write(at("leaf.pem"), leaf).unwrap();
     std::fs::write(at("key.pem"), key).unwrap();
     std::fs::write(at("ca.pem"), minted.authority.pem()).unwrap();
-    (at("leaf.pem"), at("key.pem"), at("ca.pem"))
+    ((at("leaf.pem"), at("key.pem"), at("ca.pem")), fingerprint)
 }
 
 #[test]
@@ -1643,6 +1659,11 @@ fn the_next_node(band: &Band, index: usize) -> usize {
 struct Three {
     /// Each node's own id, in band order.
     ids: Vec<[u8; 16]>,
+    /// The authority every node's peer credential was issued by, kept so a
+    /// test can issue a node its replacement.
+    minted: Minted,
+    /// The fingerprint of each node's first peer certificate, in band order.
+    fingerprints: Vec<String>,
     /// Held so the stores outlive the processes reading them. Dropping this
     /// removes the directory, so it is a field rather than a discarded local.
     _directory: tempfile::TempDir,
@@ -1785,6 +1806,7 @@ fn a_cluster_of_rows(band: &Band, preamble: &str, rows: [String; 3]) -> Three {
     let mut stores = Vec::new();
     let mut ids = Vec::new();
     let mut papers = Vec::new();
+    let mut fingerprints = Vec::new();
     for index in 0..band.len() {
         let home = directory.path().join(format!("n{index}"));
         std::fs::create_dir_all(&home).unwrap();
@@ -1792,7 +1814,9 @@ fn a_cluster_of_rows(band: &Band, preamble: &str, rows: [String; 3]) -> Three {
         let db = tessaridb::Db::open(&store).unwrap();
         let id = db.store().node_identity().unwrap().id;
         drop(db);
-        papers.push(credentials(&minted, id, &home));
+        let (paper, fingerprint) = credentials_fingerprinted(&minted, id, &home);
+        papers.push(paper);
+        fingerprints.push(fingerprint);
         ids.push(id);
         stores.push(store);
     }
@@ -1917,6 +1941,8 @@ fn a_cluster_of_rows(band: &Band, preamble: &str, rows: [String; 3]) -> Three {
         assert!(listening(peer, Duration::from_secs(30)), "{peer}");
     }
     Three {
+        minted,
+        fingerprints,
         _directory: directory,
         running,
         logs,
@@ -5070,4 +5096,152 @@ fn misses_spread_over_nodes_are_counted_once() {
         "a node that never saw a miss let the next try in: {answered:?}{}",
         what_the_nodes_said(&BUDGETED, &logs)
     );
+}
+
+// ---- G054 C5: a peer certificate rotated and revoked on a live cluster ------
+
+/// The rotation cluster's addresses, free pairs below the suite's band.
+const ROTATED: Band = [
+    ("127.0.0.1:47786", "127.0.0.1:47787"),
+    ("127.0.0.1:47788", "127.0.0.1:47789"),
+    ("127.0.0.1:47790", "127.0.0.1:47791"),
+];
+
+/// The value `node` was started with after `flag`, as a path.
+fn started_arg(cluster: &Three, node: usize, flag: &str) -> std::path::PathBuf {
+    let mut args = cluster.started_with[node].iter();
+    args.by_ref().find(|arg| *arg == flag).unwrap();
+    std::path::PathBuf::from(args.next().unwrap())
+}
+
+/// Hand `node` a new peer credential from the cluster's authority, and wait
+/// until it says it presents it. Answers the new certificate's fingerprint.
+fn rotated(cluster: &Three, node: usize, times: usize) -> String {
+    let (leaf, key, fingerprint) = cluster.minted.issue_fingerprinted(cluster.ids[node]);
+    std::fs::write(started_arg(cluster, node, "--cluster-credential"), leaf).unwrap();
+    std::fs::write(started_arg(cluster, node, "--cluster-key"), key).unwrap();
+    let began = Instant::now();
+    while std::fs::read_to_string(&cluster.logs[node])
+        .map(|said| said.matches("certificate at").count() < times)
+        .unwrap_or(true)
+    {
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "node {node} never presented its renewed peer certificate{}",
+            what_the_nodes_said(&ROTATED, &cluster.logs)
+        );
+        std::thread::sleep(POLL);
+    }
+    fingerprint
+}
+
+#[test]
+#[ignore = "three processes, a credential swapped on disk and two revocations — G054 C5's \
+            live check, run explicitly: cargo test -p tessari-cli --test serving \
+            a_peer_certificate_rotates -- --ignored --nocapture"]
+fn a_peer_certificate_rotates_under_writes_and_a_revoked_one_is_cut_off() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let cluster = a_cluster_of_three(&ROTATED);
+    let leader = the_node_a_majority_granted(&ROTATED);
+    let (rotating, other) = ([1, 2, 0][leader], [2, 0, 1][leader]);
+    for index in 0..ROTATED.len() {
+        caught_up(&ROTATED, index, "1", &cluster);
+    }
+    // One writer on the leader throughout, at the namespace's default level —
+    // a majority, so every write it is told landed was held by a follower.
+    let stop = Arc::new(AtomicBool::new(false));
+    let landed_writes = Arc::new(AtomicUsize::new(0));
+    let writer = {
+        let (stop, landed_writes) = (Arc::clone(&stop), Arc::clone(&landed_writes));
+        let on = ROTATED[leader].0;
+        std::thread::spawn(move || {
+            let mut attempt = 0_u32;
+            while !stop.load(Ordering::Relaxed) {
+                attempt = attempt.saturating_add(1);
+                if Client::connect(on).is_ok_and(|mut client| {
+                    landed(&client.run(&into_item(&format!("w{attempt:06}"), ""), None))
+                }) {
+                    landed_writes.fetch_add(1, Ordering::Relaxed);
+                }
+                std::thread::sleep(POLL);
+            }
+        })
+    };
+    let run = |script: &str| {
+        let mut client = Client::connect(ROTATED[leader].0).unwrap();
+        client.run(script, None).unwrap();
+    };
+    let write = |key: &str| run(&into_item(key, ""));
+    // The revocation and a record behind it in one script: the record reaching
+    // a node says the revocation reached it first.
+    let revoke = |fingerprint: &str, then: &str| {
+        run(&format!(
+            "REVOKE CERTIFICATE '{fingerprint}'; {}",
+            into_item(then, "")
+        ));
+    };
+
+    // Rotated twice without a restart, and it goes on holding what is written.
+    let first = rotated(&cluster, rotating, 1);
+    write("after-first");
+    caught_up(&ROTATED, rotating, "after-first", &cluster);
+    let second = rotated(&cluster, rotating, 2);
+    write("after-second");
+    caught_up(&ROTATED, rotating, "after-second", &cluster);
+
+    // Revoking the certificate it no longer presents changes nothing.
+    revoke(&first, "old-revoked");
+    caught_up(&ROTATED, rotating, "old-revoked", &cluster);
+
+    // Revoking every certificate it holds cuts it off — the one its held
+    // stream opened with, from before either rotation, included: a stream
+    // outlives its handshake, so the revocation has to reach it there. The
+    // other two keep a leader that acknowledges at a majority.
+    let before = landed_writes.load(Ordering::Relaxed);
+    run(&format!(
+        "REVOKE CERTIFICATE '{}';",
+        cluster.fingerprints[rotating]
+    ));
+    revoke(&second, "revoked");
+    caught_up(&ROTATED, other, "revoked", &cluster);
+    // A node applies the revocation list its catalog holds when it next looks
+    // (`credentials::LOOK_SECONDS`); from then on it neither admits nor dials
+    // the revoked certificate, and a stream it was serving ends.
+    let began = Instant::now();
+    while ![leader, other].iter().all(|index| {
+        std::fs::read_to_string(&cluster.logs[*index])
+            .is_ok_and(|said| said.contains("now refuses 3 revoked certificate(s)"))
+    }) {
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "the leader and the other follower never applied the revocation{}",
+            what_the_nodes_said(&ROTATED, &cluster.logs)
+        );
+        std::thread::sleep(POLL);
+    }
+    write("cut-off");
+    caught_up(&ROTATED, other, "cut-off", &cluster);
+    let watched = Instant::now();
+    while watched.elapsed() < Duration::from_secs(10) {
+        assert!(
+            !item_ids_at(ROTATED[rotating].0)
+                .is_ok_and(|held| held.iter().any(|id| id == "cut-off")),
+            "a node whose certificate was revoked still collected{}",
+            what_the_nodes_said(&ROTATED, &cluster.logs)
+        );
+        std::thread::sleep(POLL);
+    }
+    assert!(
+        std::fs::read_to_string(&cluster.logs[leader])
+            .is_ok_and(|said| said.contains("no longer admitted")),
+        "the leader never ended the stream the revoked certificate was holding{}",
+        what_the_nodes_said(&ROTATED, &cluster.logs)
+    );
+    assert!(
+        landed_writes.load(Ordering::Relaxed) > before,
+        "the leader stopped taking writes once one follower was cut off"
+    );
+    stop.store(true, Ordering::Relaxed);
+    writer.join().unwrap();
 }

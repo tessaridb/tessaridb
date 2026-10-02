@@ -72,6 +72,9 @@ pub struct Credential {
 pub struct Peers {
     pub(crate) listener: TcpListener,
     pub(crate) settings: Arc<ServerConfig>,
+    /// The same keys the settings judge a handshake by, asked again while a
+    /// held stream is open.
+    pub(crate) keys: PeerKeys,
 }
 
 impl Peers {
@@ -86,6 +89,7 @@ impl Peers {
         Ok(Self {
             listener: TcpListener::bind(address)?,
             settings: keys.door(),
+            keys: keys.clone(),
         })
     }
 

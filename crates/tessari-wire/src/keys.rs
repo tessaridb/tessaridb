@@ -266,6 +266,15 @@ impl PeerKeys {
         )
     }
 
+    /// Whether a handshake now would admit `presented` — asked again of a
+    /// connection that outlives its handshake, so a revocation or a removal
+    /// reaches a held stream rather than waiting for a reconnect that a stream
+    /// never makes (ADR-0108 D6).
+    #[must_use]
+    pub(crate) fn still_admits(&self, presented: &CertificateDer<'_>) -> bool {
+        self.admits(presented).is_ok()
+    }
+
     /// Refuse `presented` when its fingerprint is revoked.
     ///
     /// Asked after the authority has accepted the chain, so a certificate that
@@ -466,6 +475,26 @@ mod tests {
         failure
             .to_string()
             .contains("invalid peer certificate: Revoked")
+    }
+
+    #[test]
+    fn a_certificate_admitted_once_is_judged_again_after_a_revocation_or_a_removal() {
+        let authority = Authority::new();
+        let door = authority.keys(DOOR, Purpose::Peer);
+        let caller = authority.keys(CALLER, Purpose::Peer);
+        let presented = caller.duplicate().chain.remove(0);
+        assert!(door.still_admits(&presented));
+
+        door.refuse(only(caller.fingerprint()));
+        assert!(!door.still_admits(&presented), "a revoked certificate");
+
+        door.refuse(Revoked::new());
+        assert!(door.still_admits(&presented), "the revocation lifted");
+        door.refuse_nodes(super::Removed::from([CALLER]));
+        assert!(
+            !door.still_admits(&presented),
+            "a removed node's certificate"
+        );
     }
 
     #[test]

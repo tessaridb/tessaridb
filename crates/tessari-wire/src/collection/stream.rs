@@ -178,6 +178,10 @@ pub(crate) fn answer(
 pub struct Following {
     session: ClientConnection,
     socket: TcpStream,
+    /// What the handshake judged the leader by, asked again for every frame:
+    /// a leader whose certificate is revoked while it streams is followed no
+    /// further (ADR-0108 D6).
+    keys: PeerKeys,
 }
 
 impl std::fmt::Debug for Following {
@@ -208,7 +212,11 @@ impl Following {
         }
         // After the greeting, which keeps the greeting's own deadline.
         socket.set_read_timeout(Some(silence))?;
-        Ok(Self { session, socket })
+        Ok(Self {
+            session,
+            socket,
+            keys: keys.clone(),
+        })
     }
 
     /// Ask from where this node stands. The leader answers with any number of
@@ -235,6 +243,16 @@ impl Following {
     /// [`Error::Uncollectable`] or [`Error::Unsubscribed`] as the leader sent
     /// them, and the transport's failure otherwise.
     pub fn heard(&mut self) -> Result<Streamed> {
+        let admitted = self
+            .session
+            .peer_certificates()
+            .and_then(<[_]>::first)
+            .is_some_and(|presented| self.keys.still_admits(presented));
+        if !admitted {
+            return Err(Error::Refused {
+                message: "the leader's certificate is no longer admitted here".to_owned(),
+            });
+        }
         let mut link = rustls::Stream::new(&mut self.session, &mut self.socket);
         let (tag, body) = frame::read_tagged(&mut link)?.ok_or(Error::Truncated)?;
         match PeerFrame::from_tag(tag) {

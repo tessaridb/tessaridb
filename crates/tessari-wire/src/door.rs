@@ -171,6 +171,7 @@ impl Peers {
                 holding: Arc::clone(&holding),
                 bridge: Arc::clone(&bridge),
                 replays: Arc::clone(&replays),
+                keys: self.keys.clone(),
             };
             connections.spawn(async move {
                 let ended = served.serve(socket).await;
@@ -207,6 +208,8 @@ struct Connection<H> {
     /// The nonces of the assertions this door believed, so none is believed
     /// twice (ADR-0108 D3).
     replays: Arc<Replays>,
+    /// What a handshake is judged by, asked again while a stream is open.
+    keys: crate::PeerKeys,
 }
 
 impl<H: Holding> Connection<H> {
@@ -284,7 +287,8 @@ impl<H: Holding> Connection<H> {
                 {
                     log::warn!("a peer opened a stream but could not be recorded");
                 }
-                self.stream(&mut link, said.node, body).await?;
+                self.stream(&mut link, said.node, body, shown.as_ref())
+                    .await?;
                 return Ok(None);
             }
             // A copy streams (ADR-0094 D3): the store side runs on the bridge
@@ -409,8 +413,13 @@ impl<H: Holding> Connection<H> {
         link: &mut tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
         follower: [u8; NODE_ID_LEN],
         mut body: Vec<u8>,
+        presented: Option<&rustls::pki_types::CertificateDer<'_>>,
     ) -> Result<()> {
         let heartbeat = std::time::Duration::from_millis(STREAM_HEARTBEAT_MILLIS);
+        // A stream outlives its handshake by hours, so the handshake's judgement
+        // is asked again before every frame: a certificate revoked, or a node
+        // removed, while it streams is cut off at the next one (ADR-0108 D6).
+        let admitted = || presented.is_some_and(|presented| self.keys.still_admits(presented));
         let quiet = crate::collection::Streamed {
             answers: Vec::new(),
         }
@@ -419,6 +428,12 @@ impl<H: Holding> Connection<H> {
         loop {
             let asked = StreamAsk::decode(&body)?;
             let round = loop {
+                if !admitted() {
+                    log::warn!(
+                        "a held stream ended: the peer's certificate is no longer admitted here"
+                    );
+                    return Ok(());
+                }
                 commits.borrow_and_update();
                 let holding = Arc::clone(&self.holding);
                 let ask = asked.clone();
@@ -468,6 +483,13 @@ impl<H: Holding> Connection<H> {
                             break;
                         }
                         () = tokio::time::sleep(heartbeat) => {
+                            if !admitted() {
+                                log::warn!(
+                                    "a held stream ended: the peer's certificate is no longer \
+                                     admitted here"
+                                );
+                                return Ok(());
+                            }
                             bounded(frame_async::write_tagged(
                                 link,
                                 PeerFrame::Streamed.tag(),
