@@ -10,10 +10,8 @@ use crate::supervise;
 
 /// The peer surface, once the door is open.
 ///
-/// A struct rather than a tuple because the dialling half needs two things the
-/// door does not — a credential of its own and the authority to check the far
-/// end against — and four positional fields threaded through three sites is
-/// where a mix-up stops being visible.
+/// A struct rather than a tuple because four positional fields threaded through
+/// three sites is where a mix-up stops being visible.
 pub(crate) struct Peering {
     /// The door peers arrive at.
     pub(crate) door: tessari_wire::Peers,
@@ -24,10 +22,12 @@ pub(crate) struct Peering {
     /// was parsed, counted, printed and discarded, so a node could be told
     /// where its cluster was and still had no way to reach it.
     pub(crate) seeds: Vec<tessari_wire::Seed>,
-    /// This node's credential, for the side that calls rather than answers.
-    pub(crate) dialling: tessari_wire::Credential,
-    /// The one root every peer in this cluster is issued by.
-    pub(crate) authority: tessari_wire::CertificateDer<'static>,
+    /// What this node presents and refuses, shared by the door and every
+    /// round so a reload or a revocation reaches them all (ADR-0108 D6).
+    pub(crate) keys: tessari_wire::PeerKeys,
+    /// A join token to offer the seeds until a row names this node
+    /// (ADR-0108 D9).
+    pub(crate) join: Option<[u8; 32]>,
     /// What the greeting round writes and the client surface reads.
     ///
     /// One of these, shared, and that sharing is the point of the field: a
@@ -35,6 +35,21 @@ pub(crate) struct Peering {
     /// until this wave that is exactly what it was.
     pub(crate) routing: std::sync::Arc<tessari_wire::Published>,
 }
+/// What starts a cluster round before its cadence would (G053 SG2b).
+///
+/// A follower whose leader died learns of it from its stream in about a second,
+/// and was then waiting up to a whole awareness interval to be told where the
+/// leader went and a whole collection interval more to follow it there. A
+/// stream that ends wakes the greeting round; a greeting round that finds a
+/// different leader wakes the collection round.
+#[derive(Debug, Default)]
+pub(crate) struct Wakes {
+    /// Wakes the greeting round.
+    pub(crate) greeting: tokio::sync::Notify,
+    /// Wakes the collection round.
+    pub(crate) collection: tokio::sync::Notify,
+}
+
 /// Put the peer surface on the runtime: the door, and the three cluster rounds
 /// `driver.rs` names, each under its own supervisor in `hosting`.
 pub(crate) fn host(
@@ -46,8 +61,8 @@ pub(crate) fn host(
     let Peering {
         door,
         seeds,
-        dialling,
-        authority,
+        keys,
+        join,
         routing,
     } = surface;
     // One voting memory, held by the door and by the campaign alike. A
@@ -58,6 +73,14 @@ pub(crate) fn host(
     // node grant one epoch twice and hand two candidates an honest
     // majority each.
     let deciding = std::sync::Arc::new(tessari_wire::Deciding::started());
+    let wakes = std::sync::Arc::new(Wakes::default());
+    // A grant to a new leadership greets at once (Q-900): the voter is the
+    // first to know the leader changed, and a follower that waited for its next
+    // greeting followed nobody while the new leader's writes waited for copies.
+    {
+        let wakes = std::sync::Arc::clone(&wakes);
+        deciding.when_granted_anew(Box::new(move || wakes.greeting.notify_one()));
+    }
     // Served on the runtime, each peer in its own task (ADR-0085 §7);
     // its supervisor starts it again after a panic, as every cadence is.
     {
@@ -119,23 +142,19 @@ pub(crate) fn host(
     // node that can hear a leader does not stand against it (ADR-0066).
     {
         let db = std::sync::Arc::clone(&db);
+        let wakes = std::sync::Arc::clone(&wakes);
         let stop = peer_stops.clone();
-        let (mine, authority, seeds, routing) = (
-            dialling.duplicate(),
-            authority.clone(),
-            seeds.clone(),
-            std::sync::Arc::clone(&routing),
-        );
+        let (keys, seeds, routing) = (keys.clone(), seeds.clone(), std::sync::Arc::clone(&routing));
         hosting.spawn(supervise::supervised(
             "the greeting round",
             peer_stops.clone(),
             move || {
                 dial_peers(
                     std::sync::Arc::clone(&db),
-                    mine.duplicate(),
-                    authority.clone(),
+                    (keys.clone(), join),
                     seeds.clone(),
                     std::sync::Arc::clone(&routing),
+                    std::sync::Arc::clone(&wakes),
                     stop.clone(),
                 )
             },
@@ -143,23 +162,19 @@ pub(crate) fn host(
     }
     {
         let db = std::sync::Arc::clone(&db);
+        let wakes = std::sync::Arc::clone(&wakes);
         let stop = peer_stops.clone();
-        let (mine, authority, seeds, routing) = (
-            dialling.duplicate(),
-            authority.clone(),
-            seeds.clone(),
-            std::sync::Arc::clone(&routing),
-        );
+        let (keys, seeds, routing) = (keys.clone(), seeds.clone(), std::sync::Arc::clone(&routing));
         hosting.spawn(supervise::supervised(
             "the collection round",
             peer_stops.clone(),
             move || {
                 collect_from_upstream(
                     std::sync::Arc::clone(&db),
-                    mine.duplicate(),
-                    authority.clone(),
+                    keys.clone(),
                     seeds.clone(),
                     std::sync::Arc::clone(&routing),
+                    std::sync::Arc::clone(&wakes),
                     stop.clone(),
                 )
             },
@@ -174,8 +189,7 @@ pub(crate) fn host(
             move || {
                 stand_for_leadership(
                     std::sync::Arc::clone(&db),
-                    dialling.duplicate(),
-                    authority.clone(),
+                    keys.clone(),
                     std::sync::Arc::clone(&deciding),
                     std::sync::Arc::clone(&routing),
                     stop.clone(),

@@ -32,6 +32,7 @@ mod series_floor;
 mod sharded_logs;
 mod spatial_nearest;
 mod spatial_region;
+mod stream_sync;
 mod superseded_leadership;
 mod term_dictionary;
 mod topics;

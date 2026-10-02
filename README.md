@@ -10,10 +10,10 @@ Eleven engines. One transaction. One binary. A real-time multi-model database,
 written in Rust, for AI applications and the products built around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.20.1--beta-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.21.0--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.98%2B-6B5FD1?style=flat-square)](Cargo.toml)
-[![conformance](https://img.shields.io/badge/conformance-1488%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![conformance](https://img.shields.io/badge/conformance-1492%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/tessaridb/tessaridb-protocol) ·
@@ -22,8 +22,8 @@ written in Rust, for AI applications and the products built around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is a beta — `0.20.1-beta`.** It is released and tested, published as
-> a container image (`tessaridb/tessaridb:0.20.1-beta`; the image tracks the
+> **TessariDB is a beta — `0.21.0-beta`.** It is released and tested, published as
+> a container image (`tessaridb/tessaridb:0.21.0-beta`; the image tracks the
 > larger releases), and the licence makes production use free, including inside
 > a commercial company.
 > What a beta does not promise yet is permanence of shape: before 1.0 the query
@@ -198,7 +198,7 @@ surviving version and the node that wrote it.
 
 ## Status
 
-**Stage: active development · `0.20.1-beta` · not published to crates.io.** What
+**Stage: active development · `0.21.0-beta` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 
@@ -223,6 +223,16 @@ follows is what runs today, not a roadmap.
   write concurrent with the stored version is **refused and named** unless the
   table declares `LAST WRITER WINS`, in which case what it discards is counted.
   See [Clustering](https://docs.tessaridb.com/cluster/what-a-cluster-is).
+- ✅ **A cluster that trusts nothing in the clear:** peers speak mutual TLS with a
+  certificate issued for each node's id, renewed from its files without a restart
+  and revoked with `REVOKE CERTIFICATE` — a revocation or an expiry ends even a
+  stream already open; clients are served over TLS 1.3, and a clustered node
+  serves them in the clear only when told to; a request sent to a node that
+  cannot answer it is carried over the peer link as a signed assertion of who
+  asked, never a password; a joining node is approved by its id, its certificate
+  fingerprint or a one-time join token; and the store can be encrypted at rest,
+  its backups sealed under the same key. The built-in console builds such a
+  cluster from empty to serving.
 - ✅ **The storage and backup layer settled around that.** The log is kept **per
   range** rather than per store, so a key carries its home and the sequence and
   the leadership that wrote it are properties of a range instead of the whole
@@ -540,7 +550,7 @@ source, and no third-party database is vendored, linked, or derived from here.
 
 TessariDB is **source-available** under the
 [Business Source License 1.1](LICENSE). The source is public, and on
-**2030-10-01** — or four years after any given version is first published,
+**2030-10-03** — or four years after any given version is first published,
 whichever comes first — that version becomes **Apache-2.0** permanently.
 
 **Free, with no agreement and no charge**, for any use — including production,

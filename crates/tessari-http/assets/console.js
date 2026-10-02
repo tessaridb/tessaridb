@@ -162,8 +162,9 @@
   var redacted = (statement2) => statement2.replace(/PASSWORD\s+'(?:[^'\\]|\\.)*'/gi, "PASSWORD '…'");
   var CAP = 200;
   var kept = [];
+  var answeredOnce = (entry2) => !entry2.failed && /CREATE\s+JOIN\s+TOKEN/i.test(entry2.what) ? "a join token, shown once where it was asked for" : entry2.said;
   function record(entry2) {
-    kept.unshift({ ...entry2, what: redacted(entry2.what) });
+    kept.unshift({ ...entry2, what: redacted(entry2.what), said: answeredOnce(entry2) });
     if (kept.length > CAP) {
       kept.length = CAP;
     }
@@ -325,8 +326,17 @@
     }
     return found;
   }
+  function transport() {
+    const secured = location.protocol === "https:";
+    write(
+      "transport-says",
+      secured ? "This page and everything it sends travel over TLS to this node." : "This page arrived without TLS, so the password travels as typed. Give the node --tls-cert and --tls-key, or keep it on a network you protect."
+    );
+    at("transport-says").className = secured ? "note" : "note warn";
+  }
   function wire3() {
     const identity = sheet();
+    transport();
     at("user").addEventListener("input", signedIn);
     at("sign-in").addEventListener("click", async () => {
       const offered = typed();
@@ -942,6 +952,29 @@
     });
   }
 
+  // src/topic-names.ts
+  //! What the Topics screen may write into a statement.
+  //!
+  //! A topic, a group, a namespace and a database are grammar: the node cannot take
+  //! them as parameters, so this screen writes them into the text. That is safe
+  //! only behind a check narrower than the node's own lexer, and these are the same
+  //! two patterns every client applies (consumer contract 1.0, section 3). A name
+  //! that fails is refused here, before anything is sent, rather than quoted.
+  //!
+  //! Numbers and durations are grammar too — `AFTER 40`, `ACK DEADLINE 30s` — and
+  //! are checked for the same reason.
+  var NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  var GROUP = /^[A-Za-z0-9_.:-]{1,128}$/;
+  var DURATION = /^[0-9]{1,9}(ms|s|m|h|d|w)$/;
+  var WHOLE = /^[0-9]{1,15}$/;
+  var aName = (text) => NAME.test(text) ? text : null;
+  var aGroup = (text) => GROUP.test(text) ? text : null;
+  var aDuration = (text) => DURATION.test(text) ? text : null;
+  function aWhole(text) {
+    return WHOLE.test(text) ? Number(text) : null;
+  }
+  var tenancy = (namespace, database) => `USE NAMESPACE ${namespace}; USE DATABASE ${database}; `;
+
   // src/drawer.ts
   //! One node, over the map.
   //!
@@ -980,34 +1013,32 @@
   //! nothing that survives, which is the slow kind of lie, so the drawer says so
   //! while the decision is still being made.
   //!
-  //! # A peer cannot be changed from here at all, and that was measured
+  //! # A peer is amended one clause at a time, and removed for good
   //!
-  //! The drawer first offered the role change on any node. A running node refused
-  //! it, which is the right way to learn it:
+  //! The drawer first offered the role change on this node only, because a
+  //! running node refused every way of changing a peer's row — a second `DEFINE
+  //! REPLICA` for the name in use, an `ALTER` that took no `REPLICA`. `ALTER
+  //! REPLICA <name> ROLES …` exists now (Q-892) and changes that one clause,
+  //! leaving the row's node, subscription and pinned certificate as they are. It
+  //! is a write to the membership, so it is taken by the node that leads the store
+  //! and refused, in the node's words, anywhere else.
   //!
-  //! - `DEFINE REPLICA warsaw …` again → *"the name rp:warsaw is already in use"*
-  //! - `ALTER REPLICA warsaw SET ROLES …` → `ALTER` takes only `NAMESPACE`,
-  //!   `USER` or `TABLE`
-  //! - `DROP REPLICA warsaw` → *"this node is in a cluster and holds no
-  //!   leadership: it does not accept writes until a majority grants it one"*
-  //!
-  //! So a clustered node can declare its membership once and then cannot amend it
-  //! from the query surface. **This node's own roles are the exception**, because
-  //! `DEFINE NODE` writes to the local `META` keyspace rather than through the
-  //! log, so the fence does not apply — verified on the same clustered node.
-  //!
-  //! The drawer therefore offers the control on this node and, on a peer, says
-  //! what it would take. Offering it everywhere would have composed a statement
-  //! that always fails, which is a button that lies in the slower way: it looks
-  //! right until the one moment somebody needs it.
+  //! Removing a peer is `DROP REPLICA`, and it is not a role change with a bigger
+  //! button: the dropped node is recorded as removed and never admitted again
+  //! (ADR-0108 D9), so a machine coming back must be wiped and join under a new
+  //! identity. The drawer therefore asks for the name typed again and says so
+  //! before the button is live.
   var open = null;
   var BITS = ["serving", "writable", "coordinating"];
   function ticked() {
     return BITS.filter((bit) => at(`drawer-${bit}`).checked);
   }
   function change2(subject, roles) {
-    if (subject === null || !subject.self) {
+    if (subject === null) {
       return null;
+    }
+    if (!subject.self) {
+      return aName(subject.name) === null || roles.length === 0 ? null : `ALTER REPLICA ${subject.name} ROLES ${roles.join(", ")};`;
     }
     return roles.length === 0 ? `DEFINE NODE ROLES NONE;` : `DEFINE NODE ROLES ${roles.join(", ")};`;
   }
@@ -1016,9 +1047,10 @@
       return;
     }
     if (!open.self) {
+      const roles2 = ticked();
       say(
         "drawer-says",
-        `A peer's row cannot be amended from here: there is no ALTER REPLICA, a second DEFINE REPLICA is refused for the name already in use, and DROP REPLICA is refused while this node holds no leadership.`
+        roles2.length === 0 ? `A peer keeps at least one role; to take it out of the cluster, remove it below.` : `Sets ${open.name}'s declared roles to ${roles2.join(", ")}, leaving its node, subscription and certificate as they are. Taken by the node that leads the store.`
       );
       return;
     }
@@ -1041,10 +1073,9 @@
       at(`drawer-${bit}`).checked = subject.roles.includes(bit);
     }
     clear("drawer-missing");
-    for (const bit of BITS) {
-      at(`drawer-${bit}`).disabled = !subject.self;
-    }
-    hide("drawer-apply", !subject.self);
+    hide("drawer-remove-part", subject.self);
+    setValue("drawer-remove-confirm", "");
+    shapeRemove();
     if (!subject.self) {
       const note2 = made("p", "faint");
       note2.textContent = `${subject.name} answers on ${subject.endpoint ?? "an address this node did not record"}.`;
@@ -1055,6 +1086,19 @@
     hide("drawer", false);
     at("drawer-close").focus();
   }
+  function removal() {
+    if (open === null || open.self || aName(open.name) === null) {
+      return null;
+    }
+    return trimmed("drawer-remove-confirm") === open.name ? `DROP REPLICA ${open.name};` : null;
+  }
+  function shapeRemove() {
+    disable("drawer-remove", removal() === null);
+    say(
+      "drawer-remove-says",
+      open === null || open.self ? "" : `Removes ${open.name} from the membership. Its node is never admitted again — a machine coming back is wiped and joins under a new identity. Type ${open.name} to confirm.`
+    );
+  }
   function closeIt3() {
     hide("drawer", true);
     open = null;
@@ -1064,6 +1108,22 @@
       at(`drawer-${bit}`).addEventListener("change", preview);
     }
     at("drawer-close").addEventListener("click", closeIt3);
+    at("drawer-remove-confirm").addEventListener("input", shapeRemove);
+    at("drawer-remove").addEventListener("click", async () => {
+      const statement2 = removal();
+      if (statement2 === null) {
+        return;
+      }
+      say("drawer-remove-status", "running…");
+      try {
+        await valueOf(statement2, "Cluster · remove", trimmed("drawer-remove-why") || void 0);
+        say("drawer-remove-status", "removed");
+        closeIt3();
+        hereAgain();
+      } catch (failure) {
+        say("drawer-remove-status", told(failure), true);
+      }
+    });
     document.addEventListener("keydown", (pressed) => {
       if (pressed.key === "Escape" && !at("drawer").hidden) {
         closeIt3();
@@ -1085,6 +1145,219 @@
         }
       } catch (failure) {
         say("drawer-status", told(failure), true);
+      }
+    });
+  }
+
+  // src/trust.ts
+  //! Trust on the cluster tab: what this node presents, what the cluster refuses,
+  //! who may join, and the failover periods (ADR-0108 D6, D9; DEFINE FAILOVER).
+  //!
+  //! Everything drawn comes from the `INFO FOR NODE` answer the map was drawn
+  //! from, so the panes and the map can never describe two different moments.
+  //!
+  //! # The irreversible one asks for the value again
+  //!
+  //! A revocation reaches every node and cannot be taken back, so the button stays
+  //! dead until the first eight digits are typed a second time, and the sentence
+  //! above it says when the fingerprint is this node's own — revoking that cuts
+  //! this node off from its own cluster, which is a thing to be told before, not
+  //! after.
+  var SCREEN = "Cluster · trust";
+  var FINGERPRINT = /^[0-9a-f]{64}$/;
+  var DAY_MS = 864e5;
+  var PERIODS = ["awareness", "collection", "round", "campaign", "lease"];
+  var mine = [];
+  var rows = [];
+  function aFingerprint(text) {
+    const plain = text.replace(/:/g, "").toLowerCase();
+    return FINGERPRINT.test(plain) ? plain : null;
+  }
+  function daysLeft(expires) {
+    const at_ = typeof expires === "string" ? Date.parse(expires) : Number.NaN;
+    return Number.isNaN(at_) ? null : Math.floor((at_ - Date.now()) / DAY_MS);
+  }
+  function listed(where3, values, empty) {
+    clear(where3);
+    if (values.length === 0) {
+      const none = made("p", "faint");
+      none.textContent = empty;
+      at(where3).appendChild(none);
+      return;
+    }
+    const list = made("ul");
+    for (const one2 of values) {
+      const item = made("li");
+      const code = made("code");
+      code.textContent = one2;
+      item.appendChild(code);
+      list.appendChild(item);
+    }
+    at(where3).appendChild(list);
+  }
+  function drawMine() {
+    clear("trust-mine");
+    if (mine.length === 0) {
+      const none = made("p", "faint");
+      none.textContent = "This node speaks plaintext on every door; a cluster accepts that only when --client-plaintext chose it.";
+      at("trust-mine").appendChild(none);
+      return;
+    }
+    for (const shown3 of mine) {
+      const line = made("p");
+      const left = daysLeft(shown3.expires);
+      const when = left === null ? "its expiry could not be read" : left < 0 ? `EXPIRED ${-left} day(s) ago — every handshake refuses it` : `expires in ${left} day(s) (${told(shown3.expires)})`;
+      line.textContent = `${shown3.surface ?? "?"} — ${when}: `;
+      const code = made("code");
+      code.textContent = shown3.fingerprint ?? "";
+      line.appendChild(code);
+      if (left !== null && left < 14) {
+        line.className = "note warn";
+      }
+      at("trust-mine").appendChild(line);
+    }
+  }
+  function drawJoin() {
+    const select = at("join-row");
+    clear("join-row");
+    const open2 = rows.filter((row) => (row.node ?? null) === null && typeof row.name === "string");
+    if (open2.length === 0) {
+      hide("join-token", true);
+    }
+    for (const row of open2) {
+      const option = made("option");
+      option.value = row.name ?? "";
+      const until = row.join_expires_ms;
+      option.textContent = (row.name ?? "") + (typeof until === "number" ? ` (a token waits until ${new Date(until).toLocaleTimeString()})` : "");
+      select.appendChild(option);
+    }
+    shapeJoin();
+  }
+  function drawFailover(held5) {
+    write(
+      "failover-held",
+      held5 === null || held5 === void 0 ? "Nobody has set a policy: every node runs the built-in periods shown as placeholders." : "Set: " + PERIODS.map((clause) => `${clause.toUpperCase()} ${told(held5[clause])}`).join(", ") + ` (epoch ${told(held5["epoch"])}, version ${told(held5["version"])}).`
+    );
+  }
+  function draw2(seen) {
+    mine = seen.certificates ?? [];
+    rows = seen.cluster?.peers ?? [];
+    drawMine();
+    listed("trust-revoked", seen.cluster?.revoked ?? [], "No certificate is refused.");
+    listed("trust-removed", seen.cluster?.tombstoned ?? [], "No node has been removed.");
+    drawJoin();
+    drawFailover(seen.cluster?.failover);
+    shapeRevoke();
+    shapeFailover();
+  }
+  function revocation() {
+    const fingerprint = aFingerprint(trimmed("revoke-fingerprint"));
+    if (fingerprint === null) {
+      return { missing: "a fingerprint: 64 hexadecimal digits, with or without colons" };
+    }
+    if (trimmed("revoke-confirm").toLowerCase() !== fingerprint.slice(0, 8)) {
+      return { missing: `type ${fingerprint.slice(0, 8)} again to confirm` };
+    }
+    const own2 = mine.find((shown3) => shown3.fingerprint === fingerprint);
+    const pinned = rows.find((row) => row.fingerprint === fingerprint);
+    return {
+      statement: `REVOKE CERTIFICATE '${fingerprint}';`,
+      says: (own2 !== void 0 ? `This is the certificate THIS node presents on its ${own2.surface ?? ""} surface — every peer will refuse this node until it is given a new one. ` : pinned !== void 0 ? `This is the certificate pinned to ${pinned.name ?? "a row"}. ` : "") + "Every node refuses it, in both directions, for good."
+    };
+  }
+  function shapeRevoke() {
+    const composed = revocation();
+    disable("revoke-apply", !("statement" in composed));
+    say("revoke-says", "statement" in composed ? composed.says : composed.missing);
+  }
+  function shapeJoin() {
+    const name = aName(trimmed("join-row"));
+    disable("join-apply", name === null);
+    say(
+      "join-says",
+      name === null ? "No row waits for a node: declare one without a node id or a fingerprint first." : `Issues a token that binds ${name} to the first node offering it, for ${trimmed("join-life")}.`
+    );
+  }
+  function policy() {
+    const said3 = [];
+    for (const clause of PERIODS) {
+      const period = aDuration(trimmed(`failover-${clause}`));
+      if (period === null) {
+        return { missing: `${clause.toUpperCase()} needs a duration such as 200ms or 1s — every clause is required` };
+      }
+      said3.push(`${clause.toUpperCase()} ${period}`);
+    }
+    return { statement: `DEFINE FAILOVER ${said3.join(" ")};` };
+  }
+  function shapeFailover() {
+    const composed = policy();
+    disable("failover-apply", !("statement" in composed));
+    say(
+      "failover-says",
+      "statement" in composed ? `Replaces the policy on every node: ${composed.statement} The node refuses a set whose periods do not hold together, and says which.` : composed.missing
+    );
+  }
+  async function send(statement2, status, why) {
+    say(status, "sending…");
+    try {
+      const answered2 = await valueOf(statement2, SCREEN, why);
+      say(status, "done");
+      return answered2 !== null;
+    } catch (failure) {
+      say(status, told(failure), true);
+      return false;
+    }
+  }
+  function wire8() {
+    for (const id of ["revoke-fingerprint", "revoke-confirm"]) {
+      at(id).addEventListener("input", shapeRevoke);
+    }
+    for (const id of ["join-row", "join-life"]) {
+      at(id).addEventListener("change", shapeJoin);
+    }
+    for (const clause of PERIODS) {
+      at(`failover-${clause}`).addEventListener("input", shapeFailover);
+    }
+    at("revoke-apply").addEventListener("click", async () => {
+      const composed = revocation();
+      if (!("statement" in composed)) {
+        return;
+      }
+      if (await send(composed.statement, "revoke-status", trimmed("revoke-why") || void 0)) {
+        setValue("revoke-confirm", "");
+        setValue("revoke-fingerprint", "");
+        hereAgain();
+      }
+    });
+    at("join-apply").addEventListener("click", async () => {
+      const name = aName(trimmed("join-row"));
+      const life = aDuration(trimmed("join-life"));
+      if (name === null || life === null) {
+        return;
+      }
+      say("join-status", "sending…");
+      hide("join-token", true);
+      try {
+        const answered2 = await valueOf(`CREATE JOIN TOKEN FOR REPLICA ${name} EXPIRES ${life};`, SCREEN);
+        const token2 = answered2 !== null && answered2.kind === "value" ? answered2.value : null;
+        if (typeof token2 !== "string") {
+          say("join-status", "the node answered without a token", true);
+          return;
+        }
+        write("join-token", `--join-token ${token2}
+
+Shown once. The node keeps only its digest.`);
+        hide("join-token", false);
+        say("join-status", "issued");
+        hereAgain();
+      } catch (failure) {
+        say("join-status", told(failure), true);
+      }
+    });
+    at("failover-apply").addEventListener("click", async () => {
+      const composed = policy();
+      if ("statement" in composed && await send(composed.statement, "failover-status")) {
+        hereAgain();
       }
     });
   }
@@ -1266,7 +1539,7 @@
       )
     );
   }
-  function removal() {
+  function removal2() {
     const name = trimmed("remove-name");
     const again = trimmed("remove-confirm");
     return name !== "" && name === again ? "DROP USER " + name + ";" : null;
@@ -1275,7 +1548,7 @@
     return trimmed("remove-why");
   }
   function shapeTheRemoval() {
-    const statement2 = removal();
+    const statement2 = removal2();
     disable("remove", statement2 === null);
     const name = trimmed("remove-name");
     write(
@@ -1284,7 +1557,7 @@
     );
     write("remove-preview", statement2 ?? "");
   }
-  function wire8() {
+  function wire9() {
     for (const field of [
       "new-name",
       "new-scope",
@@ -1343,50 +1616,73 @@
   //! There are no ordered stages here — a membership is a set, declared at once.
   //! A wizard would impose an order the domain does not have and would make the
   //! last step the one that fails.
+  //!
+  //! # What a row must say, and what the form adds
+  //!
+  //! A row with no `REPLICATES` is subscribed to nothing — every node up, every
+  //! greeting landing, one copy that never changes — so the subscription is a
+  //! field with `STORE` already in it rather than a clause left to memory. The
+  //! identity is a node id or a pinned certificate fingerprint (ADR-0108 D9); a
+  //! row with neither binds nobody until a join token is issued for it below.
+  //!
+  //! This node's own row is offered first, filled from the node. After the
+  //! transaction the form sets this node's roles to what its row declares, with
+  //! `DEFINE NODE ROLES` — local and never fenced — because a node left at the
+  //! default `serving, writable` is clustered and a candidate for nothing: it
+  //! stops accepting writes and never starts again.
   var ROWS = 5;
-  var rowFields = (at_) => [
-    `peer-${at_}-name`,
-    `peer-${at_}-endpoint`,
-    `peer-${at_}-node`
-  ];
+  var BITS2 = ["serving", "writable", "coordinating"];
+  var IDENTIFYING = ["name", "endpoint", "clients", "node", "fingerprint"];
+  var TEXTS = [...IDENTIFYING, "replicates"];
+  var REACH = /^(STORE|NAMESPACE [A-Za-z_][A-Za-z0-9_]*|DATABASE [A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*)$/i;
+  var thisNode = null;
   function intended() {
     const found = [];
     for (let index = 0; index < ROWS; index += 1) {
-      const name = trimmed(`peer-${index}-name`);
-      const endpoint = trimmed(`peer-${index}-endpoint`);
-      const node = trimmed(`peer-${index}-node`);
-      if (name === "" && endpoint === "" && node === "") {
+      const read = (part) => trimmed(`peer-${index}-${part}`);
+      if (IDENTIFYING.every((part) => read(part) === "")) {
         continue;
       }
-      const roles = [];
-      for (const bit of ["serving", "writable", "coordinating"]) {
-        if (at(`peer-${index}-${bit}`).checked) {
-          roles.push(bit);
-        }
-      }
-      found.push({ name, endpoint, node, roles });
+      const roles = BITS2.filter((bit) => at(`peer-${index}-${bit}`).checked);
+      found.push({
+        name: read("name"),
+        endpoint: read("endpoint"),
+        clients: read("clients"),
+        node: read("node"),
+        fingerprint: read("fingerprint"),
+        replicates: read("replicates").replace(/\s+/g, " "),
+        roles
+      });
     }
     return found;
   }
-  function incomplete(rows) {
-    for (const [index, row] of rows.entries()) {
-      const missing3 = row.name === "" ? "a name" : row.endpoint === "" ? "an address" : row.node === "" ? "a node id" : row.roles.length === 0 ? "at least one role" : null;
+  function incomplete(rows2) {
+    for (const [index, row] of rows2.entries()) {
+      const missing3 = aName(row.name) === null ? "a name: a letter or _, then letters, digits or _" : row.endpoint === "" ? "a peer address" : row.node !== "" && row.fingerprint !== "" ? "a node id or a fingerprint, not both" : row.fingerprint !== "" && aFingerprint(row.fingerprint) === null ? "a fingerprint of 64 hexadecimal digits" : !REACH.test(row.replicates) ? "what it replicates: STORE, NAMESPACE n or DATABASE n.d" : row.roles.length === 0 ? "at least one role" : null;
       if (missing3 !== null) {
         return `row ${index + 1} needs ${missing3}`;
       }
     }
     return null;
   }
-  function formation(rows) {
-    const declarations = rows.map(
-      (row) => `DEFINE REPLICA ${row.name} AT ${quoted(row.endpoint)} NODE ${quoted(row.node)} ROLES ${row.roles.join(", ")};`
-    );
-    return ["BEGIN;", ...declarations, "COMMIT;"].join("\n");
+  var own = (rows2) => thisNode === null ? void 0 : rows2.find((row) => row.node === thisNode?.id);
+  function formation(rows2) {
+    const declarations = rows2.map((row) => {
+      const pinned = aFingerprint(row.fingerprint);
+      return `DEFINE REPLICA ${row.name} AT ${quoted(row.endpoint)}` + (row.clients === "" ? "" : ` CLIENTS AT ${quoted(row.clients)}`) + (row.node === "" ? "" : ` NODE ${quoted(row.node)}`) + ` ROLES ${row.roles.join(", ")} REPLICATES ${row.replicates}` + (pinned === null ? "" : ` FINGERPRINT '${pinned}'`) + ";";
+    });
+    const mine2 = own(rows2);
+    return [
+      "BEGIN;",
+      ...declarations,
+      "COMMIT;",
+      ...mine2 === void 0 ? [] : [`DEFINE NODE ROLES ${mine2.roles.join(", ")};`]
+    ].join("\n");
   }
   function preview3() {
-    const rows = intended();
-    const missing3 = incomplete(rows);
-    if (rows.length === 0) {
+    const rows2 = intended();
+    const missing3 = incomplete(rows2);
+    if (rows2.length === 0) {
       say("form-says", "Nothing declared yet.");
       return;
     }
@@ -1394,62 +1690,84 @@
       say("form-says", missing3, true);
       return;
     }
-    const named = rows.map((row) => row.name).join(", ");
+    const named = rows2.map((row) => row.name).join(", ");
+    const waiting = rows2.filter((row) => row.node === "" && row.fingerprint === "").map((row) => row.name);
+    const mine2 = own(rows2);
     say(
       "form-says",
-      `Declares ${rows.length === 1 ? "one peer" : `${rows.length} peers`} — ${named} — in a single transaction. All of them or none.`
+      `Declares ${rows2.length === 1 ? "one member" : `${rows2.length} members`} — ${named} — in a single transaction. All of them or none. ` + (mine2 === void 0 ? "This node keeps the roles it has, as none of these rows names it — and once clustered, a node writes only while it holds coordinating. " : mine2.roles.includes("coordinating") ? `Then sets this node's roles to ${mine2.roles.join(", ")}. ` : "This node's row leaves out coordinating: once clustered, it stops accepting writes for good. ") + (waiting.length === 0 ? "" : `${waiting.join(", ")} will wait for a join token.`)
     );
   }
   function showStatement() {
-    const rows = intended();
+    const rows2 = intended();
     clear("form-statement");
     const block = made("pre");
-    block.textContent = rows.length === 0 || incomplete(rows) !== null ? "" : formation(rows);
+    block.textContent = rows2.length === 0 || incomplete(rows2) !== null ? "" : formation(rows2);
     at("form-statement").appendChild(block);
   }
-  function wire9() {
+  function changed() {
+    preview3();
+    showStatement();
+  }
+  function know(id, endpoints, peers) {
+    if (typeof id !== "string") {
+      return;
+    }
+    const endpoint = Array.isArray(endpoints) && typeof endpoints[0] === "string" ? endpoints[0] : "";
+    thisNode = { id, endpoint };
+    if (peers > 0 || IDENTIFYING.some((part) => trimmed(`peer-0-${part}`) !== "")) {
+      changed();
+      return;
+    }
+    setValue("peer-0-name", "this_node");
+    setValue("peer-0-endpoint", endpoint);
+    setValue("peer-0-node", id);
+    for (const bit of BITS2) {
+      at(`peer-0-${bit}`).checked = true;
+    }
+    changed();
+  }
+  function wire10() {
     for (let index = 0; index < ROWS; index += 1) {
-      for (const field of [
-        ...rowFields(index),
-        `peer-${index}-serving`,
-        `peer-${index}-writable`,
-        `peer-${index}-coordinating`
-      ]) {
-        at(field).addEventListener("input", () => {
-          preview3();
-          showStatement();
-        });
-        at(field).addEventListener("change", () => {
-          preview3();
-          showStatement();
-        });
+      for (const part of [...TEXTS, ...BITS2]) {
+        at(`peer-${index}-${part}`).addEventListener("input", changed);
+        at(`peer-${index}-${part}`).addEventListener("change", changed);
       }
     }
     at("form-cluster").addEventListener("click", async () => {
-      const rows = intended();
-      if (rows.length === 0) {
+      const rows2 = intended();
+      if (rows2.length === 0) {
         say("form-status", "nothing to declare", true);
         return;
       }
-      const missing3 = incomplete(rows);
+      const missing3 = incomplete(rows2);
       if (missing3 !== null) {
         say("form-status", missing3, true);
         return;
       }
       say("form-status", "running…");
       try {
-        const answered2 = await valueOf(formation(rows), "Cluster · form");
+        const answered2 = await valueOf(formation(rows2), "Cluster · form");
         const done = answered2 !== null && answered2.kind === "done";
         say("form-status", done ? "declared" : "");
         if (done) {
+          for (let index = 0; index < ROWS; index += 1) {
+            for (const part of IDENTIFYING) {
+              setValue(`peer-${index}-${part}`, "");
+            }
+            setValue(`peer-${index}-replicates`, "STORE");
+            for (const bit of BITS2) {
+              at(`peer-${index}-${bit}`).checked = false;
+            }
+          }
+          changed();
           hereAgain();
         }
       } catch (failure) {
         say("form-status", told(failure), true);
       }
     });
-    preview3();
-    showStatement();
+    changed();
   }
 
   // src/grants.ts
@@ -1534,7 +1852,7 @@
     hide("grant-name-field", reachOf() === "store");
     say("grant-says", statement() === null ? missing2() : says());
   }
-  function wire10() {
+  function wire11() {
     for (const field of [
       "grant-who",
       "grant-what",
@@ -1605,7 +1923,7 @@
   //! drawn as declarations and labelled as declarations; drawing them filled, like
   //! this node's reported ones, would be the map claiming an observation nobody
   //! made.
-  var BITS2 = [
+  var BITS3 = [
     { name: "serving", letter: "S", means: "answers client requests" },
     {
       name: "writable",
@@ -1630,7 +1948,7 @@
   }
   function lamps(has, wanted2) {
     const row = made("div", "lamps");
-    for (const bit of BITS2) {
+    for (const bit of BITS3) {
       const held5 = has.includes(bit.name);
       const asked2 = wanted2 !== null && wanted2.includes(bit.name);
       row.appendChild(
@@ -1716,13 +2034,13 @@
     }
     return `${told2(upstream.copied_records)} record(s) in ${upstream.copies} cop${upstream.copies === 1 ? "y" : "ies"}`;
   }
-  function draw2(into, seen) {
+  function draw3(into, seen) {
     const cluster = seen.cluster ?? {};
-    const mine = seen.roles ?? [];
+    const mine2 = seen.roles ?? [];
     const wanted2 = cluster.desired ?? null;
     const self = figure(
       "This node",
-      mine,
+      mine2,
       wanted2,
       [
         lease(cluster.lease),
@@ -1747,7 +2065,7 @@
         self: true,
         endpoint: null,
         node: null,
-        roles: mine,
+        roles: mine2,
         declared: wanted2
       }
     );
@@ -1858,22 +2176,27 @@
     try {
       const answered2 = held2(await valueOf("INFO FOR NODE;", "Node"));
       const all2 = answered2 ?? {};
-      const { cluster, ...mine } = all2;
-      facts("node-facts", mine);
+      const { cluster, ...mine2 } = all2;
+      facts("node-facts", mine2);
       const peers = typeof cluster === "object" && cluster !== null ? cluster.peers : void 0;
       clear("cluster-map");
-      draw2(at("cluster-map"), all2);
+      draw3(at("cluster-map"), all2);
+      draw2(all2);
+      know(all2["id"], all2["endpoints"], Array.isArray(peers) ? peers.length : 0);
       facts("cluster-facts", {
         roles: all2["roles"],
         peers: peers ?? [],
         endpoints: all2["endpoints"],
         id: all2["id"]
       });
+      const joining = Array.isArray(all2["certificates"]) && all2["certificates"].some(
+        (shown3) => typeof shown3 === "object" && shown3 !== null && "surface" in shown3 && shown3.surface === "peers"
+      );
       if (!Array.isArray(peers) || peers.length === 0) {
         state(
           "cluster-status",
           "empty",
-          "No peers — this node holds everything itself. Declare the membership below to add them, all at once."
+          joining ? "This node holds a peer certificate and names nobody yet. To join through its seed, open This node above and set its roles to serving: a writable node stays its own authority and collects from nobody. To found a cluster here, declare the membership below." : "No peers — this node holds everything itself. Declare the membership below to add them, all at once."
         );
       } else {
         settled("cluster-status");
@@ -1898,7 +2221,7 @@
     );
     say("node-status", "");
   }
-  function wire11() {
+  function wire12() {
     at("node-refresh").addEventListener("click", readNode);
     onArrival(["cluster", "this-node"], () => void readNode());
   }
@@ -1913,7 +2236,7 @@
     const differ = fresh !== "" && again !== "" && fresh !== again;
     say("mine-status", differ ? "the two new ones differ" : "", differ);
   }
-  function wire12() {
+  function wire13() {
     for (const field of ["mine-current", "mine-new", "mine-again"]) {
       at(field).addEventListener("input", shapeMine);
     }
@@ -2018,7 +2341,7 @@
       say("script-status", "the node did not answer: " + told(failure), true);
     }
   }
-  function wire13() {
+  function wire14() {
     for (const button of all("[data-shape]")) {
       button.addEventListener("click", () => {
         drawing = button.dataset["shape"] ?? "auto";
@@ -2165,7 +2488,7 @@
       text.includes(":") ? "nothing here answers to that — name a record in full, as namespace.database.table:key" : text.includes(".") ? "nothing here answers to that name" : "nothing here answers to that name — a table is named in full, as namespace.database.table"
     );
   }
-  function wire14() {
+  function wire15() {
     at("search").addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -2214,7 +2537,7 @@
     const focused = document.activeElement;
     return focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || focused instanceof HTMLSelectElement;
   }
-  function draw3() {
+  function draw4() {
     clear("keys-list");
     const list = made("dl", "keys");
     for (const key of KEYS) {
@@ -2230,8 +2553,8 @@
     at("keys-sheet").hidden = true;
   }
   var DESTINATIONS = ["run", "topics", "cluster", "access", "this-node", "backup", "vault"];
-  function wire15() {
-    draw3();
+  function wire16() {
+    draw4();
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !at("keys-sheet").hidden) {
         closeIt4();
@@ -2338,35 +2661,12 @@
     return lags.length === 0 ? 0 : Math.max(...lags);
   }
 
-  // src/topic-names.ts
-  //! What the Topics screen may write into a statement.
-  //!
-  //! A topic, a group, a namespace and a database are grammar: the node cannot take
-  //! them as parameters, so this screen writes them into the text. That is safe
-  //! only behind a check narrower than the node's own lexer, and these are the same
-  //! two patterns every client applies (consumer contract 1.0, section 3). A name
-  //! that fails is refused here, before anything is sent, rather than quoted.
-  //!
-  //! Numbers and durations are grammar too — `AFTER 40`, `ACK DEADLINE 30s` — and
-  //! are checked for the same reason.
-  var NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-  var GROUP = /^[A-Za-z0-9_.:-]{1,128}$/;
-  var DURATION = /^[0-9]{1,9}(ms|s|m|h|d|w)$/;
-  var WHOLE = /^[0-9]{1,15}$/;
-  var aName = (text) => NAME.test(text) ? text : null;
-  var aGroup = (text) => GROUP.test(text) ? text : null;
-  var aDuration = (text) => DURATION.test(text) ? text : null;
-  function aWhole(text) {
-    return WHOLE.test(text) ? Number(text) : null;
-  }
-  var tenancy = (namespace, database) => `USE NAMESPACE ${namespace}; USE DATABASE ${database}; `;
-
   // src/topic-list.ts
   //! The Topics screen's reading: where, which topics, the chosen one, its messages.
   //!
   //! Everything here reads. Nothing moves a position — the message browser uses
   //! `READ FROM … AFTER n` with no consumer, which is a look and nothing more.
-  var SCREEN = "Topics";
+  var SCREEN2 = "Topics";
   var TOPICS_SHOWN = 200;
   function where2() {
     const namespace = aName(value("topics-namespace"));
@@ -2382,7 +2682,7 @@
   }
   var words = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
   async function results(source) {
-    const { text } = await ask(source, SCREEN);
+    const { text } = await ask(source, SCREEN2);
     const body = JSON.parse(text);
     if (!Array.isArray(body.results)) {
       throw new Error(typeof body.error === "string" ? body.error : text);
@@ -2410,7 +2710,7 @@
   async function readNamespaces() {
     state("topics-status", "waiting", "asking…");
     try {
-      offer("topics-namespace", strings(await valueOf("INFO FOR STORE;", SCREEN), "namespaces"));
+      offer("topics-namespace", strings(await valueOf("INFO FOR STORE;", SCREEN2), "namespaces"));
     } catch (failure) {
       state("topics-status", "wrong", words(failure));
       return;
@@ -2421,12 +2721,12 @@
     const namespace = aName(value("topics-namespace"));
     if (namespace === null) {
       offer("topics-database", []);
-      draw4([]);
+      draw5([]);
       state("topics-status", "empty", "No namespace here — declare one on Run with DEFINE NAMESPACE.");
       return;
     }
     try {
-      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN);
+      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN2);
       offer("topics-database", strings(answered2, "databases"));
     } catch (failure) {
       state("topics-status", "wrong", words(failure));
@@ -2437,20 +2737,20 @@
   async function readTopics() {
     const place2 = where2();
     if (place2 === null) {
-      draw4([]);
+      draw5([]);
       state("topics-status", "empty", "Choose a namespace and a database that exist.");
       return;
     }
     const start = tenancy(place2.namespace, place2.database);
     state("topics-status", "waiting", "asking…");
     try {
-      const listed = strings(await valueOf(start + "INFO FOR DATABASE;", SCREEN), "topics");
-      const names = listed.filter((name) => aName(name) !== null);
+      const listed2 = strings(await valueOf(start + "INFO FOR DATABASE;", SCREEN2), "topics");
+      const names = listed2.filter((name) => aName(name) !== null);
       const shown3 = names.slice(0, TOPICS_SHOWN);
       const asked2 = shown3.map((name) => `INFO FOR TOPIC ${name};`).join(" ");
       const answered2 = shown3.length === 0 ? [] : await results(start + asked2);
       const read = answered2.map((each) => topic(each.value)).filter((each) => each !== null);
-      draw4(read);
+      draw5(read);
       if (names.length === 0) {
         const here2 = `${place2.namespace}.${place2.database}`;
         state("topics-status", "empty", `${here2} holds no topics — create one below.`);
@@ -2460,7 +2760,7 @@
         settled("topics-status");
       }
     } catch (failure) {
-      draw4([]);
+      draw5([]);
       state("topics-status", "wrong", words(failure));
     }
   }
@@ -2479,7 +2779,7 @@
     }
     return table;
   }
-  function draw4(read) {
+  function draw5(read) {
     topics = read;
     if (chosen() === null) {
       chosenName = null;
@@ -2513,7 +2813,7 @@
     setValue("browse-after", String(found === null || found.first === null ? 0 : found.first - 1));
     clear("browse-list");
     settled("browse-status");
-    draw4(topics);
+    draw5(topics);
   }
   function drawChosen() {
     const found = chosen();
@@ -2604,7 +2904,7 @@
     try {
       const answered2 = await valueOf(
         tenancy(place2.namespace, place2.database) + `READ FROM ${found.name} AFTER ${after2} LIMIT ${count};`,
-        SCREEN
+        SCREEN2
       );
       const records = answered2?.records ?? [];
       clear("browse-list");
@@ -2632,7 +2932,7 @@
       state("browse-status", "wrong", words(failure));
     }
   }
-  function wire16() {
+  function wire17() {
     at("topics-namespace").addEventListener("change", () => void readDatabases());
     at("topics-database").addEventListener("change", () => void readTopics());
     at("topics-refresh").addEventListener("click", () => void readNamespaces());
@@ -2652,7 +2952,7 @@
   //! node's last answer about the chosen topic, so the reader sees the blast
   //! radius before the button is live. The three that lose something (removing a
   //! topic, removing a group, moving a group) ask for the name to be typed again.
-  var SCREEN2 = "Topics";
+  var SCREEN3 = "Topics";
   var MAX_IN_FLIGHT = 1e4;
   var PLACE = "choose a namespace and a database first";
   var TOPIC = "choose a topic in the list first";
@@ -2770,7 +3070,7 @@
     disable(form.button, !("statement" in composed));
     write(form.says, "statement" in composed ? composed.says : composed.missing);
   }
-  async function send(form) {
+  async function send2(form) {
     const composed = form.compose();
     const place2 = where2();
     if (!("statement" in composed) || place2 === null) {
@@ -2780,7 +3080,7 @@
     say(form.status, "sending…");
     try {
       const why = form.why === void 0 ? void 0 : trimmed(form.why) || void 0;
-      await valueOf(tenancy(place2.namespace, place2.database) + composed.statement, SCREEN2, why);
+      await valueOf(tenancy(place2.namespace, place2.database) + composed.statement, SCREEN3, why);
       say(form.status, "done");
       for (const field of form.fields) {
         if (at(field) instanceof HTMLInputElement) {
@@ -2794,13 +3094,13 @@
     }
     shape3(form);
   }
-  function wire17() {
+  function wire18() {
     for (const form of FORMS) {
       for (const field of form.fields) {
         at(field).addEventListener("input", () => shape3(form));
         at(field).addEventListener("change", () => shape3(form));
       }
-      at(form.button).addEventListener("click", () => void send(form));
+      at(form.button).addEventListener("click", () => void send2(form));
     }
     whenChosen(() => {
       offer("group-which", [...chosen()?.groups.keys() ?? []].filter((name) => aGroup(name) !== null));
@@ -2821,7 +3121,7 @@
   //! first and a name that fails is refused here, before anything is sent. Whether
   //! a name stays inside the backup folder, and whether a restore may land, is the
   //! node's decision, and its refusal is shown in its own words.
-  var SCREEN3 = "Backup";
+  var SCREEN4 = "Backup";
   var WHAT = {
     state: {
       statement: "BACKUP STATE",
@@ -2919,7 +3219,7 @@
     disable("restore-run", !("statement" in restore3));
     write("restore-says", "statement" in restore3 ? restore3.says : restore3.missing);
   }
-  async function send2(composed, button, status, answer2, shown3) {
+  async function send3(composed, button, status, answer2, shown3) {
     if (!("statement" in composed)) {
       return false;
     }
@@ -2927,7 +3227,7 @@
     say(status, "working…");
     write(answer2, "");
     try {
-      write(answer2, shown3(held2(await valueOf(composed.statement, SCREEN3))));
+      write(answer2, shown3(held2(await valueOf(composed.statement, SCREEN4))));
       say(status, "done");
       return true;
     } catch (failure) {
@@ -2939,7 +3239,7 @@
     }
   }
   async function backUp() {
-    const written = await send2(composeBackup(), "backup-run", "backup-status", "backup-answer", (answered2) => {
+    const written = await send3(composeBackup(), "backup-run", "backup-status", "backup-answer", (answered2) => {
       const path = typeof answered2?.path === "string" ? answered2.path : trimmed("backup-name");
       const bytes = typeof answered2?.bytes === "number" ? answered2.bytes : null;
       return bytes === null ? path : `${path}
@@ -2952,13 +3252,13 @@ ${bytes.toLocaleString("en")} bytes`;
     }
   }
   async function restore2() {
-    await send2(composeRestore(), "restore-run", "restore-status", "restore-answer", (answered2) => {
+    await send3(composeRestore(), "restore-run", "restore-status", "restore-answer", (answered2) => {
       const databases = Array.isArray(answered2?.databases) ? answered2.databases.filter((place2) => typeof place2 === "string") : [];
       const statements = typeof answered2?.statements === "number" ? answered2.statements : 0;
       return `${databases.join(", ") || "no database"} created · ${statements.toLocaleString("en")} statements`;
     });
   }
-  function wire18() {
+  function wire19() {
     setValue("backup-name", suggested(chosenForm()));
     for (const id of ["backup-form", "backup-part"]) {
       at(id).addEventListener("change", () => {
@@ -2990,7 +3290,7 @@ ${bytes.toLocaleString("en")} bytes`;
   //! parameters, which is what keeps a written secret out of it. Revealed values
   //! live in one element on this page and nowhere else — no storage, no log line —
   //! and are removed by Hide, by the next reveal, and by listing again.
-  var SCREEN4 = "Vault";
+  var SCREEN5 = "Vault";
   var PAGE = 50;
   var after = null;
   function place(needsVault) {
@@ -3021,7 +3321,7 @@ ${bytes.toLocaleString("en")} bytes`;
     if ("missing" in where3) return say("vault-rec-status", where3.missing, true);
     clear("vault-rec-vaults");
     try {
-      const report = held2(await valueOf(`${where3.tenancy}INFO FOR DATABASE;`, SCREEN4));
+      const report = held2(await valueOf(`${where3.tenancy}INFO FOR DATABASE;`, SCREEN5));
       const names = Array.isArray(report?.vaults) ? report.vaults : [];
       const list = made("ul");
       for (const each of names) {
@@ -3056,7 +3356,7 @@ ${bytes.toLocaleString("en")} bytes`;
     const bound = after === null ? void 0 : { after };
     try {
       const report = held2(
-        await valueOf(`${where3.tenancy}INFO FOR VAULT ${vault} RECORDS${from} LIMIT ${PAGE};`, SCREEN4, void 0, bound)
+        await valueOf(`${where3.tenancy}INFO FOR VAULT ${vault} RECORDS${from} LIMIT ${PAGE};`, SCREEN5, void 0, bound)
       );
       const ids = Array.isArray(report?.records) ? report.records : [];
       clear("vault-rec-ids");
@@ -3084,7 +3384,7 @@ ${bytes.toLocaleString("en")} bytes`;
   async function reveal(where3, vault, id) {
     hideRevealed();
     try {
-      const opened = held2(await valueOf(`${where3}REVEAL * FROM ${vault}:$id;`, SCREEN4, void 0, { id }));
+      const opened = held2(await valueOf(`${where3}REVEAL * FROM ${vault}:$id;`, SCREEN5, void 0, { id }));
       at("vault-rec-shown").appendChild(shown(opened ?? {}));
       disable("vault-rec-hide", false);
       say("vault-rec-status", "revealed — the store recorded this read");
@@ -3107,7 +3407,7 @@ ${bytes.toLocaleString("en")} bytes`;
     try {
       await valueOf(
         `${where3.tenancy}UPSERT ${where3.vault}:$id MERGE { '${field}': $value };`,
-        SCREEN4,
+        SCREEN5,
         void 0,
         { id: quoted(id), value: quoted(secret) }
       );
@@ -3125,7 +3425,7 @@ ${bytes.toLocaleString("en")} bytes`;
     clear("vault-rec-trail");
     try {
       const by = actor === null ? "" : ` BY ${actor}`;
-      const report = held2(await valueOf(`${where3.tenancy}INFO FOR AUDIT${by};`, SCREEN4));
+      const report = held2(await valueOf(`${where3.tenancy}INFO FOR AUDIT${by};`, SCREEN5));
       at("vault-rec-trail").appendChild(shown(report?.audit ?? []));
       say("vault-rec-status", "the audit trail, oldest first");
     } catch (failure) {
@@ -3161,7 +3461,7 @@ ${bytes.toLocaleString("en")} bytes`;
   //! emptied as soon as its request has gone. A vault's three names are grammar
   //! in the path, so each passes `aName()` first and a name that fails is refused
   //! here, before anything is sent.
-  var SCREEN5 = "Vault";
+  var SCREEN6 = "Vault";
   function shown2(body) {
     if (typeof body !== "object" || body === null) return "";
     const answered2 = body;
@@ -3186,7 +3486,7 @@ ${bytes.toLocaleString("en")} bytes`;
   async function act(method, path, statusId, answerId, body) {
     say(statusId, "working…");
     try {
-      const answered2 = await route(method, path, SCREEN5, body);
+      const answered2 = await route(method, path, SCREEN6, body);
       if (answered2.status === 200) {
         write(answerId, shown2(answered2.body));
         say(statusId, "done");
@@ -3236,7 +3536,7 @@ ${bytes.toLocaleString("en")} bytes`;
     if ("path" in one2) await act_(one2.path);
     shape6();
   }
-  function wire19() {
+  function wire20() {
     const store = (method, path, body) => act(method, path, "vault-store-status", "vault-store-answer", body).finally(shape6);
     const one2 = (method, path, body) => act(method, path, "vault-one-status", "vault-one-answer", body);
     at("vault-store-refresh").addEventListener("click", () => void store("GET", "/vault"));
@@ -3286,7 +3586,7 @@ ${bytes.toLocaleString("en")} bytes`;
   //! writes back the statement that made it. The keys and the value come from the
   //! `/kv` routes, so what the pane shows is what any HTTP caller of those routes
   //! would be answered.
-  var SCREEN6 = "Run";
+  var SCREEN7 = "Run";
   var TABLES_ASKED = 200;
   var KEYS_SHOWN = 100;
   var words2 = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
@@ -3303,7 +3603,7 @@ ${bytes.toLocaleString("en")} bytes`;
   async function readNamespaces2() {
     state("kv-status", "waiting", "asking…");
     try {
-      offer("kv-namespace", strings2(await valueOf("INFO FOR STORE;", SCREEN6), "namespaces"));
+      offer("kv-namespace", strings2(await valueOf("INFO FOR STORE;", SCREEN7), "namespaces"));
     } catch (failure) {
       state("kv-status", "wrong", words2(failure));
       return;
@@ -3319,7 +3619,7 @@ ${bytes.toLocaleString("en")} bytes`;
       return;
     }
     try {
-      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN6);
+      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN7);
       offer("kv-database", strings2(answered2, "databases"));
     } catch (failure) {
       state("kv-status", "wrong", words2(failure));
@@ -3340,10 +3640,10 @@ ${bytes.toLocaleString("en")} bytes`;
     const start = tenancy(namespace, database);
     state("kv-status", "waiting", "asking…");
     try {
-      const tables = strings2(await valueOf(start + "INFO FOR DATABASE;", SCREEN6), "tables").filter((name) => aName(name) !== null).slice(0, TABLES_ASKED);
+      const tables = strings2(await valueOf(start + "INFO FOR DATABASE;", SCREEN7), "tables").filter((name) => aName(name) !== null).slice(0, TABLES_ASKED);
       let answered2 = [];
       if (tables.length > 0) {
-        const { text } = await ask(start + tables.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN6);
+        const { text } = await ask(start + tables.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN7);
         const body = JSON.parse(text);
         if (!Array.isArray(body.results)) {
           throw new Error(typeof body.error === "string" ? body.error : text);
@@ -3370,7 +3670,7 @@ ${bytes.toLocaleString("en")} bytes`;
   }
   var listing = 0;
   async function listKeys() {
-    const mine = ++listing;
+    const mine2 = ++listing;
     const where3 = base();
     clear("kv-list");
     clear("kv-value");
@@ -3382,8 +3682,8 @@ ${bytes.toLocaleString("en")} bytes`;
     const query = `?limit=${KEYS_SHOWN}` + (prefix === "" ? "" : `&prefix=${encodeURIComponent(prefix)}`);
     state("kv-status", "waiting", "asking…");
     try {
-      const { status, body } = await route("GET", where3 + query, SCREEN6);
-      if (mine !== listing) {
+      const { status, body } = await route("GET", where3 + query, SCREEN7);
+      if (mine2 !== listing) {
         return;
       }
       clear("kv-list");
@@ -3424,7 +3724,7 @@ ${bytes.toLocaleString("en")} bytes`;
       return;
     }
     try {
-      const { status, body } = await route("GET", `${where3}/key/${encodeURIComponent(key)}`, SCREEN6);
+      const { status, body } = await route("GET", `${where3}/key/${encodeURIComponent(key)}`, SCREEN7);
       const shown3 = made("pre");
       if (status === 404) {
         shown3.textContent = `${key}: no such key — it may have expired`;
@@ -3439,7 +3739,7 @@ ${JSON.stringify(held5, null, 2)}`;
       state("kv-status", "wrong", words2(failure));
     }
   }
-  function wire20() {
+  function wire21() {
     at("kv-namespace").addEventListener("change", () => void readDatabases2());
     at("kv-database").addEventListener("change", () => void readSpaces());
     at("kv-space").addEventListener("change", () => void listKeys());
@@ -3454,7 +3754,7 @@ ${JSON.stringify(held5, null, 2)}`;
   //! Everything here reads. A table's kind is not a field of `INFO FOR DATABASE`,
   //! so each table is asked for `INFO FOR TABLE`: a series writes back the
   //! `DEFINE SERIES` statement that made it, and a rollup says it is one.
-  var SCREEN7 = "Run";
+  var SCREEN8 = "Run";
   var TABLES_ASKED2 = 200;
   var DECLARED = /^DEFINE SERIES \S+ RETAIN (\S+?)(?: TIME (\S+?))?;/;
   function kind(value2) {
@@ -3482,7 +3782,7 @@ ${JSON.stringify(held5, null, 2)}`;
   async function readNamespaces3() {
     state("series-status", "waiting", "asking…");
     try {
-      offer("series-namespace", strings3(await valueOf("INFO FOR STORE;", SCREEN7), "namespaces"));
+      offer("series-namespace", strings3(await valueOf("INFO FOR STORE;", SCREEN8), "namespaces"));
     } catch (failure) {
       state("series-status", "wrong", words3(failure));
       return;
@@ -3493,12 +3793,12 @@ ${JSON.stringify(held5, null, 2)}`;
     const namespace = aName(value("series-namespace"));
     if (namespace === null) {
       offer("series-database", []);
-      draw5([]);
+      draw6([]);
       state("series-status", "empty", "No namespace here — declare one with DEFINE NAMESPACE.");
       return;
     }
     try {
-      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN7);
+      const answered2 = await valueOf(`USE NAMESPACE ${namespace}; INFO FOR NAMESPACE;`, SCREEN8);
       offer("series-database", strings3(answered2, "databases"));
     } catch (failure) {
       state("series-status", "wrong", words3(failure));
@@ -3510,18 +3810,18 @@ ${JSON.stringify(held5, null, 2)}`;
     const namespace = aName(value("series-namespace"));
     const database = aName(value("series-database"));
     if (namespace === null || database === null) {
-      draw5([]);
+      draw6([]);
       state("series-status", "empty", "Choose a namespace and a database that exist.");
       return;
     }
     const start = tenancy(namespace, database);
     state("series-status", "waiting", "asking…");
     try {
-      const tables = strings3(await valueOf(start + "INFO FOR DATABASE;", SCREEN7), "tables").filter((name) => aName(name) !== null);
+      const tables = strings3(await valueOf(start + "INFO FOR DATABASE;", SCREEN8), "tables").filter((name) => aName(name) !== null);
       const asked2 = tables.slice(0, TABLES_ASKED2);
       let answered2 = [];
       if (asked2.length > 0) {
-        const { text } = await ask(start + asked2.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN7);
+        const { text } = await ask(start + asked2.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN8);
         const body = JSON.parse(text);
         if (!Array.isArray(body.results)) {
           throw new Error(typeof body.error === "string" ? body.error : text);
@@ -3529,7 +3829,7 @@ ${JSON.stringify(held5, null, 2)}`;
         answered2 = body.results;
       }
       const found = answered2.map((each) => kind(each.value)).filter((each) => each !== null);
-      draw5(found);
+      draw6(found);
       if (found.length === 0) {
         state("series-status", "empty", `${namespace}.${database} holds no series — DEFINE SERIES declares one.`);
       } else if (tables.length > asked2.length) {
@@ -3538,11 +3838,11 @@ ${JSON.stringify(held5, null, 2)}`;
         settled("series-status");
       }
     } catch (failure) {
-      draw5([]);
+      draw6([]);
       state("series-status", "wrong", words3(failure));
     }
   }
-  function draw5(found) {
+  function draw6(found) {
     clear("series-list");
     if (found.length === 0) {
       return;
@@ -3564,7 +3864,7 @@ ${JSON.stringify(held5, null, 2)}`;
     }
     at("series-list").appendChild(table);
   }
-  function wire21() {
+  function wire22() {
     at("series-namespace").addEventListener("change", () => void readDatabases3());
     at("series-database").addEventListener("change", () => void readSeries());
     at("series-refresh").addEventListener("click", () => void readNamespaces3());
@@ -3619,7 +3919,7 @@ ${JSON.stringify(held5, null, 2)}`;
     }
     return `showing ${SHOWN} of ${matched.length}${filtered ? "" : ` — type a name to narrow`}`;
   }
-  function listing2(rows) {
+  function listing2(rows2) {
     const table = made("table");
     const head = table.createTHead().insertRow();
     for (const column of ["user", "role", "reach"]) {
@@ -3628,7 +3928,7 @@ ${JSON.stringify(held5, null, 2)}`;
       head.appendChild(cell2);
     }
     const body = table.createTBody();
-    for (const one2 of rows) {
+    for (const one2 of rows2) {
       const row = body.insertRow();
       const name = one2.user ?? "";
       row.insertCell().textContent = name;
@@ -3644,8 +3944,8 @@ ${JSON.stringify(held5, null, 2)}`;
     state("user-status", "waiting", "asking the node who it knows about…");
     try {
       const answer2 = held2(await valueOf("INFO FOR USERS;", "Users · list"));
-      const listed = answer2 === null ? [] : answer2["users"];
-      everybody = Array.isArray(listed) ? listed : [];
+      const listed2 = answer2 === null ? [] : answer2["users"];
+      everybody = Array.isArray(listed2) ? listed2 : [];
       forget();
       for (const one2 of everybody) {
         remember(one2.user ?? "", { role: said2(one2), reach: reach2(one2) });
@@ -3686,7 +3986,7 @@ ${JSON.stringify(held5, null, 2)}`;
     }
     write("user-count", tally(matched));
   }
-  function wire22() {
+  function wire23() {
     at("list").addEventListener("click", listUsers);
     at("user-filter").addEventListener("input", redraw);
     onArrival(["access"], () => void listUsers());
@@ -3750,7 +4050,7 @@ ${JSON.stringify(held5, null, 2)}`;
       }
     });
     at("remove").addEventListener("click", async () => {
-      const statement2 = removal();
+      const statement2 = removal2();
       if (statement2 === null) {
         say("remove-status", "the two names do not match", true);
         return;
@@ -3797,23 +4097,24 @@ ${JSON.stringify(held5, null, 2)}`;
   wire2();
   wire();
   wire3();
-  wire13();
   wire14();
   wire15();
-  wire9();
+  wire16();
   wire10();
+  wire8();
+  wire11();
   wire7();
   wire6();
   wire5();
   wire4();
-  wire8();
-  wire22();
-  wire11();
+  wire9();
+  wire23();
   wire12();
-  wire16();
+  wire13();
   wire17();
   wire18();
   wire19();
-  wire21();
   wire20();
+  wire22();
+  wire21();
 })();

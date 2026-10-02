@@ -377,6 +377,8 @@ mod tests {
             leads: None,
             clients: None,
             http: None,
+            fingerprint: None,
+            join: None,
         }
     }
 

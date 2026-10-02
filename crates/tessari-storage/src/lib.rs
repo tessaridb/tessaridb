@@ -39,6 +39,7 @@ mod feed;
 mod followers;
 mod gate;
 mod graph;
+mod holds;
 mod index;
 #[cfg(test)]
 mod index_unchanged_tests;
@@ -70,16 +71,16 @@ pub use catalog::{
     AnalyzerDefinition, Authority, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, Catalog,
     ConsumerDefinition, DatabaseDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeKindDefinition,
     EdgeOrder, EngineField, EngineMember, Eviction, FailoverDefinition, FailoverStamp, Feed,
-    FieldDefinition, FieldShape, GEO_FIELD, GrantDefinition, GraphDefinition, GroupDeclaration,
-    GroupState, Held, InFlight, IndexDefinition, IndexShape, Kind, LeadershipDefinition, Mapped,
-    NamespaceDefinition, OnFailure, PublicAppend, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY,
-    QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, Reach, ReplicaDefinition, Role,
-    RollupCompute, RollupDeclaration, RollupFold, SYSTEM_DATABASE, SYSTEM_NAMESPACE, SearchCosts,
-    SeriesDeclaration, ShardMap, ShardSpan, SpaceDeclaration, SpaceLimit, StoredKind,
-    TableDefinition, TableKind, TableShape, TopicDeclaration, UNIT_WEIGHT, UserDefinition,
-    VECTOR_FIELD, VaultCustody, VaultDeclaration, VectorDeclaration, VectorDistance, Verb,
-    ViewDeclaration, WordSet, WordSetKind, another_node_may_write, governing, names_a_peer,
-    the_row_a_greeting_binds,
+    FieldDefinition, FieldShape, GEO_FIELD, GrantDefinition, GraphDefinition, Greeter,
+    GroupDeclaration, GroupState, Held, InFlight, IndexDefinition, IndexShape, JoinTicket, Kind,
+    LeadershipDefinition, Mapped, NamespaceDefinition, OnFailure, PublicAppend, QUEUE_ATTEMPTS,
+    QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, Reach,
+    ReplicaDefinition, Role, RollupCompute, RollupDeclaration, RollupFold, SYSTEM_DATABASE,
+    SYSTEM_NAMESPACE, SearchCosts, SeriesDeclaration, ShardMap, ShardSpan, SpaceDeclaration,
+    SpaceLimit, StoredKind, TableDefinition, TableKind, TableShape, TopicDeclaration, UNIT_WEIGHT,
+    UserDefinition, VECTOR_FIELD, VaultCustody, VaultDeclaration, VectorDeclaration,
+    VectorDistance, Verb, ViewDeclaration, WordSet, WordSetKind, another_node_may_write, governing,
+    names_a_peer, the_row_a_greeting_binds,
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.
@@ -94,7 +95,8 @@ pub use topic::{Message, Messages};
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
 // the field but cannot name its type has a public API it cannot use.
 pub use audit::{
-    AuditDevice, AuditTrail, DeviceRefused, VaultRead, entries as audit_entries, reads_by,
+    Administered, AuditDevice, AuditTrail, DeviceRefused, VaultRead, administered,
+    entries as audit_entries, reads_by,
 };
 pub use error::{Error, Result};
 pub use failover::Failover;
@@ -116,7 +118,7 @@ pub use state::{StateReader, TopicHead};
 pub use store::{Health, Store};
 pub use tessari_encoding::{BUILD_VERSION, LogId, NODE_ID_LEN, Roles, Writer};
 pub use transaction::{
-    Expansion, Nearby, Neighbour, RecordAddress, Region, SearchCounts, StoredRecord, Transaction,
-    Window,
+    Committed, Expansion, Nearby, Neighbour, RecordAddress, Region, SearchCounts, StoredRecord,
+    Transaction, Window,
 };
 pub use vault::{OpenVault, SealState};

@@ -7309,6 +7309,77 @@ statements ran and the databases it created: `{ path, statements, databases }`.
 A log or a snapshot restores only into an empty store, with the node stopped:
 `tessaridb <store> --restore <file>`.
 
+### An encrypted store, and the backups it seals
+
+```text
+openssl rand 32 > store.key && chmod 600 store.key
+tessaridb ./data --encryption-key-file store.key --serve 0.0.0.0:9080
+```
+
+Given a key, a node encrypts **every file its storage engine writes** — the
+tables, the write-ahead log, the manifest, the engine's own options and log —
+and **seals every backup it produces**: a snapshot, a log or a script, answered
+by `BACKUP`, written by `BACKUP … TO`, streamed by `GET /backup`, or written by
+`--backup`, `--snapshot` and `--dump`. `TESSARIDB_ENCRYPTION_KEY_FILE` stands for
+the flag. The file holds exactly 32 bytes and, on Unix, must not be readable by
+its group or by others; any other file is refused, saying which check failed.
+
+The key is never used as it is: three subkeys are drawn from it, one for the
+engine's files, one for backups and one for a marker file, `ENCRYPTION`, that
+records which key the store was created under. The engine's files are XChaCha20
+with a random nonce per file; their integrity is the engine's own checksums. A
+sealed backup is ChaCha20-Poly1305 in 64 KiB chunks, each bound to its position
+and to whether it is the last, so a backup cut short, reordered, extended or
+altered does not open.
+
+**A store opens only the way it was created**, and says which way is wrong
+before the engine reads anything:
+
+- an encrypted store opened without a key — *"is encrypted; it opens only with
+  its key"*;
+- under another key — *"the encryption key does not open the store"*;
+- a plain store given a key — *"is not encrypted, and an encryption key was
+  given"*.
+
+**A sealed backup opens only where its key is.** `RESTORE SCRIPT FROM`,
+`--restore` and `--verify` open it with the node's key; on a node without one it
+is refused (*"this backup is sealed"*), and under another key it is refused
+(*"does not open under this key"*). A plain backup still restores into an
+encrypted store. `--backup-key-file` names the key a backup was sealed under
+when it is not the store's — which is how a store **moves to a new key**: back
+it up, then restore the backup into a new store under the new key, naming the old
+one:
+
+```text
+tessaridb ./data --encryption-key-file old.key --backup state.tessarisnap
+tessaridb ./renewed --encryption-key-file new.key \
+          --backup-key-file old.key --restore state.tessarisnap
+```
+
+Nothing rewrites a store in place, and a lost key is a lost store and a lost set
+of backups: keep it somewhere the store is not.
+
+**What is protected, and what is not.** The disk and the backups: a stolen
+volume, a discarded drive, a backup file left in a bucket. Not a running node —
+it holds the key in memory and answers anyone with a credential, and privileged
+code on the host can read both — and not the traffic, which is what TLS is for.
+Where data lives, and what each place holds:
+
+| where | holds | encrypted |
+|---|---|---|
+| the store's directory | every record, the catalog, the log | yes, under the engine subkey |
+| `ENCRYPTION` | a sealed constant that says which key | holds no data |
+| a backup file, wherever it is copied | every record of its part | sealed, under the backup subkey |
+| `<name>.partial` while `BACKUP … TO` writes | the same | sealed |
+| the node's temporary folder while `GET /backup` spools | the same | sealed |
+| the key file | the key | no — keep it apart from the store |
+| the node's memory | everything it has read | no |
+| the node's own log lines on standard error | events and failure reasons, which can name a table or an id | no |
+
+A node holding a vault keeps its sealed values sealed under the vault's own key
+whether or not the store is encrypted; the two are separate keys with separate
+custody.
+
 ## 7b. Looking at a plan
 
 ```
@@ -8275,21 +8346,21 @@ permission should fail in.
 **`REPLICATES` without `NODE` is a grant nobody holds *yet*.** A subscription
 grants to a machine, and the door looks a follower up by the id its certificate
 proved — so until the row names a node it matches no follower and hands over
-nothing. That is not a mistake to be refused, it is how a peer is admitted
-without being pre-registered: the row is bound by the first peer that dials this
-node and proves its identity with a credential this cluster issued, and the
-subscription takes effect at that moment.
+nothing. A row is bound to a node only in one of three ways, each of them the
+operator's word: `NODE` names it here; `FINGERPRINT` pins the one certificate
+allowed to bind it; or a join token the row waits on is offered by the node that
+joins (see *Approving a node that joins* below). A row that says none of the
+three binds nobody. Until `0.21.0-beta` such a row was bound by the first peer
+holding any certificate this cluster issued, and that peer received the row's
+whole reach.
 
 The binding writes the node id and **nothing else**. The address and the roles
 stay exactly as they were written here, so nothing a greeting carries — its
 epoch, its roles, how far its log reaches — can change what this row grants or
 what it says the peer is for.
 
-Two rows left unbound at once bind neither, and a row is never re-bound once it
-names a node. Nothing on an inbound connection could choose between two waiting
-rows, and guessing would put a node at another's address under another's roles —
-so peers are admitted one at a time, and an operator who wants the identity
-settled in advance writes `NODE` here and gets exactly the old behaviour.
+Evidence that approves two rows binds neither, and a row is never re-bound once
+it names a node.
 
 **What a subscription hands over is more than records.** The log is a stream of
 mutations and the identity class is in it, so a subscription carries the users,
@@ -8513,6 +8584,41 @@ writing under its lease until it hears of the change. Place another row on the
 range first.
 
 
+### How many copies hold a write before it is acknowledged
+
+A write on a cluster is applied and readable on the leader the moment it
+commits; what `ACKNOWLEDGE` decides is when the caller is told it succeeded.
+
+```
+DEFINE NAMESPACE prod REPLICATION FACTOR 3 ACKNOWLEDGE MAJORITY;
+ALTER NAMESPACE prod ACKNOWLEDGE MAJORITY OR WEAKER;
+CREATE event:1 = { kind: 'signup' } ACKNOWLEDGE LEADER;
+BEGIN; CREATE event:2 = { kind: 'login' }; COMMIT ACKNOWLEDGE MAJORITY;
+```
+
+- `LEADER` answers once the leader holds the write durably. A leader lost before
+  a follower collected it takes the write with it.
+- `MAJORITY` answers once a majority of the range's **voters** — the
+  `coordinating` members, the leader among them — hold it durably. Whichever
+  majority elects the next leader holds the write, so a lost leader loses
+  nothing that was acknowledged.
+
+**`MAJORITY` is the default for a namespace kept on more than one node**; a
+namespace with `REPLICATION NONE`, or a store standing alone, is its own
+majority and waits for nobody. A write or a `COMMIT` may name its own level, and
+asking for **less** than the namespace's is refused (`AcknowledgeBelowNamespace`)
+unless the namespace says `OR WEAKER` — a default any caller could lower is not
+one anybody can rely on.
+
+**Two refusals, and they mean opposite things.** `MajorityUnreachable` comes
+before anything is written: the voters that subscribe to where the write lands
+cannot make up a majority, so the write could never be held — **nothing was
+written**. `NotAcknowledgedInTime` comes after: the write **is committed on this
+node at the sequence it names**, and not enough copies confirmed it within one
+failover `ROUND`; it may or may not survive a failover. Retry that one only with
+a write that says the same thing twice — an `UPSERT` or a write by identity —
+because a `CREATE` retried after it lands answers *already exists*.
+
 ### How long the cluster waits before it replaces a leader
 
 The periods that decide when a leader counts as gone are a **cluster-wide fact**,
@@ -8558,7 +8664,7 @@ part worth knowing, because both ends of every one of these is a real failure:
 Four relations are enforced, and a statement that breaks one is **refused with
 the direction named** rather than accepted:
 
-- every period is at least one second;
+- every period is at least 50 milliseconds;
 - `CAMPAIGN` is at most twice `ROUND`;
 - `LEASE` is greater than the write fence plus twice `ROUND`;
 - `COLLECTION` is less than twice `AWARENESS`.
@@ -8586,6 +8692,94 @@ orders it. It is `null` when nobody has set one, which is a different statement
 from the defaults — a cluster nobody has configured runs the built-in periods,
 and reporting those as a set policy would make it impossible to see whether a
 policy ever arrived.
+
+
+### A peer certificate the cluster no longer accepts
+
+A node's peer certificate proves it is a member, and a certificate that leaked,
+or a machine retired before its certificate expired, is a member the cluster
+should stop admitting. Revoking it is a statement and a replicated row, for the
+failover policy's reason — which certificates are refused is a cluster-wide
+fact:
+
+```
+REVOKE CERTIFICATE '0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0';
+```
+
+The value is the certificate's **SHA-256 fingerprint**: the digest of its DER,
+as 64 hexadecimal digits. The colon-separated, upper-case form a certificate
+tool prints (`openssl x509 -noout -fingerprint -sha256`) names the same
+certificate and is taken too; both are stored in lower case, so revoking one
+certificate twice is one row. Anything that is not 64 hexadecimal digits is
+refused where it was written, rather than stored as a fingerprint no certificate
+can have.
+
+From the moment the row reaches a node, that node refuses the certificate in
+**both** directions of its peer link: a peer presenting it at the door is not
+admitted, and a node presenting it to a dial is not spoken to. Every node holds
+the row whatever it is subscribed to — a follower of one namespace that missed
+it would go on admitting the peer every other node refuses. A node applies the
+list within a few seconds of the row arriving. An **expired** certificate needs
+no statement: no handshake accepts one, and a held stream opened before it
+expired ends when it does.
+
+Only an operator of the store may revoke a certificate (the same authority as
+`DEFINE FAILOVER`), and the administration trail records who did. There is no
+statement that takes a revocation back: a certificate that was revoked is
+replaced, by a new one with a new fingerprint. `INFO FOR NODE` lists the
+revoked fingerprints under `cluster.revoked`.
+
+A certificate is **renewed** without a statement and without a restart: a node
+re-reads its peer and client certificate files every two seconds, and a pair
+that changed is presented from the next connection on, while open connections
+finish on the one they started with. A pair that does not belong together — the
+certificate written and the key not yet — is refused and the previous
+certificate stays in use; the node says so once, and judges the files again when
+they change. The authority a cluster's peers are issued by is not reloaded:
+trusting a new root is a restart, planned with both roots in place.
+
+
+### Approving a node that joins
+
+A node joining a running cluster is approved by the operator, never admitted
+because it arrived first. Three ways, chosen per row:
+
+```
+DEFINE REPLICA db_4 AT 'db-4.internal:9000' NODE '3f9a1c04-b7e2-489d-b561-0af3d82c7e46'
+    ROLES serving REPLICATES STORE;
+
+DEFINE REPLICA db_4 AT 'db-4.internal:9000' ROLES serving REPLICATES STORE
+    FINGERPRINT '0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0';
+
+DEFINE REPLICA db_4 AT 'db-4.internal:9000' ROLES serving REPLICATES STORE;
+CREATE JOIN TOKEN FOR REPLICA db_4 EXPIRES 10m;
+```
+
+`NODE` names the node's identity, read from the new node with `INFO FOR NODE`.
+`FINGERPRINT` pins the SHA-256 of the one peer certificate allowed to bind the
+row, in the spelling `REVOKE CERTIFICATE` takes — read it off the new node the
+way its id is: `INFO FOR NODE` lists, under `certificates`, each certificate the
+node presents (`surface` `peers` or `clients`, its `fingerprint`, and when it
+`expires`), read at the moment of asking, so a renewal shows on the next report. `CREATE JOIN TOKEN` answers a
+token **once** — 64 hexadecimal digits — and the row keeps only its digest and
+when it stops binding; `EXPIRES` is required, because a token nobody gave a life
+to binds for as long as nobody remembers it. The new node is started with
+`--join-token <token>` (or `TESSARIDB_JOIN_TOKEN`) beside its `--seed`, offers it
+to the seed every round until a row names it, and the node that may write binds
+the row and spends the token in one transaction. A second token for the row
+replaces the first. `INFO FOR NODE` shows a row's `fingerprint` and, while a
+token waits, `join_expires_ms` — never the digest. Every binding is recorded in
+the administration trail as `BIND` or `JOIN` by the node it bound; a token that
+binds nothing is logged and not recorded, because a joiner asks every round.
+
+**A node dropped is never admitted again.** `DROP REPLICA` of a row that named a
+node also records the node as removed: from then on its greeting is refused at
+the handshake whatever certificate it presents, no row binds it, and a
+`DEFINE REPLICA … NODE` naming it is refused with `NodeTombstoned`. A machine
+coming back is wiped and joins under the identity it then has. So a row is not
+amended by dropping it and declaring it again — the drop removes the node. The
+removed nodes are listed under `cluster.tombstoned` in `INFO FOR NODE`, and,
+like revocations, reach every node whatever it follows.
 
 
 ### Which peers vote, and what a node that votes for nobody does
@@ -8735,9 +8929,10 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.20.1", "build": "0.20.1-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.21.0", "build": "0.21.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
+             "revoked": [], "tombstoned": [],
              "desired": ["serving", "writable"],
              "followers": [{"node": "4b81…", "sequence": 812, "behind": 4,
                             "quiet_for": "2s143ms", "copy_age": "11s"}],

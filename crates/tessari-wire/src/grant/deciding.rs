@@ -35,6 +35,20 @@ pub struct Deciding {
     /// store line's start instant: a process that restarted cannot remember a
     /// grant on ANY line, so the restart guard covers every one of them.
     lines: std::sync::Mutex<std::collections::BTreeMap<Reach, Voter>>,
+    /// Called when this node grants the store line to a new epoch.
+    granted_anew: std::sync::OnceLock<Announce>,
+}
+
+/// What [`Deciding::when_granted_anew`] calls.
+pub type GrantedAnew = Box<dyn Fn() + Send + Sync>;
+
+/// [`GrantedAnew`], held: a closure has nothing to print but that it is one.
+struct Announce(GrantedAnew);
+
+impl std::fmt::Debug for Announce {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Announce")
+    }
 }
 
 impl Deciding {
@@ -50,6 +64,23 @@ impl Deciding {
         Self {
             voter: std::sync::Mutex::new(voter),
             lines: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+            granted_anew: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Hold every grant made from now on for `hold`, on every line — the lease
+    /// the store's installed failover policy states (G053 SG2c). Set at start
+    /// and on every leadership pass, so a policy reaches the voter in the pass
+    /// after it is installed.
+    pub fn hold_for(&self, hold: std::time::Duration) {
+        self.held().hold_for(hold);
+        for voter in self
+            .lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values_mut()
+        {
+            voter.hold_for(hold);
         }
     }
 
@@ -65,17 +96,67 @@ impl Deciding {
     /// loss bought with no safety, because the value being guarded is sound.
     pub fn asked(&self, ballot: &Ballot, now: Instant, mine: Reached, candidate: Reached) -> Vote {
         if ballot.range == Reach::Store {
-            return self.held().asked(ballot, now, mine, candidate);
+            let (vote, before, after) = {
+                let mut voter = self.held();
+                let before = voter.granted_epoch();
+                let vote = voter.asked(ballot, now, mine, candidate);
+                (vote, before, voter.granted_epoch())
+            };
+            // A grant to a new epoch, not a renewal: a new leadership exists,
+            // and this node knows it before any greeting could tell it.
+            if after != before
+                && let Some(Announce(granted_anew)) = self.granted_anew.get()
+            {
+                granted_anew();
+            }
+            return vote;
         }
-        let started = self.held().started;
+        let (started, hold) = {
+            let store = self.held();
+            (store.started, store.hold)
+        };
         let mut lines = self
             .lines
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         lines
             .entry(ballot.range)
-            .or_insert_with(|| Voter::started_at(started))
+            .or_insert_with(|| Voter::started_at(started).holding_for(hold))
             .asked(ballot, now, mine, candidate)
+    }
+
+    /// Take a round a majority carried for this node, on the ballot's line —
+    /// see [`Voter::carried`].
+    ///
+    /// # Errors
+    ///
+    /// The higher epoch this node already granted on that line.
+    pub fn carried(&self, ballot: &Ballot, now: Instant) -> std::result::Result<(), Epoch> {
+        if ballot.range == Reach::Store {
+            return self.held().carried(ballot, now);
+        }
+        let (started, hold) = {
+            let store = self.held();
+            (store.started, store.hold)
+        };
+        self.lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(ballot.range)
+            .or_insert_with(|| Voter::started_at(started).holding_for(hold))
+            .carried(ballot, now)
+    }
+
+    /// Call `granted_anew` every time this node grants the store line to a new
+    /// epoch, outside the voter's lock — once set, for the life of the memory.
+    ///
+    /// The voter is the first part of a node to learn that a leadership
+    /// changed: it granted it. A follower that waited for its next greeting to
+    /// find out followed nobody for up to an awareness interval after every
+    /// failover, while the new leader's first writes waited for its copies
+    /// (Q-900). Answers `false`, and changes nothing, when one was already set.
+    pub fn when_granted_anew(&self, granted_anew: GrantedAnew) -> bool {
+        self.granted_anew.set(Announce(granted_anew)).is_ok()
     }
 
     /// When this node last granted a ballot to somebody else — see

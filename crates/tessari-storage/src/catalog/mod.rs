@@ -42,11 +42,13 @@ mod indexes;
 mod leadership;
 mod position;
 mod replica;
+mod revocation;
 mod rows;
 mod shard;
 mod space;
 mod splitting;
 pub(crate) mod system;
+mod tombstone;
 mod topic;
 mod user;
 mod vault;
@@ -79,7 +81,8 @@ pub use leadership::LeadershipDefinition;
 pub(crate) use leadership::covering;
 pub use leadership::governing;
 pub use replica::{
-    ReplicaDefinition, another_node_may_write, names_a_peer, the_row_a_greeting_binds,
+    Greeter, JoinTicket, ReplicaDefinition, another_node_may_write, names_a_peer,
+    the_row_a_greeting_binds,
 };
 pub(crate) use rows::CatalogRows;
 pub use shard::{ShardMap, ShardSpan};

@@ -43,11 +43,26 @@ impl Session<'_> {
         let size = if form == BackupForm::State {
             let within = self.state_scope(of)?;
             self.refuse_a_partial_snapshot(within)?;
-            settle(&target, form, |file| {
-                let mut out = std::io::BufWriter::new(file);
-                tessari_backup::write_state_within(self.store, within, &mut out)
-                    .map_err(|failure| failure.to_string())?;
-                out.flush().map_err(|failure| failure.to_string())
+            settle(&target, form, self.at_rest.as_deref(), |file| {
+                let out = std::io::BufWriter::new(file);
+                match &self.at_rest {
+                    Some(key) => {
+                        let mut sealing =
+                            key.seal_into(out).map_err(|failure| failure.to_string())?;
+                        tessari_backup::write_state_within(self.store, within, &mut sealing)
+                            .map_err(|failure| failure.to_string())?;
+                        sealing
+                            .finish()
+                            .and_then(|mut out| out.flush())
+                            .map_err(|failure| failure.to_string())
+                    }
+                    None => {
+                        let mut out = out;
+                        tessari_backup::write_state_within(self.store, within, &mut out)
+                            .map_err(|failure| failure.to_string())?;
+                        out.flush().map_err(|failure| failure.to_string())
+                    }
+                }
             })?
         } else {
             let bytes = match self.backup(from, form, of)? {
@@ -59,7 +74,7 @@ impl Session<'_> {
                     });
                 }
             };
-            settle(&target, form, |file| {
+            settle(&target, form, self.at_rest.as_deref(), |file| {
                 file.write_all(&bytes)
                     .map_err(|failure| failure.to_string())
             })?
@@ -251,13 +266,14 @@ pub(crate) fn readable(folder: &Path, name: &str) -> Result<PathBuf> {
 fn settle(
     target: &Path,
     form: BackupForm,
+    key: Option<&tessari_vault::AtRestKey>,
     write: impl FnOnce(&mut fs::File) -> std::result::Result<(), String>,
 ) -> Result<u64> {
     let mut partial = target.as_os_str().to_owned();
     partial.push(".partial");
     let partial = PathBuf::from(partial);
     let written = write_new(&partial, write).and_then(|size| {
-        check(&partial, form)?;
+        check(&partial, form, key)?;
         fs::rename(&partial, target).map_err(|failure| failure.to_string())?;
         Ok(size)
     });
@@ -299,12 +315,20 @@ fn write_new(
         .map_err(|failure| failure.to_string())
 }
 
-/// Read the file back through the verifier, where it was written.
+/// Read the file back through the verifier, where it was written — opening it
+/// first when this node seals its backups, so a sealed file is checked whole.
 ///
-/// A script has no verifier: it is text the store reads by running it.
-fn check(path: &Path, form: BackupForm) -> std::result::Result<(), String> {
+/// A script has no verifier: it is text the store reads by running it. A
+/// sealed one is still read to its end, which is what authenticates it.
+fn check(
+    path: &Path,
+    form: BackupForm,
+    key: Option<&tessari_vault::AtRestKey>,
+) -> std::result::Result<(), String> {
     let open = || {
         fs::File::open(path)
+            .map(std::io::BufReader::new)
+            .and_then(|file| tessari_vault::at_rest::reading(key, file))
             .map(std::io::BufReader::new)
             .map_err(|failure| failure.to_string())
     };
@@ -320,6 +344,8 @@ fn check(path: &Path, form: BackupForm) -> std::result::Result<(), String> {
         BackupForm::State => tessari_backup::verify_state(&mut open()?)
             .map(|_| ())
             .map_err(|failure| failure.to_string()),
-        BackupForm::Script => Ok(()),
+        BackupForm::Script => std::io::copy(&mut open()?, &mut std::io::sink())
+            .map(|_| ())
+            .map_err(|failure| failure.to_string()),
     }
 }

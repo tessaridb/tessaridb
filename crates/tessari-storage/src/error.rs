@@ -165,7 +165,7 @@ pub enum Error {
         for_the_last: std::time::Duration,
     },
 
-    /// A stated failover policy named a period under a second.
+    /// A stated failover policy named a period under fifty milliseconds.
     ///
     /// The four refusals below exist because the relations between these
     /// periods hold today only because the compiler holds them — three of the
@@ -174,7 +174,7 @@ pub enum Error {
     /// rather than a warning.
     #[error(
         "a failover policy's `{field}` is {stated:?}, and every period in one \
-         must be at least a second: a cadence that never waits is a spin, and a \
+         must be at least 50ms: a cadence that never waits is a spin, and a \
          lease of zero is spent at the instant it is taken"
     )]
     FailoverPeriodTooShort {
@@ -361,6 +361,30 @@ pub enum Error {
     PlacementCannotBeDropped {
         /// The peer's name.
         name: String,
+    },
+
+    /// A join token was asked for a row that already names its node.
+    ///
+    /// Nothing is waiting to be bound, so a token for it could only be spent
+    /// on nothing — or, read the other way, would suggest the row could be
+    /// re-bound, which it cannot (ADR-0108 D9).
+    #[error("peer `{name}` already names its node; a join token binds only a row that does not")]
+    RowAlreadyBound {
+        /// The peer's name.
+        name: String,
+    },
+
+    /// A row was declared naming a node the cluster removed.
+    ///
+    /// A dropped node's identity is never admitted again; the machine joins
+    /// again wiped, under a new identity (ADR-0108 D9).
+    #[error(
+        "node {node} was removed from this cluster and is never admitted again; wipe it and \
+         declare it under the identity it then has"
+    )]
+    NodeTombstoned {
+        /// The removed node, as its record id prints.
+        node: String,
     },
 
     /// A write met a record whose stored versions disagree with each other.
@@ -1025,6 +1049,8 @@ impl Error {
             | Self::IdSpaceExhausted { .. }
             | Self::SpansLeaderships { .. }
             | Self::PlacementCannotBeDropped { .. }
+            | Self::RowAlreadyBound { .. }
+            | Self::NodeTombstoned { .. }
             | Self::SplitNeedsGeneratedUuid { .. }
             | Self::PartitionNeedsGeneratedUuid { .. }
             | Self::PartitionMismatch { .. }
@@ -1069,7 +1095,10 @@ impl Error {
                 tessari_vault::Error::WrongKey
                 | tessari_vault::Error::Sealed
                 | tessari_vault::Error::AlreadyUnsealed
-                | tessari_vault::Error::Derivation => ErrorCategory::Validation,
+                | tessari_vault::Error::Derivation
+                | tessari_vault::Error::KeyFile { .. }
+                | tessari_vault::Error::BackupSealed
+                | tessari_vault::Error::BackupDoesNotOpen => ErrorCategory::Validation,
             },
             Self::VaultUnavailable | Self::AuditUnavailable { .. } => ErrorCategory::Unavailable,
             // All three are the caller's statement being wrong about the store,

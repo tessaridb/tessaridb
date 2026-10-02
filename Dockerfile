@@ -76,6 +76,12 @@ RUN chmod +x /usr/local/bin/tessaridb-entrypoint /usr/local/bin/tessaridb-health
 #                             or `none` for an unbounded log. Read by the node
 #                             itself; `DEFINE NODE RETAIN` wins over it. Not
 #                             set here, so the engine's own default applies.
+#   TESSARIDB_ENCRYPTION_KEY_FILE  a file of 32 bytes, mode 600, outside the
+#                             volume (a secret mount): the store's files and
+#                             every backup it writes are encrypted under it.
+#                             Read by the node itself; a store opens only the
+#                             way it was created. Not set here: unset, the
+#                             store is not encrypted.
 #
 # `0.0.0.0` rather than a loopback address, because a container's loopback is
 # reachable from nothing outside it and a node bound there would answer no

@@ -47,7 +47,7 @@
 
 use std::time::Duration;
 
-use tessari_constants::{AWARENESS_SECONDS, CAMPAIGN_SECONDS, COLLECTION_SECONDS, ROUND_SECONDS};
+use tessari_constants::{AWARENESS_SECONDS, CAMPAIGN_MILLIS, COLLECTION_SECONDS, ROUND_MILLIS};
 
 use crate::error::{Error, Result};
 use crate::lease::{GUARD, TTL};
@@ -67,9 +67,11 @@ const ROUNDS_OF_MARGIN: u32 = 2;
 /// The shortest period this policy admits anywhere.
 ///
 /// A cadence of zero is not a fast cadence, it is a spin; a lease of zero is
-/// spent at the instant it is taken. One second is the floor because every
-/// period here is a network round trip at minimum.
-const SHORTEST_PERIOD: Duration = Duration::from_secs(1);
+/// spent at the instant it is taken. Fifty milliseconds is the floor because
+/// every period here is a network round trip at minimum, and a local network's
+/// round trip with a TLS handshake on it is a few milliseconds. It was a second
+/// until 0.21, which put the shipped periods themselves below it (G053 C2b).
+const SHORTEST_PERIOD: Duration = Duration::from_millis(50);
 
 /// The periods that decide how quickly a cluster reacts to losing its leader.
 ///
@@ -101,8 +103,8 @@ impl Failover {
     pub const DEFAULT: Self = Self {
         awareness: Duration::from_secs(AWARENESS_SECONDS),
         collection: Duration::from_secs(COLLECTION_SECONDS),
-        round: Duration::from_secs(ROUND_SECONDS),
-        campaign: Duration::from_secs(CAMPAIGN_SECONDS),
+        round: Duration::from_millis(ROUND_MILLIS),
+        campaign: Duration::from_millis(CAMPAIGN_MILLIS),
         lease: TTL,
     };
 
@@ -111,7 +113,8 @@ impl Failover {
     ///
     /// # Errors
     ///
-    /// [`Error::FailoverPeriodTooShort`] when any period is under a second.
+    /// [`Error::FailoverPeriodTooShort`] when any period is under fifty
+    /// milliseconds.
     ///
     /// [`Error::FailoverCampaignOutpaced`] when the campaign cadence is slower
     /// than the window it has to act inside — the **too large** direction.
@@ -292,7 +295,7 @@ mod tests {
     #[test]
     fn the_policy_this_build_ships_satisfies_every_relation() {
         // The assertion that makes the constants and the relations one thing. A
-        // later edit that raises CAMPAIGN_SECONDS above twice ROUND_SECONDS is
+        // later edit that raises CAMPAIGN_MILLIS above twice ROUND_MILLIS is
         // caught here rather than by a cluster whose leader quietly stops
         // renewing.
         let (awareness, collection, round, campaign, lease) = shipped();

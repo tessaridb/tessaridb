@@ -6,6 +6,8 @@
 
 use std::io::{BufReader, BufWriter};
 use std::net::{TcpStream, ToSocketAddrs};
+#[cfg(feature = "tls")]
+use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
 use tessari_ql::Parameters;
@@ -13,6 +15,7 @@ use tessari_ql::Parameters;
 use crate::message::{Answer, Request};
 use crate::push::{Follow, Happened};
 use crate::redirect::Elsewhere;
+use crate::transport::Transport;
 use crate::{frame, message};
 use tessari_types::Epoch;
 
@@ -37,8 +40,8 @@ pub enum Served {
 /// `Debug` says where it is connected and nothing about the buffers, because
 /// what is worth printing about a connection is the other end of it.
 pub struct Client {
-    reader: BufReader<TcpStream>,
-    writer: BufWriter<TcpStream>,
+    reader: BufReader<Transport>,
+    writer: BufWriter<Transport>,
     /// The newest leadership any node has named in a redirect to this client.
     ///
     /// `None` until the first one arrives — a client that has been told nothing
@@ -78,8 +81,45 @@ impl Client {
     /// reached, and [`Error::NotThisProtocol`] or [`Error::WrongVersion`] when
     /// whatever answered is not a node this build speaks to.
     pub fn connect(address: impl ToSocketAddrs) -> Result<Self> {
-        let stream = TcpStream::connect(address)?;
-        let mut reader = BufReader::new(stream.try_clone()?);
+        Self::greeted(Transport::Plain(TcpStream::connect(address)?))
+    }
+
+    /// Connect over TLS, trusting `roots`, and exchange greetings.
+    ///
+    /// The certificate must carry the host part of `address` — a name or an
+    /// IP address — and chain to one of `roots`. There is no way to skip
+    /// either check: a client that would accept any certificate is a client
+    /// talking to whoever answered.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::connect`], and [`Error::Tls`] when the handshake fails.
+    #[cfg(feature = "tls")]
+    pub fn connect_tls(address: &str, roots: rustls::RootCertStore) -> Result<Self> {
+        let name = crate::transport::server_name(address)?;
+        let settings =
+            rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+        let mut session = rustls::ClientConnection::new(Arc::new(settings), name)
+            .map_err(|why| Error::Tls(why.to_string()))?;
+        let mut socket = TcpStream::connect(address)?;
+        // Completed here rather than on the first write, so a certificate the
+        // client will not trust is reported as that and not as a greeting
+        // that never came back.
+        while session.is_handshaking() {
+            session
+                .complete_io(&mut socket)
+                .map_err(|why| Error::Tls(why.to_string()))?;
+        }
+        Self::greeted(Transport::Tls(Arc::new(Mutex::new(
+            rustls::StreamOwned::new(session, socket),
+        ))))
+    }
+
+    /// Greet over a connection that is already open.
+    fn greeted(stream: Transport) -> Result<Self> {
+        let mut reader = BufReader::new(stream.duplicate()?);
         let mut writer = BufWriter::new(stream);
         let minor = {
             let mut both = frame::Duplex {
@@ -257,31 +297,6 @@ impl Client {
         }
     }
 
-    /// Send a request already built, and hand back the reply frame unread.
-    ///
-    /// For a node forwarding a write it may not take (ADR-0019 §2, case
-    /// *forward*). The bytes are **not** decoded and re-encoded: the answer is
-    /// already in the store's own codec, the forwarding node has nothing to add
-    /// to it, and a round trip through `Answer` and back would put a second
-    /// encoder on the path where the two could disagree about a value neither
-    /// node ever looked at.
-    ///
-    /// A refusal relays too, and relays *as* a refusal — the caller asked the
-    /// cluster to run a statement, and the leader's own words about why it would
-    /// not are the truthful answer. Nothing here rewrites them to mention the
-    /// hop, because a client that mistyped a statement is owed the parser's
-    /// message and not a routing story.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Truncated`] when the peer hung up before replying, and
-    /// the stream's failure otherwise.
-    #[cfg(feature = "server")]
-    pub(crate) fn relay(&mut self, request: &Request) -> Result<(frame::Kind, Vec<u8>)> {
-        frame::write(&mut self.writer, frame::Kind::Request, &request.encode())?;
-        frame::read(&mut self.reader)?.ok_or(Error::Truncated)
-    }
-
     /// Stop asking, and start being told.
     ///
     /// Consumes the client, because the connection stops being a conversation:
@@ -311,7 +326,7 @@ impl Client {
 /// charge of the subscriber's.
 #[derive(Debug)]
 pub struct Feed {
-    reader: BufReader<TcpStream>,
+    reader: BufReader<Transport>,
 }
 
 impl Feed {

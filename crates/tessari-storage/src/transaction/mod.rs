@@ -39,6 +39,7 @@ mod spatial;
 
 pub use address::{RecordAddress, StoredRecord};
 pub use adjacency::Neighbour;
+pub use commit::Committed;
 pub use scan::Window;
 pub use search::{Expansion, SearchCounts};
 pub use spatial::{Nearby, Region};

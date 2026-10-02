@@ -50,11 +50,18 @@ use std::time::{Duration, Instant};
 
 /// How far the holder's fence closes ahead of the grantor's expiry.
 ///
-/// Covers the rate difference between two clocks nobody synchronised. Not
-/// configurable in this build, because a value an operator can lower to zero is
-/// a value somebody will lower to zero the day a lease refuses a write they
-/// wanted.
-pub const GUARD: Duration = Duration::from_secs(2);
+/// Covers the rate difference between two clocks nobody synchronised, and the
+/// scheduling delay between a holder deciding to write and the write landing.
+/// Not configurable in this build, because a value an operator can lower to
+/// zero is a value somebody will lower to zero the day a lease refuses a write
+/// they wanted.
+///
+/// A hundred and fifty milliseconds. Two quartz clocks drift apart by tens of
+/// parts per million, which over an 800 ms lease is well under a millisecond, so
+/// the margin is almost all scheduling — a commit admitted just before the fence
+/// is judged again once it holds its turn, and this is the room that check has.
+/// It was two seconds while the lease was ten (G053 C2b).
+pub const GUARD: Duration = Duration::from_millis(150);
 
 /// How long a leadership grant is good for.
 ///
@@ -63,10 +70,14 @@ pub const GUARD: Duration = Duration::from_secs(2);
 /// same thing to the holder and to everyone who granted it — a lease whose
 /// length the two ends disagree about is not a lease.
 ///
-/// The holder's usable window is `TTL - GUARD`, so a renewal has eight seconds
-/// to succeed. Making this an operator policy is a real question and a later
-/// one; the first cluster gets one value that every node already agrees on.
-pub const TTL: Duration = Duration::from_secs(10);
+/// The holder's usable window is `TTL - GUARD`, so a renewal has 650 ms to
+/// succeed, and the leader renews once 400 ms of it are left (two round times),
+/// which is about every 300 ms. Eight hundred milliseconds because this term is
+/// the floor under every automatic failover — nothing may be granted until a
+/// dead leader's lease has expired — and a Raft-class cluster elects in about a
+/// second (G053 C2b; it was ten seconds until 0.21). Making this an operator
+/// policy is G053 SG2c.
+pub const TTL: Duration = Duration::from_millis(800);
 
 /// Leadership held for a bounded time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

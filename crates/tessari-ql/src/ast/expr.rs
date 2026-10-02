@@ -404,8 +404,8 @@ pub enum Aggregate {
     /// `variance(<expr>)` — the **sample** variance, dividing by `n − 1`.
     ///
     /// Sample rather than population because a table's rows are usually a
-    /// sample of something, which is why the SQL standard's bare `VARIANCE` is
-    /// `VAR_SAMP` and why Postgres spells it the same way. The population form
+    /// sample of something, which is why the SQL standard's `VARIANCE` is the
+    /// sample form `VAR_SAMP`. The population form
     /// is not a second name because the language can already say it:
     /// `variance(x) * (count(x) - 1) / count(x)`.
     ///

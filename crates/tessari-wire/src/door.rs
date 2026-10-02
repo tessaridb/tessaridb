@@ -30,7 +30,7 @@
 
 use std::sync::Arc;
 
-use tessari_constants::{GREETING_SECONDS, PEER_CONNECTIONS};
+use tessari_constants::{GREETING_SECONDS, PEER_CONNECTIONS, STREAM_HEARTBEAT_MILLIS};
 use tessari_encoding::NODE_ID_LEN;
 use tessari_serve::{ACCEPT_PAUSE, Bridge, Bridged, passes};
 use tokio::sync::Semaphore;
@@ -38,7 +38,9 @@ use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
 
-use crate::collection::Origin;
+use crate::assertion::{Assertion, Replays, now_ms};
+use crate::collection::{Origin, StreamAsk, stream_answer};
+use crate::coordination::{Coordinate, encode_answer};
 use crate::credential;
 use crate::error::{Error, Result};
 use crate::frame_async;
@@ -62,6 +64,29 @@ pub trait Holding: Origin + Send + Sync + 'static {
 
     /// A peer was served to the end; record what it said and how it was voted.
     fn met(&self, met: &Met);
+
+    /// A wake-up that moves whenever this node lands a commit, so a held
+    /// stream sends a record the moment it exists (ADR-0106 D5) instead of on
+    /// the follower's next clock tick.
+    ///
+    /// No default: a door that never woke would still answer every stream —
+    /// at its heartbeat — and the replication lag it was built to remove would
+    /// come back with nothing in an error state.
+    fn commits(&self) -> tokio::sync::watch::Receiver<u64>;
+
+    /// Answer a request `from` carried here for a caller it verified, under an
+    /// assertion the door has already believed (ADR-0108 D1–D3).
+    ///
+    /// # Errors
+    ///
+    /// The reason this node will not act for that caller, in words the asking
+    /// node passes on.
+    fn coordinated(
+        &self,
+        from: [u8; NODE_ID_LEN],
+        assertion: &Assertion,
+        asked: &Coordinate,
+    ) -> std::result::Result<tessaridb::Coordinated, String>;
 }
 
 /// How one served connection ended, for the loop that decides what next.
@@ -100,6 +125,7 @@ impl Peers {
         let acceptor = TlsAcceptor::from(Arc::clone(&self.settings));
         let places = Arc::new(Semaphore::new(PEER_CONNECTIONS));
         let bridge = Arc::new(Bridge::new(PEER_CONNECTIONS));
+        let replays = Arc::new(Replays::default());
         let mut connections = JoinSet::new();
         let mut outcome = Ok(());
         loop {
@@ -138,11 +164,14 @@ impl Peers {
                 continue;
             };
             let served = Connection {
+                stop: stop.clone(),
                 acceptor: acceptor.clone(),
                 me,
                 voter: Arc::clone(&voter),
                 holding: Arc::clone(&holding),
                 bridge: Arc::clone(&bridge),
+                replays: Arc::clone(&replays),
+                keys: self.keys.clone(),
             };
             connections.spawn(async move {
                 let ended = served.serve(socket).await;
@@ -168,18 +197,28 @@ impl Peers {
 
 /// Everything one connection needs, owned so the task can hold it.
 struct Connection<H> {
+    /// The door's own stop, so a held stream ends with the door rather than
+    /// being cut at the drain deadline.
+    stop: CancellationToken,
     acceptor: TlsAcceptor,
     me: [u8; NODE_ID_LEN],
     voter: Arc<Deciding>,
     holding: Arc<H>,
     bridge: Arc<Bridge>,
+    /// The nonces of the assertions this door believed, so none is believed
+    /// twice (ADR-0108 D3).
+    replays: Arc<Replays>,
+    /// What a handshake is judged by, asked again while a stream is open.
+    keys: crate::PeerKeys,
 }
 
 impl<H: Holding> Connection<H> {
     /// Serve one peer, and say how it ended.
     async fn serve(self, socket: tokio::net::TcpStream) -> Ended {
         match self.exchange(socket).await {
-            Ok(met) => {
+            // A stream recorded its peer when it opened (see `stream`).
+            Ok(None) => Ended::Served,
+            Ok(Some(met)) => {
                 let holding = Arc::clone(&self.holding);
                 if let Bridged::Busy(()) | Bridged::Panicked =
                     self.bridge.call((), move |()| holding.met(&met)).await
@@ -199,7 +238,7 @@ impl<H: Holding> Connection<H> {
     }
 
     /// The handshake, the greetings and the one follow-up — `greet`'s order.
-    async fn exchange(&self, socket: tokio::net::TcpStream) -> Result<Met> {
+    async fn exchange(&self, socket: tokio::net::TcpStream) -> Result<Option<Met>> {
         let mut link = bounded(self.acceptor.accept(socket))
             .await?
             .map_err(|why| Error::Transport(why.to_string()))?;
@@ -233,6 +272,25 @@ impl<H: Holding> Connection<H> {
         };
         let voted = match asked {
             None => None,
+            // A held stream (ADR-0106 D5): recorded now, because it may stay
+            // open for hours and a greeting bound only at its end would leave a
+            // joining follower's row unbound all that time.
+            Some((tag, body)) if tag == PeerFrame::Stream.tag() => {
+                let holding = Arc::clone(&self.holding);
+                let met = Met {
+                    said,
+                    voted: None,
+                    presented: shown.as_ref().map_or([0; 32], credential::digest),
+                };
+                if let Bridged::Busy(()) | Bridged::Panicked =
+                    self.bridge.call((), move |()| holding.met(&met)).await
+                {
+                    log::warn!("a peer opened a stream but could not be recorded");
+                }
+                self.stream(&mut link, said.node, body, shown.as_ref())
+                    .await?;
+                return Ok(None);
+            }
             // A copy streams (ADR-0094 D3): the store side runs on the bridge
             // and hands each frame over a bounded channel, so a follower that
             // reads slowly slows the read instead of filling memory, and one
@@ -271,6 +329,58 @@ impl<H: Holding> Connection<H> {
                 }
                 None
             }
+            // A request carried here for a caller (ADR-0108 D1–D3). Believed
+            // against the certificate THIS handshake proved, so the signer is
+            // the peer on this connection and no other.
+            Some((tag, body)) if tag == PeerFrame::Coordinate.tag() => {
+                let shown = shown.as_ref().ok_or(Error::Unidentified)?;
+                let asked = Coordinate::decode(&body)?;
+                let believed = asked
+                    .signed
+                    .verify(
+                        shown,
+                        said.node,
+                        self.me,
+                        (asked.digest(), now_ms()),
+                        &self.replays,
+                    )
+                    .copied();
+                let (tag, reply) = match believed {
+                    Err(why) => {
+                        log::warn!(
+                            "a request carried from {} was refused: {why}",
+                            tessari_types::uuid_to_text(&said.node)
+                        );
+                        (
+                            PeerFrame::NotCoordinated.tag(),
+                            why.to_string().into_bytes(),
+                        )
+                    }
+                    Ok(assertion) => {
+                        log::info!(
+                            "a request carried from {} acts for {} (nonce {})",
+                            tessari_types::uuid_to_text(&said.node),
+                            match assertion.principal {
+                                crate::assertion::Principal::Anonymous => "nobody".to_owned(),
+                                crate::assertion::Principal::User { id, .. } =>
+                                    format!("user {id}"),
+                            },
+                            hex(&assertion.nonce)
+                        );
+                        let holding = Arc::clone(&self.holding);
+                        let from = said.node;
+                        let answered = self
+                            .store(move || Ok(holding.coordinated(from, &assertion, &asked)))
+                            .await?;
+                        match answered {
+                            Ok(answer) => (PeerFrame::Coordinated.tag(), encode_answer(&answer)),
+                            Err(why) => (PeerFrame::NotCoordinated.tag(), why.into_bytes()),
+                        }
+                    }
+                };
+                bounded(frame_async::write_tagged(&mut link, tag, &reply)).await??;
+                None
+            }
             Some((tag, body)) => {
                 let holding = Arc::clone(&self.holding);
                 let voter = Arc::clone(&self.voter);
@@ -281,7 +391,136 @@ impl<H: Holding> Connection<H> {
                 voted
             }
         };
-        Ok(Met { said, voted })
+        Ok(Some(Met {
+            said,
+            voted,
+            presented: shown.as_ref().map_or([0; 32], credential::digest),
+        }))
+    }
+
+    /// Serve a held stream (ADR-0106 D5) until the follower closes or the door
+    /// stops.
+    ///
+    /// Each ask is answered by exactly ONE round carrying records. While there
+    /// is nothing to send the leader reads nothing: it waits on its commit
+    /// signal and, every [`STREAM_HEARTBEAT_MILLIS`], sends an empty round — the
+    /// heartbeat — which says *nothing after your positions has landed here*.
+    /// That claim is exact rather than hopeful because the signal is marked
+    /// seen before every read of the log, so a commit landing during a read
+    /// wakes the next one instead of being slept past.
+    async fn stream(
+        &self,
+        link: &mut tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+        follower: [u8; NODE_ID_LEN],
+        mut body: Vec<u8>,
+        presented: Option<&rustls::pki_types::CertificateDer<'_>>,
+    ) -> Result<()> {
+        let heartbeat = std::time::Duration::from_millis(STREAM_HEARTBEAT_MILLIS);
+        // A stream outlives its handshake by hours, so the handshake's judgement
+        // is asked again before every frame: a certificate revoked, or a node
+        // removed, while it streams is cut off at the next one (ADR-0108 D6).
+        let admitted = || presented.is_some_and(|presented| self.keys.still_admits(presented));
+        let quiet = crate::collection::Streamed {
+            answers: Vec::new(),
+        }
+        .encode();
+        let mut commits = self.holding.commits();
+        loop {
+            let asked = StreamAsk::decode(&body)?;
+            let round = loop {
+                if !admitted() {
+                    log::warn!(
+                        "a held stream ended: the peer's certificate is no longer admitted here"
+                    );
+                    return Ok(());
+                }
+                commits.borrow_and_update();
+                let holding = Arc::clone(&self.holding);
+                let ask = asked.clone();
+                let answered = self
+                    .store(move || stream_answer(&*holding, follower, &ask))
+                    .await;
+                let round = match answered {
+                    Ok(round) => round,
+                    // The refusal crosses as the frame a round would carry, and
+                    // the stream ends: the follower's round meets it again,
+                    // which is where every repair already lives.
+                    Err(Error::Uncollectable { from }) => {
+                        let mut refused = Vec::with_capacity(8);
+                        crate::frame::put_u64(&mut refused, from);
+                        bounded(frame_async::write_tagged(
+                            link,
+                            PeerFrame::Uncollectable.tag(),
+                            &refused,
+                        ))
+                        .await??;
+                        return Ok(());
+                    }
+                    Err(Error::Unsubscribed) => {
+                        bounded(frame_async::write_tagged(
+                            link,
+                            PeerFrame::Unsubscribed.tag(),
+                            &[],
+                        ))
+                        .await??;
+                        return Ok(());
+                    }
+                    Err(why) => return Err(why),
+                };
+                if !round.is_quiet() {
+                    break round;
+                }
+                // Nothing to send: wait for a commit, saying so every beat.
+                loop {
+                    tokio::select! {
+                        biased;
+                        () = self.stop.cancelled() => return Ok(()),
+                        changed = commits.changed() => {
+                            if changed.is_err() {
+                                // The commit signal went with the node.
+                                return Ok(());
+                            }
+                            break;
+                        }
+                        () = tokio::time::sleep(heartbeat) => {
+                            if !admitted() {
+                                log::warn!(
+                                    "a held stream ended: the peer's certificate is no longer \
+                                     admitted here"
+                                );
+                                return Ok(());
+                            }
+                            bounded(frame_async::write_tagged(
+                                link,
+                                PeerFrame::Streamed.tag(),
+                                &quiet,
+                            ))
+                            .await??;
+                        }
+                    }
+                }
+            };
+            bounded(frame_async::write_tagged(
+                link,
+                PeerFrame::Streamed.tag(),
+                &round.encode(),
+            ))
+            .await??;
+            let next = tokio::select! {
+                biased;
+                () = self.stop.cancelled() => return Ok(()),
+                next = bounded(frame_async::read_tagged(link)) => next?,
+            };
+            body = match next {
+                Ok(Some((tag, next))) if tag == PeerFrame::Stream.tag() => next,
+                Ok(Some((tag, _))) => return Err(Error::OutOfTurn { tag }),
+                Ok(None) => return Ok(()),
+                Err(Error::Io(why)) if why.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    return Ok(());
+                }
+                Err(why) => return Err(why),
+            };
+        }
     }
 
     /// Run a store call on the bridge, and read a refusal as the error it is.
@@ -306,6 +545,11 @@ impl<H: Holding> Connection<H> {
 /// Per step and not per connection, as the synchronous door's socket timeouts
 /// are: a collection answer of several megabytes is many writes, and a bound
 /// on the whole would cut off a slow but moving peer.
+/// Bytes as lowercase hexadecimal, for a log line.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 async fn bounded<T>(step: impl Future<Output = T>) -> Result<T> {
     tokio::time::timeout(std::time::Duration::from_secs(GREETING_SECONDS), step)
         .await
@@ -327,7 +571,7 @@ mod tests {
     use crate::gathering::{Gather, Page};
     use crate::grant::{Ballot, Round, Vote};
     use crate::link::tests::{Authority, THERE, hello, settled, voted};
-    use crate::link::{Ask, Credential, call};
+    use crate::link::{Ask, Credential};
     use crate::peer::Purpose;
     use tessari_types::{Epoch, Reach};
 
@@ -336,6 +580,11 @@ mod tests {
     /// A node with no log, holding what [`hello`] says, remembering whom it met.
     struct Holder {
         met: std::sync::Mutex<Vec<Met>>,
+        /// Never moved: no test here commits, so a stream would only beat.
+        commits: (
+            tokio::sync::watch::Sender<u64>,
+            tokio::sync::watch::Receiver<u64>,
+        ),
     }
 
     impl Origin for Holder {
@@ -370,6 +619,19 @@ mod tests {
                 held.push(*met);
             }
         }
+
+        fn commits(&self) -> tokio::sync::watch::Receiver<u64> {
+            self.commits.1.clone()
+        }
+
+        fn coordinated(
+            &self,
+            _: [u8; NODE_ID_LEN],
+            _: &crate::assertion::Assertion,
+            _: &crate::coordination::Coordinate,
+        ) -> std::result::Result<tessaridb::Coordinated, String> {
+            Err("this test door carries no requests".to_owned())
+        }
     }
 
     /// A door for `HERE`, served on a runtime of its own until the test ends.
@@ -388,7 +650,7 @@ mod tests {
     }
 
     fn served(authority: &Authority) -> Served {
-        let peers = Peers::bind(
+        let peers = crate::link::tests::bind_with(
             "127.0.0.1:0",
             authority.issue(HERE, Purpose::Peer),
             &authority.der(),
@@ -402,6 +664,7 @@ mod tests {
             .expect("a runtime for the door");
         let holder = Arc::new(Holder {
             met: std::sync::Mutex::new(Vec::new()),
+            commits: tokio::sync::watch::channel(0),
         });
         let stop = CancellationToken::new();
         let serving = (stop.clone(), Arc::clone(&holder));
@@ -428,7 +691,7 @@ mod tests {
     fn a_peer_is_greeted_and_its_ballot_answered_by_the_door_on_the_runtime() {
         let authority = Authority::new();
         let door = served(&authority);
-        let (said, _) = call(
+        let (said, _) = crate::link::tests::call_with(
             door.address,
             peer(&authority),
             &authority.der(),
@@ -440,7 +703,7 @@ mod tests {
         assert_eq!(said.node, HERE);
 
         let ballot: Ballot = Round::opened(Epoch::new(5), THERE, 3).ballot();
-        let (_, answered) = call(
+        let (_, answered) = crate::link::tests::call_with(
             door.address,
             peer(&authority),
             &authority.der(),
@@ -449,7 +712,12 @@ mod tests {
             Ask::Ballot(&ballot),
         )
         .expect("a ballot is answered");
-        assert_eq!(voted(&answered), Some(Vote::Granted));
+        assert_eq!(
+            voted(&answered),
+            Some(Vote::Granted {
+                hold: tessari_storage::LEASE_TTL
+            })
+        );
         // Recorded through the node, as the synchronous door's caller did. The
         // record is written after the answer, so it is waited for, boundedly.
         let deadline = Instant::now() + Duration::from_secs(GREETING_SECONDS);
@@ -458,7 +726,10 @@ mod tests {
         }
         let met = door.holder.met.lock().expect("the record").clone();
         assert_eq!(met.len(), 2, "both connections were recorded");
-        assert!(met.iter().any(|m| m.voted == Some(Vote::Granted)));
+        assert!(met.iter().any(|m| m.voted
+            == Some(Vote::Granted {
+                hold: tessari_storage::LEASE_TTL
+            })));
     }
 
     #[test]
@@ -470,7 +741,7 @@ mod tests {
         // greeting deadline before it could take anyone else.
         let _quiet = TcpStream::connect(door.address).expect("a quiet connection");
         let began = Instant::now();
-        let (said, _) = call(
+        let (said, _) = crate::link::tests::call_with(
             door.address,
             peer(&authority),
             &authority.der(),
@@ -530,7 +801,7 @@ mod tests {
             matches!(returned, Ok(Ok(Ok(())))),
             "a stop ends the door cleanly: {returned:?}"
         );
-        let refused = call(
+        let refused = crate::link::tests::call_with(
             door.address,
             peer(&authority),
             &authority.der(),

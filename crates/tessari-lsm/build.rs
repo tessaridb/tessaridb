@@ -11,12 +11,18 @@
 //! first variable present in the order checked below. The workspace sets the
 //! target-specific one in `.cargo/config.toml`; this refuses any other build —
 //! another workspace, a changed environment — that would silently drop it.
+//!
+//! It also compiles `src/cipher.cc`, the engine's encryption provider for an
+//! encrypted store (ADR-0108 D7), against the engine's own headers. The engine's
+//! build crate exports where its sources are (`DEP_ROCKSDB_CARGO_MANIFEST_DIR`)
+//! to the crates that depend on it directly, which is why this crate names it.
 
 use std::env;
 
 const FULL_FLUSH: &str = "-DHAVE_FULLFSYNC";
 
 fn main() {
+    cipher();
     let target = env::var("TARGET").unwrap_or_default();
     let host = env::var("HOST").unwrap_or_default();
     let underscored = target.replace('-', "_");
@@ -47,4 +53,25 @@ fn main() {
              workspace's .cargo/config.toml does)."
         );
     }
+}
+
+/// Compile the encryption provider against the headers of the engine linked.
+fn cipher() {
+    println!("cargo::rerun-if-changed=src/cipher.cc");
+    let Ok(engine) = env::var("DEP_ROCKSDB_CARGO_MANIFEST_DIR") else {
+        println!(
+            "cargo::error=the engine's build did not say where its sources are \
+             (DEP_ROCKSDB_CARGO_MANIFEST_DIR); the encryption provider cannot be compiled"
+        );
+        return;
+    };
+    let include = std::path::Path::new(&engine)
+        .join("rocksdb")
+        .join("include");
+    cc::Build::new()
+        .cpp(true)
+        .std("c++20")
+        .include(include)
+        .file("src/cipher.cc")
+        .compile("tessari_lsm_cipher");
 }

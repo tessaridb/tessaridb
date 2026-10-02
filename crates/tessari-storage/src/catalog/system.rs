@@ -178,6 +178,12 @@ pub const TOPIC_GROUPS: TableId = TableId::new(22);
 /// Synonym and stop-word sets, keyed by kind and name (ADR-0105).
 pub const WORD_SETS: TableId = TableId::new(23);
 
+/// Peer certificates no handshake accepts, keyed by fingerprint (ADR-0108 D6).
+pub const REVOKED_CERTIFICATES: TableId = TableId::new(24);
+
+/// Nodes removed from the cluster, never admitted again (ADR-0108 D9).
+pub const TOMBSTONED_NODES: TableId = TableId::new(25);
+
 /// The one record [`VAULT_ROOT`] holds.
 pub const VAULT_ROOT_ID: u32 = 1;
 
@@ -334,6 +340,8 @@ mod tests {
             TOPIC_POSITIONS,
             TOPIC_GROUPS,
             WORD_SETS,
+            REVOKED_CERTIFICATES,
+            TOMBSTONED_NODES,
         ];
         for (index, table) in ids.iter().enumerate() {
             assert!(

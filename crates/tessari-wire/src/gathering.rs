@@ -871,7 +871,7 @@ mod door {
     use crate::error::{Error, Result};
     use crate::grant::Deciding;
     use crate::link::tests::{Authority, THERE, hello, settled};
-    use crate::link::{Answered, Ask, Peers, call};
+    use crate::link::{Answered, Ask};
     use crate::peer::Purpose;
 
     const LEADER: [u8; NODE_ID_LEN] = [71_u8; NODE_ID_LEN];
@@ -941,7 +941,7 @@ mod door {
         (budget, fold): (usize, usize),
         rounds: usize,
     ) -> (SocketAddr, JoinHandle<()>) {
-        let peers = Peers::bind(
+        let peers = crate::link::tests::bind_with(
             "127.0.0.1:0",
             authority.issue(LEADER, Purpose::Peer),
             &authority.der(),
@@ -965,7 +965,7 @@ mod door {
     }
 
     fn ask(authority: &Authority, address: SocketAddr, gather: &Gather) -> Result<Page> {
-        match call(
+        match crate::link::tests::call_with(
             address,
             authority.issue(THERE, Purpose::Peer),
             &authority.der(),

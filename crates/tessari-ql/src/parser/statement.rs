@@ -81,7 +81,9 @@ impl Parser<'_> {
             Some(Keyword::Rebuild) => self.rebuild_statement()?,
             Some(Keyword::Check) => self.check_statement()?,
             Some(Keyword::Grant) => self.grant_statement(true)?,
+            Some(Keyword::Revoke) if self.revokes_a_certificate() => self.revoke_certificate()?,
             Some(Keyword::Revoke) => self.grant_statement(false)?,
+            Some(Keyword::Create) if self.creates_a_join_token() => self.create_join_token()?,
             Some(Keyword::Create) => self.write_statement(Keyword::Create)?,
             Some(Keyword::Insert) => self.insert_statement()?,
             Some(Keyword::Update) => self.write_statement(Keyword::Update)?,
@@ -272,9 +274,26 @@ impl Parser<'_> {
             _ if self.eat_word("seal") => self.seal_statement(start)?,
             _ => return Err(self.error_here("a statement")),
         };
+        // Only a write, or the `COMMIT` of several, waits for copies — a read
+        // that named a level would be asking for something nothing does.
+        let acknowledge = if matches!(
+            kind,
+            StatementKind::Create { .. }
+                | StatementKind::Insert { .. }
+                | StatementKind::Update { .. }
+                | StatementKind::Upsert { .. }
+                | StatementKind::Delete { .. }
+                | StatementKind::Relate { .. }
+                | StatementKind::Commit
+        ) {
+            self.acknowledge_clause()?
+        } else {
+            None
+        };
         Ok(Statement {
             kind,
             span: start.to(self.span_behind()),
+            acknowledge,
         })
     }
 }

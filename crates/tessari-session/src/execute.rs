@@ -59,6 +59,7 @@ struct Peer<'a> {
     node: Option<[u8; NODE_ID_LEN]>,
     replicates: Option<&'a ReachRef>,
     leads: Option<&'a ReachRef>,
+    fingerprint: Option<&'a str>,
 }
 
 struct Declared<'a> {
@@ -74,7 +75,36 @@ struct Declared<'a> {
 }
 
 impl Session<'_> {
+    /// Carry out one statement in `transaction`, recording a change of
+    /// authority or membership beside it (ADR-0108 D8).
+    ///
+    /// Recorded only once the statement succeeded, and in the same
+    /// transaction, so a refusal records nothing and a cancel takes the record
+    /// with the change.
     pub(crate) fn execute(
+        &self,
+        transaction: &mut Transaction<'_>,
+        kind: &StatementKind,
+        span: Span,
+    ) -> Result<Outcome> {
+        let outcome = self.carry_out(transaction, kind, span)?;
+        if let Some((statement, subject)) = crate::administration::administered(kind) {
+            tessari_storage::administered(
+                transaction,
+                &tessari_storage::Administered {
+                    actor: self
+                        .identity
+                        .user()
+                        .map_or("anonymous", |user| user.name.as_str()),
+                    statement,
+                    subject,
+                },
+            )?;
+        }
+        Ok(outcome)
+    }
+
+    fn carry_out(
         &self,
         transaction: &mut Transaction<'_>,
         kind: &StatementKind,
@@ -86,9 +116,15 @@ impl Session<'_> {
                 if_not_exists,
                 replication,
                 class,
-            } => self.define_namespace(transaction, name, *if_not_exists, *replication, *class),
-            StatementKind::AlterNamespace { name, replication } => {
-                self.alter_namespace(transaction, name, *replication)
+                acknowledge,
+            } => self.define_namespace(
+                transaction,
+                name,
+                *if_not_exists,
+                (*replication, *class, *acknowledge),
+            ),
+            StatementKind::AlterNamespace { name, change } => {
+                self.alter_namespace(transaction, name, *change)
             }
             StatementKind::DefineDatabase {
                 name,
@@ -305,6 +341,9 @@ impl Session<'_> {
                 [*awareness, *collection, *round, *campaign, *lease],
                 span,
             ),
+            StatementKind::RevokeCertificate { fingerprint } => {
+                Ok(Self::revoke_certificate(transaction, fingerprint))
+            }
             StatementKind::DefineReplica {
                 name,
                 endpoint,
@@ -314,6 +353,7 @@ impl Session<'_> {
                 node,
                 replicates,
                 leads,
+                fingerprint,
                 if_not_exists,
             } => self.define_replica(
                 transaction,
@@ -326,9 +366,13 @@ impl Session<'_> {
                     node: *node,
                     replicates: replicates.as_ref(),
                     leads: leads.as_ref(),
+                    fingerprint: fingerprint.as_deref(),
                 },
                 *if_not_exists,
             ),
+            StatementKind::CreateJoinToken { replica, expires } => {
+                Self::create_join_token(transaction, replica, *expires, span)
+            }
             StatementKind::DefineConsumer {
                 name,
                 source,
@@ -515,8 +559,8 @@ impl Session<'_> {
                 self.drop_word_set(transaction, WordSetKind::Stopwords, name)
             }
             StatementKind::DropReplica { name } => self.drop_replica(transaction, name, span),
-            StatementKind::AlterReplica { name, leads } => {
-                self.alter_replica(transaction, name, leads.as_ref(), span)
+            StatementKind::AlterReplica { name, change } => {
+                self.alter_replica(transaction, name, change, span)
             }
             StatementKind::DropDatabase { name } => self.drop_database(transaction, name, span),
             StatementKind::DropNamespace { name } => self.drop_namespace(transaction, name, span),

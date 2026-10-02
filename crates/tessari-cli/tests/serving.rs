@@ -610,11 +610,18 @@ impl Minted {
 
     /// A credential naming `node` on the peer link, as PEM.
     fn issue(&self, node: [u8; 16]) -> (String, String) {
+        let (leaf, key, _) = self.issue_fingerprinted(node);
+        (leaf, key)
+    }
+
+    /// [`Self::issue`], and the fingerprint a `REVOKE CERTIFICATE` names it by.
+    fn issue_fingerprinted(&self, node: [u8; 16]) -> (String, String, String) {
         let name = tessari_wire::names(node, tessari_wire::Purpose::Peer);
         let params = rcgen::CertificateParams::new(vec![name]).unwrap();
         let key = rcgen::KeyPair::generate().unwrap();
         let leaf = params.signed_by(&key, &self.authority, &self.key).unwrap();
-        (leaf.pem(), key.serialize_pem())
+        let fingerprint = tessari_wire::fingerprint(leaf.der());
+        (leaf.pem(), key.serialize_pem(), fingerprint)
     }
 }
 
@@ -624,12 +631,21 @@ fn credentials(
     node: [u8; 16],
     into: &std::path::Path,
 ) -> (String, String, String) {
-    let (leaf, key) = minted.issue(node);
+    credentials_fingerprinted(minted, node, into).0
+}
+
+/// [`credentials`], and the fingerprint of the certificate it wrote.
+fn credentials_fingerprinted(
+    minted: &Minted,
+    node: [u8; 16],
+    into: &std::path::Path,
+) -> ((String, String, String), String) {
+    let (leaf, key, fingerprint) = minted.issue_fingerprinted(node);
     let at = |name: &str| into.join(name).to_string_lossy().into_owned();
     std::fs::write(at("leaf.pem"), leaf).unwrap();
     std::fs::write(at("key.pem"), key).unwrap();
     std::fs::write(at("ca.pem"), minted.authority.pem()).unwrap();
-    (at("leaf.pem"), at("key.pem"), at("ca.pem"))
+    ((at("leaf.pem"), at("key.pem"), at("ca.pem")), fingerprint)
 }
 
 #[test]
@@ -663,6 +679,7 @@ fn a_node_told_about_a_cluster_opens_its_peer_door_and_still_serves_clients() {
         .arg(&store)
         .args(["--serve", WIRE_WITH_PEERS])
         .args(["--cluster-credential", &leaf])
+        .arg("--client-plaintext")
         .args(["--cluster-key", &key])
         .args(["--cluster-authority", &authority])
         .args(["--cluster-address", PEERS])
@@ -711,8 +728,7 @@ fn a_node_told_about_a_cluster_opens_its_peer_door_and_still_serves_clients() {
     .expect("a credential this authority issued");
     let (heard, answered) = tessari_wire::call(
         PEERS,
-        ours.mine,
-        &ours.authority,
+        &tessari_wire::PeerKeys::new(ours.mine, ours.authority).expect("usable peer keys"),
         node,
         &tessari_wire::Hello {
             node: caller,
@@ -760,6 +776,7 @@ fn a_peer_address_that_cannot_be_taken_is_a_failure_to_start_and_not_a_warning()
         .arg(&store)
         .args(["--serve", "127.0.0.1:0"])
         .args(["--cluster-credential", &leaf])
+        .arg("--client-plaintext")
         .args(["--cluster-key", &key])
         .args(["--cluster-authority", &authority])
         .args(["--cluster-address", "127.0.0.1:1"])
@@ -806,6 +823,7 @@ fn a_clustered_node_with_no_seed_and_no_peer_refuses_to_start() {
         .arg(&store)
         .args(["--serve", "127.0.0.1:0"])
         .args(["--cluster-credential", &leaf])
+        .arg("--client-plaintext")
         .args(["--cluster-key", &key])
         .args(["--cluster-authority", &authority])
         .args(["--cluster-address", "127.0.0.1:0"])
@@ -828,6 +846,184 @@ fn a_clustered_node_with_no_seed_and_no_peer_refuses_to_start() {
     assert!(
         !said.contains("wire protocol on"),
         "the client surface must never have been announced: {said}"
+    );
+}
+
+#[test]
+fn a_cluster_node_told_nothing_about_its_clients_refuses_to_start() {
+    // ADR-0108 D4: a cluster serves clients in the clear only when somebody
+    // said so. Everything else here is a configuration that starts — the seed
+    // is given — so the one refusal is the clients' transport.
+    let directory = tempfile::tempdir().unwrap();
+    let store = directory.path().join("store");
+    let minted = Minted::new();
+    let (leaf, key, authority) = credentials(&minted, [7u8; 16], directory.path());
+
+    let mut refused = Command::new(TESSARIDB)
+        .arg(&store)
+        .args(["--serve", "127.0.0.1:0"])
+        .args(["--cluster-credential", &leaf])
+        .args(["--cluster-key", &key])
+        .args(["--cluster-authority", &authority])
+        .args(["--cluster-address", "127.0.0.1:0"])
+        .args(["--seed", A_SEED])
+        .env_remove("TESSARIDB_TLS_CERT")
+        .env_remove("TESSARIDB_TLS_KEY")
+        .env_remove("TESSARIDB_CLIENT_PLAINTEXT")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // A node that wrongly starts serves for ever, so the refusal is waited for
+    // under a deadline: the failure this test exists for must not be a hang.
+    let began = Instant::now();
+    while refused.try_wait().unwrap().is_none() {
+        if began.elapsed() > Duration::from_secs(20) {
+            drop(refused.kill());
+            drop(refused.wait());
+            panic!("a cluster came up serving clients in the clear");
+        }
+        std::thread::yield_now();
+    }
+    let refused = refused.wait_with_output().unwrap();
+    assert!(
+        !refused.status.success(),
+        "a cluster came up serving clients in the clear"
+    );
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        said.contains("--tls-cert") && said.contains("--client-plaintext"),
+        "the refusal names both ways out: {said}"
+    );
+    assert!(
+        !said.contains("wire protocol on"),
+        "a client surface was announced: {said}"
+    );
+}
+
+/// The node `a_node_with_a_certificate_…` serves; 47976 is past every other band.
+const SECURED: &str = "127.0.0.1:47976";
+
+#[test]
+fn a_node_with_a_certificate_answers_at_over_tls_and_never_in_the_clear() {
+    let directory = tempfile::tempdir().unwrap();
+    let minted = Minted::new();
+    let params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_owned()]).unwrap();
+    let leaf_key = rcgen::KeyPair::generate().unwrap();
+    let leaf = params
+        .signed_by(&leaf_key, &minted.authority, &minted.key)
+        .unwrap();
+    let at = |name: &str| directory.path().join(name).to_string_lossy().into_owned();
+    std::fs::write(at("cert.pem"), leaf.pem()).unwrap();
+    std::fs::write(at("key.pem"), leaf_key.serialize_pem()).unwrap();
+    std::fs::write(at("ca.pem"), minted.authority.pem()).unwrap();
+
+    let _node = Running(
+        Command::new(TESSARIDB)
+            .arg(directory.path().join("store"))
+            .args(["--serve", SECURED])
+            .args(["--tls-cert", &at("cert.pem")])
+            .args(["--tls-key", &at("key.pem")])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    assert!(
+        listening(SECURED, Duration::from_secs(20)),
+        "the node never listened"
+    );
+
+    let asked = |trusting: Option<&str>| {
+        let mut command = Command::new(TESSARIDB);
+        command.args(["--at", SECURED, "-e", "RETURN 40 + 2;"]);
+        command.env_remove("TESSARIDB_TLS_AUTHORITY");
+        if let Some(file) = trusting {
+            command.args(["--tls-authority", file]);
+        }
+        command.output().unwrap()
+    };
+    let verified = asked(Some(&at("ca.pem")));
+    assert!(
+        verified.status.success() && String::from_utf8_lossy(&verified.stdout).contains("42"),
+        "a client that verified the node was not answered: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let clear = asked(None);
+    assert!(
+        !clear.status.success() && !String::from_utf8_lossy(&clear.stdout).contains("42"),
+        "a client in the clear was answered"
+    );
+}
+
+/// The renewal below has a port of its own: its node outlives the one above.
+const RENEWED: &str = "127.0.0.1:47977";
+
+#[test]
+fn a_renewed_client_certificate_is_presented_without_a_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let at = |name: &str| directory.path().join(name).to_string_lossy().into_owned();
+    // Two authorities, so which certificate a client was shown is decided by
+    // which authority it trusts: a client trusting only the second is answered
+    // only once the renewal is what the node presents.
+    let (first, second) = (Minted::new(), Minted::new());
+    let issue = |by: &Minted| {
+        let params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_owned()]).unwrap();
+        let key = rcgen::KeyPair::generate().unwrap();
+        let leaf = params.signed_by(&key, &by.authority, &by.key).unwrap();
+        (leaf.pem(), key.serialize_pem())
+    };
+    let (chain, key) = issue(&first);
+    std::fs::write(at("cert.pem"), chain).unwrap();
+    std::fs::write(at("key.pem"), key).unwrap();
+    std::fs::write(at("first.pem"), first.authority.pem()).unwrap();
+    std::fs::write(at("second.pem"), second.authority.pem()).unwrap();
+
+    let _node = Running(
+        Command::new(TESSARIDB)
+            .arg(directory.path().join("store"))
+            .args(["--serve", RENEWED])
+            .args(["--tls-cert", &at("cert.pem")])
+            .args(["--tls-key", &at("key.pem")])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    assert!(
+        listening(RENEWED, Duration::from_secs(20)),
+        "the node never listened"
+    );
+    let answered = |trusting: &str| {
+        let out = Command::new(TESSARIDB)
+            .args(["--at", RENEWED, "-e", "RETURN 40 + 2;"])
+            .args(["--tls-authority", &at(trusting)])
+            .env_remove("TESSARIDB_TLS_AUTHORITY")
+            .output()
+            .unwrap();
+        out.status.success() && String::from_utf8_lossy(&out.stdout).contains("42")
+    };
+    assert!(answered("first.pem"), "the first certificate is presented");
+    assert!(
+        !answered("second.pem"),
+        "nothing from the second authority yet"
+    );
+
+    let (chain, key) = issue(&second);
+    std::fs::write(at("cert.pem"), chain).unwrap();
+    std::fs::write(at("key.pem"), key).unwrap();
+    // The node looks every two seconds; ten is five looks.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !answered("second.pem") {
+        assert!(
+            Instant::now() < deadline,
+            "the renewed certificate was never presented"
+        );
+        std::thread::yield_now();
+    }
+    assert!(
+        !answered("first.pem"),
+        "a new connection is shown the renewal, not the certificate it replaced"
     );
 }
 
@@ -927,6 +1123,7 @@ fn a_joiner_restarted_without_its_seed_still_finds_the_leader() {
             .arg(&stores[index])
             .args(["--serve", NAMED[index].0])
             .args(["--cluster-credential", leaf])
+            .arg("--client-plaintext")
             .args(["--cluster-key", key])
             .args(["--cluster-authority", authority])
             .args(["--cluster-address", NAMED[index].1]);
@@ -1083,36 +1280,30 @@ fn bound_node(address: &str) -> Result<Option<String>, String> {
     }
 }
 
-/// G025 S5.2 — a replica row's node id is bound by the first inbound greeting.
+/// ADR-0108 D9 (was G025 S5.2) — a row is bound by an approved node, never the
+/// first to arrive.
 ///
-/// # Why inbound is the only route, and therefore not a choice
+/// A row whose `node` is `None` is declared but **undiallable**: it can only be
+/// bound by that peer arriving here and proving who it is. Until G054 the first
+/// node holding any cluster-issued certificate to greet was bound and handed the
+/// row's whole reach (R-15). Now the operator approves one: here, with a join
+/// token the joiner offers.
 ///
-/// A row whose `node` is `None` is declared but **undiallable**:
-/// `Directory::greet_round` skips it, because opening a session derives the
-/// peer's transport name from its identifier and an unbound row has none to
-/// derive from. So this node can never bind the row by reaching out. The single
-/// event that can ever bind it is that peer arriving here and proving who it is
-/// — which is what the criterion means by *the first inbound greeting*, and it
-/// is a statement about the design rather than a preference between two.
+/// # Two phases, and the first is the one that would have passed before
+///
+/// The joiner first runs WITHOUT the token for several greeting rounds, and the
+/// row must stay unbound — the first-come binding this replaces would have bound
+/// it there. Then it restarts with the token and the row binds to it.
 ///
 /// # The greeting supplies the id and nothing else
 ///
-/// W281 made a row's `roles` decide whether this node is fenced, so a row bound
-/// by a greeting is a row that can move the write gate. That is Q-553's own
-/// recorded objection to binding by greeting — *a self-binding row is a role
-/// somebody else's first packet gets to assign* — and the answer is that only
-/// `node` is written. The endpoint, the roles and the reach stay exactly as the
-/// operator declared them, which the assertion below checks rather than assumes.
-///
-/// # The assertion is the transition, not the end state
-///
-/// The row is read once **before** the joiner starts and asserted unbound. A
-/// test that only checked the end state would pass against a fixture that had
-/// been bound all along, which is the failure mode this whole criterion is about.
+/// Only `node` is written: the endpoint, the roles and the reach stay exactly as
+/// the operator declared them, which the assertion below checks rather than
+/// assumes.
 #[test]
-#[ignore = "a minute of real cadences against two process starts; run it with \
-            cargo test -p tessari-cli --test serving a_row_nobody_bound -- --ignored"]
-fn a_row_nobody_bound_is_bound_by_the_peer_that_arrives() {
+#[ignore = "a minute of real cadences against three process starts; run it with \
+            cargo test -p tessari-cli --test serving a_row_waiting -- --ignored"]
+fn a_row_waiting_on_a_join_token_is_bound_by_the_node_that_offers_it() {
     let directory = tempfile::tempdir().unwrap();
     let minted = Minted::new();
 
@@ -1134,7 +1325,7 @@ fn a_row_nobody_bound_is_bound_by_the_peer_that_arrives() {
     // The one difference from the self-declaring cluster above: the `joiner`
     // row carries no `NODE`. The operator wrote down where the peer will be and
     // what it is for, and left the identity to be proved rather than typed.
-    {
+    let token = {
         let db = tessaridb::Db::open(&stores[0]).unwrap();
         let leader = tessari_types::RecordId::Uuid(ids[0]).to_string();
         db.session()
@@ -1145,8 +1336,19 @@ fn a_row_nobody_bound_is_bound_by_the_peer_that_arrives() {
                 UNBOUND[1].1, UNBOUND[0].1
             ))
             .expect("a leader that declared a peer it has not met");
+        let answered = db
+            .session()
+            .run("CREATE JOIN TOKEN FOR REPLICA joiner EXPIRES 10m;")
+            .expect("a join token");
+        let Some(tessari_session::Outcome::Value(tessari_types::Value::String(token))) =
+            answered.first()
+        else {
+            panic!("no token: {answered:?}");
+        };
+        let token = token.clone();
         drop(db);
-    }
+        token
+    };
     {
         let db = tessaridb::Db::open(&stores[1]).unwrap();
         db.session()
@@ -1155,13 +1357,14 @@ fn a_row_nobody_bound_is_bound_by_the_peer_that_arrives() {
         drop(db);
     }
 
-    let start = |index: usize| {
+    let start = |index: usize, token: Option<&str>| {
         let (leaf, key, authority) = &papers[index];
         let mut command = Command::new(TESSARIDB);
         command
             .arg(&stores[index])
             .args(["--serve", UNBOUND[index].0])
             .args(["--cluster-credential", leaf])
+            .arg("--client-plaintext")
             .args(["--cluster-key", key])
             .args(["--cluster-authority", authority])
             .args(["--cluster-address", UNBOUND[index].1]);
@@ -1173,6 +1376,10 @@ fn a_row_nobody_bound_is_bound_by_the_peer_that_arrives() {
         // which is the shape the S5.1 scenario above settled on for the same
         // reason. Q-612 records that the origin of a cluster should not need one.
         let other = usize::from(index == 0);
+        command.env_remove("TESSARIDB_JOIN_TOKEN");
+        if let Some(token) = token {
+            command.args(["--join-token", token]);
+        }
         command.args([
             "--seed",
             &format!(
@@ -1190,7 +1397,7 @@ fn a_row_nobody_bound_is_bound_by_the_peer_that_arrives() {
         )
     };
 
-    let leader = start(0);
+    let leader = start(0, None);
     assert!(
         listening(UNBOUND[0].0, Duration::from_secs(30)),
         "the leader never opened its client door"
@@ -1201,7 +1408,27 @@ fn a_row_nobody_bound_is_bound_by_the_peer_that_arrives() {
         "the row must start unbound, or what follows proves nothing"
     );
 
-    let joiner = start(1);
+    // Phase one: no token. The node greets the leader every round, holds a
+    // certificate the cluster issued, and the row it is meant for is the only
+    // open one — the case first-come binding bound.
+    let unapproved = start(1, None);
+    assert!(
+        listening(UNBOUND[1].0, Duration::from_secs(30)),
+        "the joiner never opened its client door"
+    );
+    let began = Instant::now();
+    while began.elapsed() < Duration::from_secs(8) {
+        assert_eq!(
+            bound_node(UNBOUND[0].0),
+            Ok(None),
+            "a node nobody approved was bound to the open row"
+        );
+        std::thread::sleep(POLL);
+    }
+    drop(unapproved);
+
+    // Phase two: the same node, offering the token.
+    let joiner = start(1, Some(&token));
     assert!(
         listening(UNBOUND[1].0, Duration::from_secs(30)),
         "the joiner never opened its client door"
@@ -1288,6 +1515,7 @@ fn a_node_dials_the_peer_its_catalog_declares() {
         .arg(&store)
         .args(["--serve", WIRE_WITH_DIALLING])
         .args(["--cluster-credential", &leaf])
+        .arg("--client-plaintext")
         .args(["--cluster-key", &key])
         .args(["--cluster-authority", &authority])
         .args(["--cluster-address", PEERS_FOR_DIALLING])
@@ -1431,6 +1659,11 @@ fn the_next_node(band: &Band, index: usize) -> usize {
 struct Three {
     /// Each node's own id, in band order.
     ids: Vec<[u8; 16]>,
+    /// The authority every node's peer credential was issued by, kept so a
+    /// test can issue a node its replacement.
+    minted: Minted,
+    /// The fingerprint of each node's first peer certificate, in band order.
+    fingerprints: Vec<String>,
     /// Held so the stores outlive the processes reading them. Dropping this
     /// removes the directory, so it is a field rather than a discarded local.
     _directory: tempfile::TempDir,
@@ -1468,7 +1701,10 @@ fn started(args: &[std::ffi::OsString], log: &std::path::Path) -> Running {
         .append(true)
         .open(log)
         .unwrap();
-    let child = Command::new(TESSARIDB)
+    // A cluster measurement is taken against the release build when one is
+    // named (G053 SG1): the debug binary's timings describe the debug build.
+    let binary = std::env::var_os("TESSARIDB_TEST_BIN").unwrap_or_else(|| TESSARIDB.into());
+    let child = Command::new(binary)
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::from(writing))
@@ -1570,6 +1806,7 @@ fn a_cluster_of_rows(band: &Band, preamble: &str, rows: [String; 3]) -> Three {
     let mut stores = Vec::new();
     let mut ids = Vec::new();
     let mut papers = Vec::new();
+    let mut fingerprints = Vec::new();
     for index in 0..band.len() {
         let home = directory.path().join(format!("n{index}"));
         std::fs::create_dir_all(&home).unwrap();
@@ -1577,7 +1814,9 @@ fn a_cluster_of_rows(band: &Band, preamble: &str, rows: [String; 3]) -> Three {
         let db = tessaridb::Db::open(&store).unwrap();
         let id = db.store().node_identity().unwrap().id;
         drop(db);
-        papers.push(credentials(&minted, id, &home));
+        let (paper, fingerprint) = credentials_fingerprinted(&minted, id, &home);
+        papers.push(paper);
+        fingerprints.push(fingerprint);
         ids.push(id);
         stores.push(store);
     }
@@ -1678,6 +1917,7 @@ fn a_cluster_of_rows(band: &Band, preamble: &str, rows: [String; 3]) -> Three {
             stores[index].as_os_str(),
             "--serve".as_ref(),
             band[index].0.as_ref(),
+            "--client-plaintext".as_ref(),
             "--cluster-credential".as_ref(),
             leaf.as_ref(),
             "--cluster-key".as_ref(),
@@ -1701,11 +1941,24 @@ fn a_cluster_of_rows(band: &Band, preamble: &str, rows: [String; 3]) -> Three {
         assert!(listening(peer, Duration::from_secs(30)), "{peer}");
     }
     Three {
+        minted,
+        fingerprints,
         _directory: directory,
         running,
         logs,
         ids,
         started_with,
+    }
+}
+
+/// Whether a write landed: acknowledged, or committed on the node with its
+/// copies not yet counted (ADR-0106 D6). The second is an answer a caller must
+/// not retry — the write is there, and the same `CREATE` or `DEFINE` again is
+/// refused as a name already in use, every time, for as long as it is asked.
+fn landed<T>(answered: &Result<T, impl std::fmt::Display>) -> bool {
+    match answered {
+        Ok(_) => true,
+        Err(why) => why.to_string().contains("is committed on this node"),
     }
 }
 
@@ -1725,16 +1978,17 @@ fn the_node_a_majority_granted(band: &Band) -> usize {
     while began.elapsed() < Duration::from_secs(90) && elected.is_none() {
         for (index, (surface, _)) in band.iter().enumerate() {
             if let Ok(mut client) = Client::connect(surface) {
-                match client.run(SCHEMA, None) {
-                    Ok(_) => {
-                        elected = Some(index);
-                        break;
-                    }
-                    // Kept so the failure below can name the refusal. A test
-                    // that reports only *nobody wrote* sends the next reader to
-                    // the logs of three processes to learn something the client
-                    // was told every second.
-                    Err(why) => refusals[index] = why.to_string(),
+                let answered = client.run(SCHEMA, None);
+                if landed(&answered) {
+                    elected = Some(index);
+                    break;
+                }
+                // Kept so the failure below can name the refusal. A test that
+                // reports only *nobody wrote* sends the next reader to the logs
+                // of three processes to learn something the client was told
+                // every second.
+                if let Err(why) = answered {
+                    refusals[index] = why.to_string();
                 }
             }
         }
@@ -1890,13 +2144,11 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
                 continue;
             }
             if let Ok(mut client) = Client::connect(surface)
-                && client
-                    .run(
-                        "USE NAMESPACE prod; USE DATABASE orders; \
-                         CREATE item:2 = { n: 2 };",
-                        None,
-                    )
-                    .is_ok()
+                && landed(&client.run(
+                    "USE NAMESPACE prod; USE DATABASE orders; \
+                     CREATE item:2 = { n: 2 };",
+                    None,
+                ))
             {
                 successor = Some(index);
                 break;
@@ -2360,6 +2612,7 @@ fn a_node_joins_a_cluster_it_was_only_given_an_address_for() {
             .arg(&stores[index])
             .args(["--serve", client])
             .args(["--cluster-credential", leaf])
+            .arg("--client-plaintext")
             .args(["--cluster-key", key])
             .args(["--cluster-authority", authority])
             .args(["--cluster-address", peer]);
@@ -2519,6 +2772,30 @@ fn lease_reported(address: &str) -> Result<Option<i64>, String> {
     }
 }
 
+/// Whole seconds left on the lease `address` writes under, or `None` when it
+/// holds none — `cluster.lease`, the countdown, beside `lease_reported`'s period.
+fn lease_left(address: &str) -> Result<Option<i64>, String> {
+    let mut client = Client::connect(address).map_err(|why| why.to_string())?;
+    let answers = client
+        .run("INFO FOR NODE;", None)
+        .map_err(|why| why.to_string())?;
+    let Some(Answer::Value {
+        value: tessari_types::Value::Object(report),
+        ..
+    }) = answers.last()
+    else {
+        return Err(format!("not a report: {answers:?}"));
+    };
+    let Some(tessari_types::Value::Object(cluster)) = report.get("cluster") else {
+        return Err(format!("no cluster group: {report:?}"));
+    };
+    match cluster.get("lease") {
+        Some(tessari_types::Value::Null) | None => Ok(None),
+        Some(tessari_types::Value::Duration(span)) => Ok(Some(span.seconds())),
+        other => Err(format!("not a lease: {other:?}")),
+    }
+}
+
 /// G029 S2.2 against three operating-system processes.
 ///
 /// The criterion's own method is *a live run in which one node's policy reaches
@@ -2621,6 +2898,19 @@ fn a_failover_policy_set_on_the_leader_reaches_a_node_that_never_saw_it() {
     assert!(
         until(patience, || lease_reported(surface) == Ok(Some(43))),
         "the later policy never replaced the earlier one on the follower.{}",
+        what_the_nodes_said(&PERIODS, &logs)
+    );
+
+    // G053 SG2c (Q-878): the policy RUNS, not only replicates. The build's
+    // lease is under a second, so two whole seconds left on the leader's own
+    // countdown is a lease no build constant could have handed it — it is the
+    // 43 s the cluster agreed to, cut by no voter that still held for less.
+    assert!(
+        until(patience, || lease_left(deciding)
+            .is_ok_and(|left| left.is_some_and(|seconds| seconds >= 2))),
+        "the leader still writes under the build's lease after its cluster agreed \
+         to a longer one: {:?}.{}",
+        lease_left(deciding),
         what_the_nodes_said(&PERIODS, &logs)
     );
 }
@@ -2880,6 +3170,7 @@ fn spawn_refusing(
         .arg(&stores[index])
         .args(["--serve", REFUSING[index].0])
         .args(["--cluster-credential", leaf])
+        .arg("--client-plaintext")
         .args(["--cluster-key", key])
         .args(["--cluster-authority", authority])
         .args(["--cluster-address", REFUSING[index].1])
@@ -2932,9 +3223,14 @@ fn until_taken(surface: &str, prefix: &str, patience: Duration) -> Result<Durati
     while began.elapsed() < patience {
         attempt = attempt.saturating_add(1);
         if let Ok(mut client) = Client::connect(surface) {
-            match client.run(&into_orders(&format!("{prefix}{attempt}")), None) {
-                Ok(_) => return Ok(began.elapsed()),
-                Err(why) => last = why.to_string(),
+            // A write committed and not yet held counts as taken: trying again
+            // under a new key would leave two records where the caller meant one.
+            let answered = client.run(&into_orders(&format!("{prefix}{attempt}")), None);
+            if landed(&answered) {
+                return Ok(began.elapsed());
+            }
+            if let Err(why) = answered {
+                last = why.to_string();
             }
         }
         std::thread::sleep(POLL);
@@ -3089,6 +3385,9 @@ const GATHERING: Band = [
     ("127.0.0.1:47857", "127.0.0.1:47858"),
 ];
 
+/// The partial holder's HTTP door, opened once the wire half has been asked.
+const GATHERING_HTTP: &str = "127.0.0.1:47822";
+
 /// A read at `surface`, answered as its records' identities — or the refusal.
 fn read_at(surface: &str, read: &str) -> Result<Vec<String>, String> {
     let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
@@ -3235,6 +3534,50 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
         std::thread::sleep(POLL);
     }
 
+    // G054 C2 (ADR-0108 D1): a client that cannot follow that redirect is
+    // answered all the same — node 2 carries the read over the peer link to a
+    // node holding the whole table and answers with what it said.
+    let transacted = "USE NAMESPACE prod; USE DATABASE shop; BEGIN; SELECT * FROM orders; COMMIT;";
+    let began = Instant::now();
+    loop {
+        let (kind, body) = ask_as_an_old_client(GATHERING[2].0, transacted, None);
+        let said = String::from_utf8_lossy(&body).into_owned();
+        if kind == 2 && whole.iter().all(|id| said.contains(id.as_str())) {
+            break;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "node 2 did not answer an old client's read it cannot gather; \
+             kind {kind}: {said}{}",
+            what_the_nodes_said(&GATHERING, &logs)
+        );
+        std::thread::sleep(POLL);
+    }
+
+    // And over HTTP, whose clients never follow a redirect at all (G054 C2):
+    // node 2, given an HTTP door, carries the same read to a whole holder.
+    cluster.restart_with(2, &["--http", GATHERING_HTTP]);
+    assert!(
+        listening(GATHERING_HTTP, Duration::from_secs(30)),
+        "node 2 never opened its HTTP door{}",
+        what_the_nodes_said(&GATHERING, &logs)
+    );
+    let began = Instant::now();
+    loop {
+        let answered = over_http(GATHERING_HTTP, "/script", transacted);
+        if answered.starts_with("HTTP/1.1 200")
+            && whole.iter().all(|id| answered.contains(id.as_str()))
+        {
+            break;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "node 2 did not answer over HTTP a read it cannot gather: {answered}{}",
+            what_the_nodes_said(&GATHERING, &logs)
+        );
+        std::thread::sleep(POLL);
+    }
+
     // G051 C6 (ADR-0103): a score on node 2 is measured against all three
     // shards — node 2 counts its own, the leaders count theirs — so it is the
     // score a node holding the whole store gives. One annotated record per
@@ -3247,15 +3590,13 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
         let began = Instant::now();
         while ![0, 1].into_iter().any(|index| {
             Client::connect(GATHERING[index].0).is_ok_and(|mut client| {
-                client
-                    .run(
-                        &format!(
-                            "USE NAMESPACE prod; USE DATABASE shop; \
-                             CREATE orders:'{key}' = {{ n: 1, note: '{note}' }};"
-                        ),
-                        None,
-                    )
-                    .is_ok()
+                landed(&client.run(
+                    &format!(
+                        "USE NAMESPACE prod; USE DATABASE shop; \
+                         CREATE orders:'{key}' = {{ n: 1, note: '{note}' }};"
+                    ),
+                    None,
+                ))
             })
         }) {
             assert!(
@@ -3299,6 +3640,19 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
         assert!(
             began.elapsed() < Duration::from_secs(90),
             "node 2's scores never matched a whole node's: {partial:?} against {whole:?}{}",
+            what_the_nodes_said(&GATHERING, &logs)
+        );
+        std::thread::sleep(POLL);
+    }
+
+    // Node 2 level with its shard before the stop, as before every kill here:
+    // the scores above were gathered on the leaders and say nothing about node
+    // 2's own copy, and a record it had not collected yet is not one it holds.
+    let began = Instant::now();
+    while read_at(GATHERING[2].0, "SELECT * FROM orders:'p'..'zz';").map(|ids| ids.len()) != Ok(2) {
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "node 2 never held both records of its shard{}",
             what_the_nodes_said(&GATHERING, &logs)
         );
         std::thread::sleep(POLL);
@@ -3490,7 +3844,7 @@ fn a_placement_is_handed_over_while_writes_continue() {
         let began = Instant::now();
         loop {
             let done = HANDING.iter().any(|(surface, _)| {
-                Client::connect(surface).is_ok_and(|mut client| client.run(script, None).is_ok())
+                Client::connect(surface).is_ok_and(|mut client| landed(&client.run(script, None)))
             });
             if done {
                 return Instant::now();
@@ -3516,8 +3870,16 @@ fn a_placement_is_handed_over_while_writes_continue() {
     // which none was.
     let stop = Arc::new(AtomicBool::new(false));
     let taken = Arc::new(Mutex::new(Vec::<String>::new()));
+    // Writes answered *committed here, not yet held by enough copies* (ADR-0106
+    // D6): their outcome is the cluster's to decide, so the new leader may or
+    // may not hold them — but nothing refused outright may land.
+    let undecided = Arc::new(Mutex::new(Vec::<String>::new()));
     let writer = {
-        let (stop, taken) = (Arc::clone(&stop), Arc::clone(&taken));
+        let (stop, taken, undecided) = (
+            Arc::clone(&stop),
+            Arc::clone(&taken),
+            Arc::clone(&undecided),
+        );
         std::thread::spawn(move || {
             let mut longest = Duration::ZERO;
             let mut last = Instant::now();
@@ -3526,8 +3888,17 @@ fn a_placement_is_handed_over_while_writes_continue() {
                 attempt = attempt.saturating_add(1);
                 let key = format!("hw{attempt:06}");
                 let took = [HANDING[0].0, HANDING[1].0].iter().any(|surface| {
-                    Client::connect(surface)
-                        .is_ok_and(|mut client| client.run(&into_orders(&key), None).is_ok())
+                    Client::connect(surface).is_ok_and(|mut client| {
+                        match client.run(&into_orders(&key), None) {
+                            Ok(_) => true,
+                            Err(why) => {
+                                if why.to_string().contains("is committed on this node") {
+                                    undecided.lock().unwrap().push(key.clone());
+                                }
+                                false
+                            }
+                        }
+                    })
                 });
                 if took {
                     longest = longest.max(last.elapsed());
@@ -3579,12 +3950,27 @@ fn a_placement_is_handed_over_while_writes_continue() {
             what_the_nodes_said(&HANDING, &logs)
         );
     }
-    // Every write the writer was told was taken is on the new leader, once.
+    // Every write the writer was told was taken is on the new leader, once —
+    // and anything else it holds is a write answered *committed, not yet held
+    // by enough copies*, never one refused outright.
     let mut held = read_at(HANDING[1].0, "SELECT * FROM orders:'hw'..'hx';").unwrap();
     held.sort();
-    assert_eq!(
-        held, taken,
-        "every write taken, held once by the new leader"
+    let mut once = held.clone();
+    once.dedup();
+    assert_eq!(once, held, "a write held twice by the new leader");
+    let undecided = undecided.lock().unwrap().clone();
+    let missing: Vec<_> = taken.iter().filter(|key| !held.contains(key)).collect();
+    assert!(
+        missing.is_empty(),
+        "taken writes lost by the hand-over: {missing:?}"
+    );
+    let refused_but_held: Vec<_> = held
+        .iter()
+        .filter(|key| !taken.contains(key) && !undecided.contains(key))
+        .collect();
+    assert!(
+        refused_but_held.is_empty(),
+        "writes refused outright are held: {refused_but_held:?}"
     );
     // The new leader leads under a later epoch than the old one did.
     let (old, new) = (shard_two_epochs(&logs[0]), shard_two_epochs(&logs[1]));
@@ -3630,29 +4016,85 @@ fn answered_at(surface: &str, read: &str) -> String {
     }
 }
 
+/// Declare `schema` through whichever node of `band` leads, and answer which.
+///
+/// Once, on the leader, as an operator would — and NOT in each node's own
+/// declaring transaction: a node holding namespaces of its own is refused the
+/// store's log (`WouldReinterpret`), so its rounds are never clean, no held
+/// stream starts, and a write waiting for a majority waits for asks that come
+/// once a round. One transaction, so the whole schema lands in the store's log
+/// and none of it waits for copies of a namespace no follower holds yet.
+fn declared_through_the_leader(band: &Band, schema: &str, logs: &[std::path::PathBuf]) -> usize {
+    let began = Instant::now();
+    loop {
+        let took = (0..band.len()).find(|index| {
+            Client::connect(band[*index].0).is_ok_and(|mut client| {
+                landed(&client.run(&format!("BEGIN; {schema} COMMIT;"), None))
+            })
+        });
+        if let Some(index) = took {
+            return index;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(120),
+            "no node took the schema{}",
+            what_the_nodes_said(band, logs)
+        );
+        std::thread::sleep(POLL);
+    }
+}
+
+/// Keep writing `write(attempt)` through `surface` until a majority holds one.
+///
+/// A majority of copies is the default a replicated namespace acknowledges at
+/// (ADR-0106 D2), and the followers of a leader elected a moment ago hold
+/// nothing of a schema declared a moment ago: a test of what they hold later
+/// starts from a write they hold now, or its first write stops it with the
+/// record committed and unheld.
+fn held_by_a_majority(
+    surface: &str,
+    write: impl Fn(u32) -> String,
+    band: &Band,
+    logs: &[std::path::PathBuf],
+) {
+    let began = Instant::now();
+    let mut attempt = 0_u32;
+    loop {
+        attempt = attempt.saturating_add(1);
+        let answered = Client::connect(surface)
+            .map_err(|why| why.to_string())
+            .and_then(|mut client| {
+                client
+                    .run(&write(attempt), None)
+                    .map_err(|why| why.to_string())
+            });
+        let Err(last) = answered else {
+            return;
+        };
+        assert!(
+            began.elapsed() < Duration::from_secs(90),
+            "no write was held by a majority; the last answer: {last}{}",
+            what_the_nodes_said(band, logs)
+        );
+        std::thread::sleep(POLL);
+    }
+}
+
 #[test]
 #[ignore = "real cadences across three processes — a leader is elected and two \
             followers collect four kinds of commit. It is G034 S3.1's own \
             validation and is run explicitly: cargo test -p tessari-cli --test \
             serving a_follower_ends_where -- --ignored"]
 fn a_follower_ends_where_its_leader_ended_after_commits_filed_in_four_logs() {
-    let cluster = a_cluster_declared(&ORDERED, ORDERED_SCHEMA, ["", "", ""]);
+    let cluster = a_cluster_declared(&ORDERED, "", ["", "", ""]);
     let logs = cluster.logs.clone();
-    // The leader is the node that takes a write.
-    let began = Instant::now();
-    let leader = loop {
-        if let Some(index) = (0..ORDERED.len())
-            .find(|index| until_taken(ORDERED[*index].0, "z", Duration::from_millis(1)).is_ok())
-        {
-            break index;
-        }
-        assert!(
-            began.elapsed() < Duration::from_secs(120),
-            "no node took a write{}",
-            what_the_nodes_said(&ORDERED, &logs)
-        );
-        std::thread::sleep(POLL);
-    };
+    let leader = declared_through_the_leader(&ORDERED, ORDERED_SCHEMA, &logs);
+    held_by_a_majority(
+        ORDERED[leader].0,
+        |attempt| into_orders(&format!("z{attempt}")),
+        &ORDERED,
+        &logs,
+    );
     // `h1` is written by a one-shard commit (shard 2's log), a two-shard commit
     // (the database's) and last by a two-database commit (the namespace's), so
     // its final value came from the coarsest log; `a1` last by the two-shard
@@ -3795,10 +4237,10 @@ const RESEEDED: Band = [
 /// of where it stands can be read and its console opened.
 const RESEEDED_HTTP: &str = "127.0.0.1:47926";
 
-/// Each node keeps twenty records of each log, so a follower stopped for sixty
-/// commits comes back below its leader's log start.
-const RESEEDED_SCHEMA: &str = "DEFINE NODE RETAIN 20 RECORDS; \
-                               DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
+/// The reseed test's schema. Each node also keeps twenty records of each log
+/// (declared on each), so a follower stopped for sixty commits comes back below
+/// its leader's log start.
+const RESEEDED_SCHEMA: &str = "DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
                                DEFINE DATABASE shop; USE DATABASE shop; \
                                DEFINE TABLE item SCHEMALESS;";
 
@@ -3816,8 +4258,11 @@ fn items_at(surface: &str) -> String {
             started again. It is G049 C4's own validation and is run explicitly: \
             cargo test -p tessari-cli --test serving a_follower_stopped_past -- --ignored"]
 fn a_follower_stopped_past_its_leaders_log_copies_the_state_and_follows_again() {
-    let mut cluster = a_cluster_declared(&RESEEDED, RESEEDED_SCHEMA, ["", "", ""]);
+    // Retention is each node's own (a local setting, not a log record), so it
+    // is declared on each; the schema is the cluster's, declared on its leader.
+    let mut cluster = a_cluster_declared(&RESEEDED, "DEFINE NODE RETAIN 20 RECORDS;", ["", "", ""]);
     let logs = cluster.logs.clone();
+    let leader = declared_through_the_leader(&RESEEDED, RESEEDED_SCHEMA, &logs);
     let write = |surface: &str, n: usize| {
         asked(
             surface,
@@ -3825,19 +4270,12 @@ fn a_follower_stopped_past_its_leaders_log_copies_the_state_and_follows_again() 
             None,
         )
     };
-    let began = Instant::now();
-    let leader = loop {
-        if let Some(index) = (0..RESEEDED.len()).find(|index| write(RESEEDED[*index].0, 0).is_ok())
-        {
-            break index;
-        }
-        assert!(
-            began.elapsed() < Duration::from_secs(120),
-            "no node took a write{}",
-            what_the_nodes_said(&RESEEDED, &logs)
-        );
-        std::thread::sleep(POLL);
-    };
+    held_by_a_majority(
+        RESEEDED[leader].0,
+        |_| "USE NAMESPACE prod; USE DATABASE shop; UPSERT item:0 = { n: 0 };".to_owned(),
+        &RESEEDED,
+        &logs,
+    );
     let stopped = the_next_node(&RESEEDED, leader);
     // Level first, so what the follower holds when it stops is a real copy
     // rather than an empty store that any answer would beat.
@@ -3937,4 +4375,900 @@ fn a_follower_stopped_past_its_leaders_log_copies_the_state_and_follows_again() 
         format!("{counted:?}").contains("Integer(62)"),
         "the follower's snapshot is not the leader's state: {counted:?} against {expected}"
     );
+}
+
+// ---- G053 SG1: what a leader acknowledges, how fast, and what its loss costs ---
+
+/// The acknowledgement cluster's addresses — free pairs below the suite's band.
+const ACKED: Band = [
+    ("127.0.0.1:47816", "127.0.0.1:47817"),
+    ("127.0.0.1:47818", "127.0.0.1:47819"),
+    ("127.0.0.1:47820", "127.0.0.1:47821"),
+];
+
+/// Its siblings', one band per test that stands up an acknowledgement cluster,
+/// so the four can run beside one another (`--test-threads`) without one
+/// cluster's nodes answering on another's ports.
+const ACKED_AT_THE_LEADER: Band = [
+    ("127.0.0.1:47792", "127.0.0.1:47793"),
+    ("127.0.0.1:47794", "127.0.0.1:47795"),
+    ("127.0.0.1:47796", "127.0.0.1:47797"),
+];
+const KILLED: Band = [
+    ("127.0.0.1:47798", "127.0.0.1:47799"),
+    ("127.0.0.1:47800", "127.0.0.1:47801"),
+    ("127.0.0.1:47802", "127.0.0.1:47803"),
+];
+const PAUSED: Band = [
+    ("127.0.0.1:47804", "127.0.0.1:47805"),
+    ("127.0.0.1:47806", "127.0.0.1:47807"),
+    ("127.0.0.1:47808", "127.0.0.1:47809"),
+];
+
+/// A write into `item` at `key`, with `clause` after it.
+fn into_item(key: &str, clause: &str) -> String {
+    format!("USE NAMESPACE prod; USE DATABASE orders; CREATE item:'{key}' = {{ n: 1 }}{clause};")
+}
+
+/// The 50th and 99th percentile of `taken`, in microseconds.
+fn percentiles(mut taken: Vec<Duration>) -> (u128, u128) {
+    taken.sort();
+    let at = |share: usize| {
+        let index = taken
+            .len()
+            .saturating_sub(1)
+            .saturating_mul(share)
+            .checked_div(100)
+            .unwrap_or(0);
+        taken.get(index).map_or(0, Duration::as_micros)
+    };
+    (at(50), at(99))
+}
+
+/// The identities `item` holds at `surface`, or the refusal.
+fn item_ids_at(surface: &str) -> Result<Vec<String>, String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    let read = "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM item;";
+    match client
+        .run(read, None)
+        .map_err(|why| why.to_string())?
+        .last()
+    {
+        Some(Answer::Records { records, .. }) => Ok(records
+            .iter()
+            .map(|(id, _)| id.trim_matches('\'').to_owned())
+            .collect()),
+        other => Err(format!("{other:?}")),
+    }
+}
+
+/// Commit latency on the leader at one and at sixteen writers, replication lag
+/// to a follower, and the acknowledged writes a `kill -9` of the leader loses,
+/// for the acknowledgement written as `clause` (`""` is the namespace's own,
+/// which for `prod` — replicated, nothing stated — is `MAJORITY`).
+///
+/// It prints its numbers (the ADR records them) and asserts only what holds at
+/// every level: every write is acknowledged once and the cluster elects again.
+fn acknowledged_writes_measured(clause: &str, band: &Band) -> (usize, usize) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    let mut cluster = a_cluster_declared(band, "", ["", "", ""]);
+    let leader = the_node_a_majority_granted(band);
+    // The next node in the band, wrapping: a follower whatever won.
+    let follower = [1, 2, 0][leader];
+    let on = band[leader].0;
+
+    // One writer.
+    let mut client = Client::connect(on).unwrap();
+    let mut one = Vec::new();
+    for index in 0..200 {
+        let began = Instant::now();
+        client
+            .run(&into_item(&format!("s{index:04}"), clause), None)
+            .unwrap();
+        one.push(began.elapsed());
+    }
+    // Sixteen writers, fifty each.
+    let many: Vec<Duration> = (0..16)
+        .map(|writer| {
+            let clause = clause.to_owned();
+            std::thread::spawn(move || {
+                let mut client = Client::connect(on).unwrap();
+                (0..50)
+                    .map(|index| {
+                        let began = Instant::now();
+                        client
+                            .run(
+                                &into_item(&format!("m{writer:02}{index:03}"), &clause),
+                                None,
+                            )
+                            .unwrap();
+                        began.elapsed()
+                    })
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .flat_map(|writer| writer.join().unwrap())
+        .collect();
+    // Replication lag: from the acknowledgement on the leader to the record
+    // being readable on a follower, ten times.
+    let mut lag = Vec::new();
+    for index in 0..10 {
+        let key = format!("l{index:02}");
+        client.run(&into_item(&key, clause), None).unwrap();
+        let acknowledged = Instant::now();
+        loop {
+            if item_ids_at(band[follower].0).is_ok_and(|held| held.contains(&key)) {
+                lag.push(acknowledged.elapsed());
+                break;
+            }
+            assert!(
+                acknowledged.elapsed() < Duration::from_secs(60),
+                "the follower never received {key}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    let (one_p50, one_p99) = percentiles(one);
+    let (many_p50, many_p99) = percentiles(many);
+    let (lag_p50, lag_p99) = percentiles(lag);
+    eprintln!(
+        "ACKNOWLEDGED clause={clause:?} one_writer_us p50={one_p50} p99={one_p99} \
+         sixteen_writers_us p50={many_p50} p99={many_p99} lag_us p50={lag_p50} p99={lag_p99}"
+    );
+
+    // Keep writing, kill the leader uncatchably, and count what the next
+    // leader does not hold of what was acknowledged.
+    let stop = Arc::new(AtomicBool::new(false));
+    let acknowledged = Arc::new(Mutex::new(Vec::<String>::new()));
+    let writer = {
+        let (stop, acknowledged, clause) = (
+            Arc::clone(&stop),
+            Arc::clone(&acknowledged),
+            clause.to_owned(),
+        );
+        std::thread::spawn(move || {
+            let mut client = Client::connect(on).unwrap();
+            let mut index = 0_u32;
+            while !stop.load(Ordering::Relaxed) {
+                index = index.saturating_add(1);
+                let key = format!("k{index:06}");
+                if client.run(&into_item(&key, &clause), None).is_err() {
+                    break;
+                }
+                acknowledged.lock().unwrap().push(key);
+            }
+        })
+    };
+    std::thread::sleep(Duration::from_millis(1500));
+    drop(cluster.running[leader].take());
+    stop.store(true, Ordering::Relaxed);
+    writer.join().unwrap();
+    let acknowledged = acknowledged.lock().unwrap().clone();
+    // The next leader: the node that takes a write.
+    let survivors: Vec<&str> = (0..band.len())
+        .filter(|index| *index != leader)
+        .map(|index| band[index].0)
+        .collect();
+    let began = Instant::now();
+    let new = loop {
+        let took = survivors.iter().find(|surface| {
+            Client::connect(surface)
+                .is_ok_and(|mut client| landed(&client.run(&into_item("after", ""), None)))
+        });
+        if let Some(surface) = took {
+            break *surface;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(120),
+            "nobody was elected after the leader died{}",
+            what_the_nodes_said(band, &cluster.logs)
+        );
+        std::thread::sleep(POLL);
+    };
+    let held = item_ids_at(new).unwrap();
+    let missing = acknowledged
+        .iter()
+        .filter(|key| !held.contains(key))
+        .count();
+    eprintln!(
+        "LEADER_KILLED clause={clause:?} acknowledged={} missing_on_new_leader={missing} \
+         elected_after={:?}",
+        acknowledged.len(),
+        began.elapsed()
+    );
+    assert!(
+        !acknowledged.is_empty(),
+        "nothing was acknowledged before the kill"
+    );
+    (acknowledged.len(), missing)
+}
+
+#[test]
+#[ignore = "three processes, real cadences and a kill -9 — G053 SG1's measurement, \
+            run explicitly: TESSARIDB_TEST_BIN=target/release/tessaridb cargo test -p \
+            tessari-cli --test serving acknowledged_writes -- --ignored --nocapture"]
+fn acknowledged_writes_at_the_leaders_level_and_what_its_loss_costs() {
+    let (acknowledged, missing) =
+        acknowledged_writes_measured(" ACKNOWLEDGE LEADER", &ACKED_AT_THE_LEADER);
+    eprintln!("LEADER level: {missing} of {acknowledged} acknowledged writes lost");
+}
+
+/// G053 C2 (ADR-0106 D8): no write acknowledged at `MAJORITY` is lost when the
+/// leader is killed. A majority of the voters held each one before its caller
+/// was told, and every majority that can elect the next leader meets it.
+///
+/// Runs under `TESSARIDB_TEST_CPU_LOAD=<threads>` too, which the criterion asks
+/// for: a loaded host is where an acknowledgement released early would show.
+#[test]
+#[ignore = "three processes, real cadences and a kill -9 — G053 C2, run \
+            explicitly: TESSARIDB_TEST_BIN=target/release/tessaridb cargo test -p \
+            tessari-cli --test serving acknowledged_writes_at_a_majority -- --ignored \
+            --nocapture (TESSARIDB_TEST_CPU_LOAD=<threads> for the run under load)"]
+fn acknowledged_writes_at_a_majority_survive_the_leader() {
+    let _load = Load::from_env();
+    let (acknowledged, missing) = acknowledged_writes_measured(" ACKNOWLEDGE MAJORITY", &ACKED);
+    eprintln!("MAJORITY level: {missing} of {acknowledged} acknowledged writes lost");
+    assert_eq!(
+        missing, 0,
+        "{missing} of {acknowledged} writes acknowledged at MAJORITY were lost"
+    );
+}
+
+// ---- G053 SG2b: a failover in about a second -------------------------------
+
+/// Busy threads in this process, `TESSARIDB_TEST_CPU_LOAD` of them, for a
+/// measurement taken under CPU pressure; dropping the guard stops them.
+struct Load(
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+    Vec<std::thread::JoinHandle<()>>,
+);
+
+impl Load {
+    fn from_env() -> Self {
+        let threads: usize = std::env::var("TESSARIDB_TEST_CPU_LOAD")
+            .ok()
+            .and_then(|count| count.parse().ok())
+            .unwrap_or(0);
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let spinning = (0..threads)
+            .map(|_| {
+                let stop = std::sync::Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    let mut spun = 0_u64;
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        spun = std::hint::black_box(spun.wrapping_add(1));
+                    }
+                })
+            })
+            .collect();
+        Self(stop, spinning)
+    }
+}
+
+impl Drop for Load {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        for spinning in self.1.drain(..) {
+            drop(spinning.join());
+        }
+    }
+}
+
+/// The first of `surfaces` that takes a write of `key`, asked until one does.
+fn the_node_that_takes(band: &Band, surfaces: &[usize], key: &str, cluster: &Three) -> usize {
+    let began = Instant::now();
+    // Kept so a failure names what each node answered, for the reason
+    // `the_node_a_majority_granted` keeps them.
+    let mut refusals = vec![String::new(); band.len()];
+    loop {
+        let took = surfaces.iter().copied().find(|index| {
+            let answered = Client::connect(band[*index].0)
+                .map_err(|why| why.to_string())
+                .and_then(|mut client| {
+                    let answered = client.run(&into_item(key, ""), None);
+                    if landed(&answered) {
+                        return Ok(());
+                    }
+                    answered.map(drop).map_err(|why| why.to_string())
+                });
+            answered.map_err(|why| refusals[*index] = why).is_ok()
+        });
+        if let Some(index) = took {
+            return index;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "nobody took a write in a minute; the last answer from each node: {refusals:?}{}",
+            what_the_nodes_said(band, &cluster.logs)
+        );
+        // Ten milliseconds, not `POLL`: this is the instrument, and a tenth of a
+        // second of granularity would be a tenth of the thing it measures.
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Wait until node `index` holds `key`, after it was started again.
+fn caught_up(band: &Band, index: usize, key: &str, cluster: &Three) {
+    let began = Instant::now();
+    while !item_ids_at(band[index].0).is_ok_and(|held| held.iter().any(|id| id == key)) {
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "the restarted node never caught up to {key}{}",
+            what_the_nodes_said(band, &cluster.logs)
+        );
+        std::thread::sleep(POLL);
+    }
+}
+
+#[test]
+#[ignore = "three processes and ten kill -9s — G053 SG2b's measurement, run \
+            explicitly: TESSARIDB_TEST_BIN=target/release/tessaridb cargo test -p \
+            tessari-cli --test serving a_leader_killed -- --ignored --nocapture \
+            (TESSARIDB_TEST_CPU_LOAD=<threads> for the run under CPU pressure)"]
+fn a_leader_killed_is_replaced_in_about_a_second() {
+    let runs: usize = std::env::var("TESSARIDB_TEST_KILLS")
+        .ok()
+        .and_then(|count| count.parse().ok())
+        .unwrap_or(10);
+    let mut cluster = a_cluster_declared(&KILLED, "", ["", "", ""]);
+    let mut leader = the_node_a_majority_granted(&KILLED);
+    let _load = Load::from_env();
+    let mut took = Vec::new();
+    for run in 0..runs {
+        // Every node level before the kill, so the measurement is of an
+        // election and not of a node still catching up from the last one.
+        let before = format!("b{run:02}");
+        let wrote = the_node_that_takes(&KILLED, &[leader], &before, &cluster);
+        for index in 0..KILLED.len() {
+            caught_up(&KILLED, index, &before, &cluster);
+        }
+        drop(cluster.running[wrote].take());
+        let killed = Instant::now();
+        let survivors: Vec<usize> = (0..KILLED.len()).filter(|index| *index != wrote).collect();
+        let after = format!("a{run:02}");
+        leader = the_node_that_takes(&KILLED, &survivors, &after, &cluster);
+        let elapsed = killed.elapsed();
+        eprintln!("FAILOVER run={run} took_ms={}", elapsed.as_millis());
+        took.push(elapsed);
+        cluster.restart_with(wrote, &[]);
+        caught_up(&KILLED, wrote, &after, &cluster);
+    }
+    let (p50, p99) = percentiles(took.clone());
+    let worst = took.iter().max().copied().unwrap_or_default();
+    eprintln!(
+        "FAILOVER runs={runs} p50_ms={} p99_ms={} max_ms={}",
+        p50 / 1000,
+        p99 / 1000,
+        worst.as_millis()
+    );
+    assert!(
+        p50 <= 1_000_000,
+        "half the failovers took longer than a second: {took:?}"
+    );
+    assert!(
+        worst <= Duration::from_secs(2),
+        "a failover took {worst:?}: {took:?}"
+    );
+}
+
+/// The divergences node `index` has refused, from its own `/metrics`.
+fn divergences(band: &Band, index: usize) -> u64 {
+    let scraped = probing(band[index].1, "/metrics").expect("the metrics route answered");
+    scraped
+        .lines()
+        .find(|line| line.starts_with("tessari_log_divergences"))
+        .and_then(|line| line.split_whitespace().last())
+        .and_then(|count| count.parse().ok())
+        .unwrap_or(0)
+}
+
+#[test]
+#[ignore = "three processes and a SIGSTOP — G053 SG2b's split-brain check, run \
+            explicitly: cargo test -p tessari-cli --test serving a_paused_leader \
+            -- --ignored --nocapture"]
+fn a_paused_leader_writes_nothing_once_its_successor_leads() {
+    // A leader that stops being scheduled — a stall, a swap storm, a debugger —
+    // is the case a lease exists for. It cannot know it was paused, so when it
+    // runs again its own fence is what must stop it: the successor was elected
+    // the moment the old lease expired, and anything the old leader committed
+    // after that would be a second history, refused later as a divergence.
+    let cluster = a_cluster_declared(&PAUSED, "", ["", "", ""]);
+    let leader = the_node_a_majority_granted(&PAUSED);
+    // Every node level before the pause, as before a kill: a write the leader
+    // acknowledged and no follower holds is lost by any failover until
+    // `ACKNOWLEDGE MAJORITY` (G053 SG2), and this test is of the fence.
+    for index in 0..PAUSED.len() {
+        caught_up(&PAUSED, index, "1", &cluster);
+    }
+    let paused = cluster.running[leader]
+        .as_ref()
+        .expect("the leader runs")
+        .0
+        .id();
+    let stopped = Command::new("kill")
+        .args(["-STOP", &paused.to_string()])
+        .status()
+        .expect("kill runs");
+    assert!(stopped.success());
+    let survivors: Vec<usize> = (0..PAUSED.len()).filter(|index| *index != leader).collect();
+    let began = Instant::now();
+    let successor = the_node_that_takes(&PAUSED, &survivors, "during", &cluster);
+    eprintln!(
+        "PAUSED successor={successor} took_ms={}",
+        began.elapsed().as_millis()
+    );
+    let resumed = Command::new("kill")
+        .args(["-CONT", &paused.to_string()])
+        .status()
+        .expect("kill runs");
+    assert!(resumed.success());
+    // The first thing the old leader is asked once it runs again: a write. It
+    // is refused by the fence or forwarded to the successor, and either way it
+    // must not land in a history of its own.
+    let answered = Client::connect(PAUSED[leader].0).map(|mut client| {
+        client
+            .run(&into_item("resumed", ""), None)
+            .map(|_| ())
+            .map_err(|why| why.to_string())
+    });
+    eprintln!("PAUSED the old leader answered {answered:?}");
+    // Let every node settle on the successor, then compare.
+    let began = Instant::now();
+    loop {
+        let held: Vec<_> = (0..PAUSED.len())
+            .map(|index| item_ids_at(PAUSED[index].0))
+            .collect();
+        let level = held.windows(2).all(|pair| match (&pair[0], &pair[1]) {
+            (Ok(one), Ok(other)) => {
+                let (mut one, mut other) = (one.clone(), other.clone());
+                one.sort();
+                other.sort();
+                one == other
+            }
+            _ => false,
+        });
+        if level
+            && held[successor]
+                .as_ref()
+                .is_ok_and(|ids| ids.iter().any(|id| id == "during"))
+        {
+            break;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(30),
+            "the three nodes never agreed after the pause: {held:?}{}",
+            what_the_nodes_said(&PAUSED, &cluster.logs)
+        );
+        std::thread::sleep(POLL);
+    }
+    for index in 0..PAUSED.len() {
+        assert_eq!(
+            divergences(&PAUSED, index),
+            0,
+            "node {index} refused a divergent history — the paused leader wrote after its successor began{}",
+            what_the_nodes_said(&PAUSED, &cluster.logs)
+        );
+    }
+}
+
+/// The coordinator's cluster — 47960-47968, a band of its own. Not 4793x:
+/// another program on this machine holds 47931, and a band that collides with
+/// it fails as a node that never listened.
+const COORDINATING: Band = [
+    ("127.0.0.1:47960", "127.0.0.1:47961"),
+    ("127.0.0.1:47962", "127.0.0.1:47963"),
+    ("127.0.0.1:47964", "127.0.0.1:47965"),
+];
+
+/// Each node's HTTP surface, in `COORDINATING`'s order.
+const COORDINATING_HTTP: [&str; 3] = ["127.0.0.1:47966", "127.0.0.1:47967", "127.0.0.1:47968"];
+
+/// `ada:` [`SECRET`], as a client sends it. Written out rather than computed,
+/// so a change to the decoder cannot quietly agree with itself.
+const ADA_BASIC: &str = "Basic YWRhOmEgbG9uZyBlbm91Z2ggcGFzc3dvcmQ=";
+
+/// One `POST` as `credential`, answered whole: the status line first.
+fn over_http_as(address: &str, path: &str, body: &str, credential: &str) -> String {
+    use std::io::{Read, Write};
+
+    let mut socket = TcpStream::connect(address).unwrap();
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {address}\r\nAuthorization: {credential}\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    socket.write_all(request.as_bytes()).unwrap();
+    socket.flush().unwrap();
+    let mut answered = String::new();
+    socket.read_to_string(&mut answered).unwrap();
+    answered
+}
+
+/// One request from a client that greets at minor 0 — built before the
+/// redirect frame existed, so it can never follow one — and the frame kind and
+/// body it is answered with.
+fn ask_as_an_old_client(address: &str, script: &str, who: Option<(&str, &str)>) -> (u8, Vec<u8>) {
+    use std::io::{Read, Write};
+
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket.write_all(b"TESS\x01\x00").unwrap();
+    let mut greeting = [0_u8; 6];
+    socket.read_exact(&mut greeting).unwrap();
+    let body = tessari_wire::Request {
+        script: script.to_owned(),
+        credentials: who.map(|(name, password)| (name.to_owned(), password.to_owned())),
+        parameters: tessari_ql::Parameters::new(),
+    }
+    .encode();
+    let mut frame = vec![1_u8];
+    frame.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes());
+    frame.extend_from_slice(&body);
+    socket.write_all(&frame).unwrap();
+    let mut head = [0_u8; 5];
+    socket.read_exact(&mut head).unwrap();
+    let length = u32::from_be_bytes([head[1], head[2], head[3], head[4]]);
+    let mut answer = vec![0_u8; usize::try_from(length).unwrap()];
+    socket.read_exact(&mut answer).unwrap();
+    (head[0], answer)
+}
+
+/// G054 C2 (ADR-0108 D1–D3) against three processes: a follower answers a
+/// client that cannot follow a redirect by carrying the request to the leader
+/// over the peer link, under a signed assertion, with no password crossing.
+///
+/// Red on the build before the coordinator: HTTP answered `307` and a minor-0
+/// wire client was refused, so neither write reached the leader.
+#[test]
+#[ignore = "three spawned processes, an election and replication waits; G054 \
+            C2's own validation, run explicitly: cargo test -p tessari-cli \
+            --test serving a_follower_answers_a_client -- --ignored"]
+fn a_follower_answers_a_client_that_cannot_follow_a_redirect() {
+    let mut cluster = a_cluster_of_three(&COORDINATING);
+    for (index, http) in COORDINATING_HTTP.iter().enumerate() {
+        cluster.running[index] = None;
+        cluster.restart_with(index, &["--http", http]);
+    }
+    for (index, http) in COORDINATING_HTTP.iter().enumerate() {
+        assert!(listening(COORDINATING[index].0, Duration::from_secs(30)));
+        assert!(listening(http, Duration::from_secs(30)), "{http}");
+    }
+    let logs = cluster.logs.clone();
+    let leader = the_node_a_majority_granted(&COORDINATING);
+    let follower = the_next_node(&COORDINATING, leader);
+    let (on_leader, on_follower) = (COORDINATING[leader].0, COORDINATING[follower].0);
+    let patience = Duration::from_secs(90);
+    assert!(
+        until(patience, || counted(on_follower) == Ok(1)),
+        "the schema never reached the follower{}",
+        what_the_nodes_said(&COORDINATING, &logs)
+    );
+    asked(
+        on_leader,
+        &format!("DEFINE USER ada ROLE owner PASSWORD '{SECRET}';"),
+        None,
+    )
+    .expect("the leader declares the first user");
+    // The account arrived when the follower stops answering a stranger.
+    assert!(
+        until(patience, || counted(on_follower).is_err()),
+        "the user never reached the follower{}",
+        what_the_nodes_said(&COORDINATING, &logs)
+    );
+    let ada = Some(("ada", SECRET));
+    let in_orders = "USE NAMESPACE prod; USE DATABASE orders;";
+
+    // HTTP: a write sent to the follower commits on the leader.
+    let answered = over_http_as(
+        COORDINATING_HTTP[follower],
+        "/script",
+        &format!("{in_orders} CREATE item:77 = {{ n: 77 }};"),
+        ADA_BASIC,
+    );
+    assert!(
+        answered.starts_with("HTTP/1.1 200"),
+        "the follower did not answer the write: {answered}{}",
+        what_the_nodes_said(&COORDINATING, &logs)
+    );
+    assert!(
+        says(on_leader, ada, READ, "Integer(77)"),
+        "the carried write is not on the leader"
+    );
+
+    // The wire, from a client that cannot follow a redirect.
+    let (kind, body) = ask_as_an_old_client(
+        on_follower,
+        &format!("{in_orders} CREATE item:78 = {{ n: 78 }};"),
+        ada,
+    );
+    assert_eq!(
+        kind,
+        2,
+        "the follower did not answer an old client's write: {}{}",
+        String::from_utf8_lossy(&body),
+        what_the_nodes_said(&COORDINATING, &logs)
+    );
+    assert!(
+        says(on_leader, ada, READ, "Integer(78)"),
+        "the old client's write is not on the leader"
+    );
+
+    // A read only the leader may answer, asked of the follower over HTTP —
+    // once the follower has heard who leads, which a greeting round tells it.
+    let leader_only = || {
+        over_http_as(
+            COORDINATING_HTTP[follower],
+            "/script",
+            &format!("{in_orders} SELECT * FROM item ANSWERED BY LEADER;"),
+            ADA_BASIC,
+        )
+    };
+    assert!(
+        until(patience, || {
+            let answered = leader_only();
+            answered.starts_with("HTTP/1.1 200") && answered.contains("78")
+        }),
+        "the follower did not answer a leader-only read: {}",
+        leader_only()
+    );
+
+    // Authority does not travel: a `DEFINE USER` sent to the follower is
+    // redirected as it always was, and not carried.
+    let answered = over_http_as(
+        COORDINATING_HTTP[follower],
+        "/script",
+        &format!("DEFINE USER eve ROLE owner PASSWORD '{SECRET}';"),
+        ADA_BASIC,
+    );
+    assert!(
+        answered.starts_with("HTTP/1.1 307"),
+        "an authority change was carried to the leader: {answered}"
+    );
+
+    // The leader recorded who asked, for whom.
+    let said = std::fs::read_to_string(&logs[leader]).unwrap();
+    assert!(
+        said.contains("a request carried from") && said.contains("acts for"),
+        "the leader kept no record of the carried requests{}",
+        what_the_nodes_said(&COORDINATING, &logs)
+    );
+}
+
+/// The sign-in budget's cluster — 47970-47975, a band of its own.
+const BUDGETED: Band = [
+    ("127.0.0.1:47970", "127.0.0.1:47971"),
+    ("127.0.0.1:47972", "127.0.0.1:47973"),
+    ("127.0.0.1:47974", "127.0.0.1:47975"),
+];
+
+/// G054 C4 (ADR-0108 D5) against three processes: misses spread over nodes are
+/// counted in ONE table, so a node that never saw a miss still makes the next
+/// try wait — even with the right password.
+///
+/// Red on the build before the shared budget: each node counted alone, so the
+/// third node, untouched, let the right password straight in.
+#[test]
+#[ignore = "three spawned processes, an election and a doubling wait of several \
+            seconds; G054 C4's own validation, run explicitly: cargo test -p \
+            tessari-cli --test serving misses_spread_over_nodes -- --ignored"]
+fn misses_spread_over_nodes_are_counted_once() {
+    let cluster = a_cluster_of_three(&BUDGETED);
+    let logs = cluster.logs.clone();
+    let leader = the_node_a_majority_granted(&BUDGETED);
+    let first = the_next_node(&BUDGETED, leader);
+    let untouched = the_next_node(&BUDGETED, first);
+    let patience = Duration::from_secs(90);
+    asked(
+        BUDGETED[leader].0,
+        &format!("DEFINE USER ada ROLE owner PASSWORD '{SECRET}';"),
+        None,
+    )
+    .expect("the leader declares the first user");
+    for node in [first, untouched] {
+        assert!(
+            until(patience, || counted(BUDGETED[node].0).is_err()),
+            "the user never reached node {node}{}",
+            what_the_nodes_said(&BUDGETED, &logs)
+        );
+    }
+    // The leader holds the cluster's table only once a greeting round has told
+    // each follower who leads; wait for the follower to say so.
+    let knows_the_leader = || {
+        Client::connect(BUDGETED[untouched].0).is_ok_and(|mut client| {
+            client
+                .run_routed(
+                    "USE NAMESPACE prod; USE DATABASE orders; \
+                     SELECT * FROM item ANSWERED BY LEADER;",
+                    Some(("ada", SECRET)),
+                    &tessari_ql::Parameters::new(),
+                )
+                .is_ok_and(|served| {
+                    matches!(served, Served::Elsewhere(sent) if sent.node == cluster.ids[leader])
+                })
+        })
+    };
+    assert!(
+        until(patience, knows_the_leader),
+        "the untouched follower never learnt who leads{}",
+        what_the_nodes_said(&BUDGETED, &logs)
+    );
+
+    // Nine counted misses, alternating between the leader and one follower,
+    // waiting out each doubling wait: the shared wait is then eight seconds.
+    let mut missed = 0;
+    let mut turn = [leader, first].into_iter().cycle();
+    let began = Instant::now();
+    while missed < 9 {
+        assert!(
+            began.elapsed() < Duration::from_secs(120),
+            "nine misses were never counted{}",
+            what_the_nodes_said(&BUDGETED, &logs)
+        );
+        let node = turn.next().unwrap();
+        match asked(BUDGETED[node].0, READ, Some(("ada", "a wrong guess"))) {
+            Err(said) if said.contains("no user of that name and password") => missed += 1,
+            Err(said) if said.contains("not taking a sign-in") => std::thread::sleep(POLL),
+            other => panic!("a wrong password was answered with {other:?}"),
+        }
+    }
+
+    // The right password, on the one node that never saw a miss.
+    let answered = asked(BUDGETED[untouched].0, READ, Some(("ada", SECRET)));
+    assert!(
+        answered
+            .as_ref()
+            .is_err_and(|said| said.contains("not taking a sign-in")),
+        "a node that never saw a miss let the next try in: {answered:?}{}",
+        what_the_nodes_said(&BUDGETED, &logs)
+    );
+}
+
+// ---- G054 C5: a peer certificate rotated and revoked on a live cluster ------
+
+/// The rotation cluster's addresses, free pairs below the suite's band.
+const ROTATED: Band = [
+    ("127.0.0.1:47786", "127.0.0.1:47787"),
+    ("127.0.0.1:47788", "127.0.0.1:47789"),
+    ("127.0.0.1:47790", "127.0.0.1:47791"),
+];
+
+/// The value `node` was started with after `flag`, as a path.
+fn started_arg(cluster: &Three, node: usize, flag: &str) -> std::path::PathBuf {
+    let mut args = cluster.started_with[node].iter();
+    args.by_ref().find(|arg| *arg == flag).unwrap();
+    std::path::PathBuf::from(args.next().unwrap())
+}
+
+/// Hand `node` a new peer credential from the cluster's authority, and wait
+/// until it says it presents it. Answers the new certificate's fingerprint.
+fn rotated(cluster: &Three, node: usize, times: usize) -> String {
+    let (leaf, key, fingerprint) = cluster.minted.issue_fingerprinted(cluster.ids[node]);
+    std::fs::write(started_arg(cluster, node, "--cluster-credential"), leaf).unwrap();
+    std::fs::write(started_arg(cluster, node, "--cluster-key"), key).unwrap();
+    let began = Instant::now();
+    while std::fs::read_to_string(&cluster.logs[node])
+        .map(|said| said.matches("certificate at").count() < times)
+        .unwrap_or(true)
+    {
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "node {node} never presented its renewed peer certificate{}",
+            what_the_nodes_said(&ROTATED, &cluster.logs)
+        );
+        std::thread::sleep(POLL);
+    }
+    fingerprint
+}
+
+#[test]
+#[ignore = "three processes, a credential swapped on disk and two revocations — G054 C5's \
+            live check, run explicitly: cargo test -p tessari-cli --test serving \
+            a_peer_certificate_rotates -- --ignored --nocapture"]
+fn a_peer_certificate_rotates_under_writes_and_a_revoked_one_is_cut_off() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let cluster = a_cluster_of_three(&ROTATED);
+    let leader = the_node_a_majority_granted(&ROTATED);
+    let (rotating, other) = ([1, 2, 0][leader], [2, 0, 1][leader]);
+    for index in 0..ROTATED.len() {
+        caught_up(&ROTATED, index, "1", &cluster);
+    }
+    // One writer on the leader throughout, at the namespace's default level —
+    // a majority, so every write it is told landed was held by a follower.
+    let stop = Arc::new(AtomicBool::new(false));
+    let landed_writes = Arc::new(AtomicUsize::new(0));
+    let writer = {
+        let (stop, landed_writes) = (Arc::clone(&stop), Arc::clone(&landed_writes));
+        let on = ROTATED[leader].0;
+        std::thread::spawn(move || {
+            let mut attempt = 0_u32;
+            while !stop.load(Ordering::Relaxed) {
+                attempt = attempt.saturating_add(1);
+                if Client::connect(on).is_ok_and(|mut client| {
+                    landed(&client.run(&into_item(&format!("w{attempt:06}"), ""), None))
+                }) {
+                    landed_writes.fetch_add(1, Ordering::Relaxed);
+                }
+                std::thread::sleep(POLL);
+            }
+        })
+    };
+    let run = |script: &str| {
+        let mut client = Client::connect(ROTATED[leader].0).unwrap();
+        client.run(script, None).unwrap();
+    };
+    let write = |key: &str| run(&into_item(key, ""));
+    // The revocation and a record behind it in one script: the record reaching
+    // a node says the revocation reached it first.
+    let revoke = |fingerprint: &str, then: &str| {
+        run(&format!(
+            "REVOKE CERTIFICATE '{fingerprint}'; {}",
+            into_item(then, "")
+        ));
+    };
+
+    // Rotated twice without a restart, and it goes on holding what is written.
+    let first = rotated(&cluster, rotating, 1);
+    write("after-first");
+    caught_up(&ROTATED, rotating, "after-first", &cluster);
+    let second = rotated(&cluster, rotating, 2);
+    write("after-second");
+    caught_up(&ROTATED, rotating, "after-second", &cluster);
+
+    // Revoking the certificate it no longer presents changes nothing.
+    revoke(&first, "old-revoked");
+    caught_up(&ROTATED, rotating, "old-revoked", &cluster);
+
+    // Revoking every certificate it holds cuts it off — the one its held
+    // stream opened with, from before either rotation, included: a stream
+    // outlives its handshake, so the revocation has to reach it there. The
+    // other two keep a leader that acknowledges at a majority.
+    let before = landed_writes.load(Ordering::Relaxed);
+    run(&format!(
+        "REVOKE CERTIFICATE '{}';",
+        cluster.fingerprints[rotating]
+    ));
+    revoke(&second, "revoked");
+    caught_up(&ROTATED, other, "revoked", &cluster);
+    // A node applies the revocation list its catalog holds when it next looks
+    // (`credentials::LOOK_SECONDS`); from then on it neither admits nor dials
+    // the revoked certificate, and a stream it was serving ends.
+    let began = Instant::now();
+    while ![leader, other].iter().all(|index| {
+        std::fs::read_to_string(&cluster.logs[*index])
+            .is_ok_and(|said| said.contains("now refuses 3 revoked certificate(s)"))
+    }) {
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "the leader and the other follower never applied the revocation{}",
+            what_the_nodes_said(&ROTATED, &cluster.logs)
+        );
+        std::thread::sleep(POLL);
+    }
+    write("cut-off");
+    caught_up(&ROTATED, other, "cut-off", &cluster);
+    let watched = Instant::now();
+    while watched.elapsed() < Duration::from_secs(10) {
+        assert!(
+            !item_ids_at(ROTATED[rotating].0)
+                .is_ok_and(|held| held.iter().any(|id| id == "cut-off")),
+            "a node whose certificate was revoked still collected{}",
+            what_the_nodes_said(&ROTATED, &cluster.logs)
+        );
+        std::thread::sleep(POLL);
+    }
+    assert!(
+        std::fs::read_to_string(&cluster.logs[leader])
+            .is_ok_and(|said| said.contains("no longer admitted")),
+        "the leader never ended the stream the revoked certificate was holding{}",
+        what_the_nodes_said(&ROTATED, &cluster.logs)
+    );
+    assert!(
+        landed_writes.load(Ordering::Relaxed) > before,
+        "the leader stopped taking writes once one follower was cut off"
+    );
+    stop.store(true, Ordering::Relaxed);
+    writer.join().unwrap();
 }

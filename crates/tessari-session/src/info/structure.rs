@@ -77,8 +77,17 @@ impl Session<'_> {
         // to anything reading this report. Its neighbour above already uses the
         // same convention for the same reason.
         let class = held
+            .as_ref()
             .and_then(|definition| definition.class)
             .map_or(Value::None, tessari_types::ReplicationClass::to_value);
+        // ADR-0106 D2: what a write here waits for before its caller is told.
+        // `NONE` where nothing was declared, for its neighbours' reason — the
+        // level an unstated namespace waits for is derived from its
+        // replication, and a derivation reported as a decision hides whether
+        // anybody ever made one.
+        let acknowledge = held
+            .and_then(|definition| definition.acknowledge)
+            .map_or(Value::None, tessari_types::Acknowledgement::to_value);
         let mut names = Vec::new();
         for database in Catalog::new(transaction).databases_in(namespace)? {
             if own.is_some_and(|id| id != database.id) {
@@ -90,6 +99,7 @@ impl Session<'_> {
             ("databases".to_owned(), by_name(names)),
             ("replication".to_owned(), replication),
             ("class".to_owned(), class),
+            ("acknowledge".to_owned(), acknowledge),
         ]))
     }
 

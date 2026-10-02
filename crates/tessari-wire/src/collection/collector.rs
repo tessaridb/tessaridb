@@ -2,9 +2,9 @@
 
 use super::{Collect, Collected};
 use crate::error::{Error, Result};
-use crate::link::{Answered, Ask, Credential, call};
+use crate::keys::PeerKeys;
+use crate::link::{Answered, Ask, call};
 use crate::peer::Hello;
-use rustls::pki_types::CertificateDer;
 use std::net::SocketAddr;
 use tessari_encoding::NODE_ID_LEN;
 use tessari_storage::{Catalog, Currency, Horizon, Reach, Store};
@@ -16,10 +16,8 @@ use tessari_types::Sequence;
 /// is one: [`call`] already takes six of its own.
 #[derive(Debug)]
 pub struct Collector<'a> {
-    /// What this node shows the peer, and the key proving it is ours.
-    pub mine: &'a Credential,
-    /// The authority the peer's credential must chain to.
-    pub authority: &'a CertificateDer<'a>,
+    /// What this node shows the peer, whom it trusts and whom it refuses.
+    pub keys: &'a PeerKeys,
     /// The greeting that opens the connection.
     pub said: &'a Hello,
     /// The peer to collect from, by id and address.
@@ -109,12 +107,47 @@ impl Collector<'_> {
             .iter()
             .map(|(home, from)| self.fetch(into, *home, *from))
             .collect();
+        self.apply(into, asks, fetched)
+    }
+
+    /// Apply one answer per ask — fetched by a round or sent on a held stream
+    /// (ADR-0106 D5) — in the writer's commit order, and answer how far each
+    /// home now reaches, in the order asked.
+    ///
+    /// The one apply path both share, so a record a stream delivers is applied
+    /// exactly as the round would have applied it.
+    pub fn apply(
+        &self,
+        into: &Store,
+        asks: &[(Reach, Sequence)],
+        fetched: Vec<Result<Collected>>,
+    ) -> Vec<Result<Sequence>> {
+        let fetched = super::deposed::refused(into, fetched);
+        // A leader that has just adopted its own log as the line's answers from
+        // the line: this node's copy of that same log is renamed the same way
+        // first, so the positions go on with no gap (ADR-0107 D3). A no-op for
+        // every answer after the first.
+        for collected in fetched.iter().filter_map(|answer| answer.as_ref().ok()) {
+            if collected.log.writer == tessari_storage::Writer::LINE {
+                let copy = tessari_storage::LogId::new(
+                    collected.log.home,
+                    tessari_storage::Writer::new(self.peer.0),
+                );
+                if let Err(why) = into.adopt_into_line(copy) {
+                    log::warn!("this node's copy of its leader's log could not be adopted: {why}");
+                }
+            }
+        }
         let applied = {
             let pages: Vec<tessari_storage::Page<'_>> = fetched
                 .iter()
-                .filter_map(|answer| answer.as_ref().ok())
-                .map(|collected| tessari_storage::Page {
+                .zip(asks)
+                .filter_map(|(answer, (_, from))| {
+                    answer.as_ref().ok().map(|collected| (collected, *from))
+                })
+                .map(|(collected, from)| tessari_storage::Page {
                     log: collected.log,
+                    from,
                     previous: collected.previous,
                     records: &collected.records,
                     horizon: self.horizon_of(collected),
@@ -125,13 +158,17 @@ impl Collector<'_> {
         let mut applied = match applied {
             Ok(applied) => applied.into_iter(),
             Err(why) => {
+                let forked = matches!(why, tessari_storage::Error::LogDivergence { .. });
                 let message = why.to_string();
                 return fetched
                     .into_iter()
                     .map(|answer| {
                         answer.and_then(|_| {
-                            Err(Error::Refused {
-                                message: message.clone(),
+                            let message = message.clone();
+                            Err(if forked {
+                                Error::Forked { message }
+                            } else {
+                                Error::Refused { message }
                             })
                         })
                     })
@@ -160,7 +197,7 @@ impl Collector<'_> {
                 let currency = if whole
                     && matches!(
                         self.horizon_of(&collected),
-                        Horizon::Level(_) | Horizon::Unstated
+                        Horizon::Level(_) | Horizon::LevelAt(..) | Horizon::Unstated
                     ) {
                     Currency::Level
                 } else {
@@ -180,7 +217,11 @@ impl Collector<'_> {
     pub(crate) fn horizon_of(&self, collected: &Collected) -> Horizon {
         let carried = u64::try_from(collected.records.len()).unwrap_or(u64::MAX);
         if carried < self.limit && !collected.stopped_early {
-            collected.order.map_or(Horizon::Unstated, Horizon::Level)
+            match (collected.order, collected.epoch) {
+                (Some(order), Some(epoch)) => Horizon::LevelAt(epoch, order),
+                (Some(order), None) => Horizon::Level(order),
+                (None, _) => Horizon::Unstated,
+            }
         } else {
             Horizon::Full
         }
@@ -205,8 +246,7 @@ impl Collector<'_> {
         }
         let (_, answered) = call(
             self.peer.1,
-            self.mine.duplicate(),
-            self.authority,
+            self.keys,
             self.peer.0,
             self.said,
             Ask::Records(Collect {

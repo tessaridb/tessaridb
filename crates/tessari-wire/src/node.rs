@@ -11,7 +11,7 @@ use std::net::{TcpListener, ToSocketAddrs};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use tessari_constants::{MAX_CONNECTIONS, MAX_STORE_CALLS};
+use tessari_constants::{GREETING_SECONDS, MAX_CONNECTIONS, MAX_STORE_CALLS};
 use tessari_serve::{ACCEPT_PAUSE, Admitting, Bridge, Stopping, passes};
 use tessaridb::Db;
 use tessaridb::feed::Commits;
@@ -21,9 +21,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::carrier::Carrier;
 use crate::conversation;
-use crate::error::{Error, Result};
-use crate::message::Request;
-use crate::{client, frame, frame_async};
+use crate::error::Result;
+use crate::{frame, frame_async};
 
 /// Names one connection across every line it produces.
 ///
@@ -95,6 +94,9 @@ pub struct Node {
     /// standing alone, which is every deployment that was never told about
     /// peers, and such a node refuses exactly as it did before.
     elsewhere: Option<Arc<dyn tessari_session::Elsewhere>>,
+    /// TLS for every connection, when the node was given a certificate
+    /// (ADR-0108 D4). `None` serves the protocol in the clear.
+    secured: Option<tokio_rustls::TlsAcceptor>,
 }
 
 impl Node {
@@ -124,6 +126,7 @@ impl Node {
             )),
             hot: Arc::new(Semaphore::new(MAX_STORE_CALLS)),
             elsewhere: None,
+            secured: None,
         })
     }
 
@@ -142,6 +145,18 @@ impl Node {
     #[must_use]
     pub fn among(mut self, elsewhere: Arc<dyn tessari_session::Elsewhere>) -> Self {
         self.elsewhere = Some(elsewhere);
+        self
+    }
+
+    /// Speak TLS on every connection, and nothing else (ADR-0108 D4).
+    ///
+    /// There is no mixed port: a client that greets in the clear fails the
+    /// handshake and never reaches the protocol, so a credential it sends is
+    /// not read by this node — it has already crossed the network, which is
+    /// what refusing it at the door cannot undo and does not pretend to.
+    #[must_use]
+    pub fn securing(mut self, settings: Arc<rustls::ServerConfig>) -> Self {
+        self.secured = Some(tokio_rustls::TlsAcceptor::from(settings));
         self
     }
 
@@ -250,19 +265,52 @@ impl Node {
             };
             let id = next_connection();
             // Before the task, because the connection is the resource being
-            // bounded. A refusal costs one frame and a close.
+            // bounded. A refusal costs one frame and a close — in the clear;
+            // under TLS the socket is closed, since a frame before the
+            // handshake is bytes the client cannot read.
             let Some(place) = self.door.admit() else {
                 log::warn!(
                     "connection {id} refused from {}: {} already open",
                     from_where(&stream),
                     self.door.limit()
                 );
-                conversations.spawn(turn_away(stream));
+                if self.secured.is_none() {
+                    conversations.spawn(turn_away(stream));
+                }
                 continue;
             };
             log::info!("connection {id} accepted from {}", from_where(&stream));
             let (talk, session) = carrier.opening(id);
             let busy = self.stopping.busy();
+            if let Some(acceptor) = self.secured.clone() {
+                conversations.spawn(async move {
+                    // Under the greeting's deadline, which is what it replaces
+                    // at the door: a client that opens a socket and never
+                    // finishes a handshake holds a place exactly as one that
+                    // never greets would.
+                    let shaken = tokio::time::timeout(
+                        std::time::Duration::from_secs(GREETING_SECONDS),
+                        acceptor.accept(stream),
+                    )
+                    .await;
+                    let secured = match shaken {
+                        Ok(Ok(secured)) => secured,
+                        Ok(Err(why)) => {
+                            log::info!("connection {id} failed its TLS handshake: {why}");
+                            return;
+                        }
+                        Err(_) => {
+                            log::info!("connection {id} did not finish its TLS handshake in time");
+                            return;
+                        }
+                    };
+                    match conversation::converse(talk, busy, place, session, secured).await {
+                        Ok(()) => log::info!("connection {id} closed"),
+                        Err(why) => log::info!("connection {id} ended: {why}"),
+                    }
+                });
+                continue;
+            }
             conversations.spawn(async move {
                 match conversation::converse(talk, busy, place, session, stream).await {
                     Ok(()) => log::info!("connection {id} closed"),
@@ -275,61 +323,6 @@ impl Node {
         conversations.detach_all();
         Ok(())
     }
-}
-
-/// Send a write to the peer that may take it, and bring back what it said.
-///
-/// Routing case *forward* (ADR-0019 §2). Three things it deliberately does not
-/// do, each of which is a feature this milestone does not have rather than an
-/// oversight:
-///
-/// - **No retry.** ADR-0019 §2 names "the peer is down mid-request" as this
-///   case's new failure mode. Naming it is the deliverable; a retry that
-///   re-sent a statement whose first attempt may already have committed would
-///   turn one failure into two writes.
-/// - **No connection kept.** One dial per forwarded write, which is a real cost
-///   and a measured one later — a pool is state shared between connections, and
-///   it earns its complexity against a number nobody has yet.
-/// - **No rewriting of the answer.** What the leader said travels back as it
-///   was said, refusals included.
-///
-/// The caller's credentials go with it, so the leader authorises the same user
-/// against its own grants. A forward that signed in as the forwarding node would
-/// make every follower an authority its operator never granted.
-///
-/// # It does not yet detect being sent back to itself
-///
-/// Nothing here compares the target against this node. If the one peer declared
-/// `writable` **is** this node — which an operator produces by draining the
-/// leader, since dropping `WRITABLE` is local and leaves the replica row saying
-/// otherwise — each hop dials this node again and spends another thread and
-/// another connection. It does not recurse on one stack; it exhausts the node.
-///
-/// The endpoint cannot be used to recognise the loop, for the reason the target
-/// is not found by endpoint in the first place (Q-108): a node's own declared
-/// endpoints are empty by default and need not be spelled the way a peer spells
-/// them, so the check would pass in exactly the deployments that need it. The
-/// answer is a hop marker on the request, which is a wire-format change and is
-/// held as **Q-109** rather than approximated here.
-///
-/// Until then this is an operational constraint and is written down as one: a
-/// node being drained has its replica row corrected first, or it is drained
-/// while nothing writes to it.
-pub(crate) fn forward(db: &Db, request: &Request) -> Result<(frame::Kind, Vec<u8>)> {
-    // The store's own words travel verbatim, as `Refused` documents — reading
-    // the peer list can fail by naming two writable peers, and "two leaders are
-    // declared" is precisely what the operator needs to be told.
-    let declared = db.writable_peer().map_err(|why| Error::Refused {
-        message: why.to_string(),
-    })?;
-    let Some(peer_row) = declared else {
-        return Err(Error::NoWritablePeer);
-    };
-    // A forward is a client of that node, so it dials where a client reaches it
-    // (`CLIENTS AT`, ADR-0101) — the row's own address is the peer door in a
-    // cluster run with peer credentials, and speaks TLS rather than this protocol.
-    let mut peer = client::Client::connect(peer_row.clients.unwrap_or(peer_row.endpoint))?;
-    peer.relay(request)
 }
 
 #[cfg(test)]

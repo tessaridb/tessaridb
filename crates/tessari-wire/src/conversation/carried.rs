@@ -76,3 +76,31 @@ impl Carried for DuplexStream {
         )))
     }
 }
+
+/// TLS on a socket this node accepted (ADR-0108 D4).
+///
+/// Not threaded: a store thread blocks on a plain socket, and a TLS session's
+/// state cannot be handed to one and back without re-implementing the record
+/// layer on both sides. A busy TLS connection is answered from its task, as a
+/// WebSocket's is (Q-885 measures what that costs).
+impl Carried for tokio_rustls::server::TlsStream<TcpStream> {
+    type Reading = tokio::io::ReadHalf<Self>;
+    type Writing = tokio::io::WriteHalf<Self>;
+    const THREADED: bool = false;
+
+    fn halves(self) -> (Self::Reading, Self::Writing) {
+        tokio::io::split(self)
+    }
+
+    fn to_thread(_: Self::Reading, _: Self::Writing) -> Result<std::net::TcpStream> {
+        Err(Error::Io(std::io::Error::other(
+            "a TLS session has no plain socket to hand to a store thread",
+        )))
+    }
+
+    fn from_thread(_: std::net::TcpStream) -> Result<(Self::Reading, Self::Writing)> {
+        Err(Error::Io(std::io::Error::other(
+            "a TLS session has no plain socket to take back from a store thread",
+        )))
+    }
+}

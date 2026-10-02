@@ -62,12 +62,14 @@ use tessari_types::{Reach, Sequence};
 /// How many samples of its own tail a leader keeps.
 ///
 /// The window this can answer over is `TAIL_MARKS × AWARENESS_SECONDS`, so at
-/// today's cadence a little over five minutes. A follower further behind than
+/// today's one-second cadence a little over five minutes — the window it had at
+/// thirty-two marks of ten seconds, kept when the cadence moved (G053 C2b). A
+/// mark is two words, so the whole series is a few kilobytes. A follower further behind than
 /// that is answered `None` — *older than this leader has sampled* — rather than
 /// with a saturated number, which is the distinction
 /// [`crate::Store::current_as_of`] already draws between a bound that is known
 /// to be exceeded and one nothing can state.
-const TAIL_MARKS: usize = 32;
+const TAIL_MARKS: usize = 320;
 
 /// A short timeline of the positions this leader's log has reached.
 ///

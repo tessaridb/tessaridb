@@ -86,10 +86,16 @@ pub fn presented(
     })
 }
 
+/// The certificate's SHA-256.
+#[must_use]
+pub fn digest(certificate: &CertificateDer<'_>) -> [u8; 32] {
+    Sha256::digest(certificate.as_ref()).into()
+}
+
 /// The certificate's SHA-256, lowercase hex.
 #[must_use]
 pub fn fingerprint(certificate: &CertificateDer<'_>) -> String {
-    let digest = Sha256::digest(certificate.as_ref());
+    let digest = digest(certificate);
     let mut out = String::with_capacity(64);
     for byte in digest {
         out.push_str(&format!("{byte:02x}"));
@@ -101,7 +107,7 @@ pub fn fingerprint(certificate: &CertificateDer<'_>) -> String {
 ///
 /// A malformed certificate and an unparseable name both answer *no*, because
 /// both mean the same thing here: this credential does not carry that name.
-fn valid_for(certificate: &CertificateDer<'_>, name: &str) -> bool {
+pub(crate) fn valid_for(certificate: &CertificateDer<'_>, name: &str) -> bool {
     let Ok(end_entity) = webpki::EndEntityCert::try_from(certificate) else {
         return false;
     };

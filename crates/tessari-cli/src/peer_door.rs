@@ -36,12 +36,30 @@ impl tessari_wire::Origin for PeerDoor {
         tessari_wire::Serving::declared(self.db.store()).copied(follower, write)
     }
 
+    // A join token offered by the node the handshake proved (ADR-0108 D9). The
+    // fingerprint is not compared here: a pinned row binds in `met`, where the
+    // presented certificate is in hand, and a token is evidence of its own.
+    fn joined(
+        &self,
+        node: [u8; tessari_storage::NODE_ID_LEN],
+        token: &[u8; 32],
+    ) -> tessari_wire::Result<bool> {
+        Ok(bind_the_greeter(&self.db, node, None, Some(token)))
+    }
+
     fn places(
         &self,
         candidate: [u8; tessari_storage::NODE_ID_LEN],
         range: tessari_types::Reach,
     ) -> bool {
         tessari_wire::Serving::declared(self.db.store()).places(candidate, range)
+    }
+
+    fn reached_on(
+        &self,
+        range: tessari_types::Reach,
+    ) -> tessari_wire::Result<Option<tessari_wire::Reached>> {
+        tessari_wire::Serving::declared(self.db.store()).reached_on(range)
     }
 }
 
@@ -62,6 +80,32 @@ impl tessari_wire::Holding for PeerDoor {
             met.voted
                 .map_or(String::new(), |vote| format!(", {vote:?}")),
         );
-        bind_the_greeter(&self.db, met.said.node);
+        bind_the_greeter(&self.db, met.said.node, Some(&met.presented), None);
+    }
+
+    fn commits(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.db.commits().watching()
+    }
+
+    // A request another node carried here for its caller (ADR-0108 D1–D3). The
+    // door believed the signature; this node judges the account and the reach,
+    // runs the script as that user — its own grants decide — and answers in
+    // the shape the caller's surface reads.
+    fn coordinated(
+        &self,
+        from: [u8; tessari_storage::NODE_ID_LEN],
+        assertion: &tessari_wire::Assertion,
+        asked: &tessari_wire::Coordinate,
+    ) -> Result<tessaridb::Coordinated, String> {
+        let mut session = tessari_wire::admit_asserted(&self.db, from, assertion)?;
+        let ran = session.run_coordinated(
+            (asked.namespace.as_deref(), asked.database.as_deref()),
+            &asked.script,
+            &asked.parameters,
+        );
+        Ok(match asked.surface {
+            tessaridb::Surface::Wire { .. } => tessari_wire::render_coordinated(&self.db, &ran),
+            tessaridb::Surface::Http => tessari_http::render_coordinated(&self.db, &ran),
+        })
     }
 }

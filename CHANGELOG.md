@@ -12,6 +12,166 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.21.0-beta — 2026-10-03
+
+### Added
+
+- **The console builds a secured cluster** (G054). The membership form declares
+  every member, this node included, in one transaction — each row with its
+  subscription (`REPLICATES`, `STORE` by default), an optional client address,
+  and a node id or a pinned certificate `FINGERPRINT` — then sets this node's
+  own roles from its row. The node drawer amends a peer with `ALTER REPLICA …
+  ROLES` and removes one behind its typed name. New panes show the certificates
+  this node presents with their expiry, the refused certificates and removed
+  nodes, `REVOKE CERTIFICATE` behind the first eight digits typed again, a join
+  token shown once (and kept out of the statement log), and `DEFINE FAILOVER`.
+  A node waiting to join is told to set its roles to `serving`; the sign-in
+  sheet says whether the page arrived over TLS.
+- **`INFO FOR NODE` reports the certificates this node presents** — under
+  `certificates`, one per surface (`peers`, `clients`) with its `fingerprint` and
+  when it `expires`, read at the moment of asking — so a newcomer's row is
+  pinned with a value read off the newcomer, as its id is.
+- **`ALTER REPLICA` amends a peer's row one clause at a time** — `AT`, `ROLES`,
+  `CLIENTS AT` / `CLIENTS NONE` and `HTTP AT` / `HTTP NONE`, beside `LEADS`. The
+  row keeps the node it is bound to, its subscription and its fingerprint:
+  since a dropped row tombstones its node, declaring a moved peer again was no
+  longer a way to change where it answers.
+- **Clients are served over TLS 1.3, and a cluster serves them in the clear only
+  when told to** (G054, ADR-0108 D4). `--tls-cert` and `--tls-key` (or
+  `TESSARIDB_TLS_CERT` / `TESSARIDB_TLS_KEY`) put the wire port, HTTP and `/wire`
+  behind TLS 1.3 with no mixed port. A node with peers refuses to start without
+  them unless `--client-plaintext` says the network is trusted; a single node
+  keeps serving in the clear and says so on every start. `--at` verifies a node
+  with `--tls-authority`. A client limited to TLS 1.2 fails the handshake.
+- **Certificates renew without a restart.** A node re-reads its client and peer
+  certificate files every two seconds and presents a renewed pair from the next
+  connection on; open connections finish on the one they started with. A pair
+  that does not belong together — the certificate written and the key not yet —
+  is refused, the previous certificate stays in use, and the node says so once.
+- **`REVOKE CERTIFICATE '<sha256>'`** refuses a peer certificate on every node
+  the row reaches, in both directions of the peer link, whatever the node is
+  subscribed to. `INFO FOR NODE` lists the revoked fingerprints under
+  `cluster.revoked`, and the administration trail records who revoked each one.
+- **A node joining a cluster is approved** (ADR-0108 D9). A peer row binds a node
+  only by `NODE`, by a pinned certificate (`DEFINE REPLICA … FINGERPRINT
+  '<sha256>'`), or by a one-time token: `CREATE JOIN TOKEN FOR REPLICA r EXPIRES
+  10m` answers the token once and the row keeps only its digest and expiry; the
+  new node offers it with `--join-token` (or `TESSARIDB_JOIN_TOKEN`). Every
+  binding is recorded in the administration trail.
+- **A dropped node is never admitted again.** `DROP REPLICA` of a row that named a
+  node records the removal on every node: the node's greeting is refused at the
+  handshake whatever certificate it presents, and no row may name it again
+  (`NodeTombstoned`). `INFO FOR NODE` lists removed nodes under
+  `cluster.tombstoned`.
+- **A store can be encrypted at rest** (ADR-0108 D7). `--encryption-key-file`
+  (or `TESSARIDB_ENCRYPTION_KEY_FILE`) names a private 32-byte key: every file the
+  storage engine writes is encrypted (XChaCha20, a random nonce per file), and
+  every backup the node produces — `BACKUP`, `BACKUP … TO`, `GET /backup`,
+  `--backup`, `--snapshot`, `--dump` — is sealed (ChaCha20-Poly1305, so a backup
+  cut or altered does not open). A store opens only the way it was created, and
+  the refusal names which key is missing or wrong; `--backup-key-file` restores a
+  backup sealed under another key, which is how a store moves to a new one.
+- **`/metrics` reports when each presented certificate expires**
+  (`tessari_tls_certificate_expires_seconds`, by surface), to a caller who may
+  read the node's topology.
+- **Any node answers any request over the peer link** (ADR-0108 D1–D3). A request
+  a caller cannot follow elsewhere is carried to the node that can answer it,
+  under an assertion signed with the node's key; no password crosses the link.
+- **One sign-in budget for the whole cluster** (ADR-0108 D5). A clustered node asks
+  the store line's leader whether a name may try a password and reports how it
+  went, so N nodes are not N allowances.
+- **Changes to users, grants, replicas and the failover policy are recorded in the
+  audit trail**, inside their own transaction.
+- **Leaders send each commit to their followers as it lands**, on a held stream,
+  instead of being collected every ten seconds; replication lag on three
+  processes went from 10 s to 16 ms at the median.
+- **A leader knows what each follower has made durable** and can hold a commit
+  until enough voters hold its position (ADR-0106).
+- **`ACKNOWLEDGE LEADER | MAJORITY`** on a namespace (`DEFINE`/`ALTER NAMESPACE`,
+  with `OR WEAKER` to let a request ask for less), on a write and on `COMMIT`
+  (ADR-0106). `MAJORITY` answers once a majority of the range's voters hold the
+  write durably; `MajorityUnreachable` refuses before anything is written when
+  they cannot, and `NotAcknowledgedInTime` says the write IS committed here but
+  was not confirmed within one failover round.
+
+### Changed
+
+- **A namespace kept on more than one node acknowledges a write once a majority
+  holds it** (ADR-0106 D1). Writes there now wait about one replication round
+  trip, and a client that treated every refusal as *nothing happened* must read
+  `NotAcknowledgedInTime`, which means the opposite. Say `ACKNOWLEDGE LEADER`
+  (with the namespace's `OR WEAKER`) to keep the earlier behaviour.
+- **A peer row with no `NODE` is no longer bound by the first node to greet.**
+  Until this release a row left open was bound to whichever peer holding a
+  certificate the cluster issued arrived first, and that peer received the row's
+  whole reach. Such a row now waits for `NODE`, `FINGERPRINT` or a join token.
+- **1492 conformance cases** define the language and run in the build.
+- **A leader is replaced in about a second.** The lease is 800 ms with a 150 ms
+  guard, renewed about every 300 ms, and every voter is canvassed in parallel; a
+  killed leader was replaced in 859 ms at the median.
+- **`DEFINE FAILOVER` drives the lease and the rounds** it always stored, and a
+  leader's lease is the shortest hold any voter that elected it granted.
+- **`/metrics` shows replication and leadership figures only to a caller who may
+  ask `INFO FOR NODE`** (ADR-0108 D8).
+
+### Fixed
+
+- **A held peer stream ends when its certificate expires**, as it already did on a
+  revocation: the handshake was the only place the date was read, and a stream
+  never makes another.
+
+- **A revoked certificate stops a stream that was already open.** A follower
+  holds one connection to its leader for as long as both run, and a revocation
+  was judged only at the next handshake — which a held stream never makes — so
+  a node whose certificate was revoked went on receiving every commit, and a
+  leader whose certificate was revoked went on being followed. Both ends now ask
+  again before every frame, and the stream ends once the certificate, or the
+  node, is refused.
+- **A node leading a placed range no longer loses that range's records.** A node
+  that replicated the whole store collected every log from the store line's
+  leader, including the logs of ranges placed on other lines — or on itself — and
+  when that follower could not continue the log the node copied its state over
+  its own range, removing records only it held. The store line now carries only
+  the logs it governs, and a node placed to lead a range is never copied over.
+- **A voter judges a range's ballot on the line it holds**, not on its greeting,
+  which describes only the range it is placed on — so a former leader or a
+  follower holding the line refuses a candidate behind it.
+- **A former leader of a placed range follows its successor after a move.** A
+  write it committed that no other node held was, correctly, not in the new
+  leader's line, and the old leader refused that line on every round, so it never
+  followed again and answered writes with a spent lease instead of redirecting.
+  A placed range's line it can no longer continue is now repaired as the store
+  line's is: by a copy of its leader's state.
+- **A placed range whose leader is lost elects its other candidate.** Every node
+  votes on a range, but only the nodes placed to lead it stand; a voter that had
+  collected more of the range's line than the surviving candidate refused it on
+  every ballot, rightly, and with the leader gone nothing brought the candidate
+  level. A candidate whose leader does not answer now catches up from the peers
+  that hold its range, and then wins.
+- **A follower finds its new leader as soon as it votes for it.** It learned of
+  a new leadership only at its next greeting, up to a second after granting it,
+  so the new leader's first writes at `ACKNOWLEDGE MAJORITY` waited for a copy
+  nobody was sending: a leader kill took about 1 020 ms to a write at p50. A
+  grant to a new epoch now greets at once — about 850-950 ms, under CPU load too.
+
+- **A refused challenger no longer ends a live lease**: a voter holding a live
+  grant adopts a ballot's epoch only past that grant (Q-880).
+- **A leader its peers elected keeps its lease** when the deciding round did not
+  carry its own vote.
+- **A single-leader range keeps one history**, and a follower whose copy a deposed
+  leadership finished is told so and re-seeds rather than reading itself level
+  (Q-879).
+
+### Performance
+
+- **A follower syncs once per round, not once per record.** It applied every
+  record its leader sent as its own synced write, so a write waiting for a
+  majority waited for a device sync per record ahead of it on each follower.
+  Sixteen writers at `ACKNOWLEDGE MAJORITY` went from 175 to about 40 ms at p50
+  (p99 about 200 → 70 ms) on one macOS host, release build; the follower still
+  asks — acknowledges — only after the sync, so what a majority acknowledges is
+  as durable as before.
+
 ## 0.20.1-beta — 2026-10-02
 
 ### Fixed

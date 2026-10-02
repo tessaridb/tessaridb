@@ -30,6 +30,8 @@
 //! this serves [`Reach::Store`] and refuses what it cannot state.
 
 mod collector;
+mod deposed;
+mod stream;
 
 use tessari_constants::{COLLECTION_BUDGET_BYTES, COLLECTION_PAGE_RECORDS};
 use tessari_encoding::{LogId, LogRecord, NODE_ID_LEN, StoreValue};
@@ -41,6 +43,8 @@ use crate::frame;
 use crate::gathering::{Gather, Page, Ungathered};
 pub(crate) use collector::refused;
 pub use collector::{Collector, logs_to_collect};
+pub(crate) use stream::answer as stream_answer;
+pub use stream::{Following, StreamAsk, Streamed};
 
 /// What a follower asks a leader for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -168,6 +172,15 @@ pub struct Collected {
     /// record of another log. A body from a leader that predates the field
     /// carries nothing here, and the follower then applies as it always did.
     pub order: Option<Sequence>,
+    /// The leadership `order` counts under (ADR-0107), read with it.
+    ///
+    /// Each leader that continues a single-leader range's log stamps its OWN
+    /// counter, so an order means nothing without the leadership it was reached
+    /// under: a follower bounding a round by it would otherwise hold back every
+    /// record an earlier leader stamped higher. Written after `order` and only
+    /// with it; an answer without it is read at the newest leadership the round
+    /// holds, which is what a leader that predates it implies.
+    pub epoch: Option<Epoch>,
 }
 
 impl Collected {
@@ -196,6 +209,9 @@ impl Collected {
             // After `over` and only with it, so its position is known.
             if let Some(order) = self.order {
                 frame::put_u64(&mut body, order.get());
+                if let Some(epoch) = self.epoch {
+                    frame::put_u64(&mut body, epoch.get());
+                }
             }
         }
         body
@@ -229,16 +245,22 @@ impl Collected {
         // byte and the byte it would have written say the same thing.
         let stopped_early = body.get(at).is_some_and(|flag| *flag != 0);
         let after = at.saturating_add(1);
-        let (over, order) = if body.len() > after {
+        let (over, order, epoch) = if body.len() > after {
             let (over, next) = frame::take_reach(body, after)?;
-            let order = if body.len() > next {
-                Some(Sequence::new(frame::take_u64(body, next)?.0))
+            let (order, next) = if body.len() > next {
+                let (order, next) = frame::take_u64(body, next)?;
+                (Some(Sequence::new(order)), next)
+            } else {
+                (None, next)
+            };
+            let epoch = if order.is_some() && body.len() > next {
+                Some(Epoch::new(frame::take_u64(body, next)?.0))
             } else {
                 None
             };
-            (Some(over), order)
+            (Some(over), order, epoch)
         } else {
-            (None, None)
+            (None, None, None)
         };
         Ok(Self {
             log,
@@ -247,6 +269,7 @@ impl Collected {
             stopped_early,
             over,
             order,
+            epoch,
         })
     }
 }
@@ -306,6 +329,39 @@ pub trait Origin {
     /// No default, for [`Self::copied`]'s reason: a door that forgot it would
     /// grant every range ballot.
     fn places(&self, candidate: [u8; NODE_ID_LEN], range: Reach) -> bool;
+
+    /// Bind `node` to the row waiting on the join token `token`, and answer
+    /// whether a row is now bound to it (ADR-0108 D9).
+    ///
+    /// Defaults to binding nothing, the safe direction: a door that forgot it
+    /// leaves a joiner waiting rather than admitting anybody.
+    ///
+    /// # Errors
+    ///
+    /// A store failure.
+    fn joined(&self, _node: [u8; NODE_ID_LEN], _token: &[u8; 32]) -> Result<bool> {
+        Ok(false)
+    }
+
+    /// Where this node's own copy of `range`'s line reaches, read from what it
+    /// holds — the position a voter judges a ballot for that range against.
+    ///
+    /// Not from this node's greeting, which describes only the one range the
+    /// node is placed on: a former leader, or a follower that collected the
+    /// line, holds the line's log while its greeting says zero there, and a
+    /// voter that believed the greeting granted a candidate behind it — whose
+    /// leadership then continued the line from its shorter tail and left the
+    /// records only the voter held behind (Q-884).
+    ///
+    /// Defaults to `None`, meaning *ask the greeting*: a door with no log has
+    /// nothing better to answer with.
+    ///
+    /// # Errors
+    ///
+    /// A store failure, which refuses the vote rather than guessing a position.
+    fn reached_on(&self, _range: Reach) -> Result<Option<crate::grant::Reached>> {
+        Ok(None)
+    }
 }
 
 /// A door with no log behind it.
@@ -491,6 +547,19 @@ impl<'a> Serving<'a> {
 }
 
 impl Origin for Serving<'_> {
+    // The line's one history as this store holds it (ADR-0107): its tail and
+    // the leadership that wrote it, the pair a greeting carries for its own line.
+    fn reached_on(&self, range: Reach) -> Result<Option<crate::grant::Reached>> {
+        let refused = |why: tessari_storage::Error| Error::Refused {
+            message: why.to_string(),
+        };
+        let log = self.log.history_log(range).map_err(refused)?;
+        Ok(Some(crate::grant::Reached {
+            leadership: self.log.tail_leadership(log).map_err(refused)?,
+            tail: self.log.committed_tail(log).map_err(refused)?,
+        }))
+    }
+
     // The rule a candidate stands by (`stands_for`), read from this node's own
     // catalog. A catalog that cannot be read vouches for nothing.
     fn places(&self, candidate: [u8; NODE_ID_LEN], range: Reach) -> bool {
@@ -551,10 +620,26 @@ impl Origin for Serving<'_> {
         // names the range and the answer names the log, because the follower
         // cannot name the writer: the identity a peer is verified BY is its
         // credential's and the identity it WRITES under is its store's.
-        let served = self.log.own_log(asked.home).map_err(|why| Error::Refused {
-            message: why.to_string(),
-        })?;
+        // The line's one log of a single-leader range once it holds records
+        // (ADR-0107), which every leader continues; before any leadership this
+        // node's own, as a cluster without elections replicates; the leader's
+        // own where two may write.
+        let served = self
+            .log
+            .history_log(asked.home)
+            .map_err(|why| Error::Refused {
+                message: why.to_string(),
+            })?;
         let previous = preceding(self.log, over, served, asked.from)?;
+        // The ask is the acknowledgement (ADR-0106 D6): a follower asks for the
+        // first position it does not hold, once it has applied and synced what
+        // it was sent. Counted only as far as this leader sent it — see
+        // `tessari_storage::Store::follower_asked`.
+        self.log.follower_asked(
+            follower,
+            served,
+            Sequence::new(asked.from.get().saturating_sub(1)),
+        );
         // A position below where this log now begins cannot be caught up from
         // the log: it is the answer to *copy my state*, not to *catch me up*
         // (ADR-0094 D3), and it crosses as the frame that already says so.
@@ -565,6 +650,12 @@ impl Origin for Serving<'_> {
         // Before the records, so a commit landing while they are read is above
         // it rather than missing below it (ADR-0084).
         let order = self.log.committed_version().map_err(refused)?;
+        // And the leadership that order counts under, read with it (ADR-0107) —
+        // stated only by a node that leads the line, since only a leader's next
+        // commit is ordered by its own counter; one that leads nothing commits
+        // nothing here, and says so by stating no leadership.
+        let epoch = self.log.writing_epoch(asked.home).map_err(refused)?;
+        let epoch = (epoch > Epoch::ZERO).then_some(epoch);
         let (records, stopped_early) = self.fill(over, served, asked.from, limit)?;
         // What the follower now holds: the last position it was handed, or —
         // when it was handed nothing — the one it told us it was at. The same
@@ -577,6 +668,12 @@ impl Origin for Serving<'_> {
         // follower's ask, because a position recorded against any other log is
         // two unrelated counters subtracted (Q-630).
         self.log.follower_served(follower, asked.home, reached);
+        // Only records sent count toward what a later ask may vouch for — a
+        // level answer sends nothing, and a copy that is level on its own word
+        // has not been checked against this leader's history.
+        if let Some((last, _)) = records.last() {
+            self.log.follower_sent(follower, served, *last);
+        }
         Ok(Collected {
             log: served,
             previous,
@@ -584,6 +681,7 @@ impl Origin for Serving<'_> {
             stopped_early,
             over: Some(over),
             order: Some(order),
+            epoch,
         })
     }
 }
@@ -721,7 +819,7 @@ mod tests {
     use crate::error::Error;
     use crate::grant::Deciding;
     use crate::link::tests::{Authority, THERE, hello, settled};
-    use crate::link::{Answered, Ask, Peers, call};
+    use crate::link::{Answered, Ask};
     use crate::peer::Purpose;
     use std::net::SocketAddr;
     use std::sync::Arc;
@@ -755,20 +853,19 @@ mod tests {
     /// Empty records because what is being tested is the transfer and the
     /// leadership it states, and a mutation would only make the assertions
     /// longer. The epochs are what a run of leaderships actually looks like in
-    /// the log, and a commit path in this build cannot produce them — it writes
-    /// every record under [`Epoch::ZERO`], which is exactly the value that makes
-    /// *the epoch at this position* and *the leader's latest epoch* impossible
-    /// to tell apart.
+    /// the log, written straight in so a test does not have to hold a lease per
+    /// epoch to produce them. Filed in the log the store's commits go to — the
+    /// line's on the store (ADR-0107), which is the one a leader serves.
     fn logged(epochs: &[u64]) -> Arc<Db> {
         let db = Arc::new(Db::in_memory().expect("an in-memory store"));
-        let writer = db.store().writer().expect("an identity");
+        let writer = store_log(&db).writer;
         logging(&db, writer, epochs);
         db
     }
 
     /// The same, in the log `writer` allocates into.
     ///
-    /// A follower's copy of a leader's log is filed under the LEADER's name, so
+    /// A follower's copy of a leader's log is filed under the log's writer, so
     /// a fixture that stands a follower part-way through one has to say whose
     /// log it is standing in. Seeding it under the follower's own name builds a
     /// second log that the collect below never reads, and the symptom is a gap
@@ -793,10 +890,10 @@ mod tests {
         }
     }
 
-    /// The store's own log, as the node that wrote it names it.
+    /// The store's log as a leader serves it — the line's (ADR-0107).
     fn store_log(db: &Arc<Db>) -> LogId {
         db.store()
-            .own_log(Reach::Store)
+            .line_log(Reach::Store)
             .expect("the store's own identity")
     }
 
@@ -902,13 +999,12 @@ mod tests {
         // A node that may not write, because a writable one answers zero by
         // identity and would prove nothing here.
         follower.hold_lease(Duration::ZERO);
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
 
         // A generous count: the answer comes back short of it, which is the
         // reading that used to mean *the peer had no more* and now does not.
-        collector(&mine, &der, &said, address, 64)
+        collector(&mine, &said, address, 64)
             .collect(follower.store(), Reach::Store, Sequence::new(1))
             .expect("the collection");
         door.join().expect("the door's thread");
@@ -950,10 +1046,9 @@ mod tests {
             .session()
             .run("DEFINE NAMESPACE research;")
             .expect("a node that holds something of its own");
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let collector = collector(&mine, &der, &said, address, 64);
+        let collector = collector(&mine, &said, address, 64);
 
         let refused = collector
             .collect(follower.store(), Reach::Store, Sequence::new(1))
@@ -1072,7 +1167,7 @@ mod tests {
         db: &Arc<Db>,
         rounds: usize,
     ) -> (SocketAddr, JoinHandle<()>) {
-        let peers = Peers::bind(
+        let peers = crate::link::tests::bind_with(
             "127.0.0.1:0",
             authority.issue(LEADER, Purpose::Peer),
             &authority.der(),
@@ -1106,7 +1201,7 @@ mod tests {
         rounds: usize,
         budget: usize,
     ) -> (SocketAddr, JoinHandle<()>) {
-        let peers = Peers::bind(
+        let peers = crate::link::tests::bind_with(
             "127.0.0.1:0",
             authority.issue(LEADER, Purpose::Peer),
             &authority.der(),
@@ -1146,7 +1241,7 @@ mod tests {
         from: u64,
         limit: u64,
     ) -> crate::error::Result<Answered> {
-        Ok(call(
+        Ok(crate::link::tests::call_with(
             address,
             authority.issue(THERE, Purpose::Peer),
             &authority.der(),
@@ -1207,6 +1302,7 @@ mod tests {
             stopped_early: true,
             over: None,
             order: None,
+            epoch: None,
         };
         let back = Collected::decode(&answer.encode()).expect("an answer");
         assert_eq!(back, answer);
@@ -1277,6 +1373,7 @@ mod tests {
             stopped_early: false,
             over: None,
             order: None,
+            epoch: None,
         };
 
         let encoded = answer.encode();
@@ -1340,6 +1437,53 @@ mod tests {
             "the leadership at sequence 2, not the one at the tail"
         );
         assert_eq!(collected.records.len(), 1, "one record stands after 2");
+    }
+
+    #[test]
+    fn an_ask_tells_the_leader_what_the_follower_holds() {
+        // ADR-0106 D6. A follower asks for the first position it does NOT hold,
+        // once it has applied what it was sent — so an ask past what this
+        // leader sent is the acknowledgement a write waiting for a majority
+        // needs. An ask past what it was NOT sent vouches for nothing: a copy
+        // of equal length that a deposed leadership finished asks the same way.
+        let authority = Authority::new();
+        let leader = logged(&[1, 1, 1]);
+        let (address, door) = serving(&authority, &leader, 3);
+        let log = store_log(&leader);
+        let held = |at: u64| {
+            leader.store().await_held(
+                log,
+                Sequence::new(at),
+                &[THERE],
+                1,
+                std::time::Duration::ZERO,
+            )
+        };
+
+        drop(served(
+            collect(&authority, address, 3, 64).expect("a follower may collect"),
+        ));
+        assert!(
+            held(2).is_empty(),
+            "a follower's word counted for positions this leader never sent it"
+        );
+
+        drop(served(
+            collect(&authority, address, 1, 64).expect("sent from the start"),
+        ));
+        drop(served(
+            collect(&authority, address, 4, 64).expect("and asked past it"),
+        ));
+        door.join().expect("the door's thread");
+        assert_eq!(
+            held(3),
+            vec![THERE],
+            "the follower holds what it asked past"
+        );
+        assert!(
+            held(4).is_empty(),
+            "a position the follower asked for counted as held"
+        );
     }
 
     #[test]
@@ -1435,15 +1579,13 @@ mod tests {
 
     /// A follower that collects from `address`, with a bound of `limit`.
     fn collector<'a>(
-        mine: &'a crate::link::Credential,
-        der: &'a rustls::pki_types::CertificateDer<'a>,
+        keys: &'a crate::keys::PeerKeys,
         said: &'a crate::peer::Hello,
         address: SocketAddr,
         limit: u64,
     ) -> Collector<'a> {
         Collector {
-            mine,
-            authority: der,
+            keys,
             said,
             peer: (LEADER, address),
             limit,
@@ -1494,6 +1636,7 @@ mod tests {
             stopped_early: false,
             over: Some(shard),
             order: None,
+            epoch: None,
         };
         let encoded = answer.encode();
         assert_eq!(
@@ -1521,6 +1664,22 @@ mod tests {
             Collected::decode(&bytes[..bytes.len() - 8])
                 .expect("an answer without an order")
                 .order,
+            None
+        );
+        // ADR-0107 — the leadership the order counts under travels after it,
+        // and a body that ends at the order reads as not stated.
+        let stated = Collected {
+            epoch: Some(Epoch::new(9)),
+            ..ordered
+        };
+        let bytes = stated.encode();
+        let back = Collected::decode(&bytes).expect("an answer stating its leadership");
+        assert_eq!(back.epoch, Some(Epoch::new(9)));
+        assert_eq!(back.order, Some(Sequence::new(42)));
+        assert_eq!(
+            Collected::decode(&bytes[..bytes.len() - 8])
+                .expect("an answer from a leader that predates it")
+                .epoch,
             None
         );
     }
@@ -1602,10 +1761,9 @@ mod tests {
         // The store's log, then the four logs it makes known in one round.
         let (address, door) = declaring_for(&authority, &leader, 5);
         let follower = Db::in_memory().expect("an in-memory store");
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let collector = collector(&mine, &der, &said, address, 1024);
+        let collector = collector(&mine, &said, address, 1024);
         let store = collector
             .collect(follower.store(), Reach::Store, Sequence::new(1))
             .expect("the store's log");
@@ -1727,10 +1885,9 @@ mod tests {
 
         let (address, door) = declaring_for(&authority, &leader, ROUNDS);
         let follower = Db::in_memory().expect("an in-memory store");
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let collector = collector(&mine, &der, &said, address, 1024);
+        let collector = collector(&mine, &said, address, 1024);
         let mut reached: BTreeMap<Reach, Sequence> = BTreeMap::new();
         let mut used = 0_usize;
         let mut settled = false;
@@ -1878,10 +2035,9 @@ mod tests {
         let (address, door) = declaring_for(&authority, &leader, ROUNDS);
 
         let follower = Db::in_memory().expect("an in-memory store");
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let collector = collector(&mine, &der, &said, address, 1024);
+        let collector = collector(&mine, &said, address, 1024);
 
         // The chain, walked the way the node's own loop walks it: collect a
         // log, then re-derive the set, because the namespace whose log is worth
@@ -1978,18 +2134,10 @@ mod tests {
         );
 
         let follower = Db::in_memory().expect("an in-memory store");
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let copied = crate::copy(
-            &address.to_string(),
-            authority.issue(THERE, Purpose::Peer),
-            &der,
-            LEADER,
-            &said,
-            follower.store(),
-        )
-        .expect("the copy lands");
+        let copied = crate::copy(&address.to_string(), &mine, LEADER, &said, follower.store())
+            .expect("the copy lands");
         assert!(matches!(copied.over, Reach::Namespace(_)), "{copied:?}");
 
         let mut session = follower.session();
@@ -2022,7 +2170,7 @@ mod tests {
             .iter()
             .find(|(log, _)| log.home != Reach::Store)
             .expect("a log below the store's was copied");
-        let collector = collector(&mine, &der, &said, address, 1024);
+        let collector = collector(&mine, &said, address, 1024);
         let reached = collector
             .collect(
                 follower.store(),
@@ -2047,10 +2195,9 @@ mod tests {
         let (address, door) = declaring_for(&authority, &leader, ROUNDS);
 
         let follower = Db::in_memory().expect("an in-memory store");
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let collector = collector(&mine, &der, &said, address, 1024);
+        let collector = collector(&mine, &said, address, 1024);
 
         // The log the subscribed namespace's records actually live in. It is
         // the DATABASE's and not the namespace's: a record homes at the join of
@@ -2165,10 +2312,9 @@ mod tests {
              outside every bound rather than inside the ones nobody measured"
         );
 
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let reached = collector(&mine, &der, &said, address, 1024)
+        let reached = collector(&mine, &said, address, 1024)
             .collect(follower.store(), Reach::Store, Sequence::new(1))
             .expect("a subscribed peer collects");
         door.join().expect("the door's thread");
@@ -2206,10 +2352,9 @@ mod tests {
         let (address, door) = serving(&authority, &leader, 1);
 
         let follower = Db::in_memory().expect("an in-memory store");
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let reached = collector(&mine, &der, &said, address, 64)
+        let reached = collector(&mine, &said, address, 64)
             .collect(follower.store(), Reach::Store, Sequence::new(1))
             .expect("a collection applies");
         door.join().expect("the door's thread");
@@ -2238,10 +2383,9 @@ mod tests {
         let (address, door) = serving(&authority, &leader, 1);
 
         let follower = Db::in_memory().expect("an in-memory store");
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let reached = collector(&mine, &der, &said, address, 64)
+        let reached = collector(&mine, &said, address, 64)
             .collect(follower.store(), Reach::Store, Sequence::new(1))
             .expect("a batch of three leaderships applies");
         door.join().expect("the door's thread");
@@ -2262,23 +2406,25 @@ mod tests {
         // follower's copy of it lives, and it is the only place the histories
         // can disagree at all: two writers' logs are two counters, so a record
         // of one never lands at a position of the other.
-        let follower = logged_as(leader.store().writer().expect("an identity"), &[1, 1]);
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let follower = logged_as(store_log(&leader).writer, &[1, 1]);
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let refused = collector(&mine, &der, &said, address, 64).collect(
+        let refused = collector(&mine, &said, address, 64).collect(
             follower.store(),
             Reach::Store,
             Sequence::new(3),
         );
         door.join().expect("the door's thread");
 
+        // Named as a fork, not as any refusal: retrying meets the same record
+        // on every pass, so the round takes it to the copy that repairs one
+        // (ADR-0107, Q-879 H2).
         assert!(
-            matches!(&refused, Err(Error::Refused { .. })),
-            "expected the store's own refusal, got {refused:?}"
+            matches!(&refused, Err(Error::Forked { .. })),
+            "expected the store's own refusal, named as a fork, got {refused:?}"
         );
         let message = match refused {
-            Err(Error::Refused { message }) => message,
+            Err(Error::Forked { message }) => message,
             _ => String::new(),
         };
         // The store's own words, carried through: a reworded divergence gives
@@ -2299,6 +2445,34 @@ mod tests {
     }
 
     #[test]
+    fn a_level_answer_whose_predecessor_disagrees_is_refused() {
+        let authority = Authority::new();
+        // The fork the paused-leader test left standing: both copies are three
+        // records long and a different leadership wrote the last one. The
+        // leader has nothing past the follower's tail, so the answer carries no
+        // record for a per-record check to run on — and the follower read
+        // *you are level* off it while holding a record the line never had.
+        // Raft's AppendEntries checks the previous entry with no entries too.
+        let leader = logged(&[9, 9, 9]);
+        let (address, door) = serving(&authority, &leader, 1);
+
+        let follower = logged_as(store_log(&leader).writer, &[1, 1, 1]);
+        let mine = authority.keys(THERE, Purpose::Peer);
+        let said = hello(THERE);
+        let refused = collector(&mine, &said, address, 64).collect(
+            follower.store(),
+            Reach::Store,
+            Sequence::new(4),
+        );
+        door.join().expect("the door's thread");
+
+        assert!(
+            matches!(&refused, Err(Error::Forked { .. })),
+            "a follower holding a record the line never had read itself level: {refused:?}"
+        );
+    }
+
+    #[test]
     fn a_short_answer_tells_the_follower_how_old_its_copy_is() {
         let authority = Authority::new();
         let leader = logged(&[1, 1, 1]);
@@ -2309,13 +2483,12 @@ mod tests {
         // about. A writable node answers zero by identity and would prove
         // nothing here.
         follower.hold_lease(Duration::ZERO);
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
 
         // Bound of two against a log of three: the answer fills the bound, so
         // the follower asked and did not arrive.
-        collector(&mine, &der, &said, address, 2)
+        collector(&mine, &said, address, 2)
             .collect(follower.store(), Reach::Store, Sequence::new(1))
             .expect("the first collection");
         assert_eq!(
@@ -2328,7 +2501,7 @@ mod tests {
         );
 
         // The rest arrives inside the bound, so the peer had no more.
-        collector(&mine, &der, &said, address, 2)
+        collector(&mine, &said, address, 2)
             .collect(follower.store(), Reach::Store, Sequence::new(3))
             .expect("the second collection");
         door.join().expect("the door's thread");
@@ -2381,13 +2554,26 @@ mod tests {
         }
 
         fn met(&self, _: &crate::link::Met) {}
+
+        fn commits(&self) -> tokio::sync::watch::Receiver<u64> {
+            self.db.commits().watching()
+        }
+
+        fn coordinated(
+            &self,
+            _: [u8; NODE_ID_LEN],
+            _: &crate::assertion::Assertion,
+            _: &crate::coordination::Coordinate,
+        ) -> std::result::Result<tessaridb::Coordinated, String> {
+            Err("this test door carries no requests".to_owned())
+        }
     }
 
     #[test]
     fn a_peer_nobody_subscribed_is_refused_by_name_by_the_door_on_the_runtime() {
         let authority = Authority::new();
         let leader = granting("");
-        let peers = Peers::bind(
+        let peers = crate::link::tests::bind_with(
             "127.0.0.1:0",
             authority.issue(LEADER, Purpose::Peer),
             &authority.der(),
@@ -2419,6 +2605,133 @@ mod tests {
         assert!(
             matches!(refused, Error::Unsubscribed),
             "the runtime door answered otherwise: {refused}"
+        );
+    }
+
+    /// ADR-0106 D5: a follower holding a stream is SENT the leader's next
+    /// commit — no second ask, no clock — and hears heartbeats while it waits.
+    #[test]
+    fn a_held_stream_is_sent_a_commit_the_moment_it_lands() {
+        let authority = Authority::new();
+        let leader = granting(" REPLICATES STORE");
+        let peers = crate::link::tests::bind_with(
+            "127.0.0.1:0",
+            authority.issue(LEADER, Purpose::Peer),
+            &authority.der(),
+        )
+        .expect("a peer door on loopback");
+        let address = peers.address().expect("the door's address");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("a runtime for the door");
+        let stop = tokio_util::sync::CancellationToken::new();
+        let serving = stop.clone();
+        let holding = Arc::new(OnTheRuntime {
+            db: Arc::clone(&leader),
+        });
+        drop(runtime.spawn(async move {
+            peers
+                .serve(
+                    serving,
+                    LEADER,
+                    Arc::new(Deciding::holding(settled())),
+                    holding,
+                )
+                .await
+        }));
+
+        let mut following = super::Following::open(
+            (LEADER, address),
+            &authority.keys(THERE, Purpose::Peer),
+            &hello(THERE),
+            Duration::from_secs(5),
+        )
+        .expect("a held stream");
+        // Every log the leader holds, as a follower of the whole store asks.
+        let homes = super::logs_to_collect(leader.store()).expect("the leader's logs");
+        let ask = |from: &[Sequence]| super::StreamAsk {
+            asks: homes
+                .iter()
+                .zip(from)
+                .map(|(home, from)| Collect {
+                    home: *home,
+                    from: *from,
+                    limit: 1024,
+                })
+                .collect(),
+        };
+        // Everything the leader holds, first: one round with records, or, if
+        // every log is empty, heartbeats only.
+        let start = vec![Sequence::new(1); homes.len()];
+        following.ask(&ask(&start)).expect("the first ask");
+        let first = loop {
+            let round = following.heard().expect("the first round");
+            if !round.is_heartbeat() {
+                break round;
+            }
+        };
+        let held: Vec<Sequence> = first
+            .answers
+            .iter()
+            .zip(&start)
+            .map(|(answer, from)| {
+                answer
+                    .records
+                    .last()
+                    .map_or(Sequence::new(from.get() - 1), |(at, _)| *at)
+            })
+            .collect();
+        // Level now: the leader has nothing after `held` and must not answer
+        // with records until it commits again.
+        let next: Vec<Sequence> = held.iter().map(|at| Sequence::new(at.get() + 1)).collect();
+        following
+            .ask(&ask(&next))
+            .expect("the ask from where the follower stands");
+        let committing = Arc::clone(&leader);
+        let committer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(350));
+            let committed = std::time::Instant::now();
+            committing
+                .session()
+                .run("USE NAMESPACE prod; USE DATABASE orders; CREATE users:2 = { name: 'grace' };")
+                .expect("the leader commits");
+            committed
+        });
+        let mut heartbeats = 0_u32;
+        let waiting = std::time::Instant::now();
+        let round = loop {
+            let round = following.heard().expect("a frame from the leader");
+            if round.is_heartbeat() {
+                heartbeats += 1;
+                assert!(
+                    waiting.elapsed() < Duration::from_secs(3),
+                    "the commit never reached the held stream ({heartbeats} heartbeats)"
+                );
+                continue;
+            }
+            break round;
+        };
+        let received = std::time::Instant::now();
+        let committed = committer.join().expect("the committer");
+        stop.cancel();
+        assert!(
+            heartbeats >= 2,
+            "the leader said nothing while it waited ({heartbeats} heartbeats in 350 ms)"
+        );
+        // Every record sent starts where the follower stood in its log.
+        for ((answer, from), home) in round.answers.iter().zip(&next).zip(&homes) {
+            if let Some((at, _)) = answer.records.first() {
+                assert_eq!(at, from, "{home:?} sent from the wrong place");
+            }
+        }
+        assert!(!round.is_quiet(), "the round carried the commit");
+        let waited = received.saturating_duration_since(committed);
+        eprintln!("STREAM a commit reached the held stream {waited:?} after it was made");
+        assert!(
+            waited < Duration::from_millis(250),
+            "the commit took {waited:?} to reach a held stream"
         );
     }
 }

@@ -1,7 +1,7 @@
 //! Declaring nodes, failover, replicas and stream consumers.
 
 use tessari_encoding::Roles;
-use tessari_ql::{Name, ReachRef, Span};
+use tessari_ql::{Name, Span};
 use tessari_storage::{
     Catalog, ConsumerDefinition, Feed, Mapped, OnFailure, ReplicaDefinition, Transaction,
 };
@@ -109,6 +109,21 @@ impl Session<'_> {
         Ok(Outcome::Done)
     }
 
+    /// `REVOKE CERTIFICATE '<sha256>'` — a row every node holds, from which
+    /// its peer link refuses the certificate in both directions (ADR-0108 D6).
+    ///
+    /// In the transaction, for the failover policy's reason: it is a catalog
+    /// record, commits with the rest of the script and reaches every node
+    /// through the log. Revoking a certificate already revoked writes the same
+    /// row again and is not refused — the list says the same thing afterwards.
+    pub(super) fn revoke_certificate(
+        transaction: &mut Transaction<'_>,
+        fingerprint: &str,
+    ) -> Outcome {
+        Catalog::new(transaction).revoke_certificate(fingerprint);
+        Outcome::Done
+    }
+
     pub(super) fn define_replica(
         &self,
         transaction: &mut Transaction<'_>,
@@ -162,6 +177,8 @@ impl Session<'_> {
             leads,
             clients: peer.clients.map(str::to_owned),
             http: peer.http.map(str::to_owned),
+            fingerprint: peer.fingerprint.map(str::to_owned),
+            join: None,
         })?;
         Ok(Outcome::Done)
     }
@@ -187,6 +204,56 @@ impl Session<'_> {
         Ok(Outcome::Done)
     }
 
+    /// `CREATE JOIN TOKEN FOR REPLICA r EXPIRES 10m` (ADR-0108 D9).
+    ///
+    /// The token is answered once and never stored: the row keeps its SHA-256
+    /// and its expiry, so the catalog — in every backup and on every follower —
+    /// holds nothing that binds a row. A second token for the row replaces the
+    /// first, which is how a lost one is withdrawn.
+    pub(super) fn create_join_token(
+        transaction: &mut Transaction<'_>,
+        replica: &Name,
+        expires: tessari_types::Duration,
+        span: Span,
+    ) -> Result<Outcome> {
+        let mut secret = [0_u8; 32];
+        crate::generate::fill(&mut secret).map_err(|_| Error::TokenUnavailable {
+            reason: "the operating system's randomness source could not be read",
+            span,
+        })?;
+        let token: String = secret.iter().map(|byte| format!("{byte:02x}")).collect();
+        // The digest of the token's bytes — what a joiner offers on the peer
+        // link — and not of the hex an operator copies.
+        let digest: String = <sha2::Sha256 as sha2::Digest>::digest(secret)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| {
+                i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+            });
+        // The parser refuses a length of zero or less, so the seconds are
+        // non-negative; a life past the clock's range saturates rather than
+        // wrapping into the past.
+        let life_ms = expires
+            .seconds()
+            .saturating_mul(1_000)
+            .saturating_add(i64::from(expires.nanos() / 1_000_000));
+        let ticket = tessari_storage::JoinTicket {
+            digest,
+            expires_ms: now_ms.saturating_add(life_ms),
+        };
+        if !Catalog::new(transaction).wait_for_join(&replica.text, ticket)? {
+            return Err(Error::Unknown {
+                entity: "replica",
+                name: replica.text.clone(),
+                span,
+            });
+        }
+        Ok(Outcome::Value(tessari_types::Value::String(token)))
+    }
+
     /// `ALTER REPLICA b LEADS …` — moves a placement (ADR-0098).
     ///
     /// The range is resolved by the reader `DEFINE REPLICA` uses, so a shard the
@@ -196,14 +263,32 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
-        leads: Option<&ReachRef>,
+        change: &tessari_ql::ReplicaChange,
         span: Span,
     ) -> Result<Outcome> {
-        let leads = match leads {
-            None => None,
-            Some(named) => Some(self.reach_of(transaction, named)?),
+        use tessari_ql::ReplicaChange;
+        let amended = match change {
+            ReplicaChange::Leads(leads) => {
+                let leads = match leads {
+                    None => None,
+                    Some(named) => Some(self.reach_of(transaction, named)?),
+                };
+                Catalog::new(transaction).alter_replica_leads(&name.text, leads)?
+            }
+            // Read before the row is touched, so a misspelled role changes
+            // nothing — `DEFINE REPLICA`'s order.
+            ReplicaChange::Roles(words) => {
+                let roles = named_roles(words)?;
+                Catalog::new(transaction).amend_replica(&name.text, |row| row.roles = roles)?
+            }
+            ReplicaChange::At(endpoint) => Catalog::new(transaction)
+                .amend_replica(&name.text, |row| row.endpoint.clone_from(endpoint))?,
+            ReplicaChange::ClientsAt(clients) => Catalog::new(transaction)
+                .amend_replica(&name.text, |row| row.clients.clone_from(clients))?,
+            ReplicaChange::HttpAt(http) => Catalog::new(transaction)
+                .amend_replica(&name.text, |row| row.http.clone_from(http))?,
         };
-        if !Catalog::new(transaction).alter_replica_leads(&name.text, leads)? {
+        if !amended {
             return Err(Error::Unknown {
                 entity: "replica",
                 name: name.text.clone(),

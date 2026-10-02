@@ -22,6 +22,9 @@
 #![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 mod accumulate;
+mod administration;
+pub use administration::travels;
+pub use throttle::{Budget, failed_shared, permit_shared, succeeded_shared};
 mod aggregate;
 mod arithmetic;
 mod authorize;
@@ -56,6 +59,8 @@ mod kv;
 mod noticed;
 mod outcome;
 mod plan;
+mod presented;
+pub use presented::{Certificates, Presented};
 mod pushdown;
 mod queue;
 mod rank;

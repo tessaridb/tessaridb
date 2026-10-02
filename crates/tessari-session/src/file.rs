@@ -216,7 +216,12 @@ impl Session<'_> {
         let mut held = Vec::new();
         if form == tessari_ql::BackupForm::Script {
             let taken = self.state_script(of)?;
-            return Ok(Outcome::Value(Value::String(taken.text)));
+            // Sealed, a script is bytes like the other forms; plain, it stays
+            // the text it is.
+            return Ok(Outcome::Value(match &self.at_rest {
+                Some(_) => Value::Bytes(self.sealed(taken.text.into_bytes())?),
+                None => Value::String(taken.text),
+            }));
         }
         if form == tessari_ql::BackupForm::State {
             let within = self.state_scope(of)?;
@@ -229,7 +234,7 @@ impl Session<'_> {
                     reason: error.to_string(),
                 }
             })?;
-            return Ok(Outcome::Value(Value::Bytes(held)));
+            return Ok(Outcome::Value(Value::Bytes(self.sealed(held)?)));
         }
         // No `FROM` backs up the store, which is every log it holds. A `FROM`
         // names one sequence, and a sequence counts in one log — so it is the
@@ -254,7 +259,23 @@ impl Session<'_> {
         .map_err(|error| Error::BackupFailed {
             reason: error.to_string(),
         })?;
-        Ok(Outcome::Value(Value::Bytes(held)))
+        Ok(Outcome::Value(Value::Bytes(self.sealed(held)?)))
+    }
+
+    /// A backup's bytes as this node hands them out: sealed under its key when
+    /// it has one (ADR-0108 D7), as they are when it has none.
+    fn sealed(&self, plain: Vec<u8>) -> Result<Vec<u8>> {
+        let Some(key) = &self.at_rest else {
+            return Ok(plain);
+        };
+        let failed = |error: std::io::Error| Error::BackupFailed {
+            reason: error.to_string(),
+        };
+        let mut sealing = key
+            .seal_into(Vec::with_capacity(plain.len()))
+            .map_err(failed)?;
+        std::io::Write::write_all(&mut sealing, &plain).map_err(failed)?;
+        sealing.finish().map_err(failed)
     }
 
     /// Write the snapshot of `within` into the caller's sink, and answer what
@@ -262,12 +283,29 @@ impl Session<'_> {
     fn snapshot_streamed(
         &self,
         within: tessari_types::Reach,
-        mut out: Box<dyn std::io::Write + Send>,
+        out: Box<dyn std::io::Write + Send>,
     ) -> Result<Outcome> {
         let failed = |reason: String| Error::BackupFailed { reason };
-        let taken = tessari_backup::write_state_within(self.store, within, &mut out)
-            .map_err(|error| failed(error.to_string()))?;
-        out.flush().map_err(|error| failed(error.to_string()))?;
+        let taken = match &self.at_rest {
+            Some(key) => {
+                let mut sealing = key
+                    .seal_into(out)
+                    .map_err(|error| failed(error.to_string()))?;
+                let taken = tessari_backup::write_state_within(self.store, within, &mut sealing)
+                    .map_err(|error| failed(error.to_string()))?;
+                sealing
+                    .finish()
+                    .map_err(|error| failed(error.to_string()))?;
+                taken
+            }
+            None => {
+                let mut out = out;
+                let taken = tessari_backup::write_state_within(self.store, within, &mut out)
+                    .map_err(|error| failed(error.to_string()))?;
+                out.flush().map_err(|error| failed(error.to_string()))?;
+                taken
+            }
+        };
         let count = |held: u64| Value::from(i64::try_from(held).unwrap_or(i64::MAX));
         Ok(Outcome::Value(Value::Object(
             std::collections::BTreeMap::from([

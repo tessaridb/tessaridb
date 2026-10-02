@@ -95,6 +95,32 @@ pub enum PeerFrame {
     StateChunk,
     /// The last frame of a copy: the counts and the topic heads.
     StateEnd,
+    /// A follower holding the connection open to be SENT what its leader
+    /// commits, naming every log it follows and the first position it does not
+    /// hold in each (ADR-0106 D5). Sent again after each round it applied, so
+    /// the positions it names are the ones it has made durable.
+    Stream,
+    /// The leader's round on a held stream: one answer per log asked, sent the
+    /// moment a commit gives it something to send, or empty as a heartbeat.
+    Streamed,
+    /// A node asking another to answer a request it cannot, for a caller it
+    /// verified, under a signed assertion (ADR-0108 D1–D3).
+    Coordinate,
+    /// The answer, in the caller's surface's shape.
+    Coordinated,
+    /// The answering node declining, with its reason — its own tag for the
+    /// reason [`Self::Unsubscribed`] has one.
+    NotCoordinated,
+    /// A node asking the store line's leader about a sign-in try, or telling
+    /// it how one went (ADR-0108 D5).
+    Attempt,
+    /// The leader's answer: whether the name may try now.
+    Attempted,
+    /// A node asking to be bound to the row a join token waits on
+    /// (ADR-0108 D9).
+    Join,
+    /// The answer: whether a row is now bound to the asker.
+    Joined,
 }
 
 impl PeerFrame {
@@ -131,6 +157,15 @@ impl PeerFrame {
             Self::StateHead => 19,
             Self::StateChunk => 20,
             Self::StateEnd => 21,
+            Self::Stream => 22,
+            Self::Streamed => 23,
+            Self::Coordinate => 24,
+            Self::Coordinated => 25,
+            Self::NotCoordinated => 26,
+            Self::Attempt => 27,
+            Self::Attempted => 28,
+            Self::Join => 29,
+            Self::Joined => 30,
         }
     }
 
@@ -152,6 +187,15 @@ impl PeerFrame {
             19 => Some(Self::StateHead),
             20 => Some(Self::StateChunk),
             21 => Some(Self::StateEnd),
+            22 => Some(Self::Stream),
+            23 => Some(Self::Streamed),
+            24 => Some(Self::Coordinate),
+            25 => Some(Self::Coordinated),
+            26 => Some(Self::NotCoordinated),
+            27 => Some(Self::Attempt),
+            28 => Some(Self::Attempted),
+            29 => Some(Self::Join),
+            30 => Some(Self::Joined),
             _ => None,
         }
     }
@@ -630,6 +674,8 @@ mod tests {
             PeerFrame::StateHead,
             PeerFrame::StateChunk,
             PeerFrame::StateEnd,
+            PeerFrame::Stream,
+            PeerFrame::Streamed,
         ] {
             assert!(
                 frame::Kind::from_tag(kind.tag()).is_none(),
@@ -657,6 +703,15 @@ mod tests {
             (PeerFrame::StateHead, 19),
             (PeerFrame::StateChunk, 20),
             (PeerFrame::StateEnd, 21),
+            (PeerFrame::Stream, 22),
+            (PeerFrame::Streamed, 23),
+            (PeerFrame::Coordinate, 24),
+            (PeerFrame::Coordinated, 25),
+            (PeerFrame::NotCoordinated, 26),
+            (PeerFrame::Attempt, 27),
+            (PeerFrame::Attempted, 28),
+            (PeerFrame::Join, 29),
+            (PeerFrame::Joined, 30),
         ];
         for (kind, tag) in expected {
             assert_eq!(kind.tag(), tag, "{kind:?}");

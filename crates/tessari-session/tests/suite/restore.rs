@@ -288,3 +288,59 @@ fn a_restore_that_fails_while_filling_leaves_nothing_behind() {
         Some(1)
     );
 }
+
+fn at_rest(byte: u8) -> Arc<tessari_vault::AtRestKey> {
+    Arc::new(
+        tessari_vault::AtRestKey::from_key(&tessari_vault::SecretBytes::adopt([byte; 32])).unwrap(),
+    )
+}
+
+/// A sealed script restores on a node holding the key it was sealed under, and
+/// is refused — naming why — on a node with no key or another one, with
+/// nothing written (ADR-0108 D7).
+#[test]
+fn a_sealed_script_restores_only_under_its_own_key() {
+    let folder = tempfile::tempdir().unwrap();
+    let from = source();
+    signed_in(&from, "root", folder.path())
+        .sealing_backups(at_rest(7))
+        .run("BACKUP SCRIPT OF prod.orders TO 'sealed.tessariql';")
+        .unwrap();
+
+    let into = target();
+    let unkeyed = refused(
+        &mut signed_in(&into, "root", folder.path()),
+        "RESTORE SCRIPT FROM 'sealed.tessariql';",
+    )
+    .to_string();
+    assert!(unkeyed.contains("given its encryption key"), "{unkeyed}");
+    let other = refused(
+        &mut signed_in(&into, "root", folder.path()).sealing_backups(at_rest(8)),
+        "RESTORE SCRIPT FROM 'sealed.tessariql';",
+    )
+    .to_string();
+    assert!(other.contains("does not open under this key"), "{other}");
+    let mut root = signed_in(&into, "root", folder.path());
+    assert_eq!(
+        held(
+            &mut root,
+            "USE NAMESPACE prod; USE DATABASE orders;",
+            "items"
+        ),
+        None,
+        "a refused restore wrote something"
+    );
+
+    let mut keyed = signed_in(&into, "root", folder.path()).sealing_backups(at_rest(7));
+    keyed
+        .run("RESTORE SCRIPT FROM 'sealed.tessariql';")
+        .unwrap();
+    assert_eq!(
+        held(
+            &mut keyed,
+            "USE NAMESPACE prod; USE DATABASE orders;",
+            "items"
+        ),
+        Some(2)
+    );
+}

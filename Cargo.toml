@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.20.1-beta"
+version = "0.21.0-beta"
 edition = "2024"
 rust-version = "1.98"
 license = "BUSL-1.1"
@@ -12,23 +12,23 @@ repository = "https://github.com/tessaridb/tessaridb"
 publish = false
 
 [workspace.dependencies]
-tessari-types = { path = "crates/tessari-types", version = "0.20.1-beta" }
-tessari-constants = { path = "crates/tessari-constants", version = "0.20.1-beta" }
-tessari-kv = { path = "crates/tessari-kv", version = "0.20.1-beta" }
-tessari-encoding = { path = "crates/tessari-encoding", version = "0.20.1-beta" }
-tessari-geo = { path = "crates/tessari-geo", version = "0.20.1-beta" }
-tessari-storage = { path = "crates/tessari-storage", version = "0.20.1-beta" }
-tessari-lsm = { path = "crates/tessari-lsm", version = "0.20.1-beta" }
-tessari-ql = { path = "crates/tessari-ql", version = "0.20.1-beta" }
-tessari-session = { path = "crates/tessari-session", version = "0.20.1-beta" }
-tessari-conformance = { path = "crates/tessari-conformance", version = "0.20.1-beta" }
-tessaridb = { path = "crates/tessaridb", version = "0.20.1-beta" }
-tessari-backup = { path = "crates/tessari-backup", version = "0.20.1-beta" }
-tessari-wire = { path = "crates/tessari-wire", version = "0.20.1-beta" }
-tessari-http = { path = "crates/tessari-http", version = "0.20.1-beta" }
-tessari-ingest = { path = "crates/tessari-ingest", version = "0.20.1-beta" }
-tessari-serve = { path = "crates/tessari-serve", version = "0.20.1-beta" }
-tessari-vault = { path = "crates/tessari-vault", version = "0.20.1-beta" }
+tessari-types = { path = "crates/tessari-types", version = "0.21.0-beta" }
+tessari-constants = { path = "crates/tessari-constants", version = "0.21.0-beta" }
+tessari-kv = { path = "crates/tessari-kv", version = "0.21.0-beta" }
+tessari-encoding = { path = "crates/tessari-encoding", version = "0.21.0-beta" }
+tessari-geo = { path = "crates/tessari-geo", version = "0.21.0-beta" }
+tessari-storage = { path = "crates/tessari-storage", version = "0.21.0-beta" }
+tessari-lsm = { path = "crates/tessari-lsm", version = "0.21.0-beta" }
+tessari-ql = { path = "crates/tessari-ql", version = "0.21.0-beta" }
+tessari-session = { path = "crates/tessari-session", version = "0.21.0-beta" }
+tessari-conformance = { path = "crates/tessari-conformance", version = "0.21.0-beta" }
+tessaridb = { path = "crates/tessaridb", version = "0.21.0-beta" }
+tessari-backup = { path = "crates/tessari-backup", version = "0.21.0-beta" }
+tessari-wire = { path = "crates/tessari-wire", version = "0.21.0-beta" }
+tessari-http = { path = "crates/tessari-http", version = "0.21.0-beta" }
+tessari-ingest = { path = "crates/tessari-ingest", version = "0.21.0-beta" }
+tessari-serve = { path = "crates/tessari-serve", version = "0.21.0-beta" }
+tessari-vault = { path = "crates/tessari-vault", version = "0.21.0-beta" }
 
 thiserror = "2"
 # The serving runtime (ADR-0085). Default features off here, so every crate names
@@ -77,6 +77,17 @@ getrandom = "0.4"
 # compiler is entitled to delete a wipe that nothing afterwards observes, and a
 # hand-written `for b in buf { *b = 0 }` is exactly that wipe.
 zeroize = { version = "1.9", features = ["zeroize_derive"] }
+# The engine files of an encrypted store (ADR-0108 D7): XChaCha20 keystream at a
+# file offset, so the engine can read any block of a file without the rest. The
+# crate is already in the tree under `chacha20poly1305`; this names the extended
+# nonce so every file can take a random one.
+chacha20 = { version = "0.10", default-features = false, features = ["cipher", "xchacha", "zeroize"] }
+# HKDF for the at-rest subkeys. `ring` is already in the tree as the TLS
+# provider below; this uses its HKDF and nothing else of it.
+ring = { version = "0.17", default-features = false }
+# Compiles the engine's encryption provider against the engine's own headers.
+# Already in the tree: every C/C++ dependency here builds with it.
+cc = "1"
 # TLS for the inter-node link, and nothing else in this workspace speaks it.
 # `rustls` with the `ring` provider rather than `aws-lc-rs`: the provider is the
 # whole build-system question, and `ring` asks only for the `cc` that

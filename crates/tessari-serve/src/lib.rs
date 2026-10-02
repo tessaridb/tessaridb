@@ -42,6 +42,7 @@
 
 mod accepting;
 mod bridge;
+pub mod tls;
 
 pub use crate::accepting::{ACCEPT_PAUSE, passes};
 pub use crate::bridge::{Bridge, Bridged};
@@ -216,6 +217,31 @@ impl Stopping {
 pub struct Census {
     started: Instant,
     surfaces: Vec<(&'static str, Arc<Stopping>)>,
+    presented: Vec<(&'static str, Presenting)>,
+}
+
+/// Reads the certificate a surface presents now (ADR-0108 D6).
+///
+/// A reader rather than a certificate, because a renewal replaces what a
+/// surface presents while the process runs, and a scrape must report the one
+/// in use rather than the one the process started with.
+pub struct Presenting(
+    Box<dyn Fn() -> Option<rustls::pki_types::CertificateDer<'static>> + Send + Sync>,
+);
+
+impl Presenting {
+    /// A reader over `leaf`.
+    pub fn new(
+        leaf: impl Fn() -> Option<rustls::pki_types::CertificateDer<'static>> + Send + Sync + 'static,
+    ) -> Self {
+        Self(Box::new(leaf))
+    }
+}
+
+impl std::fmt::Debug for Presenting {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Presenting")
+    }
 }
 
 impl Census {
@@ -230,6 +256,7 @@ impl Census {
         Self {
             started,
             surfaces: Vec::new(),
+            presented: Vec::new(),
         }
     }
 
@@ -249,6 +276,19 @@ impl Census {
         self.surfaces
             .iter()
             .map(|(name, stopping)| (*name, stopping.as_ref()))
+    }
+
+    /// Report the certificate `surface` presents.
+    pub fn presenting(&mut self, surface: &'static str, leaf: Presenting) {
+        self.presented.push((surface, leaf));
+    }
+
+    /// The date each presenting surface's certificate expires, as Unix seconds;
+    /// `None` for a certificate whose date could not be read.
+    pub fn expiries(&self) -> impl Iterator<Item = (&'static str, Option<i64>)> + '_ {
+        self.presented
+            .iter()
+            .map(|(surface, leaf)| (*surface, (leaf.0)().as_ref().and_then(tls::not_after)))
     }
 }
 

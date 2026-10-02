@@ -470,6 +470,200 @@ fn a_commit_files_under_this_nodes_own_writer_and_nobody_elses() {
 }
 
 #[test]
+fn a_placed_commit_names_the_log_its_position_counts_in() {
+    // ADR-0106 D6. A write waiting for a majority waits for followers to hold
+    // ONE log through ONE position, so the commit must say which log — alone,
+    // this node's own; under a leadership, the line's.
+    let store = store_on(&backend());
+    let mut transaction = store.begin().unwrap();
+    transaction.put(at("alone"), b"one".to_vec());
+    let alone = transaction.commit_placed().unwrap();
+    assert_eq!(alone.log, mine(&store));
+    assert_eq!(alone.sequence, store.committed_tail(mine(&store)).unwrap());
+
+    store.hold(
+        Epoch::new(3),
+        tessari_storage::Lease::taken(tessari_storage::LEASE_TTL),
+    );
+    let mut transaction = store.begin().unwrap();
+    transaction.put(at("led"), b"two".to_vec());
+    let led = transaction.commit_placed().unwrap();
+    let line = store.line_log(crate::FIXTURE_HOME).unwrap();
+    assert_eq!(
+        led.log, line,
+        "a led commit counted in a log it was not filed in"
+    );
+    assert_eq!(led.sequence, store.committed_tail(line).unwrap());
+}
+
+#[test]
+fn a_commit_carries_the_leadership_it_was_made_under() {
+    // ADR-0059's write half, which no commit performed: every record carried
+    // epoch 0, so the leadership that wrote a log's tail — the first half of the
+    // pair an election compares — read 0 on every node, and a fork between two
+    // leaderships could never be seen (Q-879).
+    let store = store_on(&backend());
+    store.hold(
+        Epoch::new(7),
+        tessari_storage::Lease::taken(tessari_storage::LEASE_TTL),
+    );
+    write(&store, "r", b"under-seven");
+
+    let line = store.line_log(crate::FIXTURE_HOME).unwrap();
+    assert_eq!(line, LogId::new(crate::FIXTURE_HOME, Writer::LINE));
+    assert_eq!(
+        store.tail_leadership(line).unwrap(),
+        Epoch::new(7),
+        "the record names the leadership it was committed under, in the line's log"
+    );
+}
+
+#[test]
+fn a_first_leader_adopts_its_own_history_as_the_start_of_the_lines_log() {
+    // ADR-0107 D3. What a node wrote before any leadership — its declarations,
+    // a store's data before it became a cluster — is in its own log; the first
+    // lease it holds moves that log into the line's, so a follower collecting
+    // the one log receives it, and the leader's next commit continues it.
+    let store = store_on(&backend());
+    write(&store, "a", b"before");
+    write(&store, "b", b"before");
+    assert_eq!(
+        store.committed_tail(mine(&store)).unwrap(),
+        Sequence::new(2)
+    );
+
+    store.hold(
+        Epoch::new(1),
+        tessari_storage::Lease::taken(tessari_storage::LEASE_TTL),
+    );
+    let line = store.line_log(crate::FIXTURE_HOME).unwrap();
+    assert_eq!(
+        store.committed_tail(line).unwrap(),
+        Sequence::new(2),
+        "adopted"
+    );
+    assert_eq!(
+        store.committed_tail(mine(&store)).unwrap(),
+        Sequence::ZERO,
+        "moved, not copied — one history, in one place"
+    );
+
+    write(&store, "c", b"led");
+    assert_eq!(store.committed_tail(line).unwrap(), Sequence::new(3));
+    assert_eq!(store.tail_leadership(line).unwrap(), Epoch::new(1));
+    assert_eq!(store.logs().unwrap(), vec![line]);
+}
+
+#[test]
+fn a_follower_that_becomes_the_leader_continues_the_one_log() {
+    // The property ADR-0107 is for. A follower applies its leader's records
+    // into the line's log; when it then leads, its first commit takes the NEXT
+    // position of that same log, so a third node asking it gets the whole
+    // history in one sequence — and a follower holding its own pre-cluster
+    // records adopts nothing, because the line's log is no longer empty.
+    let leader = store_on(&backend());
+    leader.hold(
+        Epoch::new(1),
+        tessari_storage::Lease::taken(tessari_storage::LEASE_TTL),
+    );
+    write(&leader, "a", b"1");
+    write(&leader, "b", b"2");
+    let line = leader.line_log(crate::FIXTURE_HOME).unwrap();
+
+    let follower = store_on(&backend());
+    for (sequence, record) in leader.log_records(line, Sequence::ZERO, PLENTY).unwrap() {
+        follower
+            .apply_record(line.writer, sequence, &record)
+            .unwrap();
+    }
+    follower.hold(
+        Epoch::new(2),
+        tessari_storage::Lease::taken(tessari_storage::LEASE_TTL),
+    );
+    write(&follower, "c", b"3");
+
+    assert_eq!(follower.committed_tail(line).unwrap(), Sequence::new(3));
+    assert_eq!(follower.tail_leadership(line).unwrap(), Epoch::new(2));
+}
+
+#[test]
+fn a_follower_renames_its_copy_of_the_leaders_log_the_way_the_leader_did() {
+    // ADR-0107 D3, the follower's half. A follower that collected a leader's
+    // pre-lease history holds it under that leader's writer; once the leader
+    // adopts the same log, its first line answer continues at the next
+    // position, and the follower's copy has to stand at the same place under
+    // the same name for that answer to apply with no gap.
+    let leader = store_on(&backend());
+    write(&leader, "a", b"1");
+    write(&leader, "b", b"2");
+    let theirs = mine(&leader);
+
+    let follower = store_on(&backend());
+    for (sequence, record) in leader.log_records(theirs, Sequence::ZERO, PLENTY).unwrap() {
+        follower
+            .apply_record(theirs.writer, sequence, &record)
+            .unwrap();
+    }
+
+    leader.hold(
+        Epoch::new(1),
+        tessari_storage::Lease::taken(tessari_storage::LEASE_TTL),
+    );
+    write(&leader, "c", b"3");
+    let line = leader.line_log(crate::FIXTURE_HOME).unwrap();
+
+    assert!(follower.adopt_into_line(theirs).unwrap(), "renamed");
+    assert!(
+        !follower.adopt_into_line(theirs).unwrap(),
+        "and only once: the copy is gone and the line's log holds records"
+    );
+    for (sequence, record) in leader.log_records(line, Sequence::new(2), PLENTY).unwrap() {
+        follower
+            .apply_record(line.writer, sequence, &record)
+            .unwrap();
+    }
+    assert_eq!(follower.committed_tail(line).unwrap(), Sequence::new(3));
+    assert_eq!(follower.committed_tail(theirs).unwrap(), Sequence::ZERO);
+}
+
+#[test]
+fn two_unled_records_at_one_line_position_are_one_record_only_if_they_are_the_same_bytes() {
+    // ADR-0107 D7. Epoch 0 is the one leadership with many writers — every
+    // node writes under it before a cluster exists — so on the line's one log
+    // its epoch alone cannot say that the record already held is the record
+    // offered. The same bytes again is a retry and applies; different bytes is
+    // a fork, refused rather than silently kept.
+    let one = store_on(&backend());
+    write(&one, "a", b"one");
+    let other = store_on(&backend());
+    write(&other, "a", b"other");
+    let (_, ours) = one
+        .log_records(mine(&one), Sequence::ZERO, PLENTY)
+        .unwrap()
+        .remove(0);
+    let (_, theirs) = other
+        .log_records(mine(&other), Sequence::ZERO, PLENTY)
+        .unwrap()
+        .remove(0);
+    assert_eq!(ours.epoch(), Epoch::ZERO);
+
+    let follower = store_on(&backend());
+    follower
+        .apply_record(Writer::LINE, Sequence::new(1), &ours)
+        .unwrap();
+    follower
+        .apply_record(Writer::LINE, Sequence::new(1), &ours)
+        .expect("the same record again is a retry");
+    let refused = follower
+        .apply_record(Writer::LINE, Sequence::new(1), &theirs)
+        .unwrap_err();
+    assert!(
+        matches!(refused, Error::LogDivergence { .. }),
+        "two different unled records at one position: {refused}"
+    );
+}
+
+#[test]
 fn two_writers_on_one_home_each_keep_their_own_positions() {
     // The gap rule reads per LOG, not per home. A second writer's first record
     // is its first record — not a record that skipped past the other's three —
@@ -2165,7 +2359,24 @@ fn a_peer_name_is_free_again_once_the_row_it_identifies_is_dropped() {
     transaction.commit().unwrap();
     assert_eq!(replicas_on(&theirs), vec!["alpha".to_owned()]);
 
-    declare_peer(&theirs, "beta", [2_u8; tessari_encoding::NODE_ID_LEN]);
+    // The node the row named is removed with it (ADR-0108 D9): the name is
+    // free, the identity is not, and a machine coming back joins wiped, under a
+    // new one.
+    let mut transaction = theirs.begin().unwrap();
+    let removed = Catalog::new(&mut transaction).create_replica(
+        "beta",
+        "127.0.0.1:2",
+        tessari_encoding::Roles::SERVING,
+        Some([2_u8; tessari_encoding::NODE_ID_LEN]),
+        Some(Reach::Store),
+        None,
+    );
+    transaction.rollback();
+    assert!(
+        matches!(removed, Err(Error::NodeTombstoned { .. })),
+        "a dropped node must not be declared again; got {removed:?}"
+    );
+    declare_peer(&theirs, "beta", [3_u8; tessari_encoding::NODE_ID_LEN]);
     assert_eq!(
         replicas_on(&theirs),
         vec!["alpha".to_owned(), "beta".to_owned()],

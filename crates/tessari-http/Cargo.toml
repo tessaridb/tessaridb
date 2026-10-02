@@ -31,6 +31,9 @@ futures-util = { workspace = true, features = ["sink"] }
 tokio = { workspace = true, features = ["net", "rt", "sync", "time", "macros", "io-util"] }
 tokio-util.workspace = true
 tungstenite.workspace = true
+# TLS on the listener (ADR-0108 D4): the rustls the peer link already uses.
+rustls.workspace = true
+tokio-rustls.workspace = true
 
 [dev-dependencies]
 # The tests serve a node, and a node is served on a runtime the caller owns.
@@ -50,6 +53,10 @@ tessari-storage.workspace = true
 tessari-types.workspace = true
 tessari-encoding.workspace = true
 tessari-wire.workspace = true
+# The TLS tests mint their certificate authority in memory, so no key is ever
+# written to this repository, and read it with the node's own reader.
+rcgen.workspace = true
+tessari-serve.workspace = true
 
 [lints]
 workspace = true

@@ -243,8 +243,15 @@ pub enum Refused {
 /// A voting member's answer to one ballot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Vote {
-    /// This voter will not grant this epoch to anyone else.
-    Granted,
+    /// This voter will not grant this epoch to anyone else, for `hold`.
+    Granted {
+        /// How long this voter holds the grant: the lease its installed
+        /// failover policy states (G053 SG2c). A holder's lease is the
+        /// shortest hold among the grants that carried it, so a policy
+        /// installed on one node before another can never leave the holder
+        /// writing after a voter has freed itself.
+        hold: Duration,
+    },
     /// It will not grant this one, and says which rule stopped it.
     Refused(Refused),
 }
@@ -260,7 +267,10 @@ impl Vote {
     pub fn encode(&self) -> Vec<u8> {
         let mut body = Vec::with_capacity(17);
         match self {
-            Self::Granted => body.push(0),
+            Self::Granted { hold } => {
+                body.push(0);
+                frame::put_u64(&mut body, millis(*hold));
+            }
             Self::Refused(Refused::EpochAlreadyDecided { granted }) => {
                 body.push(1);
                 frame::put_u64(&mut body, granted.get());
@@ -294,7 +304,16 @@ impl Vote {
     pub fn decode(body: &[u8]) -> Result<Self> {
         let kind = *body.first().ok_or(Error::Malformed)?;
         match kind {
-            0 => Ok(Self::Granted),
+            // A build from before the hold sends the tag alone. It held its
+            // grant for its own lease, and the shortest this build will assume
+            // is its own — the holder's lease only ever comes out shorter.
+            0 if body.len() == 1 => Ok(Self::Granted { hold: LEASE_TTL }),
+            0 => {
+                let (hold, _) = frame::take_u64(body, 1)?;
+                Ok(Self::Granted {
+                    hold: Duration::from_millis(hold),
+                })
+            }
             1 => {
                 let (granted, _) = frame::take_u64(body, 1)?;
                 Ok(Self::Refused(Refused::EpochAlreadyDecided {
@@ -344,6 +363,9 @@ fn millis(span: Duration) -> u64 {
 #[derive(Debug)]
 pub struct Voter {
     started: Instant,
+    /// How long a grant made now is held: the installed failover policy's
+    /// lease, or the build's when nobody set one (G053 SG2c).
+    hold: Duration,
     granted: Option<Granted>,
     /// The highest epoch this voter has been shown, granted or not.
     ///
@@ -375,6 +397,10 @@ struct Granted {
     epoch: Epoch,
     candidate: [u8; NODE_ID_LEN],
     at: Instant,
+    /// The hold this grant was made for. Kept with the grant rather than read
+    /// from the voter, so a policy installed afterwards neither shortens a
+    /// promise already made nor lengthens one nobody was told about.
+    hold: Duration,
 }
 
 impl Voter {
@@ -382,6 +408,11 @@ impl Voter {
     #[must_use]
     pub fn started() -> Self {
         Self::started_at(Instant::now())
+    }
+
+    /// The epoch of the grant this voter holds, if it holds one.
+    pub(crate) fn granted_epoch(&self) -> Option<Epoch> {
+        self.granted.map(|granted| granted.epoch)
     }
 
     /// A voter that started at a stated instant.
@@ -392,9 +423,23 @@ impl Voter {
     pub const fn started_at(started: Instant) -> Self {
         Self {
             started,
+            hold: LEASE_TTL,
             granted: None,
             seen: Epoch::ZERO,
         }
+    }
+
+    /// The same voter, holding every grant for `hold`.
+    #[must_use]
+    pub const fn holding_for(mut self, hold: Duration) -> Self {
+        self.hold = hold;
+        self
+    }
+
+    /// Hold every grant made from now on for `hold` — the policy the store has
+    /// installed since. A grant already made keeps the hold it was made for.
+    pub const fn hold_for(&mut self, hold: Duration) {
+        self.hold = hold;
     }
 
     /// Answer one ballot.
@@ -433,15 +478,15 @@ impl Voter {
                 tail: mine.tail,
             });
         }
-        // Adopted before it is judged, and judged against what was seen BEFORE
-        // this ballot — otherwise every ballot is trivially not below the
-        // number it just installed. Adoption is unconditional on purpose: an
-        // epoch is a cluster-wide count, so seeing a higher one anywhere means
-        // the cluster has moved, whoever showed it and whatever else is wrong
-        // with them. Raft adopts a higher term from an RPC it is about to
-        // reject, for this reason.
+        // Judged against what was seen BEFORE this ballot, and adopted only
+        // past the live-grant check below (Q-880, Raft's leader stickiness,
+        // thesis §4.2.3). Adopting on every ballot let a challenger this voter
+        // REFUSED for a live grant end that grant: the incumbent's renewal then
+        // read as an epoch already decided, and a lease nobody had taken was
+        // lost. Epoch order does not need it — a higher epoch that won was
+        // granted by a majority, each member adopted it as it granted, and any
+        // majority for a lower epoch includes one of them.
         let seen = self.seen;
-        self.seen = seen.max(ballot.epoch);
         // Before the waiting refusals below, for the reason `LogBehind` is
         // first: a candidate told that the cluster has passed it has something
         // to do about it, where *wait six seconds* leaves it to stand again at
@@ -471,16 +516,26 @@ impl Voter {
                     granted: held.epoch,
                 });
             }
-            let free = free_at(held.at);
+            let free = free_at(held.at, held.hold);
             if !incumbent && now < free {
                 return Vote::Refused(Refused::EarlierGrantStillAlive {
                     for_the_next: free.saturating_duration_since(now),
                 });
             }
-        } else {
+        }
+        // Past the live grant, the ballot is one this voter could grant, and its
+        // epoch is adopted whatever comes next — including the restart refusal
+        // below: a restarted voter that forgot a grant must still not go back to
+        // granting below what it has been shown (G025 S3.2).
+        self.seen = seen.max(ballot.epoch);
+        if self.granted.is_none() {
             // Granted nothing since it started, so it cannot rule out having
             // granted something before it started.
-            let settled = free_at(self.started);
+            // The longer of the policy and the build: what this voter granted
+            // before it restarted was held for the policy it ran under, which
+            // the store still carries — and a policy shorter than the build's
+            // must not shorten the window a build-length grant needs.
+            let settled = free_at(self.started, self.hold.max(LEASE_TTL));
             if now < settled {
                 return Vote::Refused(Refused::TooSoonAfterStarting {
                     for_the_next: settled.saturating_duration_since(now),
@@ -495,8 +550,62 @@ impl Voter {
             epoch: ballot.epoch,
             candidate: ballot.candidate,
             at: now,
+            hold: self.hold,
         });
-        Vote::Granted
+        Vote::Granted { hold: self.hold }
+    }
+
+    /// Take a round a majority carried for `ballot`'s candidate — this node —
+    /// into this voter's memory, whether or not this voter granted it; or
+    /// refuse it, answering the higher epoch this voter has already granted.
+    ///
+    /// # A win this memory does not hold is a leader its own voter disowns
+    ///
+    /// The self-vote is cast last and can be refused: a voter that granted a
+    /// rival an epoch moments ago refuses this node the next one for a whole
+    /// TTL, and the peers carry the round without it. The win is sound — every
+    /// voter in that majority kept its own promise, so the rival's lease cannot
+    /// be alive — but the memory still names the rival. Read back as a grant to
+    /// somebody else, it silenced the leader at its own standing gate for the
+    /// rest of the lease, and once that grant aged out the same memory would
+    /// grant the NEXT epoch to a challenger while this node still wrote under
+    /// this one (G053 SG2d).
+    ///
+    /// A rival's grant of the SAME epoch is replaced too. Every voter grants an
+    /// epoch once, so a majority that carried it for this node means the
+    /// rival's bid at it lost; the record names a candidacy known to be over,
+    /// and replacing it only ever refuses more — the rival is no longer the
+    /// incumbent, and the hold runs from now.
+    ///
+    /// # A grant ABOVE the round ends the round
+    ///
+    /// A ballot this node's door granted while the round was in flight carried
+    /// this node's log position as it then stood: the rival was promised it
+    /// needed nothing after it. Leading the lower epoch would append past that
+    /// promise — records acknowledged here and absent from the line a winning
+    /// rival keeps. Raft's rule, for the same reason: a node that voted in a
+    /// higher term is a follower in it, and an election for a lower term is
+    /// over whatever its replies say. Decided under the one lock the door also
+    /// takes, so no grant can land between the check and the record.
+    ///
+    /// # Errors
+    ///
+    /// The epoch this voter granted above the round, which the caller stands
+    /// past next time.
+    pub fn carried(&mut self, ballot: &Ballot, now: Instant) -> std::result::Result<(), Epoch> {
+        if let Some(held) = self.granted
+            && held.epoch > ballot.epoch
+        {
+            return Err(held.epoch);
+        }
+        self.seen = self.seen.max(ballot.epoch);
+        self.granted = Some(Granted {
+            epoch: ballot.epoch,
+            candidate: ballot.candidate,
+            at: now,
+            hold: self.hold,
+        });
+        Ok(())
     }
 
     /// The highest epoch this voter has granted, if any.
@@ -531,15 +640,15 @@ impl Voter {
     ///
     /// # It is the freshest liveness signal this node has, and it was already here
     ///
-    /// A leader renews by putting a ballot to every voter, and it renews while
-    /// two round times are left of its usable window — so a voter hears from a
-    /// live leader roughly every `LEASE_TTL - LEASE_GUARD - 2 × ROUND_SECONDS`,
-    /// which is **six seconds** at today's values. The greeting directory that
-    /// [`crate::heard_a_leader`] otherwise consults is refreshed on the
-    /// awareness cadence, **ten seconds**, and the reading itself is up to that
-    /// old again. This instant is strictly fresher and costs nothing: the grant
-    /// was already recorded, with `now` and not the earlier instant, precisely
-    /// so that a renewal moves it.
+    /// A leader renews by putting a ballot to every voter at once, and it
+    /// renews while two round times are left of its usable window — so a voter
+    /// hears from a live leader roughly every `LEASE_TTL - LEASE_GUARD - 2 ×
+    /// ROUND_MILLIS` plus one campaign tick, which is **about 300 ms** at
+    /// today's values. The greeting directory that [`crate::heard_a_leader`]
+    /// otherwise consults is refreshed on the awareness cadence, **a second**,
+    /// and the reading itself is up to that old again. This instant is strictly
+    /// fresher and costs nothing: the grant was already recorded, with `now` and
+    /// not the earlier instant, precisely so that a renewal moves it.
     ///
     /// # A refusal is not evidence
     ///
@@ -567,7 +676,7 @@ impl Voter {
     /// difference between the two, and it belongs on this side of the pair.
     #[must_use]
     pub fn free_at(&self) -> Option<Instant> {
-        self.granted.map(|held| free_at(held.at))
+        self.granted.map(|held| free_at(held.at, held.hold))
     }
 }
 
@@ -584,6 +693,9 @@ pub struct Leadership {
     /// and not the instant the majority answered, is what the lease is dated
     /// from.
     pub from: Instant,
+    /// How long the lease runs from `from`: the shortest of the candidate's own
+    /// policy lease and every granting voter's hold (G053 SG2c).
+    pub length: Duration,
 }
 
 impl Leadership {
@@ -593,7 +705,7 @@ impl Leadership {
     /// holder a shorter window rather than one that outlives the voters'.
     #[must_use]
     pub fn lease(&self) -> Lease {
-        Lease::taken_at(self.from, LEASE_TTL)
+        Lease::taken_at(self.from, self.length)
     }
 }
 
@@ -604,6 +716,16 @@ mod tests {
     use std::time::{Duration, Instant};
     use tessari_encoding::NODE_ID_LEN;
     use tessari_storage::{LEASE_GUARD, LEASE_TTL};
+
+    /// `k` tenths of the lease. These cases were written in whole seconds
+    /// against a ten-second lease; stated as fractions of it, they keep their
+    /// meaning whatever the lease is (G053 SG2b).
+    fn tenths(k: u32) -> Duration {
+        LEASE_TTL
+            .checked_div(10)
+            .expect("a lease divides")
+            .saturating_mul(k)
+    }
     use tessari_types::{DatabaseId, Epoch, NamespaceId, Reach, Sequence, ShardId, TableId};
 
     /// A log position both sides of a vote share.
@@ -695,7 +817,10 @@ mod tests {
             range: tessari_types::Reach::Store,
         };
 
-        assert_eq!(voter.asked(&ballot, now, LEVEL, LEVEL), Vote::Granted);
+        assert_eq!(
+            voter.asked(&ballot, now, LEVEL, LEVEL),
+            Vote::Granted { hold: LEASE_TTL }
+        );
 
         let long_after = after(now, LEASE_TTL.saturating_add(Duration::from_secs(60)));
         assert_eq!(
@@ -715,7 +840,7 @@ mod tests {
         );
         assert_eq!(
             voter.asked(&ballot, long_after, LEVEL, LEVEL),
-            Vote::Granted,
+            Vote::Granted { hold: LEASE_TTL },
             "the holder re-asking its own epoch adds no second holder"
         );
         assert_eq!(voter.decided(), Some(Epoch::new(7)));
@@ -738,14 +863,17 @@ mod tests {
             candidate: A,
             range: tessari_types::Reach::Store,
         };
-        assert_eq!(voter.asked(&ballot, now, LEVEL, LEVEL), Vote::Granted);
+        assert_eq!(
+            voter.asked(&ballot, now, LEVEL, LEVEL),
+            Vote::Granted { hold: LEASE_TTL }
+        );
 
         // The last moment a renewal is any use: one instant before the holder
         // stops writing. The voter is still holding for `LEASE_GUARD` longer.
         let renewing = after(now, LEASE_TTL.saturating_sub(LEASE_GUARD));
         assert_eq!(
             voter.asked(&ballot, renewing, LEVEL, LEVEL),
-            Vote::Granted,
+            Vote::Granted { hold: LEASE_TTL },
             "a leader that cannot renew before its own fence holds a terminal lease"
         );
     }
@@ -764,10 +892,16 @@ mod tests {
             candidate: A,
             range: tessari_types::Reach::Store,
         };
-        assert_eq!(voter.asked(&ballot, now, LEVEL, LEVEL), Vote::Granted);
+        assert_eq!(
+            voter.asked(&ballot, now, LEVEL, LEVEL),
+            Vote::Granted { hold: LEASE_TTL }
+        );
 
         let renewed = after(now, LEASE_TTL.saturating_sub(LEASE_GUARD));
-        assert_eq!(voter.asked(&ballot, renewed, LEVEL, LEVEL), Vote::Granted);
+        assert_eq!(
+            voter.asked(&ballot, renewed, LEVEL, LEVEL),
+            Vote::Granted { hold: LEASE_TTL }
+        );
         assert_eq!(
             voter.free_at(),
             Some(after(renewed, LEASE_TTL)),
@@ -793,7 +927,7 @@ mod tests {
                 LEVEL,
                 LEVEL
             ),
-            Vote::Granted
+            Vote::Granted { hold: LEASE_TTL }
         );
         assert_eq!(
             voter.asked(
@@ -802,7 +936,7 @@ mod tests {
                     candidate: B,
                     range: tessari_types::Reach::Store,
                 },
-                after(now, Duration::from_secs(1)),
+                after(now, tenths(1)),
                 LEVEL,
                 LEVEL
             ),
@@ -836,14 +970,14 @@ mod tests {
                 LEVEL,
                 LEVEL
             ),
-            Vote::Granted
+            Vote::Granted { hold: LEASE_TTL }
         );
         assert_eq!(voter.granted_elsewhere_at(C), Some(now));
 
         // A renewal from the incumbent moves it, because that is the whole
-        // mechanism: a leader renews about every six seconds and this is how a
+        // mechanism: a leader renews about every 300 ms and this is how a
         // voter knows the leader was alive that recently.
-        let later = after(now, Duration::from_secs(6));
+        let later = after(now, tenths(6));
         assert_eq!(
             voter.asked(
                 &Ballot {
@@ -855,7 +989,7 @@ mod tests {
                 LEVEL,
                 LEVEL
             ),
-            Vote::Granted
+            Vote::Granted { hold: LEASE_TTL }
         );
         assert_eq!(voter.granted_elsewhere_at(C), Some(later));
 
@@ -864,7 +998,7 @@ mod tests {
         // evidence at all that any leader is alive. Reading it as contact would
         // let a cluster whose leader is long gone keep itself quiet by arguing
         // with itself.
-        let refused_at = after(later, Duration::from_secs(1));
+        let refused_at = after(later, tenths(1));
         assert!(matches!(
             voter.asked(
                 &Ballot {
@@ -910,7 +1044,7 @@ mod tests {
                 LEVEL,
                 LEVEL
             ),
-            Vote::Granted
+            Vote::Granted { hold: LEASE_TTL }
         );
 
         assert_eq!(
@@ -939,10 +1073,10 @@ mod tests {
                 LEVEL,
                 LEVEL
             ),
-            Vote::Granted
+            Vote::Granted { hold: LEASE_TTL }
         );
 
-        let soon = after(now, Duration::from_secs(1));
+        let soon = after(now, tenths(1));
         assert_eq!(
             voter.asked(
                 &Ballot {
@@ -955,7 +1089,7 @@ mod tests {
                 LEVEL
             ),
             Vote::Refused(Refused::EarlierGrantStillAlive {
-                for_the_next: LEASE_TTL.saturating_sub(Duration::from_secs(1))
+                for_the_next: LEASE_TTL.saturating_sub(tenths(1))
             })
         );
 
@@ -974,7 +1108,7 @@ mod tests {
                 LEVEL,
                 LEVEL
             ),
-            Vote::Granted
+            Vote::Granted { hold: LEASE_TTL }
         );
     }
 
@@ -988,18 +1122,18 @@ mod tests {
             range: tessari_types::Reach::Store,
         };
 
-        let early = after(started, Duration::from_secs(4));
+        let early = after(started, tenths(4));
         assert_eq!(
             voter.asked(&ballot, early, LEVEL, LEVEL),
             Vote::Refused(Refused::TooSoonAfterStarting {
-                for_the_next: LEASE_TTL.saturating_sub(Duration::from_secs(4))
+                for_the_next: LEASE_TTL.saturating_sub(tenths(4))
             })
         );
         assert_eq!(voter.decided(), None, "a refusal decides nothing");
 
         assert_eq!(
             voter.asked(&ballot, after(started, LEASE_TTL), LEVEL, LEVEL),
-            Vote::Granted
+            Vote::Granted { hold: LEASE_TTL }
         );
     }
 
@@ -1018,9 +1152,9 @@ mod tests {
             range: tessari_types::Reach::Store,
         };
         assert_eq!(
-            voter.asked(&high, after(started, Duration::from_secs(1)), LEVEL, LEVEL),
+            voter.asked(&high, after(started, tenths(1)), LEVEL, LEVEL),
             Vote::Refused(Refused::TooSoonAfterStarting {
-                for_the_next: LEASE_TTL.saturating_sub(Duration::from_secs(1))
+                for_the_next: LEASE_TTL.saturating_sub(tenths(1))
             })
         );
         assert_eq!(voter.decided(), None, "a refusal grants nothing");
@@ -1056,63 +1190,48 @@ mod tests {
         };
         assert_eq!(
             voter.asked(&caught_up, after(started, LEASE_TTL), LEVEL, LEVEL),
-            Vote::Granted
+            Vote::Granted { hold: LEASE_TTL }
         );
     }
 
     #[test]
-    fn an_epoch_seen_after_a_grant_holds_that_grant_to_the_higher_number() {
-        // The same rule on the other branch: a voter holding a grant at 3 that
-        // is then shown 9 by somebody else must not go back to granting 4 when
-        // its hold comes free, because the cluster is at 9 and 4 is behind it.
+    fn an_epoch_refused_for_a_live_grant_does_not_end_that_grant() {
+        // Q-880, Raft's leader stickiness (thesis §4.2.3). A voter holding a
+        // live grant for A refuses a challenger at 9 — and until G053 SG2c it
+        // adopted 9 as it refused, then refused A's own renewal at 3 as an
+        // epoch already decided. A lease nobody had taken was lost, and a
+        // leader-only acknowledgement with it (run 42, link 4).
+        //
+        // Epoch order does not need the adoption: a 9 that WON was granted by
+        // a majority, every member of which adopted 9 as it granted, and any
+        // majority for a lower epoch includes one of them.
         let opened = base();
         let mut voter = settled(opened);
+        let ballot = |epoch: u64, candidate| Ballot {
+            epoch: Epoch::new(epoch),
+            candidate,
+            range: tessari_types::Reach::Store,
+        };
         assert_eq!(
-            voter.asked(
-                &Ballot {
-                    epoch: Epoch::new(3),
-                    candidate: A,
-                    range: tessari_types::Reach::Store,
-                },
-                opened,
-                LEVEL,
-                LEVEL
-            ),
-            Vote::Granted
+            voter.asked(&ballot(3, A), opened, LEVEL, LEVEL),
+            Vote::Granted { hold: LEASE_TTL }
         );
         assert_eq!(
-            voter.asked(
-                &Ballot {
-                    epoch: Epoch::new(9),
-                    candidate: B,
-                    range: tessari_types::Reach::Store,
-                },
-                opened,
-                LEVEL,
-                LEVEL
-            ),
+            voter.asked(&ballot(9, B), opened, LEVEL, LEVEL),
             Vote::Refused(Refused::EarlierGrantStillAlive {
                 for_the_next: LEASE_TTL
             }),
             "the hold it made for A is still alive, so 9 is refused"
         );
-
-        let free = after(opened, LEASE_TTL);
         assert_eq!(
-            voter.asked(
-                &Ballot {
-                    epoch: Epoch::new(4),
-                    candidate: A,
-                    range: tessari_types::Reach::Store,
-                },
-                free,
-                LEVEL,
-                LEVEL
-            ),
-            Vote::Refused(Refused::EpochAlreadyDecided {
-                granted: Epoch::new(9)
-            }),
-            "refused against what was SEEN, which is above what was granted"
+            voter.asked(&ballot(3, A), after(opened, tenths(3)), LEVEL, LEVEL),
+            Vote::Granted { hold: LEASE_TTL },
+            "the refused challenger ended the incumbent's renewal"
+        );
+        assert_eq!(
+            voter.seen(),
+            Epoch::new(3),
+            "a refused ballot raised the floor"
         );
     }
 
@@ -1122,18 +1241,14 @@ mod tests {
         let mut voters = [settled(opened), settled(opened), settled(opened)];
         let mut round = Round::opened_at(Epoch::new(3), A, voters.len(), opened);
 
-        // A round that drags: one voter answers at once, one after a second,
-        // one after three — comfortably longer than the guard, which is the
+        // A round that drags: one voter answers at once, one after a tenth of
+        // the lease, one after three tenths — longer than the guard, which is the
         // only shape in which dating the lease wrongly is detectable.
-        let answered = [
-            opened,
-            after(opened, Duration::from_secs(1)),
-            after(opened, Duration::from_secs(3)),
-        ];
+        let answered = [opened, after(opened, tenths(1)), after(opened, tenths(3))];
         let mut held = None;
         for ((voter, id), at) in voters.iter_mut().zip([ONE, TWO, THREE]).zip(answered) {
             let vote = voter.asked(&round.ballot(), at, LEVEL, LEVEL);
-            assert_eq!(vote, Vote::Granted);
+            assert_eq!(vote, Vote::Granted { hold: LEASE_TTL });
             held = round.counts(id, vote);
         }
 
@@ -1163,7 +1278,7 @@ mod tests {
         let mut voter = settled(opened);
         let mut round = Round::opened_at(Epoch::new(1), A, 1, opened);
 
-        let answered = after(opened, LEASE_TTL.saturating_sub(Duration::from_secs(1)));
+        let answered = after(opened, LEASE_TTL.saturating_sub(tenths(1)));
         let vote = voter.asked(&round.ballot(), answered, LEVEL, LEVEL);
         let held = round.counts(ONE, vote).expect("one of one carried it");
 
@@ -1177,13 +1292,17 @@ mod tests {
     fn one_voter_answering_twice_does_not_carry_a_round() {
         let now = base();
         let mut round = Round::opened_at(Epoch::new(1), A, 3, now);
-        assert_eq!(round.counts(ONE, Vote::Granted), None);
+        assert_eq!(round.counts(ONE, Vote::Granted { hold: LEASE_TTL }), None);
         assert_eq!(
-            round.counts(ONE, Vote::Granted),
+            round.counts(ONE, Vote::Granted { hold: LEASE_TTL }),
             None,
             "a majority is a majority of members, not of answers"
         );
-        assert!(round.counts(TWO, Vote::Granted).is_some());
+        assert!(
+            round
+                .counts(TWO, Vote::Granted { hold: LEASE_TTL })
+                .is_some()
+        );
     }
 
     #[test]
@@ -1196,8 +1315,12 @@ mod tests {
         // of a set of four must not each carry a round.
         let now = base();
         let mut ours = Round::opened_at(Epoch::new(1), A, 4, now);
-        ours.counts(ONE, Vote::Granted);
-        assert_eq!(ours.counts(TWO, Vote::Granted), None, "half is not enough");
+        ours.counts(ONE, Vote::Granted { hold: LEASE_TTL });
+        assert_eq!(
+            ours.counts(TWO, Vote::Granted { hold: LEASE_TTL }),
+            None,
+            "half is not enough"
+        );
     }
 
     #[test]
@@ -1237,7 +1360,10 @@ mod tests {
         // And the refusal is about the log rather than about this voter's state:
         // it granted nothing, so the same candidate level with it is granted.
         assert_eq!(voter.decided(), None);
-        assert_eq!(voter.asked(&ballot, now, LEVEL, LEVEL), Vote::Granted);
+        assert_eq!(
+            voter.asked(&ballot, now, LEVEL, LEVEL),
+            Vote::Granted { hold: LEASE_TTL }
+        );
     }
 
     #[test]
@@ -1263,7 +1389,7 @@ mod tests {
                 LEVEL,
                 ahead
             ),
-            Vote::Granted
+            Vote::Granted { hold: LEASE_TTL }
         );
     }
 
@@ -1390,15 +1516,24 @@ mod tests {
         let deciding = settled_deciding();
         let now = base();
         let vote = |ballot: &Ballot| deciding.asked(ballot, now, LEVEL, LEVEL);
-        assert_eq!(vote(&ballot(1, 1, shard(1))), Vote::Granted);
+        assert_eq!(
+            vote(&ballot(1, 1, shard(1))),
+            Vote::Granted { hold: LEASE_TTL }
+        );
         // The same line and epoch for somebody else: one epoch, one candidate.
         assert!(matches!(
             vote(&ballot(1, 2, shard(1))),
             Vote::Refused(Refused::EpochAlreadyDecided { .. })
         ));
         // Another line's epoch 1 is another counter, and so is the store's.
-        assert_eq!(vote(&ballot(1, 2, shard(2))), Vote::Granted);
-        assert_eq!(vote(&ballot(1, 2, Reach::Store)), Vote::Granted);
+        assert_eq!(
+            vote(&ballot(1, 2, shard(2))),
+            Vote::Granted { hold: LEASE_TTL }
+        );
+        assert_eq!(
+            vote(&ballot(1, 2, Reach::Store)),
+            Vote::Granted { hold: LEASE_TTL }
+        );
         assert_eq!(
             deciding.granted_elsewhere_on(shard(1), [2; NODE_ID_LEN]),
             Some(now)
@@ -1414,6 +1549,44 @@ mod tests {
     }
 
     #[test]
+    fn a_grant_to_a_new_store_epoch_is_announced_and_a_renewal_is_not() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let deciding = settled_deciding();
+        let announced = Arc::new(AtomicUsize::new(0));
+        let counting = Arc::clone(&announced);
+        assert!(deciding.when_granted_anew(Box::new(move || {
+            counting.fetch_add(1, Ordering::Relaxed);
+        })));
+        let now = base();
+        let candidate = [1; NODE_ID_LEN];
+
+        assert_eq!(
+            deciding.asked(&store_ballot(1, candidate), now, LEVEL, LEVEL),
+            Vote::Granted { hold: LEASE_TTL }
+        );
+        assert_eq!(announced.load(Ordering::Relaxed), 1);
+        // The incumbent renewing its epoch is the same leadership.
+        assert_eq!(
+            deciding.asked(&store_ballot(1, candidate), now, LEVEL, LEVEL),
+            Vote::Granted { hold: LEASE_TTL }
+        );
+        assert_eq!(announced.load(Ordering::Relaxed), 1);
+        // A placed range's line is not the store's leadership.
+        let _ = deciding.asked(&ballot(1, 2, shard(1)), now, LEVEL, LEVEL);
+        assert_eq!(announced.load(Ordering::Relaxed), 1);
+        // Free again, a later epoch is a new leadership.
+        let later = now
+            .checked_add(LEASE_TTL.saturating_mul(2))
+            .expect("in range");
+        assert_eq!(
+            deciding.asked(&store_ballot(2, candidate), later, LEVEL, LEVEL),
+            Vote::Granted { hold: LEASE_TTL }
+        );
+        assert_eq!(announced.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
     fn every_line_starts_when_the_process_did() {
         // A restarted voter cannot remember a grant on ANY line, so a line it
         // has never been asked about is as young as the process.
@@ -1423,6 +1596,122 @@ mod tests {
         assert!(
             matches!(vote, Vote::Refused(Refused::TooSoonAfterStarting { .. })),
             "{vote:?}"
+        );
+    }
+
+    /// A ballot for `candidate` at `epoch` on the store's line.
+    fn store_ballot(epoch: u64, candidate: [u8; NODE_ID_LEN]) -> Ballot {
+        Ballot {
+            epoch: Epoch::new(epoch),
+            candidate,
+            range: Reach::Store,
+        }
+    }
+
+    #[test]
+    fn a_voter_holds_its_grant_for_the_lease_its_policy_states() {
+        // G053 SG2c (Q-878). A policy that lengthens the lease lengthens what a
+        // voter promises, or a holder writing under the long lease would meet a
+        // voter that had already freed itself on the build's short one.
+        let now = base();
+        let hold = LEASE_TTL.saturating_mul(4);
+        let mut voter =
+            Voter::started_at(now.checked_sub(hold).expect("representable")).holding_for(hold);
+        assert_eq!(
+            voter.asked(&store_ballot(1, A), now, LEVEL, LEVEL),
+            Vote::Granted { hold },
+            "a grant states how long its voter will hold it"
+        );
+        let past_the_built_in_lease = after(now, LEASE_TTL.saturating_add(tenths(1)));
+        let vote = voter.asked(&store_ballot(2, B), past_the_built_in_lease, LEVEL, LEVEL);
+        assert!(
+            matches!(vote, Vote::Refused(Refused::EarlierGrantStillAlive { .. })),
+            "a voter freed itself on the build's lease while its policy's still ran: {vote:?}"
+        );
+        assert_eq!(voter.free_at(), Some(after(now, hold)));
+    }
+
+    #[test]
+    fn a_restarted_voter_sits_out_the_longer_of_its_policy_and_the_build() {
+        // A restarted voter cannot remember what it granted, and what it granted
+        // was held for the policy it ran under — which the store still carries.
+        let started = base();
+        let hold = LEASE_TTL.saturating_mul(4);
+        let mut voter = Voter::started_at(started).holding_for(hold);
+        let vote = voter.asked(
+            &store_ballot(1, A),
+            after(started, LEASE_TTL.saturating_add(tenths(1))),
+            LEVEL,
+            LEVEL,
+        );
+        assert!(
+            matches!(vote, Vote::Refused(Refused::TooSoonAfterStarting { .. })),
+            "{vote:?}"
+        );
+        let mut short = Voter::started_at(started).holding_for(tenths(2));
+        let vote = short.asked(&store_ballot(1, A), after(started, tenths(5)), LEVEL, LEVEL);
+        assert!(
+            matches!(vote, Vote::Refused(Refused::TooSoonAfterStarting { .. })),
+            "a short policy shortened the restart window below the build's lease: {vote:?}"
+        );
+    }
+
+    #[test]
+    fn a_lease_is_no_longer_than_the_shortest_hold_that_carried_it() {
+        // The holder stops before ANY voter that granted it is free, whichever
+        // policy each had installed when it answered — and before its own.
+        let opened = base();
+        let mut round =
+            Round::opened_at(Epoch::new(3), A, 3, opened).leasing(LEASE_TTL.saturating_mul(4));
+        assert_eq!(
+            round.counts(
+                ONE,
+                Vote::Granted {
+                    hold: LEASE_TTL.saturating_mul(4)
+                }
+            ),
+            None
+        );
+        let held = round
+            .counts(
+                TWO,
+                Vote::Granted {
+                    hold: LEASE_TTL.saturating_mul(2),
+                },
+            )
+            .expect("two of three");
+        assert_eq!(
+            held.lease().expiry(),
+            after(opened, LEASE_TTL.saturating_mul(2)),
+            "the lease outlived a voter's hold"
+        );
+
+        let mut modest = Round::opened_at(Epoch::new(4), A, 1, opened).leasing(LEASE_TTL);
+        let held = modest
+            .counts(
+                ONE,
+                Vote::Granted {
+                    hold: LEASE_TTL.saturating_mul(4),
+                },
+            )
+            .expect("one of one");
+        assert_eq!(
+            held.lease().expiry(),
+            after(opened, LEASE_TTL),
+            "a voter's longer hold lengthened the candidate's own lease"
+        );
+    }
+
+    #[test]
+    fn a_grant_states_its_hold_on_the_wire_and_a_bare_one_is_the_builds() {
+        let hold = Duration::from_millis(3_250);
+        let granted = Vote::Granted { hold };
+        assert_eq!(Vote::decode(&granted.encode()).ok(), Some(granted));
+        // What a build from before the field sends: the tag alone. It held its
+        // grant for its own lease, and the shortest this build assumes is its own.
+        assert_eq!(
+            Vote::decode(&[0]).ok(),
+            Some(Vote::Granted { hold: LEASE_TTL })
         );
     }
 }

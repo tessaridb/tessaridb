@@ -8,6 +8,7 @@
 //! error anywhere. The lookup is one catalog read per statement, and the store
 //! is the only thing entitled to say what a name currently means.
 
+mod acknowledging;
 mod atomic;
 mod step;
 
@@ -85,6 +86,17 @@ pub struct Session<'a> {
     /// A fact about the process, like `gather`, so it is taken at the session;
     /// `None` refuses every `TO` rather than writing somewhere nobody chose.
     pub(crate) backups: Option<Arc<Path>>,
+    /// The key every backup this node produces is sealed under, and every
+    /// sealed backup it reads is opened with (ADR-0108 D7). A fact about the
+    /// process, like `backups`; `None` writes backups as they are.
+    pub(crate) at_rest: Option<Arc<tessari_vault::AtRestKey>>,
+    /// The cluster's sign-in budget, when this node is part of one (ADR-0108
+    /// D5). A fact about the process, like `gather`.
+    pub(crate) budget: Option<Arc<dyn crate::throttle::Budget>>,
+    /// The certificates this node presents, read when `INFO FOR NODE` asks
+    /// (ADR-0108 D9). A fact about the process, like `budget`; `None` on a node
+    /// that presents none.
+    pub(crate) certificates: Option<Arc<dyn crate::presented::Certificates>>,
     /// Where a `BACKUP STATE` answered here writes its snapshot instead of
     /// answering with it (ADR-0094 D6), when the caller is streaming.
     pub(crate) sink: crate::backup_to::Sink,
@@ -96,6 +108,10 @@ pub struct Session<'a> {
     /// `CREATE` by the time the read is redirected. The edge asks this before
     /// turning a refusal into a redirect.
     pub(crate) landed: bool,
+    /// The strongest acknowledgement a write inside the open transaction asked
+    /// for, carried to its `COMMIT` (ADR-0106 D2) — a level asked of one write
+    /// is asked of the transaction that lands it.
+    pub(crate) acknowledge_open: Option<tessari_types::Acknowledge>,
 }
 
 /// Who a session is, to a queue.
@@ -129,8 +145,12 @@ impl<'a> Session<'a> {
             elsewhere: None,
             gather: None,
             backups: None,
+            at_rest: None,
+            budget: None,
+            certificates: None,
             sink: crate::backup_to::Sink::none(),
             landed: false,
+            acknowledge_open: None,
         }
     }
 
@@ -160,11 +180,34 @@ impl<'a> Session<'a> {
         self
     }
 
+    /// Open this session counting sign-in tries against the cluster's one
+    /// budget (ADR-0108 D5) as well as this node's own.
+    #[must_use]
+    pub fn budgeted(mut self, budget: Arc<dyn crate::throttle::Budget>) -> Self {
+        self.budget = Some(budget);
+        self
+    }
+
+    /// Open this session reporting the certificates `certificates` reads.
+    #[must_use]
+    pub fn presenting(mut self, certificates: Arc<dyn crate::presented::Certificates>) -> Self {
+        self.certificates = Some(certificates);
+        self
+    }
+
     /// Open this session able to write `BACKUP … TO` into `folder`, and nowhere
     /// else.
     #[must_use]
     pub fn backing_up_into(mut self, folder: Arc<Path>) -> Self {
         self.backups = Some(folder);
+        self
+    }
+
+    /// Open this session sealing every backup it produces under `key`, and
+    /// opening every sealed backup it reads with it (ADR-0108 D7).
+    #[must_use]
+    pub fn sealing_backups(mut self, key: Arc<tessari_vault::AtRestKey>) -> Self {
+        self.at_rest = Some(key);
         self
     }
 
@@ -228,6 +271,71 @@ impl<'a> Session<'a> {
     pub fn run_with(&mut self, source: &str, parameters: &Parameters) -> Result<Vec<Outcome>> {
         let script = parse(source)?.bind(parameters)?;
         self.run_script(script)
+    }
+
+    /// Run a script that another node sent on its caller's behalf (ADR-0108 D2).
+    ///
+    /// As [`Session::run_with`], in the namespace and database the caller's
+    /// own session had selected, except that a script holding any statement
+    /// that changes authority or membership, or reads or replaces the whole
+    /// store, is refused whole before anything in it runs.
+    ///
+    /// The selection is put in front of the script as a `USE` statement that is
+    /// BUILT rather than written, so names another node sent can never become
+    /// syntax, and so the tenancy rule a `USE` carries is applied to it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::MayNotTravel`] naming the first such statement; otherwise as
+    /// [`Session::run_with`].
+    pub fn run_coordinated(
+        &mut self,
+        (namespace, database): (Option<&str>, Option<&str>),
+        source: &str,
+        parameters: &Parameters,
+    ) -> Result<Vec<Outcome>> {
+        let mut script = parse(source)?;
+        if let Some(statement) = script
+            .statements
+            .iter()
+            .find_map(|statement| crate::administration::stays_home(&statement.kind))
+        {
+            return Err(Error::MayNotTravel { statement });
+        }
+        if namespace.is_some() || database.is_some() {
+            let span = tessari_ql::Span { start: 0, end: 0 };
+            let named = |text: Option<&str>| {
+                text.map(|text| tessari_ql::Name {
+                    text: text.to_owned(),
+                    span,
+                })
+            };
+            script.statements.insert(
+                0,
+                tessari_ql::Statement {
+                    kind: StatementKind::Use {
+                        namespace: named(namespace),
+                        database: named(database),
+                        consumer: None,
+                    },
+                    span,
+                    acknowledge: None,
+                },
+            );
+        }
+        let ran = self.run_script(script.bind(parameters)?)?;
+        // The built `USE` answered too; the caller sent none and is owed none.
+        Ok(if namespace.is_some() || database.is_some() {
+            ran.into_iter().skip(1).collect()
+        } else {
+            ran
+        })
+    }
+
+    /// The user this session is signed in as, if any.
+    #[must_use]
+    pub const fn signed_in(&self) -> Option<&tessari_storage::UserDefinition> {
+        self.identity.user()
     }
 
     /// Run a script that is already parsed and bound, exactly as
@@ -363,7 +471,15 @@ impl<'a> Session<'a> {
     pub fn sign_in(&mut self, name: &str, password: &str) -> Result<()> {
         // First, and before the transaction below: a throttled attempt has to
         // cost a lock and an array index, or the refusal has bounded nothing.
-        if !throttle::attempts().permit(name) {
+        // The cluster's table when there is one and it answers in time, else
+        // this node's own (ADR-0108 D5). Both are kept: this node's own count
+        // is what stands in while the shared one cannot be asked.
+        let permitted = self
+            .budget
+            .as_ref()
+            .and_then(|budget| budget.permit(name))
+            .unwrap_or_else(|| throttle::attempts().permit(name));
+        if !permitted {
             log::warn!("sign-in for {name} refused: too many recent failures");
             return Err(Error::SignInThrottled);
         }
@@ -397,18 +513,29 @@ impl<'a> Session<'a> {
             // Counted against the name that was tried, not against the user that
             // was not found. Counting only known names would let an attacker
             // enumerate the catalog by watching which names start to wait.
-            throttle::attempts().failed(name);
+            self.missed(name);
             return Err(Error::SignInRefused);
         };
         if !identity::verifies(password, &user.secret) {
             log::warn!("sign-in refused for {name}");
-            throttle::attempts().failed(name);
+            self.missed(name);
             return Err(Error::SignInRefused);
         }
         log::info!("signed in as {name}");
         throttle::attempts().succeeded(name);
+        if let Some(budget) = &self.budget {
+            budget.succeeded(name);
+        }
         self.identity = Identity::Signed(Box::new(user));
         Ok(())
+    }
+
+    /// Count a missed try as `name` here and, in a cluster, in the shared table.
+    fn missed(&self, name: &str) {
+        throttle::attempts().failed(name);
+        if let Some(budget) = &self.budget {
+            budget.failed(name);
+        }
     }
 
     /// Act as a user the store already declared, without a credential.
@@ -498,8 +625,13 @@ impl<'a> Session<'a> {
             gather: self.gather.clone(),
             // A probe answers who may do what and never writes a file.
             backups: None,
+            at_rest: None,
+            budget: self.budget.clone(),
+            // A probe answers who may do what, and reports no certificates.
+            certificates: None,
             sink: crate::backup_to::Sink::none(),
             landed: false,
+            acknowledge_open: None,
         };
         probe.acting_as(id)?;
         Ok(probe)

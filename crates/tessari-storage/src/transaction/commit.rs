@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use tessari_constants::{COMMIT_BACKOFF_CEILING, COMMIT_BACKOFF_STEP, MAX_COMMIT_ATTEMPTS};
 use tessari_encoding::{CausalStamp, LogId, LogRecord, Mutation, RecordValue, StampedValue};
-use tessari_types::{Sequence, ShardId, TableId};
+use tessari_types::{Epoch, Reach, Sequence, ShardId, TableId};
 
 use super::{RecordAddress, Transaction};
 use crate::catalog::ShardMap;
@@ -32,6 +32,15 @@ thread_local! {
     /// gate: the window a split must not fall into (ADR-0095 D8).
     static AFTER_PLACEMENT: std::cell::RefCell<Option<Hook>> =
         const { std::cell::RefCell::new(None) };
+}
+
+/// Where a commit landed: one position, in one log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Committed {
+    /// The log the position counts in.
+    pub log: LogId,
+    /// The position the commit was written at.
+    pub sequence: Sequence,
 }
 
 /// What becomes of a settled transaction's batch.
@@ -224,6 +233,32 @@ impl Transaction<'_> {
         self.writes.insert(address, RecordValue::Tombstone);
     }
 
+    /// Whether this transaction has written anything a commit would land.
+    ///
+    /// A read commits too — an empty transaction — and nothing about it is
+    /// worth waiting for copies of (ADR-0106).
+    #[must_use]
+    pub fn writes_anything(&self) -> bool {
+        !self.writes.is_empty()
+    }
+
+    /// The range this transaction's commit lands in — the home whose log
+    /// [`commit_placed`](Self::commit_placed) will name (ADR-0106).
+    ///
+    /// The commit's own derivation, run early, so a write that must wait for
+    /// copies is judged against where it actually lands: a membership row is a
+    /// store-wide write whatever namespace the session has selected.
+    ///
+    /// # Errors
+    ///
+    /// A substrate failure reading what the records were before.
+    pub fn home(&self) -> Result<Reach> {
+        let identity = self.store.node_identity()?;
+        let placement = self.placement()?;
+        let record = self.log_record(identity.id, &placement)?;
+        crate::catalog::home_of(&record)
+    }
+
     /// Discard the transaction.
     ///
     /// Nothing was written, so nothing is undone. Dropping the transaction does
@@ -240,6 +275,21 @@ impl Transaction<'_> {
     /// record this one wrote, [`Error::CommitContention`] when every attempt
     /// lost the race for the committed tail, or a substrate error.
     pub fn commit(self) -> Result<Sequence> {
+        self.settle(Settle::Apply)
+            .map(|committed| committed.sequence)
+    }
+
+    /// [`commit`](Self::commit), answering the log the position counts in.
+    ///
+    /// A commit lands in ONE log — the line's log of the home it writes under a
+    /// leadership, this node's own otherwise — and a write waiting for a
+    /// majority waits for followers to hold that log through that position
+    /// (ADR-0106 D6). A position without its log is a number in no counter.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`commit`](Self::commit).
+    pub fn commit_placed(self) -> Result<Committed> {
         self.settle(Settle::Apply)
     }
 
@@ -269,16 +319,19 @@ impl Transaction<'_> {
         self.settle(Settle::Discard).map(|_| ())
     }
 
-    fn settle(self, settle: Settle) -> Result<Sequence> {
+    fn settle(mut self, settle: Settle) -> Result<Committed> {
         if self.writes.is_empty() {
             // The log position, not this transaction's snapshot. Nothing was
             // committed, so neither answer is a position anything was written
             // at — but the return names a log position, and the snapshot stopped
             // being one when the version was separated from it (Q-614).
-            return self.store.committed_tail(
-                self.store
-                    .own_log(crate::store::UNPARTITIONED_REPORT_HOME)?,
-            );
+            let log = self
+                .store
+                .own_log(crate::store::UNPARTITIONED_REPORT_HOME)?;
+            return Ok(Committed {
+                log,
+                sequence: self.store.committed_tail(log)?,
+            });
         }
         // First, and after the empty check rather than before it. First because
         // a node that has run out of leadership should not be doing schema
@@ -356,11 +409,20 @@ impl Transaction<'_> {
             // what is being written, not of the state being written onto. The
             // position is allocated from this home's counter, which is the whole of
             // what "the sequence is per-range" means at the write end.
-            // And the writer, which is THIS node: a commit allocates into its own
-            // log and never into another writer's. That is the whole of what S2.2
-            // means at the write end — two masters on one range are two counters,
-            // and a node that allocated from the other's would be back to one.
-            let log = LogId::new(crate::catalog::home_of(&record)?, self.store.writer()?);
+            // And the writer. Under a leadership, the line's one log of a
+            // single-leader range, which the next leader continues (ADR-0107) —
+            // and THIS node's own where the range admits two writers, since two
+            // masters are two counters (S2.2). Under none — a store standing
+            // alone, a node's declarations before it joins — its own log. The
+            // leadership is asked once here and stamped on every attempt, so the
+            // log and the epoch the record names cannot disagree.
+            let home = crate::catalog::home_of(&record)?;
+            let epoch = self.store.epoch_under(&placed, home);
+            let log = if epoch > Epoch::ZERO && !self.admits_two_writers_here(home)? {
+                tessari_encoding::LogId::line(home)
+            } else {
+                self.store.own_log(home)?
+            };
 
             loop {
                 attempt = attempt.saturating_add(1);
@@ -444,6 +506,11 @@ impl Transaction<'_> {
                 // applying those logs needs to know where each commit stood among
                 // all of them — which only the writer knows (ADR-0084, Q-796).
                 carried.set_order(commit_version);
+                // And the leadership it is committed under, on the line that
+                // governs its home — the epoch a follower refuses a second
+                // history by and an election compares (ADR-0059); zero for a
+                // node nobody made a leader.
+                carried.set_epoch(epoch);
                 // Index entries are derived here rather than carried in the record,
                 // and they are derived inside the loop because they depend on the
                 // committed state this attempt is building on (see `crate::index`).
@@ -477,7 +544,10 @@ impl Transaction<'_> {
                 // rehearsal and a write, and it is one line so that it can only ever
                 // be the whole difference.
                 if matches!(settle, Settle::Discard) {
-                    return Ok(commit_at);
+                    return Ok(Committed {
+                        log,
+                        sequence: commit_at,
+                    });
                 }
                 // Before the batch can be read: a reader at this version must not be
                 // answered from name or table rows held from before it.
@@ -506,7 +576,10 @@ impl Transaction<'_> {
                     drop(turn);
                     self.store.write_gate().land(ticket, backend)
                 } else {
-                    let applied = self.store.write_gate().apply(batch, backend);
+                    let applied =
+                        self.store
+                            .write_gate()
+                            .apply(batch, backend, crate::gate::Landing::Synced);
                     drop(turn);
                     applied
                 };
@@ -520,7 +593,10 @@ impl Transaction<'_> {
                         if discarded > 0 {
                             self.store.discarded(discarded);
                         }
-                        return Ok(commit_at);
+                        return Ok(Committed {
+                            log,
+                            sequence: commit_at,
+                        });
                     }
                     // The position moved between reading it and applying — or the
                     // batch was derived on a staged one that did not land — so the

@@ -1138,8 +1138,90 @@ pub enum Error {
         span: Span,
     },
 
+    /// A join token could not be made (ADR-0108 D9).
+    ///
+    /// No fallback, for [`Error::IdentityUnavailable`]'s reason: a token from a
+    /// weaker source is a credential somebody else can produce.
+    #[error("the store cannot make a join token: {reason} (at {span})")]
+    TokenUnavailable {
+        /// Why there is no token.
+        reason: &'static str,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A read asked to be answered by a node fresher than this cluster can know.
     ///
+    /// A write, or a `COMMIT`, asked to be acknowledged at a level its namespace
+    /// does not let a request lower to (ADR-0106 D2).
+    ///
+    /// Refused before anything is written. A namespace's level is a default
+    /// somebody relies on, and one any caller can silently lower is not one —
+    /// so lowering it takes the namespace's own `OR WEAKER`.
+    #[error(
+        "this write asks for `{asked}` (at {span}), and namespace `{namespace}` \
+         waits for `{stated}`: write the namespace's level or a stronger one, or \
+         declare `ALTER NAMESPACE {namespace} {stated} OR WEAKER` to let a request \
+         ask for less"
+    )]
+    AcknowledgeBelowNamespace {
+        /// The level the request asked for.
+        asked: tessari_types::Acknowledge,
+        /// The namespace's own.
+        stated: tessari_types::Acknowledgement,
+        /// The namespace the write is in.
+        namespace: String,
+        /// Where the request is.
+        span: Span,
+    },
+
+    /// A `MAJORITY` write the declared voters cannot acknowledge, refused
+    /// before it commits (ADR-0106 D7).
+    ///
+    /// A voter whose subscription does not cover the write can never hold it.
+    /// When the ones that can do not make up a majority, accepting the write and
+    /// timing it out would commit something the caller is then told failed.
+    #[error(
+        "this write waits for {needed} of {voters} voter(s) to hold it (at \
+         {span}), and only {holders:?} besides this node subscribe to where it \
+         is written: nothing was written. Declare a subscription that covers it \
+         on enough voters, or write it with `ACKNOWLEDGE LEADER` if the namespace \
+         allows that"
+    )]
+    MajorityUnreachable {
+        /// The voters, other than this node, that do subscribe to it.
+        holders: Vec<String>,
+        /// How many voters the range has, this node included.
+        voters: usize,
+        /// How many of them a majority is.
+        needed: usize,
+        /// Where the write is.
+        span: Span,
+    },
+
+    /// A `MAJORITY` write committed here that not enough voters acknowledged in
+    /// time (ADR-0106 D4).
+    ///
+    /// **The write IS committed on this node**, and this refusal says so rather
+    /// than answering success: whether it survives a failover depends on copies
+    /// this node could not confirm. Retrying is safe only for a write that
+    /// says the same thing twice.
+    #[error(
+        "this write (at {span}) is committed on this node at sequence {sequence}, \
+         and only {held_by:?} besides it acknowledged holding it in time, where \
+         {needed} copies were needed: it may not survive a failover"
+    )]
+    NotAcknowledgedInTime {
+        /// Where it was committed in the log.
+        sequence: u64,
+        /// The voters, other than this node, that acknowledged it.
+        held_by: Vec<String>,
+        /// How many copies were needed, this node's included.
+        needed: usize,
+        /// Where the write is.
+        span: Span,
+    },
+
     /// A staleness bound says how far behind an answering node may be. A bound
     /// tighter than the interval at which a node learns anything about its peers
     /// is a promise nothing can check — it would be enforced against a picture
@@ -1563,6 +1645,21 @@ pub enum Error {
     /// where an attacker is not.
     #[error("this node is not taking a sign-in for that user right now")]
     SignInThrottled,
+
+    /// A statement that changes authority or membership, or reads the whole
+    /// store, arrived through another node acting for its caller (ADR-0108 D2).
+    ///
+    /// Such a statement is taken only from a caller who proved a credential to
+    /// the node that judges it, so a member cannot widen a user, add a member or
+    /// take the store's backup by asking another node to act for somebody.
+    #[error(
+        "`{statement}` is not taken through another node; send it to the node that \
+         leads, signed in there"
+    )]
+    MayNotTravel {
+        /// The statement, as the language spells it.
+        statement: &'static str,
+    },
 
     /// A passphrase was presented while guesses at it are being made to wait
     /// (ADR-0092 D2).

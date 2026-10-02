@@ -8,11 +8,12 @@
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use tessari_ql::{
-    Approximation, BinaryOp, EdgeClause, Error, ExprKind, Identity, InfoSubject, Projection,
-    RecordTarget, Script, Source, StatementKind, parse,
+    Approximation, BinaryOp, EdgeClause, Error, ExprKind, Identity, InfoSubject, NamespaceChange,
+    Projection, RecordTarget, Script, Source, StatementKind, parse,
 };
 use tessari_types::{
-    ConflictPolicy, Datetime, FieldKind, Number, RecordId, Replication, ReplicationClass, Value,
+    Acknowledge, Acknowledgement, ConflictPolicy, Datetime, FieldKind, Number, RecordId,
+    Replication, ReplicationClass, Value,
 };
 
 /// A replication factor, which is never zero.
@@ -1463,20 +1464,94 @@ fn the_clause_follows_if_not_exists_rather_than_displacing_it() {
 fn replication_moves_in_both_directions() {
     // D12: a namespace starts unreplicated and is switched on later, and the
     // statement that switches it on must be able to switch it off again.
-    let StatementKind::AlterNamespace { name, replication } =
+    let StatementKind::AlterNamespace { name, change } =
         one("ALTER NAMESPACE prod REPLICATION FACTOR 3;")
     else {
         panic!("ALTER NAMESPACE REPLICATION FACTOR");
     };
     assert_eq!(name.text, "prod");
-    assert_eq!(replication, factor(3));
+    assert_eq!(change, NamespaceChange::Replication(factor(3)));
 
-    let StatementKind::AlterNamespace { replication, .. } =
+    let StatementKind::AlterNamespace { change, .. } =
         one("ALTER NAMESPACE prod REPLICATION NONE;")
     else {
         panic!("ALTER NAMESPACE REPLICATION NONE");
     };
-    assert_eq!(replication, Replication::None);
+    assert_eq!(change, NamespaceChange::Replication(Replication::None));
+}
+
+/// ADR-0106 D2: the level a namespace's writes wait for, and whether a request
+/// may ask for less, are declared where its replication is.
+#[test]
+fn a_namespace_declares_how_many_copies_acknowledge_a_write() {
+    let StatementKind::DefineNamespace { acknowledge, .. } = one("DEFINE NAMESPACE prod;") else {
+        panic!("DEFINE NAMESPACE");
+    };
+    assert_eq!(acknowledge, None, "a bare definition states nothing");
+
+    let StatementKind::DefineNamespace {
+        replication,
+        acknowledge,
+        ..
+    } = one("DEFINE NAMESPACE prod REPLICATION FACTOR 3 ACKNOWLEDGE MAJORITY;")
+    else {
+        panic!("DEFINE NAMESPACE … ACKNOWLEDGE MAJORITY");
+    };
+    assert_eq!(replication, Some(factor(3)));
+    assert_eq!(
+        acknowledge,
+        Some(Acknowledgement {
+            level: Acknowledge::Majority,
+            or_weaker: false
+        })
+    );
+
+    let StatementKind::AlterNamespace { change, .. } =
+        one("ALTER NAMESPACE prod ACKNOWLEDGE MAJORITY OR WEAKER;")
+    else {
+        panic!("ALTER NAMESPACE ACKNOWLEDGE");
+    };
+    assert_eq!(
+        change,
+        NamespaceChange::Acknowledge(Acknowledgement {
+            level: Acknowledge::Majority,
+            or_weaker: true
+        })
+    );
+    assert!(parse("DEFINE NAMESPACE prod ACKNOWLEDGE QUORUM;").is_err());
+    assert!(parse("DEFINE NAMESPACE prod ACKNOWLEDGE;").is_err());
+}
+
+/// ADR-0106 D2: a write, or the `COMMIT` of several, may name its own level —
+/// and only a write may, because a read waits for no copies.
+#[test]
+fn a_write_or_a_commit_may_name_its_own_acknowledgement() {
+    let level = |source: &str| {
+        let parsed = script(source);
+        assert_eq!(parsed.statements.len(), 1, "{source}");
+        parsed.statements.into_iter().next().unwrap().acknowledge
+    };
+    assert_eq!(level("CREATE t:1 = { a: 1 };"), None);
+    assert_eq!(
+        level("CREATE t:1 = { a: 1 } ACKNOWLEDGE MAJORITY;"),
+        Some(Acknowledge::Majority)
+    );
+    assert_eq!(
+        level("UPDATE t:1 MERGE { a: 2 } ACKNOWLEDGE LEADER;"),
+        Some(Acknowledge::Leader)
+    );
+    assert_eq!(
+        level("COMMIT ACKNOWLEDGE MAJORITY;"),
+        Some(Acknowledge::Majority)
+    );
+    assert!(
+        parse("SELECT * FROM t ACKNOWLEDGE MAJORITY;").is_err(),
+        "a read waits for no copies"
+    );
+    assert!(
+        parse("CREATE t:1 = { a: 1 } ACKNOWLEDGE MAJORITY OR WEAKER;").is_err(),
+        "OR WEAKER is the namespace's to grant, not a request's to claim"
+    );
 }
 
 #[test]

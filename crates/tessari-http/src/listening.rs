@@ -14,13 +14,18 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-/// Where connections come from: the runtime's listener, or a test's script.
+/// Where connections come from: the runtime's listener, TLS on it, or a test's
+/// script.
 pub(crate) trait Accept: Send + 'static {
-    fn accept(&mut self) -> impl Future<Output = io::Result<(TcpStream, SocketAddr)>> + Send;
+    /// What one accepted connection is.
+    type Io: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static;
+    fn accept(&mut self) -> impl Future<Output = io::Result<(Self::Io, SocketAddr)>> + Send;
     fn local_addr(&self) -> io::Result<SocketAddr>;
 }
 
 impl Accept for TcpListener {
+    type Io = TcpStream;
+
     fn accept(&mut self) -> impl Future<Output = io::Result<(TcpStream, SocketAddr)>> + Send {
         Self::accept(self)
     }
@@ -67,10 +72,10 @@ impl<A: Accept> Listening<A> {
 }
 
 impl<A: Accept> axum::serve::Listener for Listening<A> {
-    type Io = TcpStream;
+    type Io = A::Io;
     type Addr = SocketAddr;
 
-    async fn accept(&mut self) -> (TcpStream, SocketAddr) {
+    async fn accept(&mut self) -> (A::Io, SocketAddr) {
         loop {
             match self.accepting.accept().await {
                 Ok(accepted) => return accepted,
@@ -117,6 +122,8 @@ mod tests {
     struct Scripted(VecDeque<io::Result<(TcpStream, SocketAddr)>>);
 
     impl Accept for Scripted {
+        type Io = TcpStream;
+
         async fn accept(&mut self) -> io::Result<(TcpStream, SocketAddr)> {
             match self.0.pop_front() {
                 Some(next) => next,

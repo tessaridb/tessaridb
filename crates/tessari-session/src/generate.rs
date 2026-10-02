@@ -183,7 +183,9 @@ fn stamp(bytes: &mut [u8; UUID_LEN], millis: u64) {
 }
 
 /// Fill the buffer from this thread's source, opening it on the first call.
-fn fill(bytes: &mut [u8; UUID_LEN]) -> std::io::Result<()> {
+///
+/// Any length, because a join token takes it too (ADR-0108 D9).
+pub(crate) fn fill(bytes: &mut [u8]) -> std::io::Result<()> {
     SOURCE.with_borrow_mut(|held| {
         if held.is_none() {
             *held = Some(File::open(ENTROPY_SOURCE)?);

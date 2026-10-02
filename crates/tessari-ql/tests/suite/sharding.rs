@@ -159,7 +159,10 @@ fn a_placement_is_moved_by_alter_replica_and_removed_by_leads_none() {
         .statements
         .iter()
         .map(|statement| match &statement.kind {
-            StatementKind::AlterReplica { name, leads } => (name.text.clone(), leads.clone()),
+            StatementKind::AlterReplica {
+                name,
+                change: tessari_ql::ReplicaChange::Leads(leads),
+            } => (name.text.clone(), leads.clone()),
             other => panic!("{other:?}"),
         })
         .collect();
@@ -175,6 +178,49 @@ fn a_placement_is_moved_by_alter_replica_and_removed_by_leads_none() {
         "ALTER REPLICA b LEADS STORE;",
         "ALTER REPLICA b LEADS;",
         "ALTER REPLICA b;",
+    ] {
+        assert!(parse(refused).is_err(), "{refused}");
+    }
+}
+
+#[test]
+fn a_peer_row_is_amended_one_clause_at_a_time() {
+    use tessari_ql::ReplicaChange;
+    let parsed = parse(
+        "ALTER REPLICA b AT 'b2:9001'; ALTER REPLICA b ROLES serving, writable; \
+         ALTER REPLICA b CLIENTS AT 'b2:9080'; ALTER REPLICA b CLIENTS NONE; \
+         ALTER REPLICA b HTTP AT 'http://b2:8000'; ALTER REPLICA b HTTP NONE;",
+    )
+    .unwrap();
+    let changes: Vec<ReplicaChange> = parsed
+        .statements
+        .into_iter()
+        .map(|statement| match statement.kind {
+            StatementKind::AlterReplica { change, .. } => change,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(changes[0], ReplicaChange::At("b2:9001".to_owned()));
+    assert!(
+        matches!(&changes[1], ReplicaChange::Roles(roles) if roles.len() == 2),
+        "{changes:?}"
+    );
+    assert_eq!(
+        changes[2],
+        ReplicaChange::ClientsAt(Some("b2:9080".to_owned()))
+    );
+    assert_eq!(changes[3], ReplicaChange::ClientsAt(None));
+    assert_eq!(
+        changes[4],
+        ReplicaChange::HttpAt(Some("http://b2:8000".to_owned()))
+    );
+    assert_eq!(changes[5], ReplicaChange::HttpAt(None));
+    // One clause each, and every one says what it changes.
+    for refused in [
+        "ALTER REPLICA b AT;",
+        "ALTER REPLICA b ROLES;",
+        "ALTER REPLICA b CLIENTS 'b2:9080';",
+        "ALTER REPLICA b AT 'b2:9001' ROLES serving;",
     ] {
         assert!(parse(refused).is_err(), "{refused}");
     }

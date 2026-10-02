@@ -48,6 +48,10 @@ const FIELD_REPLICATES: &str = "replicates";
 const FIELD_LEADS: &str = "leads";
 const FIELD_CLIENTS: &str = "clients";
 const FIELD_HTTP: &str = "http";
+const FIELD_FINGERPRINT: &str = "fingerprint";
+const FIELD_JOIN: &str = "join";
+const FIELD_DIGEST: &str = "digest";
+const FIELD_EXPIRES: &str = "expires";
 
 const ENTITY: &str = "replica";
 
@@ -154,6 +158,25 @@ pub struct ReplicaDefinition {
     /// The HTTP base a client reaches that peer at (`HTTP AT`), for the
     /// `Location` of a `307`. `None` for the same reason as [`Self::clients`].
     pub http: Option<String>,
+    /// The SHA-256 of the one certificate allowed to bind this row
+    /// (`FINGERPRINT`, ADR-0108 D9), lowercase hex.
+    ///
+    /// One of the three ways a row learns its node — `NODE`, this, or a join
+    /// token — because a row that bound whichever peer arrived first handed its
+    /// whole reach to it (R-15).
+    pub fingerprint: Option<String>,
+    /// A join token waiting to bind this row (`CREATE JOIN TOKEN`), as its
+    /// digest and its expiry; cleared by the binding that spends it.
+    pub join: Option<JoinTicket>,
+}
+
+/// A one-time join token as the catalog keeps it: never the token itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinTicket {
+    /// The token's SHA-256, lowercase hex.
+    pub digest: String,
+    /// When it stops binding, in milliseconds since the Unix epoch.
+    pub expires_ms: i64,
 }
 
 impl ReplicaDefinition {
@@ -192,6 +215,26 @@ impl ReplicaDefinition {
         if let Some(http) = &self.http {
             fields.insert(FIELD_HTTP.to_owned(), Value::from(http.as_str()));
         }
+        // Both written only when there is one, so a row declared before
+        // ADR-0108 D9 keeps its bytes.
+        if let Some(fingerprint) = &self.fingerprint {
+            fields.insert(
+                FIELD_FINGERPRINT.to_owned(),
+                Value::from(fingerprint.as_str()),
+            );
+        }
+        if let Some(join) = &self.join {
+            fields.insert(
+                FIELD_JOIN.to_owned(),
+                Value::Object(BTreeMap::from([
+                    (FIELD_DIGEST.to_owned(), Value::from(join.digest.as_str())),
+                    (
+                        FIELD_EXPIRES.to_owned(),
+                        Value::Number(Number::Integer(join.expires_ms)),
+                    ),
+                ])),
+            );
+        }
         Value::Object(fields)
     }
 
@@ -222,7 +265,34 @@ impl ReplicaDefinition {
                 .transpose()?,
             clients: text_in(fields, FIELD_CLIENTS)?,
             http: text_in(fields, FIELD_HTTP)?,
+            fingerprint: text_in(fields, FIELD_FINGERPRINT)?,
+            join: join_in(fields)?,
         })
+    }
+}
+
+/// The join token a stored row waits on: absent is none, anything else that is
+/// not a digest and an expiry is refused rather than read as none.
+fn join_in(fields: &BTreeMap<String, Value>) -> Result<Option<JoinTicket>> {
+    let Some(found) = fields.get(FIELD_JOIN) else {
+        return Ok(None);
+    };
+    let malformed = |field: &'static str, found: &Value| Error::CatalogMalformed {
+        entity: ENTITY,
+        field,
+        found: found.type_name(),
+    };
+    let Value::Object(join) = found else {
+        return Err(malformed(FIELD_JOIN, found));
+    };
+    match (join.get(FIELD_DIGEST), join.get(FIELD_EXPIRES)) {
+        (Some(Value::String(digest)), Some(Value::Number(Number::Integer(expires_ms)))) => {
+            Ok(Some(JoinTicket {
+                digest: digest.clone(),
+                expires_ms: *expires_ms,
+            }))
+        }
+        _ => Err(malformed(FIELD_JOIN, found)),
     }
 }
 
@@ -327,6 +397,8 @@ impl Catalog<'_, '_> {
             leads,
             clients: None,
             http: None,
+            fingerprint: None,
+            join: None,
         })
     }
 
@@ -343,6 +415,13 @@ impl Catalog<'_, '_> {
         if self.replica_row(&definition.name)?.is_some() {
             return Err(Error::NameTaken {
                 qualified: qualify(Level::Replica, &[], &definition.name),
+            });
+        }
+        if let Some(node) = definition.node
+            && self.is_tombstoned(&node)?
+        {
+            return Err(Error::NodeTombstoned {
+                node: RecordId::Uuid(node).to_string(),
             });
         }
         self.write_replica(&definition);
@@ -401,6 +480,30 @@ impl Catalog<'_, '_> {
             return Ok(false);
         };
         definition.node = Some(node);
+        // The token is spent by the binding it made, in the same write.
+        definition.join = None;
+        self.write_replica(&definition);
+        Ok(true)
+    }
+
+    /// Wait on a join token for `name`'s row (`CREATE JOIN TOKEN`).
+    ///
+    /// Answers `false` when there is no row under that name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::RowAlreadyBound`] when the row already names its node,
+    /// and an error when the stored definitions cannot be read.
+    pub fn wait_for_join(&mut self, name: &str, ticket: JoinTicket) -> Result<bool> {
+        let Some(mut definition) = self.replica_row(name)? else {
+            return Ok(false);
+        };
+        if definition.node.is_some() {
+            return Err(Error::RowAlreadyBound {
+                name: name.to_owned(),
+            });
+        }
+        definition.join = Some(ticket);
         self.write_replica(&definition);
         Ok(true)
     }
@@ -431,6 +534,12 @@ impl Catalog<'_, '_> {
         self.keeps_a_candidate(&found)?;
         self.transaction
             .delete(system::address(system::REPLICAS, RecordId::from(name)));
+        // A row that named a node removes the node, not only the row: its
+        // identity and certificate are still valid, and nothing else would
+        // keep it from being bound again (ADR-0108 D9).
+        if let Some(node) = found.node {
+            self.tombstone_node(node);
+        }
         Ok(true)
     }
 
@@ -450,6 +559,31 @@ impl Catalog<'_, '_> {
         }
         self.keeps_a_candidate(&definition)?;
         definition.leads = leads;
+        self.write_replica(&definition);
+        Ok(true)
+    }
+
+    /// Amend the row named `name` in place with `amend`, and answer whether
+    /// there was one (Q-892).
+    ///
+    /// For the clauses no other row depends on — where the peer answers, what
+    /// it is for, where clients and HTTP reach it. The placement has a rule of
+    /// its own and goes through [`Self::alter_replica_leads`]. The node the row
+    /// is bound to, its subscription and its fingerprint are not offered to
+    /// `amend` by any caller, so a row keeps the identity it was bound to.
+    ///
+    /// # Errors
+    ///
+    /// The store's, reading or decoding the row.
+    pub fn amend_replica(
+        &mut self,
+        name: &str,
+        amend: impl FnOnce(&mut ReplicaDefinition),
+    ) -> Result<bool> {
+        let Some(mut definition) = self.replica_row(name)? else {
+            return Ok(false);
+        };
+        amend(&mut definition);
         self.write_replica(&definition);
         Ok(true)
     }
@@ -636,59 +770,71 @@ pub fn another_node_may_write(declared: &[ReplicaDefinition], me: &[u8; NODE_ID_
     })
 }
 
-/// Which declared row, if any, the greeting of `node` binds itself to.
+/// Who arrived at the door, as far as binding a row is concerned.
+#[derive(Debug, Clone, Copy)]
+pub struct Greeter<'a> {
+    /// The node the greeting and its certificate both name.
+    pub node: [u8; NODE_ID_LEN],
+    /// The SHA-256 of the certificate it presented, lowercase hex.
+    pub fingerprint: &'a str,
+    /// The SHA-256 of the join token it carried, lowercase hex, if it carried one.
+    pub token: Option<&'a str>,
+}
+
+/// Which declared row, if any, a greeting binds itself to (ADR-0108 D9).
 ///
 /// A row with no `node` is **declared but undiallable**: `Directory::greet_round`
-/// skips it, because opening a session derives the peer's transport name from
-/// its identifier and there is none to derive from. So a row nobody bound can
-/// never be bound from this side, and the only event that can ever bind it is
-/// that peer arriving here and proving who it is. The greeting supplies the
-/// **id and nothing else** — the endpoint, the roles and the reach are what the
-/// operator wrote, and a row that took its role from the wire would be a role
-/// somebody else's first packet got to assign.
+/// skips it, so the only event that can bind it is that peer arriving here and
+/// proving who it is. The greeting supplies the **id and nothing else** — the
+/// endpoint, the roles and the reach are what the operator wrote.
 ///
-/// # Two refusals, and the second is the load-bearing one
+/// # Approved, never first-come
 ///
-/// Nothing is bound when a row **already names** `node`: that peer is known, and
-/// binding a second row to one id would put one node in the catalog twice, where
-/// the two rows can disagree about its endpoint and its roles.
+/// A row binds a greeter only when the operator said which one: its pinned
+/// certificate [`ReplicaDefinition::fingerprint`] is the one presented, or a join
+/// token the row is waiting on — unexpired at `now_ms` — is the one carried.
+/// A row that says neither binds nobody. It used to bind whichever peer holding
+/// a cluster-issued certificate greeted first, and that peer then received the
+/// row's whole reach, users' credential hashes included (R-15).
 ///
-/// Nothing is bound when **more than one** row is unbound either, and this is
-/// the refusal that matters. An inbound connection carries no discriminator that
-/// could choose between them — the source port is ephemeral and two peers on one
-/// host share an address — so a binding taken among several would be a guess, and
-/// the cost of guessing wrong is a node running under somebody else's roles at
-/// somebody else's dial-back address. Declining leaves the operator with a row
-/// they can bind by hand with `NODE`, which is a visible non-event rather than a
-/// silent wrong answer.
-///
-/// One at a time is also the settled answer in this class of system: a cluster
-/// that has been told about a member it has not yet heard from holds further
-/// membership changes until it has, for exactly this reason. The comparison and
-/// its source are recorded in ADR-0072.
+/// Nothing is bound when a row **already names** the node — one node in the
+/// catalog twice is two rows that can disagree about it — nor when the evidence
+/// matches more than one row, which would be a guess. Whether the node was
+/// dropped before (a tombstone) is the caller's question, asked of the catalog.
 #[must_use]
 pub fn the_row_a_greeting_binds<'a>(
     declared: &'a [ReplicaDefinition],
-    node: &[u8; NODE_ID_LEN],
+    greeter: &Greeter<'_>,
+    now_ms: i64,
 ) -> Option<&'a str> {
-    if declared.iter().any(|row| row.node == Some(*node)) {
+    if declared.iter().any(|row| row.node == Some(greeter.node)) {
         return None;
     }
-    let mut unbound = declared.iter().filter(|row| row.node.is_none());
-    let candidate = unbound.next()?;
-    if unbound.next().is_some() {
+    let approves = |row: &&ReplicaDefinition| {
+        row.node.is_none()
+            && (row.fingerprint.as_deref() == Some(greeter.fingerprint)
+                || row.join.as_ref().is_some_and(|join| {
+                    Some(join.digest.as_str()) == greeter.token && join.expires_ms > now_ms
+                }))
+    };
+    let mut approved = declared.iter().filter(approves);
+    let row = approved.next()?;
+    if approved.next().is_some() {
         return None;
     }
-    Some(candidate.name.as_str())
+    Some(row.name.as_str())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ReplicaDefinition, the_row_a_greeting_binds};
+    use super::{Greeter, JoinTicket, ReplicaDefinition, the_row_a_greeting_binds};
     use tessari_encoding::{NODE_ID_LEN, Roles};
 
     const GREETER: [u8; NODE_ID_LEN] = [9; NODE_ID_LEN];
     const SOMEBODY_ELSE: [u8; NODE_ID_LEN] = [7; NODE_ID_LEN];
+    const PRESENTED: &str = "aa";
+    const TOKEN: &str = "bb";
+    const NOW: i64 = 1_000;
 
     /// A row an operator declared with `NODE`.
     fn bound(name: &str, node: [u8; NODE_ID_LEN]) -> ReplicaDefinition {
@@ -698,7 +844,8 @@ mod tests {
         }
     }
 
-    /// A row an operator declared without `NODE`.
+    /// A row an operator declared without `NODE`, and without saying who may
+    /// bind it.
     ///
     /// The names differ per row throughout, so that a rule taking the wrong
     /// candidate is detectable rather than accidentally right.
@@ -712,51 +859,84 @@ mod tests {
             leads: None,
             clients: None,
             http: None,
+            fingerprint: None,
+            join: None,
         }
     }
 
+    fn pinned(name: &str, fingerprint: &str) -> ReplicaDefinition {
+        ReplicaDefinition {
+            fingerprint: Some(fingerprint.to_owned()),
+            ..unbound(name)
+        }
+    }
+
+    fn waiting(name: &str, digest: &str, expires_ms: i64) -> ReplicaDefinition {
+        ReplicaDefinition {
+            join: Some(JoinTicket {
+                digest: digest.to_owned(),
+                expires_ms,
+            }),
+            ..unbound(name)
+        }
+    }
+
+    fn greeter(token: Option<&'static str>) -> Greeter<'static> {
+        Greeter {
+            node: GREETER,
+            fingerprint: PRESENTED,
+            token,
+        }
+    }
+
+    fn binds(declared: &[ReplicaDefinition], token: Option<&'static str>) -> Option<String> {
+        the_row_a_greeting_binds(declared, &greeter(token), NOW).map(str::to_owned)
+    }
+
+    /// R-15: the row an operator left open is no longer handed to whichever
+    /// peer greets first.
     #[test]
-    fn the_one_row_nobody_bound_is_the_row_a_greeting_binds() {
+    fn a_row_that_says_nothing_about_its_node_binds_nobody() {
         let declared = [bound("leader", SOMEBODY_ELSE), unbound("joiner")];
-        assert_eq!(
-            the_row_a_greeting_binds(&declared, &GREETER),
-            Some("joiner")
-        );
+        assert_eq!(binds(&declared, None), None);
+        assert_eq!(binds(&declared, Some(TOKEN)), None);
+    }
+
+    #[test]
+    fn a_pinned_certificate_binds_its_row_and_no_other() {
+        let declared = [unbound("open"), pinned("joiner", PRESENTED)];
+        assert_eq!(binds(&declared, None).as_deref(), Some("joiner"));
+        let elsewhere = [pinned("joiner", "cc")];
+        assert_eq!(binds(&elsewhere, None), None);
+    }
+
+    #[test]
+    fn a_join_token_binds_its_row_until_it_expires() {
+        let declared = [unbound("open"), waiting("joiner", TOKEN, NOW + 1)];
+        assert_eq!(binds(&declared, Some(TOKEN)).as_deref(), Some("joiner"));
+        assert_eq!(binds(&declared, None), None, "no token carried");
+        assert_eq!(binds(&declared, Some("cc")), None, "another token");
+        let expired = [waiting("joiner", TOKEN, NOW)];
+        assert_eq!(binds(&expired, Some(TOKEN)), None, "expired at now");
     }
 
     #[test]
     fn an_empty_catalog_binds_nothing_because_there_is_no_row_to_bind() {
-        assert_eq!(the_row_a_greeting_binds(&[], &GREETER), None);
-    }
-
-    #[test]
-    fn a_catalog_whose_every_row_is_bound_binds_nothing() {
-        let declared = [bound("leader", SOMEBODY_ELSE)];
-        assert_eq!(the_row_a_greeting_binds(&declared, &GREETER), None);
+        assert_eq!(binds(&[], Some(TOKEN)), None);
     }
 
     /// The peer is already known, and knowing it twice is worse than once.
-    ///
-    /// Two rows for one id can disagree about that node's endpoint and its
-    /// roles, and every reader of the catalog then gets whichever it reaches
-    /// first. The unbound row beside it is what makes this a real test: without
-    /// it there would be nothing to bind either way.
     #[test]
     fn a_greeting_from_a_node_a_row_already_names_binds_nothing() {
-        let declared = [bound("leader", GREETER), unbound("joiner")];
-        assert_eq!(the_row_a_greeting_binds(&declared, &GREETER), None);
+        let declared = [bound("leader", GREETER), pinned("joiner", PRESENTED)];
+        assert_eq!(binds(&declared, None), None);
     }
 
-    /// The refusal the whole rule is built around.
-    ///
-    /// Nothing on an inbound connection can choose between two unbound rows —
-    /// the source port is ephemeral and two peers on one host share an address
-    /// — so binding either would be a guess, and the cost of guessing wrong is
-    /// a node running under somebody else's roles at somebody else's dial-back
-    /// address.
+    /// Evidence that approves two rows chooses neither: binding one would be
+    /// a guess, and a wrong guess runs a node under another row's roles.
     #[test]
-    fn two_rows_nobody_bound_bind_nothing_because_neither_can_be_chosen() {
-        let declared = [unbound("joiner"), unbound("another")];
-        assert_eq!(the_row_a_greeting_binds(&declared, &GREETER), None);
+    fn evidence_matching_two_rows_binds_neither() {
+        let declared = [pinned("joiner", PRESENTED), pinned("another", PRESENTED)];
+        assert_eq!(binds(&declared, None), None);
     }
 }

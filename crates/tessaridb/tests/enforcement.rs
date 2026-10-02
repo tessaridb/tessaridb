@@ -438,7 +438,65 @@ const TABLES: &[Table] = &[
         // frame that answers it to a caller who was NOT authorized for the
         // request that was redirected — the address of every member would then
         // be readable without a sign-in.
-        expected: 28,
+        //
+        // 32 since any node answers any request (G054, ADR-0108 D1–D3):
+        //
+        //   * `Db::coordinate_through` installs, once, who carries a request
+        //     this node cannot answer to the node that can. Classified
+        //     **ENFORCED, at the answering end**: the carried script runs there
+        //     in a session acting as the asserted user, whose grants decide —
+        //     after the door believed a signature by the proven peer, the
+        //     account digest matched that node's own catalog, the user's reach
+        //     lay inside the peer's subscription, and no statement that changes
+        //     authority or membership was in it (`coordinated::*`,
+        //     `assertion::tests::*`, serving
+        //     `a_follower_answers_a_client_that_cannot_follow_a_redirect`).
+        //     Re-classification trigger: anything outside the starting process
+        //     able to install a coordinator — it would then choose who the store
+        //     believes callers are.
+        //   * `Db::coordinator` hands it to the two surfaces; **exempt on
+        //     `coordinate_through`'s ground**, with the same trigger.
+        //   * `Db::answers_instead` names the node a refusal points at, from the
+        //     refusal and the member rows; **exempt on `member`'s ground** — both
+        //     surfaces call it only after the request was authorized here and
+        //     refused for where it must run.
+        //   * `Db::among` gives every session the peer directory (Q-863);
+        //     **exempt on `gather_through`'s ground**: set once by the starting
+        //     process, and it decides only which node a refusal names.
+        //
+        // 33 since one sign-in budget for a cluster (G054 W3, ADR-0108 D5):
+        // `Db::budget_through` installs, once, who is asked whether a name may
+        // try a password now. Classified **exempt on `gather_through`'s
+        // ground**: set by the starting process; it can only make a sign-in
+        // WAIT (or decide on this node's own count when it cannot answer) and
+        // never admits anybody — the password is still verified here.
+        // Re-classification trigger: an installed budget able to answer for a
+        // sign-in rather than about one.
+        //
+        // 35 since a store can be encrypted at rest (G054 W8, ADR-0108 D7):
+        //
+        //   * `Db::open_encrypted` opens a store on disk under a key. **Exempt
+        //     under E3**, with `open` and `open_with`: opening is holding the
+        //     store, and a caller who can open the directory holds every byte;
+        //     the key protects the disk from a caller who cannot, which is not
+        //     a permission. The refusals it adds (no key, another key, a key on
+        //     a plain store) are `encryption_tests::*` and CLI
+        //     `an_encrypted_store_keeps_its_records_*`.
+        //   * `Db::at_rest` hands the key to the command line's own backup and
+        //     restore; **exempt under E3** for the same reason — only the
+        //     process that opened the store with it can ask.
+        //     Re-classification trigger: any network surface reaching it.
+        //
+        // 36 since the console builds a secured cluster (G054 W8c, ADR-0108
+        // D9): `Db::presenting` installs, once, the reader `INFO FOR NODE`
+        // asks for the certificates this node presents. **Exempt on
+        // `gather_through`'s ground**: set by the starting process; it reads no
+        // record, catalog entry or grant, and what it reports is reached only
+        // through `INFO FOR NODE`, which `Needs::of` already holds to
+        // `Administer`. A fingerprint and an expiry are public by construction
+        // — every peer sees both in the handshake. Re-classification trigger:
+        // the reader carrying a private key or anything a handshake withholds.
+        expected: 36,
         count: |text| public_functions(&block(text, "impl Db")),
     },
     Table {
@@ -858,7 +916,37 @@ const TABLES: &[Table] = &[
         // the follower rows beside it. Re-classification trigger: a writer
         // reachable from a session or a route, which would let a caller report
         // a node in sync that is not.
-        expected: 53,
+        //
+        // 54-57 since a single-leader range keeps one history (G053 SG2d,
+        // ADR-0107): `Store::line_log`, `Store::history_log`,
+        // `Store::followed_log` and `Store::writing_epoch`. Classified **not a
+        // data path**: each answers a name — which log, which leadership — and
+        // reads no record, catalog entry or grant a caller could not already
+        // see; the reads that follow go through the doors classified above
+        // (`committed_tail` at its named lines, `log_records_within` behind
+        // `Serving::collected`). Re-classification trigger: any of them
+        // returning record content.
+        //
+        // 58 since adoption (same wave): `Store::adopt_into_line` renames one
+        // log's keys into its home's line log, with no identity. Classified
+        // **exempt, on `apply_record`'s ground**: its callers are this node's
+        // own lease taking and the follower's collector before it applies a
+        // peer's answer — neither reachable from a session or a route — and it
+        // moves records already in the store, creating none. Re-classification
+        // trigger: a caller reachable from a session or a route.
+        //
+        // 59-61 since a write can wait for a majority (G053 SG2, ADR-0106 D6):
+        // `Store::follower_sent` and `Store::follower_asked` are classified
+        // **exempt, on `follower_served`'s ground** — they write a process-local
+        // record of what a follower was sent and what its ask says it holds, no
+        // record, catalog entry or grant, and their one caller is the peer
+        // door's `Serving::collected`, after the follower proved its credential.
+        // `Store::await_held` is **not a data path**: it answers which voters
+        // hold a position and reads nothing a caller could not already see.
+        // Re-classification trigger, and it is sharper than its neighbours': a
+        // writer reachable from a session or a route would let a caller forge
+        // the acknowledgement a `MAJORITY` write is released on.
+        expected: 61,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1028,7 +1116,27 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 126 since the write redirect (G051, ADR-0101): `Db::member`, exempt,
     // classified above.
-    assert_eq!(total, 126, "the counted tables no longer sum to 126");
+    //
+    // 131 since a single-leader range keeps one history (G053 SG2d,
+    // ADR-0107): four name-only methods on `Store` and `adopt_into_line`,
+    // exempt — classified above.
+    //
+    // 134 since a write can wait for a majority (G053 SG2, ADR-0106 D6):
+    // `Store::follower_sent` and `Store::follower_asked`, exempt, and
+    // `Store::await_held`, not a data path — classified above.
+    //
+    // 138 since any node answers any request (G054, ADR-0108): four on `Db`,
+    // `coordinate_through` enforced and three exempt — classified above.
+    //
+    // 139 since one sign-in budget for a cluster: `Db::budget_through`,
+    // exempt, classified above.
+    //
+    // 141 since a store can be encrypted at rest (ADR-0108 D7):
+    // `Db::open_encrypted` and `Db::at_rest`, exempt, classified above.
+    //
+    // 142 since the console builds a secured cluster (G054 W8c):
+    // `Db::presenting`, exempt, classified above.
+    assert_eq!(total, 142, "the counted tables no longer sum to 142");
 }
 
 /// Every `.rs` file under a directory.
@@ -1146,9 +1254,30 @@ const RAW_FEED: &[&str] = &[
 /// exact-line match would otherwise admit the second site without anybody
 /// having looked at it.
 ///
+/// **Two, a third site: the held stream (ADR-0106 D5).** A follower holding a
+/// stream to its leader reads its own tail of each log before every ask, for
+/// exactly Two's purpose and on Two's ground: the value leaves this process only
+/// as the `from` of an outgoing ask on the peer link, and what comes back is
+/// whatever the leader's own subscription check permits — the stream reads
+/// through `Origin::collected`, the same door. Named here, by its exact line,
+/// so it was looked at rather than admitted by Two's pattern.
+///
+/// **Two, a fourth site: a candidate catching up (Q-897).** A node placed to
+/// lead a range whose leader does not answer collects the range from the peers
+/// that hold it, and reads its own tail of each log to seed that ask — Two's
+/// read for Two's purpose: the value leaves only as the `from` of an outgoing
+/// ask, answered through `Origin::collected` under the holder's own
+/// subscription check. Named by its exact line, as the third was.
+///
 /// **Five.** The greeting's placed line (ADR-0082) says how far this node's own
 /// log of the range it stands for reaches — One's field, for one range: a
 /// `Sequence`, sent only after the peer handshake.
+///
+/// **Six.** The voter's own position on a range's line (`Serving::reached_on`,
+/// Q-884) is Five's field read for the range a ballot names rather than the one
+/// this node is placed on: a `Sequence` judged here, which leaves only as the
+/// position a `LogBehind` refusal names to a candidate that completed the peer
+/// handshake.
 ///
 /// **Three and four.** `Serving::fill` is the peer door's scoped log reader —
 /// the loop behind `Serving::collected` that fills one answer under a byte
@@ -1183,6 +1312,18 @@ const CLASSIFIED: &[(&str, &str)] = &[
     (
         "tessari-cli/src/greeting_round.rs",
         "tail: store.committed_tail(log)?,",
+    ),
+    (
+        "tessari-cli/src/collection_round.rs",
+        "let tail = store.committed_tail(log).ok()?;",
+    ),
+    (
+        "tessari-cli/src/streaming.rs",
+        "let tail = store.committed_tail(log).map_err(|why| why.to_string())?;",
+    ),
+    (
+        "tessari-wire/src/collection.rs",
+        "tail: self.log.committed_tail(log).map_err(refused)?,",
     ),
     (
         "tessari-wire/src/collection.rs",

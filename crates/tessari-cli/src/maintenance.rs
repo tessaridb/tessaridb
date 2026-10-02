@@ -11,16 +11,21 @@ use tessaridb::Db;
 /// The whole store, because state is a pure function of the log — so this is a
 /// complete backup and not a partial one, and restoring it is a replay.
 pub(crate) fn backup(db: &Db, path: &std::path::Path, from: Option<u64>) -> Result<(), String> {
-    let written = aside(path, |out| {
+    let written = aside(path, db.at_rest(), |mut out| {
         // No `FROM` is the whole store, and the whole store is every log it holds.
         // A `FROM` names one sequence, which counts in one log — so it is the
         // incremental path, and a store holding several logs refuses it rather than
         // writing a file that reads as whole and is missing the rest (Q-624).
         match from {
-            None | Some(0 | 1) => tessari_backup::write(db.store(), out),
+            None | Some(0 | 1) => tessari_backup::write(db.store(), &mut out),
             Some(from) => {
                 let home = tessari_backup::only_log(db.store()).map_err(|why| why.to_string())?;
-                tessari_backup::write_from(db.store(), out, home, tessaridb::Sequence::new(from))
+                tessari_backup::write_from(
+                    db.store(),
+                    &mut out,
+                    home,
+                    tessaridb::Sequence::new(from),
+                )
             }
         }
         .map_err(|failure| match failure {
@@ -49,8 +54,8 @@ pub(crate) fn backup(db: &Db, path: &std::path::Path, from: Option<u64>) -> Resu
 /// Sized by what the store holds rather than by its history, and the one whole
 /// backup a pruned store can still take.
 pub(crate) fn snapshot(db: &Db, path: &std::path::Path) -> Result<(), String> {
-    let taken = aside(path, |out| {
-        tessari_backup::write_state(db.store(), out).map_err(|failure| failure.to_string())
+    let taken = aside(path, db.at_rest(), |mut out| {
+        tessari_backup::write_state(db.store(), &mut out).map_err(|failure| failure.to_string())
     })?;
     println!(
         "{} record(s) at version {} to {}",
@@ -68,7 +73,7 @@ pub(crate) fn snapshot(db: &Db, path: &std::path::Path) -> Result<(), String> {
 ///
 /// The parts it does not carry are named in the file's own header, and here.
 pub(crate) fn dump(db: &Db, path: &std::path::Path) -> Result<(), String> {
-    let taken = aside(path, |out| {
+    let taken = aside(path, db.at_rest(), |out| {
         let taken =
             tessari_session::write_script(db.store()).map_err(|failure| failure.to_string())?;
         std::io::Write::write_all(out, taken.text.as_bytes())
@@ -97,7 +102,8 @@ pub(crate) fn dump(db: &Db, path: &std::path::Path) -> Result<(), String> {
 /// (ADR-0091 §8).
 fn aside<T>(
     path: &std::path::Path,
-    write: impl FnOnce(&mut std::io::BufWriter<fs::File>) -> Result<T, String>,
+    key: Option<&tessaridb::AtRestKey>,
+    write: impl FnOnce(&mut dyn std::io::Write) -> Result<T, String>,
 ) -> Result<T, String> {
     let mut partial = path.as_os_str().to_owned();
     partial.push(".partial");
@@ -106,7 +112,17 @@ fn aside<T>(
         .map_err(|failure| failure.to_string())
         .and_then(|file| {
             let mut out = std::io::BufWriter::new(file);
-            let written = write(&mut out)?;
+            // Sealed under the store's key when it has one (ADR-0108 D7): a
+            // backup of an encrypted store is no less private than the store.
+            let written = match key {
+                Some(key) => {
+                    let mut sealing = key.seal_into(out).map_err(|failure| failure.to_string())?;
+                    let written = write(&mut sealing)?;
+                    out = sealing.finish().map_err(|failure| failure.to_string())?;
+                    written
+                }
+                None => write(&mut out)?,
+            };
             let file = out
                 .into_inner()
                 .map_err(|failure| failure.error().to_string())?;
@@ -138,10 +154,24 @@ fn aside<T>(
 }
 
 /// Whether the file at `path` is a state snapshot rather than a log.
-fn holds_a_state(path: &std::path::Path) -> Result<bool, String> {
+/// A backup file as it reads: opened with `key` when it was sealed, and as it
+/// is when it was not; sealed with no key is refused, saying so.
+fn opened(
+    path: &std::path::Path,
+    key: Option<&tessaridb::AtRestKey>,
+) -> std::io::Result<std::io::BufReader<tessari_vault::at_rest::Reading<fs::File>>> {
+    fs::File::open(path)
+        .and_then(|file| tessari_vault::at_rest::reading(key, file))
+        .map(std::io::BufReader::new)
+}
+
+fn holds_a_state(
+    path: &std::path::Path,
+    key: Option<&tessaridb::AtRestKey>,
+) -> Result<bool, String> {
     let mut opening = Vec::with_capacity(tessari_backup::STATE_MAGIC.len());
     std::io::Read::take(
-        fs::File::open(path).map_err(|failure| format!("{}: {failure}", path.display()))?,
+        opened(path, key).map_err(|failure| format!("{}: {failure}", path.display()))?,
         u64::try_from(tessari_backup::STATE_MAGIC.len()).unwrap_or(u64::MAX),
     )
     .read_to_end(&mut opening)
@@ -150,18 +180,24 @@ fn holds_a_state(path: &std::path::Path) -> Result<bool, String> {
 }
 
 /// Replay a file into an empty store, or write a snapshot's state into one.
-pub(crate) fn restore(db: &Db, path: &std::path::Path, upto: Option<u64>) -> Result<(), String> {
-    if holds_a_state(path)? {
+pub(crate) fn restore(
+    db: &Db,
+    path: &std::path::Path,
+    upto: Option<u64>,
+    sealed_under: Option<&tessaridb::AtRestKey>,
+) -> Result<(), String> {
+    // A sealed backup opens under the key it was sealed with: the one named,
+    // else the store's own — the store being restored into may use another.
+    let key = sealed_under.or(db.at_rest());
+    if holds_a_state(path, key)? {
         if upto.is_some() {
             return Err(format!(
                 "{}: a snapshot is one moment and is restored whole; --upto stops a log replay",
                 path.display()
             ));
         }
-        let taken = tessari_backup::read_state(db.store(), || {
-            fs::File::open(path).map(std::io::BufReader::new)
-        })
-        .map_err(|failure| format!("{}: {failure}", path.display()))?;
+        let taken = tessari_backup::read_state(db.store(), || opened(path, key))
+            .map_err(|failure| format!("{}: {failure}", path.display()))?;
         println!(
             "{} record(s) at version {} from {}",
             taken.records,
@@ -173,9 +209,8 @@ pub(crate) fn restore(db: &Db, path: &std::path::Path, upto: Option<u64>) -> Res
         }
         return Ok(());
     }
-    let mut input = std::io::BufReader::new(
-        fs::File::open(path).map_err(|failure| format!("{}: {failure}", path.display()))?,
-    );
+    let mut input =
+        opened(path, key).map_err(|failure| format!("{}: {failure}", path.display()))?;
     let upto = upto.map(tessaridb::Sequence::new);
     let held = tessari_backup::read_until(db.store(), &mut input, upto)
         .map_err(|failure| format!("{}: {failure}", path.display()))?;
@@ -220,11 +255,13 @@ pub(crate) fn log_name(home: tessaridb::Reach) -> String {
 }
 
 /// Read a backup and say what it holds, applying none of it.
-pub(crate) fn verify(path: &std::path::Path) -> Result<Ended, String> {
-    if holds_a_state(path)? {
-        let mut input = std::io::BufReader::new(
-            fs::File::open(path).map_err(|failure| format!("{}: {failure}", path.display()))?,
-        );
+pub(crate) fn verify(
+    path: &std::path::Path,
+    key: Option<&tessaridb::AtRestKey>,
+) -> Result<Ended, String> {
+    if holds_a_state(path, key)? {
+        let mut input =
+            opened(path, key).map_err(|failure| format!("{}: {failure}", path.display()))?;
         let taken = tessari_backup::verify_state(&mut input)
             .map_err(|failure| format!("{}: {failure}", path.display()))?;
         println!(
@@ -236,9 +273,8 @@ pub(crate) fn verify(path: &std::path::Path) -> Result<Ended, String> {
         }
         return Ok(Ended::Fine);
     }
-    let mut input = std::io::BufReader::new(
-        fs::File::open(path).map_err(|failure| format!("{}: {failure}", path.display()))?,
-    );
+    let mut input =
+        opened(path, key).map_err(|failure| format!("{}: {failure}", path.display()))?;
     let held = tessari_backup::verify(&mut input)
         .map_err(|failure| format!("{}: {failure}", path.display()))?;
     println!(

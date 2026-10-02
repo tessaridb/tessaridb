@@ -10,9 +10,13 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The client surfaces' TLS (ADR-0108 D4): the same rustls the peer link uses.
+rustls.workspace = true
+thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 
 [dev-dependencies]
+rcgen.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "test-util"] }
 
 [lints]

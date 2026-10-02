@@ -58,9 +58,13 @@ const identity = (): Node =>
           "held for as long as the tab is open and no longer — so the password is " +
           "cleared from the field above, and closing the tab ends the session.",
       ),
-      warning(
-        "Credentials travel in the clear, exactly as they do for every other route " +
-          "here: this store has no TLS and belongs on a network you protect.",
+      // Rewritten on load from how this page arrived: a node given a client
+      // certificate serves the console over TLS, and one that was not still
+      // sends the password as it was typed.
+      el(
+        "p",
+        { id: "transport-says", class: "note warn" },
+        "Credentials travel as typed unless this page arrived over https.",
       ),
       row(
         "spread",

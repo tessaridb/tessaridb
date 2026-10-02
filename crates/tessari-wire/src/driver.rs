@@ -49,8 +49,8 @@ use tokio_util::sync::CancellationToken;
 use crate::directory::{Destination, Directory};
 use crate::joining::Seed;
 pub use leadership::{
-    Renewing, heard_a_leader, heard_a_leader_on, heard_a_newer_policy, leader_of_range, stands,
-    stands_for, stands_for_the_store, voters,
+    Renewing, election_timeout, heard_a_leader, heard_a_leader_on, heard_a_newer_policy,
+    leader_of_range, stands, stands_for, stands_for_the_store, voters,
 };
 
 /// How long to wait before the next pass, given when the last one started.
@@ -110,6 +110,45 @@ where
         tokio::select! {
             biased;
             () = stop.cancelled() => return,
+            () = tokio::time::sleep(due_in(period, ran_at, Instant::now())) => {}
+        }
+    }
+}
+
+/// [`every`], where each pass names how long until the next one, and `wake`
+/// starts the next one early.
+///
+/// For the two rounds whose right period depends on what the last pass found
+/// (G053 SG2b): a node that can name no leader greets every round time rather
+/// than every awareness interval, because that is when a stale directory costs
+/// the most; and a follower whose stream ended collects again the moment the
+/// greeting round has found where its leader went, rather than up to a period
+/// later. A [`Notify`](tokio::sync::Notify) keeps one permit, so a wake that
+/// arrives while a pass is running is not lost — the next wait returns at once.
+pub async fn every_paced<P>(stop: &CancellationToken, wake: &tokio::sync::Notify, mut pass: P)
+where
+    P: FnMut(Instant) -> Duration + Send + 'static,
+{
+    while !stop.is_cancelled() {
+        let ran_at = Instant::now();
+        let (returned, period) = match tokio::task::spawn_blocking(move || {
+            let period = pass(ran_at);
+            (pass, period)
+        })
+        .await
+        {
+            Ok(ran) => ran,
+            Err(ended) => match ended.try_into_panic() {
+                Ok(payload) => std::panic::resume_unwind(payload),
+                // Cancelled: the runtime is shutting down under it.
+                Err(_) => return,
+            },
+        };
+        pass = returned;
+        tokio::select! {
+            biased;
+            () = stop.cancelled() => return,
+            () = wake.notified() => {}
             () = tokio::time::sleep(due_in(period, ran_at, Instant::now())) => {}
         }
     }
@@ -509,9 +548,9 @@ mod tests {
     use tessari_storage::{FailoverStamp, ReplicaDefinition};
 
     use super::{
-        Collecting, Published, Renewing, Seed, bootstrap_from, due_in, every, heard_a_leader,
-        heard_a_leader_on, heard_a_newer_policy, leader_of_range, names_a_peer, stands, stands_for,
-        stands_for_the_store, upstream, voters,
+        Collecting, Published, Renewing, Seed, bootstrap_from, due_in, election_timeout, every,
+        heard_a_leader, heard_a_leader_on, heard_a_newer_policy, leader_of_range, names_a_peer,
+        stands, stands_for, stands_for_the_store, upstream, voters,
     };
     use crate::campaign::Stood;
     use crate::directory::Directory;
@@ -598,6 +637,8 @@ mod tests {
             leads: None,
             clients: None,
             http: None,
+            fingerprint: None,
+            join: None,
         }
     }
 
@@ -948,6 +989,7 @@ mod tests {
     #[test]
     fn a_lost_round_stands_higher_the_next_time_it_stands() {
         let mut renewing = Renewing::holding(Leadership {
+            length: tessari_storage::LEASE_TTL,
             epoch: Epoch::ZERO,
             from: Instant::now(),
         });
@@ -980,6 +1022,7 @@ mod tests {
     #[test]
     fn a_refusal_that_names_a_granted_epoch_is_learned_from() {
         let mut renewing = Renewing::holding(Leadership {
+            length: tessari_storage::LEASE_TTL,
             epoch: Epoch::ZERO,
             from: Instant::now(),
         });
@@ -1007,6 +1050,7 @@ mod tests {
     #[test]
     fn a_candidate_that_just_lost_waits_before_standing_again() {
         let mut renewing = Renewing::holding(Leadership {
+            length: tessari_storage::LEASE_TTL,
             epoch: Epoch::ZERO,
             from: Instant::now(),
         });
@@ -1034,6 +1078,7 @@ mod tests {
         let opened = Instant::now();
         let waited = |candidate: [u8; NODE_ID_LEN]| {
             let mut renewing = Renewing::holding(Leadership {
+                length: tessari_storage::LEASE_TTL,
                 epoch: Epoch::ZERO,
                 from: opened,
             });
@@ -1143,11 +1188,11 @@ mod tests {
         let long_ago = Instant::now();
         heard.heard("10.0.0.1:9000", writing(Epoch::new(7)), long_ago);
         // One whole lease after the greeting, which is the moment the directory
-        // stops testifying — and four seconds after a renewal this node granted,
-        // which is the whole point: a leader renews about every six seconds and
-        // the directory is refreshed every ten.
+        // stops testifying — and half a lease after a renewal this node granted,
+        // which is the whole point: a leader renews about every 300 ms and the
+        // directory is refreshed every second.
         let now = long_ago + tessari_storage::LEASE_TTL + Duration::from_secs(1);
-        let granted = now - Duration::from_secs(4);
+        let granted = now - tessari_storage::LEASE_TTL / 2;
         assert!(
             heard_a_leader(
                 &declared,
@@ -1157,7 +1202,7 @@ mod tests {
                 tessari_storage::LEASE_TTL
             ),
             "the directory had aged out but this node had granted that leader a \
-             renewal four seconds ago — standing against a leader it just \
+             renewal half a lease ago — standing against a leader it just \
              acknowledged is exactly what the quiet-cluster gate exists to stop"
         );
     }
@@ -1369,6 +1414,7 @@ mod tests {
     #[test]
     fn a_renewal_that_wins_nothing_keeps_the_lease_it_holds() {
         let held = Leadership {
+            length: tessari_storage::LEASE_TTL,
             epoch: Epoch::new(4),
             from: Instant::now(),
         };
@@ -1379,23 +1425,101 @@ mod tests {
     }
 
     #[test]
-    fn a_renewal_stands_for_the_epoch_after_the_one_it_holds() {
+    fn an_election_timeout_is_the_lease_plus_a_spread_that_differs_by_node() {
+        // G053 SG2b, D4. Never shorter than the lease — a voter refuses all but
+        // the incumbent until then — and never more than the spread past it;
+        // and two nodes do not share one timeout at every epoch, which is the
+        // property that keeps two followers from standing on the same tick.
+        let spread = Duration::from_millis(tessari_constants::ELECTION_JITTER_MILLIS);
+        let (one, other) = ([1_u8; NODE_ID_LEN], [2_u8; NODE_ID_LEN]);
+        let mut differed = 0_u32;
+        for epoch in 1..=64 {
+            let epoch = Epoch::new(epoch);
+            for node in [one, other] {
+                let waited = election_timeout(node, epoch, tessari_storage::LEASE_TTL);
+                assert!(waited >= tessari_storage::LEASE_TTL, "{waited:?}");
+                assert!(
+                    waited < tessari_storage::LEASE_TTL.saturating_add(spread),
+                    "{waited:?}"
+                );
+            }
+            if election_timeout(one, epoch, tessari_storage::LEASE_TTL)
+                != election_timeout(other, epoch, tessari_storage::LEASE_TTL)
+            {
+                differed = differed.saturating_add(1);
+            }
+        }
+        assert!(
+            differed >= 60,
+            "two nodes shared a timeout {} times in 64",
+            64_u32.saturating_sub(differed)
+        );
+    }
+
+    #[test]
+    fn a_renewal_re_asks_the_epoch_it_holds() {
+        // G053 SG2b. A leader renews about every 300 ms, and an epoch per
+        // renewal was a leadership record per renewal — three a second on an
+        // idle cluster, eating the retained log and waking every stream. The
+        // voter has always admitted the incumbent re-asking its own epoch.
         let from = Instant::now();
-        let mut renewing = Renewing::holding(Leadership {
+        let held = Leadership {
+            length: tessari_storage::LEASE_TTL,
             epoch: Epoch::new(4),
             from,
-        });
+        };
+        let mut renewing = Renewing::holding(held);
         let stood_for = RefCell::new(Vec::new());
-        let won = Leadership {
-            epoch: Epoch::new(5),
-            from,
+        let renewed = Leadership {
+            length: tessari_storage::LEASE_TTL,
+            epoch: Epoch::new(4),
+            from: from + Duration::from_millis(300),
         };
         let standing = renewing.once(NODE, from, |_: Lease, next| {
             stood_for.borrow_mut().push(next);
-            Stood::Won(won)
+            Stood::Won(renewed)
         });
-        assert_eq!(*stood_for.borrow(), vec![Epoch::new(5)]);
-        assert_eq!(standing, won, "a round that was won was not taken up");
+        assert_eq!(*stood_for.borrow(), vec![Epoch::new(4)]);
+        assert_eq!(standing, renewed, "a round that was won was not taken up");
+    }
+
+    #[test]
+    fn a_holder_told_of_a_higher_epoch_stands_above_it() {
+        // The renewal keeps its epoch only while nothing says the cluster moved.
+        // A refusal naming epoch 9 means a rival stood there; re-asking 4 would
+        // be refused for ever, so the next stand is above what was heard.
+        let from = Instant::now();
+        let mut renewing = Renewing::holding(Leadership {
+            length: tessari_storage::LEASE_TTL,
+            epoch: Epoch::new(4),
+            from,
+        });
+        renewing.once(NODE, from, |_, _| Stood::Lost {
+            granted: Epoch::new(9),
+        });
+        let later = from + Duration::from_secs(5);
+        let stood_for = RefCell::new(Vec::new());
+        renewing.once(NODE, later, |_: Lease, next| {
+            stood_for.borrow_mut().push(next);
+            Stood::NotDue
+        });
+        assert_eq!(*stood_for.borrow(), vec![Epoch::new(10)]);
+    }
+
+    #[test]
+    fn a_node_that_never_led_stands_for_a_new_epoch() {
+        let from = Instant::now();
+        let mut renewing = Renewing::holding(Leadership {
+            length: tessari_storage::LEASE_TTL,
+            epoch: Epoch::ZERO,
+            from,
+        });
+        let stood_for = RefCell::new(Vec::new());
+        renewing.once(NODE, from, |_: Lease, next| {
+            stood_for.borrow_mut().push(next);
+            Stood::NotDue
+        });
+        assert_eq!(*stood_for.borrow(), vec![Epoch::new(1)]);
     }
 
     #[test]

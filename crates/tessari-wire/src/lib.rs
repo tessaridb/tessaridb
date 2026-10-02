@@ -56,6 +56,10 @@
 #![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 #[cfg(feature = "server")]
+mod assertion;
+#[cfg(feature = "server")]
+mod budget;
+#[cfg(feature = "server")]
 mod campaign;
 #[cfg(feature = "server")]
 mod carrier;
@@ -64,6 +68,8 @@ mod client;
 mod collection;
 #[cfg(feature = "server")]
 mod conversation;
+#[cfg(feature = "server")]
+mod coordination;
 mod copying;
 #[cfg(feature = "server")]
 mod credential;
@@ -88,6 +94,8 @@ mod hot;
 #[cfg(feature = "server")]
 mod joining;
 #[cfg(feature = "server")]
+mod keys;
+#[cfg(feature = "server")]
 mod link;
 mod message;
 #[cfg(feature = "server")]
@@ -96,11 +104,18 @@ mod node;
 mod peer;
 mod push;
 mod redirect;
+mod transport;
 mod vault;
 
 #[cfg(feature = "server")]
 use std::time::Duration;
 
+#[cfg(feature = "server")]
+pub use crate::assertion::{
+    Assertion, Disbelieved, Principal, Replays, Signed, nonce, now_ms, request_digest,
+};
+#[cfg(feature = "server")]
+pub use crate::budget::{Attempt, SharedBudget, Try};
 #[cfg(feature = "server")]
 pub use crate::campaign::{Standing, Stood};
 #[cfg(feature = "server")]
@@ -108,8 +123,13 @@ pub use crate::carrier::{Admission, Carrier};
 pub use crate::client::{Client, Feed, Served};
 #[cfg(feature = "server")]
 pub use crate::collection::{
-    Collect, Collected, Collector, NoLog, Origin, Serving, Subscriptions, logs_to_collect,
+    Collect, Collected, Collector, Following, NoLog, Origin, Serving, StreamAsk, Streamed,
+    Subscriptions, logs_to_collect,
 };
+#[cfg(feature = "server")]
+pub use crate::conversation::render_coordinated;
+#[cfg(feature = "server")]
+pub use crate::coordination::{Coordinate, Coordinator, account, admit_asserted};
 #[cfg(feature = "server")]
 pub use crate::copying::{Copied, copy};
 pub use crate::credential::{fingerprint, names, presented};
@@ -119,9 +139,9 @@ pub use crate::directory::{Destination, Directory, Heard};
 pub use crate::door::Holding;
 #[cfg(feature = "server")]
 pub use crate::driver::{
-    Collecting, Published, Renewing, bootstrap_from, due_in, every, heard_a_leader,
-    heard_a_leader_on, heard_a_newer_policy, leader_of_range, names_a_peer, stands, stands_for,
-    stands_for_the_store, upstream, voters,
+    Collecting, Published, Renewing, bootstrap_from, due_in, election_timeout, every, every_paced,
+    heard_a_leader, heard_a_leader_on, heard_a_newer_policy, leader_of_range, names_a_peer, stands,
+    stands_for, stands_for_the_store, upstream, voters,
 };
 pub use crate::error::{Error, Result};
 #[cfg(feature = "server")]
@@ -131,9 +151,11 @@ pub use crate::gathering::{Gather, Page, Ungathered};
 #[cfg(feature = "server")]
 pub use crate::grant::{Ballot, Deciding, Leadership, Reached, Refused, Round, Vote, Voter};
 #[cfg(feature = "server")]
-pub use crate::joining::{CredentialFile, Joining, Seed, Told};
+pub use crate::joining::{CredentialFile, Joining, Seed, Told, peer_credential};
 #[cfg(feature = "server")]
-pub use crate::link::{Answered, Ask, Credential, Met, Peers, call};
+pub use crate::keys::{PeerKeys, Removed, Revoked};
+#[cfg(feature = "server")]
+pub use crate::link::{Answered, Ask, Credential, Met, Peers, call, call_within};
 #[cfg(feature = "server")]
 pub use crate::message::names_for;
 pub use crate::message::{Answer, Correction, Exact, Names, Remark, Request, Suggested, spell};

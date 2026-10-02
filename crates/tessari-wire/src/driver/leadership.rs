@@ -402,7 +402,20 @@ impl Renewing {
         self.standing
     }
 
-    /// One renewal round, standing for the epoch after the one held.
+    /// One renewal round: the epoch held, while nothing says the cluster has
+    /// moved past it; otherwise the epoch after everything this node has seen.
+    ///
+    /// # A renewal keeps its epoch
+    ///
+    /// A leader renews about every 300 ms (G053 SG2b), and a new epoch per
+    /// renewal is a new leadership record per renewal — three a second on an
+    /// idle cluster, each one a commit every follower applies, together eating
+    /// the retained log in hours. The voter admits the incumbent re-asking its
+    /// own epoch, and safety is unchanged: a voter still grants one epoch to one
+    /// candidate, so two majorities for one epoch still need a voter that
+    /// granted it twice. A fresh epoch is stood for when this node holds none,
+    /// when it already stood above what it holds, or when a refusal named a
+    /// higher one — each a sign that re-asking the held epoch would be refused.
     ///
     /// # Why a round that wins nothing changes nothing
     ///
@@ -421,14 +434,17 @@ impl Renewing {
         if self.not_before.is_some_and(|until| now < until) {
             return self.standing;
         }
-        let next = Epoch::new(
-            self.standing
-                .epoch
-                .get()
-                .max(self.stood.get())
-                .max(self.heard.get())
-                .saturating_add(1),
-        );
+        let held = self.standing.epoch;
+        let next = if held > Epoch::ZERO && self.stood == held && self.heard <= held {
+            held
+        } else {
+            Epoch::new(
+                held.get()
+                    .max(self.stood.get())
+                    .max(self.heard.get())
+                    .saturating_add(1),
+            )
+        };
         match pass(self.standing.lease(), next) {
             // Untouched, and that is the ordinary case: a cadence that ran a
             // little early while the fence was still far off. Standing down here
@@ -478,24 +494,60 @@ impl Renewing {
     /// pair would collide at every epoch forever — which is the failure this
     /// exists to remove, reintroduced one level down.
     pub(crate) fn stagger(candidate: [u8; NODE_ID_LEN], epoch: Epoch) -> Duration {
-        // A 64-bit mix of the id and the epoch, spread over one round. The
-        // constants are SplitMix64's; nothing here needs a distribution better
-        // than "two different inputs land in different places", and a named
-        // mixer is easier to recognise than an invented one.
-        let mut mixed = epoch.get();
-        for chunk in candidate.chunks(8) {
-            let mut byte = 0_u64;
-            for (place, value) in chunk.iter().enumerate() {
-                byte |= u64::from(*value) << (place.saturating_mul(8));
-            }
-            mixed ^= byte;
-            mixed = mixed.wrapping_add(0x9e37_79b9_7f4a_7c15);
-            mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-            mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-            mixed ^= mixed >> 31;
-        }
-        let round = Duration::from_secs(tessari_constants::ROUND_SECONDS);
-        let spread = u64::try_from(round.as_millis()).unwrap_or(u64::MAX).max(1);
-        Duration::from_millis(mixed.rem_euclid(spread))
+        spread(candidate, epoch, tessari_constants::ROUND_MILLIS)
     }
+}
+
+/// How long this node goes without hearing a leader before it stands: the
+/// lease, plus a spread derived from this node and the last epoch it granted.
+///
+/// # Why the lease and not less
+///
+/// A voter refuses everyone but the incumbent until a whole lease after its last
+/// grant ([`crate::Voter`]), so standing sooner only spends rounds that cannot
+/// win. Standing later than the lease is the whole failover budget going on
+/// waiting, which is what the spread is kept small for.
+///
+/// # Why a spread at all
+///
+/// Every voter hears the same renewal ballot, so their memories of a dead
+/// leader lapse within milliseconds of each other. Two followers standing on
+/// the same tick each grant the other the one epoch and both lose it for a whole
+/// lease; Raft's randomised election timeout is the liveness argument for
+/// exactly this. Derived rather than random for the reason [`Renewing::stagger`]
+/// gives — a test can state when a node stands — and with the epoch in the mix
+/// so that two ids that collide once do not collide at the next election.
+///
+/// `lease` is the hold this node's own voter grants for — the installed failover
+/// policy's lease (G053 SG2c). A leader's lease is never longer than the hold of
+/// a voter that granted it, so a node whose grant has aged past its own hold has
+/// outlived any lease that grant could have carried.
+#[must_use]
+pub fn election_timeout(me: [u8; NODE_ID_LEN], granted: Epoch, lease: Duration) -> Duration {
+    lease.saturating_add(spread(
+        me,
+        granted,
+        tessari_constants::ELECTION_JITTER_MILLIS,
+    ))
+}
+
+/// A duration in `[0, millis)` ms, derived from a node and an epoch.
+fn spread(candidate: [u8; NODE_ID_LEN], epoch: Epoch, millis: u64) -> Duration {
+    // A 64-bit mix of the id and the epoch. The constants are SplitMix64's;
+    // nothing here needs a distribution better than "two different inputs land
+    // in different places", and a named mixer is easier to recognise than an
+    // invented one.
+    let mut mixed = epoch.get();
+    for chunk in candidate.chunks(8) {
+        let mut byte = 0_u64;
+        for (place, value) in chunk.iter().enumerate() {
+            byte |= u64::from(*value) << (place.saturating_mul(8));
+        }
+        mixed ^= byte;
+        mixed = mixed.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        mixed ^= mixed >> 31;
+    }
+    Duration::from_millis(mixed.rem_euclid(millis.max(1)))
 }

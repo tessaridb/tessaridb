@@ -31,11 +31,27 @@ pub(crate) fn serve(
     // have come up **open**. It also costs nothing to find a path typo here
     // rather than at the first dial, which is minutes or hours later and looks
     // like a network fault.
+    let told = cluster;
     let cluster = match cluster {
         Some(told) => {
             Some(tessari_wire::Joining::read(told).map_err(|refused| refused.to_string())?)
         }
         None => None,
+    };
+    // Before anything is bound, for the cluster's reason above: a node that
+    // would have served its clients in the clear when it should not refuses
+    // here, and a certificate that cannot be read is found now, not at the
+    // first client's handshake (ADR-0108 D4).
+    let clients = crate::tls::decide(
+        serving
+            .tls
+            .clone()
+            .with_environment(|name| std::env::var(name).ok())?,
+        cluster.is_some(),
+    )?;
+    let secured = match &clients {
+        crate::tls::Clients::Tls { cert, key } => Some(crate::tls::credential(cert, key)?),
+        crate::tls::Clients::Plaintext { .. } => None,
     };
     // A cluster configuration with no seed address is legal, and it is legal
     // because the catalog is the other half of the answer: a node whose
@@ -81,18 +97,18 @@ pub(crate) fn serve(
         Some(joining) => {
             let where_to = joining.door.clone();
             let seeds = joining.seeds.clone();
-            // Taken before the bind, which consumes the first copy. Both halves
-            // of the link prove the same node with the same credential.
-            let dialling = joining.mine.duplicate();
-            let authority = joining.authority.clone();
-            let door =
-                tessari_wire::Peers::bind(joining.door.as_str(), joining.mine, &joining.authority)
-                    .map_err(|failure| format!("{where_to}: {failure}"))?;
+            // One handle for both halves of the link, so the door and every
+            // dial prove the same node with the same credential — and a reload
+            // or a revocation reaches both at once (ADR-0108 D6).
+            let keys = tessari_wire::PeerKeys::new(joining.mine, joining.authority)
+                .map_err(|failure| format!("this node's peer credential: {failure}"))?;
+            let door = tessari_wire::Peers::bind(joining.door.as_str(), &keys)
+                .map_err(|failure| format!("{where_to}: {failure}"))?;
             Some(Peering {
                 door,
                 seeds,
-                dialling,
-                authority,
+                keys,
+                join: join_token(serving.join_token.as_deref())?,
                 routing: std::sync::Arc::new(tessari_wire::Published::holding(
                     tessari_wire::Directory::new(),
                 )),
@@ -100,18 +116,19 @@ pub(crate) fn serve(
         }
         None => None,
     };
-    // Taken here because `peers` is moved into the peer tasks further down,
-    // while the surface that needs it is bound in between. Both ends hold the
-    // same `Published`: the greeting round swaps a new round in, and every
-    // session this node opens reads whatever the last completed round left.
-    let routing = peers
-        .as_ref()
-        .map(|surface| std::sync::Arc::clone(&surface.routing));
     // Before anything is bound. A node that came up **open** because its
     // credentials were misconfigured should never have reached the point of
     // answering on a network, so this is a failure to start rather than a
     // warning behind a listening socket.
     bootstrap::first_user(&db)?;
+    // What each surface presents, for `INFO FOR NODE` — the fingerprint an
+    // operator pins a newcomer's row with is read off the newcomer (D9).
+    if secured.is_some() || peers.is_some() {
+        db.presenting(std::sync::Arc::new(crate::presented::Shown {
+            clients: secured.clone(),
+            peers: peers.as_ref().map(|surface| surface.keys.clone()),
+        }));
+    }
     let db = std::sync::Arc::new(db);
     // Every session this node opens gathers the shards of a split table it
     // lacks from their leaders (G033, ADR-0083) — on the wire and over HTTP
@@ -127,7 +144,7 @@ pub(crate) fn serve(
         let gathering = tessari_wire::Gathering::new(
             std::sync::Arc::clone(&db),
             me,
-            (surface.dialling.duplicate(), surface.authority.clone()),
+            surface.keys.clone(),
             std::sync::Arc::clone(&surface.routing),
             Box::new(move || {
                 speaking
@@ -137,6 +154,42 @@ pub(crate) fn serve(
             }),
         );
         db.gather_through(std::sync::Arc::new(gathering));
+        // Every session on every surface knows who leads and where its peers
+        // are, so a read HTTP cannot answer here names — or is carried to — the
+        // node that can (Q-863). Spelled with the concrete type for the unsizing.
+        db.among(std::sync::Arc::<tessari_wire::Published>::clone(
+            &surface.routing,
+        ));
+        // And one sign-in budget for the whole cluster, held by the store
+        // line's leader (ADR-0108 D5), so N nodes are not N allowances.
+        let speaking = std::sync::Arc::downgrade(&db);
+        db.budget_through(std::sync::Arc::new(tessari_wire::SharedBudget::new(
+            me,
+            surface.keys.clone(),
+            std::sync::Arc::clone(&surface.routing),
+            Box::new(move || {
+                speaking
+                    .upgrade()
+                    .ok_or(tessari_wire::GreetingUnavailable::Stopping)
+                    .and_then(|db| greeting(&db).map_err(tessari_wire::GreetingUnavailable::Store))
+            }),
+        )));
+        // And every request it cannot answer — a write another node leads, a
+        // read another node holds — is carried there over the peer link, under
+        // an assertion signed with this node's key, for a caller who cannot
+        // follow a redirect (ADR-0108 D1–D3). No password crosses.
+        let speaking = std::sync::Arc::downgrade(&db);
+        db.coordinate_through(std::sync::Arc::new(tessari_wire::Coordinator::new(
+            &db,
+            me,
+            surface.keys.clone(),
+            Box::new(move || {
+                speaking
+                    .upgrade()
+                    .ok_or(tessari_wire::GreetingUnavailable::Stopping)
+                    .and_then(|db| greeting(&db).map_err(tessari_wire::GreetingUnavailable::Store))
+            }),
+        )));
     }
     if let Some(folder) = &serving.backups {
         db.back_up_into(std::sync::Arc::from(folder.as_path()));
@@ -172,28 +225,26 @@ pub(crate) fn serve(
     // while the other one answered.
     let wire = match &serving.wire {
         Some(address) => {
+            // The directory reaches this surface's sessions through the store's
+            // handle, set where the peers are (Q-863), as it reaches HTTP's.
             let node = tessari_wire::Node::bind(std::sync::Arc::clone(&db), address.as_str())
                 .map_err(|failure| format!("{address}: {failure}"))?;
-            // Only the wire surface, deliberately. `tessari-http` opens sessions
-            // too and does not depend on `tessari-wire`, so giving it the
-            // directory is a second wiring question rather than a line that fits
-            // here — recorded rather than smuggled in.
-            Some(match &routing {
-                // Spelled with the concrete type because the parameter is the
-                // trait: left to inference, `Arc::clone` would try to clone an
-                // `Arc<dyn Elsewhere>` this line does not hold. The unsizing
-                // happens at the argument, where it belongs.
-                Some(known) => node.among(std::sync::Arc::<tessari_wire::Published>::clone(known)),
+            Some(match &secured {
+                Some(credential) => node.securing(credential.server_config(&[])),
                 None => node,
             })
         }
         None => None,
     };
     let mut http = match &serving.http {
-        Some(address) => Some(
-            tessari_http::Node::bind(std::sync::Arc::clone(&db), address)
-                .map_err(|failure| format!("{address}: {failure}"))?,
-        ),
+        Some(address) => {
+            let mut node = tessari_http::Node::bind(std::sync::Arc::clone(&db), address)
+                .map_err(|failure| format!("{address}: {failure}"))?;
+            if let Some(credential) = &secured {
+                node.securing(credential.server_config(&[b"http/1.1"]));
+            }
+            Some(node)
+        }
         None => None,
     };
     // `GET /wire` carries the wire protocol over a WebSocket (ADR-0089), so it is
@@ -212,7 +263,21 @@ pub(crate) fn serve(
     if let Some(node) = &http {
         eprintln!("tessaridb — http on {}", node.address());
     }
-    eprintln!("tessaridb — there is no TLS, so trust the network");
+    match &clients {
+        crate::tls::Clients::Tls { cert, .. } => {
+            eprintln!(
+                "tessaridb — clients over TLS only, presenting {}",
+                cert.display()
+            );
+        }
+        crate::tls::Clients::Plaintext { chosen: true } => {
+            eprintln!("tessaridb — clients in the clear, as asked; trust the network");
+        }
+        crate::tls::Clients::Plaintext { chosen: false } => eprintln!(
+            "tessaridb — clients in the clear: --tls-cert and --tls-key would encrypt them, \
+             and a cluster node refuses to start without them or --client-plaintext"
+        ),
+    }
     // Said only when there is something to say. Every deployment today is a
     // single node, and a line printed on every start is a line operators stop
     // reading. What was *bound* rather than what was asked for, the same as the
@@ -249,6 +314,19 @@ pub(crate) fn serve(
     // set of numbers, or the two disagree in exactly the situation — a shutdown
     // — where somebody is reading both.
     let mut census = tessari_serve::Census::since(started);
+    // What each surface presents, read at the scrape, so a renewal shows in the
+    // expiry gauge the moment it is in use (ADR-0108 D6).
+    if let Some(credential) = &secured {
+        let credential = credential.clone();
+        census.presenting(
+            "clients",
+            tessari_serve::Presenting::new(move || credential.leaf()),
+        );
+    }
+    if let Some(surface) = &peers {
+        let keys = surface.keys.clone();
+        census.presenting("peers", tessari_serve::Presenting::new(move || keys.leaf()));
+    }
     let mut surfaces = Vec::new();
     // The wire surface accepts on the runtime until this is cancelled, which is
     // the stage that refuses new connections — not the first signal, which
@@ -299,6 +377,38 @@ pub(crate) fn serve(
     if let Some(node) = &mut http {
         node.watching(std::sync::Arc::clone(&census));
     }
+
+    // The certificate files, re-read while the node serves so a renewal needs no
+    // restart (ADR-0108 D6): the client surfaces' pair when they speak TLS, and
+    // the peer link's when this node is in a cluster.
+    let mut watched = Vec::new();
+    if let (Some(credential), crate::tls::Clients::Tls { cert, key }) = (&secured, &clients) {
+        watched.push(crate::credentials::Watched::clients(
+            credential.clone(),
+            cert.clone(),
+            key.clone(),
+        ));
+    }
+    if let (Some(surface), Some(told)) = (&peers, told) {
+        watched.push(crate::credentials::Watched::peers(
+            surface.keys.clone(),
+            told,
+        ));
+    }
+    // Applied once before the peer door serves anybody, so a certificate the
+    // catalog already revoked is never admitted in the moments before the
+    // first look.
+    let revoking = match &peers {
+        Some(surface) => {
+            let revoking = crate::credentials::Revoking {
+                db: std::sync::Arc::clone(&db),
+                keys: surface.keys.clone(),
+            };
+            revoking.refresh()?;
+            Some(revoking)
+        }
+        None => None,
+    };
 
     // The one runtime this process owns, and the token a stop arrives on — both
     // before anything serves, so a signal arriving during startup is counted
@@ -357,6 +467,11 @@ pub(crate) fn serve(
             ));
         }
 
+        if !watched.is_empty() || revoking.is_some() {
+            let stop = house_stops.clone();
+            hosting.spawn(crate::credentials::watch(watched, revoking, stop));
+        }
+
         // The declared topic consumers, joined with the rest of the node's own
         // work before the store is dropped.
         hosting.spawn(tessari_ingest::run_topic_consumers(
@@ -411,6 +526,35 @@ pub(crate) fn serve(
     Ok(Ended::Fine)
 }
 
+/// The join token to offer the seeds: the flag, else `TESSARIDB_JOIN_TOKEN`.
+///
+/// Read at start-up and refused there when it is not what `CREATE JOIN TOKEN`
+/// answered — 64 hexadecimal digits — rather than offered every round as a
+/// token no row can wait on.
+fn join_token(given: Option<&str>) -> Result<Option<[u8; 32]>, String> {
+    let written = match given {
+        Some(written) => written.to_owned(),
+        None => match std::env::var(JOIN_TOKEN) {
+            Ok(written) if !written.is_empty() => written,
+            _ => return Ok(None),
+        },
+    };
+    let malformed =
+        || "the join token is the 64 hexadecimal digits CREATE JOIN TOKEN answered".to_owned();
+    if written.len() != 64 {
+        return Err(malformed());
+    }
+    let mut token = [0_u8; 32];
+    for (slot, pair) in token.iter_mut().zip(written.as_bytes().chunks(2)) {
+        let pair = std::str::from_utf8(pair).map_err(|_| malformed())?;
+        *slot = u8::from_str_radix(pair, 16).map_err(|_| malformed())?;
+    }
+    Ok(Some(token))
+}
+
+/// The variable a join token is read from when the flag is absent.
+const JOIN_TOKEN: &str = "TESSARIDB_JOIN_TOKEN";
+
 /// The wire node's door in the shape the HTTP node takes it (ADR-0089).
 ///
 /// Built here because this is the one place that holds both surfaces: neither
@@ -426,4 +570,19 @@ fn wire_door(carrier: tessari_wire::Carrier) -> tessari_http::WireDoor {
             session
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::join_token;
+
+    #[test]
+    fn a_join_token_is_the_64_digits_it_was_answered_as() {
+        let written = "0f".repeat(32);
+        assert_eq!(join_token(Some(&written)), Ok(Some([0x0f; 32])));
+        for malformed in ["0f", &"0g".repeat(32), &"0f".repeat(33)] {
+            let refused = join_token(Some(malformed)).expect_err(malformed);
+            assert!(refused.contains("64 hexadecimal digits"), "{refused}");
+        }
+    }
 }

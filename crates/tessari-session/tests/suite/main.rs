@@ -10,6 +10,8 @@
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
 mod a_catalog_record_is_not_a_users_row;
+mod acknowledge;
+mod administration_audit;
 mod advice;
 mod alone;
 mod alter_user;
@@ -36,6 +38,7 @@ mod composite_range;
 mod conditionals;
 mod configuration;
 mod consumers;
+mod coordinated;
 mod counters;
 mod descending;
 mod describing_kinds;

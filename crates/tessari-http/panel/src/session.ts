@@ -112,8 +112,22 @@ function sheet(): HTMLDetailsElement {
   return found;
 }
 
+/** Say how the password will travel, from how this page itself arrived. */
+function transport(): void {
+  const secured = location.protocol === "https:";
+  write(
+    "transport-says",
+    secured
+      ? "This page and everything it sends travel over TLS to this node."
+      : "This page arrived without TLS, so the password travels as typed. Give the node " +
+          "--tls-cert and --tls-key, or keep it on a network you protect.",
+  );
+  at("transport-says").className = secured ? "note" : "note warn";
+}
+
 export function wire(): void {
   const identity = sheet();
+  transport();
 
   at("user").addEventListener("input", signedIn);
 

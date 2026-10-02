@@ -517,6 +517,55 @@ fn a_row_that_places_a_leader_cannot_be_dropped_and_one_that_does_not_can() {
 // ---- G050 W-G050-6: a placement moves (ADR-0098) --------------------------------
 
 #[test]
+fn a_bound_peer_row_is_amended_in_place_and_keeps_its_node() {
+    // Q-892: dropping a bound row tombstones its node (ADR-0108 D9), so a row
+    // that moved or changed role is amended rather than declared again.
+    let store = store();
+    let mut session = tenancy(&store);
+    // One transaction, judged against a catalog that names no peer yet: once a
+    // row names a node this store is a cluster member and writes on a lease.
+    session
+        .run(
+            "BEGIN; \
+             DEFINE REPLICA b AT 'b:9001' NODE '9f2c4e1a70bb43d5a1c6e2f480937d55' \
+             ROLES serving REPLICATES STORE; \
+             ALTER REPLICA b AT 'b2:9001'; ALTER REPLICA b ROLES serving, writable, coordinating; \
+             ALTER REPLICA b CLIENTS AT 'b2:9080'; ALTER REPLICA b HTTP AT 'http://b2:8000'; \
+             ALTER REPLICA b HTTP NONE; \
+             COMMIT;",
+        )
+        .unwrap();
+    let field = |session: &mut Session<'_>, name: &str| peer_field(session, name)[0].1.clone();
+    assert_eq!(field(&mut session, "endpoint").as_deref(), Some("b2:9001"));
+    assert_eq!(field(&mut session, "clients").as_deref(), Some("b2:9080"));
+    assert_eq!(field(&mut session, "http"), None);
+    assert_eq!(field(&mut session, "replicates").as_deref(), Some("STORE"));
+    let Value::Object(report) = report(&mut session, "INFO FOR NODE;") else {
+        panic!("not a report");
+    };
+    let rendered = format!("{report:?}");
+    let bound = Value::Uuid([
+        0x9f, 0x2c, 0x4e, 0x1a, 0x70, 0xbb, 0x43, 0xd5, 0xa1, 0xc6, 0xe2, 0xf4, 0x80, 0x93, 0x7d,
+        0x55,
+    ]);
+    assert!(
+        rendered.contains("coordinating") && rendered.contains(&format!("{bound:?}")),
+        "the roles changed and the node stayed bound: {rendered}"
+    );
+
+    for (refused, names) in [
+        ("ALTER REPLICA nobody AT 'x:1';", "nobody"),
+        ("ALTER REPLICA b ROLES flying;", "flying"),
+    ] {
+        let why = format!("{:?}", session.run(refused));
+        assert!(
+            why.starts_with("Err") && why.contains(names),
+            "{refused}: {why}"
+        );
+    }
+}
+
+#[test]
 fn a_placement_is_handed_to_another_row_and_taken_from_the_first() {
     let store = store();
     let mut session = tenancy(&store);

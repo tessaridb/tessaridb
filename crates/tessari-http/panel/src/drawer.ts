@@ -35,31 +35,27 @@
 //! nothing that survives, which is the slow kind of lie, so the drawer says so
 //! while the decision is still being made.
 //!
-//! # A peer cannot be changed from here at all, and that was measured
+//! # A peer is amended one clause at a time, and removed for good
 //!
-//! The drawer first offered the role change on any node. A running node refused
-//! it, which is the right way to learn it:
+//! The drawer first offered the role change on this node only, because a
+//! running node refused every way of changing a peer's row — a second `DEFINE
+//! REPLICA` for the name in use, an `ALTER` that took no `REPLICA`. `ALTER
+//! REPLICA <name> ROLES …` exists now (Q-892) and changes that one clause,
+//! leaving the row's node, subscription and pinned certificate as they are. It
+//! is a write to the membership, so it is taken by the node that leads the store
+//! and refused, in the node's words, anywhere else.
 //!
-//! - `DEFINE REPLICA warsaw …` again → *"the name rp:warsaw is already in use"*
-//! - `ALTER REPLICA warsaw SET ROLES …` → `ALTER` takes only `NAMESPACE`,
-//!   `USER` or `TABLE`
-//! - `DROP REPLICA warsaw` → *"this node is in a cluster and holds no
-//!   leadership: it does not accept writes until a majority grants it one"*
-//!
-//! So a clustered node can declare its membership once and then cannot amend it
-//! from the query surface. **This node's own roles are the exception**, because
-//! `DEFINE NODE` writes to the local `META` keyspace rather than through the
-//! log, so the fence does not apply — verified on the same clustered node.
-//!
-//! The drawer therefore offers the control on this node and, on a peer, says
-//! what it would take. Offering it everywhere would have composed a statement
-//! that always fails, which is a button that lies in the slower way: it looks
-//! right until the one moment somebody needs it.
+//! Removing a peer is `DROP REPLICA`, and it is not a role change with a bigger
+//! button: the dropped node is recorded as removed and never admitted again
+//! (ADR-0108 D9), so a machine coming back must be wiped and join under a new
+//! identity. The drawer therefore asks for the name typed again and says so
+//! before the button is live.
 
 import { valueOf } from "./api.js";
-import { at, clear, hide, made, say } from "./dom.js";
+import { at, clear, disable, hide, made, say, setValue, trimmed } from "./dom.js";
 import { told } from "./session.js";
 import { hereAgain } from "./tabs.js";
+import { aName } from "./topic-names.js";
 
 /** What the drawer is open on. `null` when it is closed. */
 export interface Subject {
@@ -92,12 +88,18 @@ function ticked(): string[] {
  * because it never recorded the address and id the declaration needs.
  */
 export function change(subject: Subject | null, roles: readonly string[]): string | null {
-  // This node only. `DEFINE NODE` reaches the local `META` keyspace and works
-  // on a clustered node; there is no statement at all that amends a peer's row,
-  // and that is true of the drain as well — a peer is drained by rewriting the
-  // membership row that declares it, not from here.
-  if (subject === null || !subject.self) {
+  // A peer first: its roles are a clause of its membership row. This node's
+  // own statement below reaches the local `META` keyspace and works on a
+  // clustered node, and must never be what a peer's drawer sends.
+  if (subject === null) {
     return null;
+  }
+  if (!subject.self) {
+    // A peer's row, one clause. A name is grammar, so it is checked rather
+    // than quoted; a row whose name is not one cannot be amended from here.
+    return aName(subject.name) === null || roles.length === 0
+      ? null
+      : `ALTER REPLICA ${subject.name} ROLES ${roles.join(", ")};`;
   }
   // `NONE` is a whole answer and not a member of the list, so an empty tick set
   // composes it rather than composing `ROLES ;`, which the grammar refuses.
@@ -112,11 +114,13 @@ function preview(): void {
     return;
   }
   if (!open.self) {
+    const roles = ticked();
     say(
       "drawer-says",
-      `A peer's row cannot be amended from here: there is no ALTER REPLICA, a ` +
-        `second DEFINE REPLICA is refused for the name already in use, and DROP ` +
-        `REPLICA is refused while this node holds no leadership.`,
+      roles.length === 0
+        ? `A peer keeps at least one role; to take it out of the cluster, remove it below.`
+        : `Sets ${open.name}'s declared roles to ${roles.join(", ")}, leaving its node, ` +
+            `subscription and certificate as they are. Taken by the node that leads the store.`,
     );
     return;
   }
@@ -147,10 +151,9 @@ export function show(subject: Subject): void {
     (at(`drawer-${bit}`) as HTMLInputElement).checked = subject.roles.includes(bit);
   }
   clear("drawer-missing");
-  for (const bit of BITS) {
-    (at(`drawer-${bit}`) as HTMLInputElement).disabled = !subject.self;
-  }
-  hide("drawer-apply", !subject.self);
+  hide("drawer-remove-part", subject.self);
+  setValue("drawer-remove-confirm", "");
+  shapeRemove();
   if (!subject.self) {
     const note = made("p", "faint");
     note.textContent =
@@ -163,6 +166,25 @@ export function show(subject: Subject): void {
   at("drawer-close").focus();
 }
 
+/** The removal, once its name has been typed again; `null` until then. */
+function removal(): string | null {
+  if (open === null || open.self || aName(open.name) === null) {
+    return null;
+  }
+  return trimmed("drawer-remove-confirm") === open.name ? `DROP REPLICA ${open.name};` : null;
+}
+
+function shapeRemove(): void {
+  disable("drawer-remove", removal() === null);
+  say(
+    "drawer-remove-says",
+    open === null || open.self
+      ? ""
+      : `Removes ${open.name} from the membership. Its node is never admitted again — ` +
+          `a machine coming back is wiped and joins under a new identity. Type ${open.name} to confirm.`,
+  );
+}
+
 function closeIt(): void {
   hide("drawer", true);
   open = null;
@@ -173,6 +195,22 @@ export function wire(): void {
     at(`drawer-${bit}`).addEventListener("change", preview);
   }
   at("drawer-close").addEventListener("click", closeIt);
+  at("drawer-remove-confirm").addEventListener("input", shapeRemove);
+  at("drawer-remove").addEventListener("click", async () => {
+    const statement = removal();
+    if (statement === null) {
+      return;
+    }
+    say("drawer-remove-status", "running…");
+    try {
+      await valueOf(statement, "Cluster · remove", trimmed("drawer-remove-why") || undefined);
+      say("drawer-remove-status", "removed");
+      closeIt();
+      hereAgain();
+    } catch (failure) {
+      say("drawer-remove-status", told(failure), true);
+    }
+  });
   document.addEventListener("keydown", (pressed) => {
     if (pressed.key === "Escape" && !at("drawer").hidden) {
       closeIt();

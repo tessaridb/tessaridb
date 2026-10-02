@@ -30,6 +30,9 @@ pub struct Detached {
     elsewhere: Option<Arc<dyn Elsewhere>>,
     gather: Option<Arc<dyn Gather>>,
     backups: Option<Arc<std::path::Path>>,
+    at_rest: Option<Arc<tessari_vault::AtRestKey>>,
+    budget: Option<Arc<dyn crate::throttle::Budget>>,
+    certificates: Option<Arc<dyn crate::presented::Certificates>>,
 }
 
 impl Session<'_> {
@@ -44,6 +47,9 @@ impl Session<'_> {
             elsewhere: self.elsewhere,
             gather: self.gather,
             backups: self.backups,
+            at_rest: self.at_rest,
+            budget: self.budget,
+            certificates: self.certificates,
         }
     }
 }
@@ -61,10 +67,16 @@ impl Detached {
             elsewhere: self.elsewhere,
             gather: self.gather,
             backups: self.backups,
+            at_rest: self.at_rest,
+            budget: self.budget,
+            certificates: self.certificates,
             // A sink belongs to the request that streams, never to state
             // carried to a later one.
             sink: crate::backup_to::Sink::none(),
             landed: false,
+            // For the sink's reason: it belongs to a transaction this request
+            // opened, and none travels with a detached session.
+            acknowledge_open: None,
         }
     }
 }

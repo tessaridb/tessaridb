@@ -1,7 +1,7 @@
 //! One campaign round: the ballots out, the votes back, and the majority it needs.
 
 use super::{Ballot, Leadership, Vote};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tessari_encoding::NODE_ID_LEN;
 use tessari_storage::LEASE_TTL;
 use tessari_types::{Epoch, Reach};
@@ -13,6 +13,9 @@ pub struct Round {
     voters: usize,
     opened: Instant,
     granted: Vec<[u8; NODE_ID_LEN]>,
+    /// The longest lease this round can hand out: the candidate's own policy
+    /// lease, shortened by every grant that holds for less (G053 SG2c).
+    shortest: Duration,
 }
 
 impl Round {
@@ -43,7 +46,15 @@ impl Round {
             voters,
             opened,
             granted: Vec::new(),
+            shortest: LEASE_TTL,
         }
+    }
+
+    /// The same round, for a candidate whose own policy states `lease`.
+    #[must_use]
+    pub const fn leasing(mut self, lease: Duration) -> Self {
+        self.shortest = lease;
+        self
     }
 
     /// The same round, on a placed range's own line (ADR-0082).
@@ -65,8 +76,11 @@ impl Round {
     /// majority of *members*, and a transport that retried would otherwise be
     /// able to elect a leader on its own.
     pub fn counts(&mut self, voter: [u8; NODE_ID_LEN], vote: Vote) -> Option<Leadership> {
-        if vote == Vote::Granted && !self.granted.contains(&voter) {
+        if let Vote::Granted { hold } = vote
+            && !self.granted.contains(&voter)
+        {
             self.granted.push(voter);
+            self.shortest = self.shortest.min(hold);
         }
         self.held()
     }
@@ -88,6 +102,7 @@ impl Round {
         (self.granted.len() >= majority(self.voters)).then_some(Leadership {
             epoch: self.ballot.epoch,
             from: self.opened,
+            length: self.shortest,
         })
     }
 }
@@ -102,12 +117,12 @@ pub const fn majority(voters: usize) -> usize {
     voters.div_euclid(2).saturating_add(1)
 }
 
-/// One TTL after `at`, which is when a grant made then is certainly dead.
+/// `hold` after `at`, which is when a grant made then is certainly dead.
 ///
 /// Saturating rather than wrapping for the reason [`Lease::taken_at`] floors its
 /// own: an instant so far out that the addition cannot be represented is not a
 /// reason to hand back an earlier one, and an earlier one here would free a
 /// voter that is not free.
-pub(crate) fn free_at(at: Instant) -> Instant {
-    at.checked_add(LEASE_TTL).unwrap_or(at)
+pub(crate) fn free_at(at: Instant, hold: Duration) -> Instant {
+    at.checked_add(hold).unwrap_or(at)
 }

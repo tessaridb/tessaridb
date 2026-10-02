@@ -3,13 +3,98 @@
 use core::num::NonZeroU32;
 
 use super::Parser;
-use tessari_types::{Duration, Number, Replication, ReplicationClass, parse_uuid};
+use tessari_types::{
+    Acknowledge, Acknowledgement, Duration, Number, Replication, ReplicationClass, parse_uuid,
+};
 
-use crate::ast::{ReachRef, StatementKind};
+use crate::ast::{ReachRef, ReplicaChange, StatementKind};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
 
 impl Parser<'_> {
+    /// Whether `REVOKE` here takes a certificate rather than a grant: the word
+    /// `CERTIFICATE` and then text.
+    ///
+    /// Both halves, because `certificate` is not reserved — a grant verb in
+    /// that position is followed by `ON` or a comma, never by a string — so a
+    /// table or verb of that name keeps meaning what it meant.
+    pub(super) fn revokes_a_certificate(&self) -> bool {
+        let at = |offset: usize| {
+            self.tokens
+                .get(self.position.saturating_add(offset))
+                .map(|spanned| &spanned.token)
+        };
+        matches!(at(1), Some(Token::Ident(word)) if word.eq_ignore_ascii_case("certificate"))
+            && matches!(at(2), Some(Token::Str(_)))
+    }
+
+    /// `REVOKE CERTIFICATE '<sha256>'` — a certificate no peer handshake
+    /// accepts again, in either direction (ADR-0108 D6).
+    ///
+    /// The fingerprint is the SHA-256 of the certificate's DER, as 64
+    /// hexadecimal digits; the colon-separated form a certificate tool prints
+    /// is taken too, and either is stored in lowercase so one certificate has
+    /// one spelling. Anything else is refused here, where the span is, rather
+    /// than stored as a fingerprint no certificate can have.
+    pub(super) fn revoke_certificate(&mut self) -> Result<StatementKind> {
+        self.advance();
+        self.eat_word("certificate");
+        Ok(StatementKind::RevokeCertificate {
+            fingerprint: self.fingerprint()?,
+        })
+    }
+
+    /// A certificate's SHA-256, as 64 hexadecimal digits or the colon-separated
+    /// form a certificate tool prints, in lowercase.
+    ///
+    /// One reader for `REVOKE CERTIFICATE` and `DEFINE REPLICA … FINGERPRINT`,
+    /// so a fingerprint copied from one is accepted by the other.
+    fn fingerprint(&mut self) -> Result<String> {
+        const FINGERPRINT: &str = "a certificate's SHA-256 fingerprint: 64 hexadecimal digits";
+        let at = self.position;
+        let (written, _) = self.text(FINGERPRINT)?;
+        let digits: String = written.chars().filter(|found| *found != ':').collect();
+        if digits.len() != 64 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(self.error_at(at, FINGERPRINT));
+        }
+        Ok(digits.to_ascii_lowercase())
+    }
+
+    /// Whether `CREATE` here makes a join token: `JOIN` and the word `TOKEN`.
+    ///
+    /// `JOIN` is reserved, so no table is called that and a record write can
+    /// never begin `CREATE JOIN`; `TOKEN` is read as a word and checked too,
+    /// so the refusal for anything else after `CREATE JOIN` stays the write's.
+    pub(super) fn creates_a_join_token(&self) -> bool {
+        let at = |offset: usize| {
+            self.tokens
+                .get(self.position.saturating_add(offset))
+                .map(|spanned| &spanned.token)
+        };
+        matches!(at(1), Some(Token::Keyword(Keyword::Join)))
+            && matches!(at(2), Some(Token::Ident(word)) if word.eq_ignore_ascii_case("token"))
+    }
+
+    /// `CREATE JOIN TOKEN FOR REPLICA r EXPIRES 10m` (ADR-0108 D9).
+    ///
+    /// `EXPIRES` is required with no default: a token nobody gave a life to
+    /// would be a credential that binds a row for as long as nobody remembers
+    /// it exists.
+    pub(super) fn create_join_token(&mut self) -> Result<StatementKind> {
+        self.advance();
+        self.eat_keyword(Keyword::Join);
+        self.eat_word("token");
+        if !self.eat_word("for") || !self.eat_word("replica") {
+            return Err(self.error_here("`REPLICA` and the row the token binds"));
+        }
+        let replica = self.name()?;
+        if !self.eat_word("expires") {
+            return Err(self.error_here("`EXPIRES` and how long the token binds for"));
+        }
+        let expires = self.length("expires")?;
+        Ok(StatementKind::CreateJoinToken { replica, expires })
+    }
+
     /// A contextual word this statement requires.
     /// `REPLICATION NONE` or `REPLICATION FACTOR 3`, when one stands here.
     ///
@@ -66,6 +151,37 @@ impl Parser<'_> {
             return Ok(Some(ReplicationClass::SingleLeader));
         }
         Ok(None)
+    }
+
+    /// `ACKNOWLEDGE LEADER` or `ACKNOWLEDGE MAJORITY`, when one stands here
+    /// (ADR-0106 D2) — the level a write, or the `COMMIT` of several, asks for
+    /// itself.
+    ///
+    /// Contextual words for [`Self::replication_clause`]'s reason: each is an
+    /// ordinary noun a schema may already use as a name.
+    pub(in crate::parser) fn acknowledge_clause(&mut self) -> Result<Option<Acknowledge>> {
+        if !self.eat_word("acknowledge") {
+            return Ok(None);
+        }
+        if self.eat_word("leader") {
+            return Ok(Some(Acknowledge::Leader));
+        }
+        self.expect_word("majority", "`LEADER` or `MAJORITY`")?;
+        Ok(Some(Acknowledge::Majority))
+    }
+
+    /// A namespace's acknowledgement: the level, and `OR WEAKER` when a request
+    /// may ask for less. Only a namespace says `OR WEAKER` — it is the
+    /// operator's to grant, never a request's to claim.
+    pub(super) fn acknowledgement_clause(&mut self) -> Result<Option<Acknowledgement>> {
+        let Some(level) = self.acknowledge_clause()? else {
+            return Ok(None);
+        };
+        let or_weaker = self.eat_keyword(Keyword::Or);
+        if or_weaker {
+            self.expect_word("weaker", "`WEAKER` after `OR`")?;
+        }
+        Ok(Some(Acknowledgement { level, or_weaker }))
     }
 
     pub(in crate::parser) fn expect_word(
@@ -167,6 +283,11 @@ impl Parser<'_> {
                 _ => "`LEASE` and how long a granted leadership is held",
             }));
         }
+        self.length(clause)
+    }
+
+    /// The duration after a clause word, refused when it has no length.
+    pub(super) fn length(&mut self, clause: &'static str) -> Result<Duration> {
         let Some(Token::Duration(written)) = self.peek() else {
             return Err(self.error_here("a duration, like `10s` or `1m`"));
         };
@@ -334,6 +455,13 @@ impl Parser<'_> {
         } else {
             None
         };
+        // ADR-0108 D9: the certificate that may bind this row, when it is not
+        // bound by `NODE` and not to wait on a join token.
+        let fingerprint = if self.eat_word("fingerprint") {
+            Some(self.fingerprint()?)
+        } else {
+            None
+        };
         Ok(StatementKind::DefineReplica {
             name,
             endpoint,
@@ -343,8 +471,61 @@ impl Parser<'_> {
             node,
             replicates,
             leads,
+            fingerprint,
             if_not_exists,
         })
+    }
+
+    /// The one clause an `ALTER REPLICA` changes, read by the readers
+    /// `DEFINE REPLICA` uses for the same clause (Q-892).
+    pub(super) fn replica_change(&mut self) -> Result<ReplicaChange> {
+        if self.eat_word("leads") {
+            return Ok(ReplicaChange::Leads(if self.eat_keyword(Keyword::None) {
+                None
+            } else {
+                Some(self.placed_range()?)
+            }));
+        }
+        if self.eat_word("at") {
+            return Ok(ReplicaChange::At(self.text("the endpoint, as text")?.0));
+        }
+        if self.eat_word("roles") {
+            let mut named = vec![self.name()?];
+            while self.eat_punct(Punct::Comma) {
+                named.push(self.name()?);
+            }
+            return Ok(ReplicaChange::Roles(named));
+        }
+        if self.eat_word("clients") {
+            return Ok(ReplicaChange::ClientsAt(self.address_or_none(
+                "`AT` and where a client reaches the peer, or `NONE`",
+                "the client address, as text",
+            )?));
+        }
+        if self.eat_word("http") {
+            return Ok(ReplicaChange::HttpAt(self.address_or_none(
+                "`AT` and the peer's HTTP base, or `NONE`",
+                "the HTTP base, as text",
+            )?));
+        }
+        Err(self.error_here(
+            "`LEADS`, `AT`, `ROLES`, `CLIENTS AT` or `HTTP AT` — the one clause that changes",
+        ))
+    }
+
+    /// `AT '…'` or `NONE`, after `CLIENTS` or `HTTP`.
+    fn address_or_none(
+        &mut self,
+        expected: &'static str,
+        text: &'static str,
+    ) -> Result<Option<String>> {
+        if self.eat_keyword(Keyword::None) {
+            return Ok(None);
+        }
+        if !self.eat_word("at") {
+            return Err(self.error_here(expected));
+        }
+        Ok(Some(self.text(text)?.0))
     }
 
     /// The range after `LEADS`, read for `DEFINE REPLICA` and `ALTER REPLICA`.

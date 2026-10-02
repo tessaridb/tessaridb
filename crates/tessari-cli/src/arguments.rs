@@ -28,11 +28,27 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   --unseal-for <duration> how long an unseal lasts before the store seals itself,
                   written as TessariQL (`10m`, `1h`); default TESSARIDB_UNSEAL_FOR
                   or 10m
+  --tls-cert <file> serve clients over TLS with this certificate chain, PEM;
+                  default TESSARIDB_TLS_CERT
+  --tls-key <file> its private key, PEM; default TESSARIDB_TLS_KEY
+  --client-plaintext serve clients in the clear, which a cluster node refuses
+                  to do otherwise; or TESSARIDB_CLIENT_PLAINTEXT=1
+  --tls-authority <file> with --at: speak TLS and trust the node by these
+                  certificates, PEM; default TESSARIDB_TLS_AUTHORITY
   --cluster-credential <file> this node's peer credential, PEM, with --serve
   --cluster-key <file> its private key, PEM
   --cluster-authority <file> the one certificate this cluster trusts, PEM
   --cluster-address <host:port> where this node's own peer door binds
   --seed <node-id>@<host:port> a node to reach the cluster through; repeatable
+  --join-token <token> a token from CREATE JOIN TOKEN, offered to the seeds until
+                  a row names this node; default TESSARIDB_JOIN_TOKEN
+  --encryption-key-file <file> the store's files and every backup it writes are
+                  encrypted under the 32 bytes in <file> (`openssl rand 32`,
+                  mode 600); a store opens only the way it was created; default
+                  TESSARIDB_ENCRYPTION_KEY_FILE
+  --backup-key-file <file> with --restore or --verify: the key a sealed backup
+                  was sealed under, when it is not the store's — how a store
+                  moves to a new key
   --param <name>=<value> bind $name to <value>, written as TessariQL; repeatable
   -e, --execute <script> run this and exit
   -f, --file <file> run this file and exit
@@ -47,6 +63,11 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   --health        say whether the store is well, and exit non-zero if not
   -V, --version   say which build this is, and exit
   -h, --help      this
+
+a node given --tls-cert and --tls-key speaks TLS on every client surface — the
+wire port, HTTP and the WebSocket on it — and nothing else. A cluster node will
+not serve clients in the clear unless --client-plaintext says so; a single node
+does, and says so when it starts.
 
 the five cluster options are given together or not at all: told some of them a
 node refuses to start rather than serving with credentials nobody checked, and
@@ -97,6 +118,13 @@ pub struct Asked {
     pub at_sequence: Option<u64>,
     /// The addresses to serve on, when `Source::Serve` was asked for.
     pub serving: Serving,
+    /// The certificates `--at` trusts a node by; given, the client speaks TLS.
+    pub authority: Option<PathBuf>,
+    /// The file holding the key the store and its backups are encrypted under
+    /// (ADR-0108 D7), when the flag named one.
+    pub encryption_key: Option<PathBuf>,
+    /// The key a sealed backup opens under, when it is not the store's.
+    pub backup_key: Option<PathBuf>,
     /// The cluster this node was told to join, when it was told about one.
     ///
     /// `None` is the single node every current deployment is, and is not a
@@ -121,6 +149,11 @@ pub struct Serving {
     pub backups: Option<PathBuf>,
     /// How long an unseal lasts; absent, `TESSARIDB_UNSEAL_FOR` or ten minutes.
     pub unseal_for: Option<core::time::Duration>,
+    /// What the TLS flags said; the environment fills the rest at start-up.
+    pub tls: crate::tls::Given,
+    /// A join token to offer the seeds (ADR-0108 D9); the environment fills
+    /// it at start-up when absent.
+    pub join_token: Option<String>,
 }
 
 impl Serving {
@@ -192,6 +225,9 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
     let mut authority = None;
     let mut door = None;
     let mut seeds: Vec<String> = Vec::new();
+    let mut trusted = None;
+    let mut encryption_key = None;
+    let mut backup_key = None;
     let mut arguments = arguments;
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
@@ -293,6 +329,44 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                     .ok_or_else(|| "--unseal-for wants a duration, such as 10m".to_owned())?;
                 serving.unseal_for =
                     Some(unseal_period(&written).map_err(|why| format!("--unseal-for {why}"))?);
+            }
+            "--tls-cert" => {
+                let path = arguments
+                    .next()
+                    .ok_or_else(|| "--tls-cert wants a path".to_owned())?;
+                serving.tls.cert = Some(PathBuf::from(path));
+            }
+            "--tls-key" => {
+                let path = arguments
+                    .next()
+                    .ok_or_else(|| "--tls-key wants a path".to_owned())?;
+                serving.tls.key = Some(PathBuf::from(path));
+            }
+            "--client-plaintext" => serving.tls.plaintext = true,
+            "--join-token" => {
+                serving.join_token = Some(
+                    arguments
+                        .next()
+                        .ok_or_else(|| "--join-token wants the token".to_owned())?,
+                );
+            }
+            "--encryption-key-file" => {
+                let path = arguments
+                    .next()
+                    .ok_or_else(|| "--encryption-key-file wants a path".to_owned())?;
+                encryption_key = Some(PathBuf::from(path));
+            }
+            "--backup-key-file" => {
+                let path = arguments
+                    .next()
+                    .ok_or_else(|| "--backup-key-file wants a path".to_owned())?;
+                backup_key = Some(PathBuf::from(path));
+            }
+            "--tls-authority" => {
+                let path = arguments
+                    .next()
+                    .ok_or_else(|| "--tls-authority wants a path".to_owned())?;
+                trusted = Some(PathBuf::from(path));
             }
             "--cluster-credential" => {
                 let path = arguments
@@ -431,13 +505,49 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                 .to_owned(),
         );
     }
+    // And again: a certificate named on a process that serves nothing is one
+    // somebody believes is encrypting their clients.
+    if serving.tls != crate::tls::Given::default() && !matches!(source, Source::Serve) {
+        return Err(
+            "--tls-cert, --tls-key and --client-plaintext say how a serving node speaks to \
+             its clients, and this serves nothing"
+                .to_owned(),
+        );
+    }
+    // The client's half: trusting a node by a certificate is something only a
+    // connection to one can do.
+    if trusted.is_some() && at.is_none() {
+        return Err(
+            "--tls-authority is what --at trusts a node by, and there is no --at".to_owned(),
+        );
+    }
+    // A key is for the files this process writes: a store on disk, or a backup
+    // to verify. Named for a store elsewhere or one in memory, it would encrypt
+    // nothing while somebody believed it did.
+    if encryption_key.is_some()
+        && (at.is_some() || store.is_none())
+        && !matches!(source, Source::Verify(_))
+    {
+        return Err(
+            "--encryption-key-file encrypts a store on disk this process opens, and none was named"
+                .to_owned(),
+        );
+    }
+    // The key a backup opens under is only ever asked for by reading one.
+    if backup_key.is_some() && !matches!(source, Source::Restore(_) | Source::Verify(_)) {
+        return Err(
+            "--backup-key-file opens a backup being restored or verified, and this reads none"
+                .to_owned(),
+        );
+    }
     // Same reason as the line above, and what the operator believes here is
     // stronger: not that a port is open, but that this node joined a cluster.
     let told_about_a_cluster = credential.is_some()
         || key.is_some()
         || authority.is_some()
         || door.is_some()
-        || !seeds.is_empty();
+        || !seeds.is_empty()
+        || serving.join_token.is_some();
     if told_about_a_cluster && !matches!(source, Source::Serve) {
         return Err("a cluster is something a node serves in, and this serves nothing".to_owned());
     }
@@ -454,6 +564,9 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
         parameters,
         at_sequence: sequence,
         serving,
+        authority: trusted,
+        encryption_key,
+        backup_key,
         cluster,
     })
 }

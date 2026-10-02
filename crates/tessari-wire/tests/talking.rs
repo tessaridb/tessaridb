@@ -462,3 +462,115 @@ fn serve_until_the_test_ends(node: &Node) {
         .unwrap();
     drop(runtime.block_on(node.serve(tokio_util::sync::CancellationToken::new())));
 }
+
+/// A certificate for `127.0.0.1` issued by a fresh authority: the node's PEM
+/// chain and key, and the authority's PEM a client trusts it by.
+fn issued_for_loopback() -> (String, String, String) {
+    let authority_key = rcgen::KeyPair::generate().unwrap();
+    let mut asked = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+    asked.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let authority = asked.self_signed(&authority_key).unwrap();
+    let leaf_key = rcgen::KeyPair::generate().unwrap();
+    let leaf = rcgen::CertificateParams::new(vec!["127.0.0.1".to_owned()])
+        .unwrap()
+        .signed_by(&leaf_key, &authority, &authority_key)
+        .unwrap();
+    (leaf.pem(), leaf_key.serialize_pem(), authority.pem())
+}
+
+fn trusting(pem: &str) -> rustls::RootCertStore {
+    tessari_serve::tls::authority(tessari_serve::tls::Pem {
+        bytes: pem.as_bytes(),
+        path: "ca.pem",
+    })
+    .unwrap()
+}
+
+/// A node that speaks TLS and nothing else, and the authority that issued it.
+fn serving_tls() -> (Arc<Node>, String, String) {
+    let (chain, key, authority) = issued_for_loopback();
+    let settings = tessari_serve::tls::Credential::read(
+        tessari_serve::tls::Pem {
+            bytes: chain.as_bytes(),
+            path: "cert.pem",
+        },
+        tessari_serve::tls::Pem {
+            bytes: key.as_bytes(),
+            path: "key.pem",
+        },
+    )
+    .unwrap()
+    .server_config(&[]);
+    let (node, address) = started(
+        Node::bind(Arc::new(Db::in_memory().unwrap()), "127.0.0.1:0")
+            .unwrap()
+            .securing(settings),
+    );
+    (node, address, authority)
+}
+
+#[test]
+fn a_node_with_a_certificate_answers_a_client_that_verified_it() {
+    let (_node, address, authority) = serving_tls();
+    let mut client = Client::connect_tls(&address, trusting(&authority)).unwrap();
+    let answers = client.run("RETURN 40 + 2;", None).unwrap();
+    assert_eq!(answers.len(), 1);
+    assert!(
+        matches!(&answers[0], Answer::Value { value, .. } if *value == Value::Number(tessaridb::Number::Integer(42))),
+        "{answers:?}"
+    );
+}
+
+#[test]
+fn a_node_with_a_certificate_never_answers_the_protocol_in_the_clear() {
+    let (_node, address, _) = serving_tls();
+    let refused = Client::connect(&address).expect_err("a plaintext greeting was answered");
+    // What comes back is a TLS alert, which a plaintext client reads as
+    // something that is not a node — or nothing, if the node hung up first.
+    assert!(
+        matches!(
+            refused,
+            tessari_wire::Error::NotThisProtocol | tessari_wire::Error::Io(_)
+        ),
+        "{refused}"
+    );
+    // And the bytes that came back, if any, are not the protocol's magic.
+    let mut raw = TcpStream::connect(&address).unwrap();
+    raw.write_all(b"TESS\x01\x02").unwrap();
+    let mut back = Vec::new();
+    drop(std::io::Read::read_to_end(&mut raw, &mut back));
+    assert!(!back.starts_with(b"TESS"), "the node greeted in the clear");
+}
+
+#[test]
+fn a_client_trusting_another_authority_is_refused_by_its_own_check() {
+    let (_node, address, _) = serving_tls();
+    let (_, _, someone_elses) = issued_for_loopback();
+    let refused = Client::connect_tls(&address, trusting(&someone_elses))
+        .expect_err("a certificate from an authority the client does not trust");
+    assert!(matches!(refused, tessari_wire::Error::Tls(_)), "{refused}");
+}
+
+#[test]
+fn a_node_with_a_certificate_refuses_a_client_that_offers_only_tls_1_2() {
+    let (_node, address, authority) = serving_tls();
+    let settings = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS12])
+        .with_root_certificates(trusting(&authority))
+        .with_no_client_auth();
+    let name = rustls::pki_types::ServerName::try_from("127.0.0.1").unwrap();
+    let mut session = rustls::ClientConnection::new(Arc::new(settings), name).unwrap();
+    let mut socket = TcpStream::connect(&address).unwrap();
+    let mut refused = None;
+    while session.is_handshaking() {
+        if let Err(why) = session.complete_io(&mut socket) {
+            refused = Some(why);
+            break;
+        }
+    }
+    let refused = refused.expect("a TLS 1.2 handshake completed");
+    assert!(
+        refused.to_string().contains("ProtocolVersion")
+            || refused.to_string().contains("protocol version"),
+        "{refused}"
+    );
+}

@@ -266,9 +266,14 @@ fn a_node_holding_a_lease_reports_the_time_it_has_left() {
     // Positive, and inside the fence rather than inside the grant: the δ the
     // cluster waits before reassigning is not time this node may write in.
     assert!(left.seconds() > 0, "the lease reports {left:?} remaining");
+    let reported = Duration::new(
+        u64::try_from(left.seconds()).expect("positive, asserted above"),
+        left.nanos(),
+    );
+    let fence = Duration::from_secs(120).saturating_sub(tessari_storage::LEASE_GUARD);
     assert!(
-        left.seconds() <= 118,
-        "the lease reports {left:?}, which reaches past its own fence"
+        reported <= fence,
+        "the lease reports {left:?}, which reaches past its own fence at {fence:?}"
     );
 }
 
@@ -1135,4 +1140,350 @@ fn a_follower_reports_where_it_stands_against_its_upstream() {
         panic!("no upstream once stranded");
     };
     assert_eq!(upstream.get("state"), Some(&Value::from("stranded")));
+}
+
+/// The fingerprints a report says every peer handshake refuses.
+fn revoked(report: &std::collections::BTreeMap<String, Value>) -> Vec<String> {
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster half: {report:?}");
+    };
+    let Some(Value::Array(listed)) = cluster.get("revoked") else {
+        panic!("no revocation list: {cluster:?}");
+    };
+    listed
+        .iter()
+        .map(|entry| match entry {
+            Value::String(fingerprint) => fingerprint.clone(),
+            other => panic!("a revocation that is not a fingerprint: {other:?}"),
+        })
+        .collect()
+}
+
+const FINGERPRINT: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0";
+
+#[test]
+fn a_revoked_certificate_is_listed_once_in_one_spelling() {
+    let store = closed(&backend());
+    assert!(
+        revoked(&reported(&store)).is_empty(),
+        "a fresh node refuses nobody"
+    );
+    // The colon-separated, upper-case form a certificate tool prints is the
+    // same certificate, and revoking it again changes nothing.
+    let printed = FINGERPRINT
+        .to_ascii_uppercase()
+        .as_bytes()
+        .chunks(2)
+        .map(|pair| String::from_utf8_lossy(pair).into_owned())
+        .collect::<Vec<_>>()
+        .join(":");
+    owner(&store)
+        .run(&format!("REVOKE CERTIFICATE '{printed}';"))
+        .unwrap();
+    owner(&store)
+        .run(&format!("REVOKE CERTIFICATE '{FINGERPRINT}';"))
+        .unwrap();
+    assert_eq!(revoked(&reported(&store)), vec![FINGERPRINT.to_owned()]);
+}
+
+#[test]
+fn a_fingerprint_that_is_not_a_sha256_is_refused_where_it_was_written() {
+    let store = closed(&backend());
+    for written in [
+        "abc",
+        &FINGERPRINT[1..],
+        &format!("{}zz", &FINGERPRINT[2..]),
+    ] {
+        let refused = owner(&store)
+            .run(&format!("REVOKE CERTIFICATE '{written}';"))
+            .expect_err("not a fingerprint");
+        assert!(
+            refused.to_string().contains("SHA-256 fingerprint"),
+            "{written}: {refused}"
+        );
+    }
+    assert!(revoked(&reported(&store)).is_empty());
+}
+
+#[test]
+fn only_an_operator_of_the_store_revokes_a_certificate() {
+    let store = closed(&backend());
+    owner(&store)
+        .run(&format!("DEFINE USER e ROLE editor PASSWORD '{PASSWORD}';"))
+        .unwrap();
+    let refused = format!(
+        "{:?}",
+        signed_in(&store, "e").run(&format!("REVOKE CERTIFICATE '{FINGERPRINT}';"))
+    );
+    assert!(refused.contains("RoleForbids"), "{refused}");
+    assert!(revoked(&reported(&store)).is_empty());
+}
+
+#[test]
+fn a_grant_named_certificate_is_still_a_grant() {
+    // `certificate` is not reserved: a REVOKE whose next word is a verb of
+    // that name, followed by `ON`, is the grant statement it always was.
+    let refused = format!(
+        "{:?}",
+        owner(&closed(&backend())).run("REVOKE certificate ON orders FROM ada;")
+    );
+    assert!(!refused.contains("SHA-256 fingerprint"), "{refused}");
+}
+
+/// The peer rows a report names, by name, as their full objects.
+fn rows(
+    report: &std::collections::BTreeMap<String, Value>,
+) -> std::collections::BTreeMap<String, std::collections::BTreeMap<String, Value>> {
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster half: {report:?}");
+    };
+    let Some(Value::Array(peers)) = cluster.get("peers") else {
+        panic!("no peers: {cluster:?}");
+    };
+    peers
+        .iter()
+        .map(|row| {
+            let Value::Object(row) = row else {
+                panic!("a peer that is not an object: {row:?}");
+            };
+            let Some(Value::String(name)) = row.get("name") else {
+                panic!("a peer with no name: {row:?}");
+            };
+            (name.clone(), row.clone())
+        })
+        .collect()
+}
+
+const JOINER: &str = "3f9a1c04-b7e2-489d-b561-0af3d82c7e46";
+
+#[test]
+fn a_join_token_is_answered_once_and_the_catalog_keeps_only_when_it_ends() {
+    let store = closed(&backend());
+    owner(&store)
+        .run("DEFINE REPLICA joiner AT '10.0.0.2:9000' ROLES serving;")
+        .unwrap();
+    let answered = owner(&store)
+        .run("CREATE JOIN TOKEN FOR REPLICA joiner EXPIRES 10m;")
+        .unwrap();
+    let Some(Outcome::Value(Value::String(token))) = answered.first() else {
+        panic!("no token: {answered:?}");
+    };
+    assert_eq!(token.len(), 64, "{token}");
+    assert!(
+        token.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "{token}"
+    );
+
+    let report = reported(&store);
+    let joiner = &rows(&report)["joiner"];
+    let Some(Value::Number(tessari_types::Number::Integer(ends))) = joiner.get("join_expires_ms")
+    else {
+        panic!("no expiry on the waiting row: {joiner:?}");
+    };
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    assert!(
+        (now + 590_000..=now + 600_000).contains(ends),
+        "{ends} vs {now}"
+    );
+    let printed = format!("{report:?}");
+    assert!(
+        !printed.contains(token.as_str()),
+        "the token is in the report"
+    );
+    assert!(!printed.contains("digest"), "the digest is in the report");
+}
+
+#[test]
+fn a_join_token_needs_a_row_that_does_not_yet_name_its_node() {
+    let store = closed(&backend());
+    let unknown = owner(&store)
+        .run("CREATE JOIN TOKEN FOR REPLICA nobody EXPIRES 10m;")
+        .expect_err("no such row");
+    assert!(
+        matches!(
+            unknown,
+            Error::Unknown {
+                entity: "replica",
+                ..
+            }
+        ),
+        "{unknown}"
+    );
+    // One transaction, so the peer it names never makes this store a cluster
+    // whose writes need a leadership.
+    let bound = owner(&store)
+        .run(&format!(
+            "BEGIN; DEFINE REPLICA known AT '10.0.0.3:9000' NODE '{JOINER}' ROLES serving; \
+             CREATE JOIN TOKEN FOR REPLICA known EXPIRES 10m; COMMIT;"
+        ))
+        .expect_err("the row already names its node");
+    assert!(
+        bound.to_string().contains("already names its node"),
+        "{bound}"
+    );
+    let unsaid = owner(&store)
+        .run("CREATE JOIN TOKEN FOR REPLICA nobody;")
+        .expect_err("a token with no life");
+    assert!(unsaid.to_string().contains("EXPIRES"), "{unsaid}");
+}
+
+#[test]
+fn a_pinned_certificate_reads_back_in_one_spelling() {
+    let store = closed(&backend());
+    owner(&store)
+        .run(&format!(
+            "DEFINE REPLICA joiner AT '10.0.0.2:9000' ROLES serving FINGERPRINT '{}';",
+            FINGERPRINT.to_ascii_uppercase()
+        ))
+        .unwrap();
+    assert_eq!(
+        rows(&reported(&store))["joiner"].get("fingerprint"),
+        Some(&Value::from(FINGERPRINT))
+    );
+}
+
+#[test]
+fn a_dropped_node_is_never_declared_again() {
+    let store = closed(&backend());
+    owner(&store)
+        .run(&format!(
+            "BEGIN; DEFINE REPLICA gone AT '10.0.0.4:9000' NODE '{JOINER}' ROLES serving; \
+             DROP REPLICA gone; DEFINE REPLICA open AT '10.0.0.5:9000' ROLES serving; \
+             DROP REPLICA open; COMMIT;"
+        ))
+        .unwrap();
+    let report = reported(&store);
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster half");
+    };
+    let Some(Value::Array(tombstoned)) = cluster.get("tombstoned") else {
+        panic!("no tombstones: {cluster:?}");
+    };
+    assert_eq!(
+        tombstoned.len(),
+        1,
+        "the row that named a node removed it, the open row removed nobody: {tombstoned:?}"
+    );
+    let refused = owner(&store)
+        .run(&format!(
+            "BEGIN; DEFINE REPLICA back AT '10.0.0.4:9000' NODE '{JOINER}' ROLES serving; \
+             DROP REPLICA back; COMMIT;"
+        ))
+        .expect_err("a removed node declared again");
+    assert!(
+        refused.to_string().contains("never admitted again"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn only_an_operator_of_the_store_makes_a_join_token() {
+    let store = closed(&backend());
+    owner(&store)
+        .run(&format!(
+            "DEFINE USER e ROLE editor PASSWORD '{PASSWORD}'; \
+             DEFINE REPLICA joiner AT '10.0.0.2:9000' ROLES serving;"
+        ))
+        .unwrap();
+    let refused = format!(
+        "{:?}",
+        signed_in(&store, "e").run("CREATE JOIN TOKEN FOR REPLICA joiner EXPIRES 10m;")
+    );
+    assert!(refused.contains("RoleForbids"), "{refused}");
+}
+
+/// What a test node presents: one readable certificate on the peer surface, one
+/// whose date could not be read on the client surface.
+#[derive(Debug)]
+struct Shown;
+
+impl tessari_session::Certificates for Shown {
+    fn presented(&self) -> Vec<tessari_session::Presented> {
+        vec![
+            tessari_session::Presented {
+                surface: "peers",
+                fingerprint: "0f".repeat(32),
+                expires: Some(1_900_000_000),
+            },
+            tessari_session::Presented {
+                surface: "clients",
+                fingerprint: "a1".repeat(32),
+                expires: None,
+            },
+        ]
+    }
+}
+
+/// The certificates entry of a report, as `(surface, fingerprint, expires)`.
+fn certificates(
+    report: &std::collections::BTreeMap<String, Value>,
+) -> Vec<(String, String, Value)> {
+    let Some(Value::Array(rows)) = report.get("certificates") else {
+        panic!("no certificates list: {report:?}");
+    };
+    rows.iter()
+        .map(|row| {
+            let Value::Object(row) = row else {
+                panic!("not a certificate: {row:?}");
+            };
+            let text = |field: &str| match row.get(field) {
+                Some(Value::String(said)) => said.clone(),
+                other => panic!("{field}: {other:?}"),
+            };
+            (
+                text("surface"),
+                text("fingerprint"),
+                row.get("expires").cloned().unwrap_or(Value::None),
+            )
+        })
+        .collect()
+}
+
+/// A node reads the certificate it presents the way `NODE` is read: from the
+/// node itself, so an operator pinning a newcomer's row copies a value the
+/// newcomer reported rather than one a tool computed beside it (ADR-0108 D9).
+/// On the local side of ADR-0018's line, because a certificate belongs to the
+/// machine and a backup must not carry it.
+#[test]
+fn a_node_reports_the_certificates_it_presents_beside_its_own_settings() {
+    let store = closed(&backend());
+    let outcomes = owner(&store)
+        .presenting(Arc::new(Shown))
+        .run("INFO FOR NODE;")
+        .unwrap();
+    let Some(Outcome::Value(Value::Object(report))) = outcomes.first() else {
+        panic!("not a report: {outcomes:?}");
+    };
+    assert_eq!(
+        certificates(report),
+        vec![
+            (
+                "peers".to_owned(),
+                "0f".repeat(32),
+                Value::Datetime(tessari_types::Datetime::from_seconds(1_900_000_000)),
+            ),
+            ("clients".to_owned(), "a1".repeat(32), Value::Null),
+        ]
+    );
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster group: {report:?}");
+    };
+    assert!(
+        !cluster.contains_key("certificates"),
+        "a certificate is this machine's, not the topology's"
+    );
+}
+
+/// A node with no certificate presents nothing, and says so as an empty list
+/// rather than leaving the operator to wonder whether it was asked.
+#[test]
+fn a_node_presenting_no_certificate_reports_an_empty_list() {
+    let store = closed(&backend());
+    assert_eq!(certificates(&reported(&store)), Vec::new());
 }

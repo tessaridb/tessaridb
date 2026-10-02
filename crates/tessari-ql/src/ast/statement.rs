@@ -2,14 +2,14 @@
 
 use super::{
     Answer, ColumnDeclaration, ConsumerSource, CreateTarget, Credential, DeleteBound, EdgeClause,
-    Edit, Expr, FieldMapping, FieldPath, GroupClauses, Identity, InfoSubject, Name, OnFailure,
-    RangeExpr, ReachRef, RecordTarget, Select, SetCondition, SpaceBound, TableChange, TableRef,
-    TopicClauses, UserChange, UserGrant, Written,
+    Edit, Expr, FieldMapping, FieldPath, GroupClauses, Identity, InfoSubject, Name,
+    NamespaceChange, OnFailure, RangeExpr, ReachRef, RecordTarget, Select, SetCondition,
+    SpaceBound, TableChange, TableRef, TopicClauses, UserChange, UserGrant, Written,
 };
 use crate::token::Span;
 use tessari_types::{
-    Assertion, ConflictPolicy, Duration, FieldKind, Filter, IdentityKind, Number, RecordId,
-    Replication, ReplicationClass,
+    Acknowledgement, Assertion, ConflictPolicy, Duration, FieldKind, Filter, IdentityKind, Number,
+    RecordId, Replication, ReplicationClass,
 };
 
 /// The statement forms this milestone accepts.
@@ -70,6 +70,10 @@ pub enum StatementKind {
         /// [`ReplicationClass::SingleLeader`] because an operator who answered
         /// the question has told the cluster something a silence has not.
         class: Option<ReplicationClass>,
+        /// How many copies must hold a write here before it is acknowledged,
+        /// and whether a request may ask for fewer (ADR-0106 D2) — `None` when
+        /// the statement said nothing, which is not a stated level.
+        acknowledge: Option<Acknowledgement>,
     },
     /// `DEFINE DATABASE orders`
     DefineDatabase {
@@ -604,8 +608,8 @@ pub enum StatementKind {
     AlterNamespace {
         /// The namespace being changed.
         name: Name,
-        /// What its replication becomes.
-        replication: Replication,
+        /// The one thing about it that changes.
+        change: NamespaceChange,
     },
     /// `DEFINE NODE ROLES serving, writable ENDPOINTS 'host:9000'`
     ///
@@ -669,6 +673,12 @@ pub enum StatementKind {
         /// How long a granted leadership is held before it must be renewed.
         lease: Duration,
     },
+    /// `REVOKE CERTIFICATE '<sha256>'` — a peer certificate refused by every
+    /// node from the moment the catalog reaches it (ADR-0108 D6).
+    RevokeCertificate {
+        /// The certificate's SHA-256, as 64 lowercase hexadecimal digits.
+        fingerprint: String,
+    },
     /// `DEFINE REPLICA second AT 'host:9001'`
     ///
     /// The opposite half: a peer is a fact every node must learn, so it is a
@@ -713,8 +723,19 @@ pub enum StatementKind {
         /// already — so the parser takes `NAMESPACE`, `DATABASE` and `SHARD`
         /// only. `None` is the row as it has always been.
         leads: Option<ReachRef>,
+        /// The one certificate allowed to bind this row (`FINGERPRINT`), its
+        /// SHA-256 as 64 lowercase hexadecimal digits (ADR-0108 D9).
+        fingerprint: Option<String>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
+    },
+    /// `CREATE JOIN TOKEN FOR REPLICA second EXPIRES 10m` — a one-time token
+    /// that binds the named row to the node presenting it (ADR-0108 D9).
+    CreateJoinToken {
+        /// The row the token binds.
+        replica: Name,
+        /// How long it binds for.
+        expires: Duration,
     },
     /// `DEFINE KAFKA CONSUMER orders_in FROM 'broker:9092' TOPIC 'orders' …`
     ///
@@ -1351,15 +1372,16 @@ pub enum StatementKind {
         /// What a value must satisfy.
         assert: Option<Assertion>,
     },
-    /// `ALTER REPLICA b LEADS SHARD prod.shop.orders 2` · `… LEADS NONE`
+    /// `ALTER REPLICA b LEADS SHARD prod.shop.orders 2` · `… LEADS NONE` ·
+    /// `… AT '…'` · `… ROLES …` · `… CLIENTS AT '…'` · `… HTTP AT '…'`
     ///
-    /// Moves a placement (ADR-0098): the row's `LEADS` is replaced, and `NONE`
-    /// removes it. The other half of the row stays as declared.
+    /// Amends one clause of a peer's row (ADR-0098, Q-892); the rest of the row
+    /// stays as declared, the node it is bound to included.
     AlterReplica {
         /// The peer whose row changes.
         name: Name,
-        /// The range it now stands to lead, or `None` for none.
-        leads: Option<ReachRef>,
+        /// What changes.
+        change: super::ReplicaChange,
     },
     /// `ALTER TABLE users SET SCHEMAFULL` · `… SET SCHEMALESS`
     ///

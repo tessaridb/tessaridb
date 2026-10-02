@@ -113,11 +113,16 @@ impl Remote {
     /// protocol.
     pub fn connect(
         address: &str,
+        trusting: Option<rustls::RootCertStore>,
         credentials: Option<(String, String)>,
         parameters: Parameters,
     ) -> Result<Self, String> {
+        let client = match trusting {
+            Some(roots) => Client::connect_tls(address, roots),
+            None => Client::connect(address),
+        };
         Ok(Self {
-            client: Client::connect(address).map_err(|held| format!("{address}: {held}"))?,
+            client: client.map_err(|held| format!("{address}: {held}"))?,
             credentials,
             parameters,
         })

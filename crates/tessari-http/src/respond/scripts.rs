@@ -79,36 +79,104 @@ pub(crate) fn script(
             }
         }
     }
-    match session.run_with(source, &given) {
-        Ok(outcomes) => {
-            // Resolved once for the whole answer rather than per outcome, and
-            // only when something in it holds a reference: a record reference
-            // carries a table id, and a client receiving `"1:2"` cannot follow
-            // it. See `Db::names_in`.
-            let referenced: Vec<(tessaridb::RecordId, tessaridb::Value)> = outcomes
-                .iter()
-                .flat_map(|outcome| match outcome {
-                    Outcome::Records { records, .. } => records.clone(),
-                    Outcome::Value(held) => {
-                        vec![(tessaridb::RecordId::Int(0), held.clone())]
-                    }
-                    _ => Vec::new(),
-                })
-                .collect();
-            let names = db.names_in(&referenced).unwrap_or_default();
-
-            let mut body = String::from(r#"{"results":["#);
-            for (position, outcome) in outcomes.iter().enumerate() {
-                if position > 0 {
-                    body.push(',');
-                }
-                encode(&mut body, outcome, &names);
+    // What the caller had selected BEFORE the script ran: a carried request is
+    // run again from the start on the node that answers it.
+    let selected = (
+        session.namespace().map(str::to_owned),
+        session.database().map(str::to_owned),
+    );
+    let ran = session.run_with(source, &given);
+    // Coordinated (ADR-0108 D1): carried over the peer link to the node that
+    // can answer it, as the caller this request proved, rather than answered
+    // with a redirect an HTTP client may not follow.
+    if let Err(refused) = &ran
+        && !session.landed()
+        && tessaridb::travels(source)
+        && let Some(coordinator) = db.coordinator()
+        && let Some(to) = db.answers_instead(refused)
+    {
+        return match coordinator.coordinate(&tessaridb::Coordination {
+            to,
+            user: session.signed_in(),
+            namespace: selected.0.as_deref(),
+            database: selected.1.as_deref(),
+            script: source,
+            parameters: &given,
+            surface: tessaridb::Surface::Http,
+        }) {
+            Ok(answer) => Answer {
+                status: answer.kind,
+                body: answer.body,
+                ..Answer::new(200, String::new())
+            },
+            Err(why) => {
+                let mut body = String::from(r#"{"error":"#);
+                json::string(&mut body, &why);
+                body.push('}');
+                Answer::new(502, body)
             }
-            body.push_str("]}");
-            Answer::new(200, body)
-        }
+        };
+    }
+    match ran {
+        Ok(outcomes) => results(db, &outcomes),
         Err(error) => script_failure(db, &error, session.landed(), "/script"),
     }
+}
+
+/// A carried request's answer, rendered for an HTTP caller by the node that
+/// ran it (ADR-0108 D1).
+///
+/// A refusal naming yet another node is answered `409` — retry — rather than
+/// redirected: the request has made its one hop, and a `Location` would not
+/// survive the way back.
+#[must_use]
+pub fn render_coordinated(
+    db: &Db,
+    ran: &tessaridb::Result<Vec<Outcome>>,
+) -> tessaridb::Coordinated {
+    let answer = match ran {
+        Ok(outcomes) => results(db, outcomes),
+        Err(refused) if db.answers_instead(refused).is_some() => {
+            let mut body = String::from(r#"{"error":"#);
+            json::string(&mut body, &refused.to_string());
+            body.push('}');
+            Answer::new(409, body)
+        }
+        Err(refused) => super::failure(refused),
+    };
+    tessaridb::Coordinated {
+        kind: answer.status,
+        body: answer.body,
+    }
+}
+
+/// Every outcome of a run, as the body `POST /script` answers with.
+fn results(db: &Db, outcomes: &[Outcome]) -> Answer {
+    // Resolved once for the whole answer rather than per outcome, and only
+    // when something in it holds a reference: a record reference carries a
+    // table id, and a client receiving `"1:2"` cannot follow it. See
+    // `Db::names_in`.
+    let referenced: Vec<(tessaridb::RecordId, tessaridb::Value)> = outcomes
+        .iter()
+        .flat_map(|outcome| match outcome {
+            Outcome::Records { records, .. } => records.clone(),
+            Outcome::Value(held) => {
+                vec![(tessaridb::RecordId::Int(0), held.clone())]
+            }
+            _ => Vec::new(),
+        })
+        .collect();
+    let names = db.names_in(&referenced).unwrap_or_default();
+
+    let mut body = String::from(r#"{"results":["#);
+    for (position, outcome) in outcomes.iter().enumerate() {
+        if position > 0 {
+            body.push(',');
+        }
+        encode(&mut body, outcome, &names);
+    }
+    body.push_str("]}");
+    Answer::new(200, body)
 }
 
 /// One outcome, as the object a caller parses.

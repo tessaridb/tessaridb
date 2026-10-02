@@ -1,8 +1,13 @@
-//! A write that arrives at a node which may not take it.
+//! A write that arrives at a node which may not take it, when no peer link
+//! joins the two nodes.
 //!
 //! Two nodes over real sockets, one range, one leader (ADR-0019). The follower
-//! holds no `writable` role, so a write sent to it is **routed** rather than
-//! refused: it commits on the leader, and after replication both hold it.
+//! holds no `writable` role. It used to relay the write — the caller's name and
+//! password included — to the leader's plaintext client surface (R-10). With no
+//! peer link there is now nothing to carry it over, so the write is REFUSED,
+//! naming where the writable peer takes writes, and nothing reaches the leader
+//! (ADR-0108 D1). The coordinated path, over the peer link and under a signed
+//! assertion, is exercised on a real cluster in `tessari-cli`'s serving tests.
 //!
 //! What makes this different from wave 69's tests: those asked the classifier
 //! what a script *is*. These ask what a node *does* with one, which is the half
@@ -138,67 +143,47 @@ fn two_nodes_declared(
 }
 
 #[test]
-fn a_write_sent_to_a_follower_commits_on_the_leader_and_is_visible_on_both() {
-    let (leader, leader_address, follower, follower_address, _leader_node, _follower_node) =
+fn a_write_sent_to_a_follower_is_refused_naming_the_leader_and_reaches_nobody() {
+    let (_leader, leader_address, _follower, follower_address, _leader_node, _follower_node) =
         two_nodes();
 
-    // The write goes to the node that may not take it.
     let mut to_follower = Client::connect(&follower_address).unwrap();
-    to_follower
+    let refused = to_follower
         .run(
             &format!("{READY} CREATE users:2 = {{ name: 'grace' }};"),
             None,
         )
-        .unwrap();
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains(&leader_address),
+        "the refusal did not say where writes are taken: {refused}"
+    );
 
-    // It committed on the leader.
+    // Nothing was carried: the leader holds only what it held.
     let mut to_leader = Client::connect(&leader_address).unwrap();
     assert_eq!(
         names(&mut to_leader, "SELECT * FROM users;"),
-        vec!["ada".to_owned(), "grace".to_owned()],
-        "the forwarded write did not commit on the leader",
-    );
-
-    // And **not** on the follower, which is the half that separates a forward
-    // from a write taken locally. A test that only checked the leader would
-    // pass just as well against a node that wrote in both places, and writing
-    // in both places is the split brain.
-    assert_eq!(
-        names(&mut to_follower, "SELECT * FROM users;"),
         vec!["ada".to_owned()],
-        "the follower took the write itself instead of forwarding it",
-    );
-
-    // Visible on both, once what the leader committed is carried across.
-    let carried = replicate(&leader, &follower);
-    assert!(carried > 0, "replication carried nothing to compare");
-    assert_eq!(
-        names(&mut to_follower, "SELECT * FROM users;"),
-        vec!["ada".to_owned(), "grace".to_owned()],
-        "the follower does not hold what the leader committed",
+        "a write reached the leader with no peer link to carry it",
     );
 }
 
-/// G051 SG3 — in a cluster run with peer credentials a member row's `AT` is the
-/// peer door, which speaks TLS and not this protocol, and `CLIENTS AT` is where
-/// a client reaches the node. A forwarded write is a client of the leader, so it
-/// goes where a client goes: here `AT` names a port nothing listens on.
 #[test]
-fn a_write_is_forwarded_to_where_a_client_reaches_the_leader() {
+fn the_refusal_names_where_a_client_reaches_the_leader() {
     let (_leader, leader_address, _follower, follower_address, _leader_node, _follower_node) =
         two_nodes_declared(|address| format!("AT '127.0.0.1:1' CLIENTS AT '{address}'"));
     let mut to_follower = Client::connect(&follower_address).unwrap();
-    to_follower
+    let refused = to_follower
         .run(
             &format!("{READY} CREATE users:2 = {{ name: 'grace' }};"),
             None,
         )
-        .unwrap();
-    let mut to_leader = Client::connect(&leader_address).unwrap();
-    assert_eq!(
-        names(&mut to_leader, "SELECT * FROM users;"),
-        vec!["ada".to_owned(), "grace".to_owned()],
-        "the forwarded write did not reach the leader at its client address",
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains(&leader_address) && !refused.contains("127.0.0.1:1"),
+        "the refusal named the peer door rather than the client surface: {refused}"
     );
 }
 
@@ -290,49 +275,6 @@ fn a_node_can_be_given_back_the_role_it_dropped() {
         vec!["ada".to_owned(), "hedy".to_owned()],
         "the node did not take a write after being given the role back",
     );
-}
-
-#[test]
-fn a_forwarded_write_does_not_carry_the_session_that_sent_it() {
-    // **A characterisation test: it pins what the build does, not what it
-    // should do.** When Q-110 is answered this test fails, and that failure is
-    // the notification.
-    //
-    // The forward opens a fresh session on the leader, so the `USE` this
-    // connection ran earlier is not there. That contradicts a promise this
-    // protocol makes in its own words — a session "lives as long as the
-    // connection, because that is what a connection *is*" — and forwarding is
-    // where the promise currently stops holding.
-    //
-    // It is not a failure of the criterion: a write whose script carries its own
-    // `USE` forwards and commits, which the test above shows. It is a failure of
-    // the *pattern a client would actually use*, which is to say `USE` once and
-    // then write repeatedly, and it is recorded rather than papered over.
-    let (_leader, _leader_address, _follower, follower_address, _leader_node, _follower_node) =
-        two_nodes();
-    let mut client = Client::connect(&follower_address).unwrap();
-
-    client
-        .run("USE NAMESPACE prod; USE DATABASE orders;", None)
-        .unwrap();
-    let refused = client
-        .run("CREATE users:7 = { name: 'lise' };", None)
-        .unwrap_err()
-        .to_string();
-
-    assert!(
-        refused.contains("no namespace selected"),
-        "expected the leader's fresh session to have no tenancy, got: {refused}",
-    );
-
-    // The same statement, with the selection travelling in the script, commits.
-    // Which is what identifies the gap as the session and not the forward.
-    client
-        .run(
-            "USE NAMESPACE prod; USE DATABASE orders; CREATE users:7 = { name: 'lise' };",
-            None,
-        )
-        .unwrap();
 }
 
 /// Serve `node` on a runtime of this test's own: the node creates none.

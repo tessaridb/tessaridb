@@ -71,6 +71,25 @@ pub(crate) fn described_replica(
                 Some(reach) => Value::from(spelled_reach(reach, catalog)?.as_str()),
             },
         ),
+        // The certificate allowed to bind this row (ADR-0108 D9), in the
+        // spelling `FINGERPRINT` takes.
+        (
+            "fingerprint".to_owned(),
+            replica
+                .fingerprint
+                .as_deref()
+                .map_or(Value::Null, Value::from),
+        ),
+        // A join token waiting to bind it: when it stops binding, in
+        // milliseconds since the Unix epoch, and never its digest — the digest
+        // is what a token is checked against, and nothing reading this needs it.
+        (
+            "join_expires_ms".to_owned(),
+            replica
+                .join
+                .as_ref()
+                .map_or(Value::Null, |join| Value::from(join.expires_ms)),
+        ),
     ])))
 }
 
@@ -128,8 +147,8 @@ pub(crate) fn namespace_named(namespace: NamespaceId, catalog: &Catalog<'_, '_>)
 /// stopped collecting while this leader was idle is behind by nothing at all —
 /// `behind` reads zero and it looks well, because in sequences it *is* well;
 /// only `quiet_for` grows. A follower collecting steadily but unable to keep up
-/// has almost no `quiet_for`; only `behind` grows. That is why PostgreSQL
-/// publishes positions and lags from the primary rather than either alone.
+/// has almost no `quiet_for`; only `behind` grows. That is why a primary
+/// worth monitoring publishes positions and lags rather than either alone.
 ///
 /// `quiet_for` is time since this follower last collected. `copy_age` is the
 /// other question — how old the data it holds is — and the two come apart on an

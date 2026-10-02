@@ -1077,3 +1077,127 @@ fn a_scrape_says_where_a_follower_stands_and_how_far_behind_its_followers_are() 
         "the follower was given nothing, so it is behind: {scrape}"
     );
 }
+
+#[test]
+fn a_stranger_scraping_a_closed_store_learns_nothing_about_the_cluster() {
+    // ADR-0108 D8: which nodes follow this one, how far behind each is, and
+    // whether this node leads are the topology. On a closed store they are for
+    // a caller who may ask `INFO FOR NODE`, and for nobody else.
+    let db = Arc::new(Db::in_memory().unwrap());
+    let node = Arc::new(Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap());
+    let address = node.address();
+    let serving = Arc::clone(&node);
+    std::thread::spawn(move || crate::serve_until_the_test_ends(&serving));
+    let (status, _, body) = send(
+        &address,
+        "POST",
+        "/script",
+        "DEFINE USER root ROLE owner PASSWORD 'root secret';",
+        None,
+    );
+    assert_eq!(status, 200, "{body}");
+    let (status, _, body) = send(
+        &address,
+        "POST",
+        "/script",
+        "DEFINE USER grace ROLE viewer PASSWORD 'watch only';",
+        Some(ROOT),
+    );
+    assert_eq!(status, 200, "{body}");
+    db.store().follower_served(
+        [7_u8; 16],
+        tessari_types::Reach::Store,
+        tessari_types::Sequence::new(0),
+    );
+    db.store().upstream_is(tessari_storage::Upstream::Copying);
+
+    const CLUSTER: [&str; 5] = [
+        "tessari_follower_behind_records",
+        "tessari_replica_state",
+        "tessari_replica_copied_records",
+        "tessari_campaigns",
+        "tessari_log_divergences",
+    ];
+    for (who, credential) in [("a stranger", None), ("a viewer", Some(GRACE))] {
+        let (status, _, scrape) = send(&address, "GET", "/metrics", "", credential);
+        assert_eq!(status, 200, "{scrape}");
+        // The control: the scrape is a real one, not an empty refusal.
+        assert!(scrape.contains("tessari_committed_sequence"), "{scrape}");
+        for series in CLUSTER {
+            assert!(
+                !scrape.contains(series),
+                "{who} was shown {series}: {scrape}"
+            );
+        }
+        assert!(!scrape.contains("07070707"), "{who} learnt a follower's id");
+    }
+    let (status, _, scrape) = send(&address, "GET", "/metrics", "", Some(ROOT));
+    assert_eq!(status, 200, "{scrape}");
+    for series in CLUSTER {
+        assert!(
+            scrape.contains(series),
+            "the owner was not shown {series}: {scrape}"
+        );
+    }
+}
+
+#[test]
+fn the_certificate_a_surface_presents_says_when_it_expires_and_only_to_an_operator() {
+    // ADR-0108 D6: an expired certificate is a refused handshake, so its date
+    // is a number to alert on — and which certificates a node holds is about
+    // the cluster, so it sits behind the same gate as the topology (D8).
+    const EXPIRES: i64 = 2_556_230_400; // 2051-01-02T00:00:00Z
+    let mut params = rcgen::CertificateParams::new(vec!["localhost".to_owned()]).unwrap();
+    params.not_after = rcgen::date_time_ymd(2051, 1, 2);
+    let key = rcgen::KeyPair::generate().unwrap();
+    let leaf =
+        rustls::pki_types::CertificateDer::from(params.self_signed(&key).unwrap().der().to_vec());
+    let mut census = tessari_serve::Census::since(std::time::Instant::now());
+    census.presenting(
+        "clients",
+        tessari_serve::Presenting::new(move || Some(leaf.clone())),
+    );
+    let db = Arc::new(Db::in_memory().unwrap());
+    let mut node = Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap();
+    node.watching(Arc::new(census));
+    let node = Arc::new(node);
+    let address = node.address();
+    let serving = Arc::clone(&node);
+    std::thread::spawn(move || crate::serve_until_the_test_ends(&serving));
+    let (status, _, body) = send(
+        &address,
+        "POST",
+        "/script",
+        "DEFINE USER root ROLE owner PASSWORD 'root secret';",
+        None,
+    );
+    assert_eq!(status, 200, "{body}");
+
+    let (status, _, scrape) = send(&address, "GET", "/metrics", "", None);
+    assert_eq!(status, 200, "{scrape}");
+    assert!(scrape.contains("tessari_committed_sequence"), "{scrape}");
+    assert!(
+        !scrape.contains("tessari_tls_certificate_expires_seconds"),
+        "a stranger was shown the certificates: {scrape}"
+    );
+
+    let before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let (status, _, scrape) = send(&address, "GET", "/metrics", "", Some(ROOT));
+    assert_eq!(status, 200, "{scrape}");
+    let left: i64 = scrape
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("tessari_tls_certificate_expires_seconds{surface=\"clients\"} ")
+        })
+        .unwrap_or_else(|| panic!("no expiry line: {scrape}"))
+        .parse()
+        .unwrap();
+    let expected = EXPIRES - i64::try_from(before).unwrap();
+    assert!(
+        (expected - 60..=expected).contains(&left),
+        "{left} seconds left, expected about {expected}"
+    );
+}

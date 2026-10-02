@@ -42,6 +42,8 @@ use tessari_kv::{
 
 mod group;
 
+use crate::AtRestKey;
+use crate::encryption;
 use crate::error::{BACKEND_NAME, from_engine, from_open, missing_region};
 use crate::options::{Durability, StoreConfig, database_options, regions};
 
@@ -94,10 +96,38 @@ impl LsmBackend {
     /// another process, [`Error::Validation`] when an existing store is missing a
     /// region, and the mapped engine failure otherwise.
     pub fn open(path: impl AsRef<Path>, config: StoreConfig) -> Result<Self> {
+        Self::open_with_key(path, config, None)
+    }
+
+    /// Open the store at `path`, encrypted under `key` when one is given
+    /// (ADR-0108 D7).
+    ///
+    /// A new store given a key is created encrypted. An existing store opens
+    /// only the way it was created: an encrypted one refuses to open without
+    /// its key or under another, and a plain one refuses a key — each refusal
+    /// saying which, before the engine reads a byte.
+    ///
+    /// # Errors
+    ///
+    /// As [`LsmBackend::open`], and [`Error::Validation`] for a key that does
+    /// not match the store.
+    pub fn open_with_key(
+        path: impl AsRef<Path>,
+        config: StoreConfig,
+        key: Option<&AtRestKey>,
+    ) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let cache = rocksdb::Cache::new_lru_cache(config.block_cache_bytes);
 
-        let existing = DB::list_cf(&Options::default(), &path).ok();
+        // `CURRENT` names the engine's live manifest, so it is there exactly
+        // when a store is.
+        encryption::admit(&path, key, path.join("CURRENT").exists())?;
+        let environment = key.map(encryption::environment).transpose()?;
+        let mut listing = Options::default();
+        if let Some(environment) = &environment {
+            listing.set_env(environment);
+        }
+        let existing = DB::list_cf(&listing, &path).ok();
         if let Some(found) = &existing {
             let missing: Vec<Keyspace> = Keyspace::ALL
                 .iter()
@@ -110,7 +140,10 @@ impl LsmBackend {
         }
 
         let create = existing.is_none();
-        let database_options = database_options(&config, create);
+        let mut database_options = database_options(&config, create);
+        if let Some(environment) = &environment {
+            database_options.set_env(environment);
+        }
         let descriptors = regions(&cache)
             .into_iter()
             .map(|(name, options)| rocksdb::ColumnFamilyDescriptor::new(name, options));
@@ -266,6 +299,48 @@ impl LsmBackend {
             })
     }
 
+    /// Apply `batch` under `options`, subject to its preconditions — the one
+    /// write both [`KvBackend::apply`] and [`KvBackend::apply_unsynced`] make.
+    fn write(&self, batch: WriteBatch, options: &rocksdb::WriteOptions) -> Result<()> {
+        let _writer = self.writer();
+
+        // Every precondition is read here, under the lock, so nothing can move
+        // between the check and the write below.
+        for precondition in batch.preconditions() {
+            let region = self.region(precondition.keyspace())?;
+            let observed = self
+                .database
+                .get_cf(region, precondition.key().as_slice())
+                .map_err(|error| from_engine(&error))?
+                .map(Value::new);
+            if !precondition.is_satisfied_by(observed.as_ref()) {
+                return Err(Error::Conflict {
+                    keyspace: precondition.keyspace().name().to_owned(),
+                    key: precondition.key().clone(),
+                });
+            }
+        }
+
+        // Every region an operation names is resolved before any of them is
+        // written, so an unknown one fails the batch instead of splitting it.
+        let mut engine_batch = EngineBatch::default();
+        for op in batch.ops() {
+            let region = self.region(op.keyspace())?;
+            match op {
+                WriteOp::Put { key, value, .. } => {
+                    engine_batch.put_cf(region, key.as_slice(), value.as_slice());
+                }
+                WriteOp::Delete { key, .. } => {
+                    engine_batch.delete_cf(region, key.as_slice());
+                }
+            }
+        }
+
+        self.database
+            .write_opt(engine_batch, options)
+            .map_err(|error| from_engine(&error))
+    }
+
     /// The write lock, taken as found even after a panic elsewhere held it.
     ///
     /// It guards no data: what it orders is a precondition check and one engine
@@ -396,42 +471,24 @@ impl KvBackend for LsmBackend {
     }
 
     fn apply(&self, batch: WriteBatch) -> Result<()> {
-        let _writer = self.writer();
+        self.write(batch, &self.durability.write_options())
+    }
 
-        // Every precondition is read here, under the lock, so nothing can move
-        // between the check and the write below.
-        for precondition in batch.preconditions() {
-            let region = self.region(precondition.keyspace())?;
-            let observed = self
-                .database
-                .get_cf(region, precondition.key().as_slice())
-                .map_err(|error| from_engine(&error))?
-                .map(Value::new);
-            if !precondition.is_satisfied_by(observed.as_ref()) {
-                return Err(Error::Conflict {
-                    keyspace: precondition.keyspace().name().to_owned(),
-                    key: precondition.key().clone(),
-                });
-            }
+    fn apply_unsynced(&self, batch: WriteBatch) -> Result<()> {
+        // Written ahead and not synced: it survives the process, and
+        // `sync_applied` makes it survive the machine.
+        self.write(batch, &rocksdb::WriteOptions::default())
+    }
+
+    fn sync_applied(&self) -> Result<()> {
+        // One sync of the write-ahead log covers every write landed before it.
+        // A store that promises only process-crash safety owes no sync here,
+        // exactly as its own `apply` makes none.
+        if self.durability != Durability::PowerLossSafe {
+            return Ok(());
         }
-
-        // Every region an operation names is resolved before any of them is
-        // written, so an unknown one fails the batch instead of splitting it.
-        let mut engine_batch = EngineBatch::default();
-        for op in batch.ops() {
-            let region = self.region(op.keyspace())?;
-            match op {
-                WriteOp::Put { key, value, .. } => {
-                    engine_batch.put_cf(region, key.as_slice(), value.as_slice());
-                }
-                WriteOp::Delete { key, .. } => {
-                    engine_batch.delete_cf(region, key.as_slice());
-                }
-            }
-        }
-
         self.database
-            .write_opt(engine_batch, &self.durability.write_options())
+            .flush_wal(true)
             .map_err(|error| from_engine(&error))
     }
 
@@ -630,6 +687,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!(backend.get(Keyspace::INDEX, &key).unwrap(), None);
+    }
+
+    #[test]
+    fn writes_landed_unsynced_are_kept_once_synced_at_either_durability() {
+        for durability in [Durability::PowerLossSafe, Durability::ProcessCrashSafe] {
+            let dir = tempfile::tempdir().unwrap();
+            let backend = LsmBackend::open(dir.path(), StoreConfig::new(durability)).unwrap();
+            for n in 0..3_u8 {
+                let batch = WriteBatch::default().put(
+                    Keyspace::INDEX,
+                    Key::from_slice(&[n]),
+                    Value::new(vec![n]),
+                );
+                backend.apply_unsynced(batch).unwrap();
+            }
+            backend.sync_applied().unwrap();
+            backend.close().unwrap();
+
+            let reopened = LsmBackend::open(dir.path(), StoreConfig::new(durability)).unwrap();
+            for n in 0..3_u8 {
+                assert_eq!(
+                    reopened
+                        .get(Keyspace::INDEX, &Key::from_slice(&[n]))
+                        .unwrap(),
+                    Some(Value::new(vec![n])),
+                    "{durability:?}"
+                );
+            }
+        }
     }
 
     #[test]

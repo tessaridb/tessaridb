@@ -177,6 +177,22 @@ DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 0s CAMPAIGN 1s LEASE 30s;
 DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s CAMPAIGN 9s LEASE 30s;
 --- expect: error FailoverRefused
 
+--- case: a peer certificate is revoked by its SHA-256 fingerprint
+REVOKE CERTIFICATE '0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0';
+--- expect: ok
+
+--- case: a fingerprint that is not 64 hexadecimal digits is refused
+REVOKE CERTIFICATE '0f1e2d';
+--- expect: error UnexpectedToken
+
+--- case: a join token needs a row to bind
+CREATE JOIN TOKEN FOR REPLICA nobody EXPIRES 10m;
+--- expect: error Unknown
+
+--- case: a join token has no default life
+CREATE JOIN TOKEN FOR REPLICA nobody;
+--- expect: error UnexpectedToken
+
 --- case: a session reads the node it is talking to and its own tenancy
 RETURN object::keys(session::context());
 --- expect: value ['database', 'namespace', 'node']

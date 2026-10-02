@@ -22,14 +22,14 @@ use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::sync::{Arc, Weak};
 
-use rustls::pki_types::CertificateDer;
 use tessari_encoding::NODE_ID_LEN;
 use tessari_session::{Asked, Gather as Gathers, Gathered, Unanswered};
 use tessari_storage::{Catalog, Reach};
 
 use crate::driver::{Published, leader_of_range};
 use crate::gathering::Gather;
-use crate::link::{Answered, Ask, Credential, call};
+use crate::keys::PeerKeys;
+use crate::link::{Answered, Ask, call};
 use crate::peer::Hello;
 
 /// What this node would tell a peer about itself, read when it is asked.
@@ -72,8 +72,7 @@ pub struct Gathering {
     /// This node's id, so a shard it leads itself is never dialled.
     me: [u8; NODE_ID_LEN],
     /// The peer credential and the authority that issued the cluster's.
-    credential: Credential,
-    authority: CertificateDer<'static>,
+    keys: PeerKeys,
     /// Who was heard at the last greeting round.
     routing: Arc<Published>,
     /// This node's greeting, which opens every conversation on the link.
@@ -94,15 +93,14 @@ impl Gathering {
     pub fn new(
         db: Arc<tessaridb::Db>,
         me: [u8; NODE_ID_LEN],
-        (credential, authority): (Credential, CertificateDer<'static>),
+        keys: PeerKeys,
         routing: Arc<Published>,
         greeting: Greeting,
     ) -> Self {
         Self {
             db: Arc::downgrade(&db),
             me,
-            credential,
-            authority,
+            keys,
             routing,
             greeting,
         }
@@ -166,23 +164,16 @@ impl Gathers for Gathering {
         let mut partials = Vec::new();
         let mut counted: Option<tessari_storage::SearchCounts> = None;
         loop {
-            let (_, answered) = call(
-                address,
-                self.credential.duplicate(),
-                &self.authority,
-                node,
-                &said,
-                Ask::Gather(&page),
-            )
-            .map_err(|why| match why {
-                // The leader's map differs from the one this ask was built
-                // from: said as itself, so the asker reads its map again
-                // rather than looking for a leader that did not answer.
-                crate::Error::NotGathered(crate::gathering::Ungathered::MapMoved) => {
-                    Unanswered::Moved
-                }
-                other => Unanswered::Refused(format!("{endpoint}: {other}")),
-            })?;
+            let (_, answered) = call(address, &self.keys, node, &said, Ask::Gather(&page))
+                .map_err(|why| match why {
+                    // The leader's map differs from the one this ask was built
+                    // from: said as itself, so the asker reads its map again
+                    // rather than looking for a leader that did not answer.
+                    crate::Error::NotGathered(crate::gathering::Ungathered::MapMoved) => {
+                        Unanswered::Moved
+                    }
+                    other => Unanswered::Refused(format!("{endpoint}: {other}")),
+                })?;
             let Answered::Gathered(answered) = answered else {
                 return Err(Unanswered::Refused(format!(
                     "{endpoint} answered something other than a page"

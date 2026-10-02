@@ -26,7 +26,9 @@
 //!
 //! No port is claimed: [`Peers::bind`] takes an address, because which port a
 //! cluster peers on is an operator's decision and not this module's. Nothing
-//! issues, rotates or revokes a certificate. One connection is served per call
+//! here issues a certificate; what is presented and what is refused is read
+//! from [`PeerKeys`] at each handshake, which is where rotation and revocation
+//! live (ADR-0108 D6). One connection is served per call
 //! to [`Peers::greet`], and ONE follow-up rides it — a ballot or a collection,
 //! never both, which is why [`Ask`] is an enum rather than two optional
 //! arguments. A node serving peers continuously does it on the runtime, one
@@ -42,8 +44,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
-use rustls::server::WebPkiClientVerifier;
-use rustls::{ClientConfig, ClientConnection, RootCertStore, ServerConfig, ServerConnection};
+use rustls::{ClientConnection, ServerConfig, ServerConnection};
 
 use tessari_constants::GREETING_SECONDS;
 use tessari_encoding::NODE_ID_LEN;
@@ -54,6 +55,7 @@ use crate::error::{Error, Result};
 use crate::frame;
 use crate::gathering::{Gather, Page, Ungathered};
 use crate::grant::{Ballot, Deciding, Refused, Vote};
+use crate::keys::PeerKeys;
 use crate::peer::{Hello, PeerFrame, Purpose, admit};
 
 /// What this node shows a peer, and the key that proves it is ours.
@@ -70,39 +72,24 @@ pub struct Credential {
 pub struct Peers {
     pub(crate) listener: TcpListener,
     pub(crate) settings: Arc<ServerConfig>,
+    /// The same keys the settings judge a handshake by, asked again while a
+    /// held stream is open.
+    pub(crate) keys: PeerKeys,
 }
 
 impl Peers {
-    /// Open the peer door at `address`, trusting exactly `authority`.
-    ///
-    /// One root and not a platform store: a cluster's peers are issued by the
-    /// cluster, and a link that would also accept a certificate from any public
-    /// authority is a link whose membership is whatever the operating system was
-    /// shipped believing.
+    /// Open the peer door at `address`, answering with whatever `keys` holds
+    /// at each handshake and admitting what its authority issued and its
+    /// revocations do not name.
     ///
     /// # Errors
     ///
-    /// Returns the socket's own failure, or [`Error::Transport`] when the
-    /// credential or the authority will not make a usable configuration.
-    pub fn bind(
-        address: impl ToSocketAddrs,
-        mine: Credential,
-        authority: &CertificateDer<'_>,
-    ) -> Result<Self> {
-        let mut roots = RootCertStore::empty();
-        roots
-            .add(authority.clone().into_owned())
-            .map_err(|why| Error::Transport(why.to_string()))?;
-        let verifier = WebPkiClientVerifier::builder(Arc::new(roots))
-            .build()
-            .map_err(|why| Error::Transport(why.to_string()))?;
-        let settings = ServerConfig::builder()
-            .with_client_cert_verifier(verifier)
-            .with_single_cert(mine.chain, mine.key)
-            .map_err(|why| Error::Transport(why.to_string()))?;
+    /// Returns the socket's own failure.
+    pub fn bind(address: impl ToSocketAddrs, keys: &PeerKeys) -> Result<Self> {
         Ok(Self {
             listener: TcpListener::bind(address)?,
-            settings: Arc::new(settings),
+            settings: keys.door(),
+            keys: keys.clone(),
         })
     }
 
@@ -212,7 +199,11 @@ impl Peers {
                 voted
             }
         };
-        Ok(Met { said, voted })
+        Ok(Met {
+            said,
+            voted,
+            presented: shown.as_ref().map_or([0; 32], credential::digest),
+        })
     }
 }
 
@@ -285,6 +276,21 @@ pub(crate) fn answering(
                 Err(why) => Err(why),
             }
         }
+        // A sign-in try, against this process's own table — the cluster's
+        // while this node leads the store line (ADR-0108 D5). Only a proven
+        // member reaches here; it learns whether a name may try, nothing more.
+        Some(PeerFrame::Attempt) => {
+            let asked = crate::budget::Attempt::decode(body)?;
+            let answer = u8::from(asked.answered());
+            Ok((PeerFrame::Attempted.tag(), vec![answer], None))
+        }
+        // A join token, from the node the handshake proved — never a node the
+        // frame names, so a member cannot spend a token for somebody else.
+        Some(PeerFrame::Join) => {
+            let token = <[u8; 32]>::try_from(body).map_err(|_| Error::Malformed)?;
+            let bound = log.joined(said.node, &token)?;
+            Ok((PeerFrame::Joined.tag(), vec![u8::from(bound)], None))
+        }
         Some(PeerFrame::Ballot) => {
             let asked = Ballot::decode(body)?;
             // The identity that decides a grant is the one the
@@ -309,12 +315,16 @@ pub(crate) fn answering(
                 return Ok((PeerFrame::Vote.tag(), vote.encode(), Some(vote)));
             }
             // On the ballot's own line (ADR-0082): a range ballot is
-            // judged on both greetings' positions for that range, the
-            // store ballot on the store's exactly as before.
+            // judged on the positions for that range, the store ballot on
+            // the store's exactly as before. The candidate's from the
+            // greeting it proved, which describes the range it stands for;
+            // this voter's from what it holds of that line, which its own
+            // greeting may not describe at all (Q-884).
+            let held = log.reached_on(asked.range)?;
             let vote = voter.asked(
                 &asked,
                 std::time::Instant::now(),
-                mine.reached_on(asked.range),
+                held.unwrap_or_else(|| mine.reached_on(asked.range)),
                 said.reached_on(asked.range),
             );
             Ok((PeerFrame::Vote.tag(), vote.encode(), Some(vote)))
@@ -354,6 +364,9 @@ impl Credential {
 /// What one served connection produced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Met {
+    /// The SHA-256 of the certificate the peer presented, which a row's pinned
+    /// fingerprint is compared with (ADR-0108 D9).
+    pub presented: [u8; 32],
     /// What the peer said it holds.
     pub said: Hello,
     /// How this node voted, when the peer asked for an epoch.
@@ -383,6 +396,14 @@ pub enum Ask<'a> {
     Records(Collect),
     /// One page of a shard's records, from that shard's leader (G033).
     Gather(&'a Gather),
+    /// A request this node cannot answer, for a caller it verified (ADR-0108).
+    Coordinate(&'a crate::coordination::Coordinate),
+    /// A sign-in try asked about or reported to the store line's leader
+    /// (ADR-0108 D5).
+    Attempt(&'a crate::budget::Attempt),
+    /// A join token, offered to the node that may bind this one's row
+    /// (ADR-0108 D9).
+    Join(&'a [u8; 32]),
 }
 
 /// What the other end answered with.
@@ -401,6 +422,12 @@ pub enum Answered {
     Collected(Collected),
     /// One page of a shard's records.
     Gathered(Page),
+    /// The answer to a carried request.
+    Coordinated(tessaridb::Coordinated),
+    /// Whether the name may try now (`true` for a report).
+    Attempted(bool),
+    /// Whether a row now names the asker.
+    Joined(bool),
 }
 
 /// Reach the peer `at` on `address`, and exchange greetings.
@@ -414,13 +441,44 @@ pub enum Answered {
 /// [`Error::OutOfTurn`] when the answer is not of the kind that was asked for.
 pub fn call(
     address: impl ToSocketAddrs,
-    mine: Credential,
-    authority: &CertificateDer<'_>,
+    keys: &PeerKeys,
     at: [u8; NODE_ID_LEN],
     said: &Hello,
     asking: Ask<'_>,
 ) -> Result<(Hello, Answered)> {
-    let (mut session, mut socket) = open(address, mine, authority, at)?;
+    call_within(
+        address,
+        (keys, keys.duplicate()),
+        at,
+        said,
+        asking,
+        Duration::from_secs(GREETING_SECONDS),
+    )
+}
+
+/// [`call`], with the connect and every read and write bounded by `bound`
+/// rather than by the greeting's deadline.
+///
+/// For a caller that has a deadline of its own — a ballot is worth nothing once
+/// its round is over, and a member that accepts the connection and then says
+/// nothing must cost the round no more than the round (G053 SG2b).
+///
+/// `mine` is the credential this dial presents, taken from `keys` by the
+/// caller, so a caller that signs with the key as well signs and presents one
+/// snapshot even when a rotation lands between the two.
+///
+/// # Errors
+///
+/// As [`call`], plus [`Error::Io`] when `bound` passes on any one step.
+pub fn call_within(
+    address: impl ToSocketAddrs,
+    (keys, mine): (&PeerKeys, Credential),
+    at: [u8; NODE_ID_LEN],
+    said: &Hello,
+    asking: Ask<'_>,
+    bound: Duration,
+) -> Result<(Hello, Answered)> {
+    let (mut session, mut socket) = open_within(address, (keys, mine), at, bound)?;
     let exchanged = exchange(&mut session, &mut socket, said, asking);
 
     // Say goodbye properly even when the exchange failed. A TLS peer that just
@@ -436,25 +494,34 @@ pub fn call(
 /// rides, with every read and write bounded by the greeting's deadline.
 pub(crate) fn open(
     address: impl ToSocketAddrs,
-    mine: Credential,
-    authority: &CertificateDer<'_>,
+    keys: &PeerKeys,
     at: [u8; NODE_ID_LEN],
 ) -> Result<(ClientConnection, TcpStream)> {
-    let mut roots = RootCertStore::empty();
-    roots
-        .add(authority.clone().into_owned())
-        .map_err(|why| Error::Transport(why.to_string()))?;
-    let settings = ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_client_auth_cert(mine.chain, mine.key)
-        .map_err(|why| Error::Transport(why.to_string()))?;
+    open_within(
+        address,
+        (keys, keys.duplicate()),
+        at,
+        Duration::from_secs(GREETING_SECONDS),
+    )
+}
+
+/// [`open`], with the connect and every read and write bounded by `bound`.
+fn open_within(
+    address: impl ToSocketAddrs,
+    (keys, mine): (&PeerKeys, Credential),
+    at: [u8; NODE_ID_LEN],
+    bound: Duration,
+) -> Result<(ClientConnection, TcpStream)> {
+    let settings = keys.dialling(mine)?;
     let expected = credential::names(at, Purpose::Peer);
     let name = ServerName::try_from(expected).map_err(|why| Error::Transport(why.to_string()))?;
     let session = ClientConnection::new(Arc::new(settings), name)
         .map_err(|why| Error::Transport(why.to_string()))?;
 
-    let socket = connect(address, Duration::from_secs(GREETING_SECONDS))?;
-    let bound = Some(Duration::from_secs(GREETING_SECONDS));
+    let socket = connect(address, bound)?;
+    // A zero would mean *no timeout at all* to the socket, the opposite of what
+    // a spent deadline asks for, so the least a step may have is a millisecond.
+    let bound = Some(bound.max(Duration::from_millis(1)));
     socket.set_read_timeout(bound)?;
     socket.set_write_timeout(bound)?;
     Ok((session, socket))
@@ -526,6 +593,45 @@ fn exchange(
                 None => Err(Error::UnknownFrame { tag }),
             }
         }
+        Ask::Join(token) => {
+            frame::write_tagged(&mut link, PeerFrame::Join.tag(), token.as_slice())?;
+            let (tag, body) = answer(&mut link)?;
+            match PeerFrame::from_tag(tag) {
+                Some(PeerFrame::Joined) => match body.as_slice() {
+                    [bound] => Ok((heard, Answered::Joined(*bound == 1))),
+                    _ => Err(Error::Malformed),
+                },
+                Some(_) => Err(Error::OutOfTurn { tag }),
+                None => Err(Error::UnknownFrame { tag }),
+            }
+        }
+        Ask::Attempt(asked) => {
+            frame::write_tagged(&mut link, PeerFrame::Attempt.tag(), &asked.encode())?;
+            let (tag, body) = answer(&mut link)?;
+            match PeerFrame::from_tag(tag) {
+                Some(PeerFrame::Attempted) => match body.as_slice() {
+                    [permitted] => Ok((heard, Answered::Attempted(*permitted == 1))),
+                    _ => Err(Error::Malformed),
+                },
+                Some(_) => Err(Error::OutOfTurn { tag }),
+                None => Err(Error::UnknownFrame { tag }),
+            }
+        }
+        Ask::Coordinate(request) => {
+            frame::write_tagged(&mut link, PeerFrame::Coordinate.tag(), &request.encode())?;
+            let (tag, body) = answer(&mut link)?;
+            match PeerFrame::from_tag(tag) {
+                Some(PeerFrame::Coordinated) => Ok((
+                    heard,
+                    Answered::Coordinated(crate::coordination::decode_answer(&body)?),
+                )),
+                Some(PeerFrame::NotCoordinated) => Err(Error::NotCoordinated(
+                    String::from_utf8_lossy(&body).into_owned(),
+                )),
+                Some(_) => Err(Error::OutOfTurn { tag }),
+                None => Err(Error::UnknownFrame { tag }),
+            }
+        }
         Ask::Gather(gather) => {
             frame::write_tagged(&mut link, PeerFrame::Gather.tag(), &gather.encode())?;
             let (tag, body) = answer(&mut link)?;
@@ -575,7 +681,7 @@ pub(crate) fn greeting(tag: u8, body: &[u8]) -> Result<Hello> {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::{Answered, Ask, Credential, Met, Peers, Result, call};
+    use super::{Answered, Ask, Credential, Met, PeerKeys, Peers, Result, call};
     use crate::collection::{Collect, Collected, NoLog, Origin};
     use crate::credential::names;
     use crate::error::Error;
@@ -613,14 +719,32 @@ pub(crate) mod tests {
             CertificateDer::from(self.certificate.der().to_vec())
         }
 
+        /// A handle on a credential naming `node` for `purpose`.
+        pub(crate) fn keys(&self, node: [u8; NODE_ID_LEN], purpose: Purpose) -> PeerKeys {
+            keys(self.issue(node, purpose), &self.der()).expect("a credential the authority issued")
+        }
+
         /// Issue a credential naming `node` for `purpose`.
         pub(crate) fn issue(&self, node: [u8; NODE_ID_LEN], purpose: Purpose) -> Credential {
             self.named(&names(node, purpose))
         }
 
+        /// A credential naming `node` for `purpose` whose validity ended in 2001.
+        pub(crate) fn expired(&self, node: [u8; NODE_ID_LEN], purpose: Purpose) -> Credential {
+            let mut params = rcgen::CertificateParams::new(vec![names(node, purpose)])
+                .expect("a leaf's parameters");
+            params.not_before = rcgen::date_time_ymd(2000, 1, 1);
+            params.not_after = rcgen::date_time_ymd(2001, 1, 1);
+            self.signed(params)
+        }
+
         fn named(&self, name: &str) -> Credential {
             let params =
                 rcgen::CertificateParams::new(vec![name.to_owned()]).expect("a leaf's parameters");
+            self.signed(params)
+        }
+
+        fn signed(&self, params: rcgen::CertificateParams) -> Credential {
             let key = rcgen::KeyPair::generate().expect("a leaf's key");
             let leaf = params
                 .signed_by(&key, &self.certificate, &self.key)
@@ -630,6 +754,33 @@ pub(crate) mod tests {
                 key: PrivateKeyDer::try_from(key.serialize_der()).expect("a usable leaf key"),
             }
         }
+    }
+
+    /// A handle on `mine`, built fresh — what one door or one dial held before
+    /// credentials were shared (ADR-0108 D6).
+    pub(crate) fn keys(mine: Credential, authority: &CertificateDer<'_>) -> Result<PeerKeys> {
+        PeerKeys::new(mine, authority.clone().into_owned())
+    }
+
+    /// A door answering with `mine`.
+    pub(crate) fn bind_with(
+        address: impl std::net::ToSocketAddrs,
+        mine: Credential,
+        authority: &CertificateDer<'_>,
+    ) -> Result<Peers> {
+        Peers::bind(address, &keys(mine, authority)?)
+    }
+
+    /// One dial presenting `mine`.
+    pub(crate) fn call_with(
+        address: impl std::net::ToSocketAddrs,
+        mine: Credential,
+        authority: &CertificateDer<'_>,
+        at: [u8; NODE_ID_LEN],
+        said: &Hello,
+        asking: Ask<'_>,
+    ) -> Result<(Hello, Answered)> {
+        call(address, &keys(mine, authority)?, at, said, asking)
     }
 
     /// The vote inside an answer, or `None` when the peer answered otherwise.
@@ -680,7 +831,7 @@ pub(crate) mod tests {
 
     /// Open a door for `HERE` and hand back where it is, plus the outcome.
     fn door(authority: &Authority) -> (Peers, Hello) {
-        let peers = Peers::bind(
+        let peers = bind_with(
             "127.0.0.1:0",
             authority.issue(HERE, Purpose::Peer),
             &authority.der(),
@@ -698,7 +849,7 @@ pub(crate) mod tests {
             peers.greet(|| Ok(mine), &HERE, &Deciding::holding(settled()), &NoLog)
         });
 
-        let theirs = call(
+        let theirs = call_with(
             address,
             authority.issue(THERE, Purpose::Peer),
             &authority.der(),
@@ -766,7 +917,7 @@ pub(crate) mod tests {
         std::thread::sleep(core::time::Duration::from_millis(100));
         tail.store(41, std::sync::atomic::Ordering::SeqCst);
 
-        let theirs = call(
+        let theirs = call_with(
             address,
             authority.issue(THERE, Purpose::Peer),
             &authority.der(),
@@ -799,7 +950,7 @@ pub(crate) mod tests {
             peers.greet(|| Ok(mine), &HERE, &Deciding::holding(settled()), &NoLog)
         });
 
-        let failure = call(
+        let failure = call_with(
             address,
             authority.issue(THERE, Purpose::Peer),
             &authority.der(),
@@ -843,7 +994,7 @@ pub(crate) mod tests {
 
         // The id is perfectly correct. What is wrong is the link it was issued
         // for, which is the criterion's own sentence.
-        drop(call(
+        drop(call_with(
             address,
             authority.issue(THERE, Purpose::Client),
             &authority.der(),
@@ -869,7 +1020,7 @@ pub(crate) mod tests {
         });
 
         // Issued by the right authority, for the right link, for the wrong node.
-        drop(call(
+        drop(call_with(
             address,
             authority.issue([3_u8; NODE_ID_LEN], Purpose::Peer),
             &authority.der(),
@@ -902,7 +1053,7 @@ pub(crate) mod tests {
         id: [u8; NODE_ID_LEN],
         voter: Voter,
     ) -> (SocketAddr, JoinHandle<Result<Met>>) {
-        let peers = Peers::bind(
+        let peers = bind_with(
             "127.0.0.1:0",
             authority.issue(id, Purpose::Peer),
             &authority.der(),
@@ -944,7 +1095,7 @@ pub(crate) mod tests {
             candidate: THERE,
             range: tessari_types::Reach::Store,
         };
-        let (_, vote) = call(
+        let (_, vote) = call_with(
             address,
             authority.issue(THERE, Purpose::Peer),
             &authority.der(),
@@ -954,12 +1105,23 @@ pub(crate) mod tests {
         )
         .expect("a peer that proved itself may ask");
 
-        assert_eq!(voted(&vote), Some(Vote::Granted));
+        assert_eq!(
+            voted(&vote),
+            Some(Vote::Granted {
+                hold: tessari_storage::LEASE_TTL
+            })
+        );
         let met = answering
             .join()
             .expect("the door's thread")
             .expect("served");
-        assert_eq!(met.voted, Some(Vote::Granted), "both ends saw one answer");
+        assert_eq!(
+            met.voted,
+            Some(Vote::Granted {
+                hold: tessari_storage::LEASE_TTL
+            }),
+            "both ends saw one answer"
+        );
     }
 
     /// A greeting from a node whose log stops short of [`LEVEL`].
@@ -984,7 +1146,7 @@ pub(crate) mod tests {
         let authority = Authority::new();
         let (address, answering) = voting(&authority, HERE, settled());
 
-        let (_, vote) = call(
+        let (_, vote) = call_with(
             address,
             authority.issue(THERE, Purpose::Peer),
             &authority.der(),
@@ -1024,7 +1186,7 @@ pub(crate) mod tests {
         // The credential says THERE and the ballot says HERE. Refused at the
         // door, before the voter is asked anything at all.
         let authority = Authority::new();
-        let peers = Peers::bind(
+        let peers = bind_with(
             "127.0.0.1:0",
             authority.issue(HERE, Purpose::Peer),
             &authority.der(),
@@ -1041,7 +1203,7 @@ pub(crate) mod tests {
             (met, voter.decided())
         });
 
-        let _ = call(
+        let _ = call_with(
             address,
             authority.issue(THERE, Purpose::Peer),
             &authority.der(),
@@ -1065,7 +1227,7 @@ pub(crate) mod tests {
     #[test]
     fn a_refusal_keeps_its_reason_and_its_wait_across_the_wire() {
         let authority = Authority::new();
-        let peers = Peers::bind(
+        let peers = bind_with(
             "127.0.0.1:0",
             authority.issue(HERE, Purpose::Peer),
             &authority.der(),
@@ -1082,7 +1244,7 @@ pub(crate) mod tests {
             peers.greet(|| Ok(mine), &HERE, &Deciding::holding(incumbent()), &NoLog)
         });
 
-        let refused = call(
+        let refused = call_with(
             address,
             authority.issue(THERE, Purpose::Peer),
             &authority.der(),
@@ -1127,7 +1289,7 @@ pub(crate) mod tests {
         let mut round = Round::opened(Epoch::new(5), THERE, doors.len());
         let mut held = None;
         for (id, (address, _)) in &doors {
-            let (_, vote) = call(
+            let (_, vote) = call_with(
                 *address,
                 authority.issue(THERE, Purpose::Peer),
                 &authority.der(),
@@ -1164,7 +1326,7 @@ pub(crate) mod tests {
 
         let mut round = Round::opened(Epoch::new(2), THERE, doors.len());
         for (id, (address, _)) in &doors {
-            let (_, vote) = call(
+            let (_, vote) = call_with(
                 *address,
                 authority.issue(THERE, Purpose::Peer),
                 &authority.der(),
@@ -1195,7 +1357,7 @@ pub(crate) mod tests {
         // from here and is the only version of it worth testing.
         let alive = [20_u8; NODE_ID_LEN];
         let (address, answering) = voting(&authority, alive, settled());
-        let unreachable = Peers::bind(
+        let unreachable = bind_with(
             "127.0.0.1:0",
             authority.issue([21_u8; NODE_ID_LEN], Purpose::Peer),
             &authority.der(),
@@ -1205,7 +1367,7 @@ pub(crate) mod tests {
         drop(unreachable);
 
         let mut round = Round::opened(Epoch::new(9), THERE, 3);
-        let (_, vote) = call(
+        let (_, vote) = call_with(
             address,
             authority.issue(THERE, Purpose::Peer),
             &authority.der(),
@@ -1220,7 +1382,7 @@ pub(crate) mod tests {
             "one of three is not a majority"
         );
 
-        let reached = call(
+        let reached = call_with(
             vanished,
             authority.issue(THERE, Purpose::Peer),
             &authority.der(),
@@ -1248,7 +1410,7 @@ pub(crate) mod tests {
 
         // A majority grants, and the node takes the lease that grant entitles it
         // to. The span is short so the fence is reachable inside a test; the
-        // arithmetic it runs is the same one a ten-second lease runs.
+        // arithmetic it runs is the same one the shipped lease runs.
         let voters = [
             [30_u8; NODE_ID_LEN],
             [31_u8; NODE_ID_LEN],
@@ -1262,7 +1424,7 @@ pub(crate) mod tests {
         let mut round = Round::opened(Epoch::new(1), THERE, voters.len());
         let mut held = None;
         for (id, (address, _)) in &doors {
-            let (_, vote) = call(
+            let (_, vote) = call_with(
                 *address,
                 authority.issue(THERE, Purpose::Peer),
                 &authority.der(),
@@ -1302,7 +1464,7 @@ pub(crate) mod tests {
         // reach anyone, let alone a majority, and nothing renews.
         let renewal = Round::opened(Epoch::new(2), THERE, addresses.len());
         for (id, address) in &addresses {
-            let reached = call(
+            let reached = call_with(
                 *address,
                 authority.issue(THERE, Purpose::Peer),
                 &authority.der(),
@@ -1314,10 +1476,15 @@ pub(crate) mod tests {
         }
         assert_eq!(renewal.held(), None, "so the renewal grants nothing");
 
-        // Past the fence, which is `ttl - GUARD` = 400 ms, and comfortably
-        // short of the expiry at 2.4 s. That gap is the whole point: the holder
-        // stops writing while the cluster still may not reassign.
-        std::thread::sleep(Duration::from_millis(600));
+        // Past the fence, which is `ttl - GUARD` = 400 ms, and short of the
+        // expiry by half the guard. That gap is the whole point: the holder
+        // stops writing while the cluster still may not reassign. Aimed at the
+        // middle of the guard from the instant the lease was taken, because the
+        // guard is 150 ms and a fixed sleep after the writes above would spend
+        // part of it on them (G053 SG2b).
+        let middle = Duration::from_millis(400)
+            .saturating_add(tessari_storage::LEASE_GUARD.checked_div(2).expect("halves"));
+        std::thread::sleep(middle.saturating_sub(taken.elapsed()));
         let refused = store
             .session()
             .run("USE NAMESPACE prod; USE DATABASE orders; CREATE users:2 = { name: 'grace' };")
@@ -1361,7 +1528,12 @@ pub(crate) mod tests {
         // A round that opened now and was carried at once.
         let mut prompt = Round::opened(Epoch::new(1), THERE, 1);
         let won = prompt
-            .counts(voter, Vote::Granted)
+            .counts(
+                voter,
+                Vote::Granted {
+                    hold: tessari_storage::LEASE_TTL,
+                },
+            )
             .expect("one of one carries it");
         store.hold(won.epoch, won.lease());
         store
@@ -1375,7 +1547,12 @@ pub(crate) mod tests {
             .expect("representable");
         let mut slow = Round::opened_at(Epoch::new(2), THERE, 1, opened);
         let won = slow
-            .counts(voter, Vote::Granted)
+            .counts(
+                voter,
+                Vote::Granted {
+                    hold: tessari_storage::LEASE_TTL,
+                },
+            )
             .expect("one of one carries it");
         store.hold(won.epoch, won.lease());
         let refused = store
@@ -1461,7 +1638,7 @@ pub(crate) mod tests {
         candidate.line = Some(line(2, 3));
         let ask = |range: Reach| {
             let ballot = Round::opened(Epoch::new(1), THERE, 3).over(range).ballot();
-            let (_, answered) = call(
+            let (_, answered) = call_with(
                 address,
                 authority.issue(THERE, Purpose::Peer),
                 &authority.der(),
@@ -1476,10 +1653,18 @@ pub(crate) mod tests {
             matches!(ask(shard(2)), Vote::Refused(Refused::LogBehind { tail, .. }) if tail == Sequence::new(40)),
             "behind on the range it asked for"
         );
-        assert_eq!(ask(Reach::Store), Vote::Granted, "level on the store");
+        assert_eq!(
+            ask(Reach::Store),
+            Vote::Granted {
+                hold: tessari_storage::LEASE_TTL
+            },
+            "level on the store"
+        );
         assert_eq!(
             ask(shard(3)),
-            Vote::Granted,
+            Vote::Granted {
+                hold: tessari_storage::LEASE_TTL
+            },
             "the voter never stood for shard 3"
         );
         drop(answering.join().expect("the door's thread"));
@@ -1514,6 +1699,96 @@ pub(crate) mod tests {
         }
     }
 
+    /// A door whose catalog places `THERE` on one range, and whose store holds
+    /// that range's line to a position its greeting does not mention — the
+    /// former leader after a move, or a follower that collected the line.
+    struct Former(tessari_types::Reach, crate::grant::Reached);
+
+    impl Origin for Former {
+        fn collected(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
+            NoLog.collected(follower, asked)
+        }
+
+        fn gathered(
+            &self,
+            asker: [u8; NODE_ID_LEN],
+            asked: &crate::gathering::Gather,
+        ) -> Result<crate::gathering::Page> {
+            NoLog.gathered(asker, asked)
+        }
+
+        fn copied(
+            &self,
+            follower: [u8; NODE_ID_LEN],
+            write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
+        ) -> Result<()> {
+            NoLog.copied(follower, write)
+        }
+
+        fn places(&self, candidate: [u8; NODE_ID_LEN], range: tessari_types::Reach) -> bool {
+            candidate == THERE && range == self.0
+        }
+
+        fn reached_on(&self, range: tessari_types::Reach) -> Result<Option<crate::grant::Reached>> {
+            Ok((range == self.0).then_some(self.1))
+        }
+    }
+
+    #[test]
+    fn a_voter_holding_a_line_it_no_longer_leads_refuses_a_candidate_behind_it() {
+        // Q-884. A move took the placement from this voter, so its greeting
+        // names no line; its store still holds the line's log to 40, written
+        // under leadership 2. A candidate at 3 must be refused as behind — the
+        // greeting alone would read this voter as empty there and grant it,
+        // and the candidate's leadership would continue the line from 3.
+        use crate::peer::Line;
+        use tessari_types::{DatabaseId, NamespaceId, Reach, ShardId, TableId};
+        let shard = Reach::Shard(
+            NamespaceId::new(1),
+            DatabaseId::new(1),
+            TableId::new(1),
+            ShardId::new(2),
+        );
+        let authority = Authority::new();
+        let (peers, mine) = door(&authority);
+        assert!(mine.line.is_none(), "the voter greets with no line");
+        let address = peers.address().expect("the door's address");
+        let deciding = Deciding::holding(settled());
+        let held = crate::grant::Reached {
+            leadership: Epoch::new(2),
+            tail: Sequence::new(40),
+        };
+        let answering = std::thread::spawn(move || {
+            peers.greet(|| Ok(mine), &HERE, &deciding, &Former(shard, held))
+        });
+        let mut candidate = hello(THERE);
+        candidate.line = Some(Line {
+            range: shard,
+            leading: Epoch::ZERO,
+            tail: Sequence::new(3),
+            tail_leadership: Epoch::new(2),
+        });
+        let ballot = Round::opened(Epoch::new(3), THERE, 3).over(shard).ballot();
+        let (_, answered) = call_with(
+            address,
+            authority.issue(THERE, Purpose::Peer),
+            &authority.der(),
+            HERE,
+            &candidate,
+            Ask::Ballot(&ballot),
+        )
+        .expect("the door is up");
+        assert!(
+            matches!(
+                voted(&answered),
+                Some(Vote::Refused(Refused::LogBehind { tail, .. })) if tail == Sequence::new(40)
+            ),
+            "judged on the line the voter holds: {:?}",
+            voted(&answered)
+        );
+        drop(answering.join().expect("the door's thread"));
+    }
+
     #[test]
     fn a_range_ballot_from_a_candidate_not_placed_on_it_is_refused() {
         // ADR-0098. Once this voter's catalog no longer places the candidate on
@@ -1541,7 +1816,7 @@ pub(crate) mod tests {
         let candidate = hello(THERE);
         let ask = |range: Reach| {
             let ballot = Round::opened(Epoch::new(1), THERE, 3).over(range).ballot();
-            let (_, answered) = call(
+            let (_, answered) = call_with(
                 address,
                 authority.issue(THERE, Purpose::Peer),
                 &authority.der(),
@@ -1553,8 +1828,20 @@ pub(crate) mod tests {
             voted(&answered).expect("a door that was asked answers")
         };
         assert_eq!(ask(shard(3)), Vote::Refused(Refused::NotPlaced));
-        assert_eq!(ask(shard(2)), Vote::Granted, "placed on shard 2");
-        assert_eq!(ask(Reach::Store), Vote::Granted, "the store is not placed");
+        assert_eq!(
+            ask(shard(2)),
+            Vote::Granted {
+                hold: tessari_storage::LEASE_TTL
+            },
+            "placed on shard 2"
+        );
+        assert_eq!(
+            ask(Reach::Store),
+            Vote::Granted {
+                hold: tessari_storage::LEASE_TTL
+            },
+            "the store is not placed"
+        );
         drop(answering.join().expect("the door's thread"));
     }
 

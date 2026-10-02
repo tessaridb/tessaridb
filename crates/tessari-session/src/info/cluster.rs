@@ -93,6 +93,24 @@ impl Session<'_> {
         // periods; reporting those here as a policy would make it impossible to
         // see whether one ever arrived — which is exactly the observation a
         // two-node check of replication is trying to make.
+        // What every peer handshake refuses (ADR-0108 D6), as the catalog
+        // holds it; a node applies the list within a few seconds of the row
+        // reaching it.
+        let revoked = Value::Array(
+            Catalog::new(transaction)
+                .revoked_certificates()?
+                .into_iter()
+                .map(|fingerprint| Value::from(fingerprint.as_str()))
+                .collect(),
+        );
+        // Nodes removed from the cluster and never admitted again (ADR-0108 D9).
+        let tombstoned = Value::Array(
+            Catalog::new(transaction)
+                .tombstoned_nodes()?
+                .into_iter()
+                .map(Value::Uuid)
+                .collect(),
+        );
         let failover = match Catalog::new(transaction).failover()? {
             None => Value::Null,
             Some(held) => described_failover(&held),
@@ -174,10 +192,17 @@ impl Session<'_> {
                 },
             ),
             ("retain_source".to_owned(), Value::from(retained_by.name())),
+            // Local, beside `endpoints`: what this machine presents, read from
+            // the process now, so a renewal shows on the next report. The
+            // fingerprint is the value `FINGERPRINT` pins and `REVOKE
+            // CERTIFICATE` names, read off the node the way `id` is (D9).
+            ("certificates".to_owned(), self.described_certificates()),
             (
                 "cluster".to_owned(),
                 Value::Object(BTreeMap::from([
                     ("peers".to_owned(), peers),
+                    ("revoked".to_owned(), revoked),
+                    ("tombstoned".to_owned(), tombstoned),
                     // On the replicated side of ADR-0018's line, because that is
                     // where it comes from: `roles` above is what this machine
                     // holds and a backup would not carry, `desired` is what the
@@ -324,5 +349,36 @@ impl Session<'_> {
             "consumers".to_owned(),
             Value::Array(described),
         )]))
+    }
+}
+
+impl Session<'_> {
+    /// What this node presents, one object per surface; empty when nothing.
+    fn described_certificates(&self) -> Value {
+        let presented = self
+            .certificates
+            .as_ref()
+            .map(|certificates| certificates.presented())
+            .unwrap_or_default();
+        Value::Array(
+            presented
+                .into_iter()
+                .map(|shown| {
+                    Value::Object(BTreeMap::from([
+                        ("surface".to_owned(), Value::from(shown.surface)),
+                        (
+                            "fingerprint".to_owned(),
+                            Value::from(shown.fingerprint.as_str()),
+                        ),
+                        (
+                            "expires".to_owned(),
+                            shown.expires.map_or(Value::Null, |seconds| {
+                                Value::Datetime(tessari_types::Datetime::from_seconds(seconds))
+                            }),
+                        ),
+                    ]))
+                })
+                .collect(),
+        )
     }
 }

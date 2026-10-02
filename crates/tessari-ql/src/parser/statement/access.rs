@@ -4,7 +4,8 @@ use super::Parser;
 use tessari_types::Number;
 
 use crate::ast::{
-    Credential, Name, Password, ReachRef, StatementKind, TableChange, UserChange, UserGrant,
+    Credential, Name, NamespaceChange, Password, ReachRef, StatementKind, TableChange, UserChange,
+    UserGrant,
 };
 use crate::error::Result;
 use crate::token::{Keyword, Punct, Token};
@@ -65,17 +66,12 @@ impl Parser<'_> {
         if self.eat_word("group") {
             return self.alter_group();
         }
-        // ADR-0098. The placement and nothing else: the rest of a member row is
-        // what the operator declared, and changes by declaring it again.
+        // ADR-0098, Q-892. One clause of a member row per statement, amended in
+        // place: declaring a bound row again would tombstone its node.
         if self.eat_word("replica") {
             let name = self.name()?;
-            self.expect_word("leads", "`LEADS` and the range, or `NONE`")?;
-            let leads = if self.eat_keyword(Keyword::None) {
-                None
-            } else {
-                Some(self.placed_range()?)
-            };
-            return Ok(StatementKind::AlterReplica { name, leads });
+            let change = self.replica_change()?;
+            return Ok(StatementKind::AlterReplica { name, change });
         }
         if self.eat_keyword(Keyword::Table) {
             let table = self.table_ref()?;
@@ -133,10 +129,14 @@ impl Parser<'_> {
         }
         if self.eat_keyword(Keyword::Namespace) {
             let name = self.name()?;
-            let Some(replication) = self.replication_clause()? else {
-                return Err(self.error_here("`REPLICATION` and the policy to set"));
+            let change = if let Some(replication) = self.replication_clause()? {
+                NamespaceChange::Replication(replication)
+            } else if let Some(acknowledge) = self.acknowledgement_clause()? {
+                NamespaceChange::Acknowledge(acknowledge)
+            } else {
+                return Err(self.error_here("`REPLICATION` or `ACKNOWLEDGE` and the policy to set"));
             };
-            return Ok(StatementKind::AlterNamespace { name, replication });
+            return Ok(StatementKind::AlterNamespace { name, change });
         }
         if !self.eat_keyword(Keyword::User) {
             return Err(self

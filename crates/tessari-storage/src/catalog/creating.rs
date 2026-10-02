@@ -7,7 +7,8 @@ use super::{
 };
 use crate::error::{Error, Result};
 use tessari_types::{
-    DatabaseId, FieldKind, NamespaceId, Path, Replication, ReplicationClass, TableId,
+    Acknowledgement, DatabaseId, FieldKind, NamespaceId, Path, Replication, ReplicationClass,
+    TableId,
 };
 
 impl<'a, 'txn> Catalog<'a, 'txn> {
@@ -36,6 +37,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             // The same, for the same reason: applied by
             // [`Self::set_replication_class`] whichever statement carried it.
             class: None,
+            // And again: [`Self::set_acknowledgement`].
+            acknowledge: None,
         };
         self.write(system::NAMESPACES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
@@ -98,6 +101,28 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             });
         };
         definition.class = Some(class);
+        self.write(system::NAMESPACES, namespace.get(), &definition.to_value());
+        Ok(definition)
+    }
+
+    /// Set how many copies must hold a write in a namespace before it is
+    /// acknowledged, and whether a request may ask for fewer (ADR-0106 D2).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoSuchParent`] when the namespace does not exist.
+    pub fn set_acknowledgement(
+        &mut self,
+        namespace: NamespaceId,
+        acknowledge: Acknowledgement,
+    ) -> Result<NamespaceDefinition> {
+        let Some(mut definition) = self.namespace(namespace)? else {
+            return Err(Error::NoSuchParent {
+                entity: "namespace",
+                id: namespace.get(),
+            });
+        };
+        definition.acknowledge = Some(acknowledge);
         self.write(system::NAMESPACES, namespace.get(), &definition.to_value());
         Ok(definition)
     }
