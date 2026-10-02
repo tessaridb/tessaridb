@@ -35,6 +35,21 @@ pub(crate) struct Peering {
     /// until this wave that is exactly what it was.
     pub(crate) routing: std::sync::Arc<tessari_wire::Published>,
 }
+/// What starts a cluster round before its cadence would (G053 SG2b).
+///
+/// A follower whose leader died learns of it from its stream in about a second,
+/// and was then waiting up to a whole awareness interval to be told where the
+/// leader went and a whole collection interval more to follow it there. A
+/// stream that ends wakes the greeting round; a greeting round that finds a
+/// different leader wakes the collection round.
+#[derive(Debug, Default)]
+pub(crate) struct Wakes {
+    /// Wakes the greeting round.
+    pub(crate) greeting: tokio::sync::Notify,
+    /// Wakes the collection round.
+    pub(crate) collection: tokio::sync::Notify,
+}
+
 /// Put the peer surface on the runtime: the door, and the three cluster rounds
 /// `driver.rs` names, each under its own supervisor in `hosting`.
 pub(crate) fn host(
@@ -58,6 +73,7 @@ pub(crate) fn host(
     // node grant one epoch twice and hand two candidates an honest
     // majority each.
     let deciding = std::sync::Arc::new(tessari_wire::Deciding::started());
+    let wakes = std::sync::Arc::new(Wakes::default());
     // Served on the runtime, each peer in its own task (ADR-0085 §7);
     // its supervisor starts it again after a panic, as every cadence is.
     {
@@ -119,6 +135,7 @@ pub(crate) fn host(
     // node that can hear a leader does not stand against it (ADR-0066).
     {
         let db = std::sync::Arc::clone(&db);
+        let wakes = std::sync::Arc::clone(&wakes);
         let stop = peer_stops.clone();
         let (mine, authority, seeds, routing) = (
             dialling.duplicate(),
@@ -136,6 +153,7 @@ pub(crate) fn host(
                     authority.clone(),
                     seeds.clone(),
                     std::sync::Arc::clone(&routing),
+                    std::sync::Arc::clone(&wakes),
                     stop.clone(),
                 )
             },
@@ -143,6 +161,7 @@ pub(crate) fn host(
     }
     {
         let db = std::sync::Arc::clone(&db);
+        let wakes = std::sync::Arc::clone(&wakes);
         let stop = peer_stops.clone();
         let (mine, authority, seeds, routing) = (
             dialling.duplicate(),
@@ -160,6 +179,7 @@ pub(crate) fn host(
                     authority.clone(),
                     seeds.clone(),
                     std::sync::Arc::clone(&routing),
+                    std::sync::Arc::clone(&wakes),
                     stop.clone(),
                 )
             },

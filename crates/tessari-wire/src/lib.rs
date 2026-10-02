@@ -120,9 +120,9 @@ pub use crate::directory::{Destination, Directory, Heard};
 pub use crate::door::Holding;
 #[cfg(feature = "server")]
 pub use crate::driver::{
-    Collecting, Published, Renewing, bootstrap_from, due_in, every, heard_a_leader,
-    heard_a_leader_on, heard_a_newer_policy, leader_of_range, names_a_peer, stands, stands_for,
-    stands_for_the_store, upstream, voters,
+    Collecting, Published, Renewing, bootstrap_from, due_in, election_timeout, every, every_paced,
+    heard_a_leader, heard_a_leader_on, heard_a_newer_policy, leader_of_range, names_a_peer, stands,
+    stands_for, stands_for_the_store, upstream, voters,
 };
 pub use crate::error::{Error, Result};
 #[cfg(feature = "server")]
@@ -134,7 +134,7 @@ pub use crate::grant::{Ballot, Deciding, Leadership, Reached, Refused, Round, Vo
 #[cfg(feature = "server")]
 pub use crate::joining::{CredentialFile, Joining, Seed, Told};
 #[cfg(feature = "server")]
-pub use crate::link::{Answered, Ask, Credential, Met, Peers, call};
+pub use crate::link::{Answered, Ask, Credential, Met, Peers, call, call_within};
 #[cfg(feature = "server")]
 pub use crate::message::names_for;
 pub use crate::message::{Answer, Correction, Exact, Names, Remark, Request, Suggested, spell};

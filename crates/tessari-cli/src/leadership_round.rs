@@ -56,12 +56,19 @@ pub(crate) async fn stand_for_leadership(
             .checked_sub(tessari_storage::LEASE_TTL)
             .unwrap_or(started),
     });
+    // The runtime this cadence runs on, for the canvass. A pass runs on the
+    // blocking pool, because reading the catalog is store work; the canvass is
+    // network I/O the wire crate runs as tasks on this runtime, so the pass
+    // waits for it with `Handle::block_on` — which is the bridge for a thread
+    // that is not one of the runtime's workers, and a blocking-pool thread is
+    // not (G053 SG2b).
+    let runtime = tokio::runtime::Handle::current();
     tessari_wire::every(
-        std::time::Duration::from_secs(tessari_constants::CAMPAIGN_SECONDS),
+        std::time::Duration::from_millis(tessari_constants::CAMPAIGN_MILLIS),
         &stop,
         move |now| {
-            let (db, mine, authority, voter, published) =
-                (&*db, &mine, &authority, &*voter, &*published);
+            let (db, mine, authority, voter, published, runtime) =
+                (&*db, &mine, &authority, &*voter, &*published, &runtime);
             let store = db.store();
             // Identity first, and the catalog only once this node is known to
             // stand. Reading the roles costs a record; reading every replica the
@@ -111,6 +118,7 @@ pub(crate) async fn stand_for_leadership(
                     authority,
                     voter,
                     published,
+                    runtime,
                 },
                 &mut on_a_line,
                 now,
@@ -134,12 +142,20 @@ pub(crate) async fn stand_for_leadership(
             // its own vote here would be silenced by the act of standing — and
             // a leader renews by standing. That is Q-602, and it made a lease
             // un-renewable.
+            //
+            // The window is the lease plus this node's own spread (G053 SG2b):
+            // every voter hears the same renewal, so without a spread their
+            // memories of a dead leader lapse together and two of them stand on
+            // one tick, grant each other the epoch and both lose it.
             if tessari_wire::heard_a_leader(
                 &declared,
                 &published.current(),
                 voter.granted_elsewhere_at(me.id),
                 now,
-                tessari_storage::LEASE_TTL,
+                tessari_wire::election_timeout(
+                    me.id,
+                    voter.decided().unwrap_or(tessari_types::Epoch::ZERO),
+                ),
             ) {
                 return;
             }
@@ -150,11 +166,13 @@ pub(crate) async fn stand_for_leadership(
             // replaced is the disagreement the policy row exists to remove,
             // arriving at the one moment where it decides an outcome.
             //
-            // The bound is the lease term, as above and for the same reason: a
-            // greeting older than the leader's own lease cannot testify to
-            // anything current. And the refusal lasts only while such a peer is
-            // audible — a cluster cannot deadlock behind a node that has gone
-            // away, because a node that has gone away advertises nothing.
+            // The bound is the staleness floor — one awareness interval to hear
+            // and one more to notice it did not — because the question is
+            // whether such a peer is still AUDIBLE, and greetings arrive once a
+            // second, which is longer than the lease (G053 SG2b). And the
+            // refusal lasts only while such a peer is audible — a cluster
+            // cannot deadlock behind a node that has gone away, because a node
+            // that has gone away advertises nothing.
             //
             // It is inert until somebody sets a policy: with no row anywhere,
             // every stamp is `None` and nothing supersedes anything.
@@ -163,7 +181,7 @@ pub(crate) async fn stand_for_leadership(
                 &published.current(),
                 policy.map(|definition| definition.stamp()),
                 now,
-                tessari_storage::LEASE_TTL,
+                std::time::Duration::from_secs(tessari_constants::STALENESS_FLOOR_SECONDS),
             ) {
                 log::info!(
                     "not standing: a peer runs the failover policy set at epoch {} version {}, \
@@ -210,12 +228,12 @@ pub(crate) async fn stand_for_leadership(
                 authority,
                 said: &said,
                 peers: &peers,
-                round: std::time::Duration::from_secs(tessari_constants::ROUND_SECONDS),
+                round: std::time::Duration::from_millis(tessari_constants::ROUND_MILLIS),
                 range: tessari_types::Reach::Store,
             };
             let before = renewing.standing();
             let held = renewing.once(me.id, now, |lease, next| {
-                standing.renew(voter, lease, next, now)
+                runtime.block_on(standing.renew(voter, lease, next, now))
             });
             if held != before {
                 // Installed as it was granted, whole. The lease is dated from the
@@ -223,13 +241,15 @@ pub(crate) async fn stand_for_leadership(
                 // would restart that clock here and spend the canvass out of the
                 // voters' window rather than this node's.
                 db.hold(held.epoch, held.lease());
+            }
+            if held.epoch != before.epoch {
                 log::info!("leading at epoch {}", held.epoch.get());
-                // Written here and nowhere else, because `held != before` is
-                // the change: a lease is renewed every round for as long as
-                // this node keeps leading, and a row per renewal would put a
-                // log record on the wire every few seconds forever — one every
-                // follower then pays to apply, on a log that would never
-                // quiesce.
+                // Written when the EPOCH changes and not when the lease does: a
+                // renewal keeps its epoch and only moves the lease, about every
+                // 300 ms for as long as this node keeps leading, and a row per
+                // renewal would put a log record on the wire three times a
+                // second forever — one every follower then pays to apply, on a
+                // log that would never quiesce.
                 //
                 // Logged rather than propagated. The round already granted the
                 // leadership and `hold` already installed it; this records that
@@ -262,6 +282,8 @@ pub(crate) struct Candidate<'a> {
     authority: &'a tessari_wire::CertificateDer<'static>,
     voter: &'a tessari_wire::Deciding,
     published: &'a tessari_wire::Published,
+    /// The runtime the canvass runs its ballots on.
+    runtime: &'a tokio::runtime::Handle,
 }
 
 /// Stand for the one placed range this node's member row names, on that range's
@@ -290,7 +312,13 @@ pub(crate) fn stand_for_a_placed_range(
         &candidate.published.current(),
         candidate.voter.granted_elsewhere_on(range, candidate.me),
         now,
-        tessari_storage::LEASE_TTL,
+        tessari_wire::election_timeout(
+            candidate.me,
+            candidate
+                .voter
+                .decided()
+                .unwrap_or(tessari_types::Epoch::ZERO),
+        ),
     ) {
         return;
     }
@@ -327,15 +355,19 @@ pub(crate) fn stand_for_a_placed_range(
         authority: candidate.authority,
         said: &said,
         peers: &peers,
-        round: std::time::Duration::from_secs(tessari_constants::ROUND_SECONDS),
+        round: std::time::Duration::from_millis(tessari_constants::ROUND_MILLIS),
         range,
     };
     let before = renewing.standing();
     let held = renewing.once(candidate.me, now, |lease, next| {
-        standing.renew(candidate.voter, lease, next, now)
+        candidate
+            .runtime
+            .block_on(standing.renew(candidate.voter, lease, next, now))
     });
     if held != before {
         db.store().hold_range(range, held.epoch, held.lease());
+    }
+    if held.epoch != before.epoch {
         log::info!("leading {range:?} at epoch {}", held.epoch.get());
         if let Err(refused) = db.record_leadership(range, held.epoch) {
             log::warn!(

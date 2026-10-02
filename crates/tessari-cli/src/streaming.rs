@@ -107,7 +107,7 @@ impl Streams {
         ),
         (line, address): (Line, std::net::SocketAddr),
         (homes, still): (Homes, Still),
-        stop: CancellationToken,
+        (stop, wakes): (CancellationToken, Arc<crate::peers::Wakes>),
     ) {
         if self.following(line) {
             return;
@@ -137,6 +137,10 @@ impl Streams {
                 }
                 // Last, and Release: whoever reads `false` may join at once.
                 published.store(false, Ordering::Release);
+                // A stream that ended is the first sign its leader may be gone,
+                // so the greeting round learns where the line went now rather
+                // than at its next interval (G053 SG2b).
+                wakes.greeting.notify_one();
             });
         match started {
             Ok(thread) => {

@@ -44,8 +44,8 @@ use tessari_encoding::NODE_ID_LEN;
 use tessari_storage::Lease;
 use tessari_types::{Epoch, Reach};
 
-use crate::grant::{Deciding, Leadership, Refused, Round, Vote};
-use crate::link::{Answered, Ask, Credential, call};
+use crate::grant::{Ballot, Deciding, Leadership, Refused, Round, Vote};
+use crate::link::{Answered, Ask, Credential, call_within};
 use crate::peer::Hello;
 
 /// What one pass at standing actually did.
@@ -157,7 +157,7 @@ impl Standing<'_> {
     /// forgotten, and that is as true of a ballot it wrote as of one that
     /// arrived on a socket.
     #[must_use]
-    pub fn renew(&self, voter: &Deciding, held: Lease, next: Epoch, now: Instant) -> Stood {
+    pub async fn renew(&self, voter: &Deciding, held: Lease, next: Epoch, now: Instant) -> Stood {
         if renew_in(held, self.round, now) > Duration::ZERO {
             return Stood::NotDue;
         }
@@ -175,30 +175,9 @@ impl Standing<'_> {
         // in one place, and a self-vote that took a different path through it
         // would be a second rule nobody is reading.
         let mut granted = Epoch::ZERO;
-        for (peer, address) in self.peers {
-            // One short of carried, not carried: the ballot below is this
-            // node's own and costs no handshake, so a peer asked past this
-            // point would have its voter spent — for a whole `LEASE_TTL` — on a
-            // round that was already decided. The old order asked the same
-            // number of peers by counting the self-vote first.
-            if round.needs() <= 1 {
-                break;
-            }
-            let Ok((_, answered)) = call(
-                *address,
-                self.mine.duplicate(),
-                self.authority,
-                *peer,
-                self.said,
-                Ask::Ballot(&round.ballot()),
-            ) else {
-                continue;
-            };
-            let Answered::Voted(vote) = answered else {
-                continue;
-            };
+        for (peer, vote) in self.canvass(ballot).await {
             note(&mut granted, vote);
-            round.counts(*peer, vote);
+            round.counts(peer, vote);
         }
         // The candidate's own ballot is cast LAST, and only when it still
         // decides something. Casting it first is what W257 found had to change:
@@ -220,6 +199,61 @@ impl Standing<'_> {
             round.counts(self.candidate, mine);
         }
         round.held().map_or(Stood::Lost { granted }, Stood::Won)
+    }
+}
+
+impl Standing<'_> {
+    /// Put `ballot` to every voting peer at once, each dial bounded by the round.
+    ///
+    /// # Every peer, and not only until a majority is reached
+    ///
+    /// A renewal is also the only evidence a voter has that its leader is alive
+    /// ([`crate::Voter::granted_elsewhere_at`]), and once the lease is under a
+    /// second the greeting directory is too old to testify. A canvass that
+    /// stopped at a majority left one voter in three hearing nothing: it stood,
+    /// its ballot raised every voter's epoch past the incumbent's, and the next
+    /// renewal was refused (G053 SG2b). A peer granting the winner a round that
+    /// was already carried spends nothing it should keep — its grant is to the
+    /// node that is leading, which is exactly what it refuses challengers for.
+    ///
+    /// # At once, on the runtime, and bounded by the round
+    ///
+    /// One after another, a member that accepted the connection and then said
+    /// nothing held the canvass for the greeting's ten seconds, past every lease
+    /// this build ships. Each ballot is a task on the caller's runtime — on its
+    /// blocking pool, because the peer link is synchronous (`link.rs`), the same
+    /// shape the peer door serves connections in — and none may take longer than
+    /// the round on any one step: a blocking task cannot be cancelled, so its
+    /// deadline is the only thing that ends it. A peer that cannot be reached,
+    /// answers something other than a vote, or whose task failed, are all one
+    /// answer: no vote.
+    async fn canvass(&self, ballot: Ballot) -> Vec<([u8; NODE_ID_LEN], Vote)> {
+        let mut asked = tokio::task::JoinSet::new();
+        for (peer, address) in self.peers {
+            let (peer, address, said, round) = (*peer, *address, *self.said, self.round);
+            let mine = self.mine.duplicate();
+            let authority = self.authority.clone().into_owned();
+            asked.spawn_blocking(move || {
+                match call_within(
+                    address,
+                    (mine, &authority),
+                    peer,
+                    &said,
+                    Ask::Ballot(&ballot),
+                    round,
+                ) {
+                    Ok((_, Answered::Voted(vote))) => Some((peer, vote)),
+                    _ => None,
+                }
+            });
+        }
+        let mut votes = Vec::with_capacity(self.peers.len());
+        while let Some(answered) = asked.join_next().await {
+            if let Ok(Some(vote)) = answered {
+                votes.push(vote);
+            }
+        }
+        votes
     }
 }
 
@@ -315,8 +349,8 @@ mod tests {
         Lease::taken_at(now, LEASE_GUARD.checked_add(margin).expect("representable"))
     }
 
-    #[test]
-    fn a_lost_round_reports_the_highest_epoch_a_voter_said_it_had_granted() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_lost_round_reports_the_highest_epoch_a_voter_said_it_had_granted() {
         // ADR-0066's learning half, against a real refusal over the wire rather
         // than a constructed one. The peer has already granted epoch 40 to
         // somebody else, so it refuses this ballot and says so — and that number
@@ -348,12 +382,14 @@ mod tests {
         let standing = standing(&mine, &der, &said, &peers);
 
         assert_eq!(
-            standing.renew(
-                &mine_voting(now),
-                leaving(Duration::ZERO, now),
-                Epoch::new(2),
-                now
-            ),
+            standing
+                .renew(
+                    &mine_voting(now),
+                    leaving(Duration::ZERO, now),
+                    Epoch::new(2),
+                    now
+                )
+                .await,
             Stood::Lost {
                 granted: Epoch::new(40)
             },
@@ -362,8 +398,8 @@ mod tests {
         drop(answering.join().expect("the door's thread"));
     }
 
-    #[test]
-    fn a_leader_with_margin_left_asks_nobody() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_leader_with_margin_left_asks_nobody() {
         // The door would grant — that is what makes this a test of the ordering
         // rather than of the arithmetic. If the canvass ran and its answer was
         // discarded, the epoch would be spent at the voter all the same, and a
@@ -382,7 +418,9 @@ mod tests {
         let now = Instant::now();
         let held = leaving(Duration::from_secs(5), now);
         assert_eq!(
-            standing.renew(&mine_voting(now), held, Epoch::new(2), now),
+            standing
+                .renew(&mine_voting(now), held, Epoch::new(2), now)
+                .await,
             Stood::NotDue,
             "five seconds of margin against a tenth-second round"
         );
@@ -410,8 +448,8 @@ mod tests {
         drop(answering.join().expect("the door's thread"));
     }
 
-    #[test]
-    fn a_leader_stands_early_enough_to_lose_a_round_and_still_renew() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_leader_stands_early_enough_to_lose_a_round_and_still_renew() {
         // A round and a half of margin. One round time still fits, so a cadence
         // that subtracted only one would sit still here and stand at the last
         // moment that can possibly work — leaving nothing for a round that is
@@ -436,21 +474,22 @@ mod tests {
         );
         let won = standing
             .renew(&mine_voting(now), held, Epoch::new(2), now)
+            .await
             .won()
             .expect("inside two round times, a leader stands");
         assert_eq!(won.epoch, Epoch::new(2));
         drop(answering.join().expect("the door's thread"));
     }
 
-    #[test]
-    fn a_leader_at_its_fence_wins_the_next_epoch() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_leader_at_its_fence_wins_the_next_epoch() {
         let authority = Authority::new();
         let voters = [
             [52_u8; NODE_ID_LEN],
             [53_u8; NODE_ID_LEN],
             [54_u8; NODE_ID_LEN],
         ];
-        let mut doors: Vec<_> = voters
+        let doors: Vec<_> = voters
             .into_iter()
             .map(|id| (id, voting(&authority, id, settled())))
             .collect();
@@ -472,6 +511,7 @@ mod tests {
                 Epoch::new(7),
                 now,
             )
+            .await
             .won()
             .expect("a majority of four — this node and two of its three peers");
         let answered = Instant::now();
@@ -485,39 +525,18 @@ mod tests {
         assert!(answered > now, "and the collection delay was not nothing");
 
         // The membership is four — three peers and this node — so a majority is
-        // three: this node's own vote and two peers'. The round therefore ended
-        // at the second door and the third was never asked. That is not an
-        // accident of iteration order — it is the round concluding the moment it
-        // is carried — and it shows in the third voter's untouched memory: the
-        // epoch is still grantable, which it would not be had the ballot reached
-        // it.
-        let (spare, (address, untouched)) = doors.pop().expect("three doors");
+        // three. Until G053 SG2b the round ended at the second door and the
+        // third was never asked; now every door is asked at once, because a
+        // renewal is the only evidence a voter has that its leader lives. Each
+        // door answers exactly one connection, so every one of them having
+        // finished is the proof that every one of them was asked.
         for (_, (_, door)) in doors {
             drop(door.join().expect("the door's thread"));
         }
-        let (_, vote) = call(
-            address,
-            authority.issue(THERE, Purpose::Peer),
-            &authority.der(),
-            spare,
-            &hello(THERE),
-            Ask::Ballot(&Ballot {
-                epoch: Epoch::new(7),
-                candidate: THERE,
-                range: tessari_types::Reach::Store,
-            }),
-        )
-        .expect("the third door is still up, having been asked nothing");
-        assert_eq!(
-            vote,
-            Answered::Voted(Vote::Granted),
-            "the third voter never saw the ballot the first two carried"
-        );
-        drop(untouched.join().expect("the door's thread"));
     }
 
-    #[test]
-    fn a_peer_that_is_gone_does_not_cost_the_round_its_majority() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_peer_that_is_gone_does_not_cost_the_round_its_majority() {
         let authority = Authority::new();
         let gone = [55_u8; NODE_ID_LEN];
         // A real address with nothing behind it: the door is opened to learn
@@ -555,6 +574,7 @@ mod tests {
                 Epoch::new(3),
                 now,
             )
+            .await
             .won()
             .expect("this node and the two that answered carry a membership of four");
         assert_eq!(won.epoch, Epoch::new(3));
@@ -563,8 +583,8 @@ mod tests {
             drop(door.join().expect("the door's thread"));
         }
     }
-    #[test]
-    fn a_cluster_of_three_carries_a_round_with_one_member_down() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cluster_of_three_carries_a_round_with_one_member_down() {
         // The arithmetic this wave exists for. The membership is three — this
         // node and the two peers an operator declared — so a majority is two:
         // this node's own vote and one peer's. Counting only the peers would
@@ -604,14 +624,135 @@ mod tests {
                 Epoch::new(9),
                 now,
             )
+            .await
             .won()
             .expect("this node and the one peer that answered are two of three");
         assert_eq!(won.epoch, Epoch::new(9));
         drop(answering.join().expect("the door's thread"));
     }
 
-    #[test]
-    fn a_node_that_voted_for_itself_refuses_that_epoch_to_a_rival() {
+    /// A voting door whose memory the test keeps, so it can read what the door
+    /// granted after the round — and a way to release it if it was never asked.
+    fn kept_voting(
+        authority: &Authority,
+        id: [u8; NODE_ID_LEN],
+    ) -> (
+        SocketAddr,
+        std::sync::Arc<Deciding>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let door = Peers::bind(
+            "127.0.0.1:0",
+            authority.issue(id, Purpose::Peer),
+            &authority.der(),
+        )
+        .expect("a peer door on loopback");
+        let address = door.address().expect("the door's address");
+        let deciding = std::sync::Arc::new(Deciding::holding(settled()));
+        let held = std::sync::Arc::clone(&deciding);
+        let answering = std::thread::spawn(move || {
+            drop(door.greet(|| Ok(hello(id)), &id, &held, &crate::collection::NoLog));
+        });
+        (address, deciding, answering)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_renewal_reaches_every_voter_and_not_only_a_majority() {
+        // G053 SG2b. A voter that hears no renewal has no evidence its leader is
+        // alive once the lease is under a second, so it stands — and its ballot
+        // raises every voter's epoch past the incumbent's. A canvass that
+        // stopped at a majority left one voter in three hearing nothing at all.
+        let authority = Authority::new();
+        let ids = [
+            [70_u8; NODE_ID_LEN],
+            [71_u8; NODE_ID_LEN],
+            [72_u8; NODE_ID_LEN],
+        ];
+        let doors: Vec<_> = ids
+            .iter()
+            .map(|id| (*id, kept_voting(&authority, *id)))
+            .collect();
+        let peers: Vec<_> = doors
+            .iter()
+            .map(|(id, (address, _, _))| (*id, *address))
+            .collect();
+
+        let mine = authority.issue(THERE, Purpose::Peer);
+        let der = authority.der();
+        let said = hello(THERE);
+        let standing = standing(&mine, &der, &said, &peers);
+        let now = Instant::now();
+        let won = standing
+            .renew(
+                &mine_voting(now),
+                leaving(Duration::ZERO, now),
+                Epoch::new(5),
+                now,
+            )
+            .await
+            .won()
+            .expect("four members, all granting");
+        assert_eq!(won.epoch, Epoch::new(5));
+
+        for (id, (address, deciding, answering)) in doors {
+            let decided = deciding.decided();
+            if decided.is_none() {
+                // Never asked, so its door is still waiting: knock to release it.
+                drop(std::net::TcpStream::connect(address));
+            }
+            answering.join().expect("the door's thread");
+            assert_eq!(
+                decided,
+                Some(Epoch::new(5)),
+                "voter {} heard no renewal, so it has no evidence its leader lives",
+                id[0]
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_peer_that_never_answers_costs_the_round_at_most_its_deadline() {
+        // A member whose host accepts the connection and then says nothing —
+        // a hung process, a half-open link. The dial used the greeting's ten
+        // seconds, so one such peer placed first held the whole canvass past
+        // every lease this build ships (G053 SG2b).
+        let authority = Authority::new();
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
+        let quiet = silent.local_addr().expect("its address");
+        let holding = std::thread::spawn(move || silent.accept().map(|(socket, _)| socket));
+
+        let alive = [81_u8; NODE_ID_LEN];
+        let (address, deciding, answering) = kept_voting(&authority, alive);
+        let peers = [([80_u8; NODE_ID_LEN], quiet), (alive, address)];
+
+        let mine = authority.issue(THERE, Purpose::Peer);
+        let der = authority.der();
+        let said = hello(THERE);
+        let standing = standing(&mine, &der, &said, &peers);
+        let now = Instant::now();
+        let won = standing
+            .renew(
+                &mine_voting(now),
+                leaving(Duration::ZERO, now),
+                Epoch::new(6),
+                now,
+            )
+            .await
+            .won();
+        let took = now.elapsed();
+        drop(holding.join());
+        answering.join().expect("the door's thread");
+
+        assert!(
+            took < ROUND.saturating_mul(5),
+            "a silent member held the round for {took:?} against a {ROUND:?} deadline"
+        );
+        assert_eq!(won.map(|held| held.epoch), Some(Epoch::new(6)));
+        assert_eq!(deciding.decided(), Some(Epoch::new(6)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_node_that_voted_for_itself_refuses_that_epoch_to_a_rival() {
         // The reason the self-vote goes through the node's own memory rather
         // than being added to a tally. A vote counted but not recorded would
         // leave this node free to grant the same epoch to somebody else moments
@@ -631,6 +772,7 @@ mod tests {
         let ours = mine_voting(now);
         let won = standing
             .renew(&ours, leaving(Duration::ZERO, now), Epoch::new(11), now)
+            .await
             .won()
             .expect("this node and its one peer are two of two");
         assert_eq!(won.epoch, Epoch::new(11));
@@ -662,8 +804,8 @@ mod tests {
         drop(answering.join().expect("the door's thread"));
     }
 
-    #[test]
-    fn a_node_that_will_not_vote_for_itself_does_not_count_itself() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_node_that_will_not_vote_for_itself_does_not_count_itself() {
         // A voter that has just started cannot rule out having granted something
         // it has forgotten, so it sits out one TTL. That rule is about the NODE,
         // which means it applies to a ballot the node wrote as surely as to one
@@ -684,12 +826,14 @@ mod tests {
 
         let now = Instant::now();
         assert_eq!(
-            standing.renew(
-                &Deciding::started(),
-                leaving(Duration::ZERO, now),
-                Epoch::new(13),
-                now
-            ),
+            standing
+                .renew(
+                    &Deciding::started(),
+                    leaving(Duration::ZERO, now),
+                    Epoch::new(13),
+                    now
+                )
+                .await,
             Stood::Lost {
                 granted: Epoch::ZERO
             },

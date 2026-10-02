@@ -4139,3 +4139,238 @@ fn acknowledged_writes_at_the_leaders_level_and_what_its_loss_costs() {
     let (acknowledged, missing) = acknowledged_writes_measured("");
     eprintln!("LEADER level: {missing} of {acknowledged} acknowledged writes lost");
 }
+
+// ---- G053 SG2b: a failover in about a second -------------------------------
+
+/// Busy threads in this process, `TESSARIDB_TEST_CPU_LOAD` of them, for a
+/// measurement taken under CPU pressure; dropping the guard stops them.
+struct Load(
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+    Vec<std::thread::JoinHandle<()>>,
+);
+
+impl Load {
+    fn from_env() -> Self {
+        let threads: usize = std::env::var("TESSARIDB_TEST_CPU_LOAD")
+            .ok()
+            .and_then(|count| count.parse().ok())
+            .unwrap_or(0);
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let spinning = (0..threads)
+            .map(|_| {
+                let stop = std::sync::Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    let mut spun = 0_u64;
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        spun = std::hint::black_box(spun.wrapping_add(1));
+                    }
+                })
+            })
+            .collect();
+        Self(stop, spinning)
+    }
+}
+
+impl Drop for Load {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        for spinning in self.1.drain(..) {
+            drop(spinning.join());
+        }
+    }
+}
+
+/// The first of `surfaces` that takes a write of `key`, asked until one does.
+fn the_node_that_takes(surfaces: &[usize], key: &str, cluster: &Three) -> usize {
+    let began = Instant::now();
+    // Kept so a failure names what each node answered, for the reason
+    // `the_node_a_majority_granted` keeps them.
+    let mut refusals = vec![String::new(); ACKED.len()];
+    loop {
+        let took = surfaces.iter().copied().find(|index| {
+            let answered = Client::connect(ACKED[*index].0)
+                .map_err(|why| why.to_string())
+                .and_then(|mut client| {
+                    client
+                        .run(&into_item(key, ""), None)
+                        .map_err(|why| why.to_string())
+                });
+            answered.map_err(|why| refusals[*index] = why).is_ok()
+        });
+        if let Some(index) = took {
+            return index;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "nobody took a write in a minute; the last answer from each node: {refusals:?}{}",
+            what_the_nodes_said(&ACKED, &cluster.logs)
+        );
+        // Ten milliseconds, not `POLL`: this is the instrument, and a tenth of a
+        // second of granularity would be a tenth of the thing it measures.
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Wait until node `index` holds `key`, after it was started again.
+fn caught_up(index: usize, key: &str, cluster: &Three) {
+    let began = Instant::now();
+    while !item_ids_at(ACKED[index].0).is_ok_and(|held| held.iter().any(|id| id == key)) {
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "the restarted node never caught up to {key}{}",
+            what_the_nodes_said(&ACKED, &cluster.logs)
+        );
+        std::thread::sleep(POLL);
+    }
+}
+
+#[test]
+#[ignore = "three processes and ten kill -9s — G053 SG2b's measurement, run \
+            explicitly: TESSARIDB_TEST_BIN=target/release/tessaridb cargo test -p \
+            tessari-cli --test serving a_leader_killed -- --ignored --nocapture \
+            (TESSARIDB_TEST_CPU_LOAD=<threads> for the run under CPU pressure)"]
+fn a_leader_killed_is_replaced_in_about_a_second() {
+    let runs: usize = std::env::var("TESSARIDB_TEST_KILLS")
+        .ok()
+        .and_then(|count| count.parse().ok())
+        .unwrap_or(10);
+    let mut cluster = a_cluster_declared(&ACKED, "", ["", "", ""]);
+    let mut leader = the_node_a_majority_granted(&ACKED);
+    let _load = Load::from_env();
+    let mut took = Vec::new();
+    for run in 0..runs {
+        // Every node level before the kill, so the measurement is of an
+        // election and not of a node still catching up from the last one.
+        let before = format!("b{run:02}");
+        let wrote = the_node_that_takes(&[leader], &before, &cluster);
+        for index in 0..ACKED.len() {
+            caught_up(index, &before, &cluster);
+        }
+        drop(cluster.running[wrote].take());
+        let killed = Instant::now();
+        let survivors: Vec<usize> = (0..ACKED.len()).filter(|index| *index != wrote).collect();
+        let after = format!("a{run:02}");
+        leader = the_node_that_takes(&survivors, &after, &cluster);
+        let elapsed = killed.elapsed();
+        eprintln!("FAILOVER run={run} took_ms={}", elapsed.as_millis());
+        took.push(elapsed);
+        cluster.restart_with(wrote, &[]);
+        caught_up(wrote, &after, &cluster);
+    }
+    let (p50, p99) = percentiles(took.clone());
+    let worst = took.iter().max().copied().unwrap_or_default();
+    eprintln!(
+        "FAILOVER runs={runs} p50_ms={} p99_ms={} max_ms={}",
+        p50 / 1000,
+        p99 / 1000,
+        worst.as_millis()
+    );
+    assert!(
+        p50 <= 1_000_000,
+        "half the failovers took longer than a second: {took:?}"
+    );
+    assert!(
+        worst <= Duration::from_secs(2),
+        "a failover took {worst:?}: {took:?}"
+    );
+}
+
+/// The divergences node `index` has refused, from its own `/metrics`.
+fn divergences(index: usize) -> u64 {
+    let scraped = probing(ACKED[index].1, "/metrics").expect("the metrics route answered");
+    scraped
+        .lines()
+        .find(|line| line.starts_with("tessari_log_divergences"))
+        .and_then(|line| line.split_whitespace().last())
+        .and_then(|count| count.parse().ok())
+        .unwrap_or(0)
+}
+
+#[test]
+#[ignore = "three processes and a SIGSTOP — G053 SG2b's split-brain check, run \
+            explicitly: cargo test -p tessari-cli --test serving a_paused_leader \
+            -- --ignored --nocapture"]
+fn a_paused_leader_writes_nothing_once_its_successor_leads() {
+    // A leader that stops being scheduled — a stall, a swap storm, a debugger —
+    // is the case a lease exists for. It cannot know it was paused, so when it
+    // runs again its own fence is what must stop it: the successor was elected
+    // the moment the old lease expired, and anything the old leader committed
+    // after that would be a second history, refused later as a divergence.
+    let cluster = a_cluster_declared(&ACKED, "", ["", "", ""]);
+    let leader = the_node_a_majority_granted(&ACKED);
+    // Every node level before the pause, as before a kill: a write the leader
+    // acknowledged and no follower holds is lost by any failover until
+    // `ACKNOWLEDGE MAJORITY` (G053 SG2), and this test is of the fence.
+    for index in 0..ACKED.len() {
+        caught_up(index, "1", &cluster);
+    }
+    let paused = cluster.running[leader]
+        .as_ref()
+        .expect("the leader runs")
+        .0
+        .id();
+    let stopped = Command::new("kill")
+        .args(["-STOP", &paused.to_string()])
+        .status()
+        .expect("kill runs");
+    assert!(stopped.success());
+    let survivors: Vec<usize> = (0..ACKED.len()).filter(|index| *index != leader).collect();
+    let began = Instant::now();
+    let successor = the_node_that_takes(&survivors, "during", &cluster);
+    eprintln!(
+        "PAUSED successor={successor} took_ms={}",
+        began.elapsed().as_millis()
+    );
+    let resumed = Command::new("kill")
+        .args(["-CONT", &paused.to_string()])
+        .status()
+        .expect("kill runs");
+    assert!(resumed.success());
+    // The first thing the old leader is asked once it runs again: a write. It
+    // is refused by the fence or forwarded to the successor, and either way it
+    // must not land in a history of its own.
+    let answered = Client::connect(ACKED[leader].0).map(|mut client| {
+        client
+            .run(&into_item("resumed", ""), None)
+            .map(|_| ())
+            .map_err(|why| why.to_string())
+    });
+    eprintln!("PAUSED the old leader answered {answered:?}");
+    // Let every node settle on the successor, then compare.
+    let began = Instant::now();
+    loop {
+        let held: Vec<_> = (0..ACKED.len())
+            .map(|index| item_ids_at(ACKED[index].0))
+            .collect();
+        let level = held.windows(2).all(|pair| match (&pair[0], &pair[1]) {
+            (Ok(one), Ok(other)) => {
+                let (mut one, mut other) = (one.clone(), other.clone());
+                one.sort();
+                other.sort();
+                one == other
+            }
+            _ => false,
+        });
+        if level
+            && held[successor]
+                .as_ref()
+                .is_ok_and(|ids| ids.iter().any(|id| id == "during"))
+        {
+            break;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(30),
+            "the three nodes never agreed after the pause: {held:?}{}",
+            what_the_nodes_said(&ACKED, &cluster.logs)
+        );
+        std::thread::sleep(POLL);
+    }
+    for index in 0..ACKED.len() {
+        assert_eq!(
+            divergences(index),
+            0,
+            "node {index} refused a divergent history — the paused leader wrote after its successor began{}",
+            what_the_nodes_said(&ACKED, &cluster.logs)
+        );
+    }
+}

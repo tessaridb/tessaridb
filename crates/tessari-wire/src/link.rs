@@ -420,7 +420,35 @@ pub fn call(
     said: &Hello,
     asking: Ask<'_>,
 ) -> Result<(Hello, Answered)> {
-    let (mut session, mut socket) = open(address, mine, authority, at)?;
+    call_within(
+        address,
+        (mine, authority),
+        at,
+        said,
+        asking,
+        Duration::from_secs(GREETING_SECONDS),
+    )
+}
+
+/// [`call`], with the connect and every read and write bounded by `bound`
+/// rather than by the greeting's deadline.
+///
+/// For a caller that has a deadline of its own — a ballot is worth nothing once
+/// its round is over, and a member that accepts the connection and then says
+/// nothing must cost the round no more than the round (G053 SG2b).
+///
+/// # Errors
+///
+/// As [`call`], plus [`Error::Io`] when `bound` passes on any one step.
+pub fn call_within(
+    address: impl ToSocketAddrs,
+    (mine, authority): (Credential, &CertificateDer<'_>),
+    at: [u8; NODE_ID_LEN],
+    said: &Hello,
+    asking: Ask<'_>,
+    bound: Duration,
+) -> Result<(Hello, Answered)> {
+    let (mut session, mut socket) = open_within(address, mine, authority, at, bound)?;
     let exchanged = exchange(&mut session, &mut socket, said, asking);
 
     // Say goodbye properly even when the exchange failed. A TLS peer that just
@@ -440,6 +468,23 @@ pub(crate) fn open(
     authority: &CertificateDer<'_>,
     at: [u8; NODE_ID_LEN],
 ) -> Result<(ClientConnection, TcpStream)> {
+    open_within(
+        address,
+        mine,
+        authority,
+        at,
+        Duration::from_secs(GREETING_SECONDS),
+    )
+}
+
+/// [`open`], with the connect and every read and write bounded by `bound`.
+fn open_within(
+    address: impl ToSocketAddrs,
+    mine: Credential,
+    authority: &CertificateDer<'_>,
+    at: [u8; NODE_ID_LEN],
+    bound: Duration,
+) -> Result<(ClientConnection, TcpStream)> {
     let mut roots = RootCertStore::empty();
     roots
         .add(authority.clone().into_owned())
@@ -453,8 +498,10 @@ pub(crate) fn open(
     let session = ClientConnection::new(Arc::new(settings), name)
         .map_err(|why| Error::Transport(why.to_string()))?;
 
-    let socket = connect(address, Duration::from_secs(GREETING_SECONDS))?;
-    let bound = Some(Duration::from_secs(GREETING_SECONDS));
+    let socket = connect(address, bound)?;
+    // A zero would mean *no timeout at all* to the socket, the opposite of what
+    // a spent deadline asks for, so the least a step may have is a millisecond.
+    let bound = Some(bound.max(Duration::from_millis(1)));
     socket.set_read_timeout(bound)?;
     socket.set_write_timeout(bound)?;
     Ok((session, socket))
@@ -1248,7 +1295,7 @@ pub(crate) mod tests {
 
         // A majority grants, and the node takes the lease that grant entitles it
         // to. The span is short so the fence is reachable inside a test; the
-        // arithmetic it runs is the same one a ten-second lease runs.
+        // arithmetic it runs is the same one the shipped lease runs.
         let voters = [
             [30_u8; NODE_ID_LEN],
             [31_u8; NODE_ID_LEN],
@@ -1314,10 +1361,15 @@ pub(crate) mod tests {
         }
         assert_eq!(renewal.held(), None, "so the renewal grants nothing");
 
-        // Past the fence, which is `ttl - GUARD` = 400 ms, and comfortably
-        // short of the expiry at 2.4 s. That gap is the whole point: the holder
-        // stops writing while the cluster still may not reassign.
-        std::thread::sleep(Duration::from_millis(600));
+        // Past the fence, which is `ttl - GUARD` = 400 ms, and short of the
+        // expiry by half the guard. That gap is the whole point: the holder
+        // stops writing while the cluster still may not reassign. Aimed at the
+        // middle of the guard from the instant the lease was taken, because the
+        // guard is 150 ms and a fixed sleep after the writes above would spend
+        // part of it on them (G053 SG2b).
+        let middle = Duration::from_millis(400)
+            .saturating_add(tessari_storage::LEASE_GUARD.checked_div(2).expect("halves"));
+        std::thread::sleep(middle.saturating_sub(taken.elapsed()));
         let refused = store
             .session()
             .run("USE NAMESPACE prod; USE DATABASE orders; CREATE users:2 = { name: 'grace' };")

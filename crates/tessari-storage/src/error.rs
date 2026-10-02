@@ -165,7 +165,7 @@ pub enum Error {
         for_the_last: std::time::Duration,
     },
 
-    /// A stated failover policy named a period under a second.
+    /// A stated failover policy named a period under fifty milliseconds.
     ///
     /// The four refusals below exist because the relations between these
     /// periods hold today only because the compiler holds them — three of the
@@ -174,7 +174,7 @@ pub enum Error {
     /// rather than a warning.
     #[error(
         "a failover policy's `{field}` is {stated:?}, and every period in one \
-         must be at least a second: a cadence that never waits is a spin, and a \
+         must be at least 50ms: a cadence that never waits is a spin, and a \
          lease of zero is spent at the instant it is taken"
     )]
     FailoverPeriodTooShort {

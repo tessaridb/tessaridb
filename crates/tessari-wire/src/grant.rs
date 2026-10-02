@@ -531,15 +531,15 @@ impl Voter {
     ///
     /// # It is the freshest liveness signal this node has, and it was already here
     ///
-    /// A leader renews by putting a ballot to every voter, and it renews while
-    /// two round times are left of its usable window — so a voter hears from a
-    /// live leader roughly every `LEASE_TTL - LEASE_GUARD - 2 × ROUND_SECONDS`,
-    /// which is **six seconds** at today's values. The greeting directory that
-    /// [`crate::heard_a_leader`] otherwise consults is refreshed on the
-    /// awareness cadence, **ten seconds**, and the reading itself is up to that
-    /// old again. This instant is strictly fresher and costs nothing: the grant
-    /// was already recorded, with `now` and not the earlier instant, precisely
-    /// so that a renewal moves it.
+    /// A leader renews by putting a ballot to every voter at once, and it
+    /// renews while two round times are left of its usable window — so a voter
+    /// hears from a live leader roughly every `LEASE_TTL - LEASE_GUARD - 2 ×
+    /// ROUND_MILLIS` plus one campaign tick, which is **about 300 ms** at
+    /// today's values. The greeting directory that [`crate::heard_a_leader`]
+    /// otherwise consults is refreshed on the awareness cadence, **a second**,
+    /// and the reading itself is up to that old again. This instant is strictly
+    /// fresher and costs nothing: the grant was already recorded, with `now` and
+    /// not the earlier instant, precisely so that a renewal moves it.
     ///
     /// # A refusal is not evidence
     ///
@@ -604,6 +604,16 @@ mod tests {
     use std::time::{Duration, Instant};
     use tessari_encoding::NODE_ID_LEN;
     use tessari_storage::{LEASE_GUARD, LEASE_TTL};
+
+    /// `k` tenths of the lease. These cases were written in whole seconds
+    /// against a ten-second lease; stated as fractions of it, they keep their
+    /// meaning whatever the lease is (G053 SG2b).
+    fn tenths(k: u32) -> Duration {
+        LEASE_TTL
+            .checked_div(10)
+            .expect("a lease divides")
+            .saturating_mul(k)
+    }
     use tessari_types::{DatabaseId, Epoch, NamespaceId, Reach, Sequence, ShardId, TableId};
 
     /// A log position both sides of a vote share.
@@ -802,7 +812,7 @@ mod tests {
                     candidate: B,
                     range: tessari_types::Reach::Store,
                 },
-                after(now, Duration::from_secs(1)),
+                after(now, tenths(1)),
                 LEVEL,
                 LEVEL
             ),
@@ -841,9 +851,9 @@ mod tests {
         assert_eq!(voter.granted_elsewhere_at(C), Some(now));
 
         // A renewal from the incumbent moves it, because that is the whole
-        // mechanism: a leader renews about every six seconds and this is how a
+        // mechanism: a leader renews about every 300 ms and this is how a
         // voter knows the leader was alive that recently.
-        let later = after(now, Duration::from_secs(6));
+        let later = after(now, tenths(6));
         assert_eq!(
             voter.asked(
                 &Ballot {
@@ -864,7 +874,7 @@ mod tests {
         // evidence at all that any leader is alive. Reading it as contact would
         // let a cluster whose leader is long gone keep itself quiet by arguing
         // with itself.
-        let refused_at = after(later, Duration::from_secs(1));
+        let refused_at = after(later, tenths(1));
         assert!(matches!(
             voter.asked(
                 &Ballot {
@@ -942,7 +952,7 @@ mod tests {
             Vote::Granted
         );
 
-        let soon = after(now, Duration::from_secs(1));
+        let soon = after(now, tenths(1));
         assert_eq!(
             voter.asked(
                 &Ballot {
@@ -955,7 +965,7 @@ mod tests {
                 LEVEL
             ),
             Vote::Refused(Refused::EarlierGrantStillAlive {
-                for_the_next: LEASE_TTL.saturating_sub(Duration::from_secs(1))
+                for_the_next: LEASE_TTL.saturating_sub(tenths(1))
             })
         );
 
@@ -988,11 +998,11 @@ mod tests {
             range: tessari_types::Reach::Store,
         };
 
-        let early = after(started, Duration::from_secs(4));
+        let early = after(started, tenths(4));
         assert_eq!(
             voter.asked(&ballot, early, LEVEL, LEVEL),
             Vote::Refused(Refused::TooSoonAfterStarting {
-                for_the_next: LEASE_TTL.saturating_sub(Duration::from_secs(4))
+                for_the_next: LEASE_TTL.saturating_sub(tenths(4))
             })
         );
         assert_eq!(voter.decided(), None, "a refusal decides nothing");
@@ -1018,9 +1028,9 @@ mod tests {
             range: tessari_types::Reach::Store,
         };
         assert_eq!(
-            voter.asked(&high, after(started, Duration::from_secs(1)), LEVEL, LEVEL),
+            voter.asked(&high, after(started, tenths(1)), LEVEL, LEVEL),
             Vote::Refused(Refused::TooSoonAfterStarting {
-                for_the_next: LEASE_TTL.saturating_sub(Duration::from_secs(1))
+                for_the_next: LEASE_TTL.saturating_sub(tenths(1))
             })
         );
         assert_eq!(voter.decided(), None, "a refusal grants nothing");
@@ -1122,14 +1132,10 @@ mod tests {
         let mut voters = [settled(opened), settled(opened), settled(opened)];
         let mut round = Round::opened_at(Epoch::new(3), A, voters.len(), opened);
 
-        // A round that drags: one voter answers at once, one after a second,
-        // one after three — comfortably longer than the guard, which is the
+        // A round that drags: one voter answers at once, one after a tenth of
+        // the lease, one after three tenths — longer than the guard, which is the
         // only shape in which dating the lease wrongly is detectable.
-        let answered = [
-            opened,
-            after(opened, Duration::from_secs(1)),
-            after(opened, Duration::from_secs(3)),
-        ];
+        let answered = [opened, after(opened, tenths(1)), after(opened, tenths(3))];
         let mut held = None;
         for ((voter, id), at) in voters.iter_mut().zip([ONE, TWO, THREE]).zip(answered) {
             let vote = voter.asked(&round.ballot(), at, LEVEL, LEVEL);
@@ -1163,7 +1169,7 @@ mod tests {
         let mut voter = settled(opened);
         let mut round = Round::opened_at(Epoch::new(1), A, 1, opened);
 
-        let answered = after(opened, LEASE_TTL.saturating_sub(Duration::from_secs(1)));
+        let answered = after(opened, LEASE_TTL.saturating_sub(tenths(1)));
         let vote = voter.asked(&round.ballot(), answered, LEVEL, LEVEL);
         let held = round.counts(ONE, vote).expect("one of one carried it");
 

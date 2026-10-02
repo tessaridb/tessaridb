@@ -266,9 +266,14 @@ fn a_node_holding_a_lease_reports_the_time_it_has_left() {
     // Positive, and inside the fence rather than inside the grant: the δ the
     // cluster waits before reassigning is not time this node may write in.
     assert!(left.seconds() > 0, "the lease reports {left:?} remaining");
+    let reported = Duration::new(
+        u64::try_from(left.seconds()).expect("positive, asserted above"),
+        left.nanos(),
+    );
+    let fence = Duration::from_secs(120).saturating_sub(tessari_storage::LEASE_GUARD);
     assert!(
-        left.seconds() <= 118,
-        "the lease reports {left:?}, which reaches past its own fence"
+        reported <= fence,
+        "the lease reports {left:?}, which reaches past its own fence at {fence:?}"
     );
 }
 

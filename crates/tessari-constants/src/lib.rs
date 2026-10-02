@@ -410,10 +410,14 @@ pub const GREETING_SECONDS: u64 = 10;
 /// MongoDB's `heartbeatFrequencyMS` is: the number the floor below is derived
 /// from is configured, never observed.
 ///
-/// Ten seconds for the reason [`GREETING_SECONDS`] is ten: it is short enough
-/// that a failure is noticed while somebody still cares, and long enough that a
-/// cluster of any size is not spending its bandwidth on being sure of itself.
-pub const AWARENESS_SECONDS: u64 = 10;
+/// One second, which is the interval Cassandra gossips on (G053 C2b). Ten, the
+/// value until 0.21, made a follower that lost its leader wait up to ten seconds
+/// to learn who replaced it, and put the staleness floor at twenty. A round is
+/// one TLS handshake and one frame each way per declared peer — three to seven
+/// of them — so a second costs a cluster nothing it would notice. A node that
+/// can name no leader greets faster than this until it can (see the greeting
+/// round), because that is exactly when a stale reading costs the most.
+pub const AWARENESS_SECONDS: u64 = 1;
 
 /// How often a follower collects the records it does not hold.
 ///
@@ -425,6 +429,11 @@ pub const AWARENESS_SECONDS: u64 = 10;
 /// constant: a missed greeting costs the freshness of a routing reading, and a
 /// missed collection costs data. Two mechanisms whose failures differ get two
 /// periods, so that changing one is not silently changing the other.
+///
+/// Since the leader pushes on a held stream (ADR-0106 D5) this round is the
+/// fallback: it joins, re-seeds and meets refusals, and skips every line a
+/// stream is carrying. Its period is how soon a follower whose stream ended
+/// asks again, so it follows the awareness interval down to a second.
 ///
 /// # Where the number comes from
 ///
@@ -463,10 +472,13 @@ pub const STREAM_LOGS_MAX: u64 = 16_384;
 /// How long a leader keeps the positions it copied a follower to, after the copy
 /// ended, against its own retention window (ADR-0094 D3).
 ///
-/// Unit: seconds. Twelve collection intervals: the follower's first collect after
-/// a copy is due within one, and a follower that has not asked by then is not
-/// coming soon enough to be worth a disk that keeps growing for it.
-pub const REPLICA_COPY_GRACE_SECONDS: u64 = COLLECTION_SECONDS * 12;
+/// Unit: seconds. Two minutes: the follower's first collect after a copy is due
+/// within one collection interval, and a follower that has not asked by then is
+/// not coming soon enough to be worth a disk that keeps growing for it. It was
+/// twelve collection intervals while an interval was ten seconds; it is stated
+/// on its own now, because what it has to cover is a follower installing a large
+/// copy, and that did not get faster when the collection round did.
+pub const REPLICA_COPY_GRACE_SECONDS: u64 = 120;
 
 /// The most records one collection carries.
 ///
@@ -515,7 +527,7 @@ pub const COLLECTION_PAGE_RECORDS: usize = 256;
 
 /// How long a canvass of the voting members takes on this network, end to end.
 ///
-/// Unit: seconds.
+/// Unit: milliseconds.
 ///
 /// # It is a deadline, not a measurement
 ///
@@ -525,31 +537,51 @@ pub const COLLECTION_PAGE_RECORDS: usize = 256;
 /// on the fence with nothing left for a round that is refused, lost or slow. Two
 /// is the latest opening that still allows one complete retry.
 ///
-/// One second is a canvass of three to seven members on a local network, each a
-/// TLS handshake and one frame each way. It is the value this build ships and
-/// not a property of the engine: the day a cluster spans a region, this is the
-/// number that moves, and everything derived from it moves with it.
-pub const ROUND_SECONDS: u64 = 1;
+/// Two hundred milliseconds is a canvass of three to seven members on a local
+/// network, asked at once, each a TLS handshake and one frame each way — tens of
+/// milliseconds measured, so the deadline carries several times what it needs.
+/// It is the value this build ships and not a property of the engine: the day a
+/// cluster spans a region, this is the number that moves, and everything
+/// derived from it moves with it. It was a second until 0.21, which put the
+/// failover a leader's lease bounds at ten (G053 C2b).
+pub const ROUND_MILLIS: u64 = 200;
 
-/// How often a leader checks whether it is time to stand again.
+/// How often a leader checks whether it is time to stand again, and a follower
+/// whether it still hears one.
 ///
-/// Unit: seconds.
+/// Unit: milliseconds.
 ///
 /// # Where the number comes from
 ///
 /// It is bounded by the window between *time to stand* and *the fence shuts*,
-/// and that window is exactly `2 × ROUND_SECONDS`: a holder's usable span begins
+/// and that window is exactly `2 × ROUND_MILLIS`: a holder's usable span begins
 /// at `LEASE_TTL - LEASE_GUARD` and standing opens when two round times are left
 /// of it. A cadence slower than that window can step straight over the moment it
 /// was supposed to act on, and a leader would then lose a lease it could have
 /// renewed — while nothing anywhere reported a failure, because no round was
 /// ever attempted.
 ///
-/// So the period is half the window, which leaves room for one tick to be late.
-/// A check costs nothing when there is margin left: the decision to stand is
+/// So the period is a quarter of the window, which leaves room for a tick to be
+/// late twice. It is also how quickly a follower notices that the leader it was
+/// hearing has gone quiet, so it is the step an election timeout is measured
+/// in. A check costs nothing when there is margin left: the decision to stand is
 /// taken **before** any socket is opened, precisely so that a frequent cadence is
 /// not a frequent canvass.
-pub const CAMPAIGN_SECONDS: u64 = ROUND_SECONDS;
+pub const CAMPAIGN_MILLIS: u64 = ROUND_MILLIS / 2;
+
+/// The most a follower adds to the lease before it stands against a leader it
+/// no longer hears.
+///
+/// Unit: milliseconds.
+///
+/// Every voter's grant memory is refreshed by the same renewal ballot, so when a
+/// leader dies those memories lapse within milliseconds of one another, and two
+/// followers standing on the same tick grant each other the one epoch and both
+/// lose it for a whole lease. Raft's answer is a randomised election timeout; this
+/// is its spread. Wide enough that a round trip and a TLS handshake (a few
+/// milliseconds on a local network) fit between two nodes many times over, narrow
+/// enough that the failover it adds to stays under a second (G053 C2b).
+pub const ELECTION_JITTER_MILLIS: u64 = 150;
 
 /// The tightest staleness bound a read may ask for.
 ///
