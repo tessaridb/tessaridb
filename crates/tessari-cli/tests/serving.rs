@@ -1925,6 +1925,17 @@ fn a_cluster_of_rows(band: &Band, preamble: &str, rows: [String; 3]) -> Three {
     }
 }
 
+/// Whether a write landed: acknowledged, or committed on the node with its
+/// copies not yet counted (ADR-0106 D6). The second is an answer a caller must
+/// not retry — the write is there, and the same `CREATE` or `DEFINE` again is
+/// refused as a name already in use, every time, for as long as it is asked.
+fn landed<T>(answered: &Result<T, impl std::fmt::Display>) -> bool {
+    match answered {
+        Ok(_) => true,
+        Err(why) => why.to_string().contains("is committed on this node"),
+    }
+}
+
 /// The index of the node a majority granted the epoch to.
 ///
 /// Asked by trying to use it rather than by reading anything: under ADR-0064 a
@@ -1941,16 +1952,17 @@ fn the_node_a_majority_granted(band: &Band) -> usize {
     while began.elapsed() < Duration::from_secs(90) && elected.is_none() {
         for (index, (surface, _)) in band.iter().enumerate() {
             if let Ok(mut client) = Client::connect(surface) {
-                match client.run(SCHEMA, None) {
-                    Ok(_) => {
-                        elected = Some(index);
-                        break;
-                    }
-                    // Kept so the failure below can name the refusal. A test
-                    // that reports only *nobody wrote* sends the next reader to
-                    // the logs of three processes to learn something the client
-                    // was told every second.
-                    Err(why) => refusals[index] = why.to_string(),
+                let answered = client.run(SCHEMA, None);
+                if landed(&answered) {
+                    elected = Some(index);
+                    break;
+                }
+                // Kept so the failure below can name the refusal. A test that
+                // reports only *nobody wrote* sends the next reader to the logs
+                // of three processes to learn something the client was told
+                // every second.
+                if let Err(why) = answered {
+                    refusals[index] = why.to_string();
                 }
             }
         }
@@ -3187,15 +3199,14 @@ fn until_taken(surface: &str, prefix: &str, patience: Duration) -> Result<Durati
     while began.elapsed() < patience {
         attempt = attempt.saturating_add(1);
         if let Ok(mut client) = Client::connect(surface) {
-            match client.run(&into_orders(&format!("{prefix}{attempt}")), None) {
-                Ok(_) => return Ok(began.elapsed()),
-                // Committed on the node, its copies not yet counted (ADR-0106
-                // D6): the write landed, so trying again under a new key would
-                // leave two records where the caller meant one.
-                Err(why) if why.to_string().contains("is committed on this node") => {
-                    return Ok(began.elapsed());
-                }
-                Err(why) => last = why.to_string(),
+            // A write committed and not yet held counts as taken: trying again
+            // under a new key would leave two records where the caller meant one.
+            let answered = client.run(&into_orders(&format!("{prefix}{attempt}")), None);
+            if landed(&answered) {
+                return Ok(began.elapsed());
+            }
+            if let Err(why) = answered {
+                last = why.to_string();
             }
         }
         std::thread::sleep(POLL);
@@ -3943,29 +3954,85 @@ fn answered_at(surface: &str, read: &str) -> String {
     }
 }
 
+/// Declare `schema` through whichever node of `band` leads, and answer which.
+///
+/// Once, on the leader, as an operator would — and NOT in each node's own
+/// declaring transaction: a node holding namespaces of its own is refused the
+/// store's log (`WouldReinterpret`), so its rounds are never clean, no held
+/// stream starts, and a write waiting for a majority waits for asks that come
+/// once a round. One transaction, so the whole schema lands in the store's log
+/// and none of it waits for copies of a namespace no follower holds yet.
+fn declared_through_the_leader(band: &Band, schema: &str, logs: &[std::path::PathBuf]) -> usize {
+    let began = Instant::now();
+    loop {
+        let took = (0..band.len()).find(|index| {
+            Client::connect(band[*index].0).is_ok_and(|mut client| {
+                landed(&client.run(&format!("BEGIN; {schema} COMMIT;"), None))
+            })
+        });
+        if let Some(index) = took {
+            return index;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(120),
+            "no node took the schema{}",
+            what_the_nodes_said(band, logs)
+        );
+        std::thread::sleep(POLL);
+    }
+}
+
+/// Keep writing `write(attempt)` through `surface` until a majority holds one.
+///
+/// A majority of copies is the default a replicated namespace acknowledges at
+/// (ADR-0106 D2), and the followers of a leader elected a moment ago hold
+/// nothing of a schema declared a moment ago: a test of what they hold later
+/// starts from a write they hold now, or its first write stops it with the
+/// record committed and unheld.
+fn held_by_a_majority(
+    surface: &str,
+    write: impl Fn(u32) -> String,
+    band: &Band,
+    logs: &[std::path::PathBuf],
+) {
+    let began = Instant::now();
+    let mut attempt = 0_u32;
+    loop {
+        attempt = attempt.saturating_add(1);
+        let answered = Client::connect(surface)
+            .map_err(|why| why.to_string())
+            .and_then(|mut client| {
+                client
+                    .run(&write(attempt), None)
+                    .map_err(|why| why.to_string())
+            });
+        let Err(last) = answered else {
+            return;
+        };
+        assert!(
+            began.elapsed() < Duration::from_secs(90),
+            "no write was held by a majority; the last answer: {last}{}",
+            what_the_nodes_said(band, logs)
+        );
+        std::thread::sleep(POLL);
+    }
+}
+
 #[test]
 #[ignore = "real cadences across three processes — a leader is elected and two \
             followers collect four kinds of commit. It is G034 S3.1's own \
             validation and is run explicitly: cargo test -p tessari-cli --test \
             serving a_follower_ends_where -- --ignored"]
 fn a_follower_ends_where_its_leader_ended_after_commits_filed_in_four_logs() {
-    let cluster = a_cluster_declared(&ORDERED, ORDERED_SCHEMA, ["", "", ""]);
+    let cluster = a_cluster_declared(&ORDERED, "", ["", "", ""]);
     let logs = cluster.logs.clone();
-    // The leader is the node that takes a write.
-    let began = Instant::now();
-    let leader = loop {
-        if let Some(index) = (0..ORDERED.len())
-            .find(|index| until_taken(ORDERED[*index].0, "z", Duration::from_millis(1)).is_ok())
-        {
-            break index;
-        }
-        assert!(
-            began.elapsed() < Duration::from_secs(120),
-            "no node took a write{}",
-            what_the_nodes_said(&ORDERED, &logs)
-        );
-        std::thread::sleep(POLL);
-    };
+    let leader = declared_through_the_leader(&ORDERED, ORDERED_SCHEMA, &logs);
+    held_by_a_majority(
+        ORDERED[leader].0,
+        |attempt| into_orders(&format!("z{attempt}")),
+        &ORDERED,
+        &logs,
+    );
     // `h1` is written by a one-shard commit (shard 2's log), a two-shard commit
     // (the database's) and last by a two-database commit (the namespace's), so
     // its final value came from the coarsest log; `a1` last by the two-shard
@@ -4108,10 +4175,10 @@ const RESEEDED: Band = [
 /// of where it stands can be read and its console opened.
 const RESEEDED_HTTP: &str = "127.0.0.1:47926";
 
-/// Each node keeps twenty records of each log, so a follower stopped for sixty
-/// commits comes back below its leader's log start.
-const RESEEDED_SCHEMA: &str = "DEFINE NODE RETAIN 20 RECORDS; \
-                               DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
+/// The reseed test's schema. Each node also keeps twenty records of each log
+/// (declared on each), so a follower stopped for sixty commits comes back below
+/// its leader's log start.
+const RESEEDED_SCHEMA: &str = "DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
                                DEFINE DATABASE shop; USE DATABASE shop; \
                                DEFINE TABLE item SCHEMALESS;";
 
@@ -4129,8 +4196,11 @@ fn items_at(surface: &str) -> String {
             started again. It is G049 C4's own validation and is run explicitly: \
             cargo test -p tessari-cli --test serving a_follower_stopped_past -- --ignored"]
 fn a_follower_stopped_past_its_leaders_log_copies_the_state_and_follows_again() {
-    let mut cluster = a_cluster_declared(&RESEEDED, RESEEDED_SCHEMA, ["", "", ""]);
+    // Retention is each node's own (a local setting, not a log record), so it
+    // is declared on each; the schema is the cluster's, declared on its leader.
+    let mut cluster = a_cluster_declared(&RESEEDED, "DEFINE NODE RETAIN 20 RECORDS;", ["", "", ""]);
     let logs = cluster.logs.clone();
+    let leader = declared_through_the_leader(&RESEEDED, RESEEDED_SCHEMA, &logs);
     let write = |surface: &str, n: usize| {
         asked(
             surface,
@@ -4138,19 +4208,12 @@ fn a_follower_stopped_past_its_leaders_log_copies_the_state_and_follows_again() 
             None,
         )
     };
-    let began = Instant::now();
-    let leader = loop {
-        if let Some(index) = (0..RESEEDED.len()).find(|index| write(RESEEDED[*index].0, 0).is_ok())
-        {
-            break index;
-        }
-        assert!(
-            began.elapsed() < Duration::from_secs(120),
-            "no node took a write{}",
-            what_the_nodes_said(&RESEEDED, &logs)
-        );
-        std::thread::sleep(POLL);
-    };
+    held_by_a_majority(
+        RESEEDED[leader].0,
+        |_| "USE NAMESPACE prod; USE DATABASE shop; UPSERT item:0 = { n: 0 };".to_owned(),
+        &RESEEDED,
+        &logs,
+    );
     let stopped = the_next_node(&RESEEDED, leader);
     // Level first, so what the follower holds when it stops is a real copy
     // rather than an empty store that any answer would beat.
@@ -4412,7 +4475,7 @@ fn acknowledged_writes_measured(clause: &str) -> (usize, usize) {
     let new = loop {
         let took = survivors.iter().find(|surface| {
             Client::connect(surface)
-                .is_ok_and(|mut client| client.run(&into_item("after", ""), None).is_ok())
+                .is_ok_and(|mut client| landed(&client.run(&into_item("after", ""), None)))
         });
         if let Some(surface) = took {
             break *surface;
@@ -4523,9 +4586,11 @@ fn the_node_that_takes(surfaces: &[usize], key: &str, cluster: &Three) -> usize 
             let answered = Client::connect(ACKED[*index].0)
                 .map_err(|why| why.to_string())
                 .and_then(|mut client| {
-                    client
-                        .run(&into_item(key, ""), None)
-                        .map_err(|why| why.to_string())
+                    let answered = client.run(&into_item(key, ""), None);
+                    if landed(&answered) {
+                        return Ok(());
+                    }
+                    answered.map(drop).map_err(|why| why.to_string())
                 });
             answered.map_err(|why| refusals[*index] = why).is_ok()
         });
