@@ -223,6 +223,16 @@ follows is what runs today, not a roadmap.
   write concurrent with the stored version is **refused and named** unless the
   table declares `LAST WRITER WINS`, in which case what it discards is counted.
   See [Clustering](https://docs.tessaridb.com/cluster/what-a-cluster-is).
+- ✅ **A cluster that trusts nothing in the clear:** peers speak mutual TLS with a
+  certificate issued for each node's id, renewed from its files without a restart
+  and revoked with `REVOKE CERTIFICATE` — a revocation or an expiry ends even a
+  stream already open; clients are served over TLS 1.3, and a clustered node
+  serves them in the clear only when told to; a request sent to a node that
+  cannot answer it is carried over the peer link as a signed assertion of who
+  asked, never a password; a joining node is approved by its id, its certificate
+  fingerprint or a one-time join token; and the store can be encrypted at rest,
+  its backups sealed under the same key. The built-in console builds such a
+  cluster from empty to serving.
 - ✅ **The storage and backup layer settled around that.** The log is kept **per
   range** rather than per store, so a key carries its home and the sequence and
   the leadership that wrote it are properties of a range instead of the whole
