@@ -37,6 +37,7 @@ pub(crate) fn metrics(
         Ok(series) => series,
         Err(refused) => return refused,
     };
+    let cluster = sees_the_cluster(db, tokens, presented);
     let mut out = String::new();
 
     if let Some(census) = census {
@@ -65,41 +66,47 @@ pub(crate) fn metrics(
             "tessari_background_errors {}\n",
             held.background_errors
         ));
-        // Any value above zero means this node was offered a record from a
-        // leadership other than the one it applied at that position, and refused
-        // it. It does not fall back to zero: the divergence an operator most
-        // needs to see is the one that stopped happening on its own.
-        out.push_str(
-            "# HELP tessari_log_divergences Log positions another leadership tried to rewrite.\n",
-        );
-        out.push_str("# TYPE tessari_log_divergences counter\n");
-        out.push_str(&format!(
-            "tessari_log_divergences {}\n",
-            held.log_divergences
-        ));
-
-        out.push_str("# HELP tessari_campaigns Leadership rounds this node has stood in.\n");
-        out.push_str("# TYPE tessari_campaigns counter\n");
-        out.push_str(&format!("tessari_campaigns {}\n", held.campaigns));
-        // Absent rather than zero on a node holding no lease, because a series
-        // that is always zero on every standalone store would train whoever
-        // watches it to ignore the one reading that matters. When it is here it
-        // is the split-brain signal: it heads toward zero, and zero while the
-        // node is still accepting writes is the state the lease exists to
-        // prevent.
-        if let Some(left) = held.lease_remaining {
+        // The leadership half is the topology (ADR-0108 D8): shown to a caller
+        // who may ask `INFO FOR NODE`, and to nobody else.
+        if cluster {
+            // Any value above zero means this node was offered a record from a
+            // leadership other than the one it applied at that position, and refused
+            // it. It does not fall back to zero: the divergence an operator most
+            // needs to see is the one that stopped happening on its own.
             out.push_str(
-                "# HELP tessari_lease_remaining_seconds Writable time left under this node's lease.\n",
+                "# HELP tessari_log_divergences Log positions another leadership tried to rewrite.\n",
             );
-            out.push_str("# TYPE tessari_lease_remaining_seconds gauge\n");
+            out.push_str("# TYPE tessari_log_divergences counter\n");
             out.push_str(&format!(
-                "tessari_lease_remaining_seconds {}\n",
-                left.as_secs_f64()
+                "tessari_log_divergences {}\n",
+                held.log_divergences
             ));
+
+            out.push_str("# HELP tessari_campaigns Leadership rounds this node has stood in.\n");
+            out.push_str("# TYPE tessari_campaigns counter\n");
+            out.push_str(&format!("tessari_campaigns {}\n", held.campaigns));
+            // Absent rather than zero on a node holding no lease, because a series
+            // that is always zero on every standalone store would train whoever
+            // watches it to ignore the one reading that matters. When it is here it
+            // is the split-brain signal: it heads toward zero, and zero while the
+            // node is still accepting writes is the state the lease exists to
+            // prevent.
+            if let Some(left) = held.lease_remaining {
+                out.push_str(
+                    "# HELP tessari_lease_remaining_seconds Writable time left under this node's lease.\n",
+                );
+                out.push_str("# TYPE tessari_lease_remaining_seconds gauge\n");
+                out.push_str(&format!(
+                    "tessari_lease_remaining_seconds {}\n",
+                    left.as_secs_f64()
+                ));
+            }
         }
     }
 
-    replication(&mut out, db);
+    if cluster {
+        replication(&mut out, db);
+    }
 
     // Worth a line of its own because it is the one number that says whether
     // the token bound is close: a node at `MAX_SESSION_TOKENS` starts refusing
@@ -132,6 +139,18 @@ pub(crate) fn metrics(
 
     out.push_str(&topics);
     Answer::text(200, out, EXPOSITION)
+}
+
+/// Whether `presented` may see which nodes follow this one, how far behind each
+/// is, and whether this node leads (ADR-0108 D8).
+///
+/// Answered by asking the store the question those figures answer — `INFO FOR
+/// NODE`, as that caller — rather than by a second rule here: one evaluator of
+/// who may see the topology. An open store answers yes to everyone, as it does
+/// to every statement.
+fn sees_the_cluster(db: &Db, tokens: &Tokens, presented: &Presented) -> bool {
+    super::session_for(db, tokens, presented)
+        .is_ok_and(|mut session| session.run("INFO FOR NODE;").is_ok())
 }
 
 /// Where this node stands against the peer it collects from, and how far

@@ -1077,3 +1077,66 @@ fn a_scrape_says_where_a_follower_stands_and_how_far_behind_its_followers_are() 
         "the follower was given nothing, so it is behind: {scrape}"
     );
 }
+
+#[test]
+fn a_stranger_scraping_a_closed_store_learns_nothing_about_the_cluster() {
+    // ADR-0108 D8: which nodes follow this one, how far behind each is, and
+    // whether this node leads are the topology. On a closed store they are for
+    // a caller who may ask `INFO FOR NODE`, and for nobody else.
+    let db = Arc::new(Db::in_memory().unwrap());
+    let node = Arc::new(Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap());
+    let address = node.address();
+    let serving = Arc::clone(&node);
+    std::thread::spawn(move || crate::serve_until_the_test_ends(&serving));
+    let (status, _, body) = send(
+        &address,
+        "POST",
+        "/script",
+        "DEFINE USER root ROLE owner PASSWORD 'root secret';",
+        None,
+    );
+    assert_eq!(status, 200, "{body}");
+    let (status, _, body) = send(
+        &address,
+        "POST",
+        "/script",
+        "DEFINE USER grace ROLE viewer PASSWORD 'watch only';",
+        Some(ROOT),
+    );
+    assert_eq!(status, 200, "{body}");
+    db.store().follower_served(
+        [7_u8; 16],
+        tessari_types::Reach::Store,
+        tessari_types::Sequence::new(0),
+    );
+    db.store().upstream_is(tessari_storage::Upstream::Copying);
+
+    const CLUSTER: [&str; 5] = [
+        "tessari_follower_behind_records",
+        "tessari_replica_state",
+        "tessari_replica_copied_records",
+        "tessari_campaigns",
+        "tessari_log_divergences",
+    ];
+    for (who, credential) in [("a stranger", None), ("a viewer", Some(GRACE))] {
+        let (status, _, scrape) = send(&address, "GET", "/metrics", "", credential);
+        assert_eq!(status, 200, "{scrape}");
+        // The control: the scrape is a real one, not an empty refusal.
+        assert!(scrape.contains("tessari_committed_sequence"), "{scrape}");
+        for series in CLUSTER {
+            assert!(
+                !scrape.contains(series),
+                "{who} was shown {series}: {scrape}"
+            );
+        }
+        assert!(!scrape.contains("07070707"), "{who} learnt a follower's id");
+    }
+    let (status, _, scrape) = send(&address, "GET", "/metrics", "", Some(ROOT));
+    assert_eq!(status, 200, "{scrape}");
+    for series in CLUSTER {
+        assert!(
+            scrape.contains(series),
+            "the owner was not shown {series}: {scrape}"
+        );
+    }
+}

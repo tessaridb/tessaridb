@@ -22,6 +22,7 @@
 #![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 mod accumulate;
+mod administration;
 mod aggregate;
 mod arithmetic;
 mod authorize;

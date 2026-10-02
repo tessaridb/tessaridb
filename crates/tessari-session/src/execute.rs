@@ -74,7 +74,36 @@ struct Declared<'a> {
 }
 
 impl Session<'_> {
+    /// Carry out one statement in `transaction`, recording a change of
+    /// authority or membership beside it (ADR-0108 D8).
+    ///
+    /// Recorded only once the statement succeeded, and in the same
+    /// transaction, so a refusal records nothing and a cancel takes the record
+    /// with the change.
     pub(crate) fn execute(
+        &self,
+        transaction: &mut Transaction<'_>,
+        kind: &StatementKind,
+        span: Span,
+    ) -> Result<Outcome> {
+        let outcome = self.carry_out(transaction, kind, span)?;
+        if let Some((statement, subject)) = crate::administration::administered(kind) {
+            tessari_storage::administered(
+                transaction,
+                &tessari_storage::Administered {
+                    actor: self
+                        .identity
+                        .user()
+                        .map_or("anonymous", |user| user.name.as_str()),
+                    statement,
+                    subject,
+                },
+            )?;
+        }
+        Ok(outcome)
+    }
+
+    fn carry_out(
         &self,
         transaction: &mut Transaction<'_>,
         kind: &StatementKind,

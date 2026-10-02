@@ -55,6 +55,7 @@ use tessari_types::{DatabaseId, Datetime, NamespaceId, RecordId, Value};
 use crate::catalog::system;
 use crate::error::{Error, Result};
 use crate::store::Store;
+use crate::transaction::Transaction;
 
 /// One read of a vault, as the trail records it.
 ///
@@ -178,6 +179,58 @@ impl AuditTrail {
         }
         Ok(())
     }
+}
+
+/// One change to who may do what, or to who belongs to the cluster (ADR-0108 D8).
+///
+/// Written **in the change's own transaction** — the opposite of a vault read,
+/// and for the opposite reason. A read hands something out the moment it is
+/// served, so its record must not be cancellable with it; a change does nothing
+/// until it commits, so its record must commit with it and cancel with it, or
+/// the trail would name a member that was never added.
+#[derive(Debug, Clone, Copy)]
+pub struct Administered<'a> {
+    /// Who made the change. The signed-in user's name, or `anonymous`.
+    pub actor: &'a str,
+    /// The statement, as the language spells it: `DEFINE USER`, `GRANT`, ….
+    pub statement: &'a str,
+    /// The user or member the change was about. Never a credential.
+    pub subject: &'a str,
+}
+
+/// Record `event` in `transaction`, to commit or cancel with the change.
+///
+/// # Errors
+///
+/// Returns [`Error::AuditUnavailable`] when no identity could be made for the
+/// entry; the caller refuses the change rather than make it unrecorded.
+pub fn administered(transaction: &mut Transaction<'_>, event: &Administered<'_>) -> Result<()> {
+    let address = system::address(system::VAULT_AUDIT, RecordId::Uuid(entry_id()?));
+    let entry = Value::Object(
+        [
+            ("at".to_owned(), Value::Datetime(now())),
+            (
+                "kind".to_owned(),
+                Value::String("administration".to_owned()),
+            ),
+            ("actor".to_owned(), Value::String(event.actor.to_owned())),
+            (
+                "statement".to_owned(),
+                Value::String(event.statement.to_owned()),
+            ),
+            (
+                "subject".to_owned(),
+                Value::String(event.subject.to_owned()),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    transaction.put(
+        address,
+        tessari_encoding::encode_payload(&entry).into_bytes(),
+    );
+    Ok(())
 }
 
 /// Every recorded read, oldest first.
