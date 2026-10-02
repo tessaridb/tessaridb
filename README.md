@@ -550,7 +550,7 @@ source, and no third-party database is vendored, linked, or derived from here.
 
 TessariDB is **source-available** under the
 [Business Source License 1.1](LICENSE). The source is public, and on
-**2030-10-01** — or four years after any given version is first published,
+**2030-10-03** — or four years after any given version is first published,
 whichever comes first — that version becomes **Apache-2.0** permanently.
 
 **Free, with no agreement and no charge**, for any use — including production,

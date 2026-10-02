@@ -8584,6 +8584,41 @@ writing under its lease until it hears of the change. Place another row on the
 range first.
 
 
+### How many copies hold a write before it is acknowledged
+
+A write on a cluster is applied and readable on the leader the moment it
+commits; what `ACKNOWLEDGE` decides is when the caller is told it succeeded.
+
+```
+DEFINE NAMESPACE prod REPLICATION FACTOR 3 ACKNOWLEDGE MAJORITY;
+ALTER NAMESPACE prod ACKNOWLEDGE MAJORITY OR WEAKER;
+CREATE event:1 = { kind: 'signup' } ACKNOWLEDGE LEADER;
+BEGIN; CREATE event:2 = { kind: 'login' }; COMMIT ACKNOWLEDGE MAJORITY;
+```
+
+- `LEADER` answers once the leader holds the write durably. A leader lost before
+  a follower collected it takes the write with it.
+- `MAJORITY` answers once a majority of the range's **voters** — the
+  `coordinating` members, the leader among them — hold it durably. Whichever
+  majority elects the next leader holds the write, so a lost leader loses
+  nothing that was acknowledged.
+
+**`MAJORITY` is the default for a namespace kept on more than one node**; a
+namespace with `REPLICATION NONE`, or a store standing alone, is its own
+majority and waits for nobody. A write or a `COMMIT` may name its own level, and
+asking for **less** than the namespace's is refused (`AcknowledgeBelowNamespace`)
+unless the namespace says `OR WEAKER` — a default any caller could lower is not
+one anybody can rely on.
+
+**Two refusals, and they mean opposite things.** `MajorityUnreachable` comes
+before anything is written: the voters that subscribe to where the write lands
+cannot make up a majority, so the write could never be held — **nothing was
+written**. `NotAcknowledgedInTime` comes after: the write **is committed on this
+node at the sequence it names**, and not enough copies confirmed it within one
+failover `ROUND`; it may or may not survive a failover. Retry that one only with
+a write that says the same thing twice — an `UPSERT` or a write by identity —
+because a `CREATE` retried after it lands answers *already exists*.
+
 ### How long the cluster waits before it replaces a leader
 
 The periods that decide when a leader counts as gone are a **cluster-wide fact**,

@@ -12,7 +12,7 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
-## 0.21.0-beta — 2026-10-02
+## 0.21.0-beta — 2026-10-03
 
 ### Added
 
@@ -87,9 +87,20 @@ compares carries no pre-release suffix.
   processes went from 10 s to 16 ms at the median.
 - **A leader knows what each follower has made durable** and can hold a commit
   until enough voters hold its position (ADR-0106).
+- **`ACKNOWLEDGE LEADER | MAJORITY`** on a namespace (`DEFINE`/`ALTER NAMESPACE`,
+  with `OR WEAKER` to let a request ask for less), on a write and on `COMMIT`
+  (ADR-0106). `MAJORITY` answers once a majority of the range's voters hold the
+  write durably; `MajorityUnreachable` refuses before anything is written when
+  they cannot, and `NotAcknowledgedInTime` says the write IS committed here but
+  was not confirmed within one failover round.
 
 ### Changed
 
+- **A namespace kept on more than one node acknowledges a write once a majority
+  holds it** (ADR-0106 D1). Writes there now wait about one replication round
+  trip, and a client that treated every refusal as *nothing happened* must read
+  `NotAcknowledgedInTime`, which means the opposite. Say `ACKNOWLEDGE LEADER`
+  (with the namespace's `OR WEAKER`) to keep the earlier behaviour.
 - **A peer row with no `NODE` is no longer bound by the first node to greet.**
   Until this release a row left open was bound to whichever peer holding a
   certificate the cluster issued arrived first, and that peer received the row's
