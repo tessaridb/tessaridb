@@ -3,7 +3,9 @@
 use core::num::NonZeroU32;
 
 use super::Parser;
-use tessari_types::{Duration, Number, Replication, ReplicationClass, parse_uuid};
+use tessari_types::{
+    Acknowledge, Acknowledgement, Duration, Number, Replication, ReplicationClass, parse_uuid,
+};
 
 use crate::ast::{ReachRef, StatementKind};
 use crate::error::{Error, Result};
@@ -66,6 +68,37 @@ impl Parser<'_> {
             return Ok(Some(ReplicationClass::SingleLeader));
         }
         Ok(None)
+    }
+
+    /// `ACKNOWLEDGE LEADER` or `ACKNOWLEDGE MAJORITY`, when one stands here
+    /// (ADR-0106 D2) — the level a write, or the `COMMIT` of several, asks for
+    /// itself.
+    ///
+    /// Contextual words for [`Self::replication_clause`]'s reason: each is an
+    /// ordinary noun a schema may already use as a name.
+    pub(in crate::parser) fn acknowledge_clause(&mut self) -> Result<Option<Acknowledge>> {
+        if !self.eat_word("acknowledge") {
+            return Ok(None);
+        }
+        if self.eat_word("leader") {
+            return Ok(Some(Acknowledge::Leader));
+        }
+        self.expect_word("majority", "`LEADER` or `MAJORITY`")?;
+        Ok(Some(Acknowledge::Majority))
+    }
+
+    /// A namespace's acknowledgement: the level, and `OR WEAKER` when a request
+    /// may ask for less. Only a namespace says `OR WEAKER` — it is the
+    /// operator's to grant, never a request's to claim.
+    pub(super) fn acknowledgement_clause(&mut self) -> Result<Option<Acknowledgement>> {
+        let Some(level) = self.acknowledge_clause()? else {
+            return Ok(None);
+        };
+        let or_weaker = self.eat_keyword(Keyword::Or);
+        if or_weaker {
+            self.expect_word("weaker", "`WEAKER` after `OR`")?;
+        }
+        Ok(Some(Acknowledgement { level, or_weaker }))
     }
 
     pub(in crate::parser) fn expect_word(

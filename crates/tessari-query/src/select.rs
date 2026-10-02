@@ -286,6 +286,7 @@ impl Select<Sourced> {
                 statements: vec![Statement {
                     kind: StatementKind::Select(Box::new(select)),
                     span: BUILT,
+                    acknowledge: None,
                 }],
                 span: BUILT,
             },

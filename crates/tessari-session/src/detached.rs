@@ -65,6 +65,9 @@ impl Detached {
             // carried to a later one.
             sink: crate::backup_to::Sink::none(),
             landed: false,
+            // For the sink's reason: it belongs to a transaction this request
+            // opened, and none travels with a detached session.
+            acknowledge_open: None,
         }
     }
 }

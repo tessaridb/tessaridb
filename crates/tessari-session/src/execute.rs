@@ -86,9 +86,15 @@ impl Session<'_> {
                 if_not_exists,
                 replication,
                 class,
-            } => self.define_namespace(transaction, name, *if_not_exists, *replication, *class),
-            StatementKind::AlterNamespace { name, replication } => {
-                self.alter_namespace(transaction, name, *replication)
+                acknowledge,
+            } => self.define_namespace(
+                transaction,
+                name,
+                *if_not_exists,
+                (*replication, *class, *acknowledge),
+            ),
+            StatementKind::AlterNamespace { name, change } => {
+                self.alter_namespace(transaction, name, *change)
             }
             StatementKind::DefineDatabase {
                 name,

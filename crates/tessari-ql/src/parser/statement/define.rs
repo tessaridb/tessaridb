@@ -23,11 +23,13 @@ impl Parser<'_> {
                 // reordering of the fields would silently reorder the grammar.
                 let replication = self.replication_clause()?;
                 let class = self.replication_class_clause()?;
+                let acknowledge = self.acknowledgement_clause()?;
                 Ok(StatementKind::DefineNamespace {
                     name,
                     if_not_exists,
                     replication,
                     class,
+                    acknowledge,
                 })
             }
             Some(Keyword::Database) => {

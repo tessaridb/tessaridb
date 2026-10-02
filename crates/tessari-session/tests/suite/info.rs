@@ -763,7 +763,7 @@ fn a_listing_carries_the_names_and_nothing_that_counts_what_was_dropped() {
         ("INFO FOR STORE;", vec!["namespaces"]),
         (
             "INFO FOR NAMESPACE;",
-            vec!["class", "databases", "replication"],
+            vec!["acknowledge", "class", "databases", "replication"],
         ),
     ] {
         let Value::Object(fields) = report(&mut nina, statement) else {
@@ -1447,6 +1447,36 @@ fn a_namespace_defined_before_the_peer_is_still_altered_in_both_directions_after
 /// which is exactly why they must be different values now: the day a second
 /// writer exists, one range refuses a concurrent write and the other cannot
 /// produce one, and by then the namespaces exist and nothing tells them apart.
+#[test]
+fn a_namespace_declares_how_many_copies_acknowledge_a_write_and_reads_it_back() {
+    // ADR-0106 D2: declared with the namespace, changed by `ALTER`, and reported
+    // as `NONE` where nobody said — the level such a namespace waits for is
+    // derived from its replication, and a derivation is not a decision.
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE ledger ACKNOWLEDGE MAJORITY;\n\
+             DEFINE NAMESPACE unsaid;\n\
+             ALTER NAMESPACE unsaid ACKNOWLEDGE LEADER OR WEAKER;\n\
+             DEFINE NAMESPACE silent;",
+        )
+        .unwrap();
+    let acknowledge = |session: &mut Session<'_>, namespace: &str| {
+        let script = format!("USE NAMESPACE {namespace}; INFO FOR NAMESPACE;");
+        let Value::Object(fields) = report(session, &script) else {
+            panic!("expected an object");
+        };
+        fields.get("acknowledge").cloned().unwrap()
+    };
+    assert_eq!(acknowledge(&mut session, "ledger"), Value::from("majority"));
+    assert_eq!(
+        acknowledge(&mut session, "unsaid"),
+        Value::from("leader or weaker")
+    );
+    assert_eq!(acknowledge(&mut session, "silent"), Value::None);
+}
+
 #[test]
 fn a_namespace_declares_how_many_writers_it_admits_and_reads_it_back() {
     let store = store();

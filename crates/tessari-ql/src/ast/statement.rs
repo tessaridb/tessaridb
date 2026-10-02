@@ -2,14 +2,14 @@
 
 use super::{
     Answer, ColumnDeclaration, ConsumerSource, CreateTarget, Credential, DeleteBound, EdgeClause,
-    Edit, Expr, FieldMapping, FieldPath, GroupClauses, Identity, InfoSubject, Name, OnFailure,
-    RangeExpr, ReachRef, RecordTarget, Select, SetCondition, SpaceBound, TableChange, TableRef,
-    TopicClauses, UserChange, UserGrant, Written,
+    Edit, Expr, FieldMapping, FieldPath, GroupClauses, Identity, InfoSubject, Name,
+    NamespaceChange, OnFailure, RangeExpr, ReachRef, RecordTarget, Select, SetCondition,
+    SpaceBound, TableChange, TableRef, TopicClauses, UserChange, UserGrant, Written,
 };
 use crate::token::Span;
 use tessari_types::{
-    Assertion, ConflictPolicy, Duration, FieldKind, Filter, IdentityKind, Number, RecordId,
-    Replication, ReplicationClass,
+    Acknowledgement, Assertion, ConflictPolicy, Duration, FieldKind, Filter, IdentityKind, Number,
+    RecordId, Replication, ReplicationClass,
 };
 
 /// The statement forms this milestone accepts.
@@ -70,6 +70,10 @@ pub enum StatementKind {
         /// [`ReplicationClass::SingleLeader`] because an operator who answered
         /// the question has told the cluster something a silence has not.
         class: Option<ReplicationClass>,
+        /// How many copies must hold a write here before it is acknowledged,
+        /// and whether a request may ask for fewer (ADR-0106 D2) — `None` when
+        /// the statement said nothing, which is not a stated level.
+        acknowledge: Option<Acknowledgement>,
     },
     /// `DEFINE DATABASE orders`
     DefineDatabase {
@@ -604,8 +608,8 @@ pub enum StatementKind {
     AlterNamespace {
         /// The namespace being changed.
         name: Name,
-        /// What its replication becomes.
-        replication: Replication,
+        /// The one thing about it that changes.
+        change: NamespaceChange,
     },
     /// `DEFINE NODE ROLES serving, writable ENDPOINTS 'host:9000'`
     ///

@@ -272,9 +272,26 @@ impl Parser<'_> {
             _ if self.eat_word("seal") => self.seal_statement(start)?,
             _ => return Err(self.error_here("a statement")),
         };
+        // Only a write, or the `COMMIT` of several, waits for copies — a read
+        // that named a level would be asking for something nothing does.
+        let acknowledge = if matches!(
+            kind,
+            StatementKind::Create { .. }
+                | StatementKind::Insert { .. }
+                | StatementKind::Update { .. }
+                | StatementKind::Upsert { .. }
+                | StatementKind::Delete { .. }
+                | StatementKind::Relate { .. }
+                | StatementKind::Commit
+        ) {
+            self.acknowledge_clause()?
+        } else {
+            None
+        };
         Ok(Statement {
             kind,
             span: start.to(self.span_behind()),
+            acknowledge,
         })
     }
 }

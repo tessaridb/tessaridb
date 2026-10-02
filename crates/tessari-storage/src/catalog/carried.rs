@@ -475,6 +475,7 @@ mod tests {
                         name: "prod".to_owned(),
                         replication: None,
                         class: None,
+                        acknowledge: None,
                     }
                     .to_value()
                 )
