@@ -84,7 +84,7 @@ pub(crate) fn build(
         // The graph is built in the commit that defines the index, the same way
         // every other index is — so a definition over a populated table and a
         // definition over an empty one followed by writes reach the same state.
-        let mut graph = graph::Graph::empty(distance);
+        let mut graph = graph::Graph::empty(distance, definition.quantized);
         let mut written: BTreeMap<RecordId, tessari_encoding::VectorNode> = BTreeMap::new();
         for (id, payload) in &rows {
             let Some(held) = projected_vector(definition, &decode_payload(payload)?) else {

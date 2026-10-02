@@ -34,6 +34,28 @@ pub(crate) struct Nearest<'a> {
     pub(crate) effort: Option<usize>,
 }
 
+/// How many candidates a quantized index is walked for, per record a read keeps.
+///
+/// The codes choose who is tried and the records' full vectors decide the order
+/// — the read's own ordering stage computes the exact distance — so the walk
+/// hands over more candidates than the bound and the exact order keeps the best.
+///
+/// Eight, measured rather than borrowed: on 20 000 clustered 32-dimensional
+/// vectors (`benchmarks/2026-10-03-macos-aarch64-vector-quantized.md`) four gave
+/// 93.6 % of the exact ten and eight 95.6 %, at the same walk p50 (6.1 against
+/// 6.2 ms) — the walk's cost is reading the graph, not resolving the candidates.
+pub(crate) const RESCORED: usize = 8;
+
+/// How many records a walk is asked for: the bound, widened on a quantized
+/// index so the full vectors have something to choose between.
+pub(crate) fn walked_for(wanted: usize, quantized: bool) -> usize {
+    if quantized {
+        wanted.saturating_mul(RESCORED)
+    } else {
+        wanted
+    }
+}
+
 /// The nearest-neighbour read this statement is, if it is one.
 pub(crate) fn nearest(select: &Select) -> Option<Nearest<'_>> {
     // A read keeping the newest record per key must see every record before

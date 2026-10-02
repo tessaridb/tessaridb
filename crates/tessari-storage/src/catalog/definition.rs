@@ -47,6 +47,7 @@ const FIELD_FIELDS: &str = "fields";
 const FIELD_UNIQUE: &str = "unique";
 const FIELD_SEARCH: &str = "search";
 const FIELD_VECTOR: &str = "vector";
+const FIELD_QUANTIZED: &str = "quantized";
 const FIELD_SPATIAL: &str = "spatial";
 const FIELD_POSITIONS: &str = "positions";
 const FIELD_OFFSETS: &str = "offsets";
@@ -831,6 +832,7 @@ mod tests {
             unique: false,
             search: false,
             spatial: false,
+            quantized: false,
             vector: None,
             costs: crate::catalog::SearchCosts::default(),
             engine: None,

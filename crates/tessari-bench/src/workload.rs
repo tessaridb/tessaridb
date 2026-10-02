@@ -29,6 +29,7 @@ pub type Failable<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 use crate::samples::{Report, Samples};
 pub(crate) use filtered::vector_filtered;
 pub(crate) use heavy::{clustered, restore, vault, vector_index};
+pub(crate) use quantized::vector_quantized;
 pub(crate) use reads::{filter, search};
 
 /// How many records each workload writes before reading.
@@ -153,6 +154,11 @@ pub const ALL: &[Workload] = &[
         run: vector_filtered,
     },
     Workload {
+        name: "vector-quantized",
+        about: "a quantized vector store against a full-precision one — bytes per vector, build, walk and recall after rescoring",
+        run: vector_quantized,
+    },
+    Workload {
         name: "paging",
         about: "the same page by offset, by cursor, and by a cursor that cannot seek, at four depths",
         run: crate::paging::paging,
@@ -231,6 +237,7 @@ macro_rules! timed {
 // Declared after `timed!`, which they use: a macro is in scope only below its definition.
 mod filtered;
 mod heavy;
+mod quantized;
 mod reads;
 
 fn write(db: &Db) -> Failable<Vec<Report>> {

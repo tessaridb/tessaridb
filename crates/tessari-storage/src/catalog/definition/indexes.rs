@@ -2,8 +2,9 @@
 
 use super::{
     EngineMember, FIELD_DATABASE, FIELD_ENGINE, FIELD_FIELDS, FIELD_ID, FIELD_NAME,
-    FIELD_NAMESPACE, FIELD_OFFSETS, FIELD_POSITIONS, FIELD_SEARCH, FIELD_SPATIAL, FIELD_TABLE,
-    FIELD_UNIQUE, FIELD_UNSCORED, FIELD_VECTOR, field_id, field_name, flag, number, object,
+    FIELD_NAMESPACE, FIELD_OFFSETS, FIELD_POSITIONS, FIELD_QUANTIZED, FIELD_SEARCH, FIELD_SPATIAL,
+    FIELD_TABLE, FIELD_UNIQUE, FIELD_UNSCORED, FIELD_VECTOR, field_id, field_name, flag, number,
+    object,
 };
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
@@ -23,6 +24,8 @@ pub struct IndexShape {
     pub search: bool,
     /// The distance a vector index is built with, when it is one.
     pub vector: Option<VectorDistance>,
+    /// Whether a vector index keeps each vector as one byte per component.
+    pub quantized: bool,
     /// Whether the index holds cells of each record's geometry.
     pub spatial: bool,
     /// What a search index keeps beside its postings.
@@ -128,6 +131,13 @@ pub struct IndexDefinition {
     /// to ask for it by name before it may serve one — and why the distance is
     /// declared rather than assumed.
     pub vector: Option<VectorDistance>,
+    /// Whether a vector index keeps each vector as **one byte per component**
+    /// (`QUANTIZED`) rather than eight.
+    ///
+    /// The codes choose which records a walk tries, and the records' own
+    /// full-precision vectors decide their order — the session rescores — so the
+    /// loss is in which candidates are found, never in how they are ranked.
+    pub quantized: bool,
     /// Whether this index holds the **cells** covering each record's geometry.
     ///
     /// One entry per cell rather than one per record, because a geometry is an
@@ -208,6 +218,11 @@ impl IndexDefinition {
                     .map_or(Value::None, |held| Value::from(held.name())),
             ),
         ]);
+        // Written only when set, for the reason the member below is: every
+        // other index's entry keeps the bytes it always had.
+        if self.quantized {
+            value.insert(FIELD_QUANTIZED.to_owned(), Value::Bool(true));
+        }
         // Written only on a member, so every other index's entry keeps the
         // bytes it always had.
         if let Some(engine) = &self.engine {
@@ -279,6 +294,9 @@ impl IndexDefinition {
                 )?),
                 _ => None,
             },
+            // Absent on every index written before `QUANTIZED`, which is what
+            // each of them is: full precision.
+            quantized: flag(fields, FIELD_QUANTIZED, "index")?,
             // An index written before spatial indexes existed holds no such
             // field and is not one, the same reading the two flags above get.
             spatial: flag(fields, FIELD_SPATIAL, "index")?,

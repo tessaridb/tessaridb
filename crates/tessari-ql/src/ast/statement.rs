@@ -352,6 +352,9 @@ pub enum StatementKind {
         /// for the reason [`StatementKind::DefineIndex`] carries it that way:
         /// which distances exist is the store's question, not the grammar's.
         distance: Name,
+        /// Whether its index keeps each vector as one byte per component
+        /// (`QUANTIZED`), rescored on the records' full vectors.
+        quantized: bool,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -435,6 +438,10 @@ pub enum StatementKind {
         /// grammar's: a name the store does not know is refused where the store
         /// knows what it knows, with the span the author can see.
         vector: Option<Name>,
+        /// Whether a vector index keeps each vector as one byte per component
+        /// (`QUANTIZED`). Only after `VECTOR <distance>`: on any other kind it
+        /// would describe storage that kind does not have.
+        quantized: bool,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },

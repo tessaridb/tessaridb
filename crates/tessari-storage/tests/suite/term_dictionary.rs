@@ -137,6 +137,7 @@ impl Fixture {
                     unique: false,
                     search: true,
                     spatial: false,
+                    quantized: false,
                     vector: None,
                     costs: tessari_storage::SearchCosts::default(),
                 },

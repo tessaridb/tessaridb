@@ -1053,6 +1053,39 @@ truth — so a bare percentage would look current forever. Carrying the size it 
 taken at lets a reader see the number has been outgrown, and running
 `REBUILD INDEX` again is how a current one is obtained.
 
+#### A quantized store, when memory is the constraint
+
+```
+DEFINE VECTOR embeddings DIMENSION 768 DISTANCE cosine QUANTIZED;
+DEFINE INDEX by_embedding ON notes FIELDS embedding VECTOR cosine QUANTIZED;
+```
+
+From `0.22.0-beta` a vector index may keep each vector as **one byte per
+component** instead of eight: each component coded over the vector's own range
+(`x ≈ low + code × step`, sixteen bytes for the range). Per vector rather than per
+index, so there is no training step and every replica writes the same codes.
+
+**The codes choose who is tried; the full vectors decide the order.** A walk over
+a quantized index asks for eight times the `LIMIT`, and the read's own ordering
+stage ranks those candidates by the exact distance from each record's own vector
+before the bound cuts. An exact read is untouched by the word: it never consults
+the index. `QUANTIZED` reads only after `VECTOR` and its distance — on any other
+index it would describe storage that index does not have.
+
+`INFO FOR VECTOR` reports `quantized`, and what the index costs, read off the
+stored nodes rather than computed: `vector_bytes` (the average bytes of the vector
+inside a node), `node_bytes` (the whole node, neighbour list included) and
+`nodes`. Measured on 20 000 clustered 32-dimensional vectors (memory, release,
+`benchmarks/2026-10-03-macos-aarch64-vector-quantized.md`):
+
+| | `vector_bytes` | `node_bytes` | walk p50 | recall@10 after rescoring |
+|---|---|---|---|---|
+| full precision | 260 | 326 | 6.5 ms | 98.4 % |
+| `QUANTIZED` | 52 | 118 | 6.1 ms | 95.6 % |
+
+The trade is recall for memory: a fifth of the bytes per vector for about three
+points of recall, at the engine's own budget.
+
 ### A geo store, when the places are the point
 
 ```

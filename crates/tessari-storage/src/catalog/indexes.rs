@@ -158,6 +158,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             fields,
             unique: shape.unique,
             search: shape.search,
+            quantized: shape.quantized,
             vector: shape.vector,
             spatial: shape.spatial,
             costs: shape.costs,

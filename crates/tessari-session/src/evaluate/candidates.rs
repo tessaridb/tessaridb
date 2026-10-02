@@ -296,12 +296,10 @@ impl Session<'_> {
             return Ok(None);
         };
         let mut rows = Vec::new();
-        for id in transaction.records_by_vector(
-            &gated.index,
-            &gated.query,
-            wanted.wanted,
-            wanted.effort,
-        )? {
+        let window = plan::walked_for(wanted.wanted, gated.index.quantized);
+        for id in
+            transaction.records_by_vector(&gated.index, &gated.query, window, wanted.effort)?
+        {
             // Resolved at this reader's own snapshot, like every index read, so
             // a node left behind by a deleted record produces nothing.
             let at = RecordAddress::new(context.namespace, context.database, table, id);

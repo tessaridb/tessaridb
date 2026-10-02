@@ -23,6 +23,7 @@
 //! entry that describes it, which matters exactly when something has gone wrong
 //! and an operator is looking at bytes.
 
+mod quantized;
 mod search;
 mod vectors;
 use tessari_kv::{Key, Value};
@@ -35,6 +36,7 @@ use crate::kind::KeyKind;
 use crate::order::{KeyReader, KeyWriter};
 use crate::record_id;
 use crate::value::{StoreValue, split_header, with_header};
+pub use quantized::{QuantizedVector, StoredVector};
 pub use search::{
     PostingKey, SearchStatistics, SearchStatisticsKey, SearchSuffixKey, SearchTermKey,
     TermStatistics, UniqueIndexKey,
@@ -749,19 +751,52 @@ mod tests {
 
     #[test]
     fn a_vector_node_survives_the_round_trip() {
-        use super::{RecordId, VectorNode, VectorNodeKey};
+        use super::{QuantizedVector, RecordId, StoredVector, VectorNode, VectorNodeKey};
+        let components = vec![0.123, 0.999, 0.0, 1.0, 0.5];
         let node = VectorNode::new(
-            vec![0.123, 0.999, 0.0, 1.0, 0.5],
+            StoredVector::Full(components.clone()),
             vec![RecordId::Int(1), RecordId::Int(2)],
         );
         let encoded = node.encode();
         let read = VectorNode::decode(encoded.as_slice()).expect("a node");
         assert_eq!(read, node);
 
+        let coded = QuantizedVector::of(&components).expect("codes");
+        let quantized = VectorNode::new(
+            StoredVector::Quantized(coded),
+            vec![RecordId::Int(1), RecordId::Int(2)],
+        );
+        let small = quantized.encode();
+        assert_eq!(
+            VectorNode::decode(small.as_slice()).expect("a node"),
+            quantized
+        );
+        // The layout `stored_bytes` states: the two nodes share their neighbour
+        // lists, so their sizes differ by exactly the two vectors' forms.
+        assert_eq!(
+            encoded.as_slice().len() - small.as_slice().len(),
+            node.vector.stored_bytes() - quantized.vector.stored_bytes()
+        );
+
         let key = VectorNodeKey::new(address(), 0, RecordId::Int(7));
         let bytes = key.encode();
         assert_eq!(VectorNodeKey::decode(bytes.as_slice()).expect("a key"), key);
     }
+
+    #[test]
+    fn a_full_precision_node_keeps_the_bytes_it_always_had() {
+        // Every vector index written before `QUANTIZED` holds these bytes, and
+        // a node is never rewritten by an upgrade — so the full form's encoding
+        // is pinned, not merely round-tripped.
+        use super::{RecordId, StoredVector, VectorNode};
+        let node = VectorNode::new(StoredVector::Full(vec![0.5, -1.0]), vec![RecordId::Int(3)]);
+        assert_eq!(node.encode().as_slice(), GOLDEN_FULL_NODE);
+    }
+
+    const GOLDEN_FULL_NODE: &[u8] = &[
+        1, 0, 0, 0, 0, 2, 63, 224, 0, 0, 0, 0, 0, 0, 191, 240, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1,
+        128, 0, 0, 0, 0, 0, 0, 3,
+    ];
 
     #[test]
     fn an_empty_index_has_no_average_length() {

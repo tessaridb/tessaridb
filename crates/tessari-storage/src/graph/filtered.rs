@@ -183,7 +183,7 @@ mod tests {
     }
 
     fn graph_of(records: i64, dimensions: usize) -> Graph {
-        let mut graph = Graph::empty(VectorDistance::Euclidean);
+        let mut graph = Graph::empty(VectorDistance::Euclidean, false);
         for n in 0..records {
             graph.insert(&RecordId::Int(n), point(n, dimensions));
         }

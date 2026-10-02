@@ -52,7 +52,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use tessari_encoding::{
-    IndexAddress, StoreKey, StoreValue, VectorNode, VectorNodeKey, VectorRecall, VectorRecallKey,
+    IndexAddress, QuantizedVector, StoreKey, StoreValue, StoredVector, VectorNode, VectorNodeKey,
+    VectorRecall, VectorRecallKey,
 };
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::{Number, RecordId, Value};
@@ -172,6 +173,41 @@ fn norm(vector: &[f64]) -> f64 {
     vector.iter().map(|held| held * held).sum::<f64>().sqrt()
 }
 
+/// How far a stored vector is from a query, under the index's distance.
+///
+/// The same measure as [`separation`], read straight off the codes when the
+/// vector is quantized — decoding each component as it is used rather than
+/// building the full vector first, so a quantized node costs a walk one byte per
+/// component instead of eight.
+fn separation_from(distance: VectorDistance, stored: &StoredVector, query: &[f64]) -> f64 {
+    let coded = match stored {
+        StoredVector::Full(vector) => return separation(distance, vector, query),
+        StoredVector::Quantized(coded) => coded,
+    };
+    if coded.codes.len() != query.len() || query.is_empty() {
+        return f64::INFINITY;
+    }
+    let components = coded.codes.iter().map(|code| coded.component(*code));
+    match distance {
+        VectorDistance::Euclidean => components
+            .zip(query.iter())
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum(),
+        VectorDistance::Cosine => {
+            let (mut dot, mut own) = (-0.0, -0.0);
+            for (a, b) in components.zip(query.iter()) {
+                dot += a * b;
+                own += a * a;
+            }
+            let magnitude = own.sqrt() * norm(query);
+            if magnitude == 0.0 {
+                return f64::INFINITY;
+            }
+            1.0 - dot / magnitude
+        }
+    }
+}
+
 /// The graph of one index, read from the committed state.
 ///
 /// Held in memory for the length of one operation. That is a real limit and it
@@ -181,14 +217,17 @@ fn norm(vector: &[f64]) -> f64 {
 pub struct Graph {
     nodes: BTreeMap<RecordId, VectorNode>,
     distance: VectorDistance,
+    /// Whether a node placed in this graph keeps its vector as codes.
+    quantized: bool,
 }
 
 impl Graph {
     /// An empty graph for this distance.
-    pub(crate) fn empty(distance: VectorDistance) -> Self {
+    pub(crate) fn empty(distance: VectorDistance, quantized: bool) -> Self {
         Self {
             nodes: BTreeMap::new(),
             distance,
+            quantized,
         }
     }
 
@@ -197,6 +236,7 @@ impl Graph {
         store: &Store,
         address: &IndexAddress,
         distance: VectorDistance,
+        quantized: bool,
     ) -> Result<Self> {
         let prefix = VectorNodeKey::level_prefix(address, GROUND);
         let request = ScanRequest {
@@ -210,7 +250,11 @@ impl Graph {
             let decoded = VectorNodeKey::decode(key.as_slice())?;
             nodes.insert(decoded.id, VectorNode::decode(value.as_slice())?);
         }
-        Ok(Self { nodes, distance })
+        Ok(Self {
+            nodes,
+            distance,
+            quantized,
+        })
     }
 
     /// Whether the graph holds nothing.
@@ -327,14 +371,15 @@ impl Graph {
         let mut asked = 0_usize;
         let mut sample = 0_usize;
         for (id, node) in self.nodes.iter().step_by(stride) {
-            let truth = self.exact(&node.vector, id, MEASURED_AT);
+            let probe = node.vector.to_vec();
+            let truth = self.exact(&probe, id, MEASURED_AT);
             if truth.is_empty() {
                 continue;
             }
             // One more than the answer, because the query record is expected
             // back and is then dropped; `take` trims the case where it was not.
             let found: Vec<RecordId> = self
-                .nearest(&node.vector, MEASURED_AT.saturating_add(1), None)
+                .nearest(&probe, MEASURED_AT.saturating_add(1), None)
                 .into_iter()
                 .filter(|other| other != id)
                 .take(MEASURED_AT)
@@ -365,7 +410,7 @@ impl Graph {
             if id == excluding {
                 continue;
             }
-            let distance = separation(self.distance, &node.vector, query);
+            let distance = separation_from(self.distance, &node.vector, query);
             insert_sorted(&mut held, distance, id.clone(), wanted);
         }
         held.into_iter().map(|(_, id)| id).collect()
@@ -374,7 +419,7 @@ impl Graph {
     /// How far this record is from the query, or infinitely far if it is gone.
     fn at(&self, id: RecordId, query: &[f64]) -> f64 {
         self.nodes.get(&id).map_or(f64::INFINITY, |node| {
-            separation(self.distance, &node.vector, query)
+            separation_from(self.distance, &node.vector, query)
         })
     }
 
@@ -410,7 +455,7 @@ impl Graph {
             // hierarchical layer to keep.
             self.nearest(&vector, NEIGHBOURS, None)
         };
-        let node = VectorNode::new(vector.clone(), chosen.clone());
+        let node = VectorNode::new(self.stored(vector), chosen.clone());
         self.nodes.insert(id.clone(), node.clone());
         touched.insert(id.clone(), node);
 
@@ -423,7 +468,7 @@ impl Graph {
             }
             let mut linked = held.neighbours.clone();
             linked.push(id.clone());
-            let pruned = self.prune(&held.vector.clone(), linked);
+            let pruned = self.prune(&held.vector.to_vec(), linked);
             let updated = VectorNode::new(held.vector.clone(), pruned);
             self.nodes.insert(neighbour.clone(), updated.clone());
             touched.insert(neighbour, updated);
@@ -476,13 +521,27 @@ impl Graph {
             };
             let covered = kept
                 .iter()
-                .any(|(_, other)| separation(self.distance, &held.vector, other) < to_base);
+                .any(|(_, other)| separation_from(self.distance, &held.vector, other) < to_base);
             if covered {
                 continue;
             }
-            kept.push((id, held.vector.clone()));
+            kept.push((id, held.vector.to_vec()));
         }
         kept.into_iter().map(|(id, _)| id).collect()
+    }
+
+    /// The form a vector placed in this graph is kept in.
+    ///
+    /// Codes in a quantized graph, unless the vector cannot be coded (a component
+    /// that is not finite), in which case it is kept whole rather than refused —
+    /// the distance functions already place such a vector infinitely far away.
+    fn stored(&self, vector: Vec<f64>) -> StoredVector {
+        if self.quantized
+            && let Some(coded) = QuantizedVector::of(&vector)
+        {
+            return StoredVector::Quantized(coded);
+        }
+        StoredVector::Full(vector)
     }
 
     /// Take a record out of the graph.
@@ -591,7 +650,7 @@ mod tests {
     }
 
     fn built(points: &[(i64, [f64; 2])]) -> Graph {
-        let mut graph = Graph::empty(VectorDistance::Euclidean);
+        let mut graph = Graph::empty(VectorDistance::Euclidean, false);
         for (id, point) in points {
             graph.insert(&RecordId::Int(*id), point.to_vec());
         }
@@ -626,7 +685,7 @@ mod tests {
 
     #[test]
     fn an_empty_graph_answers_with_nothing_rather_than_failing() {
-        let graph = Graph::empty(VectorDistance::Euclidean);
+        let graph = Graph::empty(VectorDistance::Euclidean, false);
         assert!(graph.is_empty());
         assert!(graph.nearest(&[1.0, 1.0], 10, None).is_empty());
     }
@@ -746,7 +805,7 @@ mod tests {
         const RECORDS: i64 = 2_000;
         const DIMENSIONS: usize = 32;
 
-        let mut graph = Graph::empty(VectorDistance::Euclidean);
+        let mut graph = Graph::empty(VectorDistance::Euclidean, false);
         for n in 0..RECORDS {
             graph.insert(&RecordId::Int(n), clustered(n, DIMENSIONS));
         }
@@ -770,6 +829,51 @@ mod tests {
                 .map(|(_, n)| RecordId::Int(*n))
                 .collect();
             let found = graph.nearest(&query, 10, None);
+            hit = hit.saturating_add(found.iter().filter(|id| truth.contains(id)).count());
+            asked = asked.saturating_add(truth.len());
+        }
+        let recall = hit.saturating_mul(100).checked_div(asked).unwrap_or(0);
+        assert!(recall >= 90, "recall was {recall}%");
+    }
+
+    #[test]
+    fn a_quantized_graph_rescored_on_full_vectors_finds_nearly_all_of_the_true_nearest() {
+        // The same fixture as the full-precision floor, built over one byte per
+        // component. The walk is asked for four times the answer and the
+        // candidates are re-ranked by the exact distance, as a read does.
+        const RECORDS: i64 = 2_000;
+        const DIMENSIONS: usize = 32;
+        let mut graph = Graph::empty(VectorDistance::Euclidean, true);
+        for n in 0..RECORDS {
+            graph.insert(&RecordId::Int(n), clustered(n, DIMENSIONS));
+        }
+        let exact_distance = |n: i64, query: &[f64]| {
+            separation(VectorDistance::Euclidean, &clustered(n, DIMENSIONS), query)
+        };
+        let (mut hit, mut asked) = (0_usize, 0_usize);
+        for q in 0..20 {
+            let query = clustered(RECORDS.saturating_add(q), DIMENSIONS);
+            let mut exact: Vec<(f64, i64)> = (0..RECORDS)
+                .map(|n| (exact_distance(n, &query), n))
+                .collect();
+            exact.sort_by(|left, right| left.0.total_cmp(&right.0).then(left.1.cmp(&right.1)));
+            let truth: Vec<RecordId> = exact
+                .iter()
+                .take(10)
+                .map(|(_, n)| RecordId::Int(*n))
+                .collect();
+            let mut rescored: Vec<(f64, RecordId)> = graph
+                .nearest(&query, 40, None)
+                .into_iter()
+                .map(|id| {
+                    let RecordId::Int(n) = id else {
+                        panic!("{id:?}")
+                    };
+                    (exact_distance(n, &query), id)
+                })
+                .collect();
+            rescored.sort_by(|left, right| left.0.total_cmp(&right.0).then(left.1.cmp(&right.1)));
+            let found: Vec<RecordId> = rescored.into_iter().take(10).map(|(_, id)| id).collect();
             hit = hit.saturating_add(found.iter().filter(|id| truth.contains(id)).count());
             asked = asked.saturating_add(truth.len());
         }
@@ -820,7 +924,7 @@ mod tests {
         const RECORDS: i64 = 2_000;
         const DIMENSIONS: usize = 32;
 
-        let mut graph = Graph::empty(VectorDistance::Euclidean);
+        let mut graph = Graph::empty(VectorDistance::Euclidean, false);
         for n in 0..RECORDS {
             graph.insert(&RecordId::Int(n), clustered(n, DIMENSIONS));
         }
@@ -844,7 +948,7 @@ mod tests {
         // `EFFORT 1 LIMIT 10` must not quietly become `LIMIT 1`. A budget that
         // overrode a bound would be a bound answering for a bound, and the caller
         // would read the short answer as "there were only that many".
-        let mut graph = Graph::empty(VectorDistance::Euclidean);
+        let mut graph = Graph::empty(VectorDistance::Euclidean, false);
         for n in 0..20_u32 {
             graph.insert(&RecordId::Int(i64::from(n)), vec![f64::from(n), 0.0]);
         }
@@ -899,7 +1003,7 @@ mod tests {
         const RECORDS: i64 = 2_000;
         const DIMENSIONS: usize = 32;
 
-        let mut graph = Graph::empty(VectorDistance::Euclidean);
+        let mut graph = Graph::empty(VectorDistance::Euclidean, false);
         for n in 0..RECORDS {
             graph.insert(&RecordId::Int(n), clustered(n, DIMENSIONS));
         }
@@ -916,7 +1020,7 @@ mod tests {
         assert!(graph.dangling() > 0, "the fixture did not churn the graph");
 
         // The rebuild: the same live records, inserted in record-id order.
-        let mut rebuilt = Graph::empty(VectorDistance::Euclidean);
+        let mut rebuilt = Graph::empty(VectorDistance::Euclidean, false);
         for n in &live {
             rebuilt.insert(&RecordId::Int(*n), clustered(*n, DIMENSIONS));
         }
@@ -939,9 +1043,13 @@ mod tests {
         // Absence means *never measured*, and it has to be reachable: a graph
         // with one record has no answer a walk could get wrong, so reporting a
         // triumphant 100% there would be a number describing nothing.
-        assert!(Graph::empty(VectorDistance::Euclidean).recall().is_none());
+        assert!(
+            Graph::empty(VectorDistance::Euclidean, false)
+                .recall()
+                .is_none()
+        );
 
-        let mut alone = Graph::empty(VectorDistance::Euclidean);
+        let mut alone = Graph::empty(VectorDistance::Euclidean, false);
         alone.insert(&RecordId::Int(1), vec![1.0, 2.0]);
         assert!(alone.recall().is_none());
     }
@@ -954,7 +1062,7 @@ mod tests {
         // come out is 100%: if the query record were left in the answer it would
         // occupy a slot the truth does not contain, and the score would be 90%.
         // The number therefore tells the two implementations apart.
-        let mut graph = Graph::empty(VectorDistance::Euclidean);
+        let mut graph = Graph::empty(VectorDistance::Euclidean, false);
         for n in 0..12_u32 {
             graph.insert(&RecordId::Int(i64::from(n)), vec![f64::from(n), 0.0]);
         }
@@ -976,11 +1084,11 @@ mod tests {
         // for exactly this reason.
         const DIMENSIONS: usize = 8;
 
-        let mut forwards = Graph::empty(VectorDistance::Euclidean);
+        let mut forwards = Graph::empty(VectorDistance::Euclidean, false);
         for n in 0..200_i64 {
             forwards.insert(&RecordId::Int(n), clustered(n, DIMENSIONS));
         }
-        let mut backwards = Graph::empty(VectorDistance::Euclidean);
+        let mut backwards = Graph::empty(VectorDistance::Euclidean, false);
         for n in (0..200_i64).rev() {
             backwards.insert(&RecordId::Int(n), clustered(n, DIMENSIONS));
         }
@@ -991,9 +1099,9 @@ mod tests {
 
         // Rebuilt the way `index::build` does it: rows in record-id order.
         let rebuild = |source: &Graph| {
-            let mut held = Graph::empty(VectorDistance::Euclidean);
+            let mut held = Graph::empty(VectorDistance::Euclidean, false);
             for (id, node) in &source.nodes {
-                held.insert(id, node.vector.clone());
+                held.insert(id, node.vector.to_vec());
             }
             held
         };
@@ -1014,11 +1122,11 @@ mod tests {
         let forwards: Vec<i64> = (0..120).collect();
         let backwards: Vec<i64> = (0..120).rev().collect();
 
-        let mut first = Graph::empty(VectorDistance::Euclidean);
+        let mut first = Graph::empty(VectorDistance::Euclidean, false);
         for n in &forwards {
             first.insert(&RecordId::Int(*n), clustered(*n, DIMENSIONS));
         }
-        let mut second = Graph::empty(VectorDistance::Euclidean);
+        let mut second = Graph::empty(VectorDistance::Euclidean, false);
         for n in &backwards {
             second.insert(&RecordId::Int(*n), clustered(*n, DIMENSIONS));
         }
@@ -1029,9 +1137,9 @@ mod tests {
 
         // Both rebuilt the way `index::build` does it: rows in record-id order.
         let rebuild = |source: &Graph| {
-            let mut held = Graph::empty(VectorDistance::Euclidean);
+            let mut held = Graph::empty(VectorDistance::Euclidean, false);
             for id in source.nodes.keys() {
-                let vector = source.nodes.get(id).map(|node| node.vector.clone());
+                let vector = source.nodes.get(id).map(|node| node.vector.to_vec());
                 if let Some(vector) = vector {
                     held.insert(id, vector);
                 }

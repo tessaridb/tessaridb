@@ -64,7 +64,7 @@ impl Session<'_> {
         let mut admitted: BTreeMap<RecordId, Value> = BTreeMap::new();
         let matched = graph.nearest_matching(
             &gated.query,
-            wanted.wanted,
+            plan::walked_for(wanted.wanted, gated.index.quantized),
             wanted.effort,
             |id: &RecordId| -> std::result::Result<bool, Error> {
                 // Read at this reader's own snapshot: a node left behind by a

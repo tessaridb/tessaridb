@@ -127,6 +127,7 @@ pub(crate) use reads::roots_read;
 pub use reported::Plan;
 pub(crate) use statement::{
     Bounded, Closest, Nearest, Scored, answers, bound, closest, nearest, ordered, scored,
+    walked_for,
 };
 pub(crate) use union::union_plan;
 pub(crate) use worth::worth_serving;

@@ -462,6 +462,7 @@ impl Session<'_> {
                 costs,
                 spatial,
                 vector,
+                quantized,
                 if_not_exists,
             } => self.define_index(
                 transaction,
@@ -472,6 +473,7 @@ impl Session<'_> {
                     unique: *unique,
                     search: *search,
                     spatial: *spatial,
+                    quantized: *quantized,
                     vector: match vector {
                         Some(named) => {
                             Some(VectorDistance::parse(&named.text).ok_or_else(|| {
@@ -924,12 +926,16 @@ impl Session<'_> {
                 name,
                 dimension,
                 distance,
+                quantized,
                 if_not_exists,
             } => self.define_vector(
                 transaction,
                 name,
-                *dimension,
-                distance,
+                tables::VectorStore {
+                    dimension: *dimension,
+                    distance,
+                    quantized: *quantized,
+                },
                 *if_not_exists,
                 span,
             ),

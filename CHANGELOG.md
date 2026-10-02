@@ -27,9 +27,19 @@ compares carries no pre-release suffix.
   filtered ten measured at 98 %, 99.9 % and 100 % for conditions admitting a
   half, a tenth and a hundredth of 20 000 records.
 
+- **A quantized vector index** (G055): `DEFINE INDEX … VECTOR <distance>
+  QUANTIZED` and `DEFINE VECTOR … QUANTIZED` keep each vector as one byte per
+  component over its own range — no training, the same codes on every replica.
+  A walk over one asks for eight times the `LIMIT` and the read ranks those
+  candidates by the exact distance from each record's own vector. `INFO FOR
+  VECTOR` reports `quantized`, `vector_bytes`, `node_bytes` and `nodes`, read off
+  the stored nodes: on 20 000 × 32-d vectors 260 → 52 bytes per vector and
+  98.4 % → 95.6 % recall@10 at the same walk time. A full-precision node keeps
+  the bytes it always had.
+
 ### Changed
 
-- **1495 conformance cases** define the language and run in the build.
+- **1498 conformance cases** define the language and run in the build.
 
 ## 0.21.0-beta — 2026-10-03
 

@@ -337,9 +337,13 @@ impl Session<'_> {
             .field_indexes_on(id)?
             .into_iter()
             .find(|index| index.vector.is_some());
-        let measured = match index {
-            Some(index) => transaction.vector_recall(&index)?,
-            None => None,
+        let (measured, footprint, quantized) = match index {
+            Some(index) => (
+                transaction.vector_recall(&index)?,
+                transaction.vector_node_bytes(&index)?,
+                index.quantized,
+            ),
+            None => (None, None, false),
         };
         Ok(BTreeMap::from([
             ("name".to_owned(), Value::from(name.text.as_str())),
@@ -352,6 +356,29 @@ impl Session<'_> {
             // the index finds nothing; absence says nobody has asked. Reporting
             // the second as the first is the failure this field exists to avoid.
             ("recall".to_owned(), measured.map_or(Value::None, reported)),
+            ("quantized".to_owned(), Value::Bool(quantized)),
+            // Measured off the stored nodes: the average bytes one takes, beside
+            // how many there are. `None` while the store holds no vector.
+            (
+                "node_bytes".to_owned(),
+                footprint.map_or(Value::None, |(_, average, _)| {
+                    Value::Number(Number::Integer(i64::try_from(average).unwrap_or(i64::MAX)))
+                }),
+            ),
+            (
+                "vector_bytes".to_owned(),
+                footprint.map_or(Value::None, |(_, _, per_vector)| {
+                    Value::Number(Number::Integer(
+                        i64::try_from(per_vector).unwrap_or(i64::MAX),
+                    ))
+                }),
+            ),
+            (
+                "nodes".to_owned(),
+                footprint.map_or(Value::None, |(nodes, _, _)| {
+                    Value::Number(Number::Integer(i64::try_from(nodes).unwrap_or(i64::MAX)))
+                }),
+            ),
         ]))
     }
 

@@ -331,12 +331,13 @@ fn apply_one(
         // Reading the whole graph is the cost this shape pays, and it is stated
         // in `graph.rs` rather than discovered: an index over more vectors than
         // fit in memory wants a paging walk, which is not this.
-        let graph = match pending.graphs.entry(address) {
-            std::collections::btree_map::Entry::Occupied(held) => held.into_mut(),
-            std::collections::btree_map::Entry::Vacant(empty) => {
-                empty.insert(graph::Graph::read(store, &address, distance)?)
-            }
-        };
+        let graph =
+            match pending.graphs.entry(address) {
+                std::collections::btree_map::Entry::Occupied(held) => held.into_mut(),
+                std::collections::btree_map::Entry::Vacant(empty) => empty.insert(
+                    graph::Graph::read(store, &address, distance, definition.quantized)?,
+                ),
+            };
         let previous_vector = previous
             .map(decode_payload)
             .transpose()?
@@ -577,6 +578,7 @@ mod tests {
             fields: vec![Path::field("body")],
             search: true,
             unique: false,
+            quantized: false,
             vector: None,
             spatial: false,
             costs: crate::catalog::SearchCosts::default(),

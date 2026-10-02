@@ -41,6 +41,9 @@ impl Parser<'_> {
             name,
             dimension,
             distance: self.name()?,
+            // Optional and last: a store is full precision unless it says so,
+            // and the word reads after the distance it is a form of.
+            quantized: self.eat_word("quantized"),
             if_not_exists,
         })
     }
@@ -278,6 +281,19 @@ impl Parser<'_> {
                 costs.unscored = true;
             }
         }
+        // `QUANTIZED` is a form of the vector a graph keeps, so it reads after
+        // `VECTOR <distance>` and nowhere else — on any other kind it would
+        // describe storage that kind does not have. Judged before the word is
+        // taken, so the refusal points at it.
+        let quantized = if matches!(self.peek(), Some(Token::Ident(found)) if found.eq_ignore_ascii_case("quantized"))
+        {
+            if !matches!(kind, Some(Marker::Vector(_))) {
+                return Err(self.error_here("`QUANTIZED` only after `VECTOR` and its distance"));
+            }
+            self.eat_word("quantized")
+        } else {
+            false
+        };
         // An index over `tags[*]` is a **multikey** index: one entry per element
         // rather than one per record. Three shapes are refused, each naming its
         // own reason — a caller told "unexpected token" would go looking for a
@@ -309,6 +325,7 @@ impl Parser<'_> {
                 Some(Marker::Vector(distance)) => Some(distance),
                 _ => None,
             },
+            quantized,
             if_not_exists,
         })
     }

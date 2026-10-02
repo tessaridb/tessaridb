@@ -255,3 +255,23 @@ SELECT * FROM readings LIMIT 2 EFFORT 200;
 --- case: and effort is still a name a caller may use
 DEFINE FIELD effort ON readings TYPE int;
 --- expect: ok
+
+# A quantized store keeps each vector as one byte per component (0.22). The
+# codes choose which records a walk tries and the records' full vectors decide
+# the order, so the word changes what an index holds and never what an exact
+# read answers.
+
+--- case: a vector store may be declared quantized
+DEFINE VECTOR coded DIMENSION 2 DISTANCE euclidean QUANTIZED;
+CREATE coded:1 = { vector: [0.0, 0.0] };
+CREATE coded:2 = { vector: [0.1, 0.0] };
+CREATE coded:3 = { vector: [0.9, 0.9] };
+--- expect: ok
+
+--- case: and an approximate read over it is rescored on the full vectors
+SELECT * FROM coded ORDER BY vector::euclidean(vector, [0.0, 0.0]) LIMIT 2 APPROXIMATE;
+--- expect: rows 2
+
+--- case: quantized describes a vector index and no other
+DEFINE INDEX by_effort ON readings FIELDS effort QUANTIZED;
+--- expect: error UnexpectedToken
