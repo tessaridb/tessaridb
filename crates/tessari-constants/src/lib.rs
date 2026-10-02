@@ -436,6 +436,30 @@ pub const AWARENESS_SECONDS: u64 = 10;
 /// meet even when everything is working.
 pub const COLLECTION_SECONDS: u64 = AWARENESS_SECONDS;
 
+/// How long a leader holding a follower's stream stays silent before it sends
+/// an empty round anyway (ADR-0106 D5).
+///
+/// Unit: milliseconds.
+///
+/// A commit is sent the moment it lands, so this never delays a record. It is
+/// the idle heartbeat — what lets a follower on a quiet leader tell *level* from
+/// *the link is gone* well inside [`GREETING_SECONDS`], the read deadline it
+/// holds the stream under, and what keeps its `quiet_for` and `copy_age`
+/// readings current on the leader. A hundred milliseconds, a Raft deployment's
+/// heartbeat: it is also the leader's liveness signal a follower can stand on
+/// (G053 C2b), and a second is far too long for that.
+pub const STREAM_HEARTBEAT_MILLIS: u64 = 100;
+
+/// The most logs one stream ask may name (ADR-0106 D5).
+///
+/// Unit: logs. A leader answers every log named on every commit it lands, so the
+/// count is work a peer can ask for once and have repeated; the frame ceiling
+/// alone would admit hundreds of thousands. A follower names one log per
+/// namespace, database and shard it holds, so sixteen thousand is far beyond any
+/// store this engine has been measured on and still a bound on what one peer can
+/// make a leader do.
+pub const STREAM_LOGS_MAX: u64 = 16_384;
+
 /// How long a leader keeps the positions it copied a follower to, after the copy
 /// ended, against its own retention window (ADR-0094 D3).
 ///

@@ -109,6 +109,21 @@ impl Collector<'_> {
             .iter()
             .map(|(home, from)| self.fetch(into, *home, *from))
             .collect();
+        self.apply(into, asks, fetched)
+    }
+
+    /// Apply one answer per ask — fetched by a round or sent on a held stream
+    /// (ADR-0106 D5) — in the writer's commit order, and answer how far each
+    /// home now reaches, in the order asked.
+    ///
+    /// The one apply path both share, so a record a stream delivers is applied
+    /// exactly as the round would have applied it.
+    pub fn apply(
+        &self,
+        into: &Store,
+        asks: &[(Reach, Sequence)],
+        fetched: Vec<Result<Collected>>,
+    ) -> Vec<Result<Sequence>> {
         let applied = {
             let pages: Vec<tessari_storage::Page<'_>> = fetched
                 .iter()

@@ -95,6 +95,14 @@ pub enum PeerFrame {
     StateChunk,
     /// The last frame of a copy: the counts and the topic heads.
     StateEnd,
+    /// A follower holding the connection open to be SENT what its leader
+    /// commits, naming every log it follows and the first position it does not
+    /// hold in each (ADR-0106 D5). Sent again after each round it applied, so
+    /// the positions it names are the ones it has made durable.
+    Stream,
+    /// The leader's round on a held stream: one answer per log asked, sent the
+    /// moment a commit gives it something to send, or empty as a heartbeat.
+    Streamed,
 }
 
 impl PeerFrame {
@@ -131,6 +139,8 @@ impl PeerFrame {
             Self::StateHead => 19,
             Self::StateChunk => 20,
             Self::StateEnd => 21,
+            Self::Stream => 22,
+            Self::Streamed => 23,
         }
     }
 
@@ -152,6 +162,8 @@ impl PeerFrame {
             19 => Some(Self::StateHead),
             20 => Some(Self::StateChunk),
             21 => Some(Self::StateEnd),
+            22 => Some(Self::Stream),
+            23 => Some(Self::Streamed),
             _ => None,
         }
     }
@@ -630,6 +642,8 @@ mod tests {
             PeerFrame::StateHead,
             PeerFrame::StateChunk,
             PeerFrame::StateEnd,
+            PeerFrame::Stream,
+            PeerFrame::Streamed,
         ] {
             assert!(
                 frame::Kind::from_tag(kind.tag()).is_none(),
@@ -657,6 +671,8 @@ mod tests {
             (PeerFrame::StateHead, 19),
             (PeerFrame::StateChunk, 20),
             (PeerFrame::StateEnd, 21),
+            (PeerFrame::Stream, 22),
+            (PeerFrame::Streamed, 23),
         ];
         for (kind, tag) in expected {
             assert_eq!(kind.tag(), tag, "{kind:?}");

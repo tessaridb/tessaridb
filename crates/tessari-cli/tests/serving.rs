@@ -1468,7 +1468,10 @@ fn started(args: &[std::ffi::OsString], log: &std::path::Path) -> Running {
         .append(true)
         .open(log)
         .unwrap();
-    let child = Command::new(TESSARIDB)
+    // A cluster measurement is taken against the release build when one is
+    // named (G053 SG1): the debug binary's timings describe the debug build.
+    let binary = std::env::var_os("TESSARIDB_TEST_BIN").unwrap_or_else(|| TESSARIDB.into());
+    let child = Command::new(binary)
         .args(args)
         .stdout(Stdio::null())
         .stderr(Stdio::from(writing))
@@ -3937,4 +3940,202 @@ fn a_follower_stopped_past_its_leaders_log_copies_the_state_and_follows_again() 
         format!("{counted:?}").contains("Integer(62)"),
         "the follower's snapshot is not the leader's state: {counted:?} against {expected}"
     );
+}
+
+// ---- G053 SG1: what a leader acknowledges, how fast, and what its loss costs ---
+
+/// The acknowledgement cluster's addresses — free pairs below the suite's band.
+const ACKED: Band = [
+    ("127.0.0.1:47816", "127.0.0.1:47817"),
+    ("127.0.0.1:47818", "127.0.0.1:47819"),
+    ("127.0.0.1:47820", "127.0.0.1:47821"),
+];
+
+/// A write into `item` at `key`, with `clause` after it.
+fn into_item(key: &str, clause: &str) -> String {
+    format!("USE NAMESPACE prod; USE DATABASE orders; CREATE item:'{key}' = {{ n: 1 }}{clause};")
+}
+
+/// The 50th and 99th percentile of `taken`, in microseconds.
+fn percentiles(mut taken: Vec<Duration>) -> (u128, u128) {
+    taken.sort();
+    let at = |share: usize| {
+        let index = taken
+            .len()
+            .saturating_sub(1)
+            .saturating_mul(share)
+            .checked_div(100)
+            .unwrap_or(0);
+        taken.get(index).map_or(0, Duration::as_micros)
+    };
+    (at(50), at(99))
+}
+
+/// The identities `item` holds at `surface`, or the refusal.
+fn item_ids_at(surface: &str) -> Result<Vec<String>, String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    let read = "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM item;";
+    match client
+        .run(read, None)
+        .map_err(|why| why.to_string())?
+        .last()
+    {
+        Some(Answer::Records { records, .. }) => Ok(records
+            .iter()
+            .map(|(id, _)| id.trim_matches('\'').to_owned())
+            .collect()),
+        other => Err(format!("{other:?}")),
+    }
+}
+
+/// Commit latency on the leader at one and at sixteen writers, replication lag
+/// to a follower, and the acknowledged writes a `kill -9` of the leader loses,
+/// for the acknowledgement written as `clause` (`""` is the leader's own).
+///
+/// It prints its numbers (the ADR records them) and asserts only what holds at
+/// every level: every write is acknowledged once and the cluster elects again.
+fn acknowledged_writes_measured(clause: &str) -> (usize, usize) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    let mut cluster = a_cluster_declared(&ACKED, "", ["", "", ""]);
+    let leader = the_node_a_majority_granted(&ACKED);
+    // The next node in the band, wrapping: a follower whatever won.
+    let follower = [1, 2, 0][leader];
+    let on = ACKED[leader].0;
+
+    // One writer.
+    let mut client = Client::connect(on).unwrap();
+    let mut one = Vec::new();
+    for index in 0..200 {
+        let began = Instant::now();
+        client
+            .run(&into_item(&format!("s{index:04}"), clause), None)
+            .unwrap();
+        one.push(began.elapsed());
+    }
+    // Sixteen writers, fifty each.
+    let many: Vec<Duration> = (0..16)
+        .map(|writer| {
+            let clause = clause.to_owned();
+            std::thread::spawn(move || {
+                let mut client = Client::connect(on).unwrap();
+                (0..50)
+                    .map(|index| {
+                        let began = Instant::now();
+                        client
+                            .run(
+                                &into_item(&format!("m{writer:02}{index:03}"), &clause),
+                                None,
+                            )
+                            .unwrap();
+                        began.elapsed()
+                    })
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .flat_map(|writer| writer.join().unwrap())
+        .collect();
+    // Replication lag: from the acknowledgement on the leader to the record
+    // being readable on a follower, ten times.
+    let mut lag = Vec::new();
+    for index in 0..10 {
+        let key = format!("l{index:02}");
+        client.run(&into_item(&key, clause), None).unwrap();
+        let acknowledged = Instant::now();
+        loop {
+            if item_ids_at(ACKED[follower].0).is_ok_and(|held| held.contains(&key)) {
+                lag.push(acknowledged.elapsed());
+                break;
+            }
+            assert!(
+                acknowledged.elapsed() < Duration::from_secs(60),
+                "the follower never received {key}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    let (one_p50, one_p99) = percentiles(one);
+    let (many_p50, many_p99) = percentiles(many);
+    let (lag_p50, lag_p99) = percentiles(lag);
+    eprintln!(
+        "ACKNOWLEDGED clause={clause:?} one_writer_us p50={one_p50} p99={one_p99} \
+         sixteen_writers_us p50={many_p50} p99={many_p99} lag_us p50={lag_p50} p99={lag_p99}"
+    );
+
+    // Keep writing, kill the leader uncatchably, and count what the next
+    // leader does not hold of what was acknowledged.
+    let stop = Arc::new(AtomicBool::new(false));
+    let acknowledged = Arc::new(Mutex::new(Vec::<String>::new()));
+    let writer = {
+        let (stop, acknowledged, clause) = (
+            Arc::clone(&stop),
+            Arc::clone(&acknowledged),
+            clause.to_owned(),
+        );
+        std::thread::spawn(move || {
+            let mut client = Client::connect(on).unwrap();
+            let mut index = 0_u32;
+            while !stop.load(Ordering::Relaxed) {
+                index = index.saturating_add(1);
+                let key = format!("k{index:06}");
+                if client.run(&into_item(&key, &clause), None).is_err() {
+                    break;
+                }
+                acknowledged.lock().unwrap().push(key);
+            }
+        })
+    };
+    std::thread::sleep(Duration::from_millis(1500));
+    drop(cluster.running[leader].take());
+    stop.store(true, Ordering::Relaxed);
+    writer.join().unwrap();
+    let acknowledged = acknowledged.lock().unwrap().clone();
+    // The next leader: the node that takes a write.
+    let survivors: Vec<&str> = (0..ACKED.len())
+        .filter(|index| *index != leader)
+        .map(|index| ACKED[index].0)
+        .collect();
+    let began = Instant::now();
+    let new = loop {
+        let took = survivors.iter().find(|surface| {
+            Client::connect(surface)
+                .is_ok_and(|mut client| client.run(&into_item("after", ""), None).is_ok())
+        });
+        if let Some(surface) = took {
+            break *surface;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(120),
+            "nobody was elected after the leader died{}",
+            what_the_nodes_said(&ACKED, &cluster.logs)
+        );
+        std::thread::sleep(POLL);
+    };
+    let held = item_ids_at(new).unwrap();
+    let missing = acknowledged
+        .iter()
+        .filter(|key| !held.contains(key))
+        .count();
+    eprintln!(
+        "LEADER_KILLED clause={clause:?} acknowledged={} missing_on_new_leader={missing} \
+         elected_after={:?}",
+        acknowledged.len(),
+        began.elapsed()
+    );
+    assert!(
+        !acknowledged.is_empty(),
+        "nothing was acknowledged before the kill"
+    );
+    (acknowledged.len(), missing)
+}
+
+#[test]
+#[ignore = "three processes, real cadences and a kill -9 — G053 SG1's measurement, \
+            run explicitly: TESSARIDB_TEST_BIN=target/release/tessaridb cargo test -p \
+            tessari-cli --test serving acknowledged_writes -- --ignored --nocapture"]
+fn acknowledged_writes_at_the_leaders_level_and_what_its_loss_costs() {
+    let (acknowledged, missing) = acknowledged_writes_measured("");
+    eprintln!("LEADER level: {missing} of {acknowledged} acknowledged writes lost");
 }

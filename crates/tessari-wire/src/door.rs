@@ -30,7 +30,7 @@
 
 use std::sync::Arc;
 
-use tessari_constants::{GREETING_SECONDS, PEER_CONNECTIONS};
+use tessari_constants::{GREETING_SECONDS, PEER_CONNECTIONS, STREAM_HEARTBEAT_MILLIS};
 use tessari_encoding::NODE_ID_LEN;
 use tessari_serve::{ACCEPT_PAUSE, Bridge, Bridged, passes};
 use tokio::sync::Semaphore;
@@ -38,7 +38,7 @@ use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
 
-use crate::collection::Origin;
+use crate::collection::{Origin, StreamAsk, stream_answer};
 use crate::credential;
 use crate::error::{Error, Result};
 use crate::frame_async;
@@ -62,6 +62,15 @@ pub trait Holding: Origin + Send + Sync + 'static {
 
     /// A peer was served to the end; record what it said and how it was voted.
     fn met(&self, met: &Met);
+
+    /// A wake-up that moves whenever this node lands a commit, so a held
+    /// stream sends a record the moment it exists (ADR-0106 D5) instead of on
+    /// the follower's next clock tick.
+    ///
+    /// No default: a door that never woke would still answer every stream —
+    /// at its heartbeat — and the replication lag it was built to remove would
+    /// come back with nothing in an error state.
+    fn commits(&self) -> tokio::sync::watch::Receiver<u64>;
 }
 
 /// How one served connection ended, for the loop that decides what next.
@@ -138,6 +147,7 @@ impl Peers {
                 continue;
             };
             let served = Connection {
+                stop: stop.clone(),
                 acceptor: acceptor.clone(),
                 me,
                 voter: Arc::clone(&voter),
@@ -168,6 +178,9 @@ impl Peers {
 
 /// Everything one connection needs, owned so the task can hold it.
 struct Connection<H> {
+    /// The door's own stop, so a held stream ends with the door rather than
+    /// being cut at the drain deadline.
+    stop: CancellationToken,
     acceptor: TlsAcceptor,
     me: [u8; NODE_ID_LEN],
     voter: Arc<Deciding>,
@@ -179,7 +192,9 @@ impl<H: Holding> Connection<H> {
     /// Serve one peer, and say how it ended.
     async fn serve(self, socket: tokio::net::TcpStream) -> Ended {
         match self.exchange(socket).await {
-            Ok(met) => {
+            // A stream recorded its peer when it opened (see `stream`).
+            Ok(None) => Ended::Served,
+            Ok(Some(met)) => {
                 let holding = Arc::clone(&self.holding);
                 if let Bridged::Busy(()) | Bridged::Panicked =
                     self.bridge.call((), move |()| holding.met(&met)).await
@@ -199,7 +214,7 @@ impl<H: Holding> Connection<H> {
     }
 
     /// The handshake, the greetings and the one follow-up — `greet`'s order.
-    async fn exchange(&self, socket: tokio::net::TcpStream) -> Result<Met> {
+    async fn exchange(&self, socket: tokio::net::TcpStream) -> Result<Option<Met>> {
         let mut link = bounded(self.acceptor.accept(socket))
             .await?
             .map_err(|why| Error::Transport(why.to_string()))?;
@@ -233,6 +248,20 @@ impl<H: Holding> Connection<H> {
         };
         let voted = match asked {
             None => None,
+            // A held stream (ADR-0106 D5): recorded now, because it may stay
+            // open for hours and a greeting bound only at its end would leave a
+            // joining follower's row unbound all that time.
+            Some((tag, body)) if tag == PeerFrame::Stream.tag() => {
+                let holding = Arc::clone(&self.holding);
+                let met = Met { said, voted: None };
+                if let Bridged::Busy(()) | Bridged::Panicked =
+                    self.bridge.call((), move |()| holding.met(&met)).await
+                {
+                    log::warn!("a peer opened a stream but could not be recorded");
+                }
+                self.stream(&mut link, said.node, body).await?;
+                return Ok(None);
+            }
             // A copy streams (ADR-0094 D3): the store side runs on the bridge
             // and hands each frame over a bounded channel, so a follower that
             // reads slowly slows the read instead of filling memory, and one
@@ -281,7 +310,114 @@ impl<H: Holding> Connection<H> {
                 voted
             }
         };
-        Ok(Met { said, voted })
+        Ok(Some(Met { said, voted }))
+    }
+
+    /// Serve a held stream (ADR-0106 D5) until the follower closes or the door
+    /// stops.
+    ///
+    /// Each ask is answered by exactly ONE round carrying records. While there
+    /// is nothing to send the leader reads nothing: it waits on its commit
+    /// signal and, every [`STREAM_HEARTBEAT_MILLIS`], sends an empty round — the
+    /// heartbeat — which says *nothing after your positions has landed here*.
+    /// That claim is exact rather than hopeful because the signal is marked
+    /// seen before every read of the log, so a commit landing during a read
+    /// wakes the next one instead of being slept past.
+    async fn stream(
+        &self,
+        link: &mut tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+        follower: [u8; NODE_ID_LEN],
+        mut body: Vec<u8>,
+    ) -> Result<()> {
+        let heartbeat = std::time::Duration::from_millis(STREAM_HEARTBEAT_MILLIS);
+        let quiet = crate::collection::Streamed {
+            answers: Vec::new(),
+        }
+        .encode();
+        let mut commits = self.holding.commits();
+        loop {
+            let asked = StreamAsk::decode(&body)?;
+            let round = loop {
+                commits.borrow_and_update();
+                let holding = Arc::clone(&self.holding);
+                let ask = asked.clone();
+                let answered = self
+                    .store(move || stream_answer(&*holding, follower, &ask))
+                    .await;
+                let round = match answered {
+                    Ok(round) => round,
+                    // The refusal crosses as the frame a round would carry, and
+                    // the stream ends: the follower's round meets it again,
+                    // which is where every repair already lives.
+                    Err(Error::Uncollectable { from }) => {
+                        let mut refused = Vec::with_capacity(8);
+                        crate::frame::put_u64(&mut refused, from);
+                        bounded(frame_async::write_tagged(
+                            link,
+                            PeerFrame::Uncollectable.tag(),
+                            &refused,
+                        ))
+                        .await??;
+                        return Ok(());
+                    }
+                    Err(Error::Unsubscribed) => {
+                        bounded(frame_async::write_tagged(
+                            link,
+                            PeerFrame::Unsubscribed.tag(),
+                            &[],
+                        ))
+                        .await??;
+                        return Ok(());
+                    }
+                    Err(why) => return Err(why),
+                };
+                if !round.is_quiet() {
+                    break round;
+                }
+                // Nothing to send: wait for a commit, saying so every beat.
+                loop {
+                    tokio::select! {
+                        biased;
+                        () = self.stop.cancelled() => return Ok(()),
+                        changed = commits.changed() => {
+                            if changed.is_err() {
+                                // The commit signal went with the node.
+                                return Ok(());
+                            }
+                            break;
+                        }
+                        () = tokio::time::sleep(heartbeat) => {
+                            bounded(frame_async::write_tagged(
+                                link,
+                                PeerFrame::Streamed.tag(),
+                                &quiet,
+                            ))
+                            .await??;
+                        }
+                    }
+                }
+            };
+            bounded(frame_async::write_tagged(
+                link,
+                PeerFrame::Streamed.tag(),
+                &round.encode(),
+            ))
+            .await??;
+            let next = tokio::select! {
+                biased;
+                () = self.stop.cancelled() => return Ok(()),
+                next = bounded(frame_async::read_tagged(link)) => next?,
+            };
+            body = match next {
+                Ok(Some((tag, next))) if tag == PeerFrame::Stream.tag() => next,
+                Ok(Some((tag, _))) => return Err(Error::OutOfTurn { tag }),
+                Ok(None) => return Ok(()),
+                Err(Error::Io(why)) if why.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    return Ok(());
+                }
+                Err(why) => return Err(why),
+            };
+        }
     }
 
     /// Run a store call on the bridge, and read a refusal as the error it is.
@@ -336,6 +472,11 @@ mod tests {
     /// A node with no log, holding what [`hello`] says, remembering whom it met.
     struct Holder {
         met: std::sync::Mutex<Vec<Met>>,
+        /// Never moved: no test here commits, so a stream would only beat.
+        commits: (
+            tokio::sync::watch::Sender<u64>,
+            tokio::sync::watch::Receiver<u64>,
+        ),
     }
 
     impl Origin for Holder {
@@ -370,6 +511,10 @@ mod tests {
                 held.push(*met);
             }
         }
+
+        fn commits(&self) -> tokio::sync::watch::Receiver<u64> {
+            self.commits.1.clone()
+        }
     }
 
     /// A door for `HERE`, served on a runtime of its own until the test ends.
@@ -402,6 +547,7 @@ mod tests {
             .expect("a runtime for the door");
         let holder = Arc::new(Holder {
             met: std::sync::Mutex::new(Vec::new()),
+            commits: tokio::sync::watch::channel(0),
         });
         let stop = CancellationToken::new();
         let serving = (stop.clone(), Arc::clone(&holder));

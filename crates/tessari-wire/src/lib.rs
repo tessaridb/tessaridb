@@ -108,7 +108,8 @@ pub use crate::carrier::{Admission, Carrier};
 pub use crate::client::{Client, Feed, Served};
 #[cfg(feature = "server")]
 pub use crate::collection::{
-    Collect, Collected, Collector, NoLog, Origin, Serving, Subscriptions, logs_to_collect,
+    Collect, Collected, Collector, Following, NoLog, Origin, Serving, StreamAsk, Streamed,
+    Subscriptions, logs_to_collect,
 };
 #[cfg(feature = "server")]
 pub use crate::copying::{Copied, copy};

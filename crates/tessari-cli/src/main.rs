@@ -58,6 +58,7 @@ mod serving;
 mod session;
 mod shutdown;
 mod store;
+mod streaming;
 mod supervise;
 mod table;
 

@@ -1146,6 +1146,14 @@ const RAW_FEED: &[&str] = &[
 /// exact-line match would otherwise admit the second site without anybody
 /// having looked at it.
 ///
+/// **Two, a third site: the held stream (ADR-0106 D5).** A follower holding a
+/// stream to its leader reads its own tail of each log before every ask, for
+/// exactly Two's purpose and on Two's ground: the value leaves this process only
+/// as the `from` of an outgoing ask on the peer link, and what comes back is
+/// whatever the leader's own subscription check permits — the stream reads
+/// through `Origin::collected`, the same door. Named here, by its exact line,
+/// so it was looked at rather than admitted by Two's pattern.
+///
 /// **Five.** The greeting's placed line (ADR-0082) says how far this node's own
 /// log of the range it stands for reaches — One's field, for one range: a
 /// `Sequence`, sent only after the peer handshake.
@@ -1183,6 +1191,10 @@ const CLASSIFIED: &[(&str, &str)] = &[
     (
         "tessari-cli/src/greeting_round.rs",
         "tail: store.committed_tail(log)?,",
+    ),
+    (
+        "tessari-cli/src/streaming.rs",
+        "let tail = store.committed_tail(log).map_err(|why| why.to_string())?;",
     ),
     (
         "tessari-wire/src/collection.rs",

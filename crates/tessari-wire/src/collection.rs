@@ -30,6 +30,7 @@
 //! this serves [`Reach::Store`] and refuses what it cannot state.
 
 mod collector;
+mod stream;
 
 use tessari_constants::{COLLECTION_BUDGET_BYTES, COLLECTION_PAGE_RECORDS};
 use tessari_encoding::{LogId, LogRecord, NODE_ID_LEN, StoreValue};
@@ -41,6 +42,8 @@ use crate::frame;
 use crate::gathering::{Gather, Page, Ungathered};
 pub(crate) use collector::refused;
 pub use collector::{Collector, logs_to_collect};
+pub(crate) use stream::answer as stream_answer;
+pub use stream::{Following, StreamAsk, Streamed};
 
 /// What a follower asks a leader for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2381,6 +2384,10 @@ mod tests {
         }
 
         fn met(&self, _: &crate::link::Met) {}
+
+        fn commits(&self) -> tokio::sync::watch::Receiver<u64> {
+            self.db.commits().watching()
+        }
     }
 
     #[test]
@@ -2419,6 +2426,134 @@ mod tests {
         assert!(
             matches!(refused, Error::Unsubscribed),
             "the runtime door answered otherwise: {refused}"
+        );
+    }
+
+    /// ADR-0106 D5: a follower holding a stream is SENT the leader's next
+    /// commit — no second ask, no clock — and hears heartbeats while it waits.
+    #[test]
+    fn a_held_stream_is_sent_a_commit_the_moment_it_lands() {
+        let authority = Authority::new();
+        let leader = granting(" REPLICATES STORE");
+        let peers = Peers::bind(
+            "127.0.0.1:0",
+            authority.issue(LEADER, Purpose::Peer),
+            &authority.der(),
+        )
+        .expect("a peer door on loopback");
+        let address = peers.address().expect("the door's address");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("a runtime for the door");
+        let stop = tokio_util::sync::CancellationToken::new();
+        let serving = stop.clone();
+        let holding = Arc::new(OnTheRuntime {
+            db: Arc::clone(&leader),
+        });
+        drop(runtime.spawn(async move {
+            peers
+                .serve(
+                    serving,
+                    LEADER,
+                    Arc::new(Deciding::holding(settled())),
+                    holding,
+                )
+                .await
+        }));
+
+        let mut following = super::Following::open(
+            (LEADER, address),
+            authority.issue(THERE, Purpose::Peer),
+            &authority.der(),
+            &hello(THERE),
+            Duration::from_secs(5),
+        )
+        .expect("a held stream");
+        // Every log the leader holds, as a follower of the whole store asks.
+        let homes = super::logs_to_collect(leader.store()).expect("the leader's logs");
+        let ask = |from: &[Sequence]| super::StreamAsk {
+            asks: homes
+                .iter()
+                .zip(from)
+                .map(|(home, from)| Collect {
+                    home: *home,
+                    from: *from,
+                    limit: 1024,
+                })
+                .collect(),
+        };
+        // Everything the leader holds, first: one round with records, or, if
+        // every log is empty, heartbeats only.
+        let start = vec![Sequence::new(1); homes.len()];
+        following.ask(&ask(&start)).expect("the first ask");
+        let first = loop {
+            let round = following.heard().expect("the first round");
+            if !round.is_heartbeat() {
+                break round;
+            }
+        };
+        let held: Vec<Sequence> = first
+            .answers
+            .iter()
+            .zip(&start)
+            .map(|(answer, from)| {
+                answer
+                    .records
+                    .last()
+                    .map_or(Sequence::new(from.get() - 1), |(at, _)| *at)
+            })
+            .collect();
+        // Level now: the leader has nothing after `held` and must not answer
+        // with records until it commits again.
+        let next: Vec<Sequence> = held.iter().map(|at| Sequence::new(at.get() + 1)).collect();
+        following
+            .ask(&ask(&next))
+            .expect("the ask from where the follower stands");
+        let committing = Arc::clone(&leader);
+        let committer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(350));
+            let committed = std::time::Instant::now();
+            committing
+                .session()
+                .run("USE NAMESPACE prod; USE DATABASE orders; CREATE users:2 = { name: 'grace' };")
+                .expect("the leader commits");
+            committed
+        });
+        let mut heartbeats = 0_u32;
+        let waiting = std::time::Instant::now();
+        let round = loop {
+            let round = following.heard().expect("a frame from the leader");
+            if round.is_heartbeat() {
+                heartbeats += 1;
+                assert!(
+                    waiting.elapsed() < Duration::from_secs(3),
+                    "the commit never reached the held stream ({heartbeats} heartbeats)"
+                );
+                continue;
+            }
+            break round;
+        };
+        let received = std::time::Instant::now();
+        let committed = committer.join().expect("the committer");
+        stop.cancel();
+        assert!(
+            heartbeats >= 2,
+            "the leader said nothing while it waited ({heartbeats} heartbeats in 350 ms)"
+        );
+        // Every record sent starts where the follower stood in its log.
+        for ((answer, from), home) in round.answers.iter().zip(&next).zip(&homes) {
+            if let Some((at, _)) = answer.records.first() {
+                assert_eq!(at, from, "{home:?} sent from the wrong place");
+            }
+        }
+        assert!(!round.is_quiet(), "the round carried the commit");
+        let waited = received.saturating_duration_since(committed);
+        eprintln!("STREAM a commit reached the held stream {waited:?} after it was made");
+        assert!(
+            waited < Duration::from_millis(250),
+            "the commit took {waited:?} to reach a held stream"
         );
     }
 }
