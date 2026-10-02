@@ -1637,6 +1637,7 @@ dependencies = [
  "log",
  "rcgen",
  "rust_decimal",
+ "rustls",
  "tempfile",
  "tessari-backup",
  "tessari-constants",
@@ -1700,6 +1701,8 @@ dependencies = [
  "dashmap",
  "futures-util",
  "log",
+ "rcgen",
+ "rustls",
  "tessari-backup",
  "tessari-constants",
  "tessari-encoding",
@@ -1713,6 +1716,7 @@ dependencies = [
  "tessaridb",
  "thiserror",
  "tokio",
+ "tokio-rustls",
  "tokio-util",
  "tungstenite",
 ]
@@ -1773,6 +1777,9 @@ dependencies = [
 name = "tessari-serve"
 version = "0.20.1-beta"
 dependencies = [
+ "rcgen",
+ "rustls",
+ "thiserror",
  "tokio",
 ]
 

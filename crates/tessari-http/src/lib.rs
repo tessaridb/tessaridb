@@ -55,6 +55,7 @@ mod listening;
 mod object;
 mod request;
 mod respond;
+mod securing;
 mod snapshot;
 mod tokens;
 mod websocket;
@@ -107,6 +108,9 @@ pub struct Node {
     rounds: Arc<Bridge>,
     /// The wire node's door, when this process serves the wire protocol too.
     wire: Option<WireDoor>,
+    /// TLS for every connection, when the node was given a certificate
+    /// (ADR-0108 D4). `None` answers in the clear.
+    secured: Option<tokio_rustls::TlsAcceptor>,
 }
 
 impl Node {
@@ -140,7 +144,17 @@ impl Node {
                 std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
             )),
             wire: None,
+            secured: None,
         })
+    }
+
+    /// Answer over TLS, and only over TLS (ADR-0108 D4).
+    ///
+    /// `GET /wire` and `GET /watch` ride the same connection, so they are
+    /// encrypted with everything else. `settings` should offer `http/1.1` by
+    /// ALPN, which is the one protocol this surface speaks.
+    pub fn securing(&mut self, settings: Arc<rustls::ServerConfig>) {
+        self.secured = Some(tokio_rustls::TlsAcceptor::from(settings));
     }
 
     /// Carry the wire protocol over `GET /wire`, through `door` (ADR-0089).
@@ -196,25 +210,39 @@ impl Node {
             wire: self.wire.clone(),
         });
         let app = axum::Router::new().fallback(handle).with_state(shared);
-        let mut listening = listening::Listening::new(listener);
-        let (ended, failure) = (listening.ended(), listening.failure());
-        axum::serve(
-            // Tapped for the address alone: axum hands a peer's address to
-            // `ConnectInfo` only through its own listener or a tapped one.
-            listening.tap_io(|_| {}),
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .with_graceful_shutdown(async move {
-            tokio::select! {
-                () = stop.cancelled() => {}
-                () = ended.cancelled() => {}
+        match &self.secured {
+            None => served(listening::Listening::new(listener), app, stop).await,
+            Some(acceptor) => {
+                let securing = securing::Securing::new(listener, acceptor.clone());
+                served(listening::Listening::new(securing), app, stop).await
             }
-        })
-        .await?;
-        failure
-            .and_then(|mut failed| failed.try_recv().ok())
-            .map_or(Ok(()), Err)
+        }
     }
+}
+
+/// Serve `app` on `listening` until `stop` is cancelled or the listener fails.
+async fn served<A: listening::Accept>(
+    mut listening: listening::Listening<A>,
+    app: axum::Router,
+    stop: CancellationToken,
+) -> std::io::Result<()> {
+    let (ended, failure) = (listening.ended(), listening.failure());
+    axum::serve(
+        // Tapped for the address alone: axum hands a peer's address to
+        // `ConnectInfo` only through its own listener or a tapped one.
+        listening.tap_io(|_| {}),
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        tokio::select! {
+            () = stop.cancelled() => {}
+            () = ended.cancelled() => {}
+        }
+    })
+    .await?;
+    failure
+        .and_then(|mut failed| failed.try_recv().ok())
+        .map_or(Ok(()), Err)
 }
 
 /// Names one request across every line it produces.

@@ -6,6 +6,8 @@
 
 use std::io::{BufReader, BufWriter};
 use std::net::{TcpStream, ToSocketAddrs};
+#[cfg(feature = "tls")]
+use std::sync::{Arc, Mutex};
 
 use crate::error::{Error, Result};
 use tessari_ql::Parameters;
@@ -13,6 +15,7 @@ use tessari_ql::Parameters;
 use crate::message::{Answer, Request};
 use crate::push::{Follow, Happened};
 use crate::redirect::Elsewhere;
+use crate::transport::Transport;
 use crate::{frame, message};
 use tessari_types::Epoch;
 
@@ -37,8 +40,8 @@ pub enum Served {
 /// `Debug` says where it is connected and nothing about the buffers, because
 /// what is worth printing about a connection is the other end of it.
 pub struct Client {
-    reader: BufReader<TcpStream>,
-    writer: BufWriter<TcpStream>,
+    reader: BufReader<Transport>,
+    writer: BufWriter<Transport>,
     /// The newest leadership any node has named in a redirect to this client.
     ///
     /// `None` until the first one arrives — a client that has been told nothing
@@ -78,8 +81,44 @@ impl Client {
     /// reached, and [`Error::NotThisProtocol`] or [`Error::WrongVersion`] when
     /// whatever answered is not a node this build speaks to.
     pub fn connect(address: impl ToSocketAddrs) -> Result<Self> {
-        let stream = TcpStream::connect(address)?;
-        let mut reader = BufReader::new(stream.try_clone()?);
+        Self::greeted(Transport::Plain(TcpStream::connect(address)?))
+    }
+
+    /// Connect over TLS, trusting `roots`, and exchange greetings.
+    ///
+    /// The certificate must carry the host part of `address` — a name or an
+    /// IP address — and chain to one of `roots`. There is no way to skip
+    /// either check: a client that would accept any certificate is a client
+    /// talking to whoever answered.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::connect`], and [`Error::Tls`] when the handshake fails.
+    #[cfg(feature = "tls")]
+    pub fn connect_tls(address: &str, roots: rustls::RootCertStore) -> Result<Self> {
+        let name = crate::transport::server_name(address)?;
+        let settings = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let mut session = rustls::ClientConnection::new(Arc::new(settings), name)
+            .map_err(|why| Error::Tls(why.to_string()))?;
+        let mut socket = TcpStream::connect(address)?;
+        // Completed here rather than on the first write, so a certificate the
+        // client will not trust is reported as that and not as a greeting
+        // that never came back.
+        while session.is_handshaking() {
+            session
+                .complete_io(&mut socket)
+                .map_err(|why| Error::Tls(why.to_string()))?;
+        }
+        Self::greeted(Transport::Tls(Arc::new(Mutex::new(
+            rustls::StreamOwned::new(session, socket),
+        ))))
+    }
+
+    /// Greet over a connection that is already open.
+    fn greeted(stream: Transport) -> Result<Self> {
+        let mut reader = BufReader::new(stream.duplicate()?);
         let mut writer = BufWriter::new(stream);
         let minor = {
             let mut both = frame::Duplex {
@@ -286,7 +325,7 @@ impl Client {
 /// charge of the subscriber's.
 #[derive(Debug)]
 pub struct Feed {
-    reader: BufReader<TcpStream>,
+    reader: BufReader<Transport>,
 }
 
 impl Feed {

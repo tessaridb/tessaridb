@@ -37,6 +37,21 @@ pub(crate) fn serve(
         }
         None => None,
     };
+    // Before anything is bound, for the cluster's reason above: a node that
+    // would have served its clients in the clear when it should not refuses
+    // here, and a certificate that cannot be read is found now, not at the
+    // first client's handshake (ADR-0108 D4).
+    let clients = crate::tls::decide(
+        serving
+            .tls
+            .clone()
+            .with_environment(|name| std::env::var(name).ok())?,
+        cluster.is_some(),
+    )?;
+    let secured = match &clients {
+        crate::tls::Clients::Tls { cert, key } => Some(crate::tls::settings(cert, key)?),
+        crate::tls::Clients::Plaintext { .. } => None,
+    };
     // A cluster configuration with no seed address is legal, and it is legal
     // because the catalog is the other half of the answer: a node whose
     // membership rows already name a peer has somewhere to dial and needs no
@@ -203,18 +218,24 @@ pub(crate) fn serve(
         Some(address) => {
             // The directory reaches this surface's sessions through the store's
             // handle, set where the peers are (Q-863), as it reaches HTTP's.
-            Some(
-                tessari_wire::Node::bind(std::sync::Arc::clone(&db), address.as_str())
-                    .map_err(|failure| format!("{address}: {failure}"))?,
-            )
+            let node = tessari_wire::Node::bind(std::sync::Arc::clone(&db), address.as_str())
+                .map_err(|failure| format!("{address}: {failure}"))?;
+            Some(match &secured {
+                Some((wire, _)) => node.securing(std::sync::Arc::clone(wire)),
+                None => node,
+            })
         }
         None => None,
     };
     let mut http = match &serving.http {
-        Some(address) => Some(
-            tessari_http::Node::bind(std::sync::Arc::clone(&db), address)
-                .map_err(|failure| format!("{address}: {failure}"))?,
-        ),
+        Some(address) => {
+            let mut node = tessari_http::Node::bind(std::sync::Arc::clone(&db), address)
+                .map_err(|failure| format!("{address}: {failure}"))?;
+            if let Some((_, http)) = &secured {
+                node.securing(std::sync::Arc::clone(http));
+            }
+            Some(node)
+        }
         None => None,
     };
     // `GET /wire` carries the wire protocol over a WebSocket (ADR-0089), so it is
@@ -233,7 +254,21 @@ pub(crate) fn serve(
     if let Some(node) = &http {
         eprintln!("tessaridb — http on {}", node.address());
     }
-    eprintln!("tessaridb — there is no TLS, so trust the network");
+    match &clients {
+        crate::tls::Clients::Tls { cert, .. } => {
+            eprintln!(
+                "tessaridb — clients over TLS only, presenting {}",
+                cert.display()
+            );
+        }
+        crate::tls::Clients::Plaintext { chosen: true } => {
+            eprintln!("tessaridb — clients in the clear, as asked; trust the network");
+        }
+        crate::tls::Clients::Plaintext { chosen: false } => eprintln!(
+            "tessaridb — clients in the clear: --tls-cert and --tls-key would encrypt them, \
+             and a cluster node refuses to start without them or --client-plaintext"
+        ),
+    }
     // Said only when there is something to say. Every deployment today is a
     // single node, and a line printed on every start is a line operators stop
     // reading. What was *bound* rather than what was asked for, the same as the

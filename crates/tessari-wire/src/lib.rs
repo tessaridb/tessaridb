@@ -102,6 +102,7 @@ mod node;
 mod peer;
 mod push;
 mod redirect;
+mod transport;
 mod vault;
 
 #[cfg(feature = "server")]

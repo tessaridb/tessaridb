@@ -14,9 +14,9 @@
 //! every other client and is read from the handshake when present, but for the
 //! one client this route exists to serve it is not available, so the request may
 //! carry a name and password instead. Recorded plainly rather than left to be
-//! inferred: this is a credential inside a message body, which is acceptable
-//! only because this store already states it has no TLS and belongs on a network
-//! the operator protects.
+//! inferred: this is a credential inside a message body, protected by exactly
+//! what protects an `Authorization` header — the node's TLS when it was given a
+//! certificate, and the operator's network when it was not (ADR-0108 D4).
 
 use tessaridb::{Change, ChangeKind, Value, Visible, seen};
 

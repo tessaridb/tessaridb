@@ -663,6 +663,7 @@ fn a_node_told_about_a_cluster_opens_its_peer_door_and_still_serves_clients() {
         .arg(&store)
         .args(["--serve", WIRE_WITH_PEERS])
         .args(["--cluster-credential", &leaf])
+        .arg("--client-plaintext")
         .args(["--cluster-key", &key])
         .args(["--cluster-authority", &authority])
         .args(["--cluster-address", PEERS])
@@ -760,6 +761,7 @@ fn a_peer_address_that_cannot_be_taken_is_a_failure_to_start_and_not_a_warning()
         .arg(&store)
         .args(["--serve", "127.0.0.1:0"])
         .args(["--cluster-credential", &leaf])
+        .arg("--client-plaintext")
         .args(["--cluster-key", &key])
         .args(["--cluster-authority", &authority])
         .args(["--cluster-address", "127.0.0.1:1"])
@@ -806,6 +808,7 @@ fn a_clustered_node_with_no_seed_and_no_peer_refuses_to_start() {
         .arg(&store)
         .args(["--serve", "127.0.0.1:0"])
         .args(["--cluster-credential", &leaf])
+        .arg("--client-plaintext")
         .args(["--cluster-key", &key])
         .args(["--cluster-authority", &authority])
         .args(["--cluster-address", "127.0.0.1:0"])
@@ -828,6 +831,113 @@ fn a_clustered_node_with_no_seed_and_no_peer_refuses_to_start() {
     assert!(
         !said.contains("wire protocol on"),
         "the client surface must never have been announced: {said}"
+    );
+}
+
+#[test]
+fn a_cluster_node_told_nothing_about_its_clients_refuses_to_start() {
+    // ADR-0108 D4: a cluster serves clients in the clear only when somebody
+    // said so. Everything else here is a configuration that starts — the seed
+    // is given — so the one refusal is the clients' transport.
+    let directory = tempfile::tempdir().unwrap();
+    let store = directory.path().join("store");
+    let minted = Minted::new();
+    let (leaf, key, authority) = credentials(&minted, [7u8; 16], directory.path());
+
+    let mut refused = Command::new(TESSARIDB)
+        .arg(&store)
+        .args(["--serve", "127.0.0.1:0"])
+        .args(["--cluster-credential", &leaf])
+        .args(["--cluster-key", &key])
+        .args(["--cluster-authority", &authority])
+        .args(["--cluster-address", "127.0.0.1:0"])
+        .args(["--seed", A_SEED])
+        .env_remove("TESSARIDB_TLS_CERT")
+        .env_remove("TESSARIDB_TLS_KEY")
+        .env_remove("TESSARIDB_CLIENT_PLAINTEXT")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // A node that wrongly starts serves for ever, so the refusal is waited for
+    // under a deadline: the failure this test exists for must not be a hang.
+    let began = Instant::now();
+    while refused.try_wait().unwrap().is_none() {
+        if began.elapsed() > Duration::from_secs(20) {
+            drop(refused.kill());
+            drop(refused.wait());
+            panic!("a cluster came up serving clients in the clear");
+        }
+        std::thread::yield_now();
+    }
+    let refused = refused.wait_with_output().unwrap();
+    assert!(
+        !refused.status.success(),
+        "a cluster came up serving clients in the clear"
+    );
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        said.contains("--tls-cert") && said.contains("--client-plaintext"),
+        "the refusal names both ways out: {said}"
+    );
+    assert!(
+        !said.contains("wire protocol on"),
+        "a client surface was announced: {said}"
+    );
+}
+
+/// The node `a_node_with_a_certificate_…` serves; 47976 is past every other band.
+const SECURED: &str = "127.0.0.1:47976";
+
+#[test]
+fn a_node_with_a_certificate_answers_at_over_tls_and_never_in_the_clear() {
+    let directory = tempfile::tempdir().unwrap();
+    let minted = Minted::new();
+    let params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_owned()]).unwrap();
+    let leaf_key = rcgen::KeyPair::generate().unwrap();
+    let leaf = params
+        .signed_by(&leaf_key, &minted.authority, &minted.key)
+        .unwrap();
+    let at = |name: &str| directory.path().join(name).to_string_lossy().into_owned();
+    std::fs::write(at("cert.pem"), leaf.pem()).unwrap();
+    std::fs::write(at("key.pem"), leaf_key.serialize_pem()).unwrap();
+    std::fs::write(at("ca.pem"), minted.authority.pem()).unwrap();
+
+    let _node = Running(
+        Command::new(TESSARIDB)
+            .arg(directory.path().join("store"))
+            .args(["--serve", SECURED])
+            .args(["--tls-cert", &at("cert.pem")])
+            .args(["--tls-key", &at("key.pem")])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    assert!(
+        listening(SECURED, Duration::from_secs(20)),
+        "the node never listened"
+    );
+
+    let asked = |trusting: Option<&str>| {
+        let mut command = Command::new(TESSARIDB);
+        command.args(["--at", SECURED, "-e", "RETURN 40 + 2;"]);
+        command.env_remove("TESSARIDB_TLS_AUTHORITY");
+        if let Some(file) = trusting {
+            command.args(["--tls-authority", file]);
+        }
+        command.output().unwrap()
+    };
+    let verified = asked(Some(&at("ca.pem")));
+    assert!(
+        verified.status.success() && String::from_utf8_lossy(&verified.stdout).contains("42"),
+        "a client that verified the node was not answered: {}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let clear = asked(None);
+    assert!(
+        !clear.status.success() && !String::from_utf8_lossy(&clear.stdout).contains("42"),
+        "a client in the clear was answered"
     );
 }
 
@@ -927,6 +1037,7 @@ fn a_joiner_restarted_without_its_seed_still_finds_the_leader() {
             .arg(&stores[index])
             .args(["--serve", NAMED[index].0])
             .args(["--cluster-credential", leaf])
+            .arg("--client-plaintext")
             .args(["--cluster-key", key])
             .args(["--cluster-authority", authority])
             .args(["--cluster-address", NAMED[index].1]);
@@ -1162,6 +1273,7 @@ fn a_row_nobody_bound_is_bound_by_the_peer_that_arrives() {
             .arg(&stores[index])
             .args(["--serve", UNBOUND[index].0])
             .args(["--cluster-credential", leaf])
+            .arg("--client-plaintext")
             .args(["--cluster-key", key])
             .args(["--cluster-authority", authority])
             .args(["--cluster-address", UNBOUND[index].1]);
@@ -1288,6 +1400,7 @@ fn a_node_dials_the_peer_its_catalog_declares() {
         .arg(&store)
         .args(["--serve", WIRE_WITH_DIALLING])
         .args(["--cluster-credential", &leaf])
+        .arg("--client-plaintext")
         .args(["--cluster-key", &key])
         .args(["--cluster-authority", &authority])
         .args(["--cluster-address", PEERS_FOR_DIALLING])
@@ -1681,6 +1794,7 @@ fn a_cluster_of_rows(band: &Band, preamble: &str, rows: [String; 3]) -> Three {
             stores[index].as_os_str(),
             "--serve".as_ref(),
             band[index].0.as_ref(),
+            "--client-plaintext".as_ref(),
             "--cluster-credential".as_ref(),
             leaf.as_ref(),
             "--cluster-key".as_ref(),
@@ -2363,6 +2477,7 @@ fn a_node_joins_a_cluster_it_was_only_given_an_address_for() {
             .arg(&stores[index])
             .args(["--serve", client])
             .args(["--cluster-credential", leaf])
+            .arg("--client-plaintext")
             .args(["--cluster-key", key])
             .args(["--cluster-authority", authority])
             .args(["--cluster-address", peer]);
@@ -2920,6 +3035,7 @@ fn spawn_refusing(
         .arg(&stores[index])
         .args(["--serve", REFUSING[index].0])
         .args(["--cluster-credential", leaf])
+        .arg("--client-plaintext")
         .args(["--cluster-key", key])
         .args(["--cluster-authority", authority])
         .args(["--cluster-address", REFUSING[index].1])

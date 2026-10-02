@@ -15,6 +15,7 @@ mod kv;
 mod objects;
 mod redirects;
 mod routes;
+mod secured;
 mod series;
 mod sessions;
 mod vault_responses;

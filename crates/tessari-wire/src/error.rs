@@ -310,6 +310,13 @@ pub enum Error {
     #[error("the peer link's transport refused this connection: {0}")]
     Transport(String),
 
+    /// A client's TLS with a node failed: the handshake, the name, the chain.
+    ///
+    /// The client surface's counterpart of [`Self::Transport`], kept apart so
+    /// an operator told about a certificate knows which door it was at.
+    #[error("TLS with that node failed: {0}")]
+    Tls(String),
+
     /// This node could not state what it holds, so it had nothing to greet with.
     ///
     /// Distinct from [`Self::Transport`] for the reason that one carries the

@@ -42,6 +42,7 @@
 
 mod accepting;
 mod bridge;
+pub mod tls;
 
 pub use crate::accepting::{ACCEPT_PAUSE, passes};
 pub use crate::bridge::{Bridge, Bridged};

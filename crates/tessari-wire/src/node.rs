@@ -11,7 +11,7 @@ use std::net::{TcpListener, ToSocketAddrs};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use tessari_constants::{MAX_CONNECTIONS, MAX_STORE_CALLS};
+use tessari_constants::{GREETING_SECONDS, MAX_CONNECTIONS, MAX_STORE_CALLS};
 use tessari_serve::{ACCEPT_PAUSE, Admitting, Bridge, Stopping, passes};
 use tessaridb::Db;
 use tessaridb::feed::Commits;
@@ -94,6 +94,9 @@ pub struct Node {
     /// standing alone, which is every deployment that was never told about
     /// peers, and such a node refuses exactly as it did before.
     elsewhere: Option<Arc<dyn tessari_session::Elsewhere>>,
+    /// TLS for every connection, when the node was given a certificate
+    /// (ADR-0108 D4). `None` serves the protocol in the clear.
+    secured: Option<tokio_rustls::TlsAcceptor>,
 }
 
 impl Node {
@@ -123,6 +126,7 @@ impl Node {
             )),
             hot: Arc::new(Semaphore::new(MAX_STORE_CALLS)),
             elsewhere: None,
+            secured: None,
         })
     }
 
@@ -141,6 +145,18 @@ impl Node {
     #[must_use]
     pub fn among(mut self, elsewhere: Arc<dyn tessari_session::Elsewhere>) -> Self {
         self.elsewhere = Some(elsewhere);
+        self
+    }
+
+    /// Speak TLS on every connection, and nothing else (ADR-0108 D4).
+    ///
+    /// There is no mixed port: a client that greets in the clear fails the
+    /// handshake and never reaches the protocol, so a credential it sends is
+    /// not read by this node — it has already crossed the network, which is
+    /// what refusing it at the door cannot undo and does not pretend to.
+    #[must_use]
+    pub fn securing(mut self, settings: Arc<rustls::ServerConfig>) -> Self {
+        self.secured = Some(tokio_rustls::TlsAcceptor::from(settings));
         self
     }
 
@@ -249,19 +265,52 @@ impl Node {
             };
             let id = next_connection();
             // Before the task, because the connection is the resource being
-            // bounded. A refusal costs one frame and a close.
+            // bounded. A refusal costs one frame and a close — in the clear;
+            // under TLS the socket is closed, since a frame before the
+            // handshake is bytes the client cannot read.
             let Some(place) = self.door.admit() else {
                 log::warn!(
                     "connection {id} refused from {}: {} already open",
                     from_where(&stream),
                     self.door.limit()
                 );
-                conversations.spawn(turn_away(stream));
+                if self.secured.is_none() {
+                    conversations.spawn(turn_away(stream));
+                }
                 continue;
             };
             log::info!("connection {id} accepted from {}", from_where(&stream));
             let (talk, session) = carrier.opening(id);
             let busy = self.stopping.busy();
+            if let Some(acceptor) = self.secured.clone() {
+                conversations.spawn(async move {
+                    // Under the greeting's deadline, which is what it replaces
+                    // at the door: a client that opens a socket and never
+                    // finishes a handshake holds a place exactly as one that
+                    // never greets would.
+                    let shaken = tokio::time::timeout(
+                        std::time::Duration::from_secs(GREETING_SECONDS),
+                        acceptor.accept(stream),
+                    )
+                    .await;
+                    let secured = match shaken {
+                        Ok(Ok(secured)) => secured,
+                        Ok(Err(why)) => {
+                            log::info!("connection {id} failed its TLS handshake: {why}");
+                            return;
+                        }
+                        Err(_) => {
+                            log::info!("connection {id} did not finish its TLS handshake in time");
+                            return;
+                        }
+                    };
+                    match conversation::converse(talk, busy, place, session, secured).await {
+                        Ok(()) => log::info!("connection {id} closed"),
+                        Err(why) => log::info!("connection {id} ended: {why}"),
+                    }
+                });
+                continue;
+            }
             conversations.spawn(async move {
                 match conversation::converse(talk, busy, place, session, stream).await {
                     Ok(()) => log::info!("connection {id} closed"),

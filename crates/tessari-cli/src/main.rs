@@ -61,6 +61,7 @@ mod store;
 mod streaming;
 mod supervise;
 mod table;
+mod tls;
 
 use std::env;
 use std::fs;
@@ -140,7 +141,17 @@ fn run(asked: Asked) -> Result<Ended, String> {
         return verify(path);
     }
     if let Some(address) = &asked.at {
-        let mut remote = store::Remote::connect(address, credentials, parameters)?;
+        // The flag, or the environment beside the other `--at` settings; given,
+        // the node is spoken to over TLS and must prove itself by it.
+        let trusting = match asked.authority.clone().or_else(|| {
+            std::env::var(tls::TLS_AUTHORITY)
+                .ok()
+                .map(std::path::PathBuf::from)
+        }) {
+            Some(file) => Some(tls::authority(&file)?),
+            None => None,
+        };
+        let mut remote = store::Remote::connect(address, trusting, credentials, parameters)?;
         let mut out = io::stdout().lock();
         return statements(&mut remote, &mut out, &asked.source, Where::Node(address));
     }

@@ -28,6 +28,13 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   --unseal-for <duration> how long an unseal lasts before the store seals itself,
                   written as TessariQL (`10m`, `1h`); default TESSARIDB_UNSEAL_FOR
                   or 10m
+  --tls-cert <file> serve clients over TLS with this certificate chain, PEM;
+                  default TESSARIDB_TLS_CERT
+  --tls-key <file> its private key, PEM; default TESSARIDB_TLS_KEY
+  --client-plaintext serve clients in the clear, which a cluster node refuses
+                  to do otherwise; or TESSARIDB_CLIENT_PLAINTEXT=1
+  --tls-authority <file> with --at: speak TLS and trust the node by these
+                  certificates, PEM; default TESSARIDB_TLS_AUTHORITY
   --cluster-credential <file> this node's peer credential, PEM, with --serve
   --cluster-key <file> its private key, PEM
   --cluster-authority <file> the one certificate this cluster trusts, PEM
@@ -47,6 +54,11 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   --health        say whether the store is well, and exit non-zero if not
   -V, --version   say which build this is, and exit
   -h, --help      this
+
+a node given --tls-cert and --tls-key speaks TLS on every client surface — the
+wire port, HTTP and the WebSocket on it — and nothing else. A cluster node will
+not serve clients in the clear unless --client-plaintext says so; a single node
+does, and says so when it starts.
 
 the five cluster options are given together or not at all: told some of them a
 node refuses to start rather than serving with credentials nobody checked, and
@@ -97,6 +109,8 @@ pub struct Asked {
     pub at_sequence: Option<u64>,
     /// The addresses to serve on, when `Source::Serve` was asked for.
     pub serving: Serving,
+    /// The certificates `--at` trusts a node by; given, the client speaks TLS.
+    pub authority: Option<PathBuf>,
     /// The cluster this node was told to join, when it was told about one.
     ///
     /// `None` is the single node every current deployment is, and is not a
@@ -121,6 +135,8 @@ pub struct Serving {
     pub backups: Option<PathBuf>,
     /// How long an unseal lasts; absent, `TESSARIDB_UNSEAL_FOR` or ten minutes.
     pub unseal_for: Option<core::time::Duration>,
+    /// What the TLS flags said; the environment fills the rest at start-up.
+    pub tls: crate::tls::Given,
 }
 
 impl Serving {
@@ -192,6 +208,7 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
     let mut authority = None;
     let mut door = None;
     let mut seeds: Vec<String> = Vec::new();
+    let mut trusted = None;
     let mut arguments = arguments;
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
@@ -293,6 +310,25 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                     .ok_or_else(|| "--unseal-for wants a duration, such as 10m".to_owned())?;
                 serving.unseal_for =
                     Some(unseal_period(&written).map_err(|why| format!("--unseal-for {why}"))?);
+            }
+            "--tls-cert" => {
+                let path = arguments
+                    .next()
+                    .ok_or_else(|| "--tls-cert wants a path".to_owned())?;
+                serving.tls.cert = Some(PathBuf::from(path));
+            }
+            "--tls-key" => {
+                let path = arguments
+                    .next()
+                    .ok_or_else(|| "--tls-key wants a path".to_owned())?;
+                serving.tls.key = Some(PathBuf::from(path));
+            }
+            "--client-plaintext" => serving.tls.plaintext = true,
+            "--tls-authority" => {
+                let path = arguments
+                    .next()
+                    .ok_or_else(|| "--tls-authority wants a path".to_owned())?;
+                trusted = Some(PathBuf::from(path));
             }
             "--cluster-credential" => {
                 let path = arguments
@@ -431,6 +467,22 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                 .to_owned(),
         );
     }
+    // And again: a certificate named on a process that serves nothing is one
+    // somebody believes is encrypting their clients.
+    if serving.tls != crate::tls::Given::default() && !matches!(source, Source::Serve) {
+        return Err(
+            "--tls-cert, --tls-key and --client-plaintext say how a serving node speaks to \
+             its clients, and this serves nothing"
+                .to_owned(),
+        );
+    }
+    // The client's half: trusting a node by a certificate is something only a
+    // connection to one can do.
+    if trusted.is_some() && at.is_none() {
+        return Err(
+            "--tls-authority is what --at trusts a node by, and there is no --at".to_owned(),
+        );
+    }
     // Same reason as the line above, and what the operator believes here is
     // stronger: not that a port is open, but that this node joined a cluster.
     let told_about_a_cluster = credential.is_some()
@@ -454,6 +506,7 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
         parameters,
         at_sequence: sequence,
         serving,
+        authority: trusted,
         cluster,
     })
 }

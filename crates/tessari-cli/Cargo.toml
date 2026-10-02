@@ -25,6 +25,8 @@ tessari-backup.workspace = true
 tessari-http.workspace = true
 tessari-ingest.workspace = true
 tessari-serve.workspace = true
+# The client surfaces' TLS settings (ADR-0108 D4), built by `tessari-serve`.
+rustls.workspace = true
 tessari-constants.workspace = true
 # The terminal's raw mode, and the immediate exit a second stop signal asks for.
 # Already in the tree through the engine, so this costs no crate.

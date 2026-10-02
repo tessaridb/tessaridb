@@ -19,7 +19,11 @@ publish.workspace = true
 # in one crate on purpose, so that a change to a frame breaks the other end at
 # compile time rather than in somebody's deployment.
 default = ["server"]
+# A client that speaks TLS to a node (ADR-0108 D4). Apart from `server` so a lean
+# client takes rustls only when it asks for it.
+tls = ["dep:rustls"]
 server = [
+    "tls",
     "dep:dashmap",
     "dep:getrandom",
     "dep:tessari-constants",
@@ -83,6 +87,8 @@ tessari-backup.workspace = true
 rust_decimal.workspace = true
 # The test certificate authority, minted in memory per test.
 rcgen.workspace = true
+# The client surfaces' TLS reader, for the node the TLS tests start.
+tessari-serve.workspace = true
 
 # These four drive a node, so without the server half there is nothing for them
 # to drive. Declared as `required-features` rather than gated with an inner

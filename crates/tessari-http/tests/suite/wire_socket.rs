@@ -31,7 +31,7 @@ const SUBSCRIBE: u8 = 4;
 const CHANGE: u8 = 5;
 
 /// The wire node's carrier, in the shape the HTTP node takes it.
-fn door_of(wire: &tessari_wire::Node) -> WireDoor {
+pub(crate) fn door_of(wire: &tessari_wire::Node) -> WireDoor {
     let carrier = wire.carrier();
     Arc::new(move || {
         carrier.admit().map(|admitted| {

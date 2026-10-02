@@ -98,7 +98,7 @@ fn embedded(db: &Db, script: &str) -> String {
 
 /// The same, against a node.
 fn remote(address: &str, script: &str) -> String {
-    let mut store = Remote::connect(address, None, Parameters::new()).expect("a connection");
+    let mut store = Remote::connect(address, None, None, Parameters::new()).expect("a connection");
     said(&mut store, script)
 }
 
@@ -162,7 +162,7 @@ fn a_parameterised_script_reads_the_same_from_a_socket_as_from_this_process() {
 
     let mut near_store = Embedded::new(&here, None, given.clone()).expect("a session");
     let near = said(&mut near_store, script);
-    let mut far_store = Remote::connect(&address, None, given).expect("a connection");
+    let mut far_store = Remote::connect(&address, None, None, given).expect("a connection");
     let far = said(&mut far_store, script);
 
     assert_eq!(near, far, "embedded:\n{near}\nremote:\n{far}");
