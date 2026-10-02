@@ -94,6 +94,12 @@ compares carries no pre-release suffix.
 - **A voter judges a range's ballot on the line it holds**, not on its greeting,
   which describes only the range it is placed on — so a former leader or a
   follower holding the line refuses a candidate behind it.
+- **A former leader of a placed range follows its successor after a move.** A
+  write it committed that no other node held was, correctly, not in the new
+  leader's line, and the old leader refused that line on every round, so it never
+  followed again and answered writes with a spent lease instead of redirecting.
+  A placed range's line it can no longer continue is now repaired as the store
+  line's is: by a copy of its leader's state.
 
 - **A refused challenger no longer ends a live lease**: a voter holding a live
   grant adopts a ballot's epoch only past that grant (Q-880).

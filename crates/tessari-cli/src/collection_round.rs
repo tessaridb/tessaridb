@@ -121,13 +121,16 @@ pub(crate) async fn collect_from_upstream(
         // ADR-0082. Before the store line's early returns below: a node that
         // may write follows nobody on the STORE line, and must still collect
         // every placed range it does not lead from that range's leader.
-        collect_placed_ranges(
+        if collect_placed_ranges(
             (db, &handle),
             keys,
             (&declared, me, &heard, &published_handle),
             &mut by_leader,
             (&mut streams, &stopped, &wakes),
-        );
+        ) {
+            // A copy from a range's leader moved every log this node holds.
+            collecting = tessari_wire::Collecting::new();
+        }
         // The seed INSTEAD of the catalog, and only while the catalog names
         // no peer but this node — `bootstrap_from` carries the reason it is
         // not a fallback for `upstream` answering `None`. `DEFINE REPLICA`
@@ -225,16 +228,7 @@ pub(crate) async fn collect_from_upstream(
             asks.push((home, collecting.reached(home).unwrap_or(seed)));
         }
         let answers = collector.round(store, &asks);
-        // A log that no longer reaches back to this node's position is not
-        // a refusal to retry (ADR-0094 D3): it is repaired by a copy — and so
-        // is a copy that forked from the line (ADR-0107, Q-879 H2), which
-        // meets the same record on every pass.
-        let below = answers.iter().any(|answer| {
-            matches!(
-                answer,
-                Err(tessari_wire::Error::Uncollectable { .. } | tessari_wire::Error::Forked { .. })
-            )
-        });
+        let below = repaired_by_a_copy(&answers);
         // A clean round against a member of this node's own catalog is what
         // a stream starts from; a refusal or a seed is the round's alone.
         let clean = answers.iter().all(Result::is_ok) && tessari_wire::names_a_peer(&declared, &me);
@@ -294,8 +288,10 @@ pub(crate) async fn collect_from_upstream(
             )
         {
             // The copy stood each log where the leader's stood, so every
-            // cursor starts again from this node's own tails.
+            // cursor starts again from this node's own tails — the placed
+            // ranges' too, since the copy moved their logs as well.
             collecting = tessari_wire::Collecting::new();
+            by_leader.clear();
         }
         collection
     })
@@ -321,6 +317,23 @@ pub(crate) async fn collect_from_upstream(
 /// (*cannot say what precedes*, a fork) read as this node being behind, so its
 /// own range was copied over from the follower and the records only it held
 /// were removed (Q-884).
+/// Whether a round met a log it can only be repaired on by a copy.
+///
+/// A log that no longer reaches back to this node's position is not a refusal
+/// to retry (ADR-0094 D3): it is repaired by a copy — and so is a copy that
+/// forked from the line (ADR-0107, Q-879 H2), which meets the same record on
+/// every pass. The same on the store line and on a placed range's line: a
+/// former leader of a range, moved away while its last writes were held by
+/// nobody else, holds a record its successor's line does not (Q-884).
+fn repaired_by_a_copy<T>(answers: &[Result<T, tessari_wire::Error>]) -> bool {
+    answers.iter().any(|answer| {
+        matches!(
+            answer,
+            Err(tessari_wire::Error::Uncollectable { .. } | tessari_wire::Error::Forked { .. })
+        )
+    })
+}
+
 fn on_the_store_line(
     logs: Vec<tessari_types::Reach>,
     declared: &[tessari_storage::ReplicaDefinition],
@@ -353,7 +366,9 @@ fn store_line_upstream(
 /// says it should hold, and each is collected from the range that contains it
 /// as that range's leader's log. A failure is logged and the next range still
 /// runs, for the store pass's reason — one peer being unreachable is the
-/// condition replication exists to survive.
+/// condition replication exists to survive. A range whose line this node can
+/// no longer continue is repaired by a copy from its leader, as on the store
+/// line; answers whether one landed, so the caller restarts its cursors too.
 pub(crate) fn collect_placed_ranges(
     (db, handle): (&Db, &std::sync::Arc<Db>),
     keys: &tessari_wire::PeerKeys,
@@ -372,25 +387,25 @@ pub(crate) fn collect_placed_ranges(
         &tokio_util::sync::CancellationToken,
         &std::sync::Arc<crate::peers::Wakes>,
     ),
-) {
+) -> bool {
     let placed: std::collections::BTreeSet<tessari_types::Reach> =
         declared.iter().filter_map(|peer| peer.leads).collect();
     if placed.is_empty() {
-        return;
+        return false;
     }
     let store = db.store();
     let logs = match tessari_wire::logs_to_collect(store) {
         Ok(logs) => logs,
         Err(why) => {
             log::warn!("this node cannot say which logs it should hold: {why}");
-            return;
+            return false;
         }
     };
     let said = match greeting(db) {
         Ok(said) => said,
         Err(why) => {
             log::warn!("this node cannot say what it holds: {why}");
-            return;
+            return false;
         }
     };
     for range in placed {
@@ -440,12 +455,29 @@ pub(crate) fn collect_placed_ranges(
         }
         let answers = collector.round(store, &asks);
         let clean = answers.iter().all(Result::is_ok);
+        let below = repaired_by_a_copy(&answers);
         for ((home, at), answer) in asks.into_iter().zip(answers) {
             if let Err(why) = collecting.once(home, at, |_| answer) {
                 log::warn!(
                     "collecting {home:?} from {endpoint}, its range's leader, was refused: {why}"
                 );
             }
+        }
+        if below {
+            if crate::reseeding::reseed(
+                db,
+                keys,
+                (node, &endpoint),
+                &said,
+                crate::reseeding::leads_a_range(declared, me),
+            ) {
+                // The copy stood every log where this leader's stood, and the
+                // greeting the other ranges would be asked with is stale: the
+                // pass ends, and the next starts every cursor from the store.
+                by_leader.clear();
+                return true;
+            }
+            continue;
         }
         if clean {
             let homes: crate::streaming::Homes = Box::new(move |db: &Db| {
@@ -478,6 +510,7 @@ pub(crate) fn collect_placed_ranges(
             );
         }
     }
+    false
 }
 
 #[cfg(test)]
