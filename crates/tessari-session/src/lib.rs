@@ -24,6 +24,7 @@
 mod accumulate;
 mod administration;
 pub use administration::travels;
+pub use throttle::{Budget, failed_shared, permit_shared, succeeded_shared};
 mod aggregate;
 mod arithmetic;
 mod authorize;

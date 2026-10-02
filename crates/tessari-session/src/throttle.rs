@@ -53,8 +53,7 @@
 //! Nothing here holds the name itself. A bucket index is a number, so a caller
 //! sending a megabyte of name spends a megabyte once and leaves nothing behind.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use std::hash::{BuildHasher, RandomState};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -83,12 +82,61 @@ struct Bucket {
     missed: u32,
     /// When attempts may resume, while that is in the future.
     until: Option<Instant>,
+    /// The whole 64-bit hash of the identity that missed last.
+    ///
+    /// A bucket is shared by every name that lands in it, and that sharing is
+    /// conservative for FAILURES — they throttle sooner. For a SUCCESS it was
+    /// not: one colliding account signing in correctly gave every other name in
+    /// the bucket its allowance back, three guesses at a time without end. A
+    /// success now clears the count only when it is the success of the identity
+    /// that missed (G054 W3).
+    last: u64,
+}
+
+/// A sign-in budget shared with the other nodes of a cluster (ADR-0108 D5).
+///
+/// A guess sent to each of N nodes used to be N guesses' worth of allowance,
+/// because each node counted alone. A clustered node asks the one table the
+/// cluster keeps — the store line's leader's — before it hashes a password,
+/// and tells it how the try went. A node that cannot ask in time counts on its
+/// own table, which is what a partition costs and is said in the docs.
+pub trait Budget: Send + Sync + std::fmt::Debug {
+    /// Whether `name` may try now; `None` when the shared table could not be
+    /// asked, so this node decides on its own.
+    fn permit(&self, name: &str) -> Option<bool>;
+    /// A try as `name` missed.
+    fn failed(&self, name: &str);
+    /// A try as `name` succeeded.
+    fn succeeded(&self, name: &str);
+}
+
+/// What the store line's leader answers a peer asking for `name` (ADR-0108
+/// D5): this process's own table, the cluster's while this node leads.
+#[must_use]
+pub fn permit_shared(name: &str) -> bool {
+    attempts().permit(name)
+}
+
+/// A peer reports that a try as `name` missed there.
+pub fn failed_shared(name: &str) {
+    attempts().failed(name);
+}
+
+/// A peer reports that a try as `name` succeeded there.
+pub fn succeeded_shared(name: &str) {
+    attempts().succeeded(name);
 }
 
 /// The failure counts, and the delay each one has earned.
 #[derive(Debug)]
 pub(crate) struct Attempts {
     buckets: Mutex<Box<[Bucket; BUCKETS]>>,
+    /// The key names are hashed under, drawn when the table is made.
+    ///
+    /// A fixed key made the placement public: anybody could compute, away from
+    /// the node, a name that shares a victim's bucket. Drawn per table, which
+    /// for the process's own table is per process (G054 W3).
+    keys: RandomState,
 }
 
 impl Attempts {
@@ -96,6 +144,7 @@ impl Attempts {
     pub(crate) fn new() -> Self {
         Self {
             buckets: Mutex::new(Box::new([Bucket::default(); BUCKETS])),
+            keys: RandomState::new(),
         }
     }
 
@@ -107,7 +156,7 @@ impl Attempts {
     /// refusal that still paid for the verification would have bounded nothing.
     pub(crate) fn permit(&self, name: &str) -> bool {
         let mut buckets = self.buckets.lock().unwrap_or_else(PoisonError::into_inner);
-        let bucket = &mut buckets[index_of(name)];
+        let bucket = &mut buckets[self.index_of(name)];
         match bucket.until {
             None => true,
             Some(waiting) if Instant::now() < waiting => false,
@@ -126,8 +175,9 @@ impl Attempts {
     /// Record that `name` did not match, and set what it now has to wait.
     pub(crate) fn failed(&self, name: &str) {
         let mut buckets = self.buckets.lock().unwrap_or_else(PoisonError::into_inner);
-        let bucket = &mut buckets[index_of(name)];
+        let bucket = &mut buckets[self.index_of(name)];
         bucket.missed = bucket.missed.saturating_add(1);
+        bucket.last = self.keys.hash_one(name);
         // The allowance is spent *by* the third miss, not after a fourth. Written
         // the other way round first, and the test above caught it: an off-by-one
         // here is one free guess per identity per backoff window, forever.
@@ -151,9 +201,24 @@ impl Attempts {
     /// measures *consecutive* misses and a match ends the run. It also means a
     /// person who mistyped twice and then got it right starts the next day with
     /// three tries again, rather than with the residue of a Tuesday.
+    /// Which bucket a name's failures are counted in.
+    ///
+    /// `BUCKETS` is a power of two, so the low bits **are** the index: a mask,
+    /// with no remainder to divide and no cast that can narrow.
+    fn index_of(&self, name: &str) -> usize {
+        let mask = u64::try_from(BUCKETS.saturating_sub(1)).unwrap_or(u64::MAX);
+        // Bucket zero is a real bucket, so a fallback that cannot be reached is
+        // still a safe one rather than a hidden panic.
+        usize::try_from(self.keys.hash_one(name) & mask).unwrap_or(0)
+    }
+
     pub(crate) fn succeeded(&self, name: &str) {
         let mut buckets = self.buckets.lock().unwrap_or_else(PoisonError::into_inner);
-        buckets[index_of(name)] = Bucket::default();
+        let at = self.index_of(name);
+        // Cleared only by the identity whose misses they are; see `Bucket::last`.
+        if buckets[at].missed == 0 || buckets[at].last == self.keys.hash_one(name) {
+            buckets[at] = Bucket::default();
+        }
     }
 }
 
@@ -167,21 +232,6 @@ fn wait_after(over: u32) -> Duration {
         .saturating_mul(1_u64.checked_shl(doublings).unwrap_or(u64::MAX))
         .min(SIGN_IN_BACKOFF_CEILING_MILLIS);
     Duration::from_millis(millis)
-}
-
-/// Which bucket a name's failures are counted in.
-///
-/// `BUCKETS` is a power of two, so the low bits **are** the index: this is a
-/// mask, with no remainder to divide and no cast that can narrow. Written as a
-/// remainder first, and the linter was right to refuse it — the comment already
-/// claimed a mask while the code did a division and a `u64`-to-`usize` cast.
-fn index_of(name: &str) -> usize {
-    let mut hasher = DefaultHasher::new();
-    name.hash(&mut hasher);
-    let mask = u64::try_from(BUCKETS.saturating_sub(1)).unwrap_or(u64::MAX);
-    // Bucket zero is a real bucket, so a fallback that cannot be reached is
-    // still a safe one rather than a hidden panic.
-    usize::try_from(hasher.finish() & mask).unwrap_or(0)
 }
 
 /// This process's failure counts.
@@ -204,7 +254,7 @@ pub(crate) fn verifying() -> Option<Admitted> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Attempts, BUCKETS, index_of, wait_after};
+    use super::{Attempts, BUCKETS, wait_after};
     use std::thread::sleep;
     use std::time::Duration;
     use tessari_constants::{
@@ -277,8 +327,60 @@ mod tests {
         // Two names chosen because they land in different buckets, asserted
         // rather than assumed — a test that silently picked a collision would
         // pass while proving the opposite of its name.
-        assert_ne!(index_of("root"), index_of("editor"));
+        assert_ne!(attempts.index_of("root"), attempts.index_of("editor"));
         assert!(attempts.permit("editor"));
+    }
+
+    /// Two names this table files in one bucket, found by asking it.
+    fn colliding(attempts: &Attempts) -> (String, String) {
+        let first = "victim".to_owned();
+        let at = attempts.index_of(&first);
+        let second = (0..1_000_000)
+            .map(|n| format!("other{n}"))
+            .find(|name| attempts.index_of(name) == at)
+            .expect("a collision among a million names in a thousand buckets");
+        (first, second)
+    }
+
+    #[test]
+    fn a_success_by_another_identity_in_the_bucket_does_not_give_the_misses_back() {
+        // A colliding account with a valid password signing in must not reset a
+        // victim's count: that would be unlimited guesses, three at a time.
+        let attempts = Attempts::new();
+        let (victim, other) = colliding(&attempts);
+        for _ in 0..FREE_SIGN_IN_FAILURES {
+            attempts.failed(&victim);
+        }
+        assert!(!attempts.permit(&victim));
+        attempts.succeeded(&other);
+        assert!(
+            !attempts.permit(&victim),
+            "another identity's success gave the victim its allowance back"
+        );
+        // The control: the victim's own success still does.
+        attempts.succeeded(&victim);
+        assert!(attempts.permit(&victim));
+    }
+
+    #[test]
+    fn where_a_name_is_filed_is_this_tables_secret() {
+        // Placed by a key drawn when the table is made, so a colliding name
+        // cannot be computed away from the node it is aimed at.
+        let one = Attempts::new();
+        let other = Attempts::new();
+        let names: Vec<String> = (0..64).map(|n| format!("user{n}")).collect();
+        // The control: one table files a name in the same place every time.
+        assert!(
+            names
+                .iter()
+                .all(|name| one.index_of(name) == one.index_of(name))
+        );
+        assert!(
+            names
+                .iter()
+                .any(|name| one.index_of(name) != other.index_of(name)),
+            "two tables filed sixty-four names identically, so the placement is public"
+        );
     }
 
     #[test]
@@ -369,8 +471,12 @@ mod tests {
 
     #[test]
     fn every_name_lands_inside_the_table() {
+        let attempts = Attempts::new();
         for name in ["", "root", "a name with spaces", &"x".repeat(100_000)] {
-            assert!(index_of(name) < BUCKETS, "{name} indexed outside the table");
+            assert!(
+                attempts.index_of(name) < BUCKETS,
+                "{name} indexed outside the table"
+            );
         }
     }
 }

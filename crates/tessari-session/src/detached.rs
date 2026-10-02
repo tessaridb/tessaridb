@@ -30,6 +30,7 @@ pub struct Detached {
     elsewhere: Option<Arc<dyn Elsewhere>>,
     gather: Option<Arc<dyn Gather>>,
     backups: Option<Arc<std::path::Path>>,
+    budget: Option<Arc<dyn crate::throttle::Budget>>,
 }
 
 impl Session<'_> {
@@ -44,6 +45,7 @@ impl Session<'_> {
             elsewhere: self.elsewhere,
             gather: self.gather,
             backups: self.backups,
+            budget: self.budget,
         }
     }
 }
@@ -61,6 +63,7 @@ impl Detached {
             elsewhere: self.elsewhere,
             gather: self.gather,
             backups: self.backups,
+            budget: self.budget,
             // A sink belongs to the request that streams, never to state
             // carried to a later one.
             sink: crate::backup_to::Sink::none(),

@@ -4613,3 +4613,92 @@ fn a_follower_answers_a_client_that_cannot_follow_a_redirect() {
         what_the_nodes_said(&COORDINATING, &logs)
     );
 }
+
+/// The sign-in budget's cluster — 47970-47975, a band of its own.
+const BUDGETED: Band = [
+    ("127.0.0.1:47970", "127.0.0.1:47971"),
+    ("127.0.0.1:47972", "127.0.0.1:47973"),
+    ("127.0.0.1:47974", "127.0.0.1:47975"),
+];
+
+/// G054 C4 (ADR-0108 D5) against three processes: misses spread over nodes are
+/// counted in ONE table, so a node that never saw a miss still makes the next
+/// try wait — even with the right password.
+///
+/// Red on the build before the shared budget: each node counted alone, so the
+/// third node, untouched, let the right password straight in.
+#[test]
+#[ignore = "three spawned processes, an election and a doubling wait of several \
+            seconds; G054 C4's own validation, run explicitly: cargo test -p \
+            tessari-cli --test serving misses_spread_over_nodes -- --ignored"]
+fn misses_spread_over_nodes_are_counted_once() {
+    let cluster = a_cluster_of_three(&BUDGETED);
+    let logs = cluster.logs.clone();
+    let leader = the_node_a_majority_granted(&BUDGETED);
+    let first = the_next_node(&BUDGETED, leader);
+    let untouched = the_next_node(&BUDGETED, first);
+    let patience = Duration::from_secs(90);
+    asked(
+        BUDGETED[leader].0,
+        &format!("DEFINE USER ada ROLE owner PASSWORD '{SECRET}';"),
+        None,
+    )
+    .expect("the leader declares the first user");
+    for node in [first, untouched] {
+        assert!(
+            until(patience, || counted(BUDGETED[node].0).is_err()),
+            "the user never reached node {node}{}",
+            what_the_nodes_said(&BUDGETED, &logs)
+        );
+    }
+    // The leader holds the cluster's table only once a greeting round has told
+    // each follower who leads; wait for the follower to say so.
+    let knows_the_leader = || {
+        Client::connect(BUDGETED[untouched].0).is_ok_and(|mut client| {
+            client
+                .run_routed(
+                    "USE NAMESPACE prod; USE DATABASE orders; \
+                     SELECT * FROM item ANSWERED BY LEADER;",
+                    Some(("ada", SECRET)),
+                    &tessari_ql::Parameters::new(),
+                )
+                .is_ok_and(|served| {
+                    matches!(served, Served::Elsewhere(sent) if sent.node == cluster.ids[leader])
+                })
+        })
+    };
+    assert!(
+        until(patience, knows_the_leader),
+        "the untouched follower never learnt who leads{}",
+        what_the_nodes_said(&BUDGETED, &logs)
+    );
+
+    // Nine counted misses, alternating between the leader and one follower,
+    // waiting out each doubling wait: the shared wait is then eight seconds.
+    let mut missed = 0;
+    let mut turn = [leader, first].into_iter().cycle();
+    let began = Instant::now();
+    while missed < 9 {
+        assert!(
+            began.elapsed() < Duration::from_secs(120),
+            "nine misses were never counted{}",
+            what_the_nodes_said(&BUDGETED, &logs)
+        );
+        let node = turn.next().unwrap();
+        match asked(BUDGETED[node].0, READ, Some(("ada", "a wrong guess"))) {
+            Err(said) if said.contains("no user of that name and password") => missed += 1,
+            Err(said) if said.contains("not taking a sign-in") => std::thread::sleep(POLL),
+            other => panic!("a wrong password was answered with {other:?}"),
+        }
+    }
+
+    // The right password, on the one node that never saw a miss.
+    let answered = asked(BUDGETED[untouched].0, READ, Some(("ada", SECRET)));
+    assert!(
+        answered
+            .as_ref()
+            .is_err_and(|said| said.contains("not taking a sign-in")),
+        "a node that never saw a miss let the next try in: {answered:?}{}",
+        what_the_nodes_said(&BUDGETED, &logs)
+    );
+}

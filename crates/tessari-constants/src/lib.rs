@@ -409,6 +409,14 @@ pub const GREETING_SECONDS: u64 = 10;
 /// went silent must not hold the caller's connection forever.
 pub const COORDINATED_SECONDS: u64 = 120;
 
+/// How long a sign-in waits to ask the cluster's one budget (ADR-0108 D5)
+/// before deciding on this node's own count.
+///
+/// Short, because the caller is waiting and a password hash follows: a leader
+/// that does not answer in this long is treated as unreachable for this try,
+/// which costs at most one node's allowance while it lasts.
+pub const SIGN_IN_ASK_MILLIS: u64 = 500;
+
 /// How often a node is expected to learn something about its peers.
 ///
 /// Unit: seconds.

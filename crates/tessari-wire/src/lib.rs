@@ -58,6 +58,8 @@
 #[cfg(feature = "server")]
 mod assertion;
 #[cfg(feature = "server")]
+mod budget;
+#[cfg(feature = "server")]
 mod campaign;
 #[cfg(feature = "server")]
 mod carrier;
@@ -109,6 +111,8 @@ use std::time::Duration;
 pub use crate::assertion::{
     Assertion, Disbelieved, Principal, Replays, Signed, nonce, now_ms, request_digest,
 };
+#[cfg(feature = "server")]
+pub use crate::budget::{Attempt, SharedBudget, Try};
 #[cfg(feature = "server")]
 pub use crate::campaign::{Standing, Stood};
 #[cfg(feature = "server")]

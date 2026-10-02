@@ -85,6 +85,9 @@ pub struct Session<'a> {
     /// A fact about the process, like `gather`, so it is taken at the session;
     /// `None` refuses every `TO` rather than writing somewhere nobody chose.
     pub(crate) backups: Option<Arc<Path>>,
+    /// The cluster's sign-in budget, when this node is part of one (ADR-0108
+    /// D5). A fact about the process, like `gather`.
+    pub(crate) budget: Option<Arc<dyn crate::throttle::Budget>>,
     /// Where a `BACKUP STATE` answered here writes its snapshot instead of
     /// answering with it (ADR-0094 D6), when the caller is streaming.
     pub(crate) sink: crate::backup_to::Sink,
@@ -129,6 +132,7 @@ impl<'a> Session<'a> {
             elsewhere: None,
             gather: None,
             backups: None,
+            budget: None,
             sink: crate::backup_to::Sink::none(),
             landed: false,
         }
@@ -157,6 +161,14 @@ impl<'a> Session<'a> {
     #[must_use]
     pub fn gathering(mut self, gather: Arc<dyn Gather>) -> Self {
         self.gather = Some(gather);
+        self
+    }
+
+    /// Open this session counting sign-in tries against the cluster's one
+    /// budget (ADR-0108 D5) as well as this node's own.
+    #[must_use]
+    pub fn budgeted(mut self, budget: Arc<dyn crate::throttle::Budget>) -> Self {
+        self.budget = Some(budget);
         self
     }
 
@@ -427,7 +439,15 @@ impl<'a> Session<'a> {
     pub fn sign_in(&mut self, name: &str, password: &str) -> Result<()> {
         // First, and before the transaction below: a throttled attempt has to
         // cost a lock and an array index, or the refusal has bounded nothing.
-        if !throttle::attempts().permit(name) {
+        // The cluster's table when there is one and it answers in time, else
+        // this node's own (ADR-0108 D5). Both are kept: this node's own count
+        // is what stands in while the shared one cannot be asked.
+        let permitted = self
+            .budget
+            .as_ref()
+            .and_then(|budget| budget.permit(name))
+            .unwrap_or_else(|| throttle::attempts().permit(name));
+        if !permitted {
             log::warn!("sign-in for {name} refused: too many recent failures");
             return Err(Error::SignInThrottled);
         }
@@ -461,18 +481,29 @@ impl<'a> Session<'a> {
             // Counted against the name that was tried, not against the user that
             // was not found. Counting only known names would let an attacker
             // enumerate the catalog by watching which names start to wait.
-            throttle::attempts().failed(name);
+            self.missed(name);
             return Err(Error::SignInRefused);
         };
         if !identity::verifies(password, &user.secret) {
             log::warn!("sign-in refused for {name}");
-            throttle::attempts().failed(name);
+            self.missed(name);
             return Err(Error::SignInRefused);
         }
         log::info!("signed in as {name}");
         throttle::attempts().succeeded(name);
+        if let Some(budget) = &self.budget {
+            budget.succeeded(name);
+        }
         self.identity = Identity::Signed(Box::new(user));
         Ok(())
+    }
+
+    /// Count a missed try as `name` here and, in a cluster, in the shared table.
+    fn missed(&self, name: &str) {
+        throttle::attempts().failed(name);
+        if let Some(budget) = &self.budget {
+            budget.failed(name);
+        }
     }
 
     /// Act as a user the store already declared, without a credential.
@@ -562,6 +593,7 @@ impl<'a> Session<'a> {
             gather: self.gather.clone(),
             // A probe answers who may do what and never writes a file.
             backups: None,
+            budget: self.budget.clone(),
             sink: crate::backup_to::Sink::none(),
             landed: false,
         };

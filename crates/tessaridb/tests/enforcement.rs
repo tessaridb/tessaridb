@@ -463,7 +463,16 @@ const TABLES: &[Table] = &[
         //   * `Db::among` gives every session the peer directory (Q-863);
         //     **exempt on `gather_through`'s ground**: set once by the starting
         //     process, and it decides only which node a refusal names.
-        expected: 32,
+        //
+        // 33 since one sign-in budget for a cluster (G054 W3, ADR-0108 D5):
+        // `Db::budget_through` installs, once, who is asked whether a name may
+        // try a password now. Classified **exempt on `gather_through`'s
+        // ground**: set by the starting process; it can only make a sign-in
+        // WAIT (or decide on this node's own count when it cannot answer) and
+        // never admits anybody — the password is still verified here.
+        // Re-classification trigger: an installed budget able to answer for a
+        // sign-in rather than about one.
+        expected: 33,
         count: |text| public_functions(&block(text, "impl Db")),
     },
     Table {
@@ -1094,7 +1103,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 138 since any node answers any request (G054, ADR-0108): four on `Db`,
     // `coordinate_through` enforced and three exempt — classified above.
-    assert_eq!(total, 138, "the counted tables no longer sum to 138");
+    //
+    // 139 since one sign-in budget for a cluster: `Db::budget_through`,
+    // exempt, classified above.
+    assert_eq!(total, 139, "the counted tables no longer sum to 139");
 }
 
 /// Every `.rs` file under a directory.

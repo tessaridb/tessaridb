@@ -202,6 +202,8 @@ pub struct Db {
     /// session opened here — so a session on any surface can name the node that
     /// answers what it cannot (Q-863), not only a wire session.
     elsewhere: std::sync::OnceLock<Arc<dyn tessari_session::Elsewhere>>,
+    /// The cluster's one sign-in budget (ADR-0108 D5), for every session.
+    budget: std::sync::OnceLock<Arc<dyn tessari_session::Budget>>,
     /// What this store has landed, for whatever follows it — made on first
     /// asking, so a database nobody follows pays nothing on its commits.
     commits: std::sync::OnceLock<Arc<feed::Commits>>,
@@ -228,6 +230,7 @@ impl Db {
             gather: std::sync::OnceLock::new(),
             coordinate: std::sync::OnceLock::new(),
             elsewhere: std::sync::OnceLock::new(),
+            budget: std::sync::OnceLock::new(),
             commits: std::sync::OnceLock::new(),
             backups: std::sync::OnceLock::new(),
         })
@@ -260,6 +263,7 @@ impl Db {
             gather: std::sync::OnceLock::new(),
             coordinate: std::sync::OnceLock::new(),
             elsewhere: std::sync::OnceLock::new(),
+            budget: std::sync::OnceLock::new(),
             commits: std::sync::OnceLock::new(),
             backups: std::sync::OnceLock::new(),
         })
@@ -279,6 +283,10 @@ impl Db {
         };
         let session = match self.elsewhere.get() {
             Some(known) => session.among(Arc::clone(known)),
+            None => session,
+        };
+        let session = match self.budget.get() {
+            Some(budget) => session.budgeted(Arc::clone(budget)),
             None => session,
         };
         match self.backups.get() {
@@ -318,6 +326,12 @@ impl Db {
     /// and changes nothing, when it was already set.
     pub fn among(&self, elsewhere: Arc<dyn tessari_session::Elsewhere>) -> bool {
         self.elsewhere.set(elsewhere).is_ok()
+    }
+
+    /// Count every session's sign-in tries against the cluster's one budget
+    /// (ADR-0108 D5). Once per process, as [`Db::gather_through`].
+    pub fn budget_through(&self, budget: Arc<dyn tessari_session::Budget>) -> bool {
+        self.budget.set(budget).is_ok()
     }
 
     /// Carry a request this node cannot answer to the node that can, through
@@ -516,6 +530,7 @@ impl Db {
             gather: std::sync::OnceLock::new(),
             coordinate: std::sync::OnceLock::new(),
             elsewhere: std::sync::OnceLock::new(),
+            budget: std::sync::OnceLock::new(),
             commits: std::sync::OnceLock::new(),
             backups: std::sync::OnceLock::new(),
         }

@@ -285,6 +285,14 @@ pub(crate) fn answering(
                 Err(why) => Err(why),
             }
         }
+        // A sign-in try, against this process's own table — the cluster's
+        // while this node leads the store line (ADR-0108 D5). Only a proven
+        // member reaches here; it learns whether a name may try, nothing more.
+        Some(PeerFrame::Attempt) => {
+            let asked = crate::budget::Attempt::decode(body)?;
+            let answer = u8::from(asked.answered());
+            Ok((PeerFrame::Attempted.tag(), vec![answer], None))
+        }
         Some(PeerFrame::Ballot) => {
             let asked = Ballot::decode(body)?;
             // The identity that decides a grant is the one the
@@ -385,6 +393,9 @@ pub enum Ask<'a> {
     Gather(&'a Gather),
     /// A request this node cannot answer, for a caller it verified (ADR-0108).
     Coordinate(&'a crate::coordination::Coordinate),
+    /// A sign-in try asked about or reported to the store line's leader
+    /// (ADR-0108 D5).
+    Attempt(&'a crate::budget::Attempt),
 }
 
 /// What the other end answered with.
@@ -405,6 +416,8 @@ pub enum Answered {
     Gathered(Page),
     /// The answer to a carried request.
     Coordinated(tessaridb::Coordinated),
+    /// Whether the name may try now (`true` for a report).
+    Attempted(bool),
 }
 
 /// Reach the peer `at` on `address`, and exchange greetings.
@@ -573,6 +586,18 @@ fn exchange(
                     Err(Error::Uncollectable { from })
                 }
                 Some(PeerFrame::Unsubscribed) => Err(Error::Unsubscribed),
+                Some(_) => Err(Error::OutOfTurn { tag }),
+                None => Err(Error::UnknownFrame { tag }),
+            }
+        }
+        Ask::Attempt(asked) => {
+            frame::write_tagged(&mut link, PeerFrame::Attempt.tag(), &asked.encode())?;
+            let (tag, body) = answer(&mut link)?;
+            match PeerFrame::from_tag(tag) {
+                Some(PeerFrame::Attempted) => match body.as_slice() {
+                    [permitted] => Ok((heard, Answered::Attempted(*permitted == 1))),
+                    _ => Err(Error::Malformed),
+                },
                 Some(_) => Err(Error::OutOfTurn { tag }),
                 None => Err(Error::UnknownFrame { tag }),
             }

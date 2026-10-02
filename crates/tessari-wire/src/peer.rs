@@ -111,6 +111,11 @@ pub enum PeerFrame {
     /// The answering node declining, with its reason — its own tag for the
     /// reason [`Self::Unsubscribed`] has one.
     NotCoordinated,
+    /// A node asking the store line's leader about a sign-in try, or telling
+    /// it how one went (ADR-0108 D5).
+    Attempt,
+    /// The leader's answer: whether the name may try now.
+    Attempted,
 }
 
 impl PeerFrame {
@@ -152,6 +157,8 @@ impl PeerFrame {
             Self::Coordinate => 24,
             Self::Coordinated => 25,
             Self::NotCoordinated => 26,
+            Self::Attempt => 27,
+            Self::Attempted => 28,
         }
     }
 
@@ -178,6 +185,8 @@ impl PeerFrame {
             24 => Some(Self::Coordinate),
             25 => Some(Self::Coordinated),
             26 => Some(Self::NotCoordinated),
+            27 => Some(Self::Attempt),
+            28 => Some(Self::Attempted),
             _ => None,
         }
     }
@@ -690,6 +699,8 @@ mod tests {
             (PeerFrame::Coordinate, 24),
             (PeerFrame::Coordinated, 25),
             (PeerFrame::NotCoordinated, 26),
+            (PeerFrame::Attempt, 27),
+            (PeerFrame::Attempted, 28),
         ];
         for (kind, tag) in expected {
             assert_eq!(kind.tag(), tag, "{kind:?}");

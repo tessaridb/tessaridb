@@ -136,6 +136,20 @@ pub(crate) fn serve(
         db.among(std::sync::Arc::<tessari_wire::Published>::clone(
             &surface.routing,
         ));
+        // And one sign-in budget for the whole cluster, held by the store
+        // line's leader (ADR-0108 D5), so N nodes are not N allowances.
+        let speaking = std::sync::Arc::downgrade(&db);
+        db.budget_through(std::sync::Arc::new(tessari_wire::SharedBudget::new(
+            me,
+            (surface.dialling.duplicate(), surface.authority.clone()),
+            std::sync::Arc::clone(&surface.routing),
+            Box::new(move || {
+                speaking
+                    .upgrade()
+                    .ok_or(tessari_wire::GreetingUnavailable::Stopping)
+                    .and_then(|db| greeting(&db).map_err(tessari_wire::GreetingUnavailable::Store))
+            }),
+        )));
         // And every request it cannot answer — a write another node leads, a
         // read another node holds — is carried there over the peer link, under
         // an assertion signed with this node's key, for a caller who cannot
