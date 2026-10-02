@@ -595,7 +595,12 @@ mod tests {
             Ask::Ballot(&ballot),
         )
         .expect("a ballot is answered");
-        assert_eq!(voted(&answered), Some(Vote::Granted));
+        assert_eq!(
+            voted(&answered),
+            Some(Vote::Granted {
+                hold: tessari_storage::LEASE_TTL
+            })
+        );
         // Recorded through the node, as the synchronous door's caller did. The
         // record is written after the answer, so it is waited for, boundedly.
         let deadline = Instant::now() + Duration::from_secs(GREETING_SECONDS);
@@ -604,7 +609,10 @@ mod tests {
         }
         let met = door.holder.met.lock().expect("the record").clone();
         assert_eq!(met.len(), 2, "both connections were recorded");
-        assert!(met.iter().any(|m| m.voted == Some(Vote::Granted)));
+        assert!(met.iter().any(|m| m.voted
+            == Some(Vote::Granted {
+                hold: tessari_storage::LEASE_TTL
+            })));
     }
 
     #[test]

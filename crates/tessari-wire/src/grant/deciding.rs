@@ -53,6 +53,22 @@ impl Deciding {
         }
     }
 
+    /// Hold every grant made from now on for `hold`, on every line — the lease
+    /// the store's installed failover policy states (G053 SG2c). Set at start
+    /// and on every leadership pass, so a policy reaches the voter in the pass
+    /// after it is installed.
+    pub fn hold_for(&self, hold: std::time::Duration) {
+        self.held().hold_for(hold);
+        for voter in self
+            .lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values_mut()
+        {
+            voter.hold_for(hold);
+        }
+    }
+
     /// Answer one ballot, from wherever it came.
     ///
     /// # A poisoned lock recovers rather than refusing
@@ -67,14 +83,17 @@ impl Deciding {
         if ballot.range == Reach::Store {
             return self.held().asked(ballot, now, mine, candidate);
         }
-        let started = self.held().started;
+        let (started, hold) = {
+            let store = self.held();
+            (store.started, store.hold)
+        };
         let mut lines = self
             .lines
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         lines
             .entry(ballot.range)
-            .or_insert_with(|| Voter::started_at(started))
+            .or_insert_with(|| Voter::started_at(started).holding_for(hold))
             .asked(ballot, now, mine, candidate)
     }
 
@@ -88,12 +107,15 @@ impl Deciding {
         if ballot.range == Reach::Store {
             return self.held().carried(ballot, now);
         }
-        let started = self.held().started;
+        let (started, hold) = {
+            let store = self.held();
+            (store.started, store.hold)
+        };
         self.lines
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .entry(ballot.range)
-            .or_insert_with(|| Voter::started_at(started))
+            .or_insert_with(|| Voter::started_at(started).holding_for(hold))
             .carried(ballot, now)
     }
 

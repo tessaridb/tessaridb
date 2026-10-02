@@ -987,6 +987,7 @@ mod tests {
     #[test]
     fn a_lost_round_stands_higher_the_next_time_it_stands() {
         let mut renewing = Renewing::holding(Leadership {
+            length: tessari_storage::LEASE_TTL,
             epoch: Epoch::ZERO,
             from: Instant::now(),
         });
@@ -1019,6 +1020,7 @@ mod tests {
     #[test]
     fn a_refusal_that_names_a_granted_epoch_is_learned_from() {
         let mut renewing = Renewing::holding(Leadership {
+            length: tessari_storage::LEASE_TTL,
             epoch: Epoch::ZERO,
             from: Instant::now(),
         });
@@ -1046,6 +1048,7 @@ mod tests {
     #[test]
     fn a_candidate_that_just_lost_waits_before_standing_again() {
         let mut renewing = Renewing::holding(Leadership {
+            length: tessari_storage::LEASE_TTL,
             epoch: Epoch::ZERO,
             from: Instant::now(),
         });
@@ -1073,6 +1076,7 @@ mod tests {
         let opened = Instant::now();
         let waited = |candidate: [u8; NODE_ID_LEN]| {
             let mut renewing = Renewing::holding(Leadership {
+                length: tessari_storage::LEASE_TTL,
                 epoch: Epoch::ZERO,
                 from: opened,
             });
@@ -1408,6 +1412,7 @@ mod tests {
     #[test]
     fn a_renewal_that_wins_nothing_keeps_the_lease_it_holds() {
         let held = Leadership {
+            length: tessari_storage::LEASE_TTL,
             epoch: Epoch::new(4),
             from: Instant::now(),
         };
@@ -1429,14 +1434,16 @@ mod tests {
         for epoch in 1..=64 {
             let epoch = Epoch::new(epoch);
             for node in [one, other] {
-                let waited = election_timeout(node, epoch);
+                let waited = election_timeout(node, epoch, tessari_storage::LEASE_TTL);
                 assert!(waited >= tessari_storage::LEASE_TTL, "{waited:?}");
                 assert!(
                     waited < tessari_storage::LEASE_TTL.saturating_add(spread),
                     "{waited:?}"
                 );
             }
-            if election_timeout(one, epoch) != election_timeout(other, epoch) {
+            if election_timeout(one, epoch, tessari_storage::LEASE_TTL)
+                != election_timeout(other, epoch, tessari_storage::LEASE_TTL)
+            {
                 differed = differed.saturating_add(1);
             }
         }
@@ -1455,12 +1462,14 @@ mod tests {
         // voter has always admitted the incumbent re-asking its own epoch.
         let from = Instant::now();
         let held = Leadership {
+            length: tessari_storage::LEASE_TTL,
             epoch: Epoch::new(4),
             from,
         };
         let mut renewing = Renewing::holding(held);
         let stood_for = RefCell::new(Vec::new());
         let renewed = Leadership {
+            length: tessari_storage::LEASE_TTL,
             epoch: Epoch::new(4),
             from: from + Duration::from_millis(300),
         };
@@ -1479,6 +1488,7 @@ mod tests {
         // be refused for ever, so the next stand is above what was heard.
         let from = Instant::now();
         let mut renewing = Renewing::holding(Leadership {
+            length: tessari_storage::LEASE_TTL,
             epoch: Epoch::new(4),
             from,
         });
@@ -1498,6 +1508,7 @@ mod tests {
     fn a_node_that_never_led_stands_for_a_new_epoch() {
         let from = Instant::now();
         let mut renewing = Renewing::holding(Leadership {
+            length: tessari_storage::LEASE_TTL,
             epoch: Epoch::ZERO,
             from,
         });

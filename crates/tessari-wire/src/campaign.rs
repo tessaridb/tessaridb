@@ -100,6 +100,10 @@ pub struct Standing<'a> {
     /// Which election line this standing is for — [`Reach::Store`] for the
     /// store's, a placed range for its own (ADR-0082).
     pub range: Reach,
+    /// The lease this node's installed failover policy states — the longest a
+    /// round it wins may hand it, before any voter's shorter hold cuts it down
+    /// (G053 SG2c).
+    pub lease: Duration,
 }
 
 impl Stood {
@@ -167,7 +171,8 @@ impl Standing<'_> {
             self.peers.len().saturating_add(1),
             now,
         )
-        .over(self.range);
+        .over(self.range)
+        .leasing(self.lease);
         let ballot = round.ballot();
         // Both sides of the comparison are this node's own greeting, so the log
         // restriction never refuses a candidate its own vote — a node is not
@@ -332,6 +337,7 @@ mod tests {
             peers,
             round: ROUND,
             range: tessari_types::Reach::Store,
+            lease: LEASE_TTL,
         }
     }
 
@@ -382,7 +388,7 @@ mod tests {
         };
         assert_eq!(
             spent.asked(&elsewhere, now, LEVEL, LEVEL),
-            Vote::Granted,
+            Vote::Granted { hold: LEASE_TTL },
             "the voter has to have granted 40 for the refusal below to name it"
         );
         let (address, answering) = voting(&authority, voter, spent);
@@ -454,7 +460,7 @@ mod tests {
         .expect("the door is still up, having been asked nothing");
         assert_eq!(
             vote,
-            Answered::Voted(Vote::Granted),
+            Answered::Voted(Vote::Granted { hold: LEASE_TTL }),
             "the epoch was never spent, so it is still grantable"
         );
         drop(answering.join().expect("the door's thread"));
@@ -896,7 +902,7 @@ mod tests {
         );
         assert_eq!(
             earlier,
-            Vote::Granted,
+            Vote::Granted { hold: LEASE_TTL },
             "the rival's grant this test starts from"
         );
 
@@ -973,7 +979,7 @@ mod tests {
         );
         assert_eq!(
             earlier,
-            Vote::Granted,
+            Vote::Granted { hold: LEASE_TTL },
             "the rival's grant this test starts from"
         );
 
@@ -1032,7 +1038,7 @@ mod tests {
         );
         assert_eq!(
             promised,
-            Vote::Granted,
+            Vote::Granted { hold: LEASE_TTL },
             "the rival's grant this test starts from"
         );
 

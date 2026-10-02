@@ -63,7 +63,10 @@ pub(crate) async fn collect_from_upstream(
     // A stream that ended leaves the round's cursors behind the store, so the
     // round starts again from the store's own tails (see `streaming.rs`).
     let mut streamed_from: Option<[u8; tessari_storage::NODE_ID_LEN]> = None;
-    let collection = std::time::Duration::from_secs(tessari_constants::COLLECTION_SECONDS);
+    // The collection period the installed failover policy states, re-read every
+    // pass (G053 SG2c): a pass that returns before it reaches the catalog keeps
+    // the last one it read.
+    let mut collection = tessari_storage::Failover::DEFAULT.collection();
     // Woken by the greeting round when the leader it points at changes, so a
     // follower whose stream ended follows the new leader as soon as one is
     // heard rather than up to a collection interval later (G053 SG2b).
@@ -92,16 +95,23 @@ pub(crate) async fn collect_from_upstream(
         // can fail over (ADR-0063, ADR-0064), and the rule that read the
         // declaration refused exactly that shape — so the candidate set
         // comes from the catalog and the choice comes from the greetings.
-        let declared =
-            match db.store().begin().and_then(|mut transaction| {
-                tessari_storage::Catalog::new(&mut transaction).replicas()
-            }) {
-                Ok(declared) => declared,
-                Err(why) => {
-                    log::warn!("this node cannot say who its peers are: {why}");
-                    return collection;
-                }
-            };
+        let declared = match db.store().begin().and_then(|mut transaction| {
+            let catalog = tessari_storage::Catalog::new(&mut transaction);
+            Ok((catalog.replicas()?, catalog.failover()?))
+        }) {
+            Ok((declared, policy)) => {
+                collection = policy
+                    .map_or(tessari_storage::Failover::DEFAULT, |definition| {
+                        definition.policy
+                    })
+                    .collection();
+                declared
+            }
+            Err(why) => {
+                log::warn!("this node cannot say who its peers are: {why}");
+                return collection;
+            }
+        };
         let me = match store.node_identity() {
             Ok(identity) => identity.id,
             Err(why) => {

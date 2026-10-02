@@ -1001,12 +1001,23 @@ pub(crate) mod tests {
         )
         .expect("a peer that proved itself may ask");
 
-        assert_eq!(voted(&vote), Some(Vote::Granted));
+        assert_eq!(
+            voted(&vote),
+            Some(Vote::Granted {
+                hold: tessari_storage::LEASE_TTL
+            })
+        );
         let met = answering
             .join()
             .expect("the door's thread")
             .expect("served");
-        assert_eq!(met.voted, Some(Vote::Granted), "both ends saw one answer");
+        assert_eq!(
+            met.voted,
+            Some(Vote::Granted {
+                hold: tessari_storage::LEASE_TTL
+            }),
+            "both ends saw one answer"
+        );
     }
 
     /// A greeting from a node whose log stops short of [`LEVEL`].
@@ -1413,7 +1424,12 @@ pub(crate) mod tests {
         // A round that opened now and was carried at once.
         let mut prompt = Round::opened(Epoch::new(1), THERE, 1);
         let won = prompt
-            .counts(voter, Vote::Granted)
+            .counts(
+                voter,
+                Vote::Granted {
+                    hold: tessari_storage::LEASE_TTL,
+                },
+            )
             .expect("one of one carries it");
         store.hold(won.epoch, won.lease());
         store
@@ -1427,7 +1443,12 @@ pub(crate) mod tests {
             .expect("representable");
         let mut slow = Round::opened_at(Epoch::new(2), THERE, 1, opened);
         let won = slow
-            .counts(voter, Vote::Granted)
+            .counts(
+                voter,
+                Vote::Granted {
+                    hold: tessari_storage::LEASE_TTL,
+                },
+            )
             .expect("one of one carries it");
         store.hold(won.epoch, won.lease());
         let refused = store
@@ -1528,10 +1549,18 @@ pub(crate) mod tests {
             matches!(ask(shard(2)), Vote::Refused(Refused::LogBehind { tail, .. }) if tail == Sequence::new(40)),
             "behind on the range it asked for"
         );
-        assert_eq!(ask(Reach::Store), Vote::Granted, "level on the store");
+        assert_eq!(
+            ask(Reach::Store),
+            Vote::Granted {
+                hold: tessari_storage::LEASE_TTL
+            },
+            "level on the store"
+        );
         assert_eq!(
             ask(shard(3)),
-            Vote::Granted,
+            Vote::Granted {
+                hold: tessari_storage::LEASE_TTL
+            },
             "the voter never stood for shard 3"
         );
         drop(answering.join().expect("the door's thread"));
@@ -1605,8 +1634,20 @@ pub(crate) mod tests {
             voted(&answered).expect("a door that was asked answers")
         };
         assert_eq!(ask(shard(3)), Vote::Refused(Refused::NotPlaced));
-        assert_eq!(ask(shard(2)), Vote::Granted, "placed on shard 2");
-        assert_eq!(ask(Reach::Store), Vote::Granted, "the store is not placed");
+        assert_eq!(
+            ask(shard(2)),
+            Vote::Granted {
+                hold: tessari_storage::LEASE_TTL
+            },
+            "placed on shard 2"
+        );
+        assert_eq!(
+            ask(Reach::Store),
+            Vote::Granted {
+                hold: tessari_storage::LEASE_TTL
+            },
+            "the store is not placed"
+        );
         drop(answering.join().expect("the door's thread"));
     }
 

@@ -2522,6 +2522,30 @@ fn lease_reported(address: &str) -> Result<Option<i64>, String> {
     }
 }
 
+/// Whole seconds left on the lease `address` writes under, or `None` when it
+/// holds none — `cluster.lease`, the countdown, beside `lease_reported`'s period.
+fn lease_left(address: &str) -> Result<Option<i64>, String> {
+    let mut client = Client::connect(address).map_err(|why| why.to_string())?;
+    let answers = client
+        .run("INFO FOR NODE;", None)
+        .map_err(|why| why.to_string())?;
+    let Some(Answer::Value {
+        value: tessari_types::Value::Object(report),
+        ..
+    }) = answers.last()
+    else {
+        return Err(format!("not a report: {answers:?}"));
+    };
+    let Some(tessari_types::Value::Object(cluster)) = report.get("cluster") else {
+        return Err(format!("no cluster group: {report:?}"));
+    };
+    match cluster.get("lease") {
+        Some(tessari_types::Value::Null) | None => Ok(None),
+        Some(tessari_types::Value::Duration(span)) => Ok(Some(span.seconds())),
+        other => Err(format!("not a lease: {other:?}")),
+    }
+}
+
 /// G029 S2.2 against three operating-system processes.
 ///
 /// The criterion's own method is *a live run in which one node's policy reaches
@@ -2624,6 +2648,19 @@ fn a_failover_policy_set_on_the_leader_reaches_a_node_that_never_saw_it() {
     assert!(
         until(patience, || lease_reported(surface) == Ok(Some(43))),
         "the later policy never replaced the earlier one on the follower.{}",
+        what_the_nodes_said(&PERIODS, &logs)
+    );
+
+    // G053 SG2c (Q-878): the policy RUNS, not only replicates. The build's
+    // lease is under a second, so two whole seconds left on the leader's own
+    // countdown is a lease no build constant could have handed it — it is the
+    // 43 s the cluster agreed to, cut by no voter that still held for less.
+    assert!(
+        until(patience, || lease_left(deciding)
+            .is_ok_and(|left| left.is_some_and(|seconds| seconds >= 2))),
+        "the leader still writes under the build's lease after its cluster agreed \
+         to a longer one: {:?}.{}",
+        lease_left(deciding),
         what_the_nodes_said(&PERIODS, &logs)
     );
 }

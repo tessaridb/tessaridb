@@ -38,7 +38,10 @@ pub(crate) async fn dial_peers(
     wakes: std::sync::Arc<crate::peers::Wakes>,
     stop: tokio_util::sync::CancellationToken,
 ) {
-    let awareness = std::time::Duration::from_secs(tessari_constants::AWARENESS_SECONDS);
+    // The periods the installed failover policy states, re-read every pass
+    // (G053 SG2c): a pass that returns before it reaches the catalog keeps the
+    // last ones it read.
+    let mut periods = tessari_storage::Failover::DEFAULT;
     let woken = std::sync::Arc::clone(&wakes);
     // The leader the last round pointed this node at, so the collection round is
     // woken when that changes and not on every greeting.
@@ -59,18 +62,24 @@ pub(crate) async fn dial_peers(
         if let Err(why) = store.mark_tail(tessari_types::Reach::Store) {
             log::warn!("this node cannot date its own log position: {why}");
         }
-        let declared = store
-            .begin()
-            .and_then(|mut transaction| tessari_storage::Catalog::new(&mut transaction).replicas());
+        let declared = store.begin().and_then(|mut transaction| {
+            let catalog = tessari_storage::Catalog::new(&mut transaction);
+            Ok((catalog.replicas()?, catalog.failover()?))
+        });
         let (me, declared) = match (store.node_identity(), declared) {
-            (Ok(identity), Ok(declared)) => (identity.id, declared),
+            (Ok(identity), Ok((declared, policy))) => {
+                periods = policy.map_or(tessari_storage::Failover::DEFAULT, |definition| {
+                    definition.policy
+                });
+                (identity.id, declared)
+            }
             (Err(why), _) => {
                 log::warn!("this node cannot say who it is: {why}");
-                return awareness;
+                return periods.awareness();
             }
             (_, Err(why)) => {
                 log::warn!("this node cannot say who its peers are: {why}");
-                return awareness;
+                return periods.awareness();
             }
         };
         let mut reached = 0_usize;
@@ -146,9 +155,9 @@ pub(crate) async fn dial_peers(
             wakes.collection.notify_one();
         }
         if tessari_wire::names_a_peer(&declared, &me) && !leading && leader.is_none() {
-            std::time::Duration::from_millis(tessari_constants::ROUND_MILLIS)
+            periods.round()
         } else {
-            awareness
+            periods.awareness()
         }
     })
     .await;

@@ -517,9 +517,14 @@ impl Renewing {
 /// exactly this. Derived rather than random for the reason [`Renewing::stagger`]
 /// gives — a test can state when a node stands — and with the epoch in the mix
 /// so that two ids that collide once do not collide at the next election.
+///
+/// `lease` is the hold this node's own voter grants for — the installed failover
+/// policy's lease (G053 SG2c). A leader's lease is never longer than the hold of
+/// a voter that granted it, so a node whose grant has aged past its own hold has
+/// outlived any lease that grant could have carried.
 #[must_use]
-pub fn election_timeout(me: [u8; NODE_ID_LEN], granted: Epoch) -> Duration {
-    tessari_storage::LEASE_TTL.saturating_add(spread(
+pub fn election_timeout(me: [u8; NODE_ID_LEN], granted: Epoch, lease: Duration) -> Duration {
+    lease.saturating_add(spread(
         me,
         granted,
         tessari_constants::ELECTION_JITTER_MILLIS,
