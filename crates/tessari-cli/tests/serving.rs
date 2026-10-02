@@ -3189,6 +3189,12 @@ fn until_taken(surface: &str, prefix: &str, patience: Duration) -> Result<Durati
         if let Ok(mut client) = Client::connect(surface) {
             match client.run(&into_orders(&format!("{prefix}{attempt}")), None) {
                 Ok(_) => return Ok(began.elapsed()),
+                // Committed on the node, its copies not yet counted (ADR-0106
+                // D6): the write landed, so trying again under a new key would
+                // leave two records where the caller meant one.
+                Err(why) if why.to_string().contains("is committed on this node") => {
+                    return Ok(began.elapsed());
+                }
                 Err(why) => last = why.to_string(),
             }
         }
@@ -3791,8 +3797,16 @@ fn a_placement_is_handed_over_while_writes_continue() {
     // which none was.
     let stop = Arc::new(AtomicBool::new(false));
     let taken = Arc::new(Mutex::new(Vec::<String>::new()));
+    // Writes answered *committed here, not yet held by enough copies* (ADR-0106
+    // D6): their outcome is the cluster's to decide, so the new leader may or
+    // may not hold them — but nothing refused outright may land.
+    let undecided = Arc::new(Mutex::new(Vec::<String>::new()));
     let writer = {
-        let (stop, taken) = (Arc::clone(&stop), Arc::clone(&taken));
+        let (stop, taken, undecided) = (
+            Arc::clone(&stop),
+            Arc::clone(&taken),
+            Arc::clone(&undecided),
+        );
         std::thread::spawn(move || {
             let mut longest = Duration::ZERO;
             let mut last = Instant::now();
@@ -3801,8 +3815,17 @@ fn a_placement_is_handed_over_while_writes_continue() {
                 attempt = attempt.saturating_add(1);
                 let key = format!("hw{attempt:06}");
                 let took = [HANDING[0].0, HANDING[1].0].iter().any(|surface| {
-                    Client::connect(surface)
-                        .is_ok_and(|mut client| client.run(&into_orders(&key), None).is_ok())
+                    Client::connect(surface).is_ok_and(|mut client| {
+                        match client.run(&into_orders(&key), None) {
+                            Ok(_) => true,
+                            Err(why) => {
+                                if why.to_string().contains("is committed on this node") {
+                                    undecided.lock().unwrap().push(key.clone());
+                                }
+                                false
+                            }
+                        }
+                    })
                 });
                 if took {
                     longest = longest.max(last.elapsed());
@@ -3854,12 +3877,27 @@ fn a_placement_is_handed_over_while_writes_continue() {
             what_the_nodes_said(&HANDING, &logs)
         );
     }
-    // Every write the writer was told was taken is on the new leader, once.
+    // Every write the writer was told was taken is on the new leader, once —
+    // and anything else it holds is a write answered *committed, not yet held
+    // by enough copies*, never one refused outright.
     let mut held = read_at(HANDING[1].0, "SELECT * FROM orders:'hw'..'hx';").unwrap();
     held.sort();
-    assert_eq!(
-        held, taken,
-        "every write taken, held once by the new leader"
+    let mut once = held.clone();
+    once.dedup();
+    assert_eq!(once, held, "a write held twice by the new leader");
+    let undecided = undecided.lock().unwrap().clone();
+    let missing: Vec<_> = taken.iter().filter(|key| !held.contains(key)).collect();
+    assert!(
+        missing.is_empty(),
+        "taken writes lost by the hand-over: {missing:?}"
+    );
+    let refused_but_held: Vec<_> = held
+        .iter()
+        .filter(|key| !taken.contains(key) && !undecided.contains(key))
+        .collect();
+    assert!(
+        refused_but_held.is_empty(),
+        "writes refused outright are held: {refused_but_held:?}"
     );
     // The new leader leads under a later epoch than the old one did.
     let (old, new) = (shard_two_epochs(&logs[0]), shard_two_epochs(&logs[1]));
