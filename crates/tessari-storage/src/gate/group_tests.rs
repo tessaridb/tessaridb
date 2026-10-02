@@ -46,6 +46,19 @@ impl HeldOpen {
     }
 }
 
+/// Lets the held write go when dropped — on the way out of a panic too.
+///
+/// A deadline that panics while the first write is still held would otherwise
+/// leave `thread::scope` joining a thread that waits for a release the panic
+/// skipped: the failure the deadline exists to report becomes a hang.
+struct LetGo<'a>(&'a HeldOpen);
+
+impl Drop for LetGo<'_> {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
 impl KvBackend for HeldOpen {
     fn name(&self) -> &'static str {
         "held-open"
@@ -113,6 +126,7 @@ fn commits_arriving_while_one_lands_land_together() {
     });
 
     std::thread::scope(|scope| {
+        let let_go = LetGo(&backend);
         let first = scope.spawn(|| write(&store, 0));
         let behind: Vec<_> = (1..=BEHIND)
             .map(|id| {
@@ -132,7 +146,7 @@ fn commits_arriving_while_one_lands_land_together() {
             );
             std::thread::yield_now();
         }
-        backend.release();
+        drop(let_go);
         first.join().unwrap();
         for writer in behind {
             writer.join().unwrap();
