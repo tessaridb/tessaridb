@@ -271,6 +271,7 @@ fn erase_statement(statement: &mut Statement) {
         StatementKind::DefineFailover { .. } => {}
         // A fingerprint is not a name.
         StatementKind::RevokeCertificate { .. } => {}
+        StatementKind::CreateJoinToken { replica, .. } => erase_name(replica),
         StatementKind::DefineReplica {
             name,
             roles,

@@ -153,7 +153,7 @@ pub use crate::grant::{Ballot, Deciding, Leadership, Reached, Refused, Round, Vo
 #[cfg(feature = "server")]
 pub use crate::joining::{CredentialFile, Joining, Seed, Told, peer_credential};
 #[cfg(feature = "server")]
-pub use crate::keys::{PeerKeys, Revoked};
+pub use crate::keys::{PeerKeys, Removed, Revoked};
 #[cfg(feature = "server")]
 pub use crate::link::{Answered, Ask, Credential, Met, Peers, call, call_within};
 #[cfg(feature = "server")]

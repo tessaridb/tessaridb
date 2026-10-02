@@ -36,6 +36,17 @@ impl tessari_wire::Origin for PeerDoor {
         tessari_wire::Serving::declared(self.db.store()).copied(follower, write)
     }
 
+    // A join token offered by the node the handshake proved (ADR-0108 D9). The
+    // fingerprint is not compared here: a pinned row binds in `met`, where the
+    // presented certificate is in hand, and a token is evidence of its own.
+    fn joined(
+        &self,
+        node: [u8; tessari_storage::NODE_ID_LEN],
+        token: &[u8; 32],
+    ) -> tessari_wire::Result<bool> {
+        Ok(bind_the_greeter(&self.db, node, None, Some(token)))
+    }
+
     fn places(
         &self,
         candidate: [u8; tessari_storage::NODE_ID_LEN],
@@ -62,7 +73,7 @@ impl tessari_wire::Holding for PeerDoor {
             met.voted
                 .map_or(String::new(), |vote| format!(", {vote:?}")),
         );
-        bind_the_greeter(&self.db, met.said.node);
+        bind_the_greeter(&self.db, met.said.node, Some(&met.presented), None);
     }
 
     fn commits(&self) -> tokio::sync::watch::Receiver<u64> {

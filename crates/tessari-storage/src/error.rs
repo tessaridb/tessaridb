@@ -363,6 +363,30 @@ pub enum Error {
         name: String,
     },
 
+    /// A join token was asked for a row that already names its node.
+    ///
+    /// Nothing is waiting to be bound, so a token for it could only be spent
+    /// on nothing — or, read the other way, would suggest the row could be
+    /// re-bound, which it cannot (ADR-0108 D9).
+    #[error("peer `{name}` already names its node; a join token binds only a row that does not")]
+    RowAlreadyBound {
+        /// The peer's name.
+        name: String,
+    },
+
+    /// A row was declared naming a node the cluster removed.
+    ///
+    /// A dropped node's identity is never admitted again; the machine joins
+    /// again wiped, under a new identity (ADR-0108 D9).
+    #[error(
+        "node {node} was removed from this cluster and is never admitted again; wipe it and \
+         declare it under the identity it then has"
+    )]
+    NodeTombstoned {
+        /// The removed node, as its record id prints.
+        node: String,
+    },
+
     /// A write met a record whose stored versions disagree with each other.
     ///
     /// Two nodes wrote this record without either having seen the other's
@@ -1025,6 +1049,8 @@ impl Error {
             | Self::IdSpaceExhausted { .. }
             | Self::SpansLeaderships { .. }
             | Self::PlacementCannotBeDropped { .. }
+            | Self::RowAlreadyBound { .. }
+            | Self::NodeTombstoned { .. }
             | Self::SplitNeedsGeneratedUuid { .. }
             | Self::PartitionNeedsGeneratedUuid { .. }
             | Self::PartitionMismatch { .. }

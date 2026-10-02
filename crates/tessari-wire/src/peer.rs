@@ -116,6 +116,11 @@ pub enum PeerFrame {
     Attempt,
     /// The leader's answer: whether the name may try now.
     Attempted,
+    /// A node asking to be bound to the row a join token waits on
+    /// (ADR-0108 D9).
+    Join,
+    /// The answer: whether a row is now bound to the asker.
+    Joined,
 }
 
 impl PeerFrame {
@@ -159,6 +164,8 @@ impl PeerFrame {
             Self::NotCoordinated => 26,
             Self::Attempt => 27,
             Self::Attempted => 28,
+            Self::Join => 29,
+            Self::Joined => 30,
         }
     }
 
@@ -187,6 +194,8 @@ impl PeerFrame {
             26 => Some(Self::NotCoordinated),
             27 => Some(Self::Attempt),
             28 => Some(Self::Attempted),
+            29 => Some(Self::Join),
+            30 => Some(Self::Joined),
             _ => None,
         }
     }
@@ -701,6 +710,8 @@ mod tests {
             (PeerFrame::NotCoordinated, 26),
             (PeerFrame::Attempt, 27),
             (PeerFrame::Attempted, 28),
+            (PeerFrame::Join, 29),
+            (PeerFrame::Joined, 30),
         ];
         for (kind, tag) in expected {
             assert_eq!(kind.tag(), tag, "{kind:?}");

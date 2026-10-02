@@ -32,6 +32,17 @@ compares carries no pre-release suffix.
   the row reaches, in both directions of the peer link, whatever the node is
   subscribed to. `INFO FOR NODE` lists the revoked fingerprints under
   `cluster.revoked`, and the administration trail records who revoked each one.
+- **A node joining a cluster is approved** (ADR-0108 D9). A peer row binds a node
+  only by `NODE`, by a pinned certificate (`DEFINE REPLICA … FINGERPRINT
+  '<sha256>'`), or by a one-time token: `CREATE JOIN TOKEN FOR REPLICA r EXPIRES
+  10m` answers the token once and the row keeps only its digest and expiry; the
+  new node offers it with `--join-token` (or `TESSARIDB_JOIN_TOKEN`). Every
+  binding is recorded in the administration trail.
+- **A dropped node is never admitted again.** `DROP REPLICA` of a row that named a
+  node records the removal on every node: the node's greeting is refused at the
+  handshake whatever certificate it presents, and no row may name it again
+  (`NodeTombstoned`). `INFO FOR NODE` lists removed nodes under
+  `cluster.tombstoned`.
 - **`/metrics` reports when each presented certificate expires**
   (`tessari_tls_certificate_expires_seconds`, by surface), to a caller who may
   read the node's topology.
@@ -51,7 +62,11 @@ compares carries no pre-release suffix.
 
 ### Changed
 
-- **1490 conformance cases** define the language and run in the build.
+- **A peer row with no `NODE` is no longer bound by the first node to greet.**
+  Until this release a row left open was bound to whichever peer holding a
+  certificate the cluster issued arrived first, and that peer received the row's
+  whole reach. Such a row now waits for `NODE`, `FINGERPRINT` or a join token.
+- **1492 conformance cases** define the language and run in the build.
 - **A leader is replaced in about a second.** The lease is 800 ms with a 150 ms
   guard, renewed about every 300 ms, and every voter is canvassed in parallel; a
   killed leader was replaced in 859 ms at the median.

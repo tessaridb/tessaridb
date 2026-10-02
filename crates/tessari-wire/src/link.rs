@@ -195,7 +195,11 @@ impl Peers {
                 voted
             }
         };
-        Ok(Met { said, voted })
+        Ok(Met {
+            said,
+            voted,
+            presented: shown.as_ref().map_or([0; 32], credential::digest),
+        })
     }
 }
 
@@ -276,6 +280,13 @@ pub(crate) fn answering(
             let answer = u8::from(asked.answered());
             Ok((PeerFrame::Attempted.tag(), vec![answer], None))
         }
+        // A join token, from the node the handshake proved — never a node the
+        // frame names, so a member cannot spend a token for somebody else.
+        Some(PeerFrame::Join) => {
+            let token = <[u8; 32]>::try_from(body).map_err(|_| Error::Malformed)?;
+            let bound = log.joined(said.node, &token)?;
+            Ok((PeerFrame::Joined.tag(), vec![u8::from(bound)], None))
+        }
         Some(PeerFrame::Ballot) => {
             let asked = Ballot::decode(body)?;
             // The identity that decides a grant is the one the
@@ -345,6 +356,9 @@ impl Credential {
 /// What one served connection produced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Met {
+    /// The SHA-256 of the certificate the peer presented, which a row's pinned
+    /// fingerprint is compared with (ADR-0108 D9).
+    pub presented: [u8; 32],
     /// What the peer said it holds.
     pub said: Hello,
     /// How this node voted, when the peer asked for an epoch.
@@ -379,6 +393,9 @@ pub enum Ask<'a> {
     /// A sign-in try asked about or reported to the store line's leader
     /// (ADR-0108 D5).
     Attempt(&'a crate::budget::Attempt),
+    /// A join token, offered to the node that may bind this one's row
+    /// (ADR-0108 D9).
+    Join(&'a [u8; 32]),
 }
 
 /// What the other end answered with.
@@ -401,6 +418,8 @@ pub enum Answered {
     Coordinated(tessaridb::Coordinated),
     /// Whether the name may try now (`true` for a report).
     Attempted(bool),
+    /// Whether a row now names the asker.
+    Joined(bool),
 }
 
 /// Reach the peer `at` on `address`, and exchange greetings.
@@ -562,6 +581,18 @@ fn exchange(
                     Err(Error::Uncollectable { from })
                 }
                 Some(PeerFrame::Unsubscribed) => Err(Error::Unsubscribed),
+                Some(_) => Err(Error::OutOfTurn { tag }),
+                None => Err(Error::UnknownFrame { tag }),
+            }
+        }
+        Ask::Join(token) => {
+            frame::write_tagged(&mut link, PeerFrame::Join.tag(), token.as_slice())?;
+            let (tag, body) = answer(&mut link)?;
+            match PeerFrame::from_tag(tag) {
+                Some(PeerFrame::Joined) => match body.as_slice() {
+                    [bound] => Ok((heard, Answered::Joined(*bound == 1))),
+                    _ => Err(Error::Malformed),
+                },
                 Some(_) => Err(Error::OutOfTurn { tag }),
                 None => Err(Error::UnknownFrame { tag }),
             }

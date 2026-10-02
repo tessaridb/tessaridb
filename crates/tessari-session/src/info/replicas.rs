@@ -71,6 +71,25 @@ pub(crate) fn described_replica(
                 Some(reach) => Value::from(spelled_reach(reach, catalog)?.as_str()),
             },
         ),
+        // The certificate allowed to bind this row (ADR-0108 D9), in the
+        // spelling `FINGERPRINT` takes.
+        (
+            "fingerprint".to_owned(),
+            replica
+                .fingerprint
+                .as_deref()
+                .map_or(Value::Null, Value::from),
+        ),
+        // A join token waiting to bind it: when it stops binding, in
+        // milliseconds since the Unix epoch, and never its digest — the digest
+        // is what a token is checked against, and nothing reading this needs it.
+        (
+            "join_expires_ms".to_owned(),
+            replica
+                .join
+                .as_ref()
+                .map_or(Value::Null, |join| Value::from(join.expires_ms)),
+        ),
     ])))
 }
 

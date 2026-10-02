@@ -1229,3 +1229,171 @@ fn a_grant_named_certificate_is_still_a_grant() {
     );
     assert!(!refused.contains("SHA-256 fingerprint"), "{refused}");
 }
+
+/// The peer rows a report names, by name, as their full objects.
+fn rows(
+    report: &std::collections::BTreeMap<String, Value>,
+) -> std::collections::BTreeMap<String, std::collections::BTreeMap<String, Value>> {
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster half: {report:?}");
+    };
+    let Some(Value::Array(peers)) = cluster.get("peers") else {
+        panic!("no peers: {cluster:?}");
+    };
+    peers
+        .iter()
+        .map(|row| {
+            let Value::Object(row) = row else {
+                panic!("a peer that is not an object: {row:?}");
+            };
+            let Some(Value::String(name)) = row.get("name") else {
+                panic!("a peer with no name: {row:?}");
+            };
+            (name.clone(), row.clone())
+        })
+        .collect()
+}
+
+const JOINER: &str = "3f9a1c04-b7e2-489d-b561-0af3d82c7e46";
+
+#[test]
+fn a_join_token_is_answered_once_and_the_catalog_keeps_only_when_it_ends() {
+    let store = closed(&backend());
+    owner(&store)
+        .run("DEFINE REPLICA joiner AT '10.0.0.2:9000' ROLES serving;")
+        .unwrap();
+    let answered = owner(&store)
+        .run("CREATE JOIN TOKEN FOR REPLICA joiner EXPIRES 10m;")
+        .unwrap();
+    let Some(Outcome::Value(Value::String(token))) = answered.first() else {
+        panic!("no token: {answered:?}");
+    };
+    assert_eq!(token.len(), 64, "{token}");
+    assert!(
+        token.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "{token}"
+    );
+
+    let report = reported(&store);
+    let joiner = &rows(&report)["joiner"];
+    let Some(Value::Number(tessari_types::Number::Integer(ends))) = joiner.get("join_expires_ms")
+    else {
+        panic!("no expiry on the waiting row: {joiner:?}");
+    };
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    assert!(
+        (now + 590_000..=now + 600_000).contains(ends),
+        "{ends} vs {now}"
+    );
+    let printed = format!("{report:?}");
+    assert!(
+        !printed.contains(token.as_str()),
+        "the token is in the report"
+    );
+    assert!(!printed.contains("digest"), "the digest is in the report");
+}
+
+#[test]
+fn a_join_token_needs_a_row_that_does_not_yet_name_its_node() {
+    let store = closed(&backend());
+    let unknown = owner(&store)
+        .run("CREATE JOIN TOKEN FOR REPLICA nobody EXPIRES 10m;")
+        .expect_err("no such row");
+    assert!(
+        matches!(
+            unknown,
+            Error::Unknown {
+                entity: "replica",
+                ..
+            }
+        ),
+        "{unknown}"
+    );
+    // One transaction, so the peer it names never makes this store a cluster
+    // whose writes need a leadership.
+    let bound = owner(&store)
+        .run(&format!(
+            "BEGIN; DEFINE REPLICA known AT '10.0.0.3:9000' NODE '{JOINER}' ROLES serving; \
+             CREATE JOIN TOKEN FOR REPLICA known EXPIRES 10m; COMMIT;"
+        ))
+        .expect_err("the row already names its node");
+    assert!(
+        bound.to_string().contains("already names its node"),
+        "{bound}"
+    );
+    let unsaid = owner(&store)
+        .run("CREATE JOIN TOKEN FOR REPLICA nobody;")
+        .expect_err("a token with no life");
+    assert!(unsaid.to_string().contains("EXPIRES"), "{unsaid}");
+}
+
+#[test]
+fn a_pinned_certificate_reads_back_in_one_spelling() {
+    let store = closed(&backend());
+    owner(&store)
+        .run(&format!(
+            "DEFINE REPLICA joiner AT '10.0.0.2:9000' ROLES serving FINGERPRINT '{}';",
+            FINGERPRINT.to_ascii_uppercase()
+        ))
+        .unwrap();
+    assert_eq!(
+        rows(&reported(&store))["joiner"].get("fingerprint"),
+        Some(&Value::from(FINGERPRINT))
+    );
+}
+
+#[test]
+fn a_dropped_node_is_never_declared_again() {
+    let store = closed(&backend());
+    owner(&store)
+        .run(&format!(
+            "BEGIN; DEFINE REPLICA gone AT '10.0.0.4:9000' NODE '{JOINER}' ROLES serving; \
+             DROP REPLICA gone; DEFINE REPLICA open AT '10.0.0.5:9000' ROLES serving; \
+             DROP REPLICA open; COMMIT;"
+        ))
+        .unwrap();
+    let report = reported(&store);
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster half");
+    };
+    let Some(Value::Array(tombstoned)) = cluster.get("tombstoned") else {
+        panic!("no tombstones: {cluster:?}");
+    };
+    assert_eq!(
+        tombstoned.len(),
+        1,
+        "the row that named a node removed it, the open row removed nobody: {tombstoned:?}"
+    );
+    let refused = owner(&store)
+        .run(&format!(
+            "BEGIN; DEFINE REPLICA back AT '10.0.0.4:9000' NODE '{JOINER}' ROLES serving; \
+             DROP REPLICA back; COMMIT;"
+        ))
+        .expect_err("a removed node declared again");
+    assert!(
+        refused.to_string().contains("never admitted again"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn only_an_operator_of_the_store_makes_a_join_token() {
+    let store = closed(&backend());
+    owner(&store)
+        .run(&format!(
+            "DEFINE USER e ROLE editor PASSWORD '{PASSWORD}'; \
+             DEFINE REPLICA joiner AT '10.0.0.2:9000' ROLES serving;"
+        ))
+        .unwrap();
+    let refused = format!(
+        "{:?}",
+        signed_in(&store, "e").run("CREATE JOIN TOKEN FOR REPLICA joiner EXPIRES 10m;")
+    );
+    assert!(refused.contains("RoleForbids"), "{refused}");
+}

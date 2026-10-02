@@ -719,8 +719,19 @@ pub enum StatementKind {
         /// already — so the parser takes `NAMESPACE`, `DATABASE` and `SHARD`
         /// only. `None` is the row as it has always been.
         leads: Option<ReachRef>,
+        /// The one certificate allowed to bind this row (`FINGERPRINT`), its
+        /// SHA-256 as 64 lowercase hexadecimal digits (ADR-0108 D9).
+        fingerprint: Option<String>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
+    },
+    /// `CREATE JOIN TOKEN FOR REPLICA second EXPIRES 10m` — a one-time token
+    /// that binds the named row to the node presenting it (ADR-0108 D9).
+    CreateJoinToken {
+        /// The row the token binds.
+        replica: Name,
+        /// How long it binds for.
+        expires: Duration,
     },
     /// `DEFINE KAFKA CONSUMER orders_in FROM 'broker:9092' TOPIC 'orders' …`
     ///

@@ -212,6 +212,9 @@ pub(crate) fn carried_to(mutation: &Mutation) -> Result<Carried> {
         // to: a follower that never received the row keeps admitting the peer
         // every other node refuses, with nothing in an error state (ADR-0108 D6).
         (t, _) if t == system::REVOKED_CERTIFICATES => Carried::Everywhere,
+        // And a removed node, for the same reason: a follower that missed it
+        // would admit the node every other one refuses.
+        (t, _) if t == system::TOMBSTONED_NODES => Carried::Everywhere,
         // Everything else, named rather than left to a catch-all so that the
         // ratchet below is a statement about a set somebody wrote down:
         //   ALLOCATORS        one counter per level, for the whole store
@@ -590,6 +593,16 @@ mod tests {
             ),
             Carried::Everywhere,
             "a revocation must reach a follower of one namespace too"
+        );
+        // 25 — a removed node, likewise.
+        assert_eq!(
+            class(
+                system::TOMBSTONED_NODES,
+                RecordId::Uuid([1; 16]),
+                Some(Value::Null)
+            ),
+            Carried::Everywhere,
+            "a removal must reach a follower of one namespace too"
         );
 
         for table in [

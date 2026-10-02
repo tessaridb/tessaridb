@@ -177,6 +177,8 @@ impl Session<'_> {
             leads,
             clients: peer.clients.map(str::to_owned),
             http: peer.http.map(str::to_owned),
+            fingerprint: peer.fingerprint.map(str::to_owned),
+            join: None,
         })?;
         Ok(Outcome::Done)
     }
@@ -200,6 +202,56 @@ impl Session<'_> {
             });
         }
         Ok(Outcome::Done)
+    }
+
+    /// `CREATE JOIN TOKEN FOR REPLICA r EXPIRES 10m` (ADR-0108 D9).
+    ///
+    /// The token is answered once and never stored: the row keeps its SHA-256
+    /// and its expiry, so the catalog — in every backup and on every follower —
+    /// holds nothing that binds a row. A second token for the row replaces the
+    /// first, which is how a lost one is withdrawn.
+    pub(super) fn create_join_token(
+        transaction: &mut Transaction<'_>,
+        replica: &Name,
+        expires: tessari_types::Duration,
+        span: Span,
+    ) -> Result<Outcome> {
+        let mut secret = [0_u8; 32];
+        crate::generate::fill(&mut secret).map_err(|_| Error::TokenUnavailable {
+            reason: "the operating system's randomness source could not be read",
+            span,
+        })?;
+        let token: String = secret.iter().map(|byte| format!("{byte:02x}")).collect();
+        // The digest of the token's bytes — what a joiner offers on the peer
+        // link — and not of the hex an operator copies.
+        let digest: String = <sha2::Sha256 as sha2::Digest>::digest(secret)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| {
+                i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+            });
+        // The parser refuses a length of zero or less, so the seconds are
+        // non-negative; a life past the clock's range saturates rather than
+        // wrapping into the past.
+        let life_ms = expires
+            .seconds()
+            .saturating_mul(1_000)
+            .saturating_add(i64::from(expires.nanos() / 1_000_000));
+        let ticket = tessari_storage::JoinTicket {
+            digest,
+            expires_ms: now_ms.saturating_add(life_ms),
+        };
+        if !Catalog::new(transaction).wait_for_join(&replica.text, ticket)? {
+            return Err(Error::Unknown {
+                entity: "replica",
+                name: replica.text.clone(),
+                span,
+            });
+        }
+        Ok(Outcome::Value(tessari_types::Value::String(token)))
     }
 
     /// `ALTER REPLICA b LEADS …` — moves a placement (ADR-0098).

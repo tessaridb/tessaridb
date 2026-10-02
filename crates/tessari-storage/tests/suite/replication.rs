@@ -2359,7 +2359,24 @@ fn a_peer_name_is_free_again_once_the_row_it_identifies_is_dropped() {
     transaction.commit().unwrap();
     assert_eq!(replicas_on(&theirs), vec!["alpha".to_owned()]);
 
-    declare_peer(&theirs, "beta", [2_u8; tessari_encoding::NODE_ID_LEN]);
+    // The node the row named is removed with it (ADR-0108 D9): the name is
+    // free, the identity is not, and a machine coming back joins wiped, under a
+    // new one.
+    let mut transaction = theirs.begin().unwrap();
+    let removed = Catalog::new(&mut transaction).create_replica(
+        "beta",
+        "127.0.0.1:2",
+        tessari_encoding::Roles::SERVING,
+        Some([2_u8; tessari_encoding::NODE_ID_LEN]),
+        Some(Reach::Store),
+        None,
+    );
+    transaction.rollback();
+    assert!(
+        matches!(removed, Err(Error::NodeTombstoned { .. })),
+        "a dropped node must not be declared again; got {removed:?}"
+    );
+    declare_peer(&theirs, "beta", [3_u8; tessari_encoding::NODE_ID_LEN]);
     assert_eq!(
         replicas_on(&theirs),
         vec!["alpha".to_owned(), "beta".to_owned()],

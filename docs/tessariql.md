@@ -8275,21 +8275,21 @@ permission should fail in.
 **`REPLICATES` without `NODE` is a grant nobody holds *yet*.** A subscription
 grants to a machine, and the door looks a follower up by the id its certificate
 proved — so until the row names a node it matches no follower and hands over
-nothing. That is not a mistake to be refused, it is how a peer is admitted
-without being pre-registered: the row is bound by the first peer that dials this
-node and proves its identity with a credential this cluster issued, and the
-subscription takes effect at that moment.
+nothing. A row is bound to a node only in one of three ways, each of them the
+operator's word: `NODE` names it here; `FINGERPRINT` pins the one certificate
+allowed to bind it; or a join token the row waits on is offered by the node that
+joins (see *Approving a node that joins* below). A row that says none of the
+three binds nobody. Until `0.21.0-beta` such a row was bound by the first peer
+holding any certificate this cluster issued, and that peer received the row's
+whole reach.
 
 The binding writes the node id and **nothing else**. The address and the roles
 stay exactly as they were written here, so nothing a greeting carries — its
 epoch, its roles, how far its log reaches — can change what this row grants or
 what it says the peer is for.
 
-Two rows left unbound at once bind neither, and a row is never re-bound once it
-names a node. Nothing on an inbound connection could choose between two waiting
-rows, and guessing would put a node at another's address under another's roles —
-so peers are admitted one at a time, and an operator who wants the identity
-settled in advance writes `NODE` here and gets exactly the old behaviour.
+Evidence that approves two rows binds neither, and a row is never re-bound once
+it names a node.
 
 **What a subscription hands over is more than records.** The log is a stream of
 mutations and the identity class is in it, so a subscription carries the users,
@@ -8632,6 +8632,46 @@ they change. The authority a cluster's peers are issued by is not reloaded:
 trusting a new root is a restart, planned with both roots in place.
 
 
+### Approving a node that joins
+
+A node joining a running cluster is approved by the operator, never admitted
+because it arrived first. Three ways, chosen per row:
+
+```
+DEFINE REPLICA db_4 AT 'db-4.internal:9000' NODE '3f9a1c04-b7e2-489d-b561-0af3d82c7e46'
+    ROLES serving REPLICATES STORE;
+
+DEFINE REPLICA db_4 AT 'db-4.internal:9000' ROLES serving REPLICATES STORE
+    FINGERPRINT '0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0';
+
+DEFINE REPLICA db_4 AT 'db-4.internal:9000' ROLES serving REPLICATES STORE;
+CREATE JOIN TOKEN FOR REPLICA db_4 EXPIRES 10m;
+```
+
+`NODE` names the node's identity, read from the new node with `INFO FOR NODE`.
+`FINGERPRINT` pins the SHA-256 of the one peer certificate allowed to bind the
+row, in the spelling `REVOKE CERTIFICATE` takes. `CREATE JOIN TOKEN` answers a
+token **once** — 64 hexadecimal digits — and the row keeps only its digest and
+when it stops binding; `EXPIRES` is required, because a token nobody gave a life
+to binds for as long as nobody remembers it. The new node is started with
+`--join-token <token>` (or `TESSARIDB_JOIN_TOKEN`) beside its `--seed`, offers it
+to the seed every round until a row names it, and the node that may write binds
+the row and spends the token in one transaction. A second token for the row
+replaces the first. `INFO FOR NODE` shows a row's `fingerprint` and, while a
+token waits, `join_expires_ms` — never the digest. Every binding is recorded in
+the administration trail as `BIND` or `JOIN` by the node it bound; a token that
+binds nothing is logged and not recorded, because a joiner asks every round.
+
+**A node dropped is never admitted again.** `DROP REPLICA` of a row that named a
+node also records the node as removed: from then on its greeting is refused at
+the handshake whatever certificate it presents, no row binds it, and a
+`DEFINE REPLICA … NODE` naming it is refused with `NodeTombstoned`. A machine
+coming back is wiped and joins under the identity it then has. So a row is not
+amended by dropping it and declaring it again — the drop removes the node. The
+removed nodes are listed under `cluster.tombstoned` in `INFO FOR NODE`, and,
+like revocations, reach every node whatever it follows.
+
+
 ### Which peers vote, and what a node that votes for nobody does
 
 A peer declared with the `coordinating` role is a **voting member**: a node that
@@ -8782,7 +8822,7 @@ than one flat object:
  "version": "0.21.0", "build": "0.21.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
-             "revoked": [],
+             "revoked": [], "tombstoned": [],
              "desired": ["serving", "writable"],
              "followers": [{"node": "4b81…", "sequence": 812, "behind": 4,
                             "quiet_for": "2s143ms", "copy_age": "11s"}],

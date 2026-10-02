@@ -329,6 +329,19 @@ pub trait Origin {
     /// No default, for [`Self::copied`]'s reason: a door that forgot it would
     /// grant every range ballot.
     fn places(&self, candidate: [u8; NODE_ID_LEN], range: Reach) -> bool;
+
+    /// Bind `node` to the row waiting on the join token `token`, and answer
+    /// whether a row is now bound to it (ADR-0108 D9).
+    ///
+    /// Defaults to binding nothing, the safe direction: a door that forgot it
+    /// leaves a joiner waiting rather than admitting anybody.
+    ///
+    /// # Errors
+    ///
+    /// A store failure.
+    fn joined(&self, _node: [u8; NODE_ID_LEN], _token: &[u8; 32]) -> Result<bool> {
+        Ok(false)
+    }
 }
 
 /// A door with no log behind it.

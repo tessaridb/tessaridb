@@ -59,6 +59,7 @@ struct Peer<'a> {
     node: Option<[u8; NODE_ID_LEN]>,
     replicates: Option<&'a ReachRef>,
     leads: Option<&'a ReachRef>,
+    fingerprint: Option<&'a str>,
 }
 
 struct Declared<'a> {
@@ -346,6 +347,7 @@ impl Session<'_> {
                 node,
                 replicates,
                 leads,
+                fingerprint,
                 if_not_exists,
             } => self.define_replica(
                 transaction,
@@ -358,9 +360,13 @@ impl Session<'_> {
                     node: *node,
                     replicates: replicates.as_ref(),
                     leads: leads.as_ref(),
+                    fingerprint: fingerprint.as_deref(),
                 },
                 *if_not_exists,
             ),
+            StatementKind::CreateJoinToken { replica, expires } => {
+                Self::create_join_token(transaction, replica, *expires, span)
+            }
             StatementKind::DefineConsumer {
                 name,
                 source,

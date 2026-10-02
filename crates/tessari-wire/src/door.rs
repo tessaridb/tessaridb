@@ -274,7 +274,11 @@ impl<H: Holding> Connection<H> {
             // joining follower's row unbound all that time.
             Some((tag, body)) if tag == PeerFrame::Stream.tag() => {
                 let holding = Arc::clone(&self.holding);
-                let met = Met { said, voted: None };
+                let met = Met {
+                    said,
+                    voted: None,
+                    presented: shown.as_ref().map_or([0; 32], credential::digest),
+                };
                 if let Bridged::Busy(()) | Bridged::Panicked =
                     self.bridge.call((), move |()| holding.met(&met)).await
                 {
@@ -383,7 +387,11 @@ impl<H: Holding> Connection<H> {
                 voted
             }
         };
-        Ok(Some(Met { said, voted }))
+        Ok(Some(Met {
+            said,
+            voted,
+            presented: shown.as_ref().map_or([0; 32], credential::digest),
+        }))
     }
 
     /// Serve a held stream (ADR-0106 D5) until the follower closes or the door

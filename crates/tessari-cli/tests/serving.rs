@@ -1264,36 +1264,30 @@ fn bound_node(address: &str) -> Result<Option<String>, String> {
     }
 }
 
-/// G025 S5.2 — a replica row's node id is bound by the first inbound greeting.
+/// ADR-0108 D9 (was G025 S5.2) — a row is bound by an approved node, never the
+/// first to arrive.
 ///
-/// # Why inbound is the only route, and therefore not a choice
+/// A row whose `node` is `None` is declared but **undiallable**: it can only be
+/// bound by that peer arriving here and proving who it is. Until G054 the first
+/// node holding any cluster-issued certificate to greet was bound and handed the
+/// row's whole reach (R-15). Now the operator approves one: here, with a join
+/// token the joiner offers.
 ///
-/// A row whose `node` is `None` is declared but **undiallable**:
-/// `Directory::greet_round` skips it, because opening a session derives the
-/// peer's transport name from its identifier and an unbound row has none to
-/// derive from. So this node can never bind the row by reaching out. The single
-/// event that can ever bind it is that peer arriving here and proving who it is
-/// — which is what the criterion means by *the first inbound greeting*, and it
-/// is a statement about the design rather than a preference between two.
+/// # Two phases, and the first is the one that would have passed before
+///
+/// The joiner first runs WITHOUT the token for several greeting rounds, and the
+/// row must stay unbound — the first-come binding this replaces would have bound
+/// it there. Then it restarts with the token and the row binds to it.
 ///
 /// # The greeting supplies the id and nothing else
 ///
-/// W281 made a row's `roles` decide whether this node is fenced, so a row bound
-/// by a greeting is a row that can move the write gate. That is Q-553's own
-/// recorded objection to binding by greeting — *a self-binding row is a role
-/// somebody else's first packet gets to assign* — and the answer is that only
-/// `node` is written. The endpoint, the roles and the reach stay exactly as the
-/// operator declared them, which the assertion below checks rather than assumes.
-///
-/// # The assertion is the transition, not the end state
-///
-/// The row is read once **before** the joiner starts and asserted unbound. A
-/// test that only checked the end state would pass against a fixture that had
-/// been bound all along, which is the failure mode this whole criterion is about.
+/// Only `node` is written: the endpoint, the roles and the reach stay exactly as
+/// the operator declared them, which the assertion below checks rather than
+/// assumes.
 #[test]
-#[ignore = "a minute of real cadences against two process starts; run it with \
-            cargo test -p tessari-cli --test serving a_row_nobody_bound -- --ignored"]
-fn a_row_nobody_bound_is_bound_by_the_peer_that_arrives() {
+#[ignore = "a minute of real cadences against three process starts; run it with \
+            cargo test -p tessari-cli --test serving a_row_waiting -- --ignored"]
+fn a_row_waiting_on_a_join_token_is_bound_by_the_node_that_offers_it() {
     let directory = tempfile::tempdir().unwrap();
     let minted = Minted::new();
 
@@ -1315,7 +1309,7 @@ fn a_row_nobody_bound_is_bound_by_the_peer_that_arrives() {
     // The one difference from the self-declaring cluster above: the `joiner`
     // row carries no `NODE`. The operator wrote down where the peer will be and
     // what it is for, and left the identity to be proved rather than typed.
-    {
+    let token = {
         let db = tessaridb::Db::open(&stores[0]).unwrap();
         let leader = tessari_types::RecordId::Uuid(ids[0]).to_string();
         db.session()
@@ -1326,8 +1320,19 @@ fn a_row_nobody_bound_is_bound_by_the_peer_that_arrives() {
                 UNBOUND[1].1, UNBOUND[0].1
             ))
             .expect("a leader that declared a peer it has not met");
+        let answered = db
+            .session()
+            .run("CREATE JOIN TOKEN FOR REPLICA joiner EXPIRES 10m;")
+            .expect("a join token");
+        let Some(tessari_session::Outcome::Value(tessari_types::Value::String(token))) =
+            answered.first()
+        else {
+            panic!("no token: {answered:?}");
+        };
+        let token = token.clone();
         drop(db);
-    }
+        token
+    };
     {
         let db = tessaridb::Db::open(&stores[1]).unwrap();
         db.session()
@@ -1336,7 +1341,7 @@ fn a_row_nobody_bound_is_bound_by_the_peer_that_arrives() {
         drop(db);
     }
 
-    let start = |index: usize| {
+    let start = |index: usize, token: Option<&str>| {
         let (leaf, key, authority) = &papers[index];
         let mut command = Command::new(TESSARIDB);
         command
@@ -1355,6 +1360,10 @@ fn a_row_nobody_bound_is_bound_by_the_peer_that_arrives() {
         // which is the shape the S5.1 scenario above settled on for the same
         // reason. Q-612 records that the origin of a cluster should not need one.
         let other = usize::from(index == 0);
+        command.env_remove("TESSARIDB_JOIN_TOKEN");
+        if let Some(token) = token {
+            command.args(["--join-token", token]);
+        }
         command.args([
             "--seed",
             &format!(
@@ -1372,7 +1381,7 @@ fn a_row_nobody_bound_is_bound_by_the_peer_that_arrives() {
         )
     };
 
-    let leader = start(0);
+    let leader = start(0, None);
     assert!(
         listening(UNBOUND[0].0, Duration::from_secs(30)),
         "the leader never opened its client door"
@@ -1383,7 +1392,27 @@ fn a_row_nobody_bound_is_bound_by_the_peer_that_arrives() {
         "the row must start unbound, or what follows proves nothing"
     );
 
-    let joiner = start(1);
+    // Phase one: no token. The node greets the leader every round, holds a
+    // certificate the cluster issued, and the row it is meant for is the only
+    // open one — the case first-come binding bound.
+    let unapproved = start(1, None);
+    assert!(
+        listening(UNBOUND[1].0, Duration::from_secs(30)),
+        "the joiner never opened its client door"
+    );
+    let began = Instant::now();
+    while began.elapsed() < Duration::from_secs(8) {
+        assert_eq!(
+            bound_node(UNBOUND[0].0),
+            Ok(None),
+            "a node nobody approved was bound to the open row"
+        );
+        std::thread::sleep(POLL);
+    }
+    drop(unapproved);
+
+    // Phase two: the same node, offering the token.
+    let joiner = start(1, Some(&token));
     assert!(
         listening(UNBOUND[1].0, Duration::from_secs(30)),
         "the joiner never opened its client door"

@@ -25,6 +25,9 @@ pub(crate) struct Peering {
     /// What this node presents and refuses, shared by the door and every
     /// round so a reload or a revocation reaches them all (ADR-0108 D6).
     pub(crate) keys: tessari_wire::PeerKeys,
+    /// A join token to offer the seeds until a row names this node
+    /// (ADR-0108 D9).
+    pub(crate) join: Option<[u8; 32]>,
     /// What the greeting round writes and the client surface reads.
     ///
     /// One of these, shared, and that sharing is the point of the field: a
@@ -59,6 +62,7 @@ pub(crate) fn host(
         door,
         seeds,
         keys,
+        join,
         routing,
     } = surface;
     // One voting memory, held by the door and by the campaign alike. A
@@ -140,7 +144,7 @@ pub(crate) fn host(
             move || {
                 dial_peers(
                     std::sync::Arc::clone(&db),
-                    keys.clone(),
+                    (keys.clone(), join),
                     seeds.clone(),
                     std::sync::Arc::clone(&routing),
                     std::sync::Arc::clone(&wakes),

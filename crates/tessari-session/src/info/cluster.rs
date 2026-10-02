@@ -103,6 +103,14 @@ impl Session<'_> {
                 .map(|fingerprint| Value::from(fingerprint.as_str()))
                 .collect(),
         );
+        // Nodes removed from the cluster and never admitted again (ADR-0108 D9).
+        let tombstoned = Value::Array(
+            Catalog::new(transaction)
+                .tombstoned_nodes()?
+                .into_iter()
+                .map(Value::Uuid)
+                .collect(),
+        );
         let failover = match Catalog::new(transaction).failover()? {
             None => Value::Null,
             Some(held) => described_failover(&held),
@@ -189,6 +197,7 @@ impl Session<'_> {
                 Value::Object(BTreeMap::from([
                     ("peers".to_owned(), peers),
                     ("revoked".to_owned(), revoked),
+                    ("tombstoned".to_owned(), tombstoned),
                     // On the replicated side of ADR-0018's line, because that is
                     // where it comes from: `roles` above is what this machine
                     // holds and a backup would not carry, `desired` is what the

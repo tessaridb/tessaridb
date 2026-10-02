@@ -349,6 +349,7 @@ impl Needs {
             StatementKind::DefineNode { .. }
             | StatementKind::DefineFailover { .. }
             | StatementKind::RevokeCertificate { .. }
+            | StatementKind::CreateJoinToken { .. }
             | StatementKind::DefineReplica { .. }
             | StatementKind::DropReplica { .. }
             | StatementKind::AlterReplica { .. } => Self::OPERATE_STORE,

@@ -185,6 +185,14 @@ REVOKE CERTIFICATE '0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2
 REVOKE CERTIFICATE '0f1e2d';
 --- expect: error UnexpectedToken
 
+--- case: a join token needs a row to bind
+CREATE JOIN TOKEN FOR REPLICA nobody EXPIRES 10m;
+--- expect: error Unknown
+
+--- case: a join token has no default life
+CREATE JOIN TOKEN FOR REPLICA nobody;
+--- expect: error UnexpectedToken
+
 --- case: a session reads the node it is talking to and its own tenancy
 RETURN object::keys(session::context());
 --- expect: value ['database', 'namespace', 'node']

@@ -31,6 +31,9 @@ pub(crate) fn administered(kind: &StatementKind) -> Option<(&'static str, &str)>
         StatementKind::RevokeCertificate { fingerprint } => {
             ("REVOKE CERTIFICATE", fingerprint.as_str())
         }
+        StatementKind::CreateJoinToken { replica, .. } => {
+            ("CREATE JOIN TOKEN", replica.text.as_str())
+        }
         _ => return None,
     })
 }

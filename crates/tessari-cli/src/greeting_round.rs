@@ -31,7 +31,7 @@ use tessaridb::Db;
 /// and the cadence runs again.
 pub(crate) async fn dial_peers(
     db: std::sync::Arc<Db>,
-    keys: tessari_wire::PeerKeys,
+    (keys, join): (tessari_wire::PeerKeys, Option<[u8; 32]>),
     seeds: Vec<tessari_wire::Seed>,
     published: std::sync::Arc<tessari_wire::Published>,
     wakes: std::sync::Arc<crate::peers::Wakes>,
@@ -120,6 +120,15 @@ pub(crate) async fn dial_peers(
             } else {
                 directory.greet_seeds(seeds, &me, now, greet)
             };
+            // A joiner offers its token to every seed until its catalog names a
+            // peer, which happens once the row it was bound to has reached it
+            // (ADR-0108 D9). Asking again after the binding answers `true` and
+            // writes nothing, so a lost answer costs one more round.
+            if let Some(token) = &join
+                && !tessari_wire::names_a_peer(&declared, &me)
+            {
+                offer_the_token(db, keys, seeds, token);
+            }
         });
         // The count and not the directory, because nothing reads the
         // directory yet — routing on it is S6.2 and is a wave of its own.
@@ -160,48 +169,136 @@ pub(crate) async fn dial_peers(
     .await;
 }
 
-/// Bind the row this greeting is evidence for, when there is exactly one.
+/// Offer `token` to each seed, saying what came of it.
+fn offer_the_token(
+    db: &Db,
+    keys: &tessari_wire::PeerKeys,
+    seeds: &[tessari_wire::Seed],
+    token: &[u8; 32],
+) {
+    let said = match greeting(db) {
+        Ok(said) => said,
+        Err(why) => {
+            log::warn!("this node cannot say what it holds: {why}");
+            return;
+        }
+    };
+    for seed in seeds {
+        match tessari_wire::call(
+            seed.endpoint.as_str(),
+            keys,
+            seed.node,
+            &said,
+            tessari_wire::Ask::Join(token),
+        ) {
+            Ok((_, tessari_wire::Answered::Joined(true))) => {
+                log::info!("{} bound this node to its row", seed.endpoint);
+            }
+            Ok(_) => log::info!(
+                "{} holds no row this join token binds; it may not lead, or the token \
+                 expired or was replaced",
+                seed.endpoint
+            ),
+            Err(why) => log::info!("the join token did not reach {}: {why}", seed.endpoint),
+        }
+    }
+}
+
+/// Bind the row a greeting is evidence for, when the operator approved it
+/// (ADR-0108 D9), and answer whether a row now names the node.
+///
+/// Approved means the row pins the certificate `presented` is the digest of, or
+/// waits on the join token `token` — offered by the node itself in a `Join`
+/// frame. A node the cluster removed is never bound, whatever it presents.
 ///
 /// # Why this is here and not inside the door
 ///
 /// `Peers::greet` has no store, deliberately — it settles a credential, hears a
 /// greeting and answers, and a door that could also write the catalog would be a
 /// transport with an opinion about membership. The rule needs two things the door
-/// cannot both see, so it lives in the caller that holds both, which is the shape
-/// W281 arrived at for the write fence for the same reason.
+/// cannot both see, so it lives in the caller that holds both.
 ///
 /// # Why a refusal is not an error here
 ///
 /// Binding is a catalog write and therefore a log record, so only a node that may
 /// write can take it: on a follower the fence refuses the commit, which is
-/// correct, because membership arrives at a follower by collection and a
-/// follower writing its own would be a second source of truth about who the
-/// members are. The read runs first and commits nothing, so in the ordinary case
-/// — every row already bound — this costs one catalog read and writes nothing at
-/// all.
-///
-/// Logged at the level the loop already uses for ordinary peer outcomes. A
-/// greeting that arrived and a row that did not need binding are both the normal
-/// course of a running cluster.
-pub(crate) fn bind_the_greeter(db: &Db, node: [u8; tessari_storage::NODE_ID_LEN]) {
-    let bind = || -> Result<Option<String>, String> {
+/// correct, because membership arrives at a follower by collection. The read runs
+/// first and commits nothing, so in the ordinary case — every row already bound —
+/// this costs one catalog read and writes nothing at all. A binding is audited;
+/// a refused join is logged and not audited, because a joiner asks every round
+/// until somebody approves it and the trail would fill with its patience.
+pub(crate) fn bind_the_greeter(
+    db: &Db,
+    node: [u8; tessari_storage::NODE_ID_LEN],
+    presented: Option<&[u8; 32]>,
+    token: Option<&[u8; 32]>,
+) -> bool {
+    let bind = || -> Result<(bool, Option<String>), String> {
         let mut transaction = db.store().begin().map_err(|why| why.to_string())?;
         let mut catalog = tessari_storage::Catalog::new(&mut transaction);
         let declared = catalog.replicas().map_err(|why| why.to_string())?;
-        let Some(name) = tessari_storage::the_row_a_greeting_binds(&declared, &node) else {
-            return Ok(None);
+        if declared.iter().any(|row| row.node == Some(node)) {
+            return Ok((true, None));
+        }
+        if catalog
+            .is_tombstoned(&node)
+            .map_err(|why| why.to_string())?
+        {
+            return Ok((false, None));
+        }
+        // Empty when no certificate is in hand, which no stored pin — always
+        // 64 digits — can equal.
+        let fingerprint = presented.map(|digest| hex(digest)).unwrap_or_default();
+        let digest = token.map(|token| hex(&<sha2::Sha256 as sha2::Digest>::digest(token)));
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| {
+                i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+            });
+        let greeter = tessari_storage::Greeter {
+            node,
+            fingerprint: &fingerprint,
+            token: digest.as_deref(),
+        };
+        let Some(name) = tessari_storage::the_row_a_greeting_binds(&declared, &greeter, now_ms)
+        else {
+            return Ok((false, None));
         };
         let name = name.to_owned();
         catalog
             .bind_replica_node(&name, node)
             .map_err(|why| why.to_string())?;
+        let actor = format!("node {}", hex(&node));
+        tessari_storage::administered(
+            &mut transaction,
+            &tessari_storage::Administered {
+                actor: &actor,
+                statement: if token.is_some() { "JOIN" } else { "BIND" },
+                subject: &name,
+            },
+        )
+        .map_err(|why| why.to_string())?;
         transaction.commit().map_err(|why| why.to_string())?;
-        Ok(Some(name))
+        Ok((true, Some(name)))
     };
     match bind() {
-        Ok(Some(name)) => log::info!("peer {} now names replica {name}", hex(&node)),
-        Ok(None) => {}
-        Err(why) => log::info!("peer {} was not bound to a declared row: {why}", hex(&node)),
+        Ok((bound, Some(name))) => {
+            log::info!("peer {} now names replica {name}", hex(&node));
+            bound
+        }
+        Ok((bound, None)) => {
+            if token.is_some() && !bound {
+                log::info!(
+                    "peer {} offered a join token that binds no row here",
+                    hex(&node)
+                );
+            }
+            bound
+        }
+        Err(why) => {
+            log::info!("peer {} was not bound to a declared row: {why}", hex(&node));
+            false
+        }
     }
 }
 

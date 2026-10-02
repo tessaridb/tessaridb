@@ -204,12 +204,13 @@ impl Revoking {
     ///
     /// The store's, when the list cannot be read; the keys are left as they were.
     pub(crate) fn refresh(&self) -> Result<(), String> {
-        let listed = self
+        let (listed, removed) = self
             .db
             .store()
             .begin()
             .and_then(|mut transaction| {
-                tessari_storage::Catalog::new(&mut transaction).revoked_certificates()
+                let catalog = tessari_storage::Catalog::new(&mut transaction);
+                Ok((catalog.revoked_certificates()?, catalog.tombstoned_nodes()?))
             })
             .map_err(|why| why.to_string())?;
         let listed: tessari_wire::Revoked = listed.into_iter().collect();
@@ -219,6 +220,15 @@ impl Revoking {
                 listed.len()
             );
             self.keys.refuse(listed);
+        }
+        // And the nodes the cluster removed (ADR-0108 D9), by the same route.
+        let removed: tessari_wire::Removed = removed.into_iter().collect();
+        if removed != self.keys.refusing_nodes() {
+            log::info!(
+                "the peer link now refuses {} removed node(s)",
+                removed.len()
+            );
+            self.keys.refuse_nodes(removed);
         }
         Ok(())
     }
@@ -319,6 +329,29 @@ mod tests {
         assert_eq!(
             revoking.keys.refusing(),
             tessari_wire::Revoked::from([fingerprint])
+        );
+    }
+
+    #[test]
+    fn the_peer_link_refuses_the_nodes_the_catalog_removed() {
+        let db = Arc::new(tessaridb::Db::in_memory().expect("a store"));
+        let revoking = super::Revoking {
+            db: Arc::clone(&db),
+            keys: keys(),
+        };
+        db.session()
+            .run(
+                "BEGIN; DEFINE REPLICA gone AT 'h:1' NODE '3f9a1c04-b7e2-489d-b561-0af3d82c7e46' \
+                 ROLES serving; DROP REPLICA gone; COMMIT;",
+            )
+            .expect("a removal");
+        revoking.refresh().expect("the lists");
+        assert_eq!(
+            revoking.keys.refusing_nodes(),
+            tessari_wire::Removed::from([[
+                0x3f, 0x9a, 0x1c, 0x04, 0xb7, 0xe2, 0x48, 0x9d, 0xb5, 0x61, 0x0a, 0xf3, 0xd8, 0x2c,
+                0x7e, 0x46
+            ]])
         );
     }
 

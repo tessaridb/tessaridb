@@ -44,12 +44,17 @@ use rustls::{
     ServerConfig, SignatureScheme,
 };
 
-use crate::credential::fingerprint;
+use crate::credential::{fingerprint, names, valid_for};
 use crate::error::{Error, Result};
 use crate::link::Credential;
+use crate::peer::Purpose;
+use tessari_encoding::NODE_ID_LEN;
 
 /// The fingerprints a node refuses, as [`crate::fingerprint`] prints them.
 pub type Revoked = BTreeSet<String>;
+
+/// The nodes a cluster removed, refused whatever certificate they present.
+pub type Removed = BTreeSet<[u8; NODE_ID_LEN]>;
 
 /// What this node shows its peers, whom it trusts, and whom it no longer does.
 ///
@@ -62,6 +67,7 @@ pub struct PeerKeys {
 struct Held {
     shown: Mutex<Arc<Shown>>,
     revoked: Mutex<Arc<Revoked>>,
+    removed: Mutex<Arc<Removed>>,
     authority: CertificateDer<'static>,
     clients: Arc<dyn ClientCertVerifier>,
     servers: Arc<WebPkiServerVerifier>,
@@ -108,6 +114,7 @@ impl PeerKeys {
             held: Arc::new(Held {
                 shown: Mutex::new(Arc::new(Shown::of(mine)?)),
                 revoked: Mutex::new(Arc::new(Revoked::new())),
+                removed: Mutex::new(Arc::new(Removed::new())),
                 authority,
                 clients,
                 servers,
@@ -145,6 +152,32 @@ impl PeerKeys {
             .revoked
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Arc::new(fingerprints);
+    }
+
+    /// Refuse every certificate naming one of `nodes` from the next handshake
+    /// on, in both directions (ADR-0108 D9).
+    ///
+    /// By the name the certificate carries rather than by its fingerprint,
+    /// because a removed node may hold any number of still-valid certificates
+    /// and the removal is of the node.
+    pub fn refuse_nodes(&self, nodes: Removed) {
+        *self
+            .held
+            .removed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Arc::new(nodes);
+    }
+
+    /// The nodes refused now.
+    #[must_use]
+    pub fn refusing_nodes(&self) -> Removed {
+        Removed::clone(
+            &self
+                .held
+                .removed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        )
     }
 
     /// The fingerprints refused now.
@@ -237,8 +270,24 @@ impl PeerKeys {
     ///
     /// Asked after the authority has accepted the chain, so a certificate that
     /// is both foreign and revoked is refused for the stronger reason.
+    ///
+    /// A certificate naming a removed node is refused the same way: to the
+    /// handshake, a node the cluster removed holds only revoked credentials.
     fn admits(&self, presented: &CertificateDer<'_>) -> std::result::Result<(), rustls::Error> {
         if self.revoked().contains(&fingerprint(presented)) {
+            return Err(rustls::Error::InvalidCertificate(CertificateError::Revoked));
+        }
+        let removed = Arc::clone(
+            &self
+                .held
+                .removed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        if removed
+            .iter()
+            .any(|node| valid_for(presented, &names(*node, Purpose::Peer)))
+        {
             return Err(rustls::Error::InvalidCertificate(CertificateError::Revoked));
         }
         Ok(())
@@ -446,6 +495,33 @@ mod tests {
         let refused = dial(address, &caller).expect_err("a revoked door is not spoken to");
         assert!(names_revocation(&refused), "{refused}");
         drop(greeting.join());
+    }
+
+    #[test]
+    fn a_door_refuses_a_removed_node_whatever_certificate_it_holds() {
+        let authority = Authority::new();
+        let door = authority.keys(DOOR, Purpose::Peer);
+        door.refuse_nodes(super::Removed::from([CALLER]));
+
+        // A certificate issued after the removal is still the removed node's.
+        let caller = authority.keys(CALLER, Purpose::Peer);
+        let (address, greeting) = serving(&door);
+        drop(dial(address, &caller));
+        let refused = greeting
+            .join()
+            .expect("the door's thread")
+            .expect_err("a removed node is not admitted");
+        assert!(names_revocation(&refused), "{refused}");
+
+        // The control: another node is admitted by the same door.
+        const OTHER: [u8; NODE_ID_LEN] = [6_u8; NODE_ID_LEN];
+        let other = authority.keys(OTHER, Purpose::Peer);
+        let (address, greeting) = serving(&door);
+        call(address, &other, DOOR, &hello(OTHER), Ask::Nothing).expect("another node");
+        greeting
+            .join()
+            .expect("the door's thread")
+            .expect("another node is admitted");
     }
 
     #[test]

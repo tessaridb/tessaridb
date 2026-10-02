@@ -108,6 +108,7 @@ pub(crate) fn serve(
                 door,
                 seeds,
                 keys,
+                join: join_token(serving.join_token.as_deref())?,
                 routing: std::sync::Arc::new(tessari_wire::Published::holding(
                     tessari_wire::Directory::new(),
                 )),
@@ -517,6 +518,35 @@ pub(crate) fn serve(
     Ok(Ended::Fine)
 }
 
+/// The join token to offer the seeds: the flag, else `TESSARIDB_JOIN_TOKEN`.
+///
+/// Read at start-up and refused there when it is not what `CREATE JOIN TOKEN`
+/// answered — 64 hexadecimal digits — rather than offered every round as a
+/// token no row can wait on.
+fn join_token(given: Option<&str>) -> Result<Option<[u8; 32]>, String> {
+    let written = match given {
+        Some(written) => written.to_owned(),
+        None => match std::env::var(JOIN_TOKEN) {
+            Ok(written) if !written.is_empty() => written,
+            _ => return Ok(None),
+        },
+    };
+    let malformed =
+        || "the join token is the 64 hexadecimal digits CREATE JOIN TOKEN answered".to_owned();
+    if written.len() != 64 {
+        return Err(malformed());
+    }
+    let mut token = [0_u8; 32];
+    for (slot, pair) in token.iter_mut().zip(written.as_bytes().chunks(2)) {
+        let pair = std::str::from_utf8(pair).map_err(|_| malformed())?;
+        *slot = u8::from_str_radix(pair, 16).map_err(|_| malformed())?;
+    }
+    Ok(Some(token))
+}
+
+/// The variable a join token is read from when the flag is absent.
+const JOIN_TOKEN: &str = "TESSARIDB_JOIN_TOKEN";
+
 /// The wire node's door in the shape the HTTP node takes it (ADR-0089).
 ///
 /// Built here because this is the one place that holds both surfaces: neither
@@ -532,4 +562,19 @@ fn wire_door(carrier: tessari_wire::Carrier) -> tessari_http::WireDoor {
             session
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::join_token;
+
+    #[test]
+    fn a_join_token_is_the_64_digits_it_was_answered_as() {
+        let written = "0f".repeat(32);
+        assert_eq!(join_token(Some(&written)), Ok(Some([0x0f; 32])));
+        for malformed in ["0f", &"0g".repeat(32), &"0f".repeat(33)] {
+            let refused = join_token(Some(malformed)).expect_err(malformed);
+            assert!(refused.contains("64 hexadecimal digits"), "{refused}");
+        }
+    }
 }

@@ -1138,6 +1138,18 @@ pub enum Error {
         span: Span,
     },
 
+    /// A join token could not be made (ADR-0108 D9).
+    ///
+    /// No fallback, for [`Error::IdentityUnavailable`]'s reason: a token from a
+    /// weaker source is a credential somebody else can produce.
+    #[error("the store cannot make a join token: {reason} (at {span})")]
+    TokenUnavailable {
+        /// Why there is no token.
+        reason: &'static str,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A read asked to be answered by a node fresher than this cluster can know.
     ///
     /// A staleness bound says how far behind an answering node may be. A bound

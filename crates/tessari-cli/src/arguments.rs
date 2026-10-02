@@ -40,6 +40,8 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   --cluster-authority <file> the one certificate this cluster trusts, PEM
   --cluster-address <host:port> where this node's own peer door binds
   --seed <node-id>@<host:port> a node to reach the cluster through; repeatable
+  --join-token <token> a token from CREATE JOIN TOKEN, offered to the seeds until
+                  a row names this node; default TESSARIDB_JOIN_TOKEN
   --param <name>=<value> bind $name to <value>, written as TessariQL; repeatable
   -e, --execute <script> run this and exit
   -f, --file <file> run this file and exit
@@ -137,6 +139,9 @@ pub struct Serving {
     pub unseal_for: Option<core::time::Duration>,
     /// What the TLS flags said; the environment fills the rest at start-up.
     pub tls: crate::tls::Given,
+    /// A join token to offer the seeds (ADR-0108 D9); the environment fills
+    /// it at start-up when absent.
+    pub join_token: Option<String>,
 }
 
 impl Serving {
@@ -324,6 +329,13 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                 serving.tls.key = Some(PathBuf::from(path));
             }
             "--client-plaintext" => serving.tls.plaintext = true,
+            "--join-token" => {
+                serving.join_token = Some(
+                    arguments
+                        .next()
+                        .ok_or_else(|| "--join-token wants the token".to_owned())?,
+                );
+            }
             "--tls-authority" => {
                 let path = arguments
                     .next()
@@ -489,7 +501,8 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
         || key.is_some()
         || authority.is_some()
         || door.is_some()
-        || !seeds.is_empty();
+        || !seeds.is_empty()
+        || serving.join_token.is_some();
     if told_about_a_cluster && !matches!(source, Source::Serve) {
         return Err("a cluster is something a node serves in, and this serves nothing".to_owned());
     }
