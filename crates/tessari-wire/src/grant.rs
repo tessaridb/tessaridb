@@ -499,6 +499,58 @@ impl Voter {
         Vote::Granted
     }
 
+    /// Take a round a majority carried for `ballot`'s candidate — this node —
+    /// into this voter's memory, whether or not this voter granted it; or
+    /// refuse it, answering the higher epoch this voter has already granted.
+    ///
+    /// # A win this memory does not hold is a leader its own voter disowns
+    ///
+    /// The self-vote is cast last and can be refused: a voter that granted a
+    /// rival an epoch moments ago refuses this node the next one for a whole
+    /// TTL, and the peers carry the round without it. The win is sound — every
+    /// voter in that majority kept its own promise, so the rival's lease cannot
+    /// be alive — but the memory still names the rival. Read back as a grant to
+    /// somebody else, it silenced the leader at its own standing gate for the
+    /// rest of the lease, and once that grant aged out the same memory would
+    /// grant the NEXT epoch to a challenger while this node still wrote under
+    /// this one (G053 SG2d).
+    ///
+    /// A rival's grant of the SAME epoch is replaced too. Every voter grants an
+    /// epoch once, so a majority that carried it for this node means the
+    /// rival's bid at it lost; the record names a candidacy known to be over,
+    /// and replacing it only ever refuses more — the rival is no longer the
+    /// incumbent, and the hold runs from now.
+    ///
+    /// # A grant ABOVE the round ends the round
+    ///
+    /// A ballot this node's door granted while the round was in flight carried
+    /// this node's log position as it then stood: the rival was promised it
+    /// needed nothing after it. Leading the lower epoch would append past that
+    /// promise — records acknowledged here and absent from the line a winning
+    /// rival keeps. Raft's rule, for the same reason: a node that voted in a
+    /// higher term is a follower in it, and an election for a lower term is
+    /// over whatever its replies say. Decided under the one lock the door also
+    /// takes, so no grant can land between the check and the record.
+    ///
+    /// # Errors
+    ///
+    /// The epoch this voter granted above the round, which the caller stands
+    /// past next time.
+    pub fn carried(&mut self, ballot: &Ballot, now: Instant) -> std::result::Result<(), Epoch> {
+        if let Some(held) = self.granted
+            && held.epoch > ballot.epoch
+        {
+            return Err(held.epoch);
+        }
+        self.seen = self.seen.max(ballot.epoch);
+        self.granted = Some(Granted {
+            epoch: ballot.epoch,
+            candidate: ballot.candidate,
+            at: now,
+        });
+        Ok(())
+    }
+
     /// The highest epoch this voter has granted, if any.
     #[must_use]
     pub fn decided(&self) -> Option<Epoch> {

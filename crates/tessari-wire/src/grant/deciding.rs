@@ -78,6 +78,25 @@ impl Deciding {
             .asked(ballot, now, mine, candidate)
     }
 
+    /// Take a round a majority carried for this node, on the ballot's line —
+    /// see [`Voter::carried`].
+    ///
+    /// # Errors
+    ///
+    /// The higher epoch this node already granted on that line.
+    pub fn carried(&self, ballot: &Ballot, now: Instant) -> std::result::Result<(), Epoch> {
+        if ballot.range == Reach::Store {
+            return self.held().carried(ballot, now);
+        }
+        let started = self.held().started;
+        self.lines
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(ballot.range)
+            .or_insert_with(|| Voter::started_at(started))
+            .carried(ballot, now)
+    }
+
     /// When this node last granted a ballot to somebody else — see
     /// [`Voter::granted_elsewhere_at`].
     #[must_use]
