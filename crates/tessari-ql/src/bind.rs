@@ -446,6 +446,7 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::AlterField { .. }
         | StatementKind::RebuildIndex { .. }
         | StatementKind::CheckTable { .. }
+        | StatementKind::AnalyzeTable { .. }
         | StatementKind::Backup { .. }
         | StatementKind::Restore { .. }
         // A subject is a name and never a value. `INFO FOR TABLE $t` would be a

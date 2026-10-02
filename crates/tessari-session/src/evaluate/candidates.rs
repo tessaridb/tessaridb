@@ -71,19 +71,12 @@ impl Session<'_> {
         // shorten, so the winner is measured against the table before it is
         // served — see `plan::worth_serving`, which `EXPLAIN` asks too so that
         // the reported path is the one the read takes.
-        let chosen = match plan::choose(offered) {
-            Some(candidate)
-                if plan::worth_serving(transaction, table, &candidate, asked.lift_scan_guard)? =>
-            {
-                Some(candidate)
-            }
-            _ => None,
-        };
+        let chosen = plan::serving(transaction, table, offered, asked.lift_scan_guard)?;
         if let Some(chosen) = chosen {
             // Built by the candidate itself, which is the same function
-            // `EXPLAIN` calls on the candidate its own `choose` returned. The
+            // `EXPLAIN` calls on the candidate its own `serving` returned. The
             // two report one structure because one function writes it.
-            let plan = chosen.plan(asked.named);
+            let plan = chosen.plan(asked.named).seen_by(&chosen.index, &visible);
             let answered = self.trusts(condition, &chosen, &visible);
             // The field's, resolved once for the statement while the analyzers
             // were being read — the same value the query's terms were built
@@ -95,9 +88,12 @@ impl Session<'_> {
                 .first()
                 .and_then(|path| searched.analyzer(path));
             // A range is handed back as the range itself rather than as its
-            // records, so the caller's `Break` can reach the fetch. Every other
-            // shape is served here and built whole — see [`Candidates`] for why
-            // the entry walk is never the half that stops.
+            // records, so the caller's `Break` can reach the fetch — and an
+            // equality is a range with no bounds, whose entries under a complete
+            // value are already in record order, so the walk itself stops too
+            // (`walk_records_in_range`). A complete unique equality names at most
+            // one record and is read here. Every other shape is served here and
+            // built whole — see [`Candidates`].
             let records = if let plan::Served::Range {
                 fixed,
                 lower,
@@ -109,6 +105,15 @@ impl Session<'_> {
                     fixed: fixed.clone(),
                     lower: lower.clone(),
                     upper: upper.clone(),
+                }
+            } else if let plan::Served::Equality(values) = &chosen.served
+                && !(chosen.index.unique && values.len() == chosen.index.fields.len())
+            {
+                Candidates::Range {
+                    index: Box::new(chosen.index.clone()),
+                    fixed: values.clone(),
+                    lower: None,
+                    upper: None,
                 }
             } else {
                 let found = self.serve(transaction, context, table, &chosen, analyzer)?;

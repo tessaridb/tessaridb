@@ -37,9 +37,37 @@ compares carries no pre-release suffix.
   98.4 % → 95.6 % recall@10 at the same walk time. A full-precision node keeps
   the bytes it always had.
 
+- **A planner that estimates** (G055). `ANALYZE TABLE t` walks each value
+  index's entries once and keeps, on the node, its entry count, distinct values
+  per leading run of fields, its sixteen most common values and sixty-four
+  equi-depth buckets over its first field; a serving node takes them itself as
+  they go stale, and an index's change counter sets a statistic aside once a
+  tenth of its entries (at least a thousand) have changed. A candidate the shape
+  could not size is estimated from them: two indexes on one condition are ranked
+  by the records each would produce, and an index that would return most of the
+  table loses to it on the estimate without the count it used to take. `EXPLAIN`
+  reports `estimate` and `estimated_by` (`statistics` or `probe`), withheld when
+  the index reads a field the caller may not see. Statistics are a node's own and
+  never travel in the log or a backup. Measured on 50 000 records (memory,
+  release): an equality read on a tenth of the table with `LIMIT 10` 7.69 ms →
+  32 µs, the whole-table read the guard declines 17.3 → 16.0 ms, estimates within
+  1 % on equalities and inside one bucket on ranges.
+
 ### Changed
 
-- **1498 conformance cases** define the language and run in the build.
+- **An equality read on an index stops where its answer fills** (G055). Entries
+  under one complete value are already in record order, so the entry walk is
+  read a ramping batch at a time with the records it names and stops at the
+  bound, where it used to name every match and read each one back separately.
+  The same read unbounded, five thousand of fifty thousand records: 7.74 → 5.59 ms.
+
+- **A filtered approximate read gives up early** when its admissions show it
+  cannot fill its budget before its ceiling, so a condition too rare for the
+  graph pays a share of the walk before the exact read rather than all of it
+  (one record in a hundred: 27.9 → 22.9 ms against 16.0 ms exact; the rest is the
+  walk reading the whole graph before its first step).
+
+- **1501 conformance cases** define the language and run in the build.
 
 ## 0.21.0-beta — 2026-10-03
 

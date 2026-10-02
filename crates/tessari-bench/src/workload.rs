@@ -29,6 +29,7 @@ pub type Failable<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 use crate::samples::{Report, Samples};
 pub(crate) use filtered::vector_filtered;
 pub(crate) use heavy::{clustered, restore, vault, vector_index};
+pub(crate) use planner::planner;
 pub(crate) use quantized::vector_quantized;
 pub(crate) use reads::{filter, search};
 
@@ -194,6 +195,11 @@ pub const ALL: &[Workload] = &[
         run: crate::guard::guard,
     },
     Workload {
+        name: "planner",
+        about: "a bounded equality streamed or built whole, the guard with and without statistics, and each estimate beside what its condition answers",
+        run: planner,
+    },
+    Workload {
         name: "queue",
         about: "what a claim costs behind a prefix of held and of dead-lettered records, and a drain taken one at a time against one taken in a batch",
         run: crate::queue::queue,
@@ -237,6 +243,7 @@ macro_rules! timed {
 // Declared after `timed!`, which they use: a macro is in scope only below its definition.
 mod filtered;
 mod heavy;
+mod planner;
 mod quantized;
 mod reads;
 

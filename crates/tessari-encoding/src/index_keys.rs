@@ -25,6 +25,7 @@
 
 mod quantized;
 mod search;
+mod statistics;
 mod vectors;
 use tessari_kv::{Key, Value};
 use tessari_types::{DatabaseId, IndexId, NamespaceId, RecordId, TableId};
@@ -41,6 +42,7 @@ pub use search::{
     PostingKey, SearchStatistics, SearchStatisticsKey, SearchSuffixKey, SearchTermKey,
     TermStatistics, UniqueIndexKey,
 };
+pub use statistics::{IndexChanges, IndexChangesKey, IndexStatistics, IndexStatisticsKey};
 pub use vectors::{
     SpatialRefinement, SpatialRefinementKey, VectorNode, VectorNodeKey, VectorRecall,
     VectorRecallKey,

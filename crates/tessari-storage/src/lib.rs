@@ -61,6 +61,7 @@ mod served;
 mod shards;
 mod snapshots;
 mod state;
+mod statistics;
 mod store;
 mod tailmarks;
 mod topic;
@@ -115,8 +116,9 @@ pub use sealing::{
     rewrap_own_vault, seal_secrets, unseal_own_vault, vault_key_scope,
 };
 pub use state::{StateReader, TopicHead};
+pub use statistics::{estimate_equality, estimate_range};
 pub use store::{Health, Store};
-pub use tessari_encoding::{BUILD_VERSION, LogId, NODE_ID_LEN, Roles, Writer};
+pub use tessari_encoding::{BUILD_VERSION, IndexStatistics, LogId, NODE_ID_LEN, Roles, Writer};
 pub use transaction::{
     Committed, Expansion, Nearby, Neighbour, RecordAddress, Region, SearchCounts, StoredRecord,
     Transaction, Window,

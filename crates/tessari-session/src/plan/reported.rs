@@ -20,14 +20,55 @@
 //!
 //! No invented cost. A number this store cannot know is a number it will not
 //! print, and a plan carrying a made-up estimate is how somebody comes to trust
-//! one. The candidate-to-result ratio — the number that says whether an index is
-//! actually *working* — needs the read to have happened, so it is not here.
+//! one. The one estimate a plan does carry (G055 W3) is read from statistics
+//! the index's own entries produced, or counted from them, and it is printed
+//! with which of the two it was. The candidate-to-result ratio — the number
+//! that says whether an index is actually *working* — needs the read to have
+//! happened, so it is not here.
 
 use std::collections::BTreeMap;
 
 use tessari_types::{Number, Value};
 
 use crate::outcome::{AccessPath, Exactness};
+
+/// What a plan knows about how many records its index produces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Expected {
+    /// A ceiling that was free to learn — a unique equality, a term's document
+    /// frequency. Reported as `at_most`.
+    AtMost(u64),
+    /// An estimate read from the index's statistics. Reported as `estimate`
+    /// with `estimated_by: 'statistics'`.
+    Estimated(u64),
+    /// The entries a probe counted to decide whether the index beats the table.
+    /// Reported as `estimate` with `estimated_by: 'probe'`.
+    Counted(u64),
+}
+
+impl Expected {
+    /// The number, whichever it is.
+    #[must_use]
+    pub const fn rows(self) -> u64 {
+        match self {
+            Self::AtMost(held) | Self::Estimated(held) | Self::Counted(held) => held,
+        }
+    }
+
+    /// The estimate and its source, when this is one.
+    ///
+    /// An estimate is the one number in a plan that may be wrong, which is why
+    /// it travels with where it came from. It is withheld when the index reads
+    /// a field the caller may not see — see [`Plan::seen_by`].
+    #[must_use]
+    pub const fn estimate(self) -> Option<(u64, &'static str)> {
+        match self {
+            Self::Estimated(held) => Some((held, "statistics")),
+            Self::Counted(held) => Some((held, "probe")),
+            Self::AtMost(_) => None,
+        }
+    }
+}
 
 /// What a read does, or what it would do.
 ///
@@ -61,8 +102,13 @@ pub struct Plan {
     /// The one cost of it a plan can know without running it: each cell is a
     /// scan plus a lookup per level above it.
     pub cells: Option<u64>,
-    /// The ceiling the choice promises, where it promises one.
-    pub at_most: Option<u64>,
+    /// How many records the choice expects its index to produce, and what
+    /// said so.
+    ///
+    /// One field rather than a ceiling beside an estimate, because a candidate
+    /// has at most one of them — and an answer carries a plan, so its size is
+    /// paid by every answer the store gives.
+    pub expected: Option<Expected>,
     /// The shards of a split table a span read touches, in key order
     /// (ADR-0096 D3) — so a read naming one partition says it reads one shard.
     pub shards: Option<Box<[u32]>>,
@@ -86,7 +132,7 @@ impl Plan {
             shape: None,
             columns: None,
             cells: None,
-            at_most: None,
+            expected: None,
             shards: None,
             exact: access.exactness(),
         }
@@ -98,6 +144,33 @@ impl Plan {
         Self {
             table: Some(table.to_owned()),
             ..self
+        }
+    }
+
+    /// The same plan, without its estimate when the index reads a field this
+    /// caller may not see.
+    ///
+    /// Top-level, as a redaction is: a grant names a field of a table. A count
+    /// of the records holding a value is a fact about that value, and a caller
+    /// who cannot read the field must not learn it one `EXPLAIN` at a time.
+    #[must_use]
+    pub fn seen_by(
+        self,
+        index: &tessari_storage::IndexDefinition,
+        visible: &crate::redact::Visible,
+    ) -> Self {
+        let hidden = visible.as_ref().is_some_and(|fields| {
+            index
+                .fields
+                .iter()
+                .any(|path| !fields.contains(path.root()))
+        });
+        match self.expected {
+            Some(Expected::Estimated(_) | Expected::Counted(_)) if hidden => Self {
+                expected: None,
+                ..self
+            },
+            _ => self,
         }
     }
 
@@ -147,10 +220,14 @@ impl Plan {
         if let Some(shape) = self.shape {
             plan.insert("shape".to_owned(), Value::from(shape));
         }
+        let at_most = match self.expected {
+            Some(Expected::AtMost(held)) => Some(held),
+            _ => None,
+        };
         for (key, held) in [
             ("columns", self.columns),
             ("cells", self.cells),
-            ("at_most", self.at_most),
+            ("at_most", at_most),
         ] {
             if let Some(held) = held {
                 plan.insert(
@@ -158,6 +235,13 @@ impl Plan {
                     Value::Number(Number::Integer(i64::try_from(held).unwrap_or(i64::MAX))),
                 );
             }
+        }
+        if let Some((rows, by)) = self.expected.and_then(Expected::estimate) {
+            plan.insert(
+                "estimate".to_owned(),
+                Value::Number(Number::Integer(i64::try_from(rows).unwrap_or(i64::MAX))),
+            );
+            plan.insert("estimated_by".to_owned(), Value::from(by));
         }
         if let Some(shards) = &self.shards {
             plan.insert(

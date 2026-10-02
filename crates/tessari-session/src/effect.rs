@@ -82,6 +82,11 @@ impl Effect {
             // replica as well as of the leader, and routing it away would make
             // a divergence between them the one thing it cannot detect.
             | StatementKind::CheckTable { .. }
+            // `ANALYZE TABLE` writes no record and nothing to the log: the
+            // statistics it takes are this node's own, kept beside its own
+            // entries. Routed as a read for the reason `CHECK TABLE` is — a
+            // follower plans its own reads and is asked about its own copy.
+            | StatementKind::AnalyzeTable { .. }
             // `REVEAL` writes nothing to the store and is the heaviest read in
             // the language by consequence rather than by cost. It is routed as a
             // read, which means a follower may serve it — deliberately: the

@@ -4,7 +4,7 @@ use tessaridb::Db;
 
 /// Keep this node's own disk in order, whether or not it has peers.
 ///
-/// One job today: trim the log to the retained record count. It answers `None`
+/// Its first job: trim the log to the retained record count. It answers `None`
 /// when no retention is set, which is every store until an operator sets one —
 /// and that is why the silence is deliberate rather than an omission. *Nobody
 /// asked for this* and *there was nothing to do* are different facts, and a
@@ -74,6 +74,18 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
                 ),
                 Ok(false) => {}
                 Err(why) => log::warn!("this node cannot drop an expired unseal: {why}"),
+            }
+            // The planner's statistics, taken where an index has none or has
+            // changed past the one it has (G055 W3). This node's own: each node
+            // plans over its own copy, leader or not, and a statistic decides a
+            // path and never an answer — so a failure here costs speed and is
+            // said at `warn`, not acted on.
+            match db.store().refresh_statistics() {
+                Ok(taken) if taken > 0 => {
+                    log::debug!("took the statistics of {taken} index(es) for the planner");
+                }
+                Ok(_) => {}
+                Err(why) => log::warn!("this node cannot take index statistics: {why}"),
             }
             // A series' records past its floor, removed as one range per table
             // (G044 C11). This node's own storage work: every node runs it over

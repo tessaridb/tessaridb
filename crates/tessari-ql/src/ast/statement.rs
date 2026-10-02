@@ -1427,6 +1427,18 @@ pub enum StatementKind {
         /// The table to hold to its own declarations.
         table: TableRef,
     },
+    /// `ANALYZE TABLE users`
+    ///
+    /// Takes the statistics the planner estimates the table's value indexes by
+    /// — entries, distinct values, the most common values and equi-depth
+    /// buckets — from a walk of each index's entries, on the node that runs it.
+    /// A statistic decides which path a read takes and never which records it
+    /// returns, so a node keeps its own and nothing travels in the log; a
+    /// serving node also refreshes them itself as they go stale.
+    AnalyzeTable {
+        /// The table whose indexes are summarised.
+        table: TableRef,
+    },
     /// `REBUILD INDEX by_embedding ON papers`
     ///
     /// Makes the index's entries exactly what its table's rows imply, discarding

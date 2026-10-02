@@ -5,10 +5,8 @@ use crate::error::Result;
 use crate::outcome::AccessPath;
 use crate::session::Session;
 
-use super::rank::choose;
 use super::reported::Plan;
 use super::statement::{closest, nearest, ordered, scored};
-use super::worth::worth_serving;
 
 impl Session<'_> {
     /// The plan a read would take, without taking it.
@@ -195,13 +193,30 @@ impl Session<'_> {
                 }
                 // A filtered nearest read the statement let be approximate is
                 // walked through the graph, asked first because the read asks it
-                // first. Two outcomes the plan cannot see are the read's own: a
-                // condition index that narrows to few records answers exactly,
-                // and a walk that cannot fill the bound falls back with a note.
+                // first — unless the condition's index narrows it to no more
+                // records than the walk would visit, which the read answers
+                // exactly from that index and which is asked here through the
+                // same function. The one outcome the plan cannot see is the
+                // read's own: a walk that cannot fill the bound falls back with
+                // a note.
                 if let Some(walk) = nearest(select)
                     && let Some(index) = self.index_on_path(transaction, id, walk.path)?
                     && index.vector.is_some()
                 {
+                    let searched = self.searched_for(transaction, id, &[condition])?;
+                    let declared = Catalog::new(transaction).field_indexes_on(id)?;
+                    let offered = self.enumerate(transaction, condition, &declared, &searched)?;
+                    if let Some(chosen) =
+                        super::serving(transaction, id, offered, select.lift_scan_guard)?
+                    {
+                        let visible = self.visible_in(transaction, id)?;
+                        let plan = chosen.plan(Some(named)).seen_by(&chosen.index, &visible);
+                        let range = chosen.ranged();
+                        let ceiling = tessari_storage::filtered_ceiling(walk.wanted, walk.effort);
+                        if super::narrows_to(transaction, &plan, range, ceiling)? {
+                            return Ok(plan);
+                        }
+                    }
                     return Ok(Plan {
                         index: Some(index.name.clone()),
                         ..Plan::new(AccessPath::Approximate).on(named)
@@ -235,16 +250,10 @@ impl Session<'_> {
                 // winner that does not beat reading the table is not the path
                 // the read will take, and an `EXPLAIN` that reported it would
                 // be describing a plan nothing runs.
-                let chosen = match choose(offered) {
-                    Some(candidate)
-                        if worth_serving(transaction, id, &candidate, select.lift_scan_guard)? =>
-                    {
-                        Some(candidate)
-                    }
-                    _ => None,
-                };
+                let chosen = super::serving(transaction, id, offered, select.lift_scan_guard)?;
                 if let Some(chosen) = chosen {
-                    return Ok(chosen.plan(Some(named)));
+                    let visible = self.visible_in(transaction, id)?;
+                    return Ok(chosen.plan(Some(named)).seen_by(&chosen.index, &visible));
                 }
                 Ok(
                     match self.union_of(

@@ -237,10 +237,33 @@ impl Session<'_> {
                         },
                     )?;
                     let ceiling = tessari_storage::filtered_ceiling(walk.wanted, walk.effort);
-                    let few = matches!(
-                        &reached,
-                        Some(Reached { records: Candidates::Held(held), .. }) if held.len() <= ceiling
-                    );
+                    // Decided from the plan the condition's index carries — the
+                    // same question `EXPLAIN` asks — and a range is counted up
+                    // to the ceiling rather than built.
+                    let few = match &reached {
+                        Some(Reached {
+                            records,
+                            plan: chosen,
+                            ..
+                        }) => {
+                            let range = match records {
+                                Candidates::Range {
+                                    index,
+                                    fixed,
+                                    lower,
+                                    upper,
+                                } => Some((
+                                    index.as_ref(),
+                                    fixed.as_slice(),
+                                    lower.as_ref(),
+                                    upper.as_ref(),
+                                )),
+                                Candidates::Held(_) => None,
+                            };
+                            plan::narrows_to(transaction, chosen, range, ceiling)?
+                        }
+                        None => false,
+                    };
                     if !few {
                         let testing = Testing {
                             condition,

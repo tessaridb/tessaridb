@@ -91,7 +91,9 @@ fn a_restored_snapshot_answers_exactly_what_the_original_did() {
 /// narrowed again (ADR-0050). A restore derives both from the records as they
 /// stand, which is what a rebuild does — so the source is rebuilt and the two are
 /// then required to be the same bytes. The measured recall a rebuild writes is
-/// the one entry left out: it is a measurement, which a restore has not taken.
+/// left out: it is a measurement, which a restore has not taken. So are the
+/// planner's statistics and change counters (`0x40`, `0x41`): facts about the
+/// writes this node applied and the walks it took, which no copy carries.
 #[test]
 fn every_derived_byte_is_the_sources_rebuilt_because_it_was_derived_again() {
     let (source, held, _) = original();
@@ -119,7 +121,7 @@ fn every_derived_byte_is_the_sources_rebuilt_because_it_was_derived_again() {
         .unwrap();
     let measured = |held: &Vec<(Vec<u8>, Vec<u8>)>| {
         held.iter()
-            .filter(|(key, _)| key.first() != Some(&0x17))
+            .filter(|(key, _)| !matches!(key.first(), Some(&(0x17 | 0x40 | 0x41))))
             .cloned()
             .collect::<Vec<_>>()
     };

@@ -490,6 +490,7 @@ impl Needs {
             | StatementKind::DropIndex { .. }
             | StatementKind::RebuildIndex { .. }
             | StatementKind::CheckTable { .. }
+            | StatementKind::AnalyzeTable { .. }
             | StatementKind::DefineField { .. }
             | StatementKind::DropField { .. }
             | StatementKind::AlterTable { .. }

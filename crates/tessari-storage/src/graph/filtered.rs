@@ -55,6 +55,32 @@ pub fn filtered_ceiling(wanted: usize, effort: Option<usize>) -> usize {
         .saturating_mul(FILTERED_REACH)
 }
 
+/// Whether a walk admitting at the rate it has so far would pass its ceiling
+/// before it filled its budget.
+///
+/// Asked only once the walk has spent at least its budget in expansions, so the
+/// rate is measured over a stretch rather than the first few nodes, and only on
+/// a graph larger than the ceiling — on a smaller one the walk can visit every
+/// node, ends on its own and is never cut, however rare the condition. A walk
+/// that projects short is cut there: the same outcome the ceiling would give it
+/// later, minus the expansions in between, which are the whole cost of a
+/// condition too rare for the graph (G055 W3: at one record in a hundred the
+/// walk plus its fallback cost more than the exact read alone).
+fn falls_short(
+    expanded: usize,
+    admitted: usize,
+    (effort, ceiling): (usize, usize),
+    nodes: usize,
+) -> bool {
+    ceiling < nodes
+        && expanded >= effort
+        && admitted < effort
+        && expanded
+            .saturating_mul(effort)
+            .checked_div(admitted.max(1))
+            .is_some_and(|projected| projected > ceiling)
+}
+
 /// What a filtered walk found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Matched {
@@ -114,7 +140,9 @@ impl Graph {
             {
                 break;
             }
-            if expanded >= ceiling {
+            if expanded >= ceiling
+                || falls_short(expanded, best.len(), (effort, ceiling), self.nodes.len())
+            {
                 cut = true;
                 break;
             }
@@ -274,6 +302,27 @@ mod tests {
         assert!(found.cut, "{found:?}");
         assert!(found.ids.len() < 10);
         let _ = FILTERED_REACH;
+    }
+
+    #[test]
+    fn a_walk_whose_admissions_cannot_fill_the_page_gives_up_early() {
+        // One record in five hundred again, at the default budget: the ceiling
+        // is 2 048 expansions, and a walk that admitted nothing in the first
+        // stretch is not going to admit sixty-four by the end of it. It gives
+        // the read back after spending a share of its ceiling, not all of it.
+        let graph = graph_of(4_000, 8);
+        let query = point(7_000, 8);
+        let asked = Cell::new(0_usize);
+        let Ok(found) = graph.nearest_matching(&query, 10, None, |id: &RecordId| {
+            asked.set(asked.get().saturating_add(1));
+            admitting(500)(id)
+        });
+        assert!(found.cut, "{found:?}");
+        assert!(
+            asked.get() < 1_000,
+            "asked {} of 4 000 records before giving up",
+            asked.get()
+        );
     }
 
     #[test]

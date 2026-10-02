@@ -469,6 +469,55 @@ fn an_equality_lookup_never_holds_more_than_one_batch_of_entries() {
     );
 }
 
+/// A complete equality the caller stops examines what it hands over, not every
+/// entry under the value.
+///
+/// Entries under one complete value are stored in record order — the identity is
+/// the last thing in the key — so the walk that answers in record order can also
+/// stop. The number that fails this is `sharing`: an entry walk collected whole
+/// before the first record is handed over, which is what an equality read did
+/// for a `LIMIT 10` over thousands of matches (G055 W3, Q-408).
+///
+/// The ceiling is the ramp, both halves: entries are read a batch at a time from
+/// a small first batch, and each record handed over costs one more row to
+/// resolve, so ten records cost a few dozen rows rather than one batch.
+#[test]
+fn a_complete_equality_the_caller_stops_examines_its_bound_and_not_every_entry() {
+    let fixture = Fixture::new();
+    let sharing = RANGE_SCAN_BATCH_ENTRIES * 4;
+    fixture.write_sharing(sharing, 7);
+    let mut transaction = fixture.store.begin().unwrap();
+    fixture.counting.reset();
+
+    let mut handed = Vec::new();
+    transaction
+        .walk_records_in_range(
+            &fixture.index,
+            &[Value::from(7_i64)],
+            None,
+            None,
+            |_, id, _| {
+                handed.push(id);
+                Ok::<_, tessari_storage::Error>(if handed.len() == WANTED {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                })
+            },
+        )
+        .unwrap();
+    let expected: Vec<RecordId> = (0..WANTED)
+        .map(|n| RecordId::from(format!("u{n:06}").as_str()))
+        .collect();
+    assert_eq!(handed, expected, "not the first ten in record order");
+
+    let examined = fixture.counting.entries();
+    assert!(
+        examined <= WANTED * 8,
+        "examined {examined} rows to hand over {WANTED} of {sharing}"
+    );
+}
+
 /// A document frequency is answered without reading a single posting.
 ///
 /// The sharpest case of the finding: this used to scan the term's whole posting

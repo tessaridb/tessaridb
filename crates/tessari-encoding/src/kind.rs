@@ -43,6 +43,10 @@ pub enum KeyKind {
     SpatialRefinement,
     /// One distinct term of one search index — the term dictionary.
     SearchTerm,
+    /// What one value index held when it was last walked for the planner.
+    IndexStatistics,
+    /// How many entries one value index has gained or lost on this node.
+    IndexChanges,
     /// When one record version stops being answered: the instant, then the
     /// record, so "everything that has expired" is one scan from the start
     /// (G035).
@@ -144,6 +148,8 @@ impl KeyKind {
         Self::VectorRecall,
         Self::SpatialRefinement,
         Self::SearchTerm,
+        Self::IndexStatistics,
+        Self::IndexChanges,
         Self::ExpiryIndex,
         Self::ModifiedOrder,
         Self::TopicOffset,
@@ -172,7 +178,8 @@ impl KeyKind {
     /// The leading byte that identifies this kind on disk.
     ///
     /// Tags are grouped by family — `0x0_` data, `0x1_` index, `0x2_` log,
-    /// `0x3_` meta — so a hex dump is readable and each family can grow.
+    /// `0x3_` meta, `0x4_` what the planner keeps about an index — so a hex dump
+    /// is readable and each family can grow.
     /// `0x00` is never assigned: it is the escape byte of the variable-length
     /// encoding and is kept free as a sorts-before-everything sentinel.
     #[must_use]
@@ -189,6 +196,8 @@ impl KeyKind {
             Self::VectorRecall => 0x17,
             Self::SpatialRefinement => 0x18,
             Self::SearchTerm => 0x19,
+            Self::IndexStatistics => 0x40,
+            Self::IndexChanges => 0x41,
             Self::ExpiryIndex => 0x1a,
             Self::ModifiedOrder => 0x1b,
             Self::TopicOffset => 0x1c,
@@ -230,6 +239,8 @@ impl KeyKind {
             | Self::VectorRecall
             | Self::SpatialRefinement
             | Self::SearchTerm
+            | Self::IndexStatistics
+            | Self::IndexChanges
             | Self::ExpiryIndex
             | Self::ModifiedOrder
             | Self::TopicOffset
@@ -274,6 +285,8 @@ impl KeyKind {
             Self::VectorRecall => "vector-recall",
             Self::SpatialRefinement => "spatial-refinement",
             Self::SearchTerm => "search-term",
+            Self::IndexStatistics => "index-statistics",
+            Self::IndexChanges => "index-changes",
             Self::ExpiryIndex => "expiry-index",
             Self::ModifiedOrder => "modified-order",
             Self::TopicOffset => "topic-offset",
@@ -367,6 +380,8 @@ mod tests {
             (KeyKind::VectorRecall, 0x17),
             (KeyKind::SpatialRefinement, 0x18),
             (KeyKind::SearchTerm, 0x19),
+            (KeyKind::IndexStatistics, 0x40),
+            (KeyKind::IndexChanges, 0x41),
             (KeyKind::ExpiryIndex, 0x1a),
             (KeyKind::ModifiedOrder, 0x1b),
             (KeyKind::TopicOffset, 0x1c),

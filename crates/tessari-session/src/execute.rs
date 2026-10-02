@@ -18,6 +18,7 @@ use crate::evaluate::Scope;
 use crate::outcome::Outcome;
 use crate::session::Session;
 
+mod analyzed;
 mod cluster;
 mod containers;
 mod defaults;
@@ -665,6 +666,7 @@ impl Session<'_> {
                     found.into_iter().map(violation_value).collect(),
                 )))
             }
+            StatementKind::AnalyzeTable { table } => self.analyze_table(transaction, table),
             // Writing the definition again is the whole statement: the entries
             // are derived from it, so a definition arriving in a log record is
             // what makes them get built — see `Catalog::rebuild_index`.

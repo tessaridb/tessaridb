@@ -13,7 +13,7 @@ use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
 /// `0xFF`s — the standard way to turn "everything with this prefix" into an
 /// exclusive upper bound. All-`0xFF` bytes have no successor, and the answer is
 /// then an empty vector, which `KeyRange::between` reads as unbounded above.
-pub(super) fn after(mut bytes: Vec<u8>) -> Vec<u8> {
+pub(crate) fn after(mut bytes: Vec<u8>) -> Vec<u8> {
     while let Some(last) = bytes.pop() {
         if last != u8::MAX {
             bytes.push(last.saturating_add(1));
@@ -36,7 +36,7 @@ pub(super) fn after(mut bytes: Vec<u8>) -> Vec<u8> {
 /// terminated when it is encoded — so `after` would work here. That property
 /// lives in the encoder, a crate away from this loop, and a walk that silently
 /// returns fewer records if it ever changes is not worth the byte it saves.
-pub(super) fn resuming_after(mut bytes: Vec<u8>) -> Vec<u8> {
+pub(crate) fn resuming_after(mut bytes: Vec<u8>) -> Vec<u8> {
     bytes.push(0);
     bytes
 }

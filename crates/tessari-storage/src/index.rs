@@ -238,6 +238,9 @@ pub(crate) fn maintain_from(
     let mut named: Option<BTreeMap<String, Analyzer>> = None;
     let unnamed = BTreeMap::new();
     let mut pending = Pending::default();
+    // How many records each value index was rewritten for, for its change
+    // counter — what tells a planner statistic it has gone stale.
+    let mut changed: BTreeMap<IndexAddress, u64> = BTreeMap::new();
 
     for mutation in record.mutations() {
         let at = (mutation.namespace, mutation.database, mutation.table);
@@ -285,6 +288,17 @@ pub(crate) fn maintain_from(
             if unchanged.reads_the_same(definition) {
                 continue;
             }
+            if crate::statistics::kept(definition) {
+                let counted = changed
+                    .entry(IndexAddress::new(
+                        definition.namespace,
+                        definition.database,
+                        definition.table,
+                        definition.id,
+                    ))
+                    .or_insert(0);
+                *counted = counted.saturating_add(1);
+            }
             batch = apply_one(
                 store,
                 batch,
@@ -305,6 +319,7 @@ pub(crate) fn maintain_from(
             batch = build(store, batch, &mut view, record, &definition, &mut pending)?;
         }
     }
+    let batch = crate::statistics::count_changes(store, batch, &changed)?;
     settle(store, batch, &pending)
 }
 

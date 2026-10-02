@@ -38,6 +38,7 @@ mod search;
 mod spatial;
 
 pub use address::{RecordAddress, StoredRecord};
+pub(crate) use address::{after, resuming_after};
 pub use adjacency::Neighbour;
 pub use commit::Committed;
 pub use scan::Window;

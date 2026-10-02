@@ -3821,13 +3821,16 @@ outcomes, and the answer says which happened:
 
 - **served** — `approximate` on the plan and the `approximate` note, every record
   passing the condition, the page full;
-- **answered exactly** — when an index on the condition has already narrowed the
-  read to no more records than the walk would visit, the read keeps that index
-  path: same cost, exact answer, no note;
+- **answered exactly** — when an index on the condition narrows the read to no
+  more records than the walk would visit, the read takes that index path instead:
+  same cost, exact answer, no note. It is decided **before** the walk, from the
+  index's estimate or a count of its entries that stops at the walk's ceiling, and
+  `EXPLAIN` reports the index the read will take;
 - **given back** — a walk that admitted fewer records than the `LIMIT`, or reached
   its ceiling (thirty-two expansions per candidate it keeps — 2 048 at the engine's
   own budget), answers nothing: the read is answered exactly with a `fell-back`
-  note from `approximate`. `APPROXIMATE` agreed to the graph's choice among the
+  note from `approximate`. A walk whose admissions so far say it would reach the
+  ceiling before filling its budget gives up there rather than at the ceiling. `APPROXIMATE` agreed to the graph's choice among the
   nearest, never to a short page — and the exact read also fills the bound with
   records holding no vector, which a graph cannot reach.
 
@@ -3839,11 +3842,13 @@ exact filtered ten and p50 against the exact filtered read:
 |---|---|---|---|---|
 | half | 98.0 % | 6.8 ms | 17.6 ms | 100 of 100 |
 | a tenth | 99.9 % | 8.3 ms | 16.2 ms | 100 of 100 |
-| a hundredth | 100 % | 27.9 ms | 15.7 ms | 12 of 100 |
+| a hundredth | 100 % | 22.9 ms | 16.0 ms | 9 of 100 |
 
 A condition admitting about one record in a hundred is where the walk stops
-paying: most walks reach the ceiling and the read pays for the walk and the exact
-read. There is no selectivity estimate yet to choose the exact read up front.
+paying: most walks give up and the read pays for part of the walk and the exact
+read. Most of what is left is the walk reading the whole graph before its first
+step, which every approximate read pays. An index on the condition is what lets
+the read choose the exact path before walking at all.
 
 **What it buys, measured rather than claimed:** on two thousand clustered
 thirty-two-dimensional vectors, a read of the ten nearest goes from 3.7 ms to
@@ -3925,6 +3930,13 @@ known until all of them have been named, so the entry walk always runs to the
 end. What the bound saves is reading the records it does not need:
 `SELECT * FROM notes WHERE at > '2026-01-01' LIMIT 10` reads ten records, not
 every record after that date.
+
+**An equality on every field of an index is the exception** (from
+`0.22.0-beta`). Its entries share the whole value and are ordered by the record's
+identity after it, so they already are the answer's order, and the entry walk
+stops with the records: `SELECT * FROM people WHERE band = 3 LIMIT 10` over fifty
+thousand records, a tenth of them in band 3, reads a few dozen entries and ten
+records — 32 µs where it read five thousand of each in 7.7 ms.
 
 So the practical shape is: a bounded index-served read costs one pass over the
 matching index entries plus its answer. An index that matches most of a table
@@ -4228,9 +4240,55 @@ cannot be more than the records holding one value. Ties keep source order, so tw
 runs of one statement cannot plan differently and an author can predict the plan
 from the condition they wrote.
 
-This is deliberately **not** a cost model. One needs to know how many records
-hold `city = 'london'` as against `city = 'tromsø'`, which means maintained
-histograms — and a stale histogram changes plans silently.
+**With statistics, the ranking also uses an estimate** (from `0.22.0-beta`).
+How many records hold `city = 'london'` as against `city = 'tromsø'` is the
+number a shape cannot give, and `ANALYZE TABLE` takes it:
+
+```tessariql
+ANALYZE TABLE users;
+-- [{ index: 'by_city', entries: 50000, distinct: [600], common: 16, buckets: 64 }]
+```
+
+It walks each value index's entries once — keys, no records — and keeps, beside
+the index, how many entries it held, how many distinct values each leading run of
+its fields held, its sixteen most common values with their counts and sixty-four
+equi-depth buckets over its first field. The answer counts these and never
+prints a value. A unique index keeps no statistic, because it already promises
+one record per value; neither does a search, vector or spatial index.
+
+A candidate the shape could not size is then estimated: an equality on a common
+value from that value's own count, on any other value from the spread of the
+rest, a leading run of a composite index from its distinct count, and a range on
+the first field from the buckets it covers — scaled by how much the table has
+grown or shrunk since. The smaller estimate wins, and an exact ceiling wins a tie
+with an estimate of the same size. So `city = 'tromsø' AND age = 40` reads
+whichever index holds fewer of its records, not whichever was written first.
+
+`EXPLAIN` reports the estimate and where it came from:
+
+```tessariql
+EXPLAIN SELECT * FROM users WHERE city = 'tromsø';
+-- { access: 'index', index: 'by_city', estimate: 3, estimated_by: 'statistics', … }
+```
+
+`estimated_by` is `statistics` for a number read from the summary, or `probe`
+for a count of the index's entries taken to decide whether it beats the table
+(below). The estimate is left out when the index reads a field the caller may not
+see, because how many records hold a value is a fact about that value.
+
+**A statistic is set aside once its index has changed past it.** Every node counts
+the entries each value index gains and loses; a statistic is used while the
+changes since it was taken are at most a tenth of the entries it counted, or a
+thousand, whichever is more. Past that the planner counts instead, exactly as
+it did before statistics existed — slower, never wrong. A serving node takes the
+statistics of its own indexes as they go stale, a few per second, so
+`ANALYZE TABLE` is how to have them **now**: after a bulk load, or before
+measuring a plan.
+
+Statistics are a node's own. Each node walks the entries it holds and keeps the
+summary beside them; nothing travels in the log or in a backup, and two nodes
+with different statistics answer the same read with the same records — the
+estimate chooses a path and never an answer.
 
 **An index that would return most of the table loses to reading the table.**
 Narrowing most is not the same as narrowing enough: an index read walks entries
@@ -4241,10 +4299,11 @@ an index runs when it can produce **at most half** of it.
 
 Two numbers decide that and neither works alone. The store keeps a **record count
 per table**, maintained where records are written rather than by counting them
-later. For a candidate whose size is not already known — an equality on a
-non-unique index, a range — the entries are counted by a walk that reads keys and
-no records, and **gives up** as soon as there are more than half a table's worth,
-because counting the rest would cost what the read costs.
+later. A candidate with an estimate well inside either side of half — under three
+quarters of it, or over one and a half times it — is decided on the estimate.
+Otherwise, and for a candidate with no statistic, the entries are counted by a walk
+that reads keys and no records, and **gives up** as soon as there are more than half
+a table's worth, because counting the rest would cost what the read costs.
 
 Nothing about this changes on a small table. Below about a thousand records a
 scan is a single request to the storage, both paths are cheap, and the comparison
@@ -4285,10 +4344,9 @@ SELECT * FROM events WHERE n >= 401 WITHOUT SCAN GUARD;
 ```
 
 `WITHOUT SCAN GUARD` tells the planner not to measure the winning candidate
-against the table. Half is a threshold this store chose; the count behind it is
-exact, taken by the walk described above. So what can be wrong here is the
-threshold and never the number, and the clause is spelled as lifting a guard
-rather than as overriding an estimate — because there is no estimate to override.
+against the table. Half is a threshold this store chose, and the clause is
+spelled as lifting a guard rather than as overriding an estimate: it skips the
+comparison — the estimate and the count alike — and leaves the ranking to choose.
 
 **It lifts the veto and chooses nothing.** The ranking still picks the candidate,
 a table with no applicable index still gets the scan, and `EXPLAIN` still reports

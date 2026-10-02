@@ -213,6 +213,51 @@ pub const RANGE_SCAN_BATCH_ENTRIES: usize = 1024;
 /// would mean re-tuning a buffer silently re-planned every query in the store.
 pub const PLANNER_SCAN_FLOOR_RECORDS: u64 = 1024;
 
+/// How many of an index's most common values its statistics keep.
+///
+/// Unit: values.
+///
+/// A skewed column is the case an even spread gets wrong — four records in ten
+/// under one value and the rest under a thousand others — and the common
+/// values are what let an equality on the heavy value be estimated as heavy.
+/// Sixteen covers the skew that changes a plan; a value outside the sixteen is
+/// estimated from the spread of the rest, which is where a rare value belongs.
+pub const STATISTICS_COMMON_VALUES: usize = 16;
+
+/// How many equi-depth buckets an index's statistics divide its first field
+/// into.
+///
+/// Unit: buckets.
+///
+/// A range is estimated by the buckets it covers, a whole bucket for one it
+/// covers and half for one it cuts, so the error is at most a bucket at each
+/// end: one sixty-fourth of the index twice over, which is well inside the
+/// band the scan guard decides in.
+pub const STATISTICS_BUCKETS: usize = 64;
+
+/// How many entry changes an index's statistics outlast before they are no
+/// longer used, at the least.
+///
+/// Unit: index entries added or removed.
+///
+/// A statistic is used while what changed since it was taken is at most a
+/// tenth of the entries it counted, or this many, whichever is larger. The
+/// floor keeps a small index's statistic from going stale on every handful of
+/// writes; past it, a statistic describing a distribution that has moved by
+/// more than a tenth is set aside and the planner counts instead, as it did
+/// before statistics existed.
+pub const STATISTICS_STALE_FLOOR_CHANGES: u64 = 1_000;
+
+/// How many indexes one housekeeping pass refreshes the statistics of, at most.
+///
+/// Unit: indexes.
+///
+/// Taking a statistic walks every entry of the index, so a pass that refreshed
+/// every stale index at once after a bulk load would be one long walk per
+/// index in a single tick. Four per pass spreads that over seconds, and an
+/// index waiting its turn is planned by counting — slower, never wrong.
+pub const STATISTICS_PER_PASS: usize = 4;
+
 /// How quickly repeating a term stops improving a BM25 score.
 ///
 /// Unit: dimensionless.

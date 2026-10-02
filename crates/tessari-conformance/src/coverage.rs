@@ -113,6 +113,7 @@ forms! {
     DropIndex => "DROP INDEX",
     RebuildIndex => "REBUILD INDEX",
     CheckTable => "CHECK TABLE",
+    AnalyzeTable => "ANALYZE TABLE",
     DropField => "DROP FIELD",
     DropAnalyzer => "DROP ANALYZER",
     DropSearch => "DROP SEARCH",
@@ -343,6 +344,7 @@ mod tests {
              RESTORE SCRIPT FROM 'part.tessariql';\
              EXPLAIN SELECT * FROM t;\
              CHECK TABLE t;\
+             ANALYZE TABLE t;\
              INFO FOR STORE;\
              INFO FOR NODE;\
              ALTER USER u SET ROLE viewer;\

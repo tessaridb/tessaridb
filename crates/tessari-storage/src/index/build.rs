@@ -216,6 +216,8 @@ pub(crate) fn clear(
         KeyKind::SpatialRefinement,
         KeyKind::SearchTerm,
         KeyKind::SearchSuffix,
+        KeyKind::IndexStatistics,
+        KeyKind::IndexChanges,
     ] {
         let keyspace = kind.keyspace();
         let prefix = address.prefix(kind);

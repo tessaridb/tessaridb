@@ -4,7 +4,7 @@
 //! conjunct it can serve alone: a candidate from one side would leave out the
 //! records only the other side reaches. So the enumeration, which works on
 //! conjuncts, finds nothing and the read scans the table. Here each disjunct is
-//! planned on its own, by the same enumeration and the same `choose`, and the
+//! planned on its own, by the same enumeration and the same `serving`, and the
 //! read is served by the union of their candidates — but only when **every**
 //! disjunct has one worth serving, because a union missing a side is not a
 //! superset of the answer.
@@ -17,9 +17,7 @@ use tessari_storage::{IndexDefinition, Transaction};
 use tessari_types::TableId;
 
 use super::candidate::Candidate;
-use super::rank::choose;
 use super::reported::Plan;
-use super::worth::worth_serving;
 use crate::error::Result;
 use crate::outcome::AccessPath;
 use crate::search::Searched;
@@ -45,11 +43,9 @@ impl Session<'_> {
         let mut chosen = Vec::with_capacity(disjuncts.len());
         for disjunct in disjuncts {
             let offered = self.enumerate(transaction, disjunct, declared, searched)?;
-            match choose(offered) {
-                Some(candidate) if worth_serving(transaction, table, &candidate, lifted)? => {
-                    chosen.push(candidate);
-                }
-                _ => return Ok(None),
+            match super::serving(transaction, table, offered, lifted)? {
+                Some(candidate) => chosen.push(candidate),
+                None => return Ok(None),
             }
         }
         Ok(Some(chosen))

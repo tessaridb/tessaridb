@@ -28,6 +28,7 @@
 //! | [`enumerate`] | every candidate a condition and a schema offer together |
 //! | [`rank`] | which of them promises to narrow the most |
 //! | [`worth`] | whether the one that won beats reading the table |
+//! | [`estimate`] | what the index's statistics say a candidate produces |
 //! | [`fold`] | evaluating the record-independent parts of a statement once |
 //! | [`statement`] | what shape of read a whole statement is — nearest, ordered, bounded |
 //! | [`reported`] | the one structure both `EXPLAIN` and an answer report |
@@ -109,6 +110,7 @@
 mod candidate;
 mod conjunct;
 mod enumerate;
+mod estimate;
 mod explain;
 mod fold;
 mod rank;
@@ -122,12 +124,11 @@ mod union;
 mod worth;
 
 pub(crate) use candidate::{Candidate, Served};
-pub(crate) use rank::choose;
+pub(crate) use estimate::{narrows_to, serving};
 pub(crate) use reads::roots_read;
-pub use reported::Plan;
+pub use reported::{Expected, Plan};
 pub(crate) use statement::{
     Bounded, Closest, Nearest, Scored, answers, bound, closest, nearest, ordered, scored,
     walked_for,
 };
 pub(crate) use union::union_plan;
-pub(crate) use worth::worth_serving;

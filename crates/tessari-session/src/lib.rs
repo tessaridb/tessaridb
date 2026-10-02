@@ -89,7 +89,7 @@ pub use elsewhere::{Elsewhere, Peer};
 pub use error::{Depended, Error, Result};
 pub use gather::{Asked, Counting, Gather, Gathered, Unanswered};
 pub use outcome::{AccessPath, Exactness, Nearest, Note, Outcome, Suggestion};
-pub use plan::Plan;
+pub use plan::{Expected, Plan};
 pub use pushdown::{OrderKey, Ordered, Pushed, keeping, leading};
 pub use reduce::{Folded, Partial, Portable, Reduce, Reduced, reducing};
 pub use script::{ScriptTaken, write_script};

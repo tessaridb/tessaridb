@@ -91,6 +91,10 @@ pub(crate) struct Reached {
 /// a different set of records. So the entry walk runs to the end by
 /// construction, and what the bound reaches is the half whose cost grows with
 /// the answer.
+///
+/// The one exception is an equality on every field of a secondary index: there
+/// the index's order *is* identity order, so the entry walk stops as well (G055
+/// W3, `walk_records_in_range`).
 pub(crate) enum Candidates {
     /// Built whole before the first one can be tested.
     Held(Vec<(RecordId, Value)>),

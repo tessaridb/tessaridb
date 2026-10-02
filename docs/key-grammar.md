@@ -107,6 +107,13 @@ because renumbering after data exists is a full rebuild.
 | `0x3d` | `LogStart` | `meta` | implemented |
 | `0x3e` | `LogRetention` | `meta` | implemented |
 | `0x3f` | `ServedReach` | `meta` | implemented — the reach this node's upstream last served it under; see §6.2 |
+| `0x40` | `IndexStatistics` | `index` | implemented — one value index summarised for the planner on this node (G055); never in the log |
+| `0x41` | `IndexChanges` | `index` | implemented — entries one value index has gained or lost on this node (G055); never in the log |
+
+`0x40` and `0x41` open a fifth family, `0x4_`: what the planner keeps about an
+index. Both keys are an index prefix with no suffix (`<tag> <namespace:u32>
+<database:u32> <table:u32> <index:u32>`), are cleared with the index's entries,
+and decide which access path a read takes and never which records it returns.
 
 ### 3c. The spatial entry
 

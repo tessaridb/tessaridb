@@ -40,6 +40,9 @@ pub enum Keyword {
     Rebuild,
     /// `CHECK` — ask whether what is stored still satisfies what is declared.
     Check,
+    /// `ANALYZE` — take the statistics the planner estimates a table's indexes
+    /// by.
+    Analyze,
     /// `TABLE`
     Table,
     /// `SPACE`
@@ -241,6 +244,7 @@ impl Keyword {
             Self::Alter => "ALTER",
             Self::Rebuild => "REBUILD",
             Self::Check => "CHECK",
+            Self::Analyze => "ANALYZE",
             Self::Table => "TABLE",
             Self::Space => "SPACE",
             Self::Bucket => "BUCKET",
@@ -332,6 +336,7 @@ impl Keyword {
         Self::Alter,
         Self::Rebuild,
         Self::Check,
+        Self::Analyze,
         Self::Table,
         Self::Space,
         Self::Bucket,
