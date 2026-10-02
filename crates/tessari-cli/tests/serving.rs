@@ -4320,6 +4320,25 @@ const ACKED: Band = [
     ("127.0.0.1:47820", "127.0.0.1:47821"),
 ];
 
+/// Its siblings', one band per test that stands up an acknowledgement cluster,
+/// so the four can run beside one another (`--test-threads`) without one
+/// cluster's nodes answering on another's ports.
+const ACKED_AT_THE_LEADER: Band = [
+    ("127.0.0.1:47792", "127.0.0.1:47793"),
+    ("127.0.0.1:47794", "127.0.0.1:47795"),
+    ("127.0.0.1:47796", "127.0.0.1:47797"),
+];
+const KILLED: Band = [
+    ("127.0.0.1:47798", "127.0.0.1:47799"),
+    ("127.0.0.1:47800", "127.0.0.1:47801"),
+    ("127.0.0.1:47802", "127.0.0.1:47803"),
+];
+const PAUSED: Band = [
+    ("127.0.0.1:47804", "127.0.0.1:47805"),
+    ("127.0.0.1:47806", "127.0.0.1:47807"),
+    ("127.0.0.1:47808", "127.0.0.1:47809"),
+];
+
 /// A write into `item` at `key`, with `clause` after it.
 fn into_item(key: &str, clause: &str) -> String {
     format!("USE NAMESPACE prod; USE DATABASE orders; CREATE item:'{key}' = {{ n: 1 }}{clause};")
@@ -4364,14 +4383,14 @@ fn item_ids_at(surface: &str) -> Result<Vec<String>, String> {
 ///
 /// It prints its numbers (the ADR records them) and asserts only what holds at
 /// every level: every write is acknowledged once and the cluster elects again.
-fn acknowledged_writes_measured(clause: &str) -> (usize, usize) {
+fn acknowledged_writes_measured(clause: &str, band: &Band) -> (usize, usize) {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
-    let mut cluster = a_cluster_declared(&ACKED, "", ["", "", ""]);
-    let leader = the_node_a_majority_granted(&ACKED);
+    let mut cluster = a_cluster_declared(band, "", ["", "", ""]);
+    let leader = the_node_a_majority_granted(band);
     // The next node in the band, wrapping: a follower whatever won.
     let follower = [1, 2, 0][leader];
-    let on = ACKED[leader].0;
+    let on = band[leader].0;
 
     // One writer.
     let mut client = Client::connect(on).unwrap();
@@ -4415,7 +4434,7 @@ fn acknowledged_writes_measured(clause: &str) -> (usize, usize) {
         client.run(&into_item(&key, clause), None).unwrap();
         let acknowledged = Instant::now();
         loop {
-            if item_ids_at(ACKED[follower].0).is_ok_and(|held| held.contains(&key)) {
+            if item_ids_at(band[follower].0).is_ok_and(|held| held.contains(&key)) {
                 lag.push(acknowledged.elapsed());
                 break;
             }
@@ -4463,9 +4482,9 @@ fn acknowledged_writes_measured(clause: &str) -> (usize, usize) {
     writer.join().unwrap();
     let acknowledged = acknowledged.lock().unwrap().clone();
     // The next leader: the node that takes a write.
-    let survivors: Vec<&str> = (0..ACKED.len())
+    let survivors: Vec<&str> = (0..band.len())
         .filter(|index| *index != leader)
-        .map(|index| ACKED[index].0)
+        .map(|index| band[index].0)
         .collect();
     let began = Instant::now();
     let new = loop {
@@ -4479,7 +4498,7 @@ fn acknowledged_writes_measured(clause: &str) -> (usize, usize) {
         assert!(
             began.elapsed() < Duration::from_secs(120),
             "nobody was elected after the leader died{}",
-            what_the_nodes_said(&ACKED, &cluster.logs)
+            what_the_nodes_said(band, &cluster.logs)
         );
         std::thread::sleep(POLL);
     };
@@ -4506,7 +4525,8 @@ fn acknowledged_writes_measured(clause: &str) -> (usize, usize) {
             run explicitly: TESSARIDB_TEST_BIN=target/release/tessaridb cargo test -p \
             tessari-cli --test serving acknowledged_writes -- --ignored --nocapture"]
 fn acknowledged_writes_at_the_leaders_level_and_what_its_loss_costs() {
-    let (acknowledged, missing) = acknowledged_writes_measured(" ACKNOWLEDGE LEADER");
+    let (acknowledged, missing) =
+        acknowledged_writes_measured(" ACKNOWLEDGE LEADER", &ACKED_AT_THE_LEADER);
     eprintln!("LEADER level: {missing} of {acknowledged} acknowledged writes lost");
 }
 
@@ -4523,7 +4543,7 @@ fn acknowledged_writes_at_the_leaders_level_and_what_its_loss_costs() {
             --nocapture (TESSARIDB_TEST_CPU_LOAD=<threads> for the run under load)"]
 fn acknowledged_writes_at_a_majority_survive_the_leader() {
     let _load = Load::from_env();
-    let (acknowledged, missing) = acknowledged_writes_measured(" ACKNOWLEDGE MAJORITY");
+    let (acknowledged, missing) = acknowledged_writes_measured(" ACKNOWLEDGE MAJORITY", &ACKED);
     eprintln!("MAJORITY level: {missing} of {acknowledged} acknowledged writes lost");
     assert_eq!(
         missing, 0,
@@ -4572,14 +4592,14 @@ impl Drop for Load {
 }
 
 /// The first of `surfaces` that takes a write of `key`, asked until one does.
-fn the_node_that_takes(surfaces: &[usize], key: &str, cluster: &Three) -> usize {
+fn the_node_that_takes(band: &Band, surfaces: &[usize], key: &str, cluster: &Three) -> usize {
     let began = Instant::now();
     // Kept so a failure names what each node answered, for the reason
     // `the_node_a_majority_granted` keeps them.
-    let mut refusals = vec![String::new(); ACKED.len()];
+    let mut refusals = vec![String::new(); band.len()];
     loop {
         let took = surfaces.iter().copied().find(|index| {
-            let answered = Client::connect(ACKED[*index].0)
+            let answered = Client::connect(band[*index].0)
                 .map_err(|why| why.to_string())
                 .and_then(|mut client| {
                     let answered = client.run(&into_item(key, ""), None);
@@ -4596,7 +4616,7 @@ fn the_node_that_takes(surfaces: &[usize], key: &str, cluster: &Three) -> usize 
         assert!(
             began.elapsed() < Duration::from_secs(60),
             "nobody took a write in a minute; the last answer from each node: {refusals:?}{}",
-            what_the_nodes_said(&ACKED, &cluster.logs)
+            what_the_nodes_said(band, &cluster.logs)
         );
         // Ten milliseconds, not `POLL`: this is the instrument, and a tenth of a
         // second of granularity would be a tenth of the thing it measures.
@@ -4605,13 +4625,13 @@ fn the_node_that_takes(surfaces: &[usize], key: &str, cluster: &Three) -> usize 
 }
 
 /// Wait until node `index` holds `key`, after it was started again.
-fn caught_up(index: usize, key: &str, cluster: &Three) {
+fn caught_up(band: &Band, index: usize, key: &str, cluster: &Three) {
     let began = Instant::now();
-    while !item_ids_at(ACKED[index].0).is_ok_and(|held| held.iter().any(|id| id == key)) {
+    while !item_ids_at(band[index].0).is_ok_and(|held| held.iter().any(|id| id == key)) {
         assert!(
             began.elapsed() < Duration::from_secs(60),
             "the restarted node never caught up to {key}{}",
-            what_the_nodes_said(&ACKED, &cluster.logs)
+            what_the_nodes_said(band, &cluster.logs)
         );
         std::thread::sleep(POLL);
     }
@@ -4627,28 +4647,28 @@ fn a_leader_killed_is_replaced_in_about_a_second() {
         .ok()
         .and_then(|count| count.parse().ok())
         .unwrap_or(10);
-    let mut cluster = a_cluster_declared(&ACKED, "", ["", "", ""]);
-    let mut leader = the_node_a_majority_granted(&ACKED);
+    let mut cluster = a_cluster_declared(&KILLED, "", ["", "", ""]);
+    let mut leader = the_node_a_majority_granted(&KILLED);
     let _load = Load::from_env();
     let mut took = Vec::new();
     for run in 0..runs {
         // Every node level before the kill, so the measurement is of an
         // election and not of a node still catching up from the last one.
         let before = format!("b{run:02}");
-        let wrote = the_node_that_takes(&[leader], &before, &cluster);
-        for index in 0..ACKED.len() {
-            caught_up(index, &before, &cluster);
+        let wrote = the_node_that_takes(&KILLED, &[leader], &before, &cluster);
+        for index in 0..KILLED.len() {
+            caught_up(&KILLED, index, &before, &cluster);
         }
         drop(cluster.running[wrote].take());
         let killed = Instant::now();
-        let survivors: Vec<usize> = (0..ACKED.len()).filter(|index| *index != wrote).collect();
+        let survivors: Vec<usize> = (0..KILLED.len()).filter(|index| *index != wrote).collect();
         let after = format!("a{run:02}");
-        leader = the_node_that_takes(&survivors, &after, &cluster);
+        leader = the_node_that_takes(&KILLED, &survivors, &after, &cluster);
         let elapsed = killed.elapsed();
         eprintln!("FAILOVER run={run} took_ms={}", elapsed.as_millis());
         took.push(elapsed);
         cluster.restart_with(wrote, &[]);
-        caught_up(wrote, &after, &cluster);
+        caught_up(&KILLED, wrote, &after, &cluster);
     }
     let (p50, p99) = percentiles(took.clone());
     let worst = took.iter().max().copied().unwrap_or_default();
@@ -4669,8 +4689,8 @@ fn a_leader_killed_is_replaced_in_about_a_second() {
 }
 
 /// The divergences node `index` has refused, from its own `/metrics`.
-fn divergences(index: usize) -> u64 {
-    let scraped = probing(ACKED[index].1, "/metrics").expect("the metrics route answered");
+fn divergences(band: &Band, index: usize) -> u64 {
+    let scraped = probing(band[index].1, "/metrics").expect("the metrics route answered");
     scraped
         .lines()
         .find(|line| line.starts_with("tessari_log_divergences"))
@@ -4689,13 +4709,13 @@ fn a_paused_leader_writes_nothing_once_its_successor_leads() {
     // runs again its own fence is what must stop it: the successor was elected
     // the moment the old lease expired, and anything the old leader committed
     // after that would be a second history, refused later as a divergence.
-    let cluster = a_cluster_declared(&ACKED, "", ["", "", ""]);
-    let leader = the_node_a_majority_granted(&ACKED);
+    let cluster = a_cluster_declared(&PAUSED, "", ["", "", ""]);
+    let leader = the_node_a_majority_granted(&PAUSED);
     // Every node level before the pause, as before a kill: a write the leader
     // acknowledged and no follower holds is lost by any failover until
     // `ACKNOWLEDGE MAJORITY` (G053 SG2), and this test is of the fence.
-    for index in 0..ACKED.len() {
-        caught_up(index, "1", &cluster);
+    for index in 0..PAUSED.len() {
+        caught_up(&PAUSED, index, "1", &cluster);
     }
     let paused = cluster.running[leader]
         .as_ref()
@@ -4707,9 +4727,9 @@ fn a_paused_leader_writes_nothing_once_its_successor_leads() {
         .status()
         .expect("kill runs");
     assert!(stopped.success());
-    let survivors: Vec<usize> = (0..ACKED.len()).filter(|index| *index != leader).collect();
+    let survivors: Vec<usize> = (0..PAUSED.len()).filter(|index| *index != leader).collect();
     let began = Instant::now();
-    let successor = the_node_that_takes(&survivors, "during", &cluster);
+    let successor = the_node_that_takes(&PAUSED, &survivors, "during", &cluster);
     eprintln!(
         "PAUSED successor={successor} took_ms={}",
         began.elapsed().as_millis()
@@ -4722,7 +4742,7 @@ fn a_paused_leader_writes_nothing_once_its_successor_leads() {
     // The first thing the old leader is asked once it runs again: a write. It
     // is refused by the fence or forwarded to the successor, and either way it
     // must not land in a history of its own.
-    let answered = Client::connect(ACKED[leader].0).map(|mut client| {
+    let answered = Client::connect(PAUSED[leader].0).map(|mut client| {
         client
             .run(&into_item("resumed", ""), None)
             .map(|_| ())
@@ -4732,8 +4752,8 @@ fn a_paused_leader_writes_nothing_once_its_successor_leads() {
     // Let every node settle on the successor, then compare.
     let began = Instant::now();
     loop {
-        let held: Vec<_> = (0..ACKED.len())
-            .map(|index| item_ids_at(ACKED[index].0))
+        let held: Vec<_> = (0..PAUSED.len())
+            .map(|index| item_ids_at(PAUSED[index].0))
             .collect();
         let level = held.windows(2).all(|pair| match (&pair[0], &pair[1]) {
             (Ok(one), Ok(other)) => {
@@ -4754,16 +4774,16 @@ fn a_paused_leader_writes_nothing_once_its_successor_leads() {
         assert!(
             began.elapsed() < Duration::from_secs(30),
             "the three nodes never agreed after the pause: {held:?}{}",
-            what_the_nodes_said(&ACKED, &cluster.logs)
+            what_the_nodes_said(&PAUSED, &cluster.logs)
         );
         std::thread::sleep(POLL);
     }
-    for index in 0..ACKED.len() {
+    for index in 0..PAUSED.len() {
         assert_eq!(
-            divergences(index),
+            divergences(&PAUSED, index),
             0,
             "node {index} refused a divergent history — the paused leader wrote after its successor began{}",
-            what_the_nodes_said(&ACKED, &cluster.logs)
+            what_the_nodes_said(&PAUSED, &cluster.logs)
         );
     }
 }
