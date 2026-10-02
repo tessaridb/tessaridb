@@ -400,6 +400,9 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // which is the file-beside-the-store problem in a different shape.
         | StatementKind::DefineNode { .. }
         | StatementKind::DefineFailover { .. }
+        // A fingerprint is written where it stands: a revocation aimed by a
+        // parameter would refuse whichever peer the caller happened to name.
+        | StatementKind::RevokeCertificate { .. }
         | StatementKind::DefineReplica { .. }
         // A broker address, a group name and a mapping are written where they
         // stand, for the reason above: a consumer whose destination arrived as a

@@ -31,8 +31,7 @@ use tessaridb::Db;
 /// and the cadence runs again.
 pub(crate) async fn dial_peers(
     db: std::sync::Arc<Db>,
-    mine: tessari_wire::Credential,
-    authority: tessari_wire::CertificateDer<'static>,
+    keys: tessari_wire::PeerKeys,
     seeds: Vec<tessari_wire::Seed>,
     published: std::sync::Arc<tessari_wire::Published>,
     wakes: std::sync::Arc<crate::peers::Wakes>,
@@ -47,8 +46,7 @@ pub(crate) async fn dial_peers(
     // woken when that changes and not on every greeting.
     let mut followed: Option<[u8; tessari_storage::NODE_ID_LEN]> = None;
     tessari_wire::every_paced(&stop, &woken.greeting, move |now| {
-        let (db, mine, authority, seeds, published) =
-            (&*db, &mine, &authority, &seeds[..], &*published);
+        let (db, keys, seeds, published) = (&*db, &keys, &seeds[..], &*published);
         // Read through the pieces the facade already publishes rather than
         // through a new `Db` method: `Db::store` and `Store::begin` are both
         // public, so a `Db::declared_peers` would be a second name for a
@@ -99,8 +97,7 @@ pub(crate) async fn dial_peers(
             let greet = |endpoint: &str, node| {
                 tessari_wire::call(
                     endpoint,
-                    mine.duplicate(),
-                    authority,
+                    keys,
                     node,
                     &greeting(db).map_err(|why| why.to_string())?,
                     tessari_wire::Ask::Nothing,

@@ -2,9 +2,9 @@
 
 use super::{Collect, Collected};
 use crate::error::{Error, Result};
-use crate::link::{Answered, Ask, Credential, call};
+use crate::keys::PeerKeys;
+use crate::link::{Answered, Ask, call};
 use crate::peer::Hello;
-use rustls::pki_types::CertificateDer;
 use std::net::SocketAddr;
 use tessari_encoding::NODE_ID_LEN;
 use tessari_storage::{Catalog, Currency, Horizon, Reach, Store};
@@ -16,10 +16,8 @@ use tessari_types::Sequence;
 /// is one: [`call`] already takes six of its own.
 #[derive(Debug)]
 pub struct Collector<'a> {
-    /// What this node shows the peer, and the key proving it is ours.
-    pub mine: &'a Credential,
-    /// The authority the peer's credential must chain to.
-    pub authority: &'a CertificateDer<'a>,
+    /// What this node shows the peer, whom it trusts and whom it refuses.
+    pub keys: &'a PeerKeys,
     /// The greeting that opens the connection.
     pub said: &'a Hello,
     /// The peer to collect from, by id and address.
@@ -248,8 +246,7 @@ impl Collector<'_> {
         }
         let (_, answered) = call(
             self.peer.1,
-            self.mine.duplicate(),
-            self.authority,
+            self.keys,
             self.peer.0,
             self.said,
             Ask::Records(Collect {

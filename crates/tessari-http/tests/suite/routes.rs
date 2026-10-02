@@ -1140,3 +1140,64 @@ fn a_stranger_scraping_a_closed_store_learns_nothing_about_the_cluster() {
         );
     }
 }
+
+#[test]
+fn the_certificate_a_surface_presents_says_when_it_expires_and_only_to_an_operator() {
+    // ADR-0108 D6: an expired certificate is a refused handshake, so its date
+    // is a number to alert on — and which certificates a node holds is about
+    // the cluster, so it sits behind the same gate as the topology (D8).
+    const EXPIRES: i64 = 2_556_230_400; // 2051-01-02T00:00:00Z
+    let mut params = rcgen::CertificateParams::new(vec!["localhost".to_owned()]).unwrap();
+    params.not_after = rcgen::date_time_ymd(2051, 1, 2);
+    let key = rcgen::KeyPair::generate().unwrap();
+    let leaf =
+        rustls::pki_types::CertificateDer::from(params.self_signed(&key).unwrap().der().to_vec());
+    let mut census = tessari_serve::Census::since(std::time::Instant::now());
+    census.presenting(
+        "clients",
+        tessari_serve::Presenting::new(move || Some(leaf.clone())),
+    );
+    let db = Arc::new(Db::in_memory().unwrap());
+    let mut node = Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap();
+    node.watching(Arc::new(census));
+    let node = Arc::new(node);
+    let address = node.address();
+    let serving = Arc::clone(&node);
+    std::thread::spawn(move || crate::serve_until_the_test_ends(&serving));
+    let (status, _, body) = send(
+        &address,
+        "POST",
+        "/script",
+        "DEFINE USER root ROLE owner PASSWORD 'root secret';",
+        None,
+    );
+    assert_eq!(status, 200, "{body}");
+
+    let (status, _, scrape) = send(&address, "GET", "/metrics", "", None);
+    assert_eq!(status, 200, "{scrape}");
+    assert!(scrape.contains("tessari_committed_sequence"), "{scrape}");
+    assert!(
+        !scrape.contains("tessari_tls_certificate_expires_seconds"),
+        "a stranger was shown the certificates: {scrape}"
+    );
+
+    let before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let (status, _, scrape) = send(&address, "GET", "/metrics", "", Some(ROOT));
+    assert_eq!(status, 200, "{scrape}");
+    let left: i64 = scrape
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("tessari_tls_certificate_expires_seconds{surface=\"clients\"} ")
+        })
+        .unwrap_or_else(|| panic!("no expiry line: {scrape}"))
+        .parse()
+        .unwrap();
+    let expected = EXPIRES - i64::try_from(before).unwrap();
+    assert!(
+        (expected - 60..=expected).contains(&left),
+        "{left} seconds left, expected about {expected}"
+    );
+}

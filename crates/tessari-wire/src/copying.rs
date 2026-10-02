@@ -13,14 +13,14 @@
 
 use std::time::Duration;
 
-use rustls::pki_types::CertificateDer;
 use tessari_encoding::{LogId, LogRecord, NODE_ID_LEN, StoreValue};
 use tessari_storage::{Store, TopicHead};
 use tessari_types::{DatabaseId, NamespaceId, Reach, Sequence, TableId};
 
 use crate::error::{Error, Result};
 use crate::frame;
-use crate::link::{Credential, hear, open, say};
+use crate::keys::PeerKeys;
+use crate::link::{hear, open, say};
 use crate::peer::{Hello, PeerFrame};
 
 /// How many records one chunk frame carries — few enough that a chunk of large
@@ -108,13 +108,12 @@ pub(crate) fn serve(
 /// of it: the positions are written last.
 pub fn copy(
     address: &str,
-    mine: Credential,
-    authority: &CertificateDer<'_>,
+    keys: &PeerKeys,
     at: [u8; NODE_ID_LEN],
     said: &Hello,
     into: &Store,
 ) -> Result<Copied> {
-    let (mut session, mut socket) = open(address, mine, authority, at)?;
+    let (mut session, mut socket) = open(address, keys, at)?;
     let copied = {
         let mut link = rustls::Stream::new(&mut session, &mut socket);
         say(&mut link, said)?;

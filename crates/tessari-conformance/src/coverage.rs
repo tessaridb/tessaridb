@@ -97,6 +97,7 @@ forms! {
     AlterNamespace => "ALTER NAMESPACE",
     DefineNode => "DEFINE NODE",
     DefineFailover => "DEFINE FAILOVER",
+    RevokeCertificate => "REVOKE CERTIFICATE",
     DefineReplica => "DEFINE REPLICA",
     DefineConsumer => "DEFINE KAFKA CONSUMER",
     DropConsumer => "DROP KAFKA CONSUMER",
@@ -292,6 +293,7 @@ mod tests {
              DEFINE REPLICA second AT 'host:9001';\
              DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s \
              CAMPAIGN 1s LEASE 30s;\
+             REVOKE CERTIFICATE '0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0';\
              DEFINE KAFKA CONSUMER c FROM 'b:9092' TOPIC 't' GROUP 'g' FORMAT json \
              INTO t IDENTITY k MAP a AS b ON FAILURE stop;\
              DROP KAFKA CONSUMER c;\

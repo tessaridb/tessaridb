@@ -30,7 +30,7 @@ fn issued_for_loopback() -> (String, String, String) {
 /// that issued its certificate.
 fn served() -> (String, String) {
     let (chain, key, authority) = issued_for_loopback();
-    let settings = tls::server_config(
+    let settings = tls::Credential::read(
         Pem {
             bytes: chain.as_bytes(),
             path: "cert.pem",
@@ -39,9 +39,9 @@ fn served() -> (String, String) {
             bytes: key.as_bytes(),
             path: "key.pem",
         },
-        &[b"http/1.1"],
     )
-    .unwrap();
+    .unwrap()
+    .server_config(&[b"http/1.1"]);
     let db = Arc::new(Db::in_memory().unwrap());
     let wire = tessari_wire::Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap();
     let mut http = Node::bind(db, "127.0.0.1:0").unwrap();

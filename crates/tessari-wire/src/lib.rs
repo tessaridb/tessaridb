@@ -94,6 +94,8 @@ mod hot;
 #[cfg(feature = "server")]
 mod joining;
 #[cfg(feature = "server")]
+mod keys;
+#[cfg(feature = "server")]
 mod link;
 mod message;
 #[cfg(feature = "server")]
@@ -149,7 +151,9 @@ pub use crate::gathering::{Gather, Page, Ungathered};
 #[cfg(feature = "server")]
 pub use crate::grant::{Ballot, Deciding, Leadership, Reached, Refused, Round, Vote, Voter};
 #[cfg(feature = "server")]
-pub use crate::joining::{CredentialFile, Joining, Seed, Told};
+pub use crate::joining::{CredentialFile, Joining, Seed, Told, peer_credential};
+#[cfg(feature = "server")]
+pub use crate::keys::{PeerKeys, Revoked};
 #[cfg(feature = "server")]
 pub use crate::link::{Answered, Ask, Credential, Met, Peers, call, call_within};
 #[cfg(feature = "server")]

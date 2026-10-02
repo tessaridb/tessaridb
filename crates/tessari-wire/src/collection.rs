@@ -773,7 +773,7 @@ mod tests {
     use crate::error::Error;
     use crate::grant::Deciding;
     use crate::link::tests::{Authority, THERE, hello, settled};
-    use crate::link::{Answered, Ask, Peers, call};
+    use crate::link::{Answered, Ask};
     use crate::peer::Purpose;
     use std::net::SocketAddr;
     use std::sync::Arc;
@@ -953,13 +953,12 @@ mod tests {
         // A node that may not write, because a writable one answers zero by
         // identity and would prove nothing here.
         follower.hold_lease(Duration::ZERO);
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
 
         // A generous count: the answer comes back short of it, which is the
         // reading that used to mean *the peer had no more* and now does not.
-        collector(&mine, &der, &said, address, 64)
+        collector(&mine, &said, address, 64)
             .collect(follower.store(), Reach::Store, Sequence::new(1))
             .expect("the collection");
         door.join().expect("the door's thread");
@@ -1001,10 +1000,9 @@ mod tests {
             .session()
             .run("DEFINE NAMESPACE research;")
             .expect("a node that holds something of its own");
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let collector = collector(&mine, &der, &said, address, 64);
+        let collector = collector(&mine, &said, address, 64);
 
         let refused = collector
             .collect(follower.store(), Reach::Store, Sequence::new(1))
@@ -1123,7 +1121,7 @@ mod tests {
         db: &Arc<Db>,
         rounds: usize,
     ) -> (SocketAddr, JoinHandle<()>) {
-        let peers = Peers::bind(
+        let peers = crate::link::tests::bind_with(
             "127.0.0.1:0",
             authority.issue(LEADER, Purpose::Peer),
             &authority.der(),
@@ -1157,7 +1155,7 @@ mod tests {
         rounds: usize,
         budget: usize,
     ) -> (SocketAddr, JoinHandle<()>) {
-        let peers = Peers::bind(
+        let peers = crate::link::tests::bind_with(
             "127.0.0.1:0",
             authority.issue(LEADER, Purpose::Peer),
             &authority.der(),
@@ -1197,7 +1195,7 @@ mod tests {
         from: u64,
         limit: u64,
     ) -> crate::error::Result<Answered> {
-        Ok(call(
+        Ok(crate::link::tests::call_with(
             address,
             authority.issue(THERE, Purpose::Peer),
             &authority.der(),
@@ -1535,15 +1533,13 @@ mod tests {
 
     /// A follower that collects from `address`, with a bound of `limit`.
     fn collector<'a>(
-        mine: &'a crate::link::Credential,
-        der: &'a rustls::pki_types::CertificateDer<'a>,
+        keys: &'a crate::keys::PeerKeys,
         said: &'a crate::peer::Hello,
         address: SocketAddr,
         limit: u64,
     ) -> Collector<'a> {
         Collector {
-            mine,
-            authority: der,
+            keys,
             said,
             peer: (LEADER, address),
             limit,
@@ -1719,10 +1715,9 @@ mod tests {
         // The store's log, then the four logs it makes known in one round.
         let (address, door) = declaring_for(&authority, &leader, 5);
         let follower = Db::in_memory().expect("an in-memory store");
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let collector = collector(&mine, &der, &said, address, 1024);
+        let collector = collector(&mine, &said, address, 1024);
         let store = collector
             .collect(follower.store(), Reach::Store, Sequence::new(1))
             .expect("the store's log");
@@ -1844,10 +1839,9 @@ mod tests {
 
         let (address, door) = declaring_for(&authority, &leader, ROUNDS);
         let follower = Db::in_memory().expect("an in-memory store");
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let collector = collector(&mine, &der, &said, address, 1024);
+        let collector = collector(&mine, &said, address, 1024);
         let mut reached: BTreeMap<Reach, Sequence> = BTreeMap::new();
         let mut used = 0_usize;
         let mut settled = false;
@@ -1995,10 +1989,9 @@ mod tests {
         let (address, door) = declaring_for(&authority, &leader, ROUNDS);
 
         let follower = Db::in_memory().expect("an in-memory store");
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let collector = collector(&mine, &der, &said, address, 1024);
+        let collector = collector(&mine, &said, address, 1024);
 
         // The chain, walked the way the node's own loop walks it: collect a
         // log, then re-derive the set, because the namespace whose log is worth
@@ -2095,18 +2088,10 @@ mod tests {
         );
 
         let follower = Db::in_memory().expect("an in-memory store");
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let copied = crate::copy(
-            &address.to_string(),
-            authority.issue(THERE, Purpose::Peer),
-            &der,
-            LEADER,
-            &said,
-            follower.store(),
-        )
-        .expect("the copy lands");
+        let copied = crate::copy(&address.to_string(), &mine, LEADER, &said, follower.store())
+            .expect("the copy lands");
         assert!(matches!(copied.over, Reach::Namespace(_)), "{copied:?}");
 
         let mut session = follower.session();
@@ -2139,7 +2124,7 @@ mod tests {
             .iter()
             .find(|(log, _)| log.home != Reach::Store)
             .expect("a log below the store's was copied");
-        let collector = collector(&mine, &der, &said, address, 1024);
+        let collector = collector(&mine, &said, address, 1024);
         let reached = collector
             .collect(
                 follower.store(),
@@ -2164,10 +2149,9 @@ mod tests {
         let (address, door) = declaring_for(&authority, &leader, ROUNDS);
 
         let follower = Db::in_memory().expect("an in-memory store");
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let collector = collector(&mine, &der, &said, address, 1024);
+        let collector = collector(&mine, &said, address, 1024);
 
         // The log the subscribed namespace's records actually live in. It is
         // the DATABASE's and not the namespace's: a record homes at the join of
@@ -2282,10 +2266,9 @@ mod tests {
              outside every bound rather than inside the ones nobody measured"
         );
 
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let reached = collector(&mine, &der, &said, address, 1024)
+        let reached = collector(&mine, &said, address, 1024)
             .collect(follower.store(), Reach::Store, Sequence::new(1))
             .expect("a subscribed peer collects");
         door.join().expect("the door's thread");
@@ -2323,10 +2306,9 @@ mod tests {
         let (address, door) = serving(&authority, &leader, 1);
 
         let follower = Db::in_memory().expect("an in-memory store");
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let reached = collector(&mine, &der, &said, address, 64)
+        let reached = collector(&mine, &said, address, 64)
             .collect(follower.store(), Reach::Store, Sequence::new(1))
             .expect("a collection applies");
         door.join().expect("the door's thread");
@@ -2355,10 +2337,9 @@ mod tests {
         let (address, door) = serving(&authority, &leader, 1);
 
         let follower = Db::in_memory().expect("an in-memory store");
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let reached = collector(&mine, &der, &said, address, 64)
+        let reached = collector(&mine, &said, address, 64)
             .collect(follower.store(), Reach::Store, Sequence::new(1))
             .expect("a batch of three leaderships applies");
         door.join().expect("the door's thread");
@@ -2380,10 +2361,9 @@ mod tests {
         // can disagree at all: two writers' logs are two counters, so a record
         // of one never lands at a position of the other.
         let follower = logged_as(store_log(&leader).writer, &[1, 1]);
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let refused = collector(&mine, &der, &said, address, 64).collect(
+        let refused = collector(&mine, &said, address, 64).collect(
             follower.store(),
             Reach::Store,
             Sequence::new(3),
@@ -2431,10 +2411,9 @@ mod tests {
         let (address, door) = serving(&authority, &leader, 1);
 
         let follower = logged_as(store_log(&leader).writer, &[1, 1, 1]);
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let refused = collector(&mine, &der, &said, address, 64).collect(
+        let refused = collector(&mine, &said, address, 64).collect(
             follower.store(),
             Reach::Store,
             Sequence::new(4),
@@ -2458,13 +2437,12 @@ mod tests {
         // about. A writable node answers zero by identity and would prove
         // nothing here.
         follower.hold_lease(Duration::ZERO);
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
 
         // Bound of two against a log of three: the answer fills the bound, so
         // the follower asked and did not arrive.
-        collector(&mine, &der, &said, address, 2)
+        collector(&mine, &said, address, 2)
             .collect(follower.store(), Reach::Store, Sequence::new(1))
             .expect("the first collection");
         assert_eq!(
@@ -2477,7 +2455,7 @@ mod tests {
         );
 
         // The rest arrives inside the bound, so the peer had no more.
-        collector(&mine, &der, &said, address, 2)
+        collector(&mine, &said, address, 2)
             .collect(follower.store(), Reach::Store, Sequence::new(3))
             .expect("the second collection");
         door.join().expect("the door's thread");
@@ -2549,7 +2527,7 @@ mod tests {
     fn a_peer_nobody_subscribed_is_refused_by_name_by_the_door_on_the_runtime() {
         let authority = Authority::new();
         let leader = granting("");
-        let peers = Peers::bind(
+        let peers = crate::link::tests::bind_with(
             "127.0.0.1:0",
             authority.issue(LEADER, Purpose::Peer),
             &authority.der(),
@@ -2590,7 +2568,7 @@ mod tests {
     fn a_held_stream_is_sent_a_commit_the_moment_it_lands() {
         let authority = Authority::new();
         let leader = granting(" REPLICATES STORE");
-        let peers = Peers::bind(
+        let peers = crate::link::tests::bind_with(
             "127.0.0.1:0",
             authority.issue(LEADER, Purpose::Peer),
             &authority.der(),
@@ -2620,8 +2598,7 @@ mod tests {
 
         let mut following = super::Following::open(
             (LEADER, address),
-            authority.issue(THERE, Purpose::Peer),
-            &authority.der(),
+            &authority.keys(THERE, Purpose::Peer),
             &hello(THERE),
             Duration::from_secs(5),
         )

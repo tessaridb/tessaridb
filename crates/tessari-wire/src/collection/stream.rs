@@ -40,13 +40,13 @@
 use std::net::{SocketAddr, TcpStream};
 
 use rustls::ClientConnection;
-use rustls::pki_types::CertificateDer;
 use tessari_encoding::NODE_ID_LEN;
 
 use super::{Collect, Collected, Origin};
 use crate::error::{Error, Result};
 use crate::frame;
-use crate::link::{Credential, hear, open, say};
+use crate::keys::PeerKeys;
+use crate::link::{hear, open, say};
 use crate::peer::{Hello, PeerFrame};
 
 /// What a follower asks for on a held stream: every log, from where it stands.
@@ -196,12 +196,11 @@ impl Following {
     /// Whatever the handshake refuses with, exactly as a collection round's dial.
     pub fn open(
         peer: ([u8; NODE_ID_LEN], SocketAddr),
-        mine: Credential,
-        authority: &CertificateDer<'_>,
+        keys: &PeerKeys,
         said: &Hello,
         silence: std::time::Duration,
     ) -> Result<Self> {
-        let (mut session, mut socket) = open(peer.1, mine, authority, peer.0)?;
+        let (mut session, mut socket) = open(peer.1, keys, peer.0)?;
         {
             let mut link = rustls::Stream::new(&mut session, &mut socket);
             say(&mut link, said)?;

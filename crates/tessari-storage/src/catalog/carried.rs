@@ -208,6 +208,10 @@ pub(crate) fn carried_to(mutation: &Mutation) -> Result<Carried> {
         // tenancy too, and became a widening the day they travelled everywhere.
         // A revocation's tombstone reaches every node the grant did.
         (t, _) if t == system::GRANTS => Carried::Everywhere,
+        // A revoked certificate reaches every node, whatever it is subscribed
+        // to: a follower that never received the row keeps admitting the peer
+        // every other node refuses, with nothing in an error state (ADR-0108 D6).
+        (t, _) if t == system::REVOKED_CERTIFICATES => Carried::Everywhere,
         // Everything else, named rather than left to a catch-all so that the
         // ratchet below is a statement about a set somebody wrote down:
         //   ALLOCATORS        one counter per level, for the whole store
@@ -574,6 +578,18 @@ mod tests {
             class(system::GRANTS, RecordId::Int(1), None),
             Carried::Everywhere,
             "a revoked grant must leave every node it reached"
+        );
+
+        // 24 — a revoked peer certificate reaches every node, whatever it
+        // follows: a node that missed the row admits the peer the rest refuse.
+        assert_eq!(
+            class(
+                system::REVOKED_CERTIFICATES,
+                RecordId::from("ab"),
+                Some(Value::Null)
+            ),
+            Carried::Everywhere,
+            "a revocation must reach a follower of one namespace too"
         );
 
         for table in [

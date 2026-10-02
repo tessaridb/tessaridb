@@ -38,14 +38,13 @@
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use rustls::pki_types::CertificateDer;
-
 use tessari_encoding::NODE_ID_LEN;
 use tessari_storage::Lease;
 use tessari_types::{Epoch, Reach};
 
 use crate::grant::{Ballot, Deciding, Leadership, Refused, Round, Vote};
-use crate::link::{Answered, Ask, Credential, call_within};
+use crate::keys::PeerKeys;
+use crate::link::{Answered, Ask, call_within};
 use crate::peer::Hello;
 
 /// What one pass at standing actually did.
@@ -83,10 +82,8 @@ pub enum Stood {
 pub struct Standing<'a> {
     /// The id this node stands under — the candidate on every ballot it puts.
     pub candidate: [u8; NODE_ID_LEN],
-    /// What this node shows a peer, and the key proving it is ours.
-    pub mine: &'a Credential,
-    /// The authority every peer's credential must chain to.
-    pub authority: &'a CertificateDer<'a>,
+    /// What this node shows a peer, whom it trusts and whom it refuses.
+    pub keys: &'a PeerKeys,
     /// The greeting that opens each connection.
     pub said: &'a Hello,
     /// The voting members, and where to reach each one.
@@ -248,12 +245,11 @@ impl Standing<'_> {
         let mut asked = tokio::task::JoinSet::new();
         for (peer, address) in self.peers {
             let (peer, address, said, round) = (*peer, *address, *self.said, self.round);
-            let mine = self.mine.duplicate();
-            let authority = self.authority.clone().into_owned();
+            let keys = self.keys.clone();
             asked.spawn_blocking(move || {
                 match call_within(
                     address,
-                    (mine, &authority),
+                    (&keys, keys.duplicate()),
                     peer,
                     &said,
                     Ask::Ballot(&ballot),
@@ -301,10 +297,10 @@ fn renew_in(held: Lease, round: Duration, now: Instant) -> Duration {
 mod tests {
     use super::{Standing, Stood};
     use crate::grant::{Ballot, Deciding, Refused, Vote, Voter};
+    use crate::keys::PeerKeys;
     use crate::link::tests::{Authority, THERE, hello, settled, voting};
-    use crate::link::{Answered, Ask, Credential, Peers, call};
+    use crate::link::{Answered, Ask};
     use crate::peer::{Hello, Purpose};
-    use rustls::pki_types::CertificateDer;
     use std::net::SocketAddr;
     use std::time::{Duration, Instant};
     use tessari_encoding::NODE_ID_LEN;
@@ -324,15 +320,13 @@ mod tests {
     };
 
     fn standing<'a>(
-        mine: &'a Credential,
-        authority: &'a CertificateDer<'a>,
+        keys: &'a PeerKeys,
         said: &'a Hello,
         peers: &'a [([u8; NODE_ID_LEN], SocketAddr)],
     ) -> Standing<'a> {
         Standing {
             candidate: THERE,
-            mine,
-            authority,
+            keys,
             said,
             peers,
             round: ROUND,
@@ -393,11 +387,10 @@ mod tests {
         );
         let (address, answering) = voting(&authority, voter, spent);
 
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
         let peers = [(voter, address)];
-        let standing = standing(&mine, &der, &said, &peers);
+        let standing = standing(&mine, &said, &peers);
 
         assert_eq!(
             standing
@@ -427,11 +420,10 @@ mod tests {
         let voter = [50_u8; NODE_ID_LEN];
         let (address, answering) = voting(&authority, voter, settled());
 
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
         let peers = [(voter, address)];
-        let standing = standing(&mine, &der, &said, &peers);
+        let standing = standing(&mine, &said, &peers);
 
         let now = Instant::now();
         let held = leaving(Duration::from_secs(5), now);
@@ -445,7 +437,7 @@ mod tests {
 
         // The proof that nobody was asked is the voter's own memory: the epoch
         // a canvass would have burnt is still there to be granted.
-        let (_, vote) = call(
+        let (_, vote) = crate::link::tests::call_with(
             address,
             authority.issue(THERE, Purpose::Peer),
             &authority.der(),
@@ -477,11 +469,10 @@ mod tests {
         let voter = [51_u8; NODE_ID_LEN];
         let (address, answering) = voting(&authority, voter, settled());
 
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
         let peers = [(voter, address)];
-        let standing = standing(&mine, &der, &said, &peers);
+        let standing = standing(&mine, &said, &peers);
 
         let now = Instant::now();
         let held = leaving(
@@ -516,10 +507,9 @@ mod tests {
             .map(|(id, (address, _))| (*id, *address))
             .collect();
 
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let standing = standing(&mine, &der, &said, &peers);
+        let standing = standing(&mine, &said, &peers);
 
         let now = Instant::now();
         let won = standing
@@ -562,7 +552,7 @@ mod tests {
         // because a canvass that aborted on the error would still reach a
         // majority if the unreachable member came last.
         let absent = {
-            let door = Peers::bind(
+            let door = crate::link::tests::bind_with(
                 "127.0.0.1:0",
                 authority.issue(gone, Purpose::Peer),
                 &authority.der(),
@@ -579,10 +569,9 @@ mod tests {
         let mut peers = vec![(gone, absent)];
         peers.extend(doors.iter().map(|(id, (address, _))| (*id, *address)));
 
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let standing = standing(&mine, &der, &said, &peers);
+        let standing = standing(&mine, &said, &peers);
 
         let now = Instant::now();
         let won = standing
@@ -616,7 +605,7 @@ mod tests {
         // gave up on the error would not reach the live member either.
         let gone = [60_u8; NODE_ID_LEN];
         let absent = {
-            let door = Peers::bind(
+            let door = crate::link::tests::bind_with(
                 "127.0.0.1:0",
                 authority.issue(gone, Purpose::Peer),
                 &authority.der(),
@@ -628,11 +617,10 @@ mod tests {
         let alive = [61_u8; NODE_ID_LEN];
         let (address, answering) = voting(&authority, alive, settled());
 
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
         let peers = [(gone, absent), (alive, address)];
-        let standing = standing(&mine, &der, &said, &peers);
+        let standing = standing(&mine, &said, &peers);
 
         let now = Instant::now();
         let won = standing
@@ -659,7 +647,7 @@ mod tests {
         std::sync::Arc<Deciding>,
         std::thread::JoinHandle<()>,
     ) {
-        let door = Peers::bind(
+        let door = crate::link::tests::bind_with(
             "127.0.0.1:0",
             authority.issue(id, Purpose::Peer),
             &authority.der(),
@@ -695,10 +683,9 @@ mod tests {
             .map(|(id, (address, _, _))| (*id, *address))
             .collect();
 
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let standing = standing(&mine, &der, &said, &peers);
+        let standing = standing(&mine, &said, &peers);
         let now = Instant::now();
         let won = standing
             .renew(
@@ -743,10 +730,9 @@ mod tests {
         let (address, deciding, answering) = kept_voting(&authority, alive);
         let peers = [([80_u8; NODE_ID_LEN], quiet), (alive, address)];
 
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let standing = standing(&mine, &der, &said, &peers);
+        let standing = standing(&mine, &said, &peers);
         let now = Instant::now();
         let won = standing
             .renew(
@@ -780,11 +766,10 @@ mod tests {
         let voter = [62_u8; NODE_ID_LEN];
         let (address, answering) = voting(&authority, voter, settled());
 
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
         let peers = [(voter, address)];
-        let standing = standing(&mine, &der, &said, &peers);
+        let standing = standing(&mine, &said, &peers);
 
         let now = Instant::now();
         let ours = mine_voting(now);
@@ -836,11 +821,10 @@ mod tests {
         let voter = [64_u8; NODE_ID_LEN];
         let (address, answering) = voting(&authority, voter, settled());
 
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
         let peers = [(voter, address)];
-        let standing = standing(&mine, &der, &said, &peers);
+        let standing = standing(&mine, &said, &peers);
 
         let now = Instant::now();
         assert_eq!(
@@ -880,10 +864,9 @@ mod tests {
             .map(|(id, (address, _, _))| (*id, *address))
             .collect();
 
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let standing = standing(&mine, &der, &said, &peers);
+        let standing = standing(&mine, &said, &peers);
         let now = Instant::now();
         let ours = mine_voting(now);
         let rival = [75_u8; NODE_ID_LEN];
@@ -960,10 +943,9 @@ mod tests {
             .map(|(id, (address, _, _))| (*id, *address))
             .collect();
 
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let standing = standing(&mine, &der, &said, &peers);
+        let standing = standing(&mine, &said, &peers);
         let now = Instant::now();
         let ours = mine_voting(now);
         let rival = [79_u8; NODE_ID_LEN];
@@ -1019,10 +1001,9 @@ mod tests {
             .map(|(id, (address, _, _))| (*id, *address))
             .collect();
 
-        let mine = authority.issue(THERE, Purpose::Peer);
-        let der = authority.der();
+        let mine = authority.keys(THERE, Purpose::Peer);
         let said = hello(THERE);
-        let standing = standing(&mine, &der, &said, &peers);
+        let standing = standing(&mine, &said, &peers);
         let now = Instant::now();
         let ours = mine_voting(now);
         let rival = [82_u8; NODE_ID_LEN];

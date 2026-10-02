@@ -334,6 +334,9 @@ impl Session<'_> {
                 [*awareness, *collection, *round, *campaign, *lease],
                 span,
             ),
+            StatementKind::RevokeCertificate { fingerprint } => {
+                Ok(Self::revoke_certificate(transaction, fingerprint))
+            }
             StatementKind::DefineReplica {
                 name,
                 endpoint,

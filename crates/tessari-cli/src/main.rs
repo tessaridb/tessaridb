@@ -39,6 +39,7 @@ mod arguments;
 mod bootstrap;
 mod collection_round;
 mod consumers;
+mod credentials;
 mod greeting_round;
 mod housekeeping;
 mod leadership_round;

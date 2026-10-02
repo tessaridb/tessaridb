@@ -81,6 +81,7 @@ impl Parser<'_> {
             Some(Keyword::Rebuild) => self.rebuild_statement()?,
             Some(Keyword::Check) => self.check_statement()?,
             Some(Keyword::Grant) => self.grant_statement(true)?,
+            Some(Keyword::Revoke) if self.revokes_a_certificate() => self.revoke_certificate()?,
             Some(Keyword::Revoke) => self.grant_statement(false)?,
             Some(Keyword::Create) => self.write_statement(Keyword::Create)?,
             Some(Keyword::Insert) => self.insert_statement()?,

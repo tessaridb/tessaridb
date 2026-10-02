@@ -712,8 +712,7 @@ fn a_node_told_about_a_cluster_opens_its_peer_door_and_still_serves_clients() {
     .expect("a credential this authority issued");
     let (heard, answered) = tessari_wire::call(
         PEERS,
-        ours.mine,
-        &ours.authority,
+        &tessari_wire::PeerKeys::new(ours.mine, ours.authority).expect("usable peer keys"),
         node,
         &tessari_wire::Hello {
             node: caller,
@@ -938,6 +937,77 @@ fn a_node_with_a_certificate_answers_at_over_tls_and_never_in_the_clear() {
     assert!(
         !clear.status.success() && !String::from_utf8_lossy(&clear.stdout).contains("42"),
         "a client in the clear was answered"
+    );
+}
+
+/// The renewal below has a port of its own: its node outlives the one above.
+const RENEWED: &str = "127.0.0.1:47977";
+
+#[test]
+fn a_renewed_client_certificate_is_presented_without_a_restart() {
+    let directory = tempfile::tempdir().unwrap();
+    let at = |name: &str| directory.path().join(name).to_string_lossy().into_owned();
+    // Two authorities, so which certificate a client was shown is decided by
+    // which authority it trusts: a client trusting only the second is answered
+    // only once the renewal is what the node presents.
+    let (first, second) = (Minted::new(), Minted::new());
+    let issue = |by: &Minted| {
+        let params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_owned()]).unwrap();
+        let key = rcgen::KeyPair::generate().unwrap();
+        let leaf = params.signed_by(&key, &by.authority, &by.key).unwrap();
+        (leaf.pem(), key.serialize_pem())
+    };
+    let (chain, key) = issue(&first);
+    std::fs::write(at("cert.pem"), chain).unwrap();
+    std::fs::write(at("key.pem"), key).unwrap();
+    std::fs::write(at("first.pem"), first.authority.pem()).unwrap();
+    std::fs::write(at("second.pem"), second.authority.pem()).unwrap();
+
+    let _node = Running(
+        Command::new(TESSARIDB)
+            .arg(directory.path().join("store"))
+            .args(["--serve", RENEWED])
+            .args(["--tls-cert", &at("cert.pem")])
+            .args(["--tls-key", &at("key.pem")])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    assert!(
+        listening(RENEWED, Duration::from_secs(20)),
+        "the node never listened"
+    );
+    let answered = |trusting: &str| {
+        let out = Command::new(TESSARIDB)
+            .args(["--at", RENEWED, "-e", "RETURN 40 + 2;"])
+            .args(["--tls-authority", &at(trusting)])
+            .env_remove("TESSARIDB_TLS_AUTHORITY")
+            .output()
+            .unwrap();
+        out.status.success() && String::from_utf8_lossy(&out.stdout).contains("42")
+    };
+    assert!(answered("first.pem"), "the first certificate is presented");
+    assert!(
+        !answered("second.pem"),
+        "nothing from the second authority yet"
+    );
+
+    let (chain, key) = issue(&second);
+    std::fs::write(at("cert.pem"), chain).unwrap();
+    std::fs::write(at("key.pem"), key).unwrap();
+    // The node looks every two seconds; ten is five looks.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !answered("second.pem") {
+        assert!(
+            Instant::now() < deadline,
+            "the renewed certificate was never presented"
+        );
+        std::thread::yield_now();
+    }
+    assert!(
+        !answered("first.pem"),
+        "a new connection is shown the renewal, not the certificate it replaced"
     );
 }
 

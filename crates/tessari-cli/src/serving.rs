@@ -31,6 +31,7 @@ pub(crate) fn serve(
     // have come up **open**. It also costs nothing to find a path typo here
     // rather than at the first dial, which is minutes or hours later and looks
     // like a network fault.
+    let told = cluster;
     let cluster = match cluster {
         Some(told) => {
             Some(tessari_wire::Joining::read(told).map_err(|refused| refused.to_string())?)
@@ -49,7 +50,7 @@ pub(crate) fn serve(
         cluster.is_some(),
     )?;
     let secured = match &clients {
-        crate::tls::Clients::Tls { cert, key } => Some(crate::tls::settings(cert, key)?),
+        crate::tls::Clients::Tls { cert, key } => Some(crate::tls::credential(cert, key)?),
         crate::tls::Clients::Plaintext { .. } => None,
     };
     // A cluster configuration with no seed address is legal, and it is legal
@@ -96,18 +97,17 @@ pub(crate) fn serve(
         Some(joining) => {
             let where_to = joining.door.clone();
             let seeds = joining.seeds.clone();
-            // Taken before the bind, which consumes the first copy. Both halves
-            // of the link prove the same node with the same credential.
-            let dialling = joining.mine.duplicate();
-            let authority = joining.authority.clone();
-            let door =
-                tessari_wire::Peers::bind(joining.door.as_str(), joining.mine, &joining.authority)
-                    .map_err(|failure| format!("{where_to}: {failure}"))?;
+            // One handle for both halves of the link, so the door and every
+            // dial prove the same node with the same credential — and a reload
+            // or a revocation reaches both at once (ADR-0108 D6).
+            let keys = tessari_wire::PeerKeys::new(joining.mine, joining.authority)
+                .map_err(|failure| format!("this node's peer credential: {failure}"))?;
+            let door = tessari_wire::Peers::bind(joining.door.as_str(), &keys)
+                .map_err(|failure| format!("{where_to}: {failure}"))?;
             Some(Peering {
                 door,
                 seeds,
-                dialling,
-                authority,
+                keys,
                 routing: std::sync::Arc::new(tessari_wire::Published::holding(
                     tessari_wire::Directory::new(),
                 )),
@@ -135,7 +135,7 @@ pub(crate) fn serve(
         let gathering = tessari_wire::Gathering::new(
             std::sync::Arc::clone(&db),
             me,
-            (surface.dialling.duplicate(), surface.authority.clone()),
+            surface.keys.clone(),
             std::sync::Arc::clone(&surface.routing),
             Box::new(move || {
                 speaking
@@ -156,7 +156,7 @@ pub(crate) fn serve(
         let speaking = std::sync::Arc::downgrade(&db);
         db.budget_through(std::sync::Arc::new(tessari_wire::SharedBudget::new(
             me,
-            (surface.dialling.duplicate(), surface.authority.clone()),
+            surface.keys.clone(),
             std::sync::Arc::clone(&surface.routing),
             Box::new(move || {
                 speaking
@@ -173,7 +173,7 @@ pub(crate) fn serve(
         db.coordinate_through(std::sync::Arc::new(tessari_wire::Coordinator::new(
             &db,
             me,
-            (surface.dialling.duplicate(), surface.authority.clone()),
+            surface.keys.clone(),
             Box::new(move || {
                 speaking
                     .upgrade()
@@ -221,7 +221,7 @@ pub(crate) fn serve(
             let node = tessari_wire::Node::bind(std::sync::Arc::clone(&db), address.as_str())
                 .map_err(|failure| format!("{address}: {failure}"))?;
             Some(match &secured {
-                Some((wire, _)) => node.securing(std::sync::Arc::clone(wire)),
+                Some(credential) => node.securing(credential.server_config(&[])),
                 None => node,
             })
         }
@@ -231,8 +231,8 @@ pub(crate) fn serve(
         Some(address) => {
             let mut node = tessari_http::Node::bind(std::sync::Arc::clone(&db), address)
                 .map_err(|failure| format!("{address}: {failure}"))?;
-            if let Some((_, http)) = &secured {
-                node.securing(std::sync::Arc::clone(http));
+            if let Some(credential) = &secured {
+                node.securing(credential.server_config(&[b"http/1.1"]));
             }
             Some(node)
         }
@@ -305,6 +305,19 @@ pub(crate) fn serve(
     // set of numbers, or the two disagree in exactly the situation — a shutdown
     // — where somebody is reading both.
     let mut census = tessari_serve::Census::since(started);
+    // What each surface presents, read at the scrape, so a renewal shows in the
+    // expiry gauge the moment it is in use (ADR-0108 D6).
+    if let Some(credential) = &secured {
+        let credential = credential.clone();
+        census.presenting(
+            "clients",
+            tessari_serve::Presenting::new(move || credential.leaf()),
+        );
+    }
+    if let Some(surface) = &peers {
+        let keys = surface.keys.clone();
+        census.presenting("peers", tessari_serve::Presenting::new(move || keys.leaf()));
+    }
     let mut surfaces = Vec::new();
     // The wire surface accepts on the runtime until this is cancelled, which is
     // the stage that refuses new connections — not the first signal, which
@@ -355,6 +368,38 @@ pub(crate) fn serve(
     if let Some(node) = &mut http {
         node.watching(std::sync::Arc::clone(&census));
     }
+
+    // The certificate files, re-read while the node serves so a renewal needs no
+    // restart (ADR-0108 D6): the client surfaces' pair when they speak TLS, and
+    // the peer link's when this node is in a cluster.
+    let mut watched = Vec::new();
+    if let (Some(credential), crate::tls::Clients::Tls { cert, key }) = (&secured, &clients) {
+        watched.push(crate::credentials::Watched::clients(
+            credential.clone(),
+            cert.clone(),
+            key.clone(),
+        ));
+    }
+    if let (Some(surface), Some(told)) = (&peers, told) {
+        watched.push(crate::credentials::Watched::peers(
+            surface.keys.clone(),
+            told,
+        ));
+    }
+    // Applied once before the peer door serves anybody, so a certificate the
+    // catalog already revoked is never admitted in the moments before the
+    // first look.
+    let revoking = match &peers {
+        Some(surface) => {
+            let revoking = crate::credentials::Revoking {
+                db: std::sync::Arc::clone(&db),
+                keys: surface.keys.clone(),
+            };
+            revoking.refresh()?;
+            Some(revoking)
+        }
+        None => None,
+    };
 
     // The one runtime this process owns, and the token a stop arrives on — both
     // before anything serves, so a signal arriving during startup is counted
@@ -411,6 +456,11 @@ pub(crate) fn serve(
                 house_stops.clone(),
                 move || keep_house(std::sync::Arc::clone(&db), stop.clone()),
             ));
+        }
+
+        if !watched.is_empty() || revoking.is_some() {
+            let stop = house_stops.clone();
+            hosting.spawn(crate::credentials::watch(watched, revoking, stop));
         }
 
         // The declared topic consumers, joined with the rest of the node's own

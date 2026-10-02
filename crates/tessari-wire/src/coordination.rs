@@ -27,7 +27,6 @@
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use rustls::pki_types::CertificateDer;
 use sha2::{Digest, Sha256};
 
 use tessari_constants::COORDINATED_SECONDS;
@@ -40,7 +39,8 @@ use crate::assertion::{Assertion, Principal, Signed, nonce, now_ms, request_dige
 use crate::error::{Error, Result};
 use crate::frame;
 use crate::gatherer::Greeting;
-use crate::link::{Answered, Ask, Credential, call_within};
+use crate::keys::PeerKeys;
+use crate::link::{Answered, Ask, call_within};
 
 /// How long an assertion this node makes is good for.
 const LIFE_MILLIS: u64 = 10_000;
@@ -243,8 +243,7 @@ pub fn admit_asserted<'a>(
 pub struct Coordinator {
     db: Weak<Db>,
     me: [u8; NODE_ID_LEN],
-    credential: Credential,
-    authority: CertificateDer<'static>,
+    keys: PeerKeys,
     greeting: Greeting,
 }
 
@@ -260,17 +259,11 @@ impl Coordinator {
     /// A coordinator for the node that holds `db`, speaking as `me` with its
     /// peer `credential`, whose key also signs every assertion.
     #[must_use]
-    pub fn new(
-        db: &Arc<Db>,
-        me: [u8; NODE_ID_LEN],
-        (credential, authority): (Credential, CertificateDer<'static>),
-        greeting: Greeting,
-    ) -> Self {
+    pub fn new(db: &Arc<Db>, me: [u8; NODE_ID_LEN], keys: PeerKeys, greeting: Greeting) -> Self {
         Self {
             db: Arc::downgrade(db),
             me,
-            credential,
-            authority,
+            keys,
             greeting,
         }
     }
@@ -287,6 +280,10 @@ impl Coordinates for Coordinator {
             .map_err(|why| why.to_string())?
             .map(|row| row.endpoint)
             .ok_or("the node that answers is not declared here")?;
+        // One snapshot signs and dials: the far end checks the assertion
+        // against the certificate this connection presents, so a rotation
+        // landing between the two would refuse a request that was honest.
+        let mine = self.keys.duplicate();
         let request = Coordinate {
             signed: Assertion {
                 from: self.me,
@@ -307,7 +304,7 @@ impl Coordinates for Coordinator {
                 issued_ms: now_ms(),
                 expires_ms: now_ms().saturating_add(LIFE_MILLIS),
             }
-            .sign(&self.credential.key)
+            .sign(&mine.key)
             .map_err(|why| why.to_string())?,
             namespace: asked.namespace.map(str::to_owned),
             database: asked.database.map(str::to_owned),
@@ -318,7 +315,7 @@ impl Coordinates for Coordinator {
         let said = (self.greeting)().map_err(|why| why.to_string())?;
         match call_within(
             endpoint.as_str(),
-            (self.credential.duplicate(), &self.authority),
+            (&self.keys, mine),
             asked.to,
             &said,
             Ask::Coordinate(&request),
@@ -355,13 +352,14 @@ mod tests {
         Coordinator::new(
             db,
             ME,
-            (
+            crate::keys::PeerKeys::new(
                 Credential {
                     chain: vec![certificate.der().clone()],
                     key: PrivateKeyDer::try_from(key.serialize_der()).expect("a key in DER"),
                 },
                 certificate.der().clone(),
-            ),
+            )
+            .expect("a usable credential"),
             Box::new(|| Err(crate::gatherer::GreetingUnavailable::Stopping)),
         )
     }

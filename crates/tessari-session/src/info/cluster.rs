@@ -93,6 +93,16 @@ impl Session<'_> {
         // periods; reporting those here as a policy would make it impossible to
         // see whether one ever arrived — which is exactly the observation a
         // two-node check of replication is trying to make.
+        // What every peer handshake refuses (ADR-0108 D6), as the catalog
+        // holds it; a node applies the list within a few seconds of the row
+        // reaching it.
+        let revoked = Value::Array(
+            Catalog::new(transaction)
+                .revoked_certificates()?
+                .into_iter()
+                .map(|fingerprint| Value::from(fingerprint.as_str()))
+                .collect(),
+        );
         let failover = match Catalog::new(transaction).failover()? {
             None => Value::Null,
             Some(held) => described_failover(&held),
@@ -178,6 +188,7 @@ impl Session<'_> {
                 "cluster".to_owned(),
                 Value::Object(BTreeMap::from([
                     ("peers".to_owned(), peers),
+                    ("revoked".to_owned(), revoked),
                     // On the replicated side of ADR-0018's line, because that is
                     // where it comes from: `roles` above is what this machine
                     // holds and a backup would not carry, `desired` is what the

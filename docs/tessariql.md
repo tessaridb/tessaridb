@@ -8588,6 +8588,50 @@ and reporting those as a set policy would make it impossible to see whether a
 policy ever arrived.
 
 
+### A peer certificate the cluster no longer accepts
+
+A node's peer certificate proves it is a member, and a certificate that leaked,
+or a machine retired before its certificate expired, is a member the cluster
+should stop admitting. Revoking it is a statement and a replicated row, for the
+failover policy's reason — which certificates are refused is a cluster-wide
+fact:
+
+```
+REVOKE CERTIFICATE '0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0';
+```
+
+The value is the certificate's **SHA-256 fingerprint**: the digest of its DER,
+as 64 hexadecimal digits. The colon-separated, upper-case form a certificate
+tool prints (`openssl x509 -noout -fingerprint -sha256`) names the same
+certificate and is taken too; both are stored in lower case, so revoking one
+certificate twice is one row. Anything that is not 64 hexadecimal digits is
+refused where it was written, rather than stored as a fingerprint no certificate
+can have.
+
+From the moment the row reaches a node, that node refuses the certificate in
+**both** directions of its peer link: a peer presenting it at the door is not
+admitted, and a node presenting it to a dial is not spoken to. Every node holds
+the row whatever it is subscribed to — a follower of one namespace that missed
+it would go on admitting the peer every other node refuses. A node applies the
+list within a few seconds of the row arriving. An **expired** certificate needs
+no statement: no handshake accepts one.
+
+Only an operator of the store may revoke a certificate (the same authority as
+`DEFINE FAILOVER`), and the administration trail records who did. There is no
+statement that takes a revocation back: a certificate that was revoked is
+replaced, by a new one with a new fingerprint. `INFO FOR NODE` lists the
+revoked fingerprints under `cluster.revoked`.
+
+A certificate is **renewed** without a statement and without a restart: a node
+re-reads its peer and client certificate files every two seconds, and a pair
+that changed is presented from the next connection on, while open connections
+finish on the one they started with. A pair that does not belong together — the
+certificate written and the key not yet — is refused and the previous
+certificate stays in use; the node says so once, and judges the files again when
+they change. The authority a cluster's peers are issued by is not reloaded:
+trusting a new root is a restart, planned with both roots in place.
+
+
 ### Which peers vote, and what a node that votes for nobody does
 
 A peer declared with the `coordinating` role is a **voting member**: a node that
@@ -8735,9 +8779,10 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.20.1", "build": "0.20.1-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.21.0", "build": "0.21.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
+             "revoked": [],
              "desired": ["serving", "writable"],
              "followers": [{"node": "4b81…", "sequence": 812, "behind": 4,
                             "quiet_for": "2s143ms", "copy_age": "11s"}],

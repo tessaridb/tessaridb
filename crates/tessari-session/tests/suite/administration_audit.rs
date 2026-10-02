@@ -182,3 +182,21 @@ fn a_refused_change_leaves_no_entry() {
         administered(&store)
     );
 }
+
+#[test]
+fn a_revoked_certificate_is_recorded_with_who_revoked_it() {
+    let store = store();
+    let mut root = owned(&store);
+    let fingerprint = "ab".repeat(32);
+    root.run(&format!("REVOKE CERTIFICATE '{fingerprint}';"))
+        .unwrap();
+    assert!(
+        administered(&store).contains(&(
+            "root".to_owned(),
+            "REVOKE CERTIFICATE".to_owned(),
+            fingerprint
+        )),
+        "{:?}",
+        administered(&store)
+    );
+}

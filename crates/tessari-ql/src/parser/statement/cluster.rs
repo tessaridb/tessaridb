@@ -10,6 +10,45 @@ use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
 
 impl Parser<'_> {
+    /// Whether `REVOKE` here takes a certificate rather than a grant: the word
+    /// `CERTIFICATE` and then text.
+    ///
+    /// Both halves, because `certificate` is not reserved — a grant verb in
+    /// that position is followed by `ON` or a comma, never by a string — so a
+    /// table or verb of that name keeps meaning what it meant.
+    pub(super) fn revokes_a_certificate(&self) -> bool {
+        let at = |offset: usize| {
+            self.tokens
+                .get(self.position.saturating_add(offset))
+                .map(|spanned| &spanned.token)
+        };
+        matches!(at(1), Some(Token::Ident(word)) if word.eq_ignore_ascii_case("certificate"))
+            && matches!(at(2), Some(Token::Str(_)))
+    }
+
+    /// `REVOKE CERTIFICATE '<sha256>'` — a certificate no peer handshake
+    /// accepts again, in either direction (ADR-0108 D6).
+    ///
+    /// The fingerprint is the SHA-256 of the certificate's DER, as 64
+    /// hexadecimal digits; the colon-separated form a certificate tool prints
+    /// is taken too, and either is stored in lowercase so one certificate has
+    /// one spelling. Anything else is refused here, where the span is, rather
+    /// than stored as a fingerprint no certificate can have.
+    pub(super) fn revoke_certificate(&mut self) -> Result<StatementKind> {
+        const FINGERPRINT: &str = "a certificate's SHA-256 fingerprint: 64 hexadecimal digits";
+        self.advance();
+        self.eat_word("certificate");
+        let at = self.position;
+        let (written, _) = self.text(FINGERPRINT)?;
+        let digits: String = written.chars().filter(|found| *found != ':').collect();
+        if digits.len() != 64 || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(self.error_at(at, FINGERPRINT));
+        }
+        Ok(StatementKind::RevokeCertificate {
+            fingerprint: digits.to_ascii_lowercase(),
+        })
+    }
+
     /// A contextual word this statement requires.
     /// `REPLICATION NONE` or `REPLICATION FACTOR 3`, when one stands here.
     ///

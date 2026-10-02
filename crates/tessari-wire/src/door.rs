@@ -541,7 +541,7 @@ mod tests {
     use crate::gathering::{Gather, Page};
     use crate::grant::{Ballot, Round, Vote};
     use crate::link::tests::{Authority, THERE, hello, settled, voted};
-    use crate::link::{Ask, Credential, call};
+    use crate::link::{Ask, Credential};
     use crate::peer::Purpose;
     use tessari_types::{Epoch, Reach};
 
@@ -620,7 +620,7 @@ mod tests {
     }
 
     fn served(authority: &Authority) -> Served {
-        let peers = Peers::bind(
+        let peers = crate::link::tests::bind_with(
             "127.0.0.1:0",
             authority.issue(HERE, Purpose::Peer),
             &authority.der(),
@@ -661,7 +661,7 @@ mod tests {
     fn a_peer_is_greeted_and_its_ballot_answered_by_the_door_on_the_runtime() {
         let authority = Authority::new();
         let door = served(&authority);
-        let (said, _) = call(
+        let (said, _) = crate::link::tests::call_with(
             door.address,
             peer(&authority),
             &authority.der(),
@@ -673,7 +673,7 @@ mod tests {
         assert_eq!(said.node, HERE);
 
         let ballot: Ballot = Round::opened(Epoch::new(5), THERE, 3).ballot();
-        let (_, answered) = call(
+        let (_, answered) = crate::link::tests::call_with(
             door.address,
             peer(&authority),
             &authority.der(),
@@ -711,7 +711,7 @@ mod tests {
         // greeting deadline before it could take anyone else.
         let _quiet = TcpStream::connect(door.address).expect("a quiet connection");
         let began = Instant::now();
-        let (said, _) = call(
+        let (said, _) = crate::link::tests::call_with(
             door.address,
             peer(&authority),
             &authority.der(),
@@ -771,7 +771,7 @@ mod tests {
             matches!(returned, Ok(Ok(Ok(())))),
             "a stop ends the door cleanly: {returned:?}"
         );
-        let refused = call(
+        let refused = crate::link::tests::call_with(
             door.address,
             peer(&authority),
             &authority.der(),

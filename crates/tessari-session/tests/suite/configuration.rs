@@ -1141,3 +1141,91 @@ fn a_follower_reports_where_it_stands_against_its_upstream() {
     };
     assert_eq!(upstream.get("state"), Some(&Value::from("stranded")));
 }
+
+/// The fingerprints a report says every peer handshake refuses.
+fn revoked(report: &std::collections::BTreeMap<String, Value>) -> Vec<String> {
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster half: {report:?}");
+    };
+    let Some(Value::Array(listed)) = cluster.get("revoked") else {
+        panic!("no revocation list: {cluster:?}");
+    };
+    listed
+        .iter()
+        .map(|entry| match entry {
+            Value::String(fingerprint) => fingerprint.clone(),
+            other => panic!("a revocation that is not a fingerprint: {other:?}"),
+        })
+        .collect()
+}
+
+const FINGERPRINT: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0";
+
+#[test]
+fn a_revoked_certificate_is_listed_once_in_one_spelling() {
+    let store = closed(&backend());
+    assert!(
+        revoked(&reported(&store)).is_empty(),
+        "a fresh node refuses nobody"
+    );
+    // The colon-separated, upper-case form a certificate tool prints is the
+    // same certificate, and revoking it again changes nothing.
+    let printed = FINGERPRINT
+        .to_ascii_uppercase()
+        .as_bytes()
+        .chunks(2)
+        .map(|pair| String::from_utf8_lossy(pair).into_owned())
+        .collect::<Vec<_>>()
+        .join(":");
+    owner(&store)
+        .run(&format!("REVOKE CERTIFICATE '{printed}';"))
+        .unwrap();
+    owner(&store)
+        .run(&format!("REVOKE CERTIFICATE '{FINGERPRINT}';"))
+        .unwrap();
+    assert_eq!(revoked(&reported(&store)), vec![FINGERPRINT.to_owned()]);
+}
+
+#[test]
+fn a_fingerprint_that_is_not_a_sha256_is_refused_where_it_was_written() {
+    let store = closed(&backend());
+    for written in [
+        "abc",
+        &FINGERPRINT[1..],
+        &format!("{}zz", &FINGERPRINT[2..]),
+    ] {
+        let refused = owner(&store)
+            .run(&format!("REVOKE CERTIFICATE '{written}';"))
+            .expect_err("not a fingerprint");
+        assert!(
+            refused.to_string().contains("SHA-256 fingerprint"),
+            "{written}: {refused}"
+        );
+    }
+    assert!(revoked(&reported(&store)).is_empty());
+}
+
+#[test]
+fn only_an_operator_of_the_store_revokes_a_certificate() {
+    let store = closed(&backend());
+    owner(&store)
+        .run(&format!("DEFINE USER e ROLE editor PASSWORD '{PASSWORD}';"))
+        .unwrap();
+    let refused = format!(
+        "{:?}",
+        signed_in(&store, "e").run(&format!("REVOKE CERTIFICATE '{FINGERPRINT}';"))
+    );
+    assert!(refused.contains("RoleForbids"), "{refused}");
+    assert!(revoked(&reported(&store)).is_empty());
+}
+
+#[test]
+fn a_grant_named_certificate_is_still_a_grant() {
+    // `certificate` is not reserved: a REVOKE whose next word is a verb of
+    // that name, followed by `ON`, is the grant statement it always was.
+    let refused = format!(
+        "{:?}",
+        owner(&closed(&backend())).run("REVOKE certificate ON orders FROM ada;")
+    );
+    assert!(!refused.contains("SHA-256 fingerprint"), "{refused}");
+}

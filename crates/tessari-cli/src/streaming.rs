@@ -101,10 +101,7 @@ impl Streams {
     pub(crate) fn start(
         &mut self,
         db: Arc<Db>,
-        (mine, authority): (
-            tessari_wire::Credential,
-            tessari_wire::CertificateDer<'static>,
-        ),
+        keys: tessari_wire::PeerKeys,
         (line, address): (Line, std::net::SocketAddr),
         (homes, still): (Homes, Still),
         (stop, wakes): (CancellationToken, Arc<crate::peers::Wakes>),
@@ -118,13 +115,7 @@ impl Streams {
         let started = std::thread::Builder::new()
             .name(format!("stream-{}", hex(&leader)))
             .spawn(move || {
-                let ended = follow(
-                    &db,
-                    (mine, &authority),
-                    (leader, address),
-                    (&*homes, &*still),
-                    &stop,
-                );
+                let ended = follow(&db, &keys, (leader, address), (&*homes, &*still), &stop);
                 match ended {
                     Ok(()) => log::info!(
                         "the stream from {} ended; the collection round takes over",
@@ -166,27 +157,17 @@ impl Streams {
 /// Hold one stream until it ends, applying every round the leader sends.
 fn follow(
     db: &Db,
-    (mine, authority): (
-        tessari_wire::Credential,
-        &tessari_wire::CertificateDer<'static>,
-    ),
+    keys: &tessari_wire::PeerKeys,
     (leader, address): ([u8; NODE_ID_LEN], std::net::SocketAddr),
     (homes, still): (&HomesFor, &StillFor),
     stop: &CancellationToken,
 ) -> Result<(), String> {
     let store = db.store();
     let said = greeting(db).map_err(|why| why.to_string())?;
-    let mut following = tessari_wire::Following::open(
-        (leader, address),
-        mine.duplicate(),
-        authority,
-        &said,
-        SILENCE,
-    )
-    .map_err(|why| why.to_string())?;
+    let mut following = tessari_wire::Following::open((leader, address), keys, &said, SILENCE)
+        .map_err(|why| why.to_string())?;
     let collector = tessari_wire::Collector {
-        mine: &mine,
-        authority,
+        keys,
         said: &said,
         peer: (leader, address),
         limit: COLLECTION_RECORDS,

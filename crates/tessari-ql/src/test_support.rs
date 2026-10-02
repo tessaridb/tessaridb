@@ -269,6 +269,8 @@ fn erase_statement(statement: &mut Statement) {
         // name at all. The arm exists so that adding a name to the statement
         // later cannot pass this helper silently.
         StatementKind::DefineFailover { .. } => {}
+        // A fingerprint is not a name.
+        StatementKind::RevokeCertificate { .. } => {}
         StatementKind::DefineReplica {
             name,
             roles,

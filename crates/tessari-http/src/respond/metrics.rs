@@ -6,6 +6,38 @@ use crate::tokens::Tokens;
 use tessari_serve::{Census, Stopping};
 use tessaridb::Db;
 
+/// How long until each presented certificate expires (ADR-0108 D6).
+///
+/// Behind the operator gate with the rest of the topology (D8): which
+/// certificates this node holds is about the cluster, not about a caller's
+/// data. Negative once a certificate has expired, rather than clamped to zero,
+/// so a scrape tells *expires now* from *expired a week ago*. A certificate
+/// whose date cannot be read has no line, because a guessed figure would be
+/// alerted on.
+fn expiries(out: &mut String, census: &Census) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+        });
+    let mut header = false;
+    for (surface, expires) in census.expiries() {
+        let Some(left) = expires.and_then(|at| at.checked_sub(now)) else {
+            continue;
+        };
+        if !header {
+            out.push_str(
+                "# HELP tessari_tls_certificate_expires_seconds Seconds until the certificate a surface presents expires; negative once it has.\n",
+            );
+            out.push_str("# TYPE tessari_tls_certificate_expires_seconds gauge\n");
+            header = true;
+        }
+        out.push_str(&format!(
+            "tessari_tls_certificate_expires_seconds{{surface=\"{surface}\"}} {left}\n"
+        ));
+    }
+}
+
 /// `GET /metrics` — the numbers, in the exposition format every scraper reads.
 ///
 /// Plain text with a documented grammar, so it costs a function rather than a
@@ -106,6 +138,9 @@ pub(crate) fn metrics(
 
     if cluster {
         replication(&mut out, db);
+        if let Some(census) = census {
+            expiries(&mut out, census);
+        }
     }
 
     // Worth a line of its own because it is the one number that says whether

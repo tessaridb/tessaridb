@@ -27,6 +27,9 @@ tessari-ingest.workspace = true
 tessari-serve.workspace = true
 # The client surfaces' TLS settings (ADR-0108 D4), built by `tessari-serve`.
 rustls.workspace = true
+# What tells a credential file that changed from one that did not (ADR-0108 D6),
+# without keeping a copy of a key to compare against.
+sha2.workspace = true
 tessari-constants.workspace = true
 # The terminal's raw mode, and the immediate exit a second stop signal asks for.
 # Already in the tree through the engine, so this costs no crate.

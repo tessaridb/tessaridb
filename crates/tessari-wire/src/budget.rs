@@ -15,7 +15,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rustls::pki_types::CertificateDer;
 use tessari_constants::SIGN_IN_ASK_MILLIS;
 use tessari_encoding::NODE_ID_LEN;
 
@@ -23,7 +22,8 @@ use crate::driver::Published;
 use crate::error::{Error, Result};
 use crate::frame;
 use crate::gatherer::Greeting;
-use crate::link::{Answered, Ask, Credential, call_within};
+use crate::keys::PeerKeys;
+use crate::link::{Answered, Ask, call_within};
 
 /// What a sign-in tells or asks the leader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,8 +95,7 @@ impl Attempt {
 /// Asks the store line's leader about sign-in tries.
 pub struct SharedBudget {
     me: [u8; NODE_ID_LEN],
-    credential: Credential,
-    authority: CertificateDer<'static>,
+    keys: PeerKeys,
     routing: Arc<Published>,
     greeting: Greeting,
 }
@@ -114,14 +113,13 @@ impl SharedBudget {
     #[must_use]
     pub fn new(
         me: [u8; NODE_ID_LEN],
-        (credential, authority): (Credential, CertificateDer<'static>),
+        keys: PeerKeys,
         routing: Arc<Published>,
         greeting: Greeting,
     ) -> Self {
         Self {
             me,
-            credential,
-            authority,
+            keys,
             routing,
             greeting,
         }
@@ -141,7 +139,7 @@ impl SharedBudget {
         };
         match call_within(
             endpoint.as_str(),
-            (self.credential.duplicate(), &self.authority),
+            (&self.keys, self.keys.duplicate()),
             node,
             &said,
             Ask::Attempt(&asked),

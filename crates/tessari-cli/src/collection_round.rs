@@ -36,8 +36,7 @@ use tessaridb::Db;
 /// notice.
 pub(crate) async fn collect_from_upstream(
     db: std::sync::Arc<Db>,
-    mine: tessari_wire::Credential,
-    authority: tessari_wire::CertificateDer<'static>,
+    keys: tessari_wire::PeerKeys,
     seeds: Vec<tessari_wire::Seed>,
     published: std::sync::Arc<tessari_wire::Published>,
     wakes: std::sync::Arc<crate::peers::Wakes>,
@@ -80,8 +79,7 @@ pub(crate) async fn collect_from_upstream(
             std::sync::Arc::clone(&db),
             std::sync::Arc::clone(&published),
         );
-        let (db, mine, authority, seeds, published) =
-            (&*db, &mine, &authority, &seeds[..], &*published);
+        let (db, keys, seeds, published) = (&*db, &keys, &seeds[..], &*published);
         let store = db.store();
         let roles = match store.effective_roles() {
             Ok(roles) => roles,
@@ -125,7 +123,7 @@ pub(crate) async fn collect_from_upstream(
         // every placed range it does not lead from that range's leader.
         collect_placed_ranges(
             (db, &handle),
-            (mine, authority),
+            keys,
             (&declared, me, &heard, &published_handle),
             &mut by_leader,
             (&mut streams, &stopped, &wakes),
@@ -170,8 +168,7 @@ pub(crate) async fn collect_from_upstream(
             }
         };
         let collector = tessari_wire::Collector {
-            mine,
-            authority,
+            keys,
             said: &said,
             peer: (node, address),
             limit: tessari_constants::COLLECTION_RECORDS,
@@ -271,7 +268,7 @@ pub(crate) async fn collect_from_upstream(
                 Box::new(move |db: &Db| store_line_upstream(db, &heard_from) == Some(node));
             streams.start(
                 std::sync::Arc::clone(&handle),
-                (mine.duplicate(), authority.clone()),
+                keys.clone(),
                 ((node, None), address),
                 (homes, still),
                 (stopped.clone(), std::sync::Arc::clone(&wakes)),
@@ -280,7 +277,7 @@ pub(crate) async fn collect_from_upstream(
         if below
             && crate::reseeding::reseed(
                 db,
-                (mine, authority),
+                keys,
                 (node, &endpoint),
                 &said,
                 crate::reseeding::leads_a_range(&declared, me, &heard),
@@ -328,10 +325,7 @@ fn store_line_upstream(
 /// condition replication exists to survive.
 pub(crate) fn collect_placed_ranges(
     (db, handle): (&Db, &std::sync::Arc<Db>),
-    (mine, authority): (
-        &tessari_wire::Credential,
-        &tessari_wire::CertificateDer<'static>,
-    ),
+    keys: &tessari_wire::PeerKeys,
     (declared, me, heard, published): (
         &[tessari_storage::ReplicaDefinition],
         [u8; tessari_storage::NODE_ID_LEN],
@@ -388,8 +382,7 @@ pub(crate) fn collect_placed_ranges(
             continue;
         }
         let collector = tessari_wire::Collector {
-            mine,
-            authority,
+            keys,
             said: &said,
             peer: (node, address),
             limit: tessari_constants::COLLECTION_RECORDS,
@@ -447,7 +440,7 @@ pub(crate) fn collect_placed_ranges(
             });
             streams.start(
                 std::sync::Arc::clone(handle),
-                (mine.duplicate(), authority.clone()),
+                keys.clone(),
                 ((node, Some(range)), address),
                 (homes, still),
                 (stop.clone(), std::sync::Arc::clone(wakes)),

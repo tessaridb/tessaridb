@@ -42,6 +42,7 @@ mod indexes;
 mod leadership;
 mod position;
 mod replica;
+mod revocation;
 mod rows;
 mod shard;
 mod space;

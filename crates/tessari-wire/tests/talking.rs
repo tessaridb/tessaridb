@@ -489,7 +489,7 @@ fn trusting(pem: &str) -> rustls::RootCertStore {
 /// A node that speaks TLS and nothing else, and the authority that issued it.
 fn serving_tls() -> (Arc<Node>, String, String) {
     let (chain, key, authority) = issued_for_loopback();
-    let settings = tessari_serve::tls::server_config(
+    let settings = tessari_serve::tls::Credential::read(
         tessari_serve::tls::Pem {
             bytes: chain.as_bytes(),
             path: "cert.pem",
@@ -498,9 +498,9 @@ fn serving_tls() -> (Arc<Node>, String, String) {
             bytes: key.as_bytes(),
             path: "key.pem",
         },
-        &[],
     )
-    .unwrap();
+    .unwrap()
+    .server_config(&[]);
     let (node, address) = started(
         Node::bind(Arc::new(Db::in_memory().unwrap()), "127.0.0.1:0")
             .unwrap()

@@ -310,43 +310,11 @@ impl Joining {
         door: String,
         seeds: Vec<String>,
     ) -> Result<Self> {
-        let CredentialFile {
-            bytes: chain,
-            path: chain_at,
-        } = chain;
-        let CredentialFile {
-            bytes: key,
-            path: key_at,
-        } = key;
+        let mine = peer_credential(chain, key)?;
         let CredentialFile {
             bytes: authority,
             path: authority_at,
         } = authority;
-        let chain = certificates(chain, CHAIN, chain_at)?;
-        if chain.is_empty() {
-            return Err(Error::CredentialEmpty {
-                part: CHAIN,
-                path: shown(chain_at),
-                wanted: "certificate",
-            });
-        }
-        // The two refusals are distinct and the mapping is by VARIANT, not by a
-        // catch-all: a well-formed file that holds no key is a CONTENT problem
-        // and reports `CredentialEmpty`, while anything the parser could not
-        // read at all is `CredentialUnreadable`. Collapsing them would send an
-        // operator looking for a bad path when what they have is a bad file.
-        let key = PrivateKeyDer::from_pem_slice(key).map_err(|why| match why {
-            rustls::pki_types::pem::Error::NoItemsFound => Error::CredentialEmpty {
-                part: KEY,
-                path: shown(key_at),
-                wanted: "private key",
-            },
-            why => Error::CredentialUnreadable {
-                part: KEY,
-                path: shown(key_at),
-                reason: why.to_string(),
-            },
-        })?;
         let found = certificates(authority, AUTHORITY, authority_at)?;
         // Exactly one, because the door trusts exactly one root. Two would leave
         // one of them silently ignored, and during a rotation the ignored one is
@@ -362,12 +330,59 @@ impl Joining {
             .map(|given| Seed::parse(given))
             .collect::<Result<Vec<Seed>>>()?;
         Ok(Self {
-            mine: Credential { chain, key },
+            mine,
             authority,
             door,
             seeds,
         })
     }
+}
+
+/// This node's peer credential from its two files: a chain of at least one
+/// certificate, and a private key.
+///
+/// The rules start-up applies, in one place, so a credential re-read while the
+/// node serves is judged exactly as the first one was (ADR-0108 D6).
+///
+/// # Errors
+///
+/// [`Error::CredentialUnreadable`] when a file is not PEM, and
+/// [`Error::CredentialEmpty`] when one holds nothing of its kind.
+pub fn peer_credential(chain: CredentialFile<'_>, key: CredentialFile<'_>) -> Result<Credential> {
+    let CredentialFile {
+        bytes: chain,
+        path: chain_at,
+    } = chain;
+    let CredentialFile {
+        bytes: key,
+        path: key_at,
+    } = key;
+    let chain = certificates(chain, CHAIN, chain_at)?;
+    if chain.is_empty() {
+        return Err(Error::CredentialEmpty {
+            part: CHAIN,
+            path: shown(chain_at),
+            wanted: "certificate",
+        });
+    }
+    // The two refusals are distinct and the mapping is by VARIANT, not by a
+    // catch-all: a well-formed file that holds no key is a CONTENT problem
+    // and reports `CredentialEmpty`, while anything the parser could not
+    // read at all is `CredentialUnreadable`. Collapsing them would send an
+    // operator looking for a bad path when what they have is a bad file.
+    let key = PrivateKeyDer::from_pem_slice(key).map_err(|why| match why {
+        rustls::pki_types::pem::Error::NoItemsFound => Error::CredentialEmpty {
+            part: KEY,
+            path: shown(key_at),
+            wanted: "private key",
+        },
+        why => Error::CredentialUnreadable {
+            part: KEY,
+            path: shown(key_at),
+            reason: why.to_string(),
+        },
+    })?;
+    Ok(Credential { chain, key })
 }
 
 /// Every certificate a PEM file holds, in the order it holds them.

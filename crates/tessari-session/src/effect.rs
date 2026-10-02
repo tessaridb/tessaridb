@@ -226,6 +226,9 @@ impl Effect {
             // but one writes to `META` about this box and the other writes a
             // catalog record the whole cluster must hold.
             StatementKind::DefineFailover { .. } => Self::Write,
+            // A revocation is a catalog record every node must hold, for the
+            // reason a failover policy is.
+            StatementKind::RevokeCertificate { .. } => Self::Write,
             // A consumer's **declaration** is a catalog record and replicates,
             // exactly as a replica's does; whether it is running on this machine
             // is local and is not part of the record. So both forms are writes,

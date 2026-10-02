@@ -669,6 +669,12 @@ pub enum StatementKind {
         /// How long a granted leadership is held before it must be renewed.
         lease: Duration,
     },
+    /// `REVOKE CERTIFICATE '<sha256>'` — a peer certificate refused by every
+    /// node from the moment the catalog reaches it (ADR-0108 D6).
+    RevokeCertificate {
+        /// The certificate's SHA-256, as 64 lowercase hexadecimal digits.
+        fingerprint: String,
+    },
     /// `DEFINE REPLICA second AT 'host:9001'`
     ///
     /// The opposite half: a peer is a fact every node must learn, so it is a

@@ -109,6 +109,21 @@ impl Session<'_> {
         Ok(Outcome::Done)
     }
 
+    /// `REVOKE CERTIFICATE '<sha256>'` — a row every node holds, from which
+    /// its peer link refuses the certificate in both directions (ADR-0108 D6).
+    ///
+    /// In the transaction, for the failover policy's reason: it is a catalog
+    /// record, commits with the rest of the script and reaches every node
+    /// through the log. Revoking a certificate already revoked writes the same
+    /// row again and is not refused — the list says the same thing afterwards.
+    pub(super) fn revoke_certificate(
+        transaction: &mut Transaction<'_>,
+        fingerprint: &str,
+    ) -> Outcome {
+        Catalog::new(transaction).revoke_certificate(fingerprint);
+        Outcome::Done
+    }
+
     pub(super) fn define_replica(
         &self,
         transaction: &mut Transaction<'_>,

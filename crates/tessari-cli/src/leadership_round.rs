@@ -35,8 +35,7 @@ use tessaridb::Db;
 /// which the store closes on its own.
 pub(crate) async fn stand_for_leadership(
     db: std::sync::Arc<Db>,
-    mine: tessari_wire::Credential,
-    authority: tessari_wire::CertificateDer<'static>,
+    keys: tessari_wire::PeerKeys,
     voter: std::sync::Arc<tessari_wire::Deciding>,
     published: std::sync::Arc<tessari_wire::Published>,
     stop: tokio_util::sync::CancellationToken,
@@ -69,8 +68,7 @@ pub(crate) async fn stand_for_leadership(
     // the last one it read.
     let mut cadence = tessari_storage::Failover::DEFAULT.campaign();
     let mut pass = move |now: std::time::Instant, cadence: &mut std::time::Duration| {
-        let (db, mine, authority, voter, published, runtime) =
-            (&*db, &mine, &authority, &*voter, &*published, &runtime);
+        let (db, keys, voter, published, runtime) = (&*db, &keys, &*voter, &*published, &runtime);
         let store = db.store();
         // Identity first, and the catalog only once this node is known to
         // stand. Reading the roles costs a record; reading every replica the
@@ -125,8 +123,7 @@ pub(crate) async fn stand_for_leadership(
                 me: me.id,
                 declared: &declared,
                 voting: &voting,
-                mine,
-                authority,
+                keys,
                 voter,
                 published,
                 runtime,
@@ -235,8 +232,7 @@ pub(crate) async fn stand_for_leadership(
         db.store().campaigned();
         let standing = tessari_wire::Standing {
             candidate: me.id,
-            mine,
-            authority,
+            keys,
             said: &said,
             peers: &peers,
             round: periods.round(),
@@ -295,8 +291,7 @@ pub(crate) struct Candidate<'a> {
     me: [u8; tessari_storage::NODE_ID_LEN],
     declared: &'a [tessari_storage::ReplicaDefinition],
     voting: &'a [([u8; tessari_storage::NODE_ID_LEN], String)],
-    mine: &'a tessari_wire::Credential,
-    authority: &'a tessari_wire::CertificateDer<'static>,
+    keys: &'a tessari_wire::PeerKeys,
     voter: &'a tessari_wire::Deciding,
     published: &'a tessari_wire::Published,
     /// The runtime the canvass runs its ballots on.
@@ -372,8 +367,7 @@ pub(crate) fn stand_for_a_placed_range(
     };
     let standing = tessari_wire::Standing {
         candidate: candidate.me,
-        mine: candidate.mine,
-        authority: candidate.authority,
+        keys: candidate.keys,
         said: &said,
         peers: &peers,
         round: candidate.periods.round(),

@@ -37,10 +37,7 @@ pub(crate) fn leads_a_range(
 /// below that would ask for the pruned position again.
 pub(crate) fn reseed(
     db: &Db,
-    (mine, authority): (
-        &tessari_wire::Credential,
-        &tessari_wire::CertificateDer<'static>,
-    ),
+    keys: &tessari_wire::PeerKeys,
     (node, endpoint): ([u8; tessari_storage::NODE_ID_LEN], &str),
     said: &tessari_wire::Hello,
     leads: bool,
@@ -60,7 +57,7 @@ pub(crate) fn reseed(
         "this node cannot continue {endpoint}'s log — below its start or forked from it; copying \
          its state"
     );
-    match tessari_wire::copy(endpoint, mine.duplicate(), authority, node, said, store) {
+    match tessari_wire::copy(endpoint, keys, node, said, store) {
         Ok(copied) => {
             store.replica_copied(copied.records);
             log::info!(

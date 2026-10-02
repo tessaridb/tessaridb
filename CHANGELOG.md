@@ -12,6 +12,64 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.21.0-beta — 2026-10-02
+
+### Added
+
+- **Clients are served over TLS 1.3, and a cluster serves them in the clear only
+  when told to** (G054, ADR-0108 D4). `--tls-cert` and `--tls-key` (or
+  `TESSARIDB_TLS_CERT` / `TESSARIDB_TLS_KEY`) put the wire port, HTTP and `/wire`
+  behind TLS 1.3 with no mixed port. A node with peers refuses to start without
+  them unless `--client-plaintext` says the network is trusted; a single node
+  keeps serving in the clear and says so on every start. `--at` verifies a node
+  with `--tls-authority`. A client limited to TLS 1.2 fails the handshake.
+- **Certificates renew without a restart.** A node re-reads its client and peer
+  certificate files every two seconds and presents a renewed pair from the next
+  connection on; open connections finish on the one they started with. A pair
+  that does not belong together — the certificate written and the key not yet —
+  is refused, the previous certificate stays in use, and the node says so once.
+- **`REVOKE CERTIFICATE '<sha256>'`** refuses a peer certificate on every node
+  the row reaches, in both directions of the peer link, whatever the node is
+  subscribed to. `INFO FOR NODE` lists the revoked fingerprints under
+  `cluster.revoked`, and the administration trail records who revoked each one.
+- **`/metrics` reports when each presented certificate expires**
+  (`tessari_tls_certificate_expires_seconds`, by surface), to a caller who may
+  read the node's topology.
+- **Any node answers any request over the peer link** (ADR-0108 D1–D3). A request
+  a caller cannot follow elsewhere is carried to the node that can answer it,
+  under an assertion signed with the node's key; no password crosses the link.
+- **One sign-in budget for the whole cluster** (ADR-0108 D5). A clustered node asks
+  the store line's leader whether a name may try a password and reports how it
+  went, so N nodes are not N allowances.
+- **Changes to users, grants, replicas and the failover policy are recorded in the
+  audit trail**, inside their own transaction.
+- **Leaders send each commit to their followers as it lands**, on a held stream,
+  instead of being collected every ten seconds; replication lag on three
+  processes went from 10 s to 16 ms at the median.
+- **A leader knows what each follower has made durable** and can hold a commit
+  until enough voters hold its position (ADR-0106).
+
+### Changed
+
+- **1490 conformance cases** define the language and run in the build.
+- **A leader is replaced in about a second.** The lease is 800 ms with a 150 ms
+  guard, renewed about every 300 ms, and every voter is canvassed in parallel; a
+  killed leader was replaced in 859 ms at the median.
+- **`DEFINE FAILOVER` drives the lease and the rounds** it always stored, and a
+  leader's lease is the shortest hold any voter that elected it granted.
+- **`/metrics` shows replication and leadership figures only to a caller who may
+  ask `INFO FOR NODE`** (ADR-0108 D8).
+
+### Fixed
+
+- **A refused challenger no longer ends a live lease**: a voter holding a live
+  grant adopts a ballot's epoch only past that grant (Q-880).
+- **A leader its peers elected keeps its lease** when the deciding round did not
+  carry its own vote.
+- **A single-leader range keeps one history**, and a follower whose copy a deposed
+  leadership finished is told so and re-seeds rather than reading itself level
+  (Q-879).
+
 ## 0.20.1-beta — 2026-10-02
 
 ### Fixed

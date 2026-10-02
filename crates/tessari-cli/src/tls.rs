@@ -7,7 +7,6 @@
 //! its default in this release and says so on every start (Q-883).
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use tessari_serve::tls::{self, Pem};
 
@@ -88,37 +87,30 @@ pub(crate) fn decide(given: Given, clustered: bool) -> Result<Clients, String> {
     }
 }
 
-/// The server settings for the wire surface and the HTTP surface.
+/// The certificate both client surfaces present, read from its two files.
 ///
-/// Two, because HTTP offers `http/1.1` by ALPN and the wire protocol offers
-/// nothing a client would recognise.
+/// One credential for both, so one reload reaches both. Each surface builds its
+/// own settings over it, because HTTP offers `http/1.1` by ALPN and the wire
+/// protocol offers nothing a client would recognise.
 ///
 /// # Errors
 ///
 /// A file that cannot be read, or a certificate and key that cannot be used,
 /// naming which.
-pub(crate) fn settings(
-    cert: &Path,
-    key: &Path,
-) -> Result<(Arc<rustls::ServerConfig>, Arc<rustls::ServerConfig>), String> {
+pub(crate) fn credential(cert: &Path, key: &Path) -> Result<tls::Credential, String> {
     let chain = read(cert, "certificate")?;
     let private = read(key, "key")?;
-    let (chain_at, key_at) = (cert.display().to_string(), key.display().to_string());
-    let made = |alpn: &[&[u8]]| {
-        tls::server_config(
-            Pem {
-                bytes: &chain,
-                path: &chain_at,
-            },
-            Pem {
-                bytes: &private,
-                path: &key_at,
-            },
-            alpn,
-        )
-        .map_err(|refused| refused.to_string())
-    };
-    Ok((made(&[])?, made(&[b"http/1.1"])?))
+    tls::Credential::read(
+        Pem {
+            bytes: &chain,
+            path: &cert.display().to_string(),
+        },
+        Pem {
+            bytes: &private,
+            path: &key.display().to_string(),
+        },
+    )
+    .map_err(|refused| refused.to_string())
 }
 
 /// The certificates `--at` trusts a node by.
