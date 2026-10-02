@@ -38,6 +38,17 @@ use crate::node::NODE_ID_LEN;
 pub struct Writer([u8; NODE_ID_LEN]);
 
 impl Writer {
+    /// The writer of a single-leader range's one log (ADR-0107).
+    ///
+    /// Not a node. A range with one leader at a time has one counter, and the
+    /// leadership is the agreement about it, so its log is named by the line
+    /// rather than by whichever node is leading: a follower applies the leader's
+    /// records into it and, when it becomes the leader, continues it. Naming it
+    /// after each leader in turn split one history into a log per node that ever
+    /// led, which no election could compare and no follower could resume across
+    /// (Q-879). Only a range that admits two writers names a log after a node.
+    pub const LINE: Self = Self([0; NODE_ID_LEN]);
+
     /// The writer of an entry written before entries named their writer.
     ///
     /// A store migrated up from an unqualified log has no recorded writer for
@@ -48,7 +59,10 @@ impl Writer {
     /// It is a value rather than an absence on purpose — an `Option` here would
     /// put a branch on the read path of every log entry forever, to represent
     /// something that stops being produced the moment a store is migrated.
-    pub const UNATTRIBUTED: Self = Self([0; NODE_ID_LEN]);
+    ///
+    /// The same value as [`Self::LINE`], and truly so: every log written before
+    /// writers were named was a single-leader log, which is the line's.
+    pub const UNATTRIBUTED: Self = Self::LINE;
 
     /// The writer a node's own identifier names.
     #[must_use]
@@ -86,6 +100,12 @@ impl LogId {
     #[must_use]
     pub const fn new(home: Reach, writer: Writer) -> Self {
         Self { home, writer }
+    }
+
+    /// The one log of a single-leader `home` (ADR-0107).
+    #[must_use]
+    pub const fn line(home: Reach) -> Self {
+        Self::new(home, Writer::LINE)
     }
 
     /// The log an unqualified entry of `home` belongs to.

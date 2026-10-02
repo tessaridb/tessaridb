@@ -70,14 +70,78 @@ impl Store {
 
     /// This node's own log for `home`.
     ///
-    /// The log a commit here allocates into, and the one a reporting caller
-    /// means when it asks *how far is this range* without naming a writer.
+    /// The log a commit made under no leadership allocates into — a store that
+    /// stands alone, and a node's own declarations before it joins — and the
+    /// one a reporting caller means when it asks *how far is this range*
+    /// without naming a writer. A commit under a leadership goes to
+    /// [`Self::line_log`] instead (ADR-0107).
     ///
     /// # Errors
     ///
     /// The same as [`Self::writer`].
     pub fn own_log(&self, home: Reach) -> Result<LogId> {
         Ok(LogId::new(home, self.writer()?))
+    }
+
+    /// The log a commit under a leadership allocates into for `home`, and the
+    /// one this node serves to a follower: the line's one log for a
+    /// single-leader range, which each leader continues (ADR-0107), and this
+    /// node's own only for a range that admits two writers.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::log_led_by`].
+    pub fn line_log(&self, home: Reach) -> Result<LogId> {
+        self.log_led_by(home, self.writer()?)
+    }
+
+    /// The log this node's position on `home`'s line is read from — what it
+    /// greets with and what an election compares (ADR-0107 D5): the line's log
+    /// once it holds records, and before any leadership this node's own, whose
+    /// records are every epoch 0. So the node holding a cluster's pre-cluster
+    /// history outranks an empty newcomer in the first election, and once the
+    /// line exists every node is measured in the one history it shares.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::line_log`], and a tail that cannot be read.
+    pub fn history_log(&self, home: Reach) -> Result<LogId> {
+        let line = self.line_log(home)?;
+        if self.committed_tail(line)? > Sequence::ZERO {
+            return Ok(line);
+        }
+        self.own_log(home)
+    }
+
+    /// The log a follower of `leader` measures `home` in and files its answers
+    /// under: the line's once it holds records, and before that its copy of the
+    /// leader's own log — the same rule the leader serves by
+    /// ([`Self::history_log`]), so the position asked and the log answered are
+    /// one log (ADR-0107).
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::log_led_by`], and a tail that cannot be read.
+    pub fn followed_log(&self, home: Reach, leader: Writer) -> Result<LogId> {
+        let line = self.log_led_by(home, leader)?;
+        if line.writer != Writer::LINE || self.committed_tail(line)? > Sequence::ZERO {
+            return Ok(line);
+        }
+        Ok(LogId::new(home, leader))
+    }
+
+    /// The log `leader` writes `home` into, which is the one a follower asks it
+    /// for and files its records under: the line's for a single-leader range,
+    /// `leader`'s own for a range that admits two writers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the namespace's class cannot be read.
+    pub(crate) fn log_led_by(&self, home: Reach, leader: Writer) -> Result<LogId> {
+        if self.admits_two_writers(home)? {
+            return Ok(LogId::new(home, leader));
+        }
+        Ok(LogId::line(home))
     }
 
     /// The highest sequence committed in one home's log.

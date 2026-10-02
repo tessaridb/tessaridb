@@ -37,8 +37,13 @@ use tessari_constants::HISTORY_SCAN_RECORDS;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Horizon {
     /// The leader had no more, and had committed up to this order when it
-    /// answered.
+    /// answered — read at the newest leadership the round holds for this
+    /// writer, since the reader stated none (a local feed, an older leader).
     Level(Sequence),
+    /// The leader had no more, and had committed up to this order under this
+    /// leadership when it answered (ADR-0107): every commit of an earlier
+    /// leadership is below it, whatever that leadership's counter reached.
+    LevelAt(Epoch, Sequence),
     /// The leader had no more and stated no order — one that predates it.
     Unstated,
     /// The page was full: more may follow its last record.
@@ -50,6 +55,13 @@ pub enum Horizon {
 pub struct Page<'a> {
     /// The log the records were read out of, which names their writer.
     pub log: LogId,
+    /// The position the page begins at — the one the follower asked from.
+    ///
+    /// Carried because a page may carry no record: *you are level* is an
+    /// empty page, and its `previous` still has to be judged at the position
+    /// before this one, or a copy holding a record the line never had reads
+    /// itself level for as long as the line stays quiet.
+    pub from: Sequence,
     /// The leadership that wrote the record before the first one here.
     pub previous: Epoch,
     /// The records, in log order.
@@ -66,34 +78,55 @@ pub struct Page<'a> {
 /// separately: two writers' orders are unrelated counters.
 #[must_use]
 pub fn in_writer_order(pages: &[Page<'_>]) -> Vec<(usize, usize)> {
-    let mut bound: BTreeMap<Writer, Sequence> = BTreeMap::new();
+    // The newest leadership each writer's pages carry: where a level page that
+    // states no leadership is read, so an earlier leadership's records — whose
+    // counter is not this one — are never held back by it.
+    let mut newest: BTreeMap<Writer, Epoch> = BTreeMap::new();
+    for page in pages {
+        for (_, record) in page.records {
+            newest
+                .entry(page.log.writer)
+                .and_modify(|held| *held = (*held).max(record.epoch()))
+                .or_insert(record.epoch());
+        }
+    }
+    // `None` is a page that bounds nothing: an unstated horizon.
+    let mut bound: BTreeMap<Writer, Option<(Epoch, Sequence)>> = BTreeMap::new();
     for page in pages {
         let proves = match page.horizon {
-            Horizon::Level(order) => order,
-            Horizon::Unstated => Sequence::new(u64::MAX),
+            Horizon::LevelAt(epoch, order) => Some((epoch, order)),
+            Horizon::Level(order) => Some((
+                newest.get(&page.log.writer).copied().unwrap_or(Epoch::ZERO),
+                order,
+            )),
+            Horizon::Unstated => None,
             // A full page with nothing in it proves nothing.
-            Horizon::Full => page
-                .records
-                .last()
-                .map_or(Sequence::ZERO, |(_, record)| order_of(record)),
+            Horizon::Full => Some(
+                page.records
+                    .last()
+                    .map_or((Epoch::ZERO, Sequence::ZERO), |(_, record)| key_of(record)),
+            ),
         };
         bound
             .entry(page.log.writer)
-            .and_modify(|held| *held = (*held).min(proves))
+            .and_modify(|held| {
+                *held = match (*held, proves) {
+                    (Some(held), Some(proves)) => Some(held.min(proves)),
+                    (held, None) => held,
+                    (None, proves) => proves,
+                }
+            })
             .or_insert(proves);
     }
-    let mut chosen: Vec<(Sequence, usize, usize)> = Vec::new();
+    let mut chosen: Vec<((Epoch, Sequence), usize, usize)> = Vec::new();
     for (index, page) in pages.iter().enumerate() {
-        let horizon = bound
-            .get(&page.log.writer)
-            .copied()
-            .unwrap_or(Sequence::ZERO);
+        let horizon = bound.get(&page.log.writer).copied().flatten();
         for (position, (_, record)) in page.records.iter().enumerate() {
-            let order = order_of(record);
-            if order > horizon {
+            let key = key_of(record);
+            if horizon.is_some_and(|horizon| key > horizon) {
                 break;
             }
-            chosen.push((order, index, position));
+            chosen.push((key, index, position));
         }
     }
     chosen.sort_unstable();
@@ -117,6 +150,16 @@ impl Store {
     /// Returns the store's refusal of the first record that does not apply;
     /// what was applied before it stays applied, as a log at a time did.
     pub fn apply_in_writer_order(&self, pages: &[Page<'_>]) -> Result<Vec<Option<Sequence>>> {
+        // Every page proves its history continuous with this copy before any
+        // record of the round applies — the empty page included. Raft checks
+        // the previous entry on an AppendEntries carrying none for this reason:
+        // two copies of equal length that a different leadership finished
+        // agree on how far they go, and only the predecessor says they are two
+        // histories (Q-879 H2). A page that carries records repeats the check
+        // its first record makes below; one point read buys the empty page's.
+        for page in pages {
+            self.refuse_a_parted_history(page.log, page.from, page.previous)?;
+        }
         let mut previous: Vec<Epoch> = pages.iter().map(|page| page.previous).collect();
         let mut reached: Vec<Option<Sequence>> = vec![None; pages.len()];
         for (index, position) in in_writer_order(pages) {
@@ -151,7 +194,7 @@ pub struct MergedHistory {
 
 impl Store {
     /// One record's history out of `logs`, merged by the writer's order
-    /// (G034, ADR-0084) — a split table's record is written in its shard's log
+    /// (G034, ADR-0084) under the leadership that wrote it (ADR-0107) — a split table's record is written in its shard's log
     /// by a commit touching one shard and in its database's by one touching two.
     ///
     /// Each log is walked newest first up to the same budget a single-log
@@ -169,8 +212,8 @@ impl Store {
         subject: &Subject,
         limit: usize,
     ) -> Result<MergedHistory> {
-        let mut found: Vec<(Sequence, LogId, Change)> = Vec::new();
-        let mut floor = Sequence::ZERO;
+        let mut found: Vec<((Epoch, Sequence), LogId, Change)> = Vec::new();
+        let mut floor = (Epoch::ZERO, Sequence::ZERO);
         let mut complete = true;
         let mut walked = 0_usize;
         for log in logs {
@@ -179,13 +222,13 @@ impl Store {
             if records.len() >= HISTORY_SCAN_RECORDS || self.log_start(*log)?.get() > 1 {
                 complete = false;
                 if let Some((_, oldest)) = records.last() {
-                    floor = floor.max(order_of(oldest));
+                    floor = floor.max(key_of(oldest));
                 }
             }
             for (sequence, record) in &records {
                 for change in crate::feed::changes_in(*sequence, record)? {
                     if subject.covers(&change) {
-                        found.push((order_of(record), *log, change));
+                        found.push((key_of(record), *log, change));
                     }
                 }
             }
@@ -207,6 +250,13 @@ impl Store {
 /// A record's order, with a record that carries none sorting first.
 fn order_of(record: &LogRecord) -> Sequence {
     record.order().unwrap_or(Sequence::ZERO)
+}
+
+/// Where a record stands in its line's history: the leadership that wrote it,
+/// then that leader's own order (ADR-0107) — one leadership has one writer, so
+/// the pair is a total order across every leader that continued the log.
+fn key_of(record: &LogRecord) -> (Epoch, Sequence) {
+    (record.epoch(), order_of(record))
 }
 
 #[cfg(test)]
@@ -250,12 +300,14 @@ mod tests {
         let coarser = records(&[3]);
         let pages = [
             Page {
+                from: Sequence::new(1),
                 previous: Epoch::ZERO,
                 log: namespace(),
                 records: &coarser,
                 horizon: Horizon::Level(Sequence::new(10)),
             },
             Page {
+                from: Sequence::new(1),
                 previous: Epoch::ZERO,
                 log: database(),
                 records: &finer,
@@ -263,6 +315,52 @@ mod tests {
             },
         ];
         assert_eq!(in_writer_order(&pages), vec![(1, 0), (0, 0), (1, 1)]);
+    }
+
+    /// Records at positions 1.. carrying `(epoch, order)` pairs.
+    fn stamped(pairs: &[(u64, u64)]) -> Vec<(Sequence, LogRecord)> {
+        pairs
+            .iter()
+            .zip(1_u64..)
+            .map(|((epoch, order), at)| {
+                let mut record = LogRecord::at(Epoch::new(*epoch), Vec::new());
+                record.set_order(Sequence::new(*order));
+                (Sequence::new(at), record)
+            })
+            .collect()
+    }
+
+    /// ADR-0107: a single-leader range's logs are continued by each leader in
+    /// turn, and each stamps its OWN counter — so the leader at epoch 2 may
+    /// stamp 5 where its predecessor at epoch 1 had reached 50. Every commit of
+    /// an earlier leadership precedes every commit of a later one, so the order
+    /// is the pair, and a level answer from the epoch-2 leader proves all of
+    /// epoch 1 and epoch 2 up to its own counter.
+    #[test]
+    fn a_later_leadership_follows_an_earlier_one_whatever_its_counter_says() {
+        let finer = stamped(&[(1, 50), (2, 5)]);
+        let coarser = stamped(&[(1, 48), (2, 6)]);
+        let pages = [
+            Page {
+                from: Sequence::new(1),
+                previous: Epoch::ZERO,
+                log: namespace(),
+                records: &coarser,
+                horizon: Horizon::LevelAt(Epoch::new(2), Sequence::new(6)),
+            },
+            Page {
+                from: Sequence::new(1),
+                previous: Epoch::ZERO,
+                log: database(),
+                records: &finer,
+                horizon: Horizon::LevelAt(Epoch::new(2), Sequence::new(6)),
+            },
+        ];
+        assert_eq!(
+            in_writer_order(&pages),
+            vec![(0, 0), (1, 0), (1, 1), (0, 1)],
+            "epoch 1's 48 and 50, then epoch 2's 5 and 6"
+        );
     }
 
     /// The case a log at a time gets wrong, and the case the horizon exists
@@ -276,12 +374,14 @@ mod tests {
         let coarser = records(&[7]);
         let pages = [
             Page {
+                from: Sequence::new(1),
                 previous: Epoch::ZERO,
                 log: database(),
                 records: &finer,
                 horizon: Horizon::Level(Sequence::new(5)),
             },
             Page {
+                from: Sequence::new(1),
                 previous: Epoch::ZERO,
                 log: namespace(),
                 records: &coarser,
@@ -297,12 +397,14 @@ mod tests {
         let level = records(&[5, 9]);
         let pages = [
             Page {
+                from: Sequence::new(1),
                 previous: Epoch::ZERO,
                 log: database(),
                 records: &full,
                 horizon: Horizon::Full,
             },
             Page {
+                from: Sequence::new(1),
                 previous: Epoch::ZERO,
                 log: namespace(),
                 records: &level,
@@ -320,12 +422,14 @@ mod tests {
         let later = records(&[7, 8]);
         let pages = [
             Page {
+                from: Sequence::new(1),
                 previous: Epoch::ZERO,
                 log: database(),
                 records: &full,
                 horizon: Horizon::Full,
             },
             Page {
+                from: Sequence::new(1),
                 previous: Epoch::ZERO,
                 log: namespace(),
                 records: &later,
@@ -346,12 +450,14 @@ mod tests {
         let second = unordered(1);
         let pages = [
             Page {
+                from: Sequence::new(1),
                 previous: Epoch::ZERO,
                 log: namespace(),
                 records: &first,
                 horizon: Horizon::Unstated,
             },
             Page {
+                from: Sequence::new(1),
                 previous: Epoch::ZERO,
                 log: database(),
                 records: &second,
@@ -368,12 +474,14 @@ mod tests {
         let theirs = records(&[1]);
         let pages = [
             Page {
+                from: Sequence::new(1),
                 previous: Epoch::ZERO,
                 log: database(),
                 records: &mine,
                 horizon: Horizon::Level(Sequence::new(60)),
             },
             Page {
+                from: Sequence::new(1),
                 previous: Epoch::ZERO,
                 log: LogId::new(Reach::Store, other),
                 records: &theirs,

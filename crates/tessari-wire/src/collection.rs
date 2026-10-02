@@ -30,6 +30,7 @@
 //! this serves [`Reach::Store`] and refuses what it cannot state.
 
 mod collector;
+mod deposed;
 mod stream;
 
 use tessari_constants::{COLLECTION_BUDGET_BYTES, COLLECTION_PAGE_RECORDS};
@@ -171,6 +172,15 @@ pub struct Collected {
     /// record of another log. A body from a leader that predates the field
     /// carries nothing here, and the follower then applies as it always did.
     pub order: Option<Sequence>,
+    /// The leadership `order` counts under (ADR-0107), read with it.
+    ///
+    /// Each leader that continues a single-leader range's log stamps its OWN
+    /// counter, so an order means nothing without the leadership it was reached
+    /// under: a follower bounding a round by it would otherwise hold back every
+    /// record an earlier leader stamped higher. Written after `order` and only
+    /// with it; an answer without it is read at the newest leadership the round
+    /// holds, which is what a leader that predates it implies.
+    pub epoch: Option<Epoch>,
 }
 
 impl Collected {
@@ -199,6 +209,9 @@ impl Collected {
             // After `over` and only with it, so its position is known.
             if let Some(order) = self.order {
                 frame::put_u64(&mut body, order.get());
+                if let Some(epoch) = self.epoch {
+                    frame::put_u64(&mut body, epoch.get());
+                }
             }
         }
         body
@@ -232,16 +245,22 @@ impl Collected {
         // byte and the byte it would have written say the same thing.
         let stopped_early = body.get(at).is_some_and(|flag| *flag != 0);
         let after = at.saturating_add(1);
-        let (over, order) = if body.len() > after {
+        let (over, order, epoch) = if body.len() > after {
             let (over, next) = frame::take_reach(body, after)?;
-            let order = if body.len() > next {
-                Some(Sequence::new(frame::take_u64(body, next)?.0))
+            let (order, next) = if body.len() > next {
+                let (order, next) = frame::take_u64(body, next)?;
+                (Some(Sequence::new(order)), next)
+            } else {
+                (None, next)
+            };
+            let epoch = if order.is_some() && body.len() > next {
+                Some(Epoch::new(frame::take_u64(body, next)?.0))
             } else {
                 None
             };
-            (Some(over), order)
+            (Some(over), order, epoch)
         } else {
-            (None, None)
+            (None, None, None)
         };
         Ok(Self {
             log,
@@ -250,6 +269,7 @@ impl Collected {
             stopped_early,
             over,
             order,
+            epoch,
         })
     }
 }
@@ -554,9 +574,16 @@ impl Origin for Serving<'_> {
         // names the range and the answer names the log, because the follower
         // cannot name the writer: the identity a peer is verified BY is its
         // credential's and the identity it WRITES under is its store's.
-        let served = self.log.own_log(asked.home).map_err(|why| Error::Refused {
-            message: why.to_string(),
-        })?;
+        // The line's one log of a single-leader range once it holds records
+        // (ADR-0107), which every leader continues; before any leadership this
+        // node's own, as a cluster without elections replicates; the leader's
+        // own where two may write.
+        let served = self
+            .log
+            .history_log(asked.home)
+            .map_err(|why| Error::Refused {
+                message: why.to_string(),
+            })?;
         let previous = preceding(self.log, over, served, asked.from)?;
         // A position below where this log now begins cannot be caught up from
         // the log: it is the answer to *copy my state*, not to *catch me up*
@@ -568,6 +595,12 @@ impl Origin for Serving<'_> {
         // Before the records, so a commit landing while they are read is above
         // it rather than missing below it (ADR-0084).
         let order = self.log.committed_version().map_err(refused)?;
+        // And the leadership that order counts under, read with it (ADR-0107) —
+        // stated only by a node that leads the line, since only a leader's next
+        // commit is ordered by its own counter; one that leads nothing commits
+        // nothing here, and says so by stating no leadership.
+        let epoch = self.log.writing_epoch(asked.home).map_err(refused)?;
+        let epoch = (epoch > Epoch::ZERO).then_some(epoch);
         let (records, stopped_early) = self.fill(over, served, asked.from, limit)?;
         // What the follower now holds: the last position it was handed, or —
         // when it was handed nothing — the one it told us it was at. The same
@@ -587,6 +620,7 @@ impl Origin for Serving<'_> {
             stopped_early,
             over: Some(over),
             order: Some(order),
+            epoch,
         })
     }
 }
@@ -758,20 +792,19 @@ mod tests {
     /// Empty records because what is being tested is the transfer and the
     /// leadership it states, and a mutation would only make the assertions
     /// longer. The epochs are what a run of leaderships actually looks like in
-    /// the log, and a commit path in this build cannot produce them — it writes
-    /// every record under [`Epoch::ZERO`], which is exactly the value that makes
-    /// *the epoch at this position* and *the leader's latest epoch* impossible
-    /// to tell apart.
+    /// the log, written straight in so a test does not have to hold a lease per
+    /// epoch to produce them. Filed in the log the store's commits go to — the
+    /// line's on the store (ADR-0107), which is the one a leader serves.
     fn logged(epochs: &[u64]) -> Arc<Db> {
         let db = Arc::new(Db::in_memory().expect("an in-memory store"));
-        let writer = db.store().writer().expect("an identity");
+        let writer = store_log(&db).writer;
         logging(&db, writer, epochs);
         db
     }
 
     /// The same, in the log `writer` allocates into.
     ///
-    /// A follower's copy of a leader's log is filed under the LEADER's name, so
+    /// A follower's copy of a leader's log is filed under the log's writer, so
     /// a fixture that stands a follower part-way through one has to say whose
     /// log it is standing in. Seeding it under the follower's own name builds a
     /// second log that the collect below never reads, and the symptom is a gap
@@ -796,10 +829,10 @@ mod tests {
         }
     }
 
-    /// The store's own log, as the node that wrote it names it.
+    /// The store's log as a leader serves it — the line's (ADR-0107).
     fn store_log(db: &Arc<Db>) -> LogId {
         db.store()
-            .own_log(Reach::Store)
+            .line_log(Reach::Store)
             .expect("the store's own identity")
     }
 
@@ -1210,6 +1243,7 @@ mod tests {
             stopped_early: true,
             over: None,
             order: None,
+            epoch: None,
         };
         let back = Collected::decode(&answer.encode()).expect("an answer");
         assert_eq!(back, answer);
@@ -1280,6 +1314,7 @@ mod tests {
             stopped_early: false,
             over: None,
             order: None,
+            epoch: None,
         };
 
         let encoded = answer.encode();
@@ -1497,6 +1532,7 @@ mod tests {
             stopped_early: false,
             over: Some(shard),
             order: None,
+            epoch: None,
         };
         let encoded = answer.encode();
         assert_eq!(
@@ -1524,6 +1560,22 @@ mod tests {
             Collected::decode(&bytes[..bytes.len() - 8])
                 .expect("an answer without an order")
                 .order,
+            None
+        );
+        // ADR-0107 — the leadership the order counts under travels after it,
+        // and a body that ends at the order reads as not stated.
+        let stated = Collected {
+            epoch: Some(Epoch::new(9)),
+            ..ordered
+        };
+        let bytes = stated.encode();
+        let back = Collected::decode(&bytes).expect("an answer stating its leadership");
+        assert_eq!(back.epoch, Some(Epoch::new(9)));
+        assert_eq!(back.order, Some(Sequence::new(42)));
+        assert_eq!(
+            Collected::decode(&bytes[..bytes.len() - 8])
+                .expect("an answer from a leader that predates it")
+                .epoch,
             None
         );
     }
@@ -2265,7 +2317,7 @@ mod tests {
         // follower's copy of it lives, and it is the only place the histories
         // can disagree at all: two writers' logs are two counters, so a record
         // of one never lands at a position of the other.
-        let follower = logged_as(leader.store().writer().expect("an identity"), &[1, 1]);
+        let follower = logged_as(store_log(&leader).writer, &[1, 1]);
         let mine = authority.issue(THERE, Purpose::Peer);
         let der = authority.der();
         let said = hello(THERE);
@@ -2276,12 +2328,15 @@ mod tests {
         );
         door.join().expect("the door's thread");
 
+        // Named as a fork, not as any refusal: retrying meets the same record
+        // on every pass, so the round takes it to the copy that repairs one
+        // (ADR-0107, Q-879 H2).
         assert!(
-            matches!(&refused, Err(Error::Refused { .. })),
-            "expected the store's own refusal, got {refused:?}"
+            matches!(&refused, Err(Error::Forked { .. })),
+            "expected the store's own refusal, named as a fork, got {refused:?}"
         );
         let message = match refused {
-            Err(Error::Refused { message }) => message,
+            Err(Error::Forked { message }) => message,
             _ => String::new(),
         };
         // The store's own words, carried through: a reworded divergence gives
@@ -2298,6 +2353,35 @@ mod tests {
                 .len(),
             2,
             "and nothing was appended"
+        );
+    }
+
+    #[test]
+    fn a_level_answer_whose_predecessor_disagrees_is_refused() {
+        let authority = Authority::new();
+        // The fork the paused-leader test left standing: both copies are three
+        // records long and a different leadership wrote the last one. The
+        // leader has nothing past the follower's tail, so the answer carries no
+        // record for a per-record check to run on — and the follower read
+        // *you are level* off it while holding a record the line never had.
+        // Raft's AppendEntries checks the previous entry with no entries too.
+        let leader = logged(&[9, 9, 9]);
+        let (address, door) = serving(&authority, &leader, 1);
+
+        let follower = logged_as(store_log(&leader).writer, &[1, 1, 1]);
+        let mine = authority.issue(THERE, Purpose::Peer);
+        let der = authority.der();
+        let said = hello(THERE);
+        let refused = collector(&mine, &der, &said, address, 64).collect(
+            follower.store(),
+            Reach::Store,
+            Sequence::new(4),
+        );
+        door.join().expect("the door's thread");
+
+        assert!(
+            matches!(&refused, Err(Error::Forked { .. })),
+            "a follower holding a record the line never had read itself level: {refused:?}"
         );
     }
 

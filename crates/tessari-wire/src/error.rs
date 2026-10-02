@@ -466,6 +466,41 @@ pub enum Error {
         held: tessari_types::Epoch,
     },
 
+    /// This node's copy holds a record at a position where its leader's answer
+    /// holds a different one (ADR-0059, ADR-0107, Q-879 H2).
+    ///
+    /// Not a refusal to retry: the same answer meets the same record on every
+    /// pass, so a follower that only retried would stand still for good. The
+    /// repair is the one a follower below its leader's log start takes — a copy
+    /// of the leader's state, which replaces whatever this node held that the
+    /// line does not.
+    #[error("{message}")]
+    Forked {
+        /// The store's own words, naming the position and both leaderships.
+        message: String,
+    },
+
+    /// A leader's answer stating a leadership older than the newest one this
+    /// node's copy of that log already holds records under (ADR-0107, Q-879
+    /// H1).
+    ///
+    /// Raft's `term < currentTerm`, judged on what has been written rather than
+    /// on what has been shown: a newer leadership that has written to the line
+    /// has superseded the node that answered, and records it serves may be ones
+    /// its successor never held. Applying them would fork this copy from the
+    /// line; refusing ends the stream, and the round follows whoever leads now.
+    #[error(
+        "that answer was served under leadership {stated}, and this node's copy \
+         of that log already holds records written under leadership {newest}: \
+         its server has been superseded"
+    )]
+    Deposed {
+        /// The leadership the answer stated.
+        stated: tessari_types::Epoch,
+        /// The newest leadership this node's copy holds records under.
+        newest: tessari_types::Epoch,
+    },
+
     /// A request this node sent elsewhere — a read beyond its bound or a write
     /// into a range another node leads (ADR-0101) — answered by a caller that
     /// cannot follow it.

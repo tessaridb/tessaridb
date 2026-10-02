@@ -46,7 +46,9 @@ impl Store {
     ///
     /// Returns the backend's failure when the counts cannot be read.
     pub fn health(&self) -> Result<Health> {
-        let own = self.own_log(UNPARTITIONED_REPORT_HOME)?;
+        // The log this node's history on the line is in (ADR-0107): the line's
+        // once a leadership has written it, its own on a store standing alone.
+        let own = self.history_log(UNPARTITIONED_REPORT_HOME)?;
         Ok(Health {
             background_errors: self.backend.background_errors()?,
             committed: self.committed_tail(own)?,
@@ -130,7 +132,9 @@ impl Store {
             // The tail of the follower's OWN log. Reading one log's tail against
             // a position taken in another is not an approximation — the two
             // counters are unrelated and the subtraction is meaningless (Q-622).
-            let tail = self.committed_tail(self.own_log(held.home)?)?;
+            // The log this leader serves, which is the one the position was
+            // taken in (ADR-0107).
+            let tail = self.committed_tail(self.history_log(held.home)?)?;
             rows.push(FollowerLag {
                 node,
                 home: held.home,
@@ -168,7 +172,7 @@ impl Store {
         // *how far is this range* has always meant here. A home with two
         // writers has a second tail this mark does not carry, and reporting it
         // is Q-622's, not this diagnostic's.
-        let log = self.own_log(home)?;
+        let log = self.history_log(home)?;
         self.tailmarks.mark(home, self.committed_tail(log)?);
         Ok(())
     }

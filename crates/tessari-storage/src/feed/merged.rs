@@ -74,8 +74,9 @@ impl Merged {
             .logs
             .iter()
             .zip(&fetched)
-            .map(|((log, _), records)| Page {
+            .map(|((log, from), records)| Page {
                 log: *log,
+                from: *from,
                 previous: tessari_types::Epoch::ZERO,
                 records,
                 horizon: if records.len() >= limit {

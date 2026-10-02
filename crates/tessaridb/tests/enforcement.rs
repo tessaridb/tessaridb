@@ -858,7 +858,25 @@ const TABLES: &[Table] = &[
         // the follower rows beside it. Re-classification trigger: a writer
         // reachable from a session or a route, which would let a caller report
         // a node in sync that is not.
-        expected: 53,
+        //
+        // 54-57 since a single-leader range keeps one history (G053 SG2d,
+        // ADR-0107): `Store::line_log`, `Store::history_log`,
+        // `Store::followed_log` and `Store::writing_epoch`. Classified **not a
+        // data path**: each answers a name — which log, which leadership — and
+        // reads no record, catalog entry or grant a caller could not already
+        // see; the reads that follow go through the doors classified above
+        // (`committed_tail` at its named lines, `log_records_within` behind
+        // `Serving::collected`). Re-classification trigger: any of them
+        // returning record content.
+        //
+        // 58 since adoption (same wave): `Store::adopt_into_line` renames one
+        // log's keys into its home's line log, with no identity. Classified
+        // **exempt, on `apply_record`'s ground**: its callers are this node's
+        // own lease taking and the follower's collector before it applies a
+        // peer's answer — neither reachable from a session or a route — and it
+        // moves records already in the store, creating none. Re-classification
+        // trigger: a caller reachable from a session or a route.
+        expected: 58,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1028,7 +1046,11 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 126 since the write redirect (G051, ADR-0101): `Db::member`, exempt,
     // classified above.
-    assert_eq!(total, 126, "the counted tables no longer sum to 126");
+    //
+    // 131 since a single-leader range keeps one history (G053 SG2d,
+    // ADR-0107): four name-only methods on `Store` and `adopt_into_line`,
+    // exempt — classified above.
+    assert_eq!(total, 131, "the counted tables no longer sum to 131");
 }
 
 /// Every `.rs` file under a directory.

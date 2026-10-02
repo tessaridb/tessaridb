@@ -47,6 +47,20 @@ impl Transaction<'_> {
     /// range and an undeclared one is still a write into a range that has a
     /// single leader, and exempting it because one of its ranges was declared
     /// would let the undeclared write travel under the declared one's cover.
+    /// Whether `home` admits two writers, read through this transaction's own
+    /// catalog rather than a new one — the commit path asks it on every write
+    /// under a leadership (ADR-0107), and a second transaction per commit is a
+    /// round trip a leader would pay on each one.
+    pub(crate) fn admits_two_writers_here(&mut self, home: Reach) -> Result<bool> {
+        let (Some(namespace), _) = home.parts() else {
+            return Ok(false);
+        };
+        Ok(crate::catalog::Catalog::new(self)
+            .namespace(namespace)?
+            .and_then(|definition| definition.class)
+            .is_some_and(tessari_types::ReplicationClass::admits_two_writers))
+    }
+
     pub(crate) fn every_range_admits_two_writers(&self, ranges: &BTreeSet<Reach>) -> Result<bool> {
         for range in ranges {
             if !self.store.admits_two_writers(*range)? {

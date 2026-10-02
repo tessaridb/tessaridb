@@ -6,6 +6,11 @@
 //! `Uncollectable`. Retrying that answer never succeeds; the repair is a copy of
 //! the leader's state for this node's subscription, after which the follower
 //! collects again from where the copy stood it.
+//!
+//! A follower whose copy FORKED from the line takes the same repair (ADR-0107,
+//! Q-879 H2): a record it holds at a position where the leader's answer holds
+//! another is met again on every pass, and the copy replaces what the line does
+//! not hold.
 
 use tessari_storage::Upstream;
 use tessaridb::Db;
@@ -44,14 +49,17 @@ pub(crate) fn reseed(
     if leads {
         store.upstream_is(Upstream::Stranded);
         log::warn!(
-            "this node is below the log start of {endpoint} and leads a range of its own, so it \
-             is not copied over: restore it from a snapshot (`tessaridb --restore`) and start it \
-             again"
+            "this node cannot continue {endpoint}'s log — it is below its start or forked from \
+             it — and leads a range of its own, so it is not copied over: restore it from a \
+             snapshot (`tessaridb --restore`) and start it again"
         );
         return false;
     }
     store.upstream_is(Upstream::Copying);
-    log::info!("this node is below the log start of {endpoint}; copying its state");
+    log::info!(
+        "this node cannot continue {endpoint}'s log — below its start or forked from it; copying \
+         its state"
+    );
     match tessari_wire::copy(endpoint, mine.duplicate(), authority, node, said, store) {
         Ok(copied) => {
             store.replica_copied(copied.records);

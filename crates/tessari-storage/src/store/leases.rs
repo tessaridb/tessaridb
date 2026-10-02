@@ -39,6 +39,16 @@ impl Store {
         if let Ok(mut leading) = self.leading.lock() {
             *leading = Some(epoch);
         }
+        self.adopt_on_leading();
+    }
+
+    /// A first lease makes this node's own pre-cluster history the start of the
+    /// line's log (ADR-0107 D3). Reported rather than returned: the lease is
+    /// held either way, and the next lease taken tries again.
+    fn adopt_on_leading(&self) {
+        if let Err(why) = self.adopt_own_history() {
+            log::warn!("this node's own history could not be adopted into the line's log: {why}");
+        }
     }
 
     /// The leadership epoch this node is writing under, if a round granted it
@@ -74,6 +84,7 @@ impl Store {
             self.hold(epoch, lease);
         } else {
             self.lines.hold(range, epoch, lease);
+            self.adopt_on_leading();
         }
     }
 
@@ -89,6 +100,36 @@ impl Store {
         } else {
             self.lines.epoch_of(range)
         }
+    }
+
+    /// The leadership a commit to `home` is made under now: the epoch this node
+    /// holds on the line that governs it (ADR-0082), or zero where nobody made
+    /// it a leader. One answer for the commit that stamps it and for the leader
+    /// that states it to a follower (ADR-0107), so the two cannot disagree.
+    pub(crate) fn epoch_under(
+        &self,
+        placed: &std::collections::BTreeSet<Reach>,
+        home: Reach,
+    ) -> Epoch {
+        self.leading_of(crate::catalog::governing(placed, home))
+            .unwrap_or(Epoch::ZERO)
+    }
+
+    /// [`Self::epoch_under`], with the placement read from the catalog.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the membership cannot be read.
+    pub fn writing_epoch(&self, home: Reach) -> crate::error::Result<Epoch> {
+        let mut transaction = self.begin()?;
+        let placed: std::collections::BTreeSet<Reach> =
+            crate::catalog::Catalog::new(&mut transaction)
+                .replicas()?
+                .into_iter()
+                .filter_map(|peer| peer.leads)
+                .collect();
+        drop(transaction);
+        Ok(self.epoch_under(&placed, home))
     }
 
     /// Where this node stands on a placed range's line.

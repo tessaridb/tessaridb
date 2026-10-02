@@ -2,7 +2,7 @@
 
 use std::sync::atomic::Ordering;
 
-use tessari_encoding::{LogId, LogKey, LogRecord, StoreKey, Writer};
+use tessari_encoding::{LogId, LogKey, LogRecord, StoreKey, StoreValue, Writer};
 use tessari_types::{Epoch, Sequence};
 
 use crate::error::{Error, Result};
@@ -149,7 +149,7 @@ impl Store {
         self.writing.land_all(self.backend.as_ref());
         let applied = self.committed_tail(log)?;
         if at.get() <= applied.get() {
-            self.refuse_a_divergence(log, at, record.epoch())?;
+            self.refuse_a_divergence(log, at, record)?;
             return Ok(());
         }
         let expected = Sequence::new(applied.get().saturating_add(1));
@@ -248,7 +248,7 @@ impl Store {
     ///
     /// Costs the same as its sibling: one point read and a fixed eight-byte
     /// inspection, no decode of the mutations.
-    pub(super) fn refuse_a_parted_history(
+    pub(crate) fn refuse_a_parted_history(
         &self,
         log: LogId,
         at: Sequence,
@@ -299,8 +299,9 @@ impl Store {
         &self,
         log: LogId,
         at: Sequence,
-        offered: Epoch,
+        record: &LogRecord,
     ) -> Result<()> {
+        let offered = record.epoch();
         let stored = self
             .backend
             .get(LogKey::keyspace(), &LogKey::new(log, at).encode())?;
@@ -312,7 +313,15 @@ impl Store {
             return Ok(());
         };
         let held = LogRecord::epoch_in(value.as_slice())?;
-        if held == offered {
+        // One epoch, one writer — except the first. Every node writes under
+        // epoch 0 before a cluster exists, so on a single-leader range's one log
+        // (ADR-0107) two epoch-0 records at one position are the same record
+        // only if they are the same bytes; any other leadership has exactly one
+        // writer and its epoch alone says so. Encoded only on that branch, which
+        // a retry under a real leadership never reaches.
+        if held == offered
+            && (offered > Epoch::ZERO || value.as_slice() == record.encode().as_slice())
+        {
             return Ok(());
         }
         // Asked here and nowhere earlier. Two leaderships at one position is a

@@ -196,10 +196,18 @@ pub(crate) async fn collect_from_upstream(
             // must be 1, but 2 was offered* — one counter subtracted from
             // another, which is the failure `Store::committed_tail` warns
             // about in its own words.
-            let log = tessari_storage::LogId::new(home, tessari_storage::Writer::new(node));
+            // The line's one log on a single-leader range, the leader's own
+            // only where two may write (ADR-0107) — the log the leader serves.
             // The seed for a log with no cursor yet: the first position
             // this node does not hold THERE. Read here rather than inside
             // the collector, which may not reach the feed.
+            let log = match store.followed_log(home, tessari_storage::Writer::new(node)) {
+                Ok(log) => log,
+                Err(why) => {
+                    log::warn!("this node cannot say which log of {home:?} it follows: {why}");
+                    continue;
+                }
+            };
             let seed = match store.committed_tail(log) {
                 Ok(tail) => tessari_types::Sequence::new(tail.get().saturating_add(1)),
                 Err(why) => {
@@ -211,10 +219,15 @@ pub(crate) async fn collect_from_upstream(
         }
         let answers = collector.round(store, &asks);
         // A log that no longer reaches back to this node's position is not
-        // a refusal to retry (ADR-0094 D3): it is repaired by a copy.
-        let below = answers
-            .iter()
-            .any(|answer| matches!(answer, Err(tessari_wire::Error::Uncollectable { .. })));
+        // a refusal to retry (ADR-0094 D3): it is repaired by a copy — and so
+        // is a copy that forked from the line (ADR-0107, Q-879 H2), which
+        // meets the same record on every pass.
+        let below = answers.iter().any(|answer| {
+            matches!(
+                answer,
+                Err(tessari_wire::Error::Uncollectable { .. } | tessari_wire::Error::Forked { .. })
+            )
+        });
         // A clean round against a member of this node's own catalog is what
         // a stream starts from; a refusal or a seed is the round's alone.
         let clean = answers.iter().all(Result::is_ok) && tessari_wire::names_a_peer(&declared, &me);
@@ -375,7 +388,13 @@ pub(crate) fn collect_placed_ranges(
         // One round per range, applied in its leader's commit order (ADR-0084).
         let mut asks = Vec::new();
         for home in logs.iter().copied().filter(|home| range.contains(*home)) {
-            let log = tessari_storage::LogId::new(home, tessari_storage::Writer::new(node));
+            let log = match store.followed_log(home, tessari_storage::Writer::new(node)) {
+                Ok(log) => log,
+                Err(why) => {
+                    log::warn!("this node cannot say which log of {home:?} it follows: {why}");
+                    continue;
+                }
+            };
             let seed = match store.committed_tail(log) {
                 Ok(tail) => tessari_types::Sequence::new(tail.get().saturating_add(1)),
                 Err(why) => {

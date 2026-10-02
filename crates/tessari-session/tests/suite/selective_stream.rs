@@ -123,9 +123,11 @@ fn follow_in_pages(node: &mut Session<'_>, leader: &Store, over: Reach, page: us
             .iter()
             .zip(&fetched)
             .zip(&previous)
+            .zip(&from)
             .map(
-                |((log, (records, horizon)), before)| tessari_storage::Page {
+                |(((log, (records, horizon)), before), at)| tessari_storage::Page {
                     log: *log,
+                    from: *at,
                     previous: *before,
                     records,
                     horizon: *horizon,

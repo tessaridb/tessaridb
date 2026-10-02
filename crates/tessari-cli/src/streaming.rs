@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tessari_constants::{COLLECTION_RECORDS, STREAM_HEARTBEAT_MILLIS};
-use tessari_storage::{Currency, LogId, NODE_ID_LEN, Reach, Writer};
+use tessari_storage::{Currency, NODE_ID_LEN, Reach, Writer};
 use tessari_types::Sequence;
 use tessaridb::Db;
 use tokio_util::sync::CancellationToken;
@@ -200,7 +200,10 @@ fn follow(
         };
         let mut asks = Vec::with_capacity(logs.len());
         for home in logs {
-            let log = LogId::new(home, Writer::new(leader));
+            // The log the leader serves for this home (ADR-0107).
+            let log = store
+                .followed_log(home, Writer::new(leader))
+                .map_err(|why| why.to_string())?;
             let tail = store.committed_tail(log).map_err(|why| why.to_string())?;
             asks.push((home, Sequence::new(tail.get().saturating_add(1))));
         }

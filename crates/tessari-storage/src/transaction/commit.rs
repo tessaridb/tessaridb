@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tessari_constants::{COMMIT_BACKOFF_CEILING, COMMIT_BACKOFF_STEP, MAX_COMMIT_ATTEMPTS};
-use tessari_encoding::{CausalStamp, LogId, LogRecord, Mutation, RecordValue, StampedValue};
-use tessari_types::{Sequence, ShardId, TableId};
+use tessari_encoding::{CausalStamp, LogRecord, Mutation, RecordValue, StampedValue};
+use tessari_types::{Epoch, Sequence, ShardId, TableId};
 
 use super::{RecordAddress, Transaction};
 use crate::catalog::ShardMap;
@@ -269,7 +269,7 @@ impl Transaction<'_> {
         self.settle(Settle::Discard).map(|_| ())
     }
 
-    fn settle(self, settle: Settle) -> Result<Sequence> {
+    fn settle(mut self, settle: Settle) -> Result<Sequence> {
         if self.writes.is_empty() {
             // The log position, not this transaction's snapshot. Nothing was
             // committed, so neither answer is a position anything was written
@@ -356,11 +356,20 @@ impl Transaction<'_> {
             // what is being written, not of the state being written onto. The
             // position is allocated from this home's counter, which is the whole of
             // what "the sequence is per-range" means at the write end.
-            // And the writer, which is THIS node: a commit allocates into its own
-            // log and never into another writer's. That is the whole of what S2.2
-            // means at the write end — two masters on one range are two counters,
-            // and a node that allocated from the other's would be back to one.
-            let log = LogId::new(crate::catalog::home_of(&record)?, self.store.writer()?);
+            // And the writer. Under a leadership, the line's one log of a
+            // single-leader range, which the next leader continues (ADR-0107) —
+            // and THIS node's own where the range admits two writers, since two
+            // masters are two counters (S2.2). Under none — a store standing
+            // alone, a node's declarations before it joins — its own log. The
+            // leadership is asked once here and stamped on every attempt, so the
+            // log and the epoch the record names cannot disagree.
+            let home = crate::catalog::home_of(&record)?;
+            let epoch = self.store.epoch_under(&placed, home);
+            let log = if epoch > Epoch::ZERO && !self.admits_two_writers_here(home)? {
+                tessari_encoding::LogId::line(home)
+            } else {
+                self.store.own_log(home)?
+            };
 
             loop {
                 attempt = attempt.saturating_add(1);
@@ -444,6 +453,11 @@ impl Transaction<'_> {
                 // applying those logs needs to know where each commit stood among
                 // all of them — which only the writer knows (ADR-0084, Q-796).
                 carried.set_order(commit_version);
+                // And the leadership it is committed under, on the line that
+                // governs its home — the epoch a follower refuses a second
+                // history by and an election compares (ADR-0059); zero for a
+                // node nobody made a leader.
+                carried.set_epoch(epoch);
                 // Index entries are derived here rather than carried in the record,
                 // and they are derived inside the loop because they depend on the
                 // committed state this attempt is building on (see `crate::index`).

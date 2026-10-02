@@ -207,7 +207,9 @@ pub(crate) fn bind_the_greeter(db: &Db, node: [u8; tessari_storage::NODE_ID_LEN]
 pub(crate) fn greeting(db: &Db) -> Result<tessari_wire::Hello, tessari_storage::Error> {
     let store = db.store();
     let identity = store.node_identity()?;
-    let own = store.own_log(tessari_types::Reach::Store)?;
+    // Where this node stands on the store's line: the history the line shares,
+    // not the few records it once wrote alone (ADR-0107, Q-879).
+    let own = store.history_log(tessari_types::Reach::Store)?;
     let tail = store.committed_tail(own)?;
     let current_as_of = store.current_as_of()?;
     // The leadership this node is actually writing under — and the trigger the
@@ -261,7 +263,7 @@ pub(crate) fn greeting(db: &Db) -> Result<tessari_wire::Hello, tessari_storage::
     // hears a live leader of the range by it. Read in the same transaction as
     // the policy, so a greeting is one reading of the catalog.
     if let Some(range) = tessari_wire::stands_for(&declared, &identity.id) {
-        let log = store.own_log(range)?;
+        let log = store.history_log(range)?;
         said.line = Some(tessari_wire::Line {
             range,
             leading: store

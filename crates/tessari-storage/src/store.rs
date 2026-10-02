@@ -32,6 +32,7 @@ use crate::error::Result;
 use crate::followers::Followers;
 use crate::snapshots::Registry;
 
+mod adoption;
 mod apply;
 mod history;
 mod leadership;
@@ -804,19 +805,17 @@ mod tests {
         );
         shared.apply(batch).unwrap();
 
+        // Since ADR-0107 a log written before writers were named is the line's
+        // log (`Writer::UNATTRIBUTED` is `Writer::LINE`), and health reports the
+        // log this node's history is in — so the history is counted where it
+        // is, and nothing is left "elsewhere" to need the second number.
         let held = Store::open(shared).unwrap().health().unwrap();
         assert_eq!(
             held.committed,
-            Sequence::ZERO,
-            "this node has written nothing, and that stays the honest answer \
-             about its own log"
+            Sequence::new(3),
+            "the store is not empty, and the number an operator reads says so"
         );
-        assert_eq!(
-            held.elsewhere,
-            Some(Sequence::new(3)),
-            "but the store is not empty, and this is the number an operator \
-             needs before concluding it is"
-        );
+        assert_eq!(held.elsewhere, None);
     }
 
     #[test]

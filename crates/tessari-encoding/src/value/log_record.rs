@@ -61,9 +61,8 @@ impl LogRecord {
 
     /// Build a record written under a named leadership.
     ///
-    /// `new` is the same call at [`Epoch::ZERO`], which is the honest value for
-    /// a store that has never elected anybody: this build allocates no epochs,
-    /// so every record it writes belongs to the first and only leadership.
+    /// `new` is the same call at [`Epoch::ZERO`], the value of a record written
+    /// under no leadership; a commit under one names it with [`Self::set_epoch`].
     #[must_use]
     pub fn at(epoch: Epoch, mut mutations: Vec<Mutation>) -> Self {
         mutations.sort_by(|left, right| {
@@ -85,6 +84,12 @@ impl LogRecord {
     /// (ADR-0084). Set by the commit that decides it, once per attempt.
     pub const fn set_order(&mut self, order: Sequence) {
         self.order = Some(order);
+    }
+
+    /// Name the leadership this record is committed under (ADR-0059). Set by
+    /// the commit that decides it, once per attempt, beside its order.
+    pub const fn set_epoch(&mut self, epoch: Epoch) {
+        self.epoch = epoch;
     }
 
     /// Where the writer committed this record among all its commits, or `None`

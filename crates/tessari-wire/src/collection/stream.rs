@@ -296,6 +296,7 @@ mod tests {
                 stopped_early: false,
                 over: Some(Reach::Store),
                 order: Some(Sequence::new(9)),
+                epoch: None,
             }],
         };
         assert_eq!(
