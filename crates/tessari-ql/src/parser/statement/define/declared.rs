@@ -179,6 +179,10 @@ impl Parser<'_> {
     pub(crate) fn define_view(&mut self) -> Result<StatementKind> {
         let if_not_exists = self.eat_if_not_exists()?;
         let name = self.name()?;
+        // A word rather than a reserved keyword, as `QUANTIZED` is: it means
+        // something only here, between the name and `AS`, and reserving it
+        // would take a field name from every store that already uses it.
+        let materialized = self.eat_word("MATERIALIZED");
         if !self.eat_keyword(Keyword::As) {
             return Err(self.error_here("`AS` and the read this name means"));
         }
@@ -190,6 +194,7 @@ impl Parser<'_> {
             name,
             read: self.source[read.span.start..read.span.end].to_owned(),
             if_not_exists,
+            materialized,
         })
     }
 

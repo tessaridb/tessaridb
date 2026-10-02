@@ -113,6 +113,8 @@ pub(crate) fn kind_name(error: &Error) -> &'static str {
         Error::TransactionVerbInAtomic { .. } => "TransactionVerbInAtomic",
         Error::InvalidPosition { .. } => "InvalidPosition",
         Error::ViewIsNotATable { .. } => "ViewIsNotATable",
+        Error::MaterializedShape { .. } => "MaterializedShape",
+        Error::MaterializedFromHidden { .. } => "MaterializedFromHidden",
         Error::ViewsTooDeep { .. } => "ViewsTooDeep",
         Error::ViewUnreadable { .. } => "ViewUnreadable",
         Error::QueueFieldIsTheEngines { .. } => "QueueFieldIsTheEngines",

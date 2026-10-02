@@ -362,11 +362,16 @@ impl Session<'_> {
         let id = Catalog::new(transaction)
             .table_id(context.namespace, context.database, &name.text)?
             .ok_or_else(unknown)?;
-        let is_view = Catalog::new(transaction)
+        let kind = Catalog::new(transaction)
             .table(id)?
-            .is_some_and(|definition| matches!(definition.kind, TableKind::View(_)));
-        if !is_view {
+            .map(|definition| definition.kind);
+        let Some(TableKind::View(declared)) = kind else {
             return Err(unknown());
+        };
+        // A kept view's rows go with its table; its state is kept beside them
+        // and goes too (ADR-0109 D1).
+        if declared.materialized {
+            transaction.forget_view(id);
         }
         Catalog::new(transaction).drop_table(id)?;
         Ok(Outcome::Done)

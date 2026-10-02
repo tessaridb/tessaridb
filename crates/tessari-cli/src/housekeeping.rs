@@ -87,6 +87,24 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
                 Ok(_) => {}
                 Err(why) => log::warn!("this node cannot take index statistics: {why}"),
             }
+            // Materialized views brought current from their sources' changes
+            // (ADR-0109 D6). A view this node may not write is refused at its
+            // commit before anything changes, which is the design rather than a
+            // fault, so that refusal stays quiet like expiry's.
+            match tessari_session::maintain_views(db.store()) {
+                Ok(done) if done.views > 0 => log::debug!(
+                    "applied {} change(s) to {} materialized view(s)",
+                    done.changes,
+                    done.views
+                ),
+                Ok(_) => {}
+                Err(tessari_session::Error::Store(
+                    tessari_storage::Error::LeaseSpent { .. }
+                    | tessari_storage::Error::NoLeadershipYet
+                    | tessari_storage::Error::WriteIsElsewhere { .. },
+                )) => log::debug!("materialized views are kept where the range is led"),
+                Err(why) => log::warn!("this node cannot keep its materialized views: {why}"),
+            }
             // A series' records past its floor, removed as one range per table
             // (G044 C11). This node's own storage work: every node runs it over
             // its own copy, leader or not, because the answer already changed

@@ -1,7 +1,7 @@
 //! Deciding how a read reaches its records, and refusing the reads a caller may not make.
 
 use tessari_ql::{Expr, Select, Source, TableRef};
-use tessari_storage::{Catalog, Transaction};
+use tessari_storage::{Catalog, TableDefinition, Transaction};
 use tessari_types::TableId;
 
 use crate::budget::{Ceiling, Deadline};
@@ -61,12 +61,23 @@ impl Session<'_> {
         id: TableId,
         table: &TableRef,
     ) -> Result<()> {
-        if Catalog::new(transaction)
-            .table(id)?
-            .is_some_and(|definition| definition.is_vault())
-        {
+        let definition = Catalog::new(transaction).table(id)?;
+        if definition.as_ref().is_some_and(TableDefinition::is_vault) {
             return Err(Error::NotReadBySelect {
                 table: table.name.text.clone(),
+                span: table.span,
+            });
+        }
+        // A kept view's rows were computed already and cannot be redacted after
+        // the fact, so a caller who may read only part of its source is refused
+        // rather than answered from fields they may not see (ADR-0109 D7). Here
+        // because this is asked at every source that reads a table.
+        if let Some(kept) = self.materialized_view(transaction, id)?
+            && self.visible_in(transaction, kept.source)?.is_some()
+        {
+            return Err(Error::MaterializedFromHidden {
+                view: table.name.text.clone(),
+                table: kept.understood.source.name.text.clone(),
                 span: table.span,
             });
         }
@@ -185,7 +196,7 @@ impl Session<'_> {
                 ))
             }
             Source::Table(table) => {
-                let (context, id) = self.resolve_table(transaction, table)?;
+                let (context, id) = self.resolve_readable_table(transaction, table)?;
                 self.refuse_reading_a_vault(transaction, id, table)?;
                 let searched = self.searched_for(transaction, id, &shown(select))?;
                 let visible = self.visible_in(transaction, id)?;
@@ -222,7 +233,7 @@ impl Session<'_> {
                 inclusive,
                 span,
             } => {
-                let (context, id) = self.resolve_table(transaction, table)?;
+                let (context, id) = self.resolve_readable_table(transaction, table)?;
                 self.refuse_reading_a_vault(transaction, id, table)?;
                 let visible = self.visible_in(transaction, id)?;
                 let part = Part::Span {
@@ -268,7 +279,7 @@ impl Session<'_> {
                 ))
             }
             Source::Where { table, condition } => {
-                let (context, id) = self.resolve_table(transaction, table)?;
+                let (context, id) = self.resolve_readable_table(transaction, table)?;
                 // Ahead of the analyzer resolution below, so a `WHERE` naming a
                 // secret field is refused for being a read of a vault rather
                 // than for the shape of its condition — one refusal, and the one

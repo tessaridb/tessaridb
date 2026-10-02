@@ -85,7 +85,7 @@ impl<'a> Session<'a> {
         let mut reaches = Vec::new();
         for table in crate::reach::tables_named(kind) {
             let mut transaction = store.begin()?;
-            let resolved = self.resolve_table(&mut transaction, table);
+            let resolved = self.resolve_readable_table(&mut transaction, table);
             transaction.rollback();
             if let Ok((context, _)) = resolved {
                 reaches.push(Reach::Database(context.namespace, context.database));
@@ -193,7 +193,16 @@ impl<'a> Session<'a> {
         };
         for table in crate::reach::tables_named(kind) {
             let mut transaction = store.begin()?;
-            let resolved = self.resolve_table(&mut transaction, table);
+            // A materialized view is named, not expanded, and a grant on a view
+            // is never written — so its grant is its source's (ADR-0109 D7).
+            let resolved = self
+                .resolve_readable_table(&mut transaction, table)
+                .and_then(|(context, id)| {
+                    Ok(match self.materialized_view(&mut transaction, id)? {
+                        Some(kept) => (context, kept.source),
+                        None => (context, id),
+                    })
+                });
             transaction.rollback();
             // A table that does not resolve is refused by whatever resolves it,
             // with a message about the table rather than about a grant.

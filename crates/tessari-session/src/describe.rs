@@ -289,7 +289,14 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
                 "view `{name}` carries flags its declaring word cannot say"
             )));
         }
-        let _ = writeln!(script, "DEFINE VIEW {name} AS {};", declared.read);
+        // A kept view is declared again as one and rebuilt from its source when
+        // the script runs; its rows are not written (`script.rs`).
+        let kept = if declared.materialized {
+            " MATERIALIZED"
+        } else {
+            ""
+        };
+        let _ = writeln!(script, "DEFINE VIEW {name}{kept} AS {};", declared.read);
         return Ok(());
     }
     // Written back as the word that created it, which is the whole reason the

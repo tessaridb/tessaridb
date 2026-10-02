@@ -547,6 +547,40 @@ pub enum Error {
         /// Where it was written.
         span: Span,
     },
+    /// A materialized view's read depends on something its source table's
+    /// changes do not cover (ADR-0109 D4).
+    ///
+    /// Refused where the view is declared: kept current from one table's
+    /// changes, the stored rows would go stale with no change in the feed to say
+    /// so, and nothing would be in an error state.
+    #[error(
+        "a materialized view cannot {what} (at {span}): it is kept current from one table's changes"
+    )]
+    MaterializedShape {
+        /// What the read does that a kept view cannot.
+        what: &'static str,
+        /// Where the view was declared.
+        span: Span,
+    },
+    /// A materialized view read by somebody who may read only some of its
+    /// source table's fields (ADR-0109 D7).
+    ///
+    /// A plain view re-runs its read with the caller's grants, so a hidden field
+    /// is simply absent. A kept view's rows were computed already and cannot be
+    /// redacted after the fact, so the read is refused rather than answered from
+    /// fields the caller may not see.
+    #[error(
+        "`{view}` is kept from `{table}`, which this user may read only in part (at {span}) — \
+         read `{table}` instead, or ask for its whole read"
+    )]
+    MaterializedFromHidden {
+        /// The view named.
+        view: String,
+        /// Its source table.
+        table: String,
+        /// Where the view was named.
+        span: Span,
+    },
     /// A chain of views was expanded as far as the store will follow it.
     ///
     /// A view naming a view naming a view, past the depth this build accepts —

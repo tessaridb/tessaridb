@@ -66,6 +66,34 @@ impl Merged {
         // Read before the pages: a commit that lands after this is ordered past
         // it and waits for the next round.
         let committed = store.committed_version()?;
+        self.poll_through(store, limit, committed)
+    }
+
+    /// [`Self::poll`], delivering nothing ordered past `bound` either.
+    ///
+    /// For a reader holding a snapshot: what it does with a change must be
+    /// true at its snapshot, so a commit past the snapshot waits for its next
+    /// round instead of being consumed by this one (ADR-0109 D2).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a record cannot be decoded.
+    pub fn poll_until(
+        &mut self,
+        store: &Store,
+        limit: usize,
+        bound: Sequence,
+    ) -> Result<Vec<(LogId, Change)>> {
+        let committed = store.committed_version()?.min(bound);
+        self.poll_through(store, limit, committed)
+    }
+
+    fn poll_through(
+        &mut self,
+        store: &Store,
+        limit: usize,
+        committed: Sequence,
+    ) -> Result<Vec<(LogId, Change)>> {
         let mut fetched: Vec<Vec<(Sequence, LogRecord)>> = Vec::with_capacity(self.logs.len());
         for (log, from) in &self.logs {
             fetched.push(store.log_records(*log, *from, limit)?);

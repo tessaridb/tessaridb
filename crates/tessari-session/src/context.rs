@@ -165,6 +165,29 @@ impl Session<'_> {
         Ok((context, id))
     }
 
+    /// The resolution a read source makes: [`Self::resolve_table`], with a
+    /// **materialized** view permitted — it holds records, its maintainer's,
+    /// and reading them is the point of keeping it (ADR-0109). A plain view is
+    /// still refused here, and every write still resolves through
+    /// `resolve_table`, so a kept view's rows have one writer.
+    pub(crate) fn resolve_readable_table(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: &TableRef,
+    ) -> Result<(Context, TableId)> {
+        let (context, id) = self.resolve_any_table(transaction, table)?;
+        if let Some(definition) = Catalog::new(transaction).table(id)?
+            && let TableKind::View(declared) = &definition.kind
+            && !declared.materialized
+        {
+            return Err(Error::ViewIsNotATable {
+                name: table.name.text.clone(),
+                span: table.span,
+            });
+        }
+        Ok((context, id))
+    }
+
     /// The same resolution, with a view permitted.
     ///
     /// Two functions rather than a flag, because the flag would read as an

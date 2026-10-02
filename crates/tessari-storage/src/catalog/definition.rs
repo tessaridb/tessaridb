@@ -48,6 +48,7 @@ const FIELD_UNIQUE: &str = "unique";
 const FIELD_SEARCH: &str = "search";
 const FIELD_VECTOR: &str = "vector";
 const FIELD_QUANTIZED: &str = "quantized";
+const FIELD_MATERIALIZED: &str = "materialized";
 const FIELD_SPATIAL: &str = "spatial";
 const FIELD_POSITIONS: &str = "positions";
 const FIELD_OFFSETS: &str = "offsets";

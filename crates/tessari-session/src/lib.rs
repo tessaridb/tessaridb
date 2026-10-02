@@ -56,6 +56,8 @@ mod grants;
 mod identity;
 mod info;
 mod kv;
+mod materialized;
+pub use materialized::{Maintained, maintain_views};
 mod noticed;
 mod outcome;
 mod plan;

@@ -230,6 +230,26 @@ impl Session<'_> {
             Err(unwritable) => ("undefinable", unwritable.part),
         };
         report.insert(key.to_owned(), Value::from(held.as_str()));
+        // A kept view says how fresh it is (ADR-0109 D5): the version its rows
+        // equal its read at, how many versions the store has moved past it, how
+        // many rows it holds, and when it last reached the head.
+        if let Some((state, head)) = crate::materialized::freshness(self.store, transaction, id)? {
+            let count =
+                |held: u64| Value::Number(Number::Integer(i64::try_from(held).unwrap_or(i64::MAX)));
+            let rows = Catalog::new(transaction).record_count(id)?.unwrap_or(0);
+            let mut kept = BTreeMap::new();
+            kept.insert("version".to_owned(), count(state.version.get()));
+            kept.insert(
+                "behind".to_owned(),
+                count(head.get().saturating_sub(state.version.get())),
+            );
+            kept.insert("rows".to_owned(), count(rows));
+            kept.insert(
+                "refreshed".to_owned(),
+                Value::Number(Number::Integer(state.refreshed)),
+            );
+            report.insert("materialized".to_owned(), Value::Object(kept));
+        }
         Ok(report)
     }
 

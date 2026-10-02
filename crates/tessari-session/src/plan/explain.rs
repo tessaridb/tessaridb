@@ -55,7 +55,7 @@ impl Session<'_> {
             }),
             // Straight to one record by its identity: there is nothing to choose.
             Source::Record(target) => {
-                let (_, id) = self.resolve_table(transaction, &target.table)?;
+                let (_, id) = self.resolve_readable_table(transaction, &target.table)?;
                 self.refuse_reading_a_vault(transaction, id, &target.table)?;
                 Ok(Plan::new(AccessPath::Record).on(target.table.name.text.as_str()))
             }
@@ -69,7 +69,7 @@ impl Session<'_> {
                 inclusive,
                 span,
             } => {
-                let (_, id) = self.resolve_table(transaction, table)?;
+                let (_, id) = self.resolve_readable_table(transaction, table)?;
                 self.refuse_reading_a_vault(transaction, id, table)?;
                 let part = crate::evaluate::Part::Span {
                     lower: lower.fixed(*span)?,
@@ -88,13 +88,13 @@ impl Session<'_> {
                 // answer. A `SELECT` over a vault is refused, so there is no
                 // plan — and reporting `scan` for it said a read would walk the
                 // table when the store would not have let it start.
-                let (_, gated) = self.resolve_table(transaction, table)?;
+                let (_, gated) = self.resolve_readable_table(transaction, table)?;
                 self.refuse_reading_a_vault(transaction, gated, table)?;
                 // A read with no condition has nothing for an index to narrow —
                 // except the one shape an index answers differently from a scan,
                 // which says so by name rather than hiding inside "index".
                 if let Some(walk) = nearest(select) {
-                    let (_, id) = self.resolve_table(transaction, table)?;
+                    let (_, id) = self.resolve_readable_table(transaction, table)?;
                     // Asked by path, exactly as the read asks it. Taking the
                     // first declared index carrying a vector named a different
                     // index than the read used whenever a table carried two.
@@ -110,7 +110,7 @@ impl Session<'_> {
                 }
                 if let Some(place) = closest(select)
                     && let Some((index, _)) = {
-                        let (context, id) = self.resolve_table(transaction, table)?;
+                        let (context, id) = self.resolve_readable_table(transaction, table)?;
                         self.index_serving_place(transaction, context, id, place.path)?
                     }
                 {
@@ -135,7 +135,7 @@ impl Session<'_> {
                 if let Some(read) = scored(select)
                     && read.wanted > 0
                 {
-                    let (context, id) = self.resolve_table(transaction, table)?;
+                    let (context, id) = self.resolve_readable_table(transaction, table)?;
                     if let Some(index) = self.index_on_path(transaction, id, read.field)?
                         && index.search
                         && !index.costs.unscored
@@ -152,7 +152,7 @@ impl Session<'_> {
                 }
                 if let Some(bound) = ordered(select)
                     && let Some((index, _)) = {
-                        let (context, id) = self.resolve_table(transaction, table)?;
+                        let (context, id) = self.resolve_readable_table(transaction, table)?;
                         self.index_serving_order(
                             transaction,
                             context,
@@ -176,7 +176,7 @@ impl Session<'_> {
                 Ok(Plan::new(AccessPath::Scan).on(named))
             }
             Source::Where { table, condition } => {
-                let (context, id) = self.resolve_table(transaction, table)?;
+                let (context, id) = self.resolve_readable_table(transaction, table)?;
                 self.refuse_reading_a_vault(transaction, id, table)?;
                 let named = table.name.text.as_str();
                 // A condition fixing the partition reads that partition's span,
@@ -282,7 +282,7 @@ impl Session<'_> {
                 let JoinSide::Table { table, .. } = right.as_ref() else {
                     return Ok(Plan::new(AccessPath::Join));
                 };
-                let (_, id) = self.resolve_table(transaction, table)?;
+                let (_, id) = self.resolve_readable_table(transaction, table)?;
                 self.refuse_reading_a_vault(transaction, id, table)?;
                 Ok(Plan {
                     index: crate::evaluate::ordered_index_on(transaction, id, right_key)?

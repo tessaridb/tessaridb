@@ -53,6 +53,17 @@ compares carries no pre-release suffix.
   32 µs, the whole-table read the guard declines 17.3 → 16.0 ms, estimates within
   1 % on equalities and inside one bucket on ranges.
 
+- **Materialized views** (G055, ADR-0109). `DEFINE VIEW v MATERIALIZED AS
+  SELECT …` keeps the read's answer as records, filled in the declaring
+  transaction and brought current by every serving node from the source table's
+  change feed in the writer's order — a batch recomputes, with the read engine,
+  the records its changes touched (or the whole read for a view that groups,
+  orders, bounds or splits) and writes rows and version in one commit, so the
+  rows always equal `… VERSION <version>`. `INFO FOR TABLE` reports `version`,
+  `behind`, `rows` and `refreshed`. A read the source's changes cannot cover is
+  refused as `MaterializedShape`; a caller who may read only part of the source
+  is refused as `MaterializedFromHidden`.
+
 ### Changed
 
 - **An equality read on an index stops where its answer fills** (G055). Entries
@@ -67,7 +78,7 @@ compares carries no pre-release suffix.
   (one record in a hundred: 27.9 → 22.9 ms against 16.0 ms exact; the rest is the
   walk reading the whole graph before its first step).
 
-- **1501 conformance cases** define the language and run in the build.
+- **1504 conformance cases** define the language and run in the build.
 
 ## 0.21.0-beta — 2026-10-03
 

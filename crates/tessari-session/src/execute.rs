@@ -1057,6 +1057,13 @@ impl Session<'_> {
                 name,
                 read,
                 if_not_exists,
+                materialized: true,
+            } => self.define_materialized(transaction, name, read, *if_not_exists, span),
+            StatementKind::DefineView {
+                name,
+                read,
+                if_not_exists,
+                materialized: false,
             } => self.define_table(
                 transaction,
                 name,
@@ -1066,7 +1073,10 @@ impl Session<'_> {
                     // `false` is the value that says so rather than a default
                     // nobody chose.
                     schemafull: false,
-                    kind: TableKind::View(ViewDeclaration { read: read.clone() }),
+                    kind: TableKind::View(ViewDeclaration {
+                        read: read.clone(),
+                        materialized: false,
+                    }),
                     identity: IdentityKind::default(),
                     graph: None,
                     conflict: None,

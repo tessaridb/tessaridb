@@ -67,6 +67,7 @@ mod tailmarks;
 mod topic;
 mod transaction;
 mod vault;
+mod views;
 
 pub use catalog::{
     AnalyzerDefinition, Authority, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, Catalog,
@@ -124,3 +125,4 @@ pub use transaction::{
     Transaction, Window,
 };
 pub use vault::{OpenVault, SealState};
+pub use views::ViewState;

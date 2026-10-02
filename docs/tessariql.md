@@ -6896,18 +6896,60 @@ with the authority of whoever defined them. That is a useful thing and it is a
 separate decision with its own consequences, so it is not what this word does
 today; if it arrives it will arrive as a clause you have to write.
 
-### Maintained results are a job for the change feed
+### A view that keeps its answer: `MATERIALIZED`
 
-A view is re-read every time it is named; nothing is stored under it, and there
-is no `MATERIALIZED` spelling. A store that needs a maintained result should
-write one into an ordinary table from the **change feed**, which is where the
-writes it must react to already are — and the result is then a table you can
-index, back up and grant on like any other.
+A plain view is re-read every time it is named. A **materialized** view (from
+`0.22.0-beta`) keeps its read's answer as records and is brought current from its
+source table's **change feed**:
 
-Maintaining a result inside the writing transaction is the alternative, and it
-is the reason this is not built: every write to `orders` would pay for every
-view over `orders`, silently, with a cost nobody wrote down, and the write's
-failure modes would come to include the view's.
+```tessariql
+DEFINE VIEW big_orders MATERIALIZED AS SELECT n, total FROM orders WHERE total > 30;
+SELECT * FROM big_orders;
+INFO FOR TABLE big_orders;
+-- { …, materialized: { version: 812, behind: 3, rows: 4120, refreshed: 1759480000000 } }
+```
+
+**It is filled when it is declared**, in the declaring transaction, so it is never
+read empty because it was not built yet. After that every serving node brings it
+current from the changes its source's commits carry, in the order the writer made
+them — never inside the writing transaction, so a write to `orders` pays nothing
+for the views over it.
+
+**Its rows always equal its read at the version it states.** A batch does not
+patch a stored row: it opens one transaction, collects the source changes up to
+that transaction's snapshot, and asks the read engine again for the part they can
+have touched — the changed records, for a view that answers one row per record;
+the whole read, for one that groups, folds, orders, bounds or splits. Rows and
+version are written in the same commit. So `SELECT * FROM big_orders` answers what
+`SELECT n, total FROM orders WHERE total > 30 VERSION 812` answers, record for
+record, where 812 is the `version` `INFO FOR TABLE` reports.
+
+**Freshness is reported, never assumed.** `INFO FOR TABLE` gives the `version` the
+rows equal, how many versions the store has moved `behind` it, the `rows` held and
+when it was last `refreshed` (milliseconds since the epoch). A view nothing has
+changed under is brought forward every ten seconds, so its `behind` measures
+change rather than silence.
+
+**What it can keep.** One source table that is not a view or a vault, and nothing
+its source's changes do not cover: no join, traversal, subquery, `FETCH`,
+`VERSION`, `STALENESS`, `ANSWERED BY`, `TIMEOUT`, `AFTER`, approximate or fused
+order, and no function that is not a function of the record — `time::now()`,
+`rand::uuid()`, a space key. Each is refused where the view is declared, by name
+(`MaterializedShape`), because the rows would go stale with no change in the feed
+to say so.
+
+**Who reads it.** A kept view is read with the caller's grants on its **source**:
+a user who may read the source reads the view, one who may not is refused naming
+the source, and one who may read only some of its fields is refused
+(`MaterializedFromHidden`) — the rows were computed already and cannot be redacted
+after the fact. Nothing but its maintainer writes it, and `DROP VIEW` takes its
+rows and its state.
+
+**What it costs.** A per-record view recomputes one record per change; any other
+recomputes its whole read per batch that saw a change, which is the price of an
+answer that is always exactly its read. Its rows are a node's writes like any
+other: they travel in the log, a follower holds what its leader wrote, and a
+failover moves the maintenance with the leadership.
 
 ## 6e. An order of what happened: topics
 

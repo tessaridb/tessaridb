@@ -1216,6 +1216,10 @@ pub enum StatementKind {
         /// and then `DEFINE VIEW`, and this clause only makes a provisioning
         /// script re-runnable.
         if_not_exists: bool,
+        /// `MATERIALIZED`: the read's answer is kept as records and brought
+        /// current from the change feed (ADR-0109), rather than re-run on every
+        /// read that names the view.
+        materialized: bool,
     },
     /// `DROP VIEW active`
     ///

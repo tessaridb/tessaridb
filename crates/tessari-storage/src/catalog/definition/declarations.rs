@@ -2,8 +2,8 @@
 
 use super::{
     FIELD_ATTEMPTS, FIELD_DESCENDING, FIELD_DIMENSION, FIELD_DISTANCE, FIELD_EVENT_TIME,
-    FIELD_FROM, FIELD_KEY_ID, FIELD_ORDER, FIELD_READ, FIELD_RETAIN, FIELD_TIMEOUT, FIELD_TO,
-    FIELD_WRAPPED, VectorDistance, field_id, flag, number, object,
+    FIELD_FROM, FIELD_KEY_ID, FIELD_MATERIALIZED, FIELD_ORDER, FIELD_READ, FIELD_RETAIN,
+    FIELD_TIMEOUT, FIELD_TO, FIELD_WRAPPED, VectorDistance, field_id, flag, number, object,
 };
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
@@ -148,16 +148,22 @@ impl SeriesDeclaration {
 pub struct ViewDeclaration {
     /// The read, exactly as it was written.
     pub read: String,
+    /// Whether the read's answer is kept as records and brought current from
+    /// the change feed (ADR-0109) rather than re-run by every read.
+    pub materialized: bool,
 }
 
 impl ViewDeclaration {
     /// The value written inside the table's catalog entry.
     #[must_use]
     pub fn to_value(&self) -> Value {
-        Value::Object(BTreeMap::from([(
-            FIELD_READ.to_owned(),
-            Value::from(self.read.as_str()),
-        )]))
+        let mut fields = BTreeMap::from([(FIELD_READ.to_owned(), Value::from(self.read.as_str()))]);
+        // Written only when set, so a plain view's entry is the bytes it always
+        // was and a build that predates the word reads it unchanged.
+        if self.materialized {
+            fields.insert(FIELD_MATERIALIZED.to_owned(), Value::Bool(true));
+        }
+        Value::Object(fields)
     }
 
     /// Read a declaration back.
@@ -178,7 +184,10 @@ impl ViewDeclaration {
                     .map_or("none", tessari_types::Value::type_name),
             });
         };
-        Ok(Self { read: read.clone() })
+        Ok(Self {
+            read: read.clone(),
+            materialized: flag(fields, FIELD_MATERIALIZED, ENTITY)?,
+        })
     }
 }
 

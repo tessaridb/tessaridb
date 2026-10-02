@@ -79,6 +79,7 @@ mod key_value;
 mod kinds;
 mod latest;
 mod management;
+mod materialized_views;
 mod migration;
 mod multikey;
 mod node;
