@@ -4,7 +4,8 @@ use super::Parser;
 use tessari_types::Number;
 
 use crate::ast::{
-    Credential, Name, Password, ReachRef, StatementKind, TableChange, UserChange, UserGrant,
+    Credential, Name, NamespaceChange, Password, ReachRef, StatementKind, TableChange, UserChange,
+    UserGrant,
 };
 use crate::error::Result;
 use crate::token::{Keyword, Punct, Token};
@@ -133,10 +134,14 @@ impl Parser<'_> {
         }
         if self.eat_keyword(Keyword::Namespace) {
             let name = self.name()?;
-            let Some(replication) = self.replication_clause()? else {
-                return Err(self.error_here("`REPLICATION` and the policy to set"));
+            let change = if let Some(replication) = self.replication_clause()? {
+                NamespaceChange::Replication(replication)
+            } else if let Some(acknowledge) = self.acknowledgement_clause()? {
+                NamespaceChange::Acknowledge(acknowledge)
+            } else {
+                return Err(self.error_here("`REPLICATION` or `ACKNOWLEDGE` and the policy to set"));
             };
-            return Ok(StatementKind::AlterNamespace { name, replication });
+            return Ok(StatementKind::AlterNamespace { name, change });
         }
         if !self.eat_keyword(Keyword::User) {
             return Err(self

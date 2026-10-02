@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use tessari_constants::{COMMIT_BACKOFF_CEILING, COMMIT_BACKOFF_STEP, MAX_COMMIT_ATTEMPTS};
 use tessari_encoding::{CausalStamp, LogId, LogRecord, Mutation, RecordValue, StampedValue};
-use tessari_types::{Epoch, Sequence, ShardId, TableId};
+use tessari_types::{Epoch, Reach, Sequence, ShardId, TableId};
 
 use super::{RecordAddress, Transaction};
 use crate::catalog::ShardMap;
@@ -231,6 +231,32 @@ impl Transaction<'_> {
     pub fn delete(&mut self, address: RecordAddress) {
         self.expiring.remove(&address);
         self.writes.insert(address, RecordValue::Tombstone);
+    }
+
+    /// Whether this transaction has written anything a commit would land.
+    ///
+    /// A read commits too — an empty transaction — and nothing about it is
+    /// worth waiting for copies of (ADR-0106).
+    #[must_use]
+    pub fn writes_anything(&self) -> bool {
+        !self.writes.is_empty()
+    }
+
+    /// The range this transaction's commit lands in — the home whose log
+    /// [`commit_placed`](Self::commit_placed) will name (ADR-0106).
+    ///
+    /// The commit's own derivation, run early, so a write that must wait for
+    /// copies is judged against where it actually lands: a membership row is a
+    /// store-wide write whatever namespace the session has selected.
+    ///
+    /// # Errors
+    ///
+    /// A substrate failure reading what the records were before.
+    pub fn home(&self) -> Result<Reach> {
+        let identity = self.store.node_identity()?;
+        let placement = self.placement()?;
+        let record = self.log_record(identity.id, &placement)?;
+        crate::catalog::home_of(&record)
     }
 
     /// Discard the transaction.

@@ -8,6 +8,7 @@
 //! error anywhere. The lookup is one catalog read per statement, and the store
 //! is the only thing entitled to say what a name currently means.
 
+mod acknowledging;
 mod atomic;
 mod step;
 
@@ -103,6 +104,10 @@ pub struct Session<'a> {
     /// `CREATE` by the time the read is redirected. The edge asks this before
     /// turning a refusal into a redirect.
     pub(crate) landed: bool,
+    /// The strongest acknowledgement a write inside the open transaction asked
+    /// for, carried to its `COMMIT` (ADR-0106 D2) — a level asked of one write
+    /// is asked of the transaction that lands it.
+    pub(crate) acknowledge_open: Option<tessari_types::Acknowledge>,
 }
 
 /// Who a session is, to a queue.
@@ -140,6 +145,7 @@ impl<'a> Session<'a> {
             budget: None,
             sink: crate::backup_to::Sink::none(),
             landed: false,
+            acknowledge_open: None,
         }
     }
 
@@ -301,6 +307,7 @@ impl<'a> Session<'a> {
                         consumer: None,
                     },
                     span,
+                    acknowledge: None,
                 },
             );
         }
@@ -610,6 +617,7 @@ impl<'a> Session<'a> {
             budget: self.budget.clone(),
             sink: crate::backup_to::Sink::none(),
             landed: false,
+            acknowledge_open: None,
         };
         probe.acting_as(id)?;
         Ok(probe)

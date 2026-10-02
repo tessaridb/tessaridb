@@ -1,10 +1,10 @@
 //! Declaring and dropping namespaces, databases, graphs and edge kinds.
 
 mod graphs;
-use tessari_ql::{Name, Span};
+use tessari_ql::{Name, NamespaceChange, Span};
 use tessari_storage::{Catalog, Transaction};
 
-use tessari_types::{Replication, ReplicationClass};
+use tessari_types::{Acknowledgement, Replication, ReplicationClass};
 
 use crate::error::{Depended, Error, Result};
 use crate::outcome::Outcome;
@@ -16,8 +16,11 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         name: &Name,
         if_not_exists: bool,
-        replication: Option<Replication>,
-        class: Option<ReplicationClass>,
+        (replication, class, acknowledge): (
+            Option<Replication>,
+            Option<ReplicationClass>,
+            Option<Acknowledgement>,
+        ),
     ) -> Result<Outcome> {
         if if_not_exists
             && Catalog::new(transaction)
@@ -62,6 +65,10 @@ impl Session<'_> {
             // is a statement rather than a second write path.
             Catalog::new(transaction).set_replication_class(definition.id, class)?;
         }
+        if let Some(acknowledge) = acknowledge {
+            // Through the setter an `ALTER NAMESPACE … ACKNOWLEDGE` uses.
+            Catalog::new(transaction).set_acknowledgement(definition.id, acknowledge)?;
+        }
         Ok(Outcome::Done)
     }
 
@@ -78,7 +85,7 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
-        replication: Replication,
+        change: NamespaceChange,
     ) -> Result<Outcome> {
         let Some(namespace) = Catalog::new(transaction).namespace_id(&name.text)? else {
             return Err(Error::Unknown {
@@ -87,7 +94,14 @@ impl Session<'_> {
                 span: name.span,
             });
         };
-        Catalog::new(transaction).set_replication(namespace, replication)?;
+        match change {
+            NamespaceChange::Replication(replication) => {
+                Catalog::new(transaction).set_replication(namespace, replication)?;
+            }
+            NamespaceChange::Acknowledge(acknowledge) => {
+                Catalog::new(transaction).set_acknowledgement(namespace, acknowledge)?;
+            }
+        }
         Ok(Outcome::Done)
     }
 

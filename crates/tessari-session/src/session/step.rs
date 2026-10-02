@@ -58,19 +58,25 @@ impl<'a> Session<'a> {
                     return Err(Error::NestedTransaction { span });
                 }
                 *open = Some((store.begin()?, span));
+                self.acknowledge_open = None;
                 Ok(Outcome::Done)
             }
             StatementKind::Commit => {
-                let Some((transaction, _)) = open.take() else {
+                let Some((mut transaction, _)) = open.take() else {
                     return Err(Error::NoOpenTransaction { span });
                 };
-                settle(transaction)?;
+                // The strongest level the transaction's writes or its `COMMIT`
+                // asked for (ADR-0106 D2).
+                let asked = statement.acknowledge.max(self.acknowledge_open.take());
+                let waiting = self.acknowledgement_for(&mut transaction, asked, span)?;
+                Self::commit_acknowledged(store, transaction, waiting, span)?;
                 Ok(Outcome::Done)
             }
             StatementKind::Cancel => {
                 let Some((transaction, _)) = open.take() else {
                     return Err(Error::NoOpenTransaction { span });
                 };
+                self.acknowledge_open = None;
                 transaction.rollback();
                 Ok(Outcome::Done)
             }
@@ -81,6 +87,7 @@ impl<'a> Session<'a> {
                 let Some((transaction, _)) = open.take() else {
                     return Err(Error::NoOpenTransaction { span });
                 };
+                self.acknowledge_open = None;
                 transaction.dry_run().map_err(advised)?;
                 Ok(Outcome::Done)
             }
@@ -121,6 +128,7 @@ impl<'a> Session<'a> {
                 }
                 // A transaction is one snapshot too, for the same reason.
                 (None, Some((transaction, _))) => {
+                    self.acknowledge_open = self.acknowledge_open.max(statement.acknowledge);
                     let gather = self.gather.take();
                     let outcome = self.execute(transaction, other, span);
                     self.gather = gather;
@@ -135,7 +143,12 @@ impl<'a> Session<'a> {
                     loop {
                         let mut transaction = store.begin()?;
                         let outcome = self.execute(&mut transaction, other, span)?;
-                        match settle(transaction) {
+                        let waiting = self.acknowledgement_for(
+                            &mut transaction,
+                            statement.acknowledge,
+                            span,
+                        )?;
+                        match Self::commit_acknowledged(store, transaction, waiting, span) {
                             Ok(()) => {
                                 if let StatementKind::DefineRollup { name, source, .. } = other {
                                     self.backfilled(store, source, name)?;

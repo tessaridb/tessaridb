@@ -19,7 +19,9 @@ mod rollups;
 mod tables;
 use std::collections::BTreeMap;
 
-use tessari_types::{DatabaseId, NamespaceId, Number, Replication, ReplicationClass, Value};
+use tessari_types::{
+    Acknowledgement, DatabaseId, NamespaceId, Number, Replication, ReplicationClass, Value,
+};
 
 use super::ShardMap;
 use crate::error::{Error, Result};
@@ -83,6 +85,7 @@ const FIELD_DIMENSION: &str = "dimension";
 const FIELD_DISTANCE: &str = "distance";
 const FIELD_REPLICATION: &str = "replication";
 const FIELD_REPLICATION_CLASS: &str = "replication_class";
+const FIELD_ACKNOWLEDGE: &str = "acknowledge";
 const FIELD_CONFLICT: &str = "conflict";
 const FIELD_SHARDS: &str = "shards";
 const FIELD_PARTITION: &str = "partition";
@@ -126,6 +129,15 @@ pub struct NamespaceDefinition {
     /// are independent — how many copies and how many writers — and a namespace
     /// declared multi-master still has a factor.
     pub class: Option<ReplicationClass>,
+    /// How many copies must hold a write here before it is acknowledged, and
+    /// whether a request may ask for fewer (ADR-0106 D2).
+    ///
+    /// `None` is **never stated**, kept apart from a stated level for its
+    /// neighbours' reason: the level a write waits for when nobody said is
+    /// derived from the replication (`MAJORITY` once more than one node holds
+    /// the namespace), and reporting that derivation as a decision would make a
+    /// configured namespace and an unconfigured one give the same answer.
+    pub acknowledge: Option<Acknowledgement>,
 }
 
 /// A database within a namespace.
@@ -157,6 +169,9 @@ impl NamespaceDefinition {
         }
         if let Some(class) = self.class {
             fields.insert(FIELD_REPLICATION_CLASS.to_owned(), class.to_value());
+        }
+        if let Some(acknowledge) = self.acknowledge {
+            fields.insert(FIELD_ACKNOWLEDGE.to_owned(), acknowledge.to_value());
         }
         Value::Object(fields)
     }
@@ -192,11 +207,25 @@ impl NamespaceDefinition {
                 },
             )?),
         };
+        // Refused rather than read as unstated, for `class`'s reason: a level a
+        // later build wrote, read as nothing here, would acknowledge writes a
+        // failover can lose on a namespace that asked for more.
+        let acknowledge = match fields.get(FIELD_ACKNOWLEDGE) {
+            None => None,
+            Some(held) => Some(Acknowledgement::from_value(held).ok_or(
+                Error::CatalogMalformed {
+                    entity: "namespace",
+                    field: FIELD_ACKNOWLEDGE,
+                    found: "an acknowledgement level this build does not have",
+                },
+            )?),
+        };
         Ok(Self {
             id: NamespaceId::new(field_id(fields, FIELD_ID, "namespace")?),
             name: field_name(fields, "namespace")?,
             replication,
             class,
+            acknowledge,
         })
     }
 }
@@ -383,6 +412,7 @@ mod tests {
                 name: "prod".to_owned(),
                 replication: None,
                 class: Some(class),
+                acknowledge: None,
             };
             let read = NamespaceDefinition::from_value(&namespace.to_value()).unwrap();
             assert_eq!(read, namespace, "{class}");
@@ -411,6 +441,7 @@ mod tests {
                 name: "prod".to_owned(),
                 replication: Some(policy),
                 class: None,
+                acknowledge: None,
             };
             let read = NamespaceDefinition::from_value(&namespace.to_value()).unwrap();
             assert_eq!(read, namespace, "{policy}");
@@ -450,6 +481,7 @@ mod tests {
             name: "prod".to_owned(),
             replication: None,
             class: None,
+            acknowledge: None,
         };
         assert_eq!(
             NamespaceDefinition::from_value(&namespace.to_value()).unwrap(),

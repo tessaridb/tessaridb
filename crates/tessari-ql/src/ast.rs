@@ -54,6 +54,10 @@ pub struct Statement {
     pub kind: StatementKind,
     /// Where it sits in the source.
     pub span: Span,
+    /// The acknowledgement this write — or this `COMMIT` — asked for itself,
+    /// over its namespace's (ADR-0106 D2). `None` on everything else, and on a
+    /// write that said nothing.
+    pub acknowledge: Option<tessari_types::Acknowledge>,
 }
 
 /// What an `INFO FOR` asks about.
@@ -544,6 +548,16 @@ pub enum UserChange {
     /// `SET ROLE editor` — what the user may do, within the tenancy they
     /// already hold. The tenancy itself does not move.
     Role(Name),
+}
+
+/// The one thing an [`AlterNamespace`](StatementKind::AlterNamespace) changes —
+/// one per statement, for [`UserChange`]'s reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamespaceChange {
+    /// `REPLICATION FACTOR 3` or `REPLICATION NONE`.
+    Replication(tessari_types::Replication),
+    /// `ACKNOWLEDGE MAJORITY [OR WEAKER]` (ADR-0106 D2).
+    Acknowledge(tessari_types::Acknowledgement),
 }
 
 /// One field declared inside a table's parentheses.

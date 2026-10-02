@@ -4262,7 +4262,8 @@ fn item_ids_at(surface: &str) -> Result<Vec<String>, String> {
 
 /// Commit latency on the leader at one and at sixteen writers, replication lag
 /// to a follower, and the acknowledged writes a `kill -9` of the leader loses,
-/// for the acknowledgement written as `clause` (`""` is the leader's own).
+/// for the acknowledgement written as `clause` (`""` is the namespace's own,
+/// which for `prod` — replicated, nothing stated — is `MAJORITY`).
 ///
 /// It prints its numbers (the ADR records them) and asserts only what holds at
 /// every level: every write is acknowledged once and the cluster elects again.
@@ -4408,8 +4409,29 @@ fn acknowledged_writes_measured(clause: &str) -> (usize, usize) {
             run explicitly: TESSARIDB_TEST_BIN=target/release/tessaridb cargo test -p \
             tessari-cli --test serving acknowledged_writes -- --ignored --nocapture"]
 fn acknowledged_writes_at_the_leaders_level_and_what_its_loss_costs() {
-    let (acknowledged, missing) = acknowledged_writes_measured("");
+    let (acknowledged, missing) = acknowledged_writes_measured(" ACKNOWLEDGE LEADER");
     eprintln!("LEADER level: {missing} of {acknowledged} acknowledged writes lost");
+}
+
+/// G053 C2 (ADR-0106 D8): no write acknowledged at `MAJORITY` is lost when the
+/// leader is killed. A majority of the voters held each one before its caller
+/// was told, and every majority that can elect the next leader meets it.
+///
+/// Runs under `TESSARIDB_TEST_CPU_LOAD=<threads>` too, which the criterion asks
+/// for: a loaded host is where an acknowledgement released early would show.
+#[test]
+#[ignore = "three processes, real cadences and a kill -9 — G053 C2, run \
+            explicitly: TESSARIDB_TEST_BIN=target/release/tessaridb cargo test -p \
+            tessari-cli --test serving acknowledged_writes_at_a_majority -- --ignored \
+            --nocapture (TESSARIDB_TEST_CPU_LOAD=<threads> for the run under load)"]
+fn acknowledged_writes_at_a_majority_survive_the_leader() {
+    let _load = Load::from_env();
+    let (acknowledged, missing) = acknowledged_writes_measured(" ACKNOWLEDGE MAJORITY");
+    eprintln!("MAJORITY level: {missing} of {acknowledged} acknowledged writes lost");
+    assert_eq!(
+        missing, 0,
+        "{missing} of {acknowledged} writes acknowledged at MAJORITY were lost"
+    );
 }
 
 // ---- G053 SG2b: a failover in about a second -------------------------------

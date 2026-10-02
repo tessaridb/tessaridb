@@ -140,7 +140,11 @@ impl Session<'_> {
     fn built(&mut self, kind: StatementKind) -> Result<Vec<Outcome>> {
         let span = Span::new(0, 0);
         self.run_script(Script {
-            statements: vec![Statement { kind, span }],
+            statements: vec![Statement {
+                kind,
+                span,
+                acknowledge: None,
+            }],
             span,
         })
     }
