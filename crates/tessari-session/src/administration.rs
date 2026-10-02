@@ -31,3 +31,37 @@ pub(crate) fn administered(kind: &StatementKind) -> Option<(&'static str, &str)>
         _ => return None,
     })
 }
+
+/// The statement in `kind` that may not travel under another node's
+/// assertion, if it is one (ADR-0108 D2): every administered statement, the
+/// whole-store backup and restore, and the vault's custody.
+pub(crate) fn stays_home(kind: &StatementKind) -> Option<&'static str> {
+    if let Some((statement, _)) = administered(kind) {
+        return Some(statement);
+    }
+    Some(match kind {
+        StatementKind::DefineNode { .. } => "DEFINE NODE",
+        StatementKind::Backup { .. } => "BACKUP",
+        StatementKind::Restore { .. } => "RESTORE",
+        StatementKind::UnsealVault { .. } => "UNSEAL VAULT",
+        StatementKind::SealVault { .. } => "SEAL VAULT",
+        StatementKind::ChangeVaultPassphrase { .. } => "CHANGE VAULT PASSPHRASE",
+        _ => return None,
+    })
+}
+
+/// Whether `source` may be carried to another node under an assertion: it
+/// parses, and holds no statement that stays home (ADR-0108 D2).
+///
+/// The node that would carry it asks first, so a caller sending such a
+/// statement to the wrong node gets the redirect or refusal it always got; the
+/// answering node asks again, because it does not trust the asker.
+#[must_use]
+pub fn travels(source: &str) -> bool {
+    tessari_ql::parse(source).is_ok_and(|script| {
+        script
+            .statements
+            .iter()
+            .all(|statement| stays_home(&statement.kind).is_none())
+    })
+}

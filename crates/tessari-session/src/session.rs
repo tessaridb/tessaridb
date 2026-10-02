@@ -230,6 +230,70 @@ impl<'a> Session<'a> {
         self.run_script(script)
     }
 
+    /// Run a script that another node sent on its caller's behalf (ADR-0108 D2).
+    ///
+    /// As [`Session::run_with`], in the namespace and database the caller's
+    /// own session had selected, except that a script holding any statement
+    /// that changes authority or membership, or reads or replaces the whole
+    /// store, is refused whole before anything in it runs.
+    ///
+    /// The selection is put in front of the script as a `USE` statement that is
+    /// BUILT rather than written, so names another node sent can never become
+    /// syntax, and so the tenancy rule a `USE` carries is applied to it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::MayNotTravel`] naming the first such statement; otherwise as
+    /// [`Session::run_with`].
+    pub fn run_coordinated(
+        &mut self,
+        (namespace, database): (Option<&str>, Option<&str>),
+        source: &str,
+        parameters: &Parameters,
+    ) -> Result<Vec<Outcome>> {
+        let mut script = parse(source)?;
+        if let Some(statement) = script
+            .statements
+            .iter()
+            .find_map(|statement| crate::administration::stays_home(&statement.kind))
+        {
+            return Err(Error::MayNotTravel { statement });
+        }
+        if namespace.is_some() || database.is_some() {
+            let span = tessari_ql::Span { start: 0, end: 0 };
+            let named = |text: Option<&str>| {
+                text.map(|text| tessari_ql::Name {
+                    text: text.to_owned(),
+                    span,
+                })
+            };
+            script.statements.insert(
+                0,
+                tessari_ql::Statement {
+                    kind: StatementKind::Use {
+                        namespace: named(namespace),
+                        database: named(database),
+                        consumer: None,
+                    },
+                    span,
+                },
+            );
+        }
+        let ran = self.run_script(script.bind(parameters)?)?;
+        // The built `USE` answered too; the caller sent none and is owed none.
+        Ok(if namespace.is_some() || database.is_some() {
+            ran.into_iter().skip(1).collect()
+        } else {
+            ran
+        })
+    }
+
+    /// The user this session is signed in as, if any.
+    #[must_use]
+    pub const fn signed_in(&self) -> Option<&tessari_storage::UserDefinition> {
+        self.identity.user()
+    }
+
     /// Run a script that is already parsed and bound, exactly as
     /// [`Session::run_with`] runs one it read.
     ///

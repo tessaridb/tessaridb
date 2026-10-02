@@ -75,6 +75,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::incoming::Incoming;
 pub use respond::Answer;
+pub use respond::scripts::render_coordinated;
 
 /// One wire session over a byte stream: given the stream, it runs until the
 /// session ends (ADR-0089).

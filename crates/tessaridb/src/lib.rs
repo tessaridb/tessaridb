@@ -126,10 +126,13 @@ impl core::fmt::Display for NotAValue {
 
 impl std::error::Error for NotAValue {}
 
+mod coordinate;
 pub mod feed;
 
+pub use coordinate::{Coordinate, Coordinated, Coordination, Surface};
 pub use tessari_lsm::{Durability, StoreConfig};
 pub use tessari_session::redact::{Visible, seen};
+pub use tessari_session::travels;
 pub use tessari_session::{
     AccessPath, Detached, Error, Exactness, Nearest, Note, Outcome, Parameters, Result, Session,
     Suggestion, Ticket, VaultAct, VaultTarget,
@@ -192,6 +195,13 @@ pub struct Db {
     /// by the process that knows its peers and handed to every session opened
     /// here — so every surface that serves a read, whichever it is, gathers.
     gather: std::sync::OnceLock<Arc<dyn tessari_session::Gather>>,
+    /// Who carries a request this node cannot answer to the node that can
+    /// (ADR-0108 D1), set once by the process that knows its peers.
+    coordinate: std::sync::OnceLock<Arc<dyn Coordinate>>,
+    /// Who this node has heard leads, and where its peers are, for every
+    /// session opened here — so a session on any surface can name the node that
+    /// answers what it cannot (Q-863), not only a wire session.
+    elsewhere: std::sync::OnceLock<Arc<dyn tessari_session::Elsewhere>>,
     /// What this store has landed, for whatever follows it — made on first
     /// asking, so a database nobody follows pays nothing on its commits.
     commits: std::sync::OnceLock<Arc<feed::Commits>>,
@@ -216,6 +226,8 @@ impl Db {
         Ok(Self {
             store: Store::open(backend)?,
             gather: std::sync::OnceLock::new(),
+            coordinate: std::sync::OnceLock::new(),
+            elsewhere: std::sync::OnceLock::new(),
             commits: std::sync::OnceLock::new(),
             backups: std::sync::OnceLock::new(),
         })
@@ -246,6 +258,8 @@ impl Db {
         Ok(Self {
             store: Store::open(backend)?,
             gather: std::sync::OnceLock::new(),
+            coordinate: std::sync::OnceLock::new(),
+            elsewhere: std::sync::OnceLock::new(),
             commits: std::sync::OnceLock::new(),
             backups: std::sync::OnceLock::new(),
         })
@@ -261,6 +275,10 @@ impl Db {
         let session = Session::new(&self.store);
         let session = match self.gather.get() {
             Some(gather) => session.gathering(Arc::clone(gather)),
+            None => session,
+        };
+        let session = match self.elsewhere.get() {
+            Some(known) => session.among(Arc::clone(known)),
             None => session,
         };
         match self.backups.get() {
@@ -293,6 +311,48 @@ impl Db {
     /// Answers `false`, and changes nothing, when one was already set.
     pub fn gather_through(&self, gather: Arc<dyn tessari_session::Gather>) -> bool {
         self.gather.set(gather).is_ok()
+    }
+
+    /// Let every session opened here know its peers through `elsewhere`
+    /// (Q-863). Once per process, as [`Db::gather_through`]; answers `false`,
+    /// and changes nothing, when it was already set.
+    pub fn among(&self, elsewhere: Arc<dyn tessari_session::Elsewhere>) -> bool {
+        self.elsewhere.set(elsewhere).is_ok()
+    }
+
+    /// Carry a request this node cannot answer to the node that can, through
+    /// `coordinate` (ADR-0108 D1). Once per process, as [`Db::gather_through`];
+    /// answers `false`, and changes nothing, when one was already set.
+    pub fn coordinate_through(&self, coordinate: Arc<dyn Coordinate>) -> bool {
+        self.coordinate.set(coordinate).is_ok()
+    }
+
+    /// The coordinator, when this node has one.
+    #[must_use]
+    pub fn coordinator(&self) -> Option<&Arc<dyn Coordinate>> {
+        self.coordinate.get()
+    }
+
+    /// The node that could answer what `refused` refused here, when it names
+    /// one (ADR-0108 D1): the leader a write or a bounded read belongs to, a
+    /// peer holding the whole of a split table, or the one peer declared
+    /// writable when this node may not write.
+    #[must_use]
+    pub fn answers_instead(&self, refused: &Error) -> Option<[u8; tessari_storage::NODE_ID_LEN]> {
+        match refused {
+            Error::ReadIsElsewhere { node, .. }
+            | Error::Store(tessari_storage::Error::WriteIsElsewhere { node, .. }) => Some(*node),
+            Error::NotHeldHere {
+                holder: Some(holder),
+                ..
+            }
+            | Error::ShardMapMoved {
+                holder: Some(holder),
+                ..
+            } => Some(holder.node),
+            Error::NotWritable { .. } => self.writable_peer().ok().flatten()?.node,
+            _ => None,
+        }
     }
 
     /// Let `BACKUP … TO` write into `folder`, in every session opened from now on.
@@ -454,6 +514,8 @@ impl Db {
         Self {
             store,
             gather: std::sync::OnceLock::new(),
+            coordinate: std::sync::OnceLock::new(),
+            elsewhere: std::sync::OnceLock::new(),
             commits: std::sync::OnceLock::new(),
             backups: std::sync::OnceLock::new(),
         }

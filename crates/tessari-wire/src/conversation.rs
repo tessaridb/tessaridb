@@ -45,7 +45,7 @@ use crate::error::{Error, Result};
 use crate::hot::{self, Cooled};
 use crate::message::Request;
 use crate::push::Follow;
-use crate::{frame, frame_async, message, node, redirect};
+use crate::{frame, frame_async, message, redirect};
 pub(crate) use carried::Carried;
 use feeding::feed;
 
@@ -282,18 +282,66 @@ pub(crate) fn respond(
         log::warn!("connection {id} refused: {refused}");
         return refusal(refused.to_string());
     }
+    // What the caller had selected BEFORE the script ran: a carried request is
+    // run again from the start on the node that answers it.
+    let selected = (
+        session.namespace().map(str::to_owned),
+        session.database().map(str::to_owned),
+    );
     let ran = session.run_with(&request.script, &request.parameters);
-    // A write that arrived at a node which may not take it is routed, not
-    // refused (ADR-0019 §2, case *forward*). Matched on the **variant**, not on
-    // the message text: a routing decision taken by string comparison changes
-    // meaning the day somebody rewords an error.
-    if matches!(ran, Err(tessaridb::Error::NotWritable { .. })) {
-        return match node::forward(db, request) {
-            Ok((kind, body)) => Answer { kind, body },
+    // Coordinated (ADR-0108 D1): a write this node may not take, or a request
+    // whose caller cannot follow a redirect, is carried over the peer link to
+    // the node that can answer it, as the caller this session verified — never
+    // with the caller's password. Matched on the **variant**, never on text.
+    if let Err(refused) = &ran
+        && !session.landed()
+        && (matches!(refused, tessaridb::Error::NotWritable { .. }) || theirs < frame::REDIRECTS)
+        && tessaridb::travels(&request.script)
+        && let Some(coordinator) = db.coordinator()
+        && let Some(to) = db.answers_instead(refused)
+    {
+        let carried = coordinator.coordinate(&tessaridb::Coordination {
+            to,
+            user: session.signed_in(),
+            namespace: selected.0.as_deref(),
+            database: selected.1.as_deref(),
+            script: &request.script,
+            parameters: &request.parameters,
+            surface: tessaridb::Surface::Wire { minor: theirs },
+        });
+        return match carried {
+            Ok(answer) => match u8::try_from(answer.kind)
+                .ok()
+                .and_then(frame::Kind::from_tag)
+            {
+                Some(kind) => Answer {
+                    kind,
+                    body: answer.body,
+                },
+                None => refusal(format!(
+                    "the node that answered sent a kind this node does not know ({})",
+                    answer.kind
+                )),
+            },
             // The hop failed, and the client is told that rather than being
             // told the statement was wrong. It was not.
-            Err(why) => refusal(why.to_string()),
+            Err(why) => refusal(why),
         };
+    }
+    // No peer link, so nothing to carry it over: the write is refused, naming
+    // where the writable peer takes writes. The caller's password stays here
+    // (ADR-0108 D1, R-10) — it used to be relayed to that address in clear.
+    if matches!(ran, Err(tessaridb::Error::NotWritable { .. })) {
+        return refusal(match db.writable_peer() {
+            Ok(Some(peer)) => format!(
+                "this node does not take writes; the peer declared writable takes them at {}",
+                peer.clients.unwrap_or(peer.endpoint)
+            ),
+            Ok(None) => {
+                "this node does not accept writes, and no peer is declared writable".to_owned()
+            }
+            Err(why) => why.to_string(),
+        });
     }
     // A redirect is an **instruction** and leaves as its own frame rather than
     // as a refusal carrying a hint (`redirect.rs`), gated on what the client
@@ -312,6 +360,12 @@ pub(crate) fn respond(
             body: sent.encode(),
         };
     }
+    render(db, &ran)
+}
+
+/// A run's answer as this surface writes it: one outcome per statement, or the
+/// refusal in the store's own words.
+fn render(db: &Db, ran: &tessaridb::Result<Vec<tessaridb::Outcome>>) -> Answer {
     match ran {
         Ok(outcomes) => {
             let mut answer = Vec::new();
@@ -319,7 +373,7 @@ pub(crate) fn respond(
                 &mut answer,
                 u32::try_from(outcomes.len()).unwrap_or(u32::MAX),
             );
-            for outcome in &outcomes {
+            for outcome in outcomes {
                 // Resolved here because the catalog is here. `names_in` walks
                 // the answer first and touches nothing when it holds no
                 // reference, which is most answers.
@@ -333,7 +387,25 @@ pub(crate) fn respond(
         }
         // A refusal does not close the connection: a client that mistyped a
         // statement has not stopped being a client.
-        Err(refused) => refusal(refused.to_string()),
+        Err(refused) => Answer {
+            kind: frame::Kind::Refusal,
+            body: refused.to_string().into_bytes(),
+        },
+    }
+}
+
+/// A carried request's answer, rendered for a wire client by the node that ran
+/// it (ADR-0108 D1). A refusal naming yet another node is a refusal here: the
+/// request has made its one hop.
+#[must_use]
+pub fn render_coordinated(
+    db: &Db,
+    ran: &tessaridb::Result<Vec<tessaridb::Outcome>>,
+) -> tessaridb::Coordinated {
+    let answer = render(db, ran);
+    tessaridb::Coordinated {
+        kind: u16::from(answer.kind.tag()),
+        body: answer.body,
     }
 }
 

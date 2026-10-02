@@ -100,13 +100,6 @@ pub(crate) fn serve(
         }
         None => None,
     };
-    // Taken here because `peers` is moved into the peer tasks further down,
-    // while the surface that needs it is bound in between. Both ends hold the
-    // same `Published`: the greeting round swaps a new round in, and every
-    // session this node opens reads whatever the last completed round left.
-    let routing = peers
-        .as_ref()
-        .map(|surface| std::sync::Arc::clone(&surface.routing));
     // Before anything is bound. A node that came up **open** because its
     // credentials were misconfigured should never have reached the point of
     // answering on a network, so this is a failure to start rather than a
@@ -137,6 +130,28 @@ pub(crate) fn serve(
             }),
         );
         db.gather_through(std::sync::Arc::new(gathering));
+        // Every session on every surface knows who leads and where its peers
+        // are, so a read HTTP cannot answer here names — or is carried to — the
+        // node that can (Q-863). Spelled with the concrete type for the unsizing.
+        db.among(std::sync::Arc::<tessari_wire::Published>::clone(
+            &surface.routing,
+        ));
+        // And every request it cannot answer — a write another node leads, a
+        // read another node holds — is carried there over the peer link, under
+        // an assertion signed with this node's key, for a caller who cannot
+        // follow a redirect (ADR-0108 D1–D3). No password crosses.
+        let speaking = std::sync::Arc::downgrade(&db);
+        db.coordinate_through(std::sync::Arc::new(tessari_wire::Coordinator::new(
+            &db,
+            me,
+            (surface.dialling.duplicate(), surface.authority.clone()),
+            Box::new(move || {
+                speaking
+                    .upgrade()
+                    .ok_or(tessari_wire::GreetingUnavailable::Stopping)
+                    .and_then(|db| greeting(&db).map_err(tessari_wire::GreetingUnavailable::Store))
+            }),
+        )));
     }
     if let Some(folder) = &serving.backups {
         db.back_up_into(std::sync::Arc::from(folder.as_path()));
@@ -172,20 +187,12 @@ pub(crate) fn serve(
     // while the other one answered.
     let wire = match &serving.wire {
         Some(address) => {
-            let node = tessari_wire::Node::bind(std::sync::Arc::clone(&db), address.as_str())
-                .map_err(|failure| format!("{address}: {failure}"))?;
-            // Only the wire surface, deliberately. `tessari-http` opens sessions
-            // too and does not depend on `tessari-wire`, so giving it the
-            // directory is a second wiring question rather than a line that fits
-            // here — recorded rather than smuggled in.
-            Some(match &routing {
-                // Spelled with the concrete type because the parameter is the
-                // trait: left to inference, `Arc::clone` would try to clone an
-                // `Arc<dyn Elsewhere>` this line does not hold. The unsizing
-                // happens at the argument, where it belongs.
-                Some(known) => node.among(std::sync::Arc::<tessari_wire::Published>::clone(known)),
-                None => node,
-            })
+            // The directory reaches this surface's sessions through the store's
+            // handle, set where the peers are (Q-863), as it reaches HTTP's.
+            Some(
+                tessari_wire::Node::bind(std::sync::Arc::clone(&db), address.as_str())
+                    .map_err(|failure| format!("{address}: {failure}"))?,
+            )
         }
         None => None,
     };

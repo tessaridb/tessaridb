@@ -20,6 +20,8 @@ publish.workspace = true
 # compile time rather than in somebody's deployment.
 default = ["server"]
 server = [
+    "dep:dashmap",
+    "dep:getrandom",
     "dep:tessari-constants",
     "dep:tessaridb",
     "dep:tessari-serve",
@@ -35,6 +37,10 @@ server = [
 ]
 
 [dependencies]
+# Server-side only: the replay table of signed assertions (ADR-0108 D3) and the
+# nonces they carry. Both already in the tree.
+dashmap = { workspace = true, optional = true }
+getrandom = { workspace = true, optional = true }
 tessaridb = { workspace = true, optional = true }
 tessari-serve = { workspace = true, optional = true }
 # Server-side only: the ceiling and the greeting deadline are the node's,

@@ -38,7 +38,9 @@ use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
 
+use crate::assertion::{Assertion, Replays, now_ms};
 use crate::collection::{Origin, StreamAsk, stream_answer};
+use crate::coordination::{Coordinate, encode_answer};
 use crate::credential;
 use crate::error::{Error, Result};
 use crate::frame_async;
@@ -71,6 +73,20 @@ pub trait Holding: Origin + Send + Sync + 'static {
     /// at its heartbeat — and the replication lag it was built to remove would
     /// come back with nothing in an error state.
     fn commits(&self) -> tokio::sync::watch::Receiver<u64>;
+
+    /// Answer a request `from` carried here for a caller it verified, under an
+    /// assertion the door has already believed (ADR-0108 D1–D3).
+    ///
+    /// # Errors
+    ///
+    /// The reason this node will not act for that caller, in words the asking
+    /// node passes on.
+    fn coordinated(
+        &self,
+        from: [u8; NODE_ID_LEN],
+        assertion: &Assertion,
+        asked: &Coordinate,
+    ) -> std::result::Result<tessaridb::Coordinated, String>;
 }
 
 /// How one served connection ended, for the loop that decides what next.
@@ -109,6 +125,7 @@ impl Peers {
         let acceptor = TlsAcceptor::from(Arc::clone(&self.settings));
         let places = Arc::new(Semaphore::new(PEER_CONNECTIONS));
         let bridge = Arc::new(Bridge::new(PEER_CONNECTIONS));
+        let replays = Arc::new(Replays::default());
         let mut connections = JoinSet::new();
         let mut outcome = Ok(());
         loop {
@@ -153,6 +170,7 @@ impl Peers {
                 voter: Arc::clone(&voter),
                 holding: Arc::clone(&holding),
                 bridge: Arc::clone(&bridge),
+                replays: Arc::clone(&replays),
             };
             connections.spawn(async move {
                 let ended = served.serve(socket).await;
@@ -186,6 +204,9 @@ struct Connection<H> {
     voter: Arc<Deciding>,
     holding: Arc<H>,
     bridge: Arc<Bridge>,
+    /// The nonces of the assertions this door believed, so none is believed
+    /// twice (ADR-0108 D3).
+    replays: Arc<Replays>,
 }
 
 impl<H: Holding> Connection<H> {
@@ -298,6 +319,58 @@ impl<H: Holding> Connection<H> {
                     }
                     Err(why) => return Err(why),
                 }
+                None
+            }
+            // A request carried here for a caller (ADR-0108 D1–D3). Believed
+            // against the certificate THIS handshake proved, so the signer is
+            // the peer on this connection and no other.
+            Some((tag, body)) if tag == PeerFrame::Coordinate.tag() => {
+                let shown = shown.as_ref().ok_or(Error::Unidentified)?;
+                let asked = Coordinate::decode(&body)?;
+                let believed = asked
+                    .signed
+                    .verify(
+                        shown,
+                        said.node,
+                        self.me,
+                        (asked.digest(), now_ms()),
+                        &self.replays,
+                    )
+                    .copied();
+                let (tag, reply) = match believed {
+                    Err(why) => {
+                        log::warn!(
+                            "a request carried from {} was refused: {why}",
+                            tessari_types::uuid_to_text(&said.node)
+                        );
+                        (
+                            PeerFrame::NotCoordinated.tag(),
+                            why.to_string().into_bytes(),
+                        )
+                    }
+                    Ok(assertion) => {
+                        log::info!(
+                            "a request carried from {} acts for {} (nonce {})",
+                            tessari_types::uuid_to_text(&said.node),
+                            match assertion.principal {
+                                crate::assertion::Principal::Anonymous => "nobody".to_owned(),
+                                crate::assertion::Principal::User { id, .. } =>
+                                    format!("user {id}"),
+                            },
+                            hex(&assertion.nonce)
+                        );
+                        let holding = Arc::clone(&self.holding);
+                        let from = said.node;
+                        let answered = self
+                            .store(move || Ok(holding.coordinated(from, &assertion, &asked)))
+                            .await?;
+                        match answered {
+                            Ok(answer) => (PeerFrame::Coordinated.tag(), encode_answer(&answer)),
+                            Err(why) => (PeerFrame::NotCoordinated.tag(), why.into_bytes()),
+                        }
+                    }
+                };
+                bounded(frame_async::write_tagged(&mut link, tag, &reply)).await??;
                 None
             }
             Some((tag, body)) => {
@@ -442,6 +515,11 @@ impl<H: Holding> Connection<H> {
 /// Per step and not per connection, as the synchronous door's socket timeouts
 /// are: a collection answer of several megabytes is many writes, and a bound
 /// on the whole would cut off a slow but moving peer.
+/// Bytes as lowercase hexadecimal, for a log line.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 async fn bounded<T>(step: impl Future<Output = T>) -> Result<T> {
     tokio::time::timeout(std::time::Duration::from_secs(GREETING_SECONDS), step)
         .await
@@ -514,6 +592,15 @@ mod tests {
 
         fn commits(&self) -> tokio::sync::watch::Receiver<u64> {
             self.commits.1.clone()
+        }
+
+        fn coordinated(
+            &self,
+            _: [u8; NODE_ID_LEN],
+            _: &crate::assertion::Assertion,
+            _: &crate::coordination::Coordinate,
+        ) -> std::result::Result<tessaridb::Coordinated, String> {
+            Err("this test door carries no requests".to_owned())
         }
     }
 

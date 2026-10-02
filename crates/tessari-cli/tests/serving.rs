@@ -3275,6 +3275,26 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
         std::thread::sleep(POLL);
     }
 
+    // G054 C2 (ADR-0108 D1): a client that cannot follow that redirect is
+    // answered all the same — node 2 carries the read over the peer link to a
+    // node holding the whole table and answers with what it said.
+    let transacted = "USE NAMESPACE prod; USE DATABASE shop; BEGIN; SELECT * FROM orders; COMMIT;";
+    let began = Instant::now();
+    loop {
+        let (kind, body) = ask_as_an_old_client(GATHERING[2].0, transacted, None);
+        let said = String::from_utf8_lossy(&body).into_owned();
+        if kind == 2 && whole.iter().all(|id| said.contains(id.as_str())) {
+            break;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "node 2 did not answer an old client's read it cannot gather; \
+             kind {kind}: {said}{}",
+            what_the_nodes_said(&GATHERING, &logs)
+        );
+        std::thread::sleep(POLL);
+    }
+
     // G051 C6 (ADR-0103): a score on node 2 is measured against all three
     // shards — node 2 counts its own, the leaders count theirs — so it is the
     // score a node holding the whole store gives. One annotated record per
@@ -4410,4 +4430,186 @@ fn a_paused_leader_writes_nothing_once_its_successor_leads() {
             what_the_nodes_said(&ACKED, &cluster.logs)
         );
     }
+}
+
+/// The coordinator's cluster — 47960-47968, a band of its own. Not 4793x:
+/// another program on this machine holds 47931, and a band that collides with
+/// it fails as a node that never listened.
+const COORDINATING: Band = [
+    ("127.0.0.1:47960", "127.0.0.1:47961"),
+    ("127.0.0.1:47962", "127.0.0.1:47963"),
+    ("127.0.0.1:47964", "127.0.0.1:47965"),
+];
+
+/// Each node's HTTP surface, in `COORDINATING`'s order.
+const COORDINATING_HTTP: [&str; 3] = ["127.0.0.1:47966", "127.0.0.1:47967", "127.0.0.1:47968"];
+
+/// `ada:` [`SECRET`], as a client sends it. Written out rather than computed,
+/// so a change to the decoder cannot quietly agree with itself.
+const ADA_BASIC: &str = "Basic YWRhOmEgbG9uZyBlbm91Z2ggcGFzc3dvcmQ=";
+
+/// One `POST` as `credential`, answered whole: the status line first.
+fn over_http_as(address: &str, path: &str, body: &str, credential: &str) -> String {
+    use std::io::{Read, Write};
+
+    let mut socket = TcpStream::connect(address).unwrap();
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {address}\r\nAuthorization: {credential}\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    socket.write_all(request.as_bytes()).unwrap();
+    socket.flush().unwrap();
+    let mut answered = String::new();
+    socket.read_to_string(&mut answered).unwrap();
+    answered
+}
+
+/// One request from a client that greets at minor 0 — built before the
+/// redirect frame existed, so it can never follow one — and the frame kind and
+/// body it is answered with.
+fn ask_as_an_old_client(address: &str, script: &str, who: Option<(&str, &str)>) -> (u8, Vec<u8>) {
+    use std::io::{Read, Write};
+
+    let mut socket = TcpStream::connect(address).unwrap();
+    socket.write_all(b"TESS\x01\x00").unwrap();
+    let mut greeting = [0_u8; 6];
+    socket.read_exact(&mut greeting).unwrap();
+    let body = tessari_wire::Request {
+        script: script.to_owned(),
+        credentials: who.map(|(name, password)| (name.to_owned(), password.to_owned())),
+        parameters: tessari_ql::Parameters::new(),
+    }
+    .encode();
+    let mut frame = vec![1_u8];
+    frame.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes());
+    frame.extend_from_slice(&body);
+    socket.write_all(&frame).unwrap();
+    let mut head = [0_u8; 5];
+    socket.read_exact(&mut head).unwrap();
+    let length = u32::from_be_bytes([head[1], head[2], head[3], head[4]]);
+    let mut answer = vec![0_u8; usize::try_from(length).unwrap()];
+    socket.read_exact(&mut answer).unwrap();
+    (head[0], answer)
+}
+
+/// G054 C2 (ADR-0108 D1–D3) against three processes: a follower answers a
+/// client that cannot follow a redirect by carrying the request to the leader
+/// over the peer link, under a signed assertion, with no password crossing.
+///
+/// Red on the build before the coordinator: HTTP answered `307` and a minor-0
+/// wire client was refused, so neither write reached the leader.
+#[test]
+#[ignore = "three spawned processes, an election and replication waits; G054 \
+            C2's own validation, run explicitly: cargo test -p tessari-cli \
+            --test serving a_follower_answers_a_client -- --ignored"]
+fn a_follower_answers_a_client_that_cannot_follow_a_redirect() {
+    let mut cluster = a_cluster_of_three(&COORDINATING);
+    for (index, http) in COORDINATING_HTTP.iter().enumerate() {
+        cluster.running[index] = None;
+        cluster.restart_with(index, &["--http", http]);
+    }
+    for (index, http) in COORDINATING_HTTP.iter().enumerate() {
+        assert!(listening(COORDINATING[index].0, Duration::from_secs(30)));
+        assert!(listening(http, Duration::from_secs(30)), "{http}");
+    }
+    let logs = cluster.logs.clone();
+    let leader = the_node_a_majority_granted(&COORDINATING);
+    let follower = the_next_node(&COORDINATING, leader);
+    let (on_leader, on_follower) = (COORDINATING[leader].0, COORDINATING[follower].0);
+    let patience = Duration::from_secs(90);
+    assert!(
+        until(patience, || counted(on_follower) == Ok(1)),
+        "the schema never reached the follower{}",
+        what_the_nodes_said(&COORDINATING, &logs)
+    );
+    asked(
+        on_leader,
+        &format!("DEFINE USER ada ROLE owner PASSWORD '{SECRET}';"),
+        None,
+    )
+    .expect("the leader declares the first user");
+    // The account arrived when the follower stops answering a stranger.
+    assert!(
+        until(patience, || counted(on_follower).is_err()),
+        "the user never reached the follower{}",
+        what_the_nodes_said(&COORDINATING, &logs)
+    );
+    let ada = Some(("ada", SECRET));
+    let in_orders = "USE NAMESPACE prod; USE DATABASE orders;";
+
+    // HTTP: a write sent to the follower commits on the leader.
+    let answered = over_http_as(
+        COORDINATING_HTTP[follower],
+        "/script",
+        &format!("{in_orders} CREATE item:77 = {{ n: 77 }};"),
+        ADA_BASIC,
+    );
+    assert!(
+        answered.starts_with("HTTP/1.1 200"),
+        "the follower did not answer the write: {answered}{}",
+        what_the_nodes_said(&COORDINATING, &logs)
+    );
+    assert!(
+        says(on_leader, ada, READ, "Integer(77)"),
+        "the carried write is not on the leader"
+    );
+
+    // The wire, from a client that cannot follow a redirect.
+    let (kind, body) = ask_as_an_old_client(
+        on_follower,
+        &format!("{in_orders} CREATE item:78 = {{ n: 78 }};"),
+        ada,
+    );
+    assert_eq!(
+        kind,
+        2,
+        "the follower did not answer an old client's write: {}{}",
+        String::from_utf8_lossy(&body),
+        what_the_nodes_said(&COORDINATING, &logs)
+    );
+    assert!(
+        says(on_leader, ada, READ, "Integer(78)"),
+        "the old client's write is not on the leader"
+    );
+
+    // A read only the leader may answer, asked of the follower over HTTP —
+    // once the follower has heard who leads, which a greeting round tells it.
+    let leader_only = || {
+        over_http_as(
+            COORDINATING_HTTP[follower],
+            "/script",
+            &format!("{in_orders} SELECT * FROM item ANSWERED BY LEADER;"),
+            ADA_BASIC,
+        )
+    };
+    assert!(
+        until(patience, || {
+            let answered = leader_only();
+            answered.starts_with("HTTP/1.1 200") && answered.contains("78")
+        }),
+        "the follower did not answer a leader-only read: {}",
+        leader_only()
+    );
+
+    // Authority does not travel: a `DEFINE USER` sent to the follower is
+    // redirected as it always was, and not carried.
+    let answered = over_http_as(
+        COORDINATING_HTTP[follower],
+        "/script",
+        &format!("DEFINE USER eve ROLE owner PASSWORD '{SECRET}';"),
+        ADA_BASIC,
+    );
+    assert!(
+        answered.starts_with("HTTP/1.1 307"),
+        "an authority change was carried to the leader: {answered}"
+    );
+
+    // The leader recorded who asked, for whom.
+    let said = std::fs::read_to_string(&logs[leader]).unwrap();
+    assert!(
+        said.contains("a request carried from") && said.contains("acts for"),
+        "the leader kept no record of the carried requests{}",
+        what_the_nodes_said(&COORDINATING, &logs)
+    );
 }

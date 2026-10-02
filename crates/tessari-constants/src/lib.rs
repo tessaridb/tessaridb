@@ -400,6 +400,15 @@ pub const HTTP_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 /// cannot deliver them in ten seconds cannot carry a query either.
 pub const GREETING_SECONDS: u64 = 10;
 
+/// How long a node waits for another to answer a request it carried there on
+/// its caller's behalf (ADR-0108 D1), per read on the peer link.
+///
+/// Longer than a greeting because the far side runs the caller's statement:
+/// a read that takes a minute there is still an answer, and the caller is
+/// waiting for it either way. Bounded because a peer that took the request and
+/// went silent must not hold the caller's connection forever.
+pub const COORDINATED_SECONDS: u64 = 120;
+
 /// How often a node is expected to learn something about its peers.
 ///
 /// Unit: seconds.

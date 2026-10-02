@@ -1842,6 +1842,8 @@ dependencies = [
 name = "tessari-wire"
 version = "0.20.1-beta"
 dependencies = [
+ "dashmap",
+ "getrandom 0.4.3",
  "log",
  "rcgen",
  "rust_decimal",

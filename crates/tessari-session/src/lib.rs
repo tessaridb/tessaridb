@@ -23,6 +23,7 @@
 
 mod accumulate;
 mod administration;
+pub use administration::travels;
 mod aggregate;
 mod arithmetic;
 mod authorize;

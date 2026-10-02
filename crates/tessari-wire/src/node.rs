@@ -21,9 +21,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::carrier::Carrier;
 use crate::conversation;
-use crate::error::{Error, Result};
-use crate::message::Request;
-use crate::{client, frame, frame_async};
+use crate::error::Result;
+use crate::{frame, frame_async};
 
 /// Names one connection across every line it produces.
 ///
@@ -275,61 +274,6 @@ impl Node {
         conversations.detach_all();
         Ok(())
     }
-}
-
-/// Send a write to the peer that may take it, and bring back what it said.
-///
-/// Routing case *forward* (ADR-0019 §2). Three things it deliberately does not
-/// do, each of which is a feature this milestone does not have rather than an
-/// oversight:
-///
-/// - **No retry.** ADR-0019 §2 names "the peer is down mid-request" as this
-///   case's new failure mode. Naming it is the deliverable; a retry that
-///   re-sent a statement whose first attempt may already have committed would
-///   turn one failure into two writes.
-/// - **No connection kept.** One dial per forwarded write, which is a real cost
-///   and a measured one later — a pool is state shared between connections, and
-///   it earns its complexity against a number nobody has yet.
-/// - **No rewriting of the answer.** What the leader said travels back as it
-///   was said, refusals included.
-///
-/// The caller's credentials go with it, so the leader authorises the same user
-/// against its own grants. A forward that signed in as the forwarding node would
-/// make every follower an authority its operator never granted.
-///
-/// # It does not yet detect being sent back to itself
-///
-/// Nothing here compares the target against this node. If the one peer declared
-/// `writable` **is** this node — which an operator produces by draining the
-/// leader, since dropping `WRITABLE` is local and leaves the replica row saying
-/// otherwise — each hop dials this node again and spends another thread and
-/// another connection. It does not recurse on one stack; it exhausts the node.
-///
-/// The endpoint cannot be used to recognise the loop, for the reason the target
-/// is not found by endpoint in the first place (Q-108): a node's own declared
-/// endpoints are empty by default and need not be spelled the way a peer spells
-/// them, so the check would pass in exactly the deployments that need it. The
-/// answer is a hop marker on the request, which is a wire-format change and is
-/// held as **Q-109** rather than approximated here.
-///
-/// Until then this is an operational constraint and is written down as one: a
-/// node being drained has its replica row corrected first, or it is drained
-/// while nothing writes to it.
-pub(crate) fn forward(db: &Db, request: &Request) -> Result<(frame::Kind, Vec<u8>)> {
-    // The store's own words travel verbatim, as `Refused` documents — reading
-    // the peer list can fail by naming two writable peers, and "two leaders are
-    // declared" is precisely what the operator needs to be told.
-    let declared = db.writable_peer().map_err(|why| Error::Refused {
-        message: why.to_string(),
-    })?;
-    let Some(peer_row) = declared else {
-        return Err(Error::NoWritablePeer);
-    };
-    // A forward is a client of that node, so it dials where a client reaches it
-    // (`CLIENTS AT`, ADR-0101) — the row's own address is the peer door in a
-    // cluster run with peer credentials, and speaks TLS rather than this protocol.
-    let mut peer = client::Client::connect(peer_row.clients.unwrap_or(peer_row.endpoint))?;
-    peer.relay(request)
 }
 
 #[cfg(test)]

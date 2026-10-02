@@ -2534,6 +2534,15 @@ mod tests {
         fn commits(&self) -> tokio::sync::watch::Receiver<u64> {
             self.db.commits().watching()
         }
+
+        fn coordinated(
+            &self,
+            _: [u8; NODE_ID_LEN],
+            _: &crate::assertion::Assertion,
+            _: &crate::coordination::Coordinate,
+        ) -> std::result::Result<tessaridb::Coordinated, String> {
+            Err("this test door carries no requests".to_owned())
+        }
     }
 
     #[test]

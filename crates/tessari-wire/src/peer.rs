@@ -103,6 +103,14 @@ pub enum PeerFrame {
     /// The leader's round on a held stream: one answer per log asked, sent the
     /// moment a commit gives it something to send, or empty as a heartbeat.
     Streamed,
+    /// A node asking another to answer a request it cannot, for a caller it
+    /// verified, under a signed assertion (ADR-0108 D1–D3).
+    Coordinate,
+    /// The answer, in the caller's surface's shape.
+    Coordinated,
+    /// The answering node declining, with its reason — its own tag for the
+    /// reason [`Self::Unsubscribed`] has one.
+    NotCoordinated,
 }
 
 impl PeerFrame {
@@ -141,6 +149,9 @@ impl PeerFrame {
             Self::StateEnd => 21,
             Self::Stream => 22,
             Self::Streamed => 23,
+            Self::Coordinate => 24,
+            Self::Coordinated => 25,
+            Self::NotCoordinated => 26,
         }
     }
 
@@ -164,6 +175,9 @@ impl PeerFrame {
             21 => Some(Self::StateEnd),
             22 => Some(Self::Stream),
             23 => Some(Self::Streamed),
+            24 => Some(Self::Coordinate),
+            25 => Some(Self::Coordinated),
+            26 => Some(Self::NotCoordinated),
             _ => None,
         }
     }
@@ -673,6 +687,9 @@ mod tests {
             (PeerFrame::StateEnd, 21),
             (PeerFrame::Stream, 22),
             (PeerFrame::Streamed, 23),
+            (PeerFrame::Coordinate, 24),
+            (PeerFrame::Coordinated, 25),
+            (PeerFrame::NotCoordinated, 26),
         ];
         for (kind, tag) in expected {
             assert_eq!(kind.tag(), tag, "{kind:?}");

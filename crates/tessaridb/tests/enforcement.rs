@@ -438,7 +438,32 @@ const TABLES: &[Table] = &[
         // frame that answers it to a caller who was NOT authorized for the
         // request that was redirected — the address of every member would then
         // be readable without a sign-in.
-        expected: 28,
+        //
+        // 32 since any node answers any request (G054, ADR-0108 D1–D3):
+        //
+        //   * `Db::coordinate_through` installs, once, who carries a request
+        //     this node cannot answer to the node that can. Classified
+        //     **ENFORCED, at the answering end**: the carried script runs there
+        //     in a session acting as the asserted user, whose grants decide —
+        //     after the door believed a signature by the proven peer, the
+        //     account digest matched that node's own catalog, the user's reach
+        //     lay inside the peer's subscription, and no statement that changes
+        //     authority or membership was in it (`coordinated::*`,
+        //     `assertion::tests::*`, serving
+        //     `a_follower_answers_a_client_that_cannot_follow_a_redirect`).
+        //     Re-classification trigger: anything outside the starting process
+        //     able to install a coordinator — it would then choose who the store
+        //     believes callers are.
+        //   * `Db::coordinator` hands it to the two surfaces; **exempt on
+        //     `coordinate_through`'s ground**, with the same trigger.
+        //   * `Db::answers_instead` names the node a refusal points at, from the
+        //     refusal and the member rows; **exempt on `member`'s ground** — both
+        //     surfaces call it only after the request was authorized here and
+        //     refused for where it must run.
+        //   * `Db::among` gives every session the peer directory (Q-863);
+        //     **exempt on `gather_through`'s ground**: set once by the starting
+        //     process, and it decides only which node a refusal names.
+        expected: 32,
         count: |text| public_functions(&block(text, "impl Db")),
     },
     Table {
@@ -1066,7 +1091,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // 134 since a write can wait for a majority (G053 SG2, ADR-0106 D6):
     // `Store::follower_sent` and `Store::follower_asked`, exempt, and
     // `Store::await_held`, not a data path — classified above.
-    assert_eq!(total, 134, "the counted tables no longer sum to 134");
+    //
+    // 138 since any node answers any request (G054, ADR-0108): four on `Db`,
+    // `coordinate_through` enforced and three exempt — classified above.
+    assert_eq!(total, 138, "the counted tables no longer sum to 138");
 }
 
 /// Every `.rs` file under a directory.

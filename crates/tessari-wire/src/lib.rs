@@ -56,6 +56,8 @@
 #![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 #[cfg(feature = "server")]
+mod assertion;
+#[cfg(feature = "server")]
 mod campaign;
 #[cfg(feature = "server")]
 mod carrier;
@@ -64,6 +66,8 @@ mod client;
 mod collection;
 #[cfg(feature = "server")]
 mod conversation;
+#[cfg(feature = "server")]
+mod coordination;
 mod copying;
 #[cfg(feature = "server")]
 mod credential;
@@ -102,6 +106,10 @@ mod vault;
 use std::time::Duration;
 
 #[cfg(feature = "server")]
+pub use crate::assertion::{
+    Assertion, Disbelieved, Principal, Replays, Signed, nonce, now_ms, request_digest,
+};
+#[cfg(feature = "server")]
 pub use crate::campaign::{Standing, Stood};
 #[cfg(feature = "server")]
 pub use crate::carrier::{Admission, Carrier};
@@ -111,6 +119,10 @@ pub use crate::collection::{
     Collect, Collected, Collector, Following, NoLog, Origin, Serving, StreamAsk, Streamed,
     Subscriptions, logs_to_collect,
 };
+#[cfg(feature = "server")]
+pub use crate::conversation::render_coordinated;
+#[cfg(feature = "server")]
+pub use crate::coordination::{Coordinate, Coordinator, account, admit_asserted};
 #[cfg(feature = "server")]
 pub use crate::copying::{Copied, copy};
 pub use crate::credential::{fingerprint, names, presented};

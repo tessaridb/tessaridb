@@ -1564,6 +1564,21 @@ pub enum Error {
     #[error("this node is not taking a sign-in for that user right now")]
     SignInThrottled,
 
+    /// A statement that changes authority or membership, or reads the whole
+    /// store, arrived through another node acting for its caller (ADR-0108 D2).
+    ///
+    /// Such a statement is taken only from a caller who proved a credential to
+    /// the node that judges it, so a member cannot widen a user, add a member or
+    /// take the store's backup by asking another node to act for somebody.
+    #[error(
+        "`{statement}` is not taken through another node; send it to the node that \
+         leads, signed in there"
+    )]
+    MayNotTravel {
+        /// The statement, as the language spells it.
+        statement: &'static str,
+    },
+
     /// A passphrase was presented while guesses at it are being made to wait
     /// (ADR-0092 D2).
     ///

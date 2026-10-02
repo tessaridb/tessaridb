@@ -383,6 +383,8 @@ pub enum Ask<'a> {
     Records(Collect),
     /// One page of a shard's records, from that shard's leader (G033).
     Gather(&'a Gather),
+    /// A request this node cannot answer, for a caller it verified (ADR-0108).
+    Coordinate(&'a crate::coordination::Coordinate),
 }
 
 /// What the other end answered with.
@@ -401,6 +403,8 @@ pub enum Answered {
     Collected(Collected),
     /// One page of a shard's records.
     Gathered(Page),
+    /// The answer to a carried request.
+    Coordinated(tessaridb::Coordinated),
 }
 
 /// Reach the peer `at` on `address`, and exchange greetings.
@@ -569,6 +573,21 @@ fn exchange(
                     Err(Error::Uncollectable { from })
                 }
                 Some(PeerFrame::Unsubscribed) => Err(Error::Unsubscribed),
+                Some(_) => Err(Error::OutOfTurn { tag }),
+                None => Err(Error::UnknownFrame { tag }),
+            }
+        }
+        Ask::Coordinate(request) => {
+            frame::write_tagged(&mut link, PeerFrame::Coordinate.tag(), &request.encode())?;
+            let (tag, body) = answer(&mut link)?;
+            match PeerFrame::from_tag(tag) {
+                Some(PeerFrame::Coordinated) => Ok((
+                    heard,
+                    Answered::Coordinated(crate::coordination::decode_answer(&body)?),
+                )),
+                Some(PeerFrame::NotCoordinated) => Err(Error::NotCoordinated(
+                    String::from_utf8_lossy(&body).into_owned(),
+                )),
                 Some(_) => Err(Error::OutOfTurn { tag }),
                 None => Err(Error::UnknownFrame { tag }),
             }

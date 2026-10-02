@@ -443,7 +443,10 @@ pub(crate) fn failure(error: &Error) -> Answer {
         | Error::GrantedUserCannotBackUp { .. }
         | Error::GrantedUserCannotDeclare { .. }
         | Error::NotYours { .. }
-        | Error::WiderThanYou { .. } => 403,
+        | Error::WiderThanYou { .. }
+        // Carried here from another node, and authority or membership changes
+        // only for a caller signed in to the node that judges it (ADR-0108 D2).
+        | Error::MayNotTravel { .. } => 403,
         // The caller wrote it wrong, and no amount of changing the data helps.
         // A new password that is not one is a bad request rather than a
         // refusal: nothing about the caller's authority is in question.
@@ -550,7 +553,7 @@ pub(crate) fn script_failure(db: &Db, error: &Error, landed: bool, path: &str) -
 #[cfg(test)]
 mod corpus;
 mod metrics;
-mod scripts;
+pub(crate) mod scripts;
 pub(crate) mod series;
 mod topics;
 pub(crate) mod vault;

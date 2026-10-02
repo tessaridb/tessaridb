@@ -226,15 +226,11 @@ pub enum Error {
     #[error("a frame's body is not the shape its own header says")]
     Malformed,
 
-    /// This node may not take the write, and knows of no peer that may.
-    ///
-    /// The forward's target is missing rather than unreachable: nothing is
-    /// declared `writable`, so there is no address to try. Said plainly and
-    /// separately from a failed dial, because the two have different remedies —
-    /// one is a `DEFINE REPLICA … ROLES writable` nobody ran, the other is a
-    /// peer that is down.
-    #[error("this node does not accept writes, and no peer is declared writable")]
-    NoWritablePeer,
+    /// The node a request was carried to would not act for the caller
+    /// (ADR-0108 D3), in its own words: an assertion it did not believe, or an
+    /// account or reach it would not admit.
+    #[error("{0}")]
+    NotCoordinated(String),
 
     /// The store said no, and this is what it said.
     ///

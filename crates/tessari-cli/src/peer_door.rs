@@ -68,4 +68,26 @@ impl tessari_wire::Holding for PeerDoor {
     fn commits(&self) -> tokio::sync::watch::Receiver<u64> {
         self.db.commits().watching()
     }
+
+    // A request another node carried here for its caller (ADR-0108 D1–D3). The
+    // door believed the signature; this node judges the account and the reach,
+    // runs the script as that user — its own grants decide — and answers in
+    // the shape the caller's surface reads.
+    fn coordinated(
+        &self,
+        from: [u8; tessari_storage::NODE_ID_LEN],
+        assertion: &tessari_wire::Assertion,
+        asked: &tessari_wire::Coordinate,
+    ) -> Result<tessaridb::Coordinated, String> {
+        let mut session = tessari_wire::admit_asserted(&self.db, from, assertion)?;
+        let ran = session.run_coordinated(
+            (asked.namespace.as_deref(), asked.database.as_deref()),
+            &asked.script,
+            &asked.parameters,
+        );
+        Ok(match asked.surface {
+            tessaridb::Surface::Wire { .. } => tessari_wire::render_coordinated(&self.db, &ran),
+            tessaridb::Surface::Http => tessari_http::render_coordinated(&self.db, &ran),
+        })
+    }
 }
