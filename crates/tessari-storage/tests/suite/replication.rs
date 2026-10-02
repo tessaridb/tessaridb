@@ -470,6 +470,33 @@ fn a_commit_files_under_this_nodes_own_writer_and_nobody_elses() {
 }
 
 #[test]
+fn a_placed_commit_names_the_log_its_position_counts_in() {
+    // ADR-0106 D6. A write waiting for a majority waits for followers to hold
+    // ONE log through ONE position, so the commit must say which log — alone,
+    // this node's own; under a leadership, the line's.
+    let store = store_on(&backend());
+    let mut transaction = store.begin().unwrap();
+    transaction.put(at("alone"), b"one".to_vec());
+    let alone = transaction.commit_placed().unwrap();
+    assert_eq!(alone.log, mine(&store));
+    assert_eq!(alone.sequence, store.committed_tail(mine(&store)).unwrap());
+
+    store.hold(
+        Epoch::new(3),
+        tessari_storage::Lease::taken(tessari_storage::LEASE_TTL),
+    );
+    let mut transaction = store.begin().unwrap();
+    transaction.put(at("led"), b"two".to_vec());
+    let led = transaction.commit_placed().unwrap();
+    let line = store.line_log(crate::FIXTURE_HOME).unwrap();
+    assert_eq!(
+        led.log, line,
+        "a led commit counted in a log it was not filed in"
+    );
+    assert_eq!(led.sequence, store.committed_tail(line).unwrap());
+}
+
+#[test]
 fn a_commit_carries_the_leadership_it_was_made_under() {
     // ADR-0059's write half, which no commit performed: every record carried
     // epoch 0, so the leadership that wrote a log's tail — the first half of the

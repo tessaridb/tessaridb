@@ -222,6 +222,10 @@ pub struct Store {
     /// header: a follower's progress is a fact about a live relationship, and a
     /// persisted copy of it would outlive the relationship it describes.
     followers: Arc<Followers>,
+    /// What each follower has made durable of this leader's logs, which a write
+    /// waiting for a majority reads (ADR-0106 D6). In memory for the same reason
+    /// as `followers`.
+    holds: Arc<crate::holds::Holds>,
     /// What this node has collected for itself, and when it was last level.
     ///
     /// Held in memory for the reason `crate::collections` gives in its own

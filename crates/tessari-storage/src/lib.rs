@@ -39,6 +39,7 @@ mod feed;
 mod followers;
 mod gate;
 mod graph;
+mod holds;
 mod index;
 #[cfg(test)]
 mod index_unchanged_tests;
@@ -116,7 +117,7 @@ pub use state::{StateReader, TopicHead};
 pub use store::{Health, Store};
 pub use tessari_encoding::{BUILD_VERSION, LogId, NODE_ID_LEN, Roles, Writer};
 pub use transaction::{
-    Expansion, Nearby, Neighbour, RecordAddress, Region, SearchCounts, StoredRecord, Transaction,
-    Window,
+    Committed, Expansion, Nearby, Neighbour, RecordAddress, Region, SearchCounts, StoredRecord,
+    Transaction, Window,
 };
 pub use vault::{OpenVault, SealState};

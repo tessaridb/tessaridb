@@ -2,7 +2,7 @@
 
 use std::sync::atomic::Ordering;
 
-use tessari_encoding::NODE_ID_LEN;
+use tessari_encoding::{LogId, NODE_ID_LEN};
 use tessari_types::Sequence;
 
 use crate::catalog::Reach;
@@ -71,6 +71,43 @@ impl Store {
     /// first one would report as never having collected.
     pub fn follower_served(&self, node: [u8; NODE_ID_LEN], home: Reach, reached: Sequence) {
         self.followers.served(node, home, reached);
+    }
+
+    /// Record that this leader sent `node` the records of `log` through
+    /// `through` — the bound on what that follower's next ask can vouch for.
+    pub fn follower_sent(&self, node: [u8; NODE_ID_LEN], log: LogId, through: Sequence) {
+        self.holds.sent(node, log, through);
+    }
+
+    /// Record that `node` asked for `log` from just after `holds` — what it has
+    /// made durable, counted only as far as this leader sent it (ADR-0106 D6).
+    ///
+    /// The latest ask replaces the last, so a follower that re-seeded and asks
+    /// from an earlier position stops counting toward a majority it no longer
+    /// belongs to.
+    pub fn follower_asked(&self, node: [u8; NODE_ID_LEN], log: LogId, holds: Sequence) {
+        self.holds.asked(node, log, holds);
+    }
+
+    /// Wait until `needed` of `voters` hold `log` through `at`, for at most
+    /// `within`, and answer the voters that do.
+    ///
+    /// Blocks the calling thread, so it is called off the async runtime — where
+    /// a commit already runs. The answer is the same shape whether the wait was
+    /// met or ran out, because a refusal names who held the write.
+    #[must_use]
+    pub fn await_held(
+        &self,
+        log: LogId,
+        at: Sequence,
+        voters: &[[u8; NODE_ID_LEN]],
+        needed: usize,
+        within: std::time::Duration,
+    ) -> Vec<[u8; NODE_ID_LEN]> {
+        let deadline = std::time::Instant::now()
+            .checked_add(within)
+            .unwrap_or_else(std::time::Instant::now);
+        self.holds.await_held(log, at, voters, needed, deadline)
     }
 
     /// Record what this node collected for itself, and whether it arrived.

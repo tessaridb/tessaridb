@@ -72,6 +72,7 @@ impl Store {
             retention: crate::retention::ProcessRetention::shared(),
             log_holds: crate::log_holds::LogHolds::shared(),
             followers: Arc::new(Followers::default()),
+            holds: Arc::new(crate::holds::Holds::default()),
             collections: Arc::new(crate::collections::Collections::default()),
             lease: Arc::new(crate::lease::Held::default()),
             leading: Arc::new(std::sync::Mutex::new(None)),

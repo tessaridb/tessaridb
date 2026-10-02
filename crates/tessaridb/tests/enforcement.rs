@@ -876,7 +876,19 @@ const TABLES: &[Table] = &[
         // peer's answer — neither reachable from a session or a route — and it
         // moves records already in the store, creating none. Re-classification
         // trigger: a caller reachable from a session or a route.
-        expected: 58,
+        //
+        // 59-61 since a write can wait for a majority (G053 SG2, ADR-0106 D6):
+        // `Store::follower_sent` and `Store::follower_asked` are classified
+        // **exempt, on `follower_served`'s ground** — they write a process-local
+        // record of what a follower was sent and what its ask says it holds, no
+        // record, catalog entry or grant, and their one caller is the peer
+        // door's `Serving::collected`, after the follower proved its credential.
+        // `Store::await_held` is **not a data path**: it answers which voters
+        // hold a position and reads nothing a caller could not already see.
+        // Re-classification trigger, and it is sharper than its neighbours': a
+        // writer reachable from a session or a route would let a caller forge
+        // the acknowledgement a `MAJORITY` write is released on.
+        expected: 61,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1050,7 +1062,11 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // 131 since a single-leader range keeps one history (G053 SG2d,
     // ADR-0107): four name-only methods on `Store` and `adopt_into_line`,
     // exempt — classified above.
-    assert_eq!(total, 131, "the counted tables no longer sum to 131");
+    //
+    // 134 since a write can wait for a majority (G053 SG2, ADR-0106 D6):
+    // `Store::follower_sent` and `Store::follower_asked`, exempt, and
+    // `Store::await_held`, not a data path — classified above.
+    assert_eq!(total, 134, "the counted tables no longer sum to 134");
 }
 
 /// Every `.rs` file under a directory.

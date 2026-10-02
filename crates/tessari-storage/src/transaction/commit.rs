@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tessari_constants::{COMMIT_BACKOFF_CEILING, COMMIT_BACKOFF_STEP, MAX_COMMIT_ATTEMPTS};
-use tessari_encoding::{CausalStamp, LogRecord, Mutation, RecordValue, StampedValue};
+use tessari_encoding::{CausalStamp, LogId, LogRecord, Mutation, RecordValue, StampedValue};
 use tessari_types::{Epoch, Sequence, ShardId, TableId};
 
 use super::{RecordAddress, Transaction};
@@ -32,6 +32,15 @@ thread_local! {
     /// gate: the window a split must not fall into (ADR-0095 D8).
     static AFTER_PLACEMENT: std::cell::RefCell<Option<Hook>> =
         const { std::cell::RefCell::new(None) };
+}
+
+/// Where a commit landed: one position, in one log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Committed {
+    /// The log the position counts in.
+    pub log: LogId,
+    /// The position the commit was written at.
+    pub sequence: Sequence,
 }
 
 /// What becomes of a settled transaction's batch.
@@ -241,6 +250,21 @@ impl Transaction<'_> {
     /// lost the race for the committed tail, or a substrate error.
     pub fn commit(self) -> Result<Sequence> {
         self.settle(Settle::Apply)
+            .map(|committed| committed.sequence)
+    }
+
+    /// [`commit`](Self::commit), answering the log the position counts in.
+    ///
+    /// A commit lands in ONE log — the line's log of the home it writes under a
+    /// leadership, this node's own otherwise — and a write waiting for a
+    /// majority waits for followers to hold that log through that position
+    /// (ADR-0106 D6). A position without its log is a number in no counter.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`commit`](Self::commit).
+    pub fn commit_placed(self) -> Result<Committed> {
+        self.settle(Settle::Apply)
     }
 
     /// Run every check a commit runs, then discard the work.
@@ -269,16 +293,19 @@ impl Transaction<'_> {
         self.settle(Settle::Discard).map(|_| ())
     }
 
-    fn settle(mut self, settle: Settle) -> Result<Sequence> {
+    fn settle(mut self, settle: Settle) -> Result<Committed> {
         if self.writes.is_empty() {
             // The log position, not this transaction's snapshot. Nothing was
             // committed, so neither answer is a position anything was written
             // at — but the return names a log position, and the snapshot stopped
             // being one when the version was separated from it (Q-614).
-            return self.store.committed_tail(
-                self.store
-                    .own_log(crate::store::UNPARTITIONED_REPORT_HOME)?,
-            );
+            let log = self
+                .store
+                .own_log(crate::store::UNPARTITIONED_REPORT_HOME)?;
+            return Ok(Committed {
+                log,
+                sequence: self.store.committed_tail(log)?,
+            });
         }
         // First, and after the empty check rather than before it. First because
         // a node that has run out of leadership should not be doing schema
@@ -491,7 +518,10 @@ impl Transaction<'_> {
                 // rehearsal and a write, and it is one line so that it can only ever
                 // be the whole difference.
                 if matches!(settle, Settle::Discard) {
-                    return Ok(commit_at);
+                    return Ok(Committed {
+                        log,
+                        sequence: commit_at,
+                    });
                 }
                 // Before the batch can be read: a reader at this version must not be
                 // answered from name or table rows held from before it.
@@ -534,7 +564,10 @@ impl Transaction<'_> {
                         if discarded > 0 {
                             self.store.discarded(discarded);
                         }
-                        return Ok(commit_at);
+                        return Ok(Committed {
+                            log,
+                            sequence: commit_at,
+                        });
                     }
                     // The position moved between reading it and applying — or the
                     // batch was derived on a staged one that did not land — so the

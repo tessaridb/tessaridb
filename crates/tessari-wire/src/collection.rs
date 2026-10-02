@@ -585,6 +585,15 @@ impl Origin for Serving<'_> {
                 message: why.to_string(),
             })?;
         let previous = preceding(self.log, over, served, asked.from)?;
+        // The ask is the acknowledgement (ADR-0106 D6): a follower asks for the
+        // first position it does not hold, once it has applied and synced what
+        // it was sent. Counted only as far as this leader sent it — see
+        // `tessari_storage::Store::follower_asked`.
+        self.log.follower_asked(
+            follower,
+            served,
+            Sequence::new(asked.from.get().saturating_sub(1)),
+        );
         // A position below where this log now begins cannot be caught up from
         // the log: it is the answer to *copy my state*, not to *catch me up*
         // (ADR-0094 D3), and it crosses as the frame that already says so.
@@ -613,6 +622,12 @@ impl Origin for Serving<'_> {
         // follower's ask, because a position recorded against any other log is
         // two unrelated counters subtracted (Q-630).
         self.log.follower_served(follower, asked.home, reached);
+        // Only records sent count toward what a later ask may vouch for — a
+        // level answer sends nothing, and a copy that is level on its own word
+        // has not been checked against this leader's history.
+        if let Some((last, _)) = records.last() {
+            self.log.follower_sent(follower, served, *last);
+        }
         Ok(Collected {
             log: served,
             previous,
@@ -1378,6 +1393,53 @@ mod tests {
             "the leadership at sequence 2, not the one at the tail"
         );
         assert_eq!(collected.records.len(), 1, "one record stands after 2");
+    }
+
+    #[test]
+    fn an_ask_tells_the_leader_what_the_follower_holds() {
+        // ADR-0106 D6. A follower asks for the first position it does NOT hold,
+        // once it has applied what it was sent — so an ask past what this
+        // leader sent is the acknowledgement a write waiting for a majority
+        // needs. An ask past what it was NOT sent vouches for nothing: a copy
+        // of equal length that a deposed leadership finished asks the same way.
+        let authority = Authority::new();
+        let leader = logged(&[1, 1, 1]);
+        let (address, door) = serving(&authority, &leader, 3);
+        let log = store_log(&leader);
+        let held = |at: u64| {
+            leader.store().await_held(
+                log,
+                Sequence::new(at),
+                &[THERE],
+                1,
+                std::time::Duration::ZERO,
+            )
+        };
+
+        drop(served(
+            collect(&authority, address, 3, 64).expect("a follower may collect"),
+        ));
+        assert!(
+            held(2).is_empty(),
+            "a follower's word counted for positions this leader never sent it"
+        );
+
+        drop(served(
+            collect(&authority, address, 1, 64).expect("sent from the start"),
+        ));
+        drop(served(
+            collect(&authority, address, 4, 64).expect("and asked past it"),
+        ));
+        door.join().expect("the door's thread");
+        assert_eq!(
+            held(3),
+            vec![THERE],
+            "the follower holds what it asked past"
+        );
+        assert!(
+            held(4).is_empty(),
+            "a position the follower asked for counted as held"
+        );
     }
 
     #[test]
