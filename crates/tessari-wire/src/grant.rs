@@ -473,15 +473,15 @@ impl Voter {
                 tail: mine.tail,
             });
         }
-        // Adopted before it is judged, and judged against what was seen BEFORE
-        // this ballot — otherwise every ballot is trivially not below the
-        // number it just installed. Adoption is unconditional on purpose: an
-        // epoch is a cluster-wide count, so seeing a higher one anywhere means
-        // the cluster has moved, whoever showed it and whatever else is wrong
-        // with them. Raft adopts a higher term from an RPC it is about to
-        // reject, for this reason.
+        // Judged against what was seen BEFORE this ballot, and adopted only
+        // past the live-grant check below (Q-880, Raft's leader stickiness,
+        // thesis §4.2.3). Adopting on every ballot let a challenger this voter
+        // REFUSED for a live grant end that grant: the incumbent's renewal then
+        // read as an epoch already decided, and a lease nobody had taken was
+        // lost. Epoch order does not need it — a higher epoch that won was
+        // granted by a majority, each member adopted it as it granted, and any
+        // majority for a lower epoch includes one of them.
         let seen = self.seen;
-        self.seen = seen.max(ballot.epoch);
         // Before the waiting refusals below, for the reason `LogBehind` is
         // first: a candidate told that the cluster has passed it has something
         // to do about it, where *wait six seconds* leaves it to stand again at
@@ -517,7 +517,13 @@ impl Voter {
                     for_the_next: free.saturating_duration_since(now),
                 });
             }
-        } else {
+        }
+        // Past the live grant, the ballot is one this voter could grant, and its
+        // epoch is adopted whatever comes next — including the restart refusal
+        // below: a restarted voter that forgot a grant must still not go back to
+        // granting below what it has been shown (G025 S3.2).
+        self.seen = seen.max(ballot.epoch);
+        if self.granted.is_none() {
             // Granted nothing since it started, so it cannot rule out having
             // granted something before it started.
             // The longer of the policy and the build: what this voter granted
@@ -1184,58 +1190,43 @@ mod tests {
     }
 
     #[test]
-    fn an_epoch_seen_after_a_grant_holds_that_grant_to_the_higher_number() {
-        // The same rule on the other branch: a voter holding a grant at 3 that
-        // is then shown 9 by somebody else must not go back to granting 4 when
-        // its hold comes free, because the cluster is at 9 and 4 is behind it.
+    fn an_epoch_refused_for_a_live_grant_does_not_end_that_grant() {
+        // Q-880, Raft's leader stickiness (thesis §4.2.3). A voter holding a
+        // live grant for A refuses a challenger at 9 — and until G053 SG2c it
+        // adopted 9 as it refused, then refused A's own renewal at 3 as an
+        // epoch already decided. A lease nobody had taken was lost, and a
+        // leader-only acknowledgement with it (run 42, link 4).
+        //
+        // Epoch order does not need the adoption: a 9 that WON was granted by
+        // a majority, every member of which adopted 9 as it granted, and any
+        // majority for a lower epoch includes one of them.
         let opened = base();
         let mut voter = settled(opened);
+        let ballot = |epoch: u64, candidate| Ballot {
+            epoch: Epoch::new(epoch),
+            candidate,
+            range: tessari_types::Reach::Store,
+        };
         assert_eq!(
-            voter.asked(
-                &Ballot {
-                    epoch: Epoch::new(3),
-                    candidate: A,
-                    range: tessari_types::Reach::Store,
-                },
-                opened,
-                LEVEL,
-                LEVEL
-            ),
+            voter.asked(&ballot(3, A), opened, LEVEL, LEVEL),
             Vote::Granted { hold: LEASE_TTL }
         );
         assert_eq!(
-            voter.asked(
-                &Ballot {
-                    epoch: Epoch::new(9),
-                    candidate: B,
-                    range: tessari_types::Reach::Store,
-                },
-                opened,
-                LEVEL,
-                LEVEL
-            ),
+            voter.asked(&ballot(9, B), opened, LEVEL, LEVEL),
             Vote::Refused(Refused::EarlierGrantStillAlive {
                 for_the_next: LEASE_TTL
             }),
             "the hold it made for A is still alive, so 9 is refused"
         );
-
-        let free = after(opened, LEASE_TTL);
         assert_eq!(
-            voter.asked(
-                &Ballot {
-                    epoch: Epoch::new(4),
-                    candidate: A,
-                    range: tessari_types::Reach::Store,
-                },
-                free,
-                LEVEL,
-                LEVEL
-            ),
-            Vote::Refused(Refused::EpochAlreadyDecided {
-                granted: Epoch::new(9)
-            }),
-            "refused against what was SEEN, which is above what was granted"
+            voter.asked(&ballot(3, A), after(opened, tenths(3)), LEVEL, LEVEL),
+            Vote::Granted { hold: LEASE_TTL },
+            "the refused challenger ended the incumbent's renewal"
+        );
+        assert_eq!(
+            voter.seen(),
+            Epoch::new(3),
+            "a refused ballot raised the floor"
         );
     }
 
