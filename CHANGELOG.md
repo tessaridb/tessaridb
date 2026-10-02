@@ -106,6 +106,11 @@ compares carries no pre-release suffix.
   every ballot, rightly, and with the leader gone nothing brought the candidate
   level. A candidate whose leader does not answer now catches up from the peers
   that hold its range, and then wins.
+- **A follower finds its new leader as soon as it votes for it.** It learned of
+  a new leadership only at its next greeting, up to a second after granting it,
+  so the new leader's first writes at `ACKNOWLEDGE MAJORITY` waited for a copy
+  nobody was sending: a leader kill took about 1 020 ms to a write at p50. A
+  grant to a new epoch now greets at once — about 850-950 ms, under CPU load too.
 
 - **A refused challenger no longer ends a live lease**: a voter holding a live
   grant adopts a ballot's epoch only past that grant (Q-880).

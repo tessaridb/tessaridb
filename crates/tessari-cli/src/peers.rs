@@ -74,6 +74,13 @@ pub(crate) fn host(
     // majority each.
     let deciding = std::sync::Arc::new(tessari_wire::Deciding::started());
     let wakes = std::sync::Arc::new(Wakes::default());
+    // A grant to a new leadership greets at once (Q-900): the voter is the
+    // first to know the leader changed, and a follower that waited for its next
+    // greeting followed nobody while the new leader's writes waited for copies.
+    {
+        let wakes = std::sync::Arc::clone(&wakes);
+        deciding.when_granted_anew(Box::new(move || wakes.greeting.notify_one()));
+    }
     // Served on the runtime, each peer in its own task (ADR-0085 §7);
     // its supervisor starts it again after a panic, as every cadence is.
     {

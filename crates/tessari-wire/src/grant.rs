@@ -410,6 +410,11 @@ impl Voter {
         Self::started_at(Instant::now())
     }
 
+    /// The epoch of the grant this voter holds, if it holds one.
+    pub(crate) fn granted_epoch(&self) -> Option<Epoch> {
+        self.granted.map(|granted| granted.epoch)
+    }
+
     /// A voter that started at a stated instant.
     ///
     /// The instant is taken rather than read so that the restart rule can be
@@ -1541,6 +1546,44 @@ mod tests {
             deciding.granted_elsewhere_on(shard(3), [2; NODE_ID_LEN]),
             None
         );
+    }
+
+    #[test]
+    fn a_grant_to_a_new_store_epoch_is_announced_and_a_renewal_is_not() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let deciding = settled_deciding();
+        let announced = Arc::new(AtomicUsize::new(0));
+        let counting = Arc::clone(&announced);
+        assert!(deciding.when_granted_anew(Box::new(move || {
+            counting.fetch_add(1, Ordering::Relaxed);
+        })));
+        let now = base();
+        let candidate = [1; NODE_ID_LEN];
+
+        assert_eq!(
+            deciding.asked(&store_ballot(1, candidate), now, LEVEL, LEVEL),
+            Vote::Granted { hold: LEASE_TTL }
+        );
+        assert_eq!(announced.load(Ordering::Relaxed), 1);
+        // The incumbent renewing its epoch is the same leadership.
+        assert_eq!(
+            deciding.asked(&store_ballot(1, candidate), now, LEVEL, LEVEL),
+            Vote::Granted { hold: LEASE_TTL }
+        );
+        assert_eq!(announced.load(Ordering::Relaxed), 1);
+        // A placed range's line is not the store's leadership.
+        let _ = deciding.asked(&ballot(1, 2, shard(1)), now, LEVEL, LEVEL);
+        assert_eq!(announced.load(Ordering::Relaxed), 1);
+        // Free again, a later epoch is a new leadership.
+        let later = now
+            .checked_add(LEASE_TTL.saturating_mul(2))
+            .expect("in range");
+        assert_eq!(
+            deciding.asked(&store_ballot(2, candidate), later, LEVEL, LEVEL),
+            Vote::Granted { hold: LEASE_TTL }
+        );
+        assert_eq!(announced.load(Ordering::Relaxed), 2);
     }
 
     #[test]
