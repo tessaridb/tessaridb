@@ -2118,13 +2118,11 @@ fn three_nodes_elect_lose_their_leader_and_go_on_answering() {
                 continue;
             }
             if let Ok(mut client) = Client::connect(surface)
-                && client
-                    .run(
-                        "USE NAMESPACE prod; USE DATABASE orders; \
-                         CREATE item:2 = { n: 2 };",
-                        None,
-                    )
-                    .is_ok()
+                && landed(&client.run(
+                    "USE NAMESPACE prod; USE DATABASE orders; \
+                     CREATE item:2 = { n: 2 };",
+                    None,
+                ))
             {
                 successor = Some(index);
                 break;
@@ -3539,15 +3537,13 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
         let began = Instant::now();
         while ![0, 1].into_iter().any(|index| {
             Client::connect(GATHERING[index].0).is_ok_and(|mut client| {
-                client
-                    .run(
-                        &format!(
-                            "USE NAMESPACE prod; USE DATABASE shop; \
-                             CREATE orders:'{key}' = {{ n: 1, note: '{note}' }};"
-                        ),
-                        None,
-                    )
-                    .is_ok()
+                landed(&client.run(
+                    &format!(
+                        "USE NAMESPACE prod; USE DATABASE shop; \
+                         CREATE orders:'{key}' = {{ n: 1, note: '{note}' }};"
+                    ),
+                    None,
+                ))
             })
         }) {
             assert!(
@@ -3782,7 +3778,7 @@ fn a_placement_is_handed_over_while_writes_continue() {
         let began = Instant::now();
         loop {
             let done = HANDING.iter().any(|(surface, _)| {
-                Client::connect(surface).is_ok_and(|mut client| client.run(script, None).is_ok())
+                Client::connect(surface).is_ok_and(|mut client| landed(&client.run(script, None)))
             });
             if done {
                 return Instant::now();
