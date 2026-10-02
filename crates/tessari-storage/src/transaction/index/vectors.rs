@@ -42,6 +42,27 @@ impl Transaction<'_> {
         Ok(graph.nearest(query, wanted, effort))
     }
 
+    /// The graph a vector index is, read whole, for a walk the caller drives.
+    ///
+    /// A filtered nearest read admits a record by reading it at the caller's
+    /// snapshot and testing the whole condition, which needs the transaction
+    /// mutably while the walk runs — so the graph is handed over rather than
+    /// walked here. `None` when the index holds no vectors' distance.
+    ///
+    /// **Approximate** to walk, like [`Self::records_by_vector`]: see
+    /// [`crate::VectorGraph::nearest_matching`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a node cannot be decoded.
+    pub fn vector_graph(&self, index: &IndexDefinition) -> Result<Option<crate::VectorGraph>> {
+        let Some(distance) = index.vector else {
+            return Ok(None);
+        };
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        crate::graph::Graph::read(self.store, &address, distance).map(Some)
+    }
+
     /// The recall this vector index was last measured at, if it ever was.
     ///
     /// `None` means nobody has measured — an index is measured when it is built,

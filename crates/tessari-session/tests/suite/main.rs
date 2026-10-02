@@ -151,6 +151,7 @@ mod vault_refusals;
 mod vault_rollback;
 mod vault_seal;
 mod vector_field_grants;
+mod vector_filtered;
 mod vector_index;
 mod vector_reads;
 mod vector_recall;

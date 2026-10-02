@@ -28,7 +28,7 @@ pub(crate) use shape_rules::{
     order_bound, shown, sought, streams, table_named,
 };
 pub(crate) use stages::{
-    Answered, Approximated, Asked, Candidates, Hopped, Joined, Prepared, Reached, Walked,
+    Answered, Approximated, Asked, Candidates, Gated, Hopped, Joined, Prepared, Reached, Walked,
 };
 
 mod asof;
@@ -41,6 +41,7 @@ mod join;
 mod keys;
 mod latest;
 mod lent;
+mod nearest;
 mod ordered;
 mod partition;
 mod phrase;

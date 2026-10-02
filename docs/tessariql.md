@@ -3772,6 +3772,46 @@ a read with no `LIMIT` (a walk has nothing to cut), a `DESC` ordering (that asks
 for the furthest), a second sort key (it orders records the graph never ranked),
 and a `GROUP BY` (it folds the records a walk would have chosen between).
 
+**A condition is walked too** (from `0.22.0-beta`):
+
+```
+SELECT * FROM notes WHERE lang = 'en' AND published = true
+ ORDER BY vector::cosine(embedding, $q)
+ LIMIT 10
+ APPROXIMATE;
+```
+
+The walk navigates the whole graph and admits a record into the answer only after
+reading it at the reader's snapshot and testing the **whole** condition, so the
+graph chooses which records are tried and never which records pass. Three
+outcomes, and the answer says which happened:
+
+- **served** — `approximate` on the plan and the `approximate` note, every record
+  passing the condition, the page full;
+- **answered exactly** — when an index on the condition has already narrowed the
+  read to no more records than the walk would visit, the read keeps that index
+  path: same cost, exact answer, no note;
+- **given back** — a walk that admitted fewer records than the `LIMIT`, or reached
+  its ceiling (thirty-two expansions per candidate it keeps — 2 048 at the engine's
+  own budget), answers nothing: the read is answered exactly with a `fell-back`
+  note from `approximate`. `APPROXIMATE` agreed to the graph's choice among the
+  nearest, never to a short page — and the exact read also fills the bound with
+  records holding no vector, which a graph cannot reach.
+
+Measured on twenty thousand clustered thirty-two-dimensional vectors (memory,
+release, `benchmarks/2026-10-03-macos-aarch64-vector-filtered.md`), recall of the
+exact filtered ten and p50 against the exact filtered read:
+
+| condition admits | recall@10 | walk p50 | exact p50 | served by the walk |
+|---|---|---|---|---|
+| half | 98.0 % | 6.8 ms | 17.6 ms | 100 of 100 |
+| a tenth | 99.9 % | 8.3 ms | 16.2 ms | 100 of 100 |
+| a hundredth | 100 % | 27.9 ms | 15.7 ms | 12 of 100 |
+
+A condition admitting about one record in a hundred is where the walk stops
+paying: most walks reach the ceiling and the read pays for the walk and the exact
+read. There is no selectivity estimate yet to choose the exact read up front.
+
 **What it buys, measured rather than claimed:** on two thousand clustered
 thirty-two-dimensional vectors, a read of the ten nearest goes from 3.7 ms to
 0.62 ms — about six times — while returning the same ten. Recall is measured by
@@ -8929,7 +8969,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.21.0", "build": "0.21.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.22.0", "build": "0.22.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

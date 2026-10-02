@@ -12,6 +12,25 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.22.0-beta — unreleased
+
+### Added
+
+- **A filtered nearest read is served by the vector graph** (G055). `WHERE …
+  ORDER BY vector::cosine|euclidean(f, $q) LIMIT k APPROXIMATE` walks the graph,
+  admitting a record only after testing the whole condition on it at the
+  reader's snapshot; it answers `approximate` with the note, every record passing
+  the condition and the page full. A condition an index narrows to no more
+  records than the walk would visit is answered exactly instead, and a walk that
+  cannot fill the page gives the read back to the exact path with a `fell-back`
+  note — never a short page. `EXPLAIN` names the graph. Recall of the exact
+  filtered ten measured at 98 %, 99.9 % and 100 % for conditions admitting a
+  half, a tenth and a hundredth of 20 000 records.
+
+### Changed
+
+- **1495 conformance cases** define the language and run in the build.
+
 ## 0.21.0-beta — 2026-10-03
 
 ### Added

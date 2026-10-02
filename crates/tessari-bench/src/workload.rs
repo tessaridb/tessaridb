@@ -27,6 +27,7 @@ use tessaridb::Db;
 pub type Failable<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 use crate::samples::{Report, Samples};
+pub(crate) use filtered::vector_filtered;
 pub(crate) use heavy::{clustered, restore, vault, vector_index};
 pub(crate) use reads::{filter, search};
 
@@ -61,6 +62,11 @@ const CAPACITY_BATCH: u64 = 2_500;
 const SECRETS: u64 = 500;
 
 const QUERIES: usize = 100;
+
+/// How many records the filtered nearest-neighbour workload writes: ten times
+/// the others, so a walk's ceiling is a fraction of the table and the cost of a
+/// selective filter shows.
+const FILTERED_RECORDS: u64 = 20_000;
 
 /// The dimension of the vectors the nearest-neighbour workload writes.
 const DIMENSIONS: usize = 32;
@@ -142,6 +148,11 @@ pub const ALL: &[Workload] = &[
         run: vector_index,
     },
     Workload {
+        name: "vector-filtered",
+        about: "a filtered nearest read walked through the graph, with recall against the exact filtered read at three selectivities",
+        run: vector_filtered,
+    },
+    Workload {
         name: "paging",
         about: "the same page by offset, by cursor, and by a cursor that cannot seek, at four depths",
         run: crate::paging::paging,
@@ -218,6 +229,7 @@ macro_rules! timed {
 }
 
 // Declared after `timed!`, which they use: a macro is in scope only below its definition.
+mod filtered;
 mod heavy;
 mod reads;
 

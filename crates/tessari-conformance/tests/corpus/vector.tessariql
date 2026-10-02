@@ -67,6 +67,22 @@ EXPLAIN SELECT * FROM points ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 2 
 EXPLAIN SELECT * FROM points ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 2;
 --- expect: value { access: 'scan', exact: true, table: 'points' }
 
+# A condition is walked too (0.22): the graph navigates every record and admits
+# one only after the whole condition passes on it, so it chooses which records
+# are tried and never which pass.
+
+--- case: a filtered read that says the word is planned through the graph
+EXPLAIN SELECT * FROM points WHERE name != 'origin' ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 2 APPROXIMATE;
+--- expect: value { access: 'approximate', exact: false, index: 'by_at', inexact: 'an approximate index answered this, so a nearer record may exist', table: 'points' }
+
+--- case: and answers only with records that pass the condition, the page full
+SELECT * FROM points WHERE name != 'origin' ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 2 APPROXIMATE;
+--- expect: rows 2
+
+--- case: a walk that cannot fill the page gives the read to the exact path, never a short page by choice
+SELECT * FROM points WHERE name = 'far' ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 2 APPROXIMATE;
+--- expect: rows 1
+
 --- case: a distance the engine does not have is refused by name
 SELECT * FROM points ORDER BY vector::manhattan(at, [0.0, 0.0]) LIMIT 1;
 --- expect: error NoSuchFunction

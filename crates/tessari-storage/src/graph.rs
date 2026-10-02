@@ -61,6 +61,10 @@ use crate::catalog::VectorDistance;
 use crate::error::Result;
 use crate::store::Store;
 
+mod filtered;
+
+pub use filtered::{Matched, filtered_ceiling};
+
 /// How many neighbours a node keeps.
 ///
 /// The graph's only real tuning knob. Too few and the walk gets stuck in a local
@@ -174,7 +178,7 @@ fn norm(vector: &[f64]) -> f64 {
 /// is stated rather than discovered: an index over more vectors than fit is a
 /// paging walk, which is a different piece of work.
 #[derive(Debug)]
-pub(crate) struct Graph {
+pub struct Graph {
     nodes: BTreeMap<RecordId, VectorNode>,
     distance: VectorDistance,
 }

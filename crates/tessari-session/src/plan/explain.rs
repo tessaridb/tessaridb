@@ -193,6 +193,20 @@ impl Session<'_> {
                         .on(named)
                         .touching(self.shards_touched(transaction, id, part)?));
                 }
+                // A filtered nearest read the statement let be approximate is
+                // walked through the graph, asked first because the read asks it
+                // first. Two outcomes the plan cannot see are the read's own: a
+                // condition index that narrows to few records answers exactly,
+                // and a walk that cannot fill the bound falls back with a note.
+                if let Some(walk) = nearest(select)
+                    && let Some(index) = self.index_on_path(transaction, id, walk.path)?
+                    && index.vector.is_some()
+                {
+                    return Ok(Plan {
+                        index: Some(index.name.clone()),
+                        ..Plan::new(AccessPath::Approximate).on(named)
+                    });
+                }
                 // Asked before the candidates, because the read asks it before
                 // the candidates — and from the same function, so the two cannot
                 // come to disagree. As in the unconditioned case, whether the
