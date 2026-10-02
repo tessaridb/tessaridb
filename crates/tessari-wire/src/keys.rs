@@ -267,12 +267,23 @@ impl PeerKeys {
     }
 
     /// Whether a handshake now would admit `presented` — asked again of a
-    /// connection that outlives its handshake, so a revocation or a removal
-    /// reaches a held stream rather than waiting for a reconnect that a stream
-    /// never makes (ADR-0108 D6).
+    /// connection that outlives its handshake, so a revocation, a removal or
+    /// the end of its validity reaches a held stream rather than waiting for a
+    /// reconnect that a stream never makes (ADR-0108 D6, Q-901).
+    ///
+    /// The chain itself was verified at the handshake and does not change, so
+    /// only what moves since is judged: the lists, and the clock against the
+    /// leaf's `notAfter`. A date this walk cannot read leaves the stream to
+    /// the lists, because the handshake that admitted it read the same bytes.
     #[must_use]
     pub(crate) fn still_admits(&self, presented: &CertificateDer<'_>) -> bool {
-        self.admits(presented).is_ok()
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| {
+                i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+            });
+        let lapsed = tessari_serve::tls::not_after(presented).is_some_and(|after| after < now);
+        !lapsed && self.admits(presented).is_ok()
     }
 
     /// Refuse `presented` when its fingerprint is revoked.
@@ -494,6 +505,22 @@ mod tests {
         assert!(
             !door.still_admits(&presented),
             "a removed node's certificate"
+        );
+    }
+
+    /// Q-901: a stream opened before its certificate's `notAfter` ends at it,
+    /// as one presenting a revoked certificate does — a handshake is the only
+    /// other place the date is read, and a held stream never makes another.
+    #[test]
+    fn a_certificate_admitted_once_is_judged_again_after_it_expires() {
+        let authority = Authority::new();
+        let door = authority.keys(DOOR, Purpose::Peer);
+        let current = authority.issue(CALLER, Purpose::Peer).chain.remove(0);
+        let lapsed = authority.expired(CALLER, Purpose::Peer).chain.remove(0);
+        assert!(door.still_admits(&current), "a certificate in its window");
+        assert!(
+            !door.still_admits(&lapsed),
+            "a certificate past its notAfter"
         );
     }
 

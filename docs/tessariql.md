@@ -8685,7 +8685,8 @@ admitted, and a node presenting it to a dial is not spoken to. Every node holds
 the row whatever it is subscribed to — a follower of one namespace that missed
 it would go on admitting the peer every other node refuses. A node applies the
 list within a few seconds of the row arriving. An **expired** certificate needs
-no statement: no handshake accepts one.
+no statement: no handshake accepts one, and a held stream opened before it
+expired ends when it does.
 
 Only an operator of the store may revoke a certificate (the same authority as
 `DEFINE FAILOVER`), and the administration trail records who did. There is no

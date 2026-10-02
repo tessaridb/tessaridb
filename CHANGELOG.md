@@ -105,6 +105,10 @@ compares carries no pre-release suffix.
 
 ### Fixed
 
+- **A held peer stream ends when its certificate expires**, as it already did on a
+  revocation: the handshake was the only place the date was read, and a stream
+  never makes another.
+
 - **A revoked certificate stops a stream that was already open.** A follower
   holds one connection to its leader for as long as both run, and a revocation
   was judged only at the next handshake — which a held stream never makes — so
