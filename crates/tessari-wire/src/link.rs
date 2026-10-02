@@ -311,12 +311,16 @@ pub(crate) fn answering(
                 return Ok((PeerFrame::Vote.tag(), vote.encode(), Some(vote)));
             }
             // On the ballot's own line (ADR-0082): a range ballot is
-            // judged on both greetings' positions for that range, the
-            // store ballot on the store's exactly as before.
+            // judged on the positions for that range, the store ballot on
+            // the store's exactly as before. The candidate's from the
+            // greeting it proved, which describes the range it stands for;
+            // this voter's from what it holds of that line, which its own
+            // greeting may not describe at all (Q-884).
+            let held = log.reached_on(asked.range)?;
             let vote = voter.asked(
                 &asked,
                 std::time::Instant::now(),
-                mine.reached_on(asked.range),
+                held.unwrap_or_else(|| mine.reached_on(asked.range)),
                 said.reached_on(asked.range),
             );
             Ok((PeerFrame::Vote.tag(), vote.encode(), Some(vote)))
@@ -1689,6 +1693,96 @@ pub(crate) mod tests {
         fn places(&self, candidate: [u8; NODE_ID_LEN], range: tessari_types::Reach) -> bool {
             candidate == THERE && self.0.contains(&range)
         }
+    }
+
+    /// A door whose catalog places `THERE` on one range, and whose store holds
+    /// that range's line to a position its greeting does not mention — the
+    /// former leader after a move, or a follower that collected the line.
+    struct Former(tessari_types::Reach, crate::grant::Reached);
+
+    impl Origin for Former {
+        fn collected(&self, follower: [u8; NODE_ID_LEN], asked: Collect) -> Result<Collected> {
+            NoLog.collected(follower, asked)
+        }
+
+        fn gathered(
+            &self,
+            asker: [u8; NODE_ID_LEN],
+            asked: &crate::gathering::Gather,
+        ) -> Result<crate::gathering::Page> {
+            NoLog.gathered(asker, asked)
+        }
+
+        fn copied(
+            &self,
+            follower: [u8; NODE_ID_LEN],
+            write: &mut dyn FnMut(u8, Vec<u8>) -> Result<()>,
+        ) -> Result<()> {
+            NoLog.copied(follower, write)
+        }
+
+        fn places(&self, candidate: [u8; NODE_ID_LEN], range: tessari_types::Reach) -> bool {
+            candidate == THERE && range == self.0
+        }
+
+        fn reached_on(&self, range: tessari_types::Reach) -> Result<Option<crate::grant::Reached>> {
+            Ok((range == self.0).then_some(self.1))
+        }
+    }
+
+    #[test]
+    fn a_voter_holding_a_line_it_no_longer_leads_refuses_a_candidate_behind_it() {
+        // Q-884. A move took the placement from this voter, so its greeting
+        // names no line; its store still holds the line's log to 40, written
+        // under leadership 2. A candidate at 3 must be refused as behind — the
+        // greeting alone would read this voter as empty there and grant it,
+        // and the candidate's leadership would continue the line from 3.
+        use crate::peer::Line;
+        use tessari_types::{DatabaseId, NamespaceId, Reach, ShardId, TableId};
+        let shard = Reach::Shard(
+            NamespaceId::new(1),
+            DatabaseId::new(1),
+            TableId::new(1),
+            ShardId::new(2),
+        );
+        let authority = Authority::new();
+        let (peers, mine) = door(&authority);
+        assert!(mine.line.is_none(), "the voter greets with no line");
+        let address = peers.address().expect("the door's address");
+        let deciding = Deciding::holding(settled());
+        let held = crate::grant::Reached {
+            leadership: Epoch::new(2),
+            tail: Sequence::new(40),
+        };
+        let answering = std::thread::spawn(move || {
+            peers.greet(|| Ok(mine), &HERE, &deciding, &Former(shard, held))
+        });
+        let mut candidate = hello(THERE);
+        candidate.line = Some(Line {
+            range: shard,
+            leading: Epoch::ZERO,
+            tail: Sequence::new(3),
+            tail_leadership: Epoch::new(2),
+        });
+        let ballot = Round::opened(Epoch::new(3), THERE, 3).over(shard).ballot();
+        let (_, answered) = call_with(
+            address,
+            authority.issue(THERE, Purpose::Peer),
+            &authority.der(),
+            HERE,
+            &candidate,
+            Ask::Ballot(&ballot),
+        )
+        .expect("the door is up");
+        assert!(
+            matches!(
+                voted(&answered),
+                Some(Vote::Refused(Refused::LogBehind { tail, .. })) if tail == Sequence::new(40)
+            ),
+            "judged on the line the voter holds: {:?}",
+            voted(&answered)
+        );
+        drop(answering.join().expect("the door's thread"));
     }
 
     #[test]

@@ -342,6 +342,26 @@ pub trait Origin {
     fn joined(&self, _node: [u8; NODE_ID_LEN], _token: &[u8; 32]) -> Result<bool> {
         Ok(false)
     }
+
+    /// Where this node's own copy of `range`'s line reaches, read from what it
+    /// holds — the position a voter judges a ballot for that range against.
+    ///
+    /// Not from this node's greeting, which describes only the one range the
+    /// node is placed on: a former leader, or a follower that collected the
+    /// line, holds the line's log while its greeting says zero there, and a
+    /// voter that believed the greeting granted a candidate behind it — whose
+    /// leadership then continued the line from its shorter tail and left the
+    /// records only the voter held behind (Q-884).
+    ///
+    /// Defaults to `None`, meaning *ask the greeting*: a door with no log has
+    /// nothing better to answer with.
+    ///
+    /// # Errors
+    ///
+    /// A store failure, which refuses the vote rather than guessing a position.
+    fn reached_on(&self, _range: Reach) -> Result<Option<crate::grant::Reached>> {
+        Ok(None)
+    }
 }
 
 /// A door with no log behind it.
@@ -527,6 +547,19 @@ impl<'a> Serving<'a> {
 }
 
 impl Origin for Serving<'_> {
+    // The line's one history as this store holds it (ADR-0107): its tail and
+    // the leadership that wrote it, the pair a greeting carries for its own line.
+    fn reached_on(&self, range: Reach) -> Result<Option<crate::grant::Reached>> {
+        let refused = |why: tessari_storage::Error| Error::Refused {
+            message: why.to_string(),
+        };
+        let log = self.log.history_log(range).map_err(refused)?;
+        Ok(Some(crate::grant::Reached {
+            leadership: self.log.tail_leadership(log).map_err(refused)?,
+            tail: self.log.committed_tail(log).map_err(refused)?,
+        }))
+    }
+
     // The rule a candidate stands by (`stands_for`), read from this node's own
     // catalog. A catalog that cannot be read vouches for nothing.
     fn places(&self, candidate: [u8; NODE_ID_LEN], range: Reach) -> bool {

@@ -1253,6 +1253,12 @@ const RAW_FEED: &[&str] = &[
 /// log of the range it stands for reaches — One's field, for one range: a
 /// `Sequence`, sent only after the peer handshake.
 ///
+/// **Six.** The voter's own position on a range's line (`Serving::reached_on`,
+/// Q-884) is Five's field read for the range a ballot names rather than the one
+/// this node is placed on: a `Sequence` judged here, which leaves only as the
+/// position a `LogBehind` refusal names to a candidate that completed the peer
+/// handshake.
+///
 /// **Three and four.** `Serving::fill` is the peer door's scoped log reader —
 /// the loop behind `Serving::collected` that fills one answer under a byte
 /// budget, reading a page at a time so that a follower's uncapped record count
@@ -1290,6 +1296,10 @@ const CLASSIFIED: &[(&str, &str)] = &[
     (
         "tessari-cli/src/streaming.rs",
         "let tail = store.committed_tail(log).map_err(|why| why.to_string())?;",
+    ),
+    (
+        "tessari-wire/src/collection.rs",
+        "tail: self.log.committed_tail(log).map_err(refused)?,",
     ),
     (
         "tessari-wire/src/collection.rs",
