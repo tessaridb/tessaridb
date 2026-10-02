@@ -85,6 +85,16 @@ compares carries no pre-release suffix.
 
 ### Fixed
 
+- **A node leading a placed range no longer loses that range's records.** A node
+  that replicated the whole store collected every log from the store line's
+  leader, including the logs of ranges placed on other lines — or on itself — and
+  when that follower could not continue the log the node copied its state over
+  its own range, removing records only it held. The store line now carries only
+  the logs it governs, and a node placed to lead a range is never copied over.
+- **A voter judges a range's ballot on the line it holds**, not on its greeting,
+  which describes only the range it is placed on — so a former leader or a
+  follower holding the line refuses a candidate behind it.
+
 - **A refused challenger no longer ends a live lease**: a voter holding a live
   grant adopts a ballot's epoch only past that grant (Q-880).
 - **A leader its peers elected keeps its lease** when the deciding round did not

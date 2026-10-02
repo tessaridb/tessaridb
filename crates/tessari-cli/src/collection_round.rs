@@ -177,7 +177,7 @@ pub(crate) async fn collect_from_upstream(
         // the catalog it has itself replayed — so the set is inside the
         // grant without the grant ever crossing the wire (Q-620, Q-621).
         let logs = match tessari_wire::logs_to_collect(store) {
-            Ok(logs) => logs,
+            Ok(logs) => on_the_store_line(logs, &declared),
             Err(why) => {
                 log::warn!("this node cannot say which logs it should hold: {why}");
                 return collection;
@@ -261,8 +261,18 @@ pub(crate) async fn collect_from_upstream(
             }
         }
         if clean {
-            let homes: crate::streaming::Homes =
-                Box::new(|db: &Db| tessari_wire::logs_to_collect(db.store()).ok());
+            let homes: crate::streaming::Homes = Box::new(|db: &Db| {
+                let declared = db
+                    .store()
+                    .begin()
+                    .and_then(|mut transaction| {
+                        tessari_storage::Catalog::new(&mut transaction).replicas()
+                    })
+                    .ok()?;
+                tessari_wire::logs_to_collect(db.store())
+                    .ok()
+                    .map(|logs| on_the_store_line(logs, &declared))
+            });
             let heard_from = std::sync::Arc::clone(&published_handle);
             let still: crate::streaming::Still =
                 Box::new(move |db: &Db| store_line_upstream(db, &heard_from) == Some(node));
@@ -280,7 +290,7 @@ pub(crate) async fn collect_from_upstream(
                 keys,
                 (node, &endpoint),
                 &said,
-                crate::reseeding::leads_a_range(&declared, me, &heard),
+                crate::reseeding::leads_a_range(&declared, me),
             )
         {
             // The copy stood each log where the leader's stood, so every
@@ -299,6 +309,27 @@ pub(crate) async fn collect_from_upstream(
     if joining.await.is_err() {
         log::warn!("joining the collection streams panicked");
     }
+}
+
+/// The logs the store line carries: every log this node holds except those a
+/// placement carves out (ADR-0082).
+///
+/// A placed range's log is written by that range's leader and collected from
+/// it by [`collect_placed_ranges`]. Asked of the store line's upstream instead,
+/// it is asked of a node that only follows it — or, when this node leads the
+/// range, of a follower of this node — and the refusal that comes back
+/// (*cannot say what precedes*, a fork) read as this node being behind, so its
+/// own range was copied over from the follower and the records only it held
+/// were removed (Q-884).
+fn on_the_store_line(
+    logs: Vec<tessari_types::Reach>,
+    declared: &[tessari_storage::ReplicaDefinition],
+) -> Vec<tessari_types::Reach> {
+    let placed: std::collections::BTreeSet<tessari_types::Reach> =
+        declared.iter().filter_map(|peer| peer.leads).collect();
+    logs.into_iter()
+        .filter(|home| tessari_storage::governing(&placed, *home) == tessari_types::Reach::Store)
+        .collect()
 }
 
 /// The node the store line follows right now, asked the way the round asks it.
@@ -446,5 +477,61 @@ pub(crate) fn collect_placed_ranges(
                 (stop.clone(), std::sync::Arc::clone(wakes)),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tessari_storage::ReplicaDefinition;
+    use tessari_types::{DatabaseId, NamespaceId, Reach, ShardId, TableId};
+
+    use super::on_the_store_line;
+
+    /// A row naming `node`, placed to lead `leads`.
+    fn row(node: Option<[u8; 16]>, leads: Option<Reach>) -> ReplicaDefinition {
+        ReplicaDefinition {
+            name: "peer".to_owned(),
+            endpoint: "10.0.0.2:9000".to_owned(),
+            roles: tessari_storage::Roles::WRITABLE,
+            node,
+            replicates: None,
+            leads,
+            clients: None,
+            http: None,
+            fingerprint: None,
+            join: None,
+        }
+    }
+
+    fn shard(id: u32) -> Reach {
+        Reach::Shard(
+            NamespaceId::new(1),
+            DatabaseId::new(1),
+            TableId::new(1),
+            ShardId::new(id),
+        )
+    }
+
+    #[test]
+    fn the_store_line_does_not_carry_a_placed_range() {
+        let declared = [
+            row(None, Some(shard(1))),
+            row(None, Some(shard(2))),
+            row(None, None),
+        ];
+        let held = vec![
+            Reach::Store,
+            Reach::Namespace(NamespaceId::new(1)),
+            Reach::Database(NamespaceId::new(1), DatabaseId::new(1)),
+            shard(1),
+            shard(2),
+            shard(3),
+        ];
+        assert_eq!(
+            on_the_store_line(held.clone(), &declared),
+            vec![held[0], held[1], held[2], shard(3)],
+            "a shard a placement carves out is collected from its own leader"
+        );
+        assert_eq!(on_the_store_line(held.clone(), &[]), held);
     }
 }

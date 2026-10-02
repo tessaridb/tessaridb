@@ -15,19 +15,22 @@
 use tessari_storage::Upstream;
 use tessaridb::Db;
 
-/// Whether this node leads anything: a placed range whose leader it is.
+/// Whether this node leads anything: a placed range its own row places it to
+/// lead.
 ///
 /// A node on the store line that collects at all is not writable, so a placed
 /// range is the one thing it can still be the origin of. A copy would
 /// overwrite that, so such a node is stranded rather than re-seeded.
+///
+/// Read from the catalog's row and not from who has been heard leading: the
+/// directory holds what PEERS said, never this node's own greeting, so asked
+/// there the answer for this node was always no — and a copy removed the
+/// records of the range it led (Q-884).
 pub(crate) fn leads_a_range(
     declared: &[tessari_storage::ReplicaDefinition],
     me: [u8; tessari_storage::NODE_ID_LEN],
-    heard: &tessari_wire::Directory,
 ) -> bool {
-    declared.iter().filter_map(|peer| peer.leads).any(|range| {
-        tessari_wire::leader_of_range(range, declared, heard).is_some_and(|(node, _)| node == me)
-    })
+    tessari_wire::stands_for(declared, &me).is_some()
 }
 
 /// Copy the state `node` at `endpoint` holds for this node, or say why not.
@@ -75,5 +78,45 @@ pub(crate) fn reseed(
             );
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tessari_storage::ReplicaDefinition;
+    use tessari_types::{DatabaseId, NamespaceId, Reach, ShardId, TableId};
+
+    use super::leads_a_range;
+
+    /// A row naming `node`, placed to lead `leads`.
+    fn row(node: Option<[u8; 16]>, leads: Option<Reach>) -> ReplicaDefinition {
+        ReplicaDefinition {
+            name: "peer".to_owned(),
+            endpoint: "10.0.0.2:9000".to_owned(),
+            roles: tessari_storage::Roles::WRITABLE,
+            node,
+            replicates: None,
+            leads,
+            clients: None,
+            http: None,
+            fingerprint: None,
+            join: None,
+        }
+    }
+
+    #[test]
+    fn a_node_placed_to_lead_a_range_is_never_copied_over() {
+        let me = [7; 16];
+        let shard = Reach::Shard(
+            NamespaceId::new(1),
+            DatabaseId::new(1),
+            TableId::new(1),
+            ShardId::new(1),
+        );
+        let leading = row(Some(me), Some(shard));
+        let another = row(Some([8; 16]), Some(shard));
+        assert!(leads_a_range(&[leading], me));
+        assert!(!leads_a_range(&[another], me));
+        assert!(!leads_a_range(&[], me));
     }
 }
