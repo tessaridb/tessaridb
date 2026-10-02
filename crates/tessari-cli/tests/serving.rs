@@ -3385,6 +3385,9 @@ const GATHERING: Band = [
     ("127.0.0.1:47857", "127.0.0.1:47858"),
 ];
 
+/// The partial holder's HTTP door, opened once the wire half has been asked.
+const GATHERING_HTTP: &str = "127.0.0.1:47822";
+
 /// A read at `surface`, answered as its records' identities — or the refusal.
 fn read_at(surface: &str, read: &str) -> Result<Vec<String>, String> {
     let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
@@ -3546,6 +3549,30 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
             began.elapsed() < Duration::from_secs(60),
             "node 2 did not answer an old client's read it cannot gather; \
              kind {kind}: {said}{}",
+            what_the_nodes_said(&GATHERING, &logs)
+        );
+        std::thread::sleep(POLL);
+    }
+
+    // And over HTTP, whose clients never follow a redirect at all (G054 C2):
+    // node 2, given an HTTP door, carries the same read to a whole holder.
+    cluster.restart_with(2, &["--http", GATHERING_HTTP]);
+    assert!(
+        listening(GATHERING_HTTP, Duration::from_secs(30)),
+        "node 2 never opened its HTTP door{}",
+        what_the_nodes_said(&GATHERING, &logs)
+    );
+    let began = Instant::now();
+    loop {
+        let answered = over_http(GATHERING_HTTP, "/script", transacted);
+        if answered.starts_with("HTTP/1.1 200")
+            && whole.iter().all(|id| answered.contains(id.as_str()))
+        {
+            break;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "node 2 did not answer over HTTP a read it cannot gather: {answered}{}",
             what_the_nodes_said(&GATHERING, &logs)
         );
         std::thread::sleep(POLL);
