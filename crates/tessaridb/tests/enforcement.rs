@@ -486,7 +486,17 @@ const TABLES: &[Table] = &[
         //     restore; **exempt under E3** for the same reason — only the
         //     process that opened the store with it can ask.
         //     Re-classification trigger: any network surface reaching it.
-        expected: 35,
+        //
+        // 36 since the console builds a secured cluster (G054 W8c, ADR-0108
+        // D9): `Db::presenting` installs, once, the reader `INFO FOR NODE`
+        // asks for the certificates this node presents. **Exempt on
+        // `gather_through`'s ground**: set by the starting process; it reads no
+        // record, catalog entry or grant, and what it reports is reached only
+        // through `INFO FOR NODE`, which `Needs::of` already holds to
+        // `Administer`. A fingerprint and an expiry are public by construction
+        // — every peer sees both in the handshake. Re-classification trigger:
+        // the reader carrying a private key or anything a handshake withholds.
+        expected: 36,
         count: |text| public_functions(&block(text, "impl Db")),
     },
     Table {
@@ -1123,7 +1133,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 141 since a store can be encrypted at rest (ADR-0108 D7):
     // `Db::open_encrypted` and `Db::at_rest`, exempt, classified above.
-    assert_eq!(total, 141, "the counted tables no longer sum to 141");
+    //
+    // 142 since the console builds a secured cluster (G054 W8c):
+    // `Db::presenting`, exempt, classified above.
+    assert_eq!(total, 142, "the counted tables no longer sum to 142");
 }
 
 /// Every `.rs` file under a directory.

@@ -48,6 +48,7 @@ mod logging;
 mod maintenance;
 mod peer_door;
 mod peers;
+mod presented;
 mod raw;
 mod reseeding;
 /// How a value is written back as TessariQL — the language's own, so a state

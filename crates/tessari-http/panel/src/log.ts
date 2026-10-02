@@ -62,8 +62,18 @@ export const entries = (): readonly Entry[] => kept;
 export const count = (): number => kept.length;
 
 /** Record one thing the panel did, and keep the count in the bar current. */
+/**
+ * A join token is answered once, and the screen that asked is where it is shown
+ * (ADR-0108 D9). Kept here it would be readable for as long as the tab lives,
+ * by anybody who opens the log — a second copy of a secret nobody asked for.
+ */
+const answeredOnce = (entry: Entry): string =>
+  !entry.failed && /CREATE\s+JOIN\s+TOKEN/i.test(entry.what)
+    ? "a join token, shown once where it was asked for"
+    : entry.said;
+
 export function record(entry: Entry): void {
-  kept.unshift({ ...entry, what: redacted(entry.what) });
+  kept.unshift({ ...entry, what: redacted(entry.what), said: answeredOnce(entry) });
   if (kept.length > CAP) {
     kept.length = CAP;
   }

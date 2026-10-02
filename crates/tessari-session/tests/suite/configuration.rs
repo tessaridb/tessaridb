@@ -1397,3 +1397,93 @@ fn only_an_operator_of_the_store_makes_a_join_token() {
     );
     assert!(refused.contains("RoleForbids"), "{refused}");
 }
+
+/// What a test node presents: one readable certificate on the peer surface, one
+/// whose date could not be read on the client surface.
+#[derive(Debug)]
+struct Shown;
+
+impl tessari_session::Certificates for Shown {
+    fn presented(&self) -> Vec<tessari_session::Presented> {
+        vec![
+            tessari_session::Presented {
+                surface: "peers",
+                fingerprint: "0f".repeat(32),
+                expires: Some(1_900_000_000),
+            },
+            tessari_session::Presented {
+                surface: "clients",
+                fingerprint: "a1".repeat(32),
+                expires: None,
+            },
+        ]
+    }
+}
+
+/// The certificates entry of a report, as `(surface, fingerprint, expires)`.
+fn certificates(
+    report: &std::collections::BTreeMap<String, Value>,
+) -> Vec<(String, String, Value)> {
+    let Some(Value::Array(rows)) = report.get("certificates") else {
+        panic!("no certificates list: {report:?}");
+    };
+    rows.iter()
+        .map(|row| {
+            let Value::Object(row) = row else {
+                panic!("not a certificate: {row:?}");
+            };
+            let text = |field: &str| match row.get(field) {
+                Some(Value::String(said)) => said.clone(),
+                other => panic!("{field}: {other:?}"),
+            };
+            (
+                text("surface"),
+                text("fingerprint"),
+                row.get("expires").cloned().unwrap_or(Value::None),
+            )
+        })
+        .collect()
+}
+
+/// A node reads the certificate it presents the way `NODE` is read: from the
+/// node itself, so an operator pinning a newcomer's row copies a value the
+/// newcomer reported rather than one a tool computed beside it (ADR-0108 D9).
+/// On the local side of ADR-0018's line, because a certificate belongs to the
+/// machine and a backup must not carry it.
+#[test]
+fn a_node_reports_the_certificates_it_presents_beside_its_own_settings() {
+    let store = closed(&backend());
+    let outcomes = owner(&store)
+        .presenting(Arc::new(Shown))
+        .run("INFO FOR NODE;")
+        .unwrap();
+    let Some(Outcome::Value(Value::Object(report))) = outcomes.first() else {
+        panic!("not a report: {outcomes:?}");
+    };
+    assert_eq!(
+        certificates(report),
+        vec![
+            (
+                "peers".to_owned(),
+                "0f".repeat(32),
+                Value::Datetime(tessari_types::Datetime::from_seconds(1_900_000_000)),
+            ),
+            ("clients".to_owned(), "a1".repeat(32), Value::Null),
+        ]
+    );
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster group: {report:?}");
+    };
+    assert!(
+        !cluster.contains_key("certificates"),
+        "a certificate is this machine's, not the topology's"
+    );
+}
+
+/// A node with no certificate presents nothing, and says so as an empty list
+/// rather than leaving the operator to wonder whether it was asked.
+#[test]
+fn a_node_presenting_no_certificate_reports_an_empty_list() {
+    let store = closed(&backend());
+    assert_eq!(certificates(&reported(&store)), Vec::new());
+}

@@ -5,6 +5,7 @@
 
 import { el, type Node } from "./html.js";
 import { to } from "./destinations.js";
+import { trustPanes } from "./trust-panes.js";
 import {
     answer,
     behindDisclosure,
@@ -64,6 +65,21 @@ export const cluster = (): Node =>
                     button("drawer-apply", "Declare it", "primary"),
                     status("drawer-status"),
                 ),
+                el(
+                    "div",
+                    { id: "drawer-remove-part" },
+                    row(
+                        "default",
+                        field("Type its name to remove it", text("drawer-remove-confirm")),
+                        field("Why", text("drawer-remove-why", { placeholder: "machine retired" })),
+                    ),
+                    says("drawer-remove-says"),
+                    row(
+                        "default",
+                        button("drawer-remove", "Remove from the cluster", "default", { disabled: true }),
+                        status("drawer-remove-status"),
+                    ),
+                ),
                 note(
                     // The drain used to be named here as a thing with no control. It has
                     // one now, so the note keeps only the half still true and says nothing
@@ -85,9 +101,9 @@ export const cluster = (): Node =>
         pane(
             paneHead("Declare the membership", status("form-status")),
             note(
-                "Every peer at once, in one transaction. Declaring them one at a time " +
-                    "strands you: the first declaration makes this node clustered, which " +
-                    "costs it the authority to accept the second. All of them, or none.",
+                "Every member at once, this node included, in one transaction: the first " +
+                    "declaration clusters this node and costs it the authority to accept a " +
+                    "second. A row with neither id nor fingerprint waits for a join token.",
             ),
             ...Array.from({ length: 5 }, (_, at) =>
                 row(
@@ -97,14 +113,28 @@ export const cluster = (): Node =>
                         text(`peer-${at}-name`, { placeholder: "warsaw" }),
                     ),
                     field(
-                        "Address",
+                        "Peer address",
                         text(`peer-${at}-endpoint`, {
                             placeholder: "10.0.0.2:9000",
                         }),
                     ),
                     field(
+                        "Client address",
+                        text(`peer-${at}-clients`, {
+                            placeholder: "10.0.0.2:9080",
+                        }),
+                    ),
+                    field(
                         "Node id",
                         text(`peer-${at}-node`, { placeholder: "9f2c4e1a-…" }),
+                    ),
+                    field(
+                        "or its fingerprint",
+                        text(`peer-${at}-fingerprint`, { placeholder: "0f1e2d3c…" }),
+                    ),
+                    field(
+                        "Replicates",
+                        text(`peer-${at}-replicates`, { value: "STORE", size: 14 }),
                     ),
                     ...["serving", "writable", "coordinating"].map((bit) =>
                         field(
@@ -125,6 +155,7 @@ export const cluster = (): Node =>
             ),
             row("default", button("form-cluster", "Declare it", "primary")),
         ),
+        ...trustPanes(),
         pane(
             paneHead("What is here, and what is not"),
             note(

@@ -16,6 +16,21 @@ compares carries no pre-release suffix.
 
 ### Added
 
+- **The console builds a secured cluster** (G054). The membership form declares
+  every member, this node included, in one transaction — each row with its
+  subscription (`REPLICATES`, `STORE` by default), an optional client address,
+  and a node id or a pinned certificate `FINGERPRINT` — then sets this node's
+  own roles from its row. The node drawer amends a peer with `ALTER REPLICA …
+  ROLES` and removes one behind its typed name. New panes show the certificates
+  this node presents with their expiry, the refused certificates and removed
+  nodes, `REVOKE CERTIFICATE` behind the first eight digits typed again, a join
+  token shown once (and kept out of the statement log), and `DEFINE FAILOVER`.
+  A node waiting to join is told to set its roles to `serving`; the sign-in
+  sheet says whether the page arrived over TLS.
+- **`INFO FOR NODE` reports the certificates this node presents** — under
+  `certificates`, one per surface (`peers`, `clients`) with its `fingerprint` and
+  when it `expires`, read at the moment of asking — so a newcomer's row is
+  pinned with a value read off the newcomer, as its id is.
 - **`ALTER REPLICA` amends a peer's row one clause at a time** — `AT`, `ROLES`,
   `CLIENTS AT` / `CLIENTS NONE` and `HTTP AT` / `HTTP NONE`, beside `LEADS`. The
   row keeps the node it is bound to, its subscription and its fingerprint:

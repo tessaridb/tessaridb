@@ -192,6 +192,11 @@ impl Session<'_> {
                 },
             ),
             ("retain_source".to_owned(), Value::from(retained_by.name())),
+            // Local, beside `endpoints`: what this machine presents, read from
+            // the process now, so a renewal shows on the next report. The
+            // fingerprint is the value `FINGERPRINT` pins and `REVOKE
+            // CERTIFICATE` names, read off the node the way `id` is (D9).
+            ("certificates".to_owned(), self.described_certificates()),
             (
                 "cluster".to_owned(),
                 Value::Object(BTreeMap::from([
@@ -344,5 +349,36 @@ impl Session<'_> {
             "consumers".to_owned(),
             Value::Array(described),
         )]))
+    }
+}
+
+impl Session<'_> {
+    /// What this node presents, one object per surface; empty when nothing.
+    fn described_certificates(&self) -> Value {
+        let presented = self
+            .certificates
+            .as_ref()
+            .map(|certificates| certificates.presented())
+            .unwrap_or_default();
+        Value::Array(
+            presented
+                .into_iter()
+                .map(|shown| {
+                    Value::Object(BTreeMap::from([
+                        ("surface".to_owned(), Value::from(shown.surface)),
+                        (
+                            "fingerprint".to_owned(),
+                            Value::from(shown.fingerprint.as_str()),
+                        ),
+                        (
+                            "expires".to_owned(),
+                            shown.expires.map_or(Value::Null, |seconds| {
+                                Value::Datetime(tessari_types::Datetime::from_seconds(seconds))
+                            }),
+                        ),
+                    ]))
+                })
+                .collect(),
+        )
     }
 }

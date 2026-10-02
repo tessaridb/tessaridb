@@ -32,6 +32,7 @@ pub struct Detached {
     backups: Option<Arc<std::path::Path>>,
     at_rest: Option<Arc<tessari_vault::AtRestKey>>,
     budget: Option<Arc<dyn crate::throttle::Budget>>,
+    certificates: Option<Arc<dyn crate::presented::Certificates>>,
 }
 
 impl Session<'_> {
@@ -48,6 +49,7 @@ impl Session<'_> {
             backups: self.backups,
             at_rest: self.at_rest,
             budget: self.budget,
+            certificates: self.certificates,
         }
     }
 }
@@ -67,6 +69,7 @@ impl Detached {
             backups: self.backups,
             at_rest: self.at_rest,
             budget: self.budget,
+            certificates: self.certificates,
             // A sink belongs to the request that streams, never to state
             // carried to a later one.
             sink: crate::backup_to::Sink::none(),

@@ -93,6 +93,10 @@ pub struct Session<'a> {
     /// The cluster's sign-in budget, when this node is part of one (ADR-0108
     /// D5). A fact about the process, like `gather`.
     pub(crate) budget: Option<Arc<dyn crate::throttle::Budget>>,
+    /// The certificates this node presents, read when `INFO FOR NODE` asks
+    /// (ADR-0108 D9). A fact about the process, like `budget`; `None` on a node
+    /// that presents none.
+    pub(crate) certificates: Option<Arc<dyn crate::presented::Certificates>>,
     /// Where a `BACKUP STATE` answered here writes its snapshot instead of
     /// answering with it (ADR-0094 D6), when the caller is streaming.
     pub(crate) sink: crate::backup_to::Sink,
@@ -143,6 +147,7 @@ impl<'a> Session<'a> {
             backups: None,
             at_rest: None,
             budget: None,
+            certificates: None,
             sink: crate::backup_to::Sink::none(),
             landed: false,
             acknowledge_open: None,
@@ -180,6 +185,13 @@ impl<'a> Session<'a> {
     #[must_use]
     pub fn budgeted(mut self, budget: Arc<dyn crate::throttle::Budget>) -> Self {
         self.budget = Some(budget);
+        self
+    }
+
+    /// Open this session reporting the certificates `certificates` reads.
+    #[must_use]
+    pub fn presenting(mut self, certificates: Arc<dyn crate::presented::Certificates>) -> Self {
+        self.certificates = Some(certificates);
         self
     }
 
@@ -615,6 +627,8 @@ impl<'a> Session<'a> {
             backups: None,
             at_rest: None,
             budget: self.budget.clone(),
+            // A probe answers who may do what, and reports no certificates.
+            certificates: None,
             sink: crate::backup_to::Sink::none(),
             landed: false,
             acknowledge_open: None,

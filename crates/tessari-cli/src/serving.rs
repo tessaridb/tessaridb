@@ -121,6 +121,14 @@ pub(crate) fn serve(
     // answering on a network, so this is a failure to start rather than a
     // warning behind a listening socket.
     bootstrap::first_user(&db)?;
+    // What each surface presents, for `INFO FOR NODE` — the fingerprint an
+    // operator pins a newcomer's row with is read off the newcomer (D9).
+    if secured.is_some() || peers.is_some() {
+        db.presenting(std::sync::Arc::new(crate::presented::Shown {
+            clients: secured.clone(),
+            peers: peers.as_ref().map(|surface| surface.keys.clone()),
+        }));
+    }
     let db = std::sync::Arc::new(db);
     // Every session this node opens gathers the shards of a split table it
     // lacks from their leaders (G033, ADR-0083) — on the wire and over HTTP

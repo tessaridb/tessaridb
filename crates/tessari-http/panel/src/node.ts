@@ -10,6 +10,8 @@ import { draw as drawMap, type Seen } from "./map.js";
 import { told } from "./session.js";
 import { settled, state } from "./states.js";
 import { onArrival } from "./tabs.js";
+import { know } from "./formation.js";
+import { draw as drawTrust, type Trusted } from "./trust.js";
 
 const HEALTH_ROUTE = "/health";
 const READY_ROUTE = "/ready";
@@ -76,6 +78,8 @@ export async function readNode(): Promise<void> {
     // The map first, then the answer it was read from.
     clear("cluster-map");
     drawMap(at("cluster-map"), all as Seen);
+    drawTrust(all as Trusted);
+    know(all["id"], all["endpoints"], Array.isArray(peers) ? peers.length : 0);
     facts("cluster-facts", {
       roles: all["roles"],
       peers: peers ?? [],
@@ -86,12 +90,26 @@ export async function readNode(): Promise<void> {
     // same whether this node is alone or the map simply had nothing to add.
     // They are different situations with different next actions, and the four
     // states exist precisely so a screen cannot leave the reader to guess.
+    // A node started with a peer certificate and a seed is waiting to join,
+    // which is a different next action from founding a cluster: a writable
+    // node collects from nobody, so it joins only once its roles say serving.
+    const joining =
+      Array.isArray(all["certificates"]) &&
+      all["certificates"].some(
+        (shown: unknown) =>
+          typeof shown === "object" && shown !== null && "surface" in shown && shown.surface === "peers",
+      );
     if (!Array.isArray(peers) || peers.length === 0) {
       state(
         "cluster-status",
         "empty",
-        "No peers — this node holds everything itself. Declare the membership " +
-          "below to add them, all at once.",
+        joining
+          ? "This node holds a peer certificate and names nobody yet. To join through its " +
+              "seed, open This node above and set its roles to serving: a writable node " +
+              "stays its own authority and collects from nobody. To found a cluster here, " +
+              "declare the membership below."
+          : "No peers — this node holds everything itself. Declare the membership " +
+              "below to add them, all at once.",
       );
     } else {
       settled("cluster-status");

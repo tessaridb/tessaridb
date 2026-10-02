@@ -607,10 +607,6 @@ const ACCEPTED_NEGATIONS: &[(&str, &str)] = &[
         "True: a table grant is not additive to the role — the first grant narrows the user to what it names, which is why the grant screen says so before it composes anything.",
     ),
     (
-        "A peer's row cannot be amended from here: there is no ALTER REPLICA, a second DEFINE REPLICA is refused for the name already in use, and DROP REPLICA is refused while this node holds no leadership.",
-        "True, and measured against a running clustered node (drawer.ts module doc): `ALTER` takes only NAMESPACE, USER or TABLE; the second DEFINE answers `the name rp:<n> is already in use`; the DROP answers `this node is in a cluster and holds no leadership`.",
-    ),
-    (
         "a role this build may not know.",
         "True: a typed role is sent as written rather than checked against a list held in the console, so the node's own refusal is what the operator sees. The alternative is a console that refuses a role the engine has and this build has not heard of.",
     ),
@@ -2409,11 +2405,12 @@ fn the_drain_says_what_it_costs_before_it_says_what_it_sends() {
 
 #[cfg(feature = "console")]
 #[test]
-fn a_peer_offers_no_drain_because_no_statement_drains_a_peer() {
+fn a_peer_is_amended_by_its_row_and_never_sent_this_nodes_drain() {
     // The refusal path, which is the one worth testing: a drain that works on
-    // this node and silently composes nothing on a peer would look identical
-    // until somebody needed it. `DEFINE NODE` reaches the local keyspace, so a
-    // peer is drained by rewriting the membership row that declares it.
+    // this node and silently composes the same statement on a peer would look
+    // identical until somebody needed it. `DEFINE NODE` reaches the local
+    // keyspace, so it is this node's alone; a peer is changed through its
+    // membership row, which `ALTER REPLICA` amends one clause at a time (Q-892).
     let source = drawer_source();
     let (guard, _) = source
         .split_once("DEFINE NODE ROLES NONE;")
@@ -2422,20 +2419,25 @@ fn a_peer_offers_no_drain_because_no_statement_drains_a_peer() {
         .rsplit_once("export function change")
         .map(|(_, rest)| rest)
         .expect("the composing function");
+    // Everything before the drain: the peer's branch has to be there, guarded.
     assert!(
-        composed.contains("!subject.self"),
-        "the drawer composes a statement for a subject it never checked is this \
-         node, so a peer's drawer would send this node's drain"
+        composed.contains("!subject.self") && composed.contains("ALTER REPLICA"),
+        "the drawer composes this node's statement before asking whether the \
+         subject is this node, so a peer's drawer would send this node's drain"
+    );
+
+    // Removing a peer tombstones its node for good (ADR-0108 D9), so it waits
+    // for the name typed again rather than a click.
+    assert!(
+        source.contains(r#"trimmed("drawer-remove-confirm") === open.name"#)
+            && source.contains("DROP REPLICA"),
+        "a peer can be removed without its name being typed again"
     );
 
     let (_node, address) = node();
     let (_, _, page) = get(&address, "/");
     assert!(
-        page.contains("drawer-apply"),
-        "the drawer has no apply button, so this test read the wrong page"
-    );
-    assert!(
-        drawer_source().contains(r#"hide("drawer-apply", !subject.self)"#),
-        "the apply button is offered on a peer, where nothing it could send exists"
+        page.contains("drawer-apply") && page.contains("drawer-remove-confirm"),
+        "the drawer has no apply or removal control, so this test read the wrong page"
     );
 }

@@ -8629,7 +8629,7 @@ part worth knowing, because both ends of every one of these is a real failure:
 Four relations are enforced, and a statement that breaks one is **refused with
 the direction named** rather than accepted:
 
-- every period is at least one second;
+- every period is at least 50 milliseconds;
 - `CAMPAIGN` is at most twice `ROUND`;
 - `LEASE` is greater than the write fence plus twice `ROUND`;
 - `COLLECTION` is less than twice `AWARENESS`.
@@ -8721,7 +8721,10 @@ CREATE JOIN TOKEN FOR REPLICA db_4 EXPIRES 10m;
 
 `NODE` names the node's identity, read from the new node with `INFO FOR NODE`.
 `FINGERPRINT` pins the SHA-256 of the one peer certificate allowed to bind the
-row, in the spelling `REVOKE CERTIFICATE` takes. `CREATE JOIN TOKEN` answers a
+row, in the spelling `REVOKE CERTIFICATE` takes — read it off the new node the
+way its id is: `INFO FOR NODE` lists, under `certificates`, each certificate the
+node presents (`surface` `peers` or `clients`, its `fingerprint`, and when it
+`expires`), read at the moment of asking, so a renewal shows on the next report. `CREATE JOIN TOKEN` answers a
 token **once** — 64 hexadecimal digits — and the row keeps only its digest and
 when it stops binding; `EXPIRES` is required, because a token nobody gave a life
 to binds for as long as nobody remembers it. The new node is started with

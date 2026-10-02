@@ -204,6 +204,8 @@ pub struct Db {
     elsewhere: std::sync::OnceLock<Arc<dyn tessari_session::Elsewhere>>,
     /// The cluster's one sign-in budget (ADR-0108 D5), for every session.
     budget: std::sync::OnceLock<Arc<dyn tessari_session::Budget>>,
+    /// The certificates this process presents, for `INFO FOR NODE` (ADR-0108 D9).
+    certificates: std::sync::OnceLock<Arc<dyn tessari_session::Certificates>>,
     /// What this store has landed, for whatever follows it — made on first
     /// asking, so a database nobody follows pays nothing on its commits.
     commits: std::sync::OnceLock<Arc<feed::Commits>>,
@@ -234,6 +236,7 @@ impl Db {
             coordinate: std::sync::OnceLock::new(),
             elsewhere: std::sync::OnceLock::new(),
             budget: std::sync::OnceLock::new(),
+            certificates: std::sync::OnceLock::new(),
             commits: std::sync::OnceLock::new(),
             backups: std::sync::OnceLock::new(),
             at_rest: None,
@@ -286,6 +289,7 @@ impl Db {
             coordinate: std::sync::OnceLock::new(),
             elsewhere: std::sync::OnceLock::new(),
             budget: std::sync::OnceLock::new(),
+            certificates: std::sync::OnceLock::new(),
             commits: std::sync::OnceLock::new(),
             backups: std::sync::OnceLock::new(),
             at_rest: key.map(Arc::new),
@@ -310,6 +314,10 @@ impl Db {
         };
         let session = match self.budget.get() {
             Some(budget) => session.budgeted(Arc::clone(budget)),
+            None => session,
+        };
+        let session = match self.certificates.get() {
+            Some(shown) => session.presenting(Arc::clone(shown)),
             None => session,
         };
         let session = match &self.at_rest {
@@ -366,6 +374,12 @@ impl Db {
     /// (ADR-0108 D5). Once per process, as [`Db::gather_through`].
     pub fn budget_through(&self, budget: Arc<dyn tessari_session::Budget>) -> bool {
         self.budget.set(budget).is_ok()
+    }
+
+    /// Report the certificates `certificates` reads in every session's
+    /// `INFO FOR NODE` (ADR-0108 D9). Once per process, as [`Db::gather_through`].
+    pub fn presenting(&self, certificates: Arc<dyn tessari_session::Certificates>) -> bool {
+        self.certificates.set(certificates).is_ok()
     }
 
     /// Carry a request this node cannot answer to the node that can, through
@@ -565,6 +579,7 @@ impl Db {
             coordinate: std::sync::OnceLock::new(),
             elsewhere: std::sync::OnceLock::new(),
             budget: std::sync::OnceLock::new(),
+            certificates: std::sync::OnceLock::new(),
             commits: std::sync::OnceLock::new(),
             backups: std::sync::OnceLock::new(),
             at_rest: None,
