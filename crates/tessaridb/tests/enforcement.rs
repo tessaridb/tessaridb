@@ -1249,6 +1249,13 @@ const RAW_FEED: &[&str] = &[
 /// through `Origin::collected`, the same door. Named here, by its exact line,
 /// so it was looked at rather than admitted by Two's pattern.
 ///
+/// **Two, a fourth site: a candidate catching up (Q-897).** A node placed to
+/// lead a range whose leader does not answer collects the range from the peers
+/// that hold it, and reads its own tail of each log to seed that ask — Two's
+/// read for Two's purpose: the value leaves only as the `from` of an outgoing
+/// ask, answered through `Origin::collected` under the holder's own
+/// subscription check. Named by its exact line, as the third was.
+///
 /// **Five.** The greeting's placed line (ADR-0082) says how far this node's own
 /// log of the range it stands for reaches — One's field, for one range: a
 /// `Sequence`, sent only after the peer handshake.
@@ -1292,6 +1299,10 @@ const CLASSIFIED: &[(&str, &str)] = &[
     (
         "tessari-cli/src/greeting_round.rs",
         "tail: store.committed_tail(log)?,",
+    ),
+    (
+        "tessari-cli/src/collection_round.rs",
+        "let tail = store.committed_tail(log).ok()?;",
     ),
     (
         "tessari-cli/src/streaming.rs",

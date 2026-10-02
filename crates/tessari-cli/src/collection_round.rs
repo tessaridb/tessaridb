@@ -317,6 +317,78 @@ pub(crate) async fn collect_from_upstream(
 /// (*cannot say what precedes*, a fork) read as this node being behind, so its
 /// own range was copied over from the follower and the records only it held
 /// were removed (Q-884).
+/// The peers other than `me` and `leader` whose subscription holds `range`,
+/// with the address each is reached at — where a candidate catches up when the
+/// range's leader does not answer.
+fn holders_of(
+    range: tessari_types::Reach,
+    declared: &[tessari_storage::ReplicaDefinition],
+    (me, leader): (
+        [u8; tessari_storage::NODE_ID_LEN],
+        [u8; tessari_storage::NODE_ID_LEN],
+    ),
+) -> Vec<([u8; tessari_storage::NODE_ID_LEN], std::net::SocketAddr)> {
+    declared
+        .iter()
+        .filter(|peer| {
+            peer.replicates
+                .is_some_and(|over| over.contains(range) || range.contains(over))
+        })
+        .filter_map(|peer| Some((peer.node?, peer.endpoint.parse().ok()?)))
+        .filter(|(node, _)| *node != me && *node != leader)
+        .collect()
+}
+
+/// Collect `range`'s logs from `holder`, a peer holding more of its line than
+/// this node, and apply what it sends.
+///
+/// A follower's copy of a line is the line's own records, stamped with the
+/// leadership that wrote them, and the apply checks each record's predecessor
+/// against this copy — so a holder whose copy parted from this one is refused
+/// rather than followed. Nothing here starts a stream: the leader, once one is
+/// elected, is what a range is followed from.
+fn catch_up_from(
+    store: &tessari_storage::Store,
+    (keys, said): (&tessari_wire::PeerKeys, &tessari_wire::Hello),
+    (holder, at): ([u8; tessari_storage::NODE_ID_LEN], &std::net::SocketAddr),
+    range: tessari_types::Reach,
+    logs: &[tessari_types::Reach],
+) {
+    let collector = tessari_wire::Collector {
+        keys,
+        said,
+        peer: (holder, *at),
+        limit: tessari_constants::COLLECTION_RECORDS,
+    };
+    let asks: Vec<_> = logs
+        .iter()
+        .copied()
+        .filter(|home| range.contains(*home))
+        .filter_map(|home| {
+            let log = store
+                .followed_log(home, tessari_storage::Writer::new(holder))
+                .ok()?;
+            let tail = store.committed_tail(log).ok()?;
+            Some((
+                home,
+                tessari_types::Sequence::new(tail.get().saturating_add(1)),
+            ))
+        })
+        .collect();
+    for ((home, from), answer) in asks.iter().zip(collector.round(store, &asks)) {
+        match answer {
+            Ok(reached) if reached.get() >= from.get() => {
+                log::info!(
+                    "caught {home:?} up to {} from {at}, which holds it",
+                    reached.get()
+                );
+            }
+            Ok(_) => {}
+            Err(why) => log::debug!("catching {home:?} up from {at} was refused: {why}"),
+        }
+    }
+}
+
 /// Whether a round met a log it can only be repaired on by a copy.
 ///
 /// A log that no longer reaches back to this node's position is not a refusal
@@ -463,6 +535,15 @@ pub(crate) fn collect_placed_ranges(
                 );
             }
         }
+        // A candidate whose leader did not answer catches up from the peers
+        // that hold the range instead (Q-897): a voter holding more of the line
+        // refuses it a ballot for as long as it is behind, and with the leader
+        // gone nothing else will ever bring it level.
+        if !clean && !below && tessari_wire::stands_for(declared, &me) == Some(range) {
+            for (holder, at) in holders_of(range, declared, (me, node)) {
+                catch_up_from(store, (keys, &said), (holder, &at), range, &logs);
+            }
+        }
         if below {
             if crate::reseeding::reseed(
                 db,
@@ -543,6 +624,27 @@ mod tests {
             TableId::new(1),
             ShardId::new(id),
         )
+    }
+
+    #[test]
+    fn a_candidate_catches_up_from_the_holders_of_its_range_and_no_one_else() {
+        let (me, leader, holder, stranger) = ([1; 16], [2; 16], [3; 16], [4; 16]);
+        let holding = |node, over| ReplicaDefinition {
+            replicates: over,
+            ..row(Some(node), None)
+        };
+        let declared = [
+            holding(me, Some(Reach::Store)),
+            holding(leader, Some(shard(2))),
+            holding(holder, Some(Reach::Store)),
+            holding(stranger, Some(shard(1))),
+            holding([5; 16], None),
+        ];
+        let found: Vec<_> = super::holders_of(shard(2), &declared, (me, leader))
+            .into_iter()
+            .map(|(node, _)| node)
+            .collect();
+        assert_eq!(found, vec![holder]);
     }
 
     #[test]

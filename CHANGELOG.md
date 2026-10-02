@@ -100,6 +100,12 @@ compares carries no pre-release suffix.
   followed again and answered writes with a spent lease instead of redirecting.
   A placed range's line it can no longer continue is now repaired as the store
   line's is: by a copy of its leader's state.
+- **A placed range whose leader is lost elects its other candidate.** Every node
+  votes on a range, but only the nodes placed to lead it stand; a voter that had
+  collected more of the range's line than the surviving candidate refused it on
+  every ballot, rightly, and with the leader gone nothing brought the candidate
+  level. A candidate whose leader does not answer now catches up from the peers
+  that hold its range, and then wins.
 
 - **A refused challenger no longer ends a live lease**: a voter holding a live
   grant adopts a ballot's epoch only past that grant (Q-880).
