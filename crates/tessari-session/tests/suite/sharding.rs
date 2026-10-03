@@ -507,6 +507,8 @@ fn a_row_that_places_a_leader_cannot_be_dropped_and_one_that_does_not_can() {
         matches!(refused, tessari_storage::Error::PlacementCannotBeDropped { ref name } if name == "b"),
         "{refused:?}"
     );
+    // The refusal names the way out this build has: give the range back.
+    assert!(refused.to_string().contains("`LEADS NONE`"), "{refused}");
     session.run("DROP REPLICA d;").unwrap();
     assert_eq!(
         peer_field(&mut session, "leads"),

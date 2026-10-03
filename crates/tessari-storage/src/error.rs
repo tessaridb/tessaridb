@@ -347,15 +347,16 @@ pub enum Error {
     },
 
     /// The last peer row placing a range (`LEADS`) was asked to be dropped or
-    /// moved.
+    /// moved to another range.
     ///
     /// Refused rather than taken: the node committing the drop would hand the
     /// range back to the store line at once while the range's own leader goes
-    /// on writing under its lease until the drop reaches it (ADR-0082).
+    /// on writing under its lease until the drop reaches it (ADR-0082). `LEADS
+    /// NONE` gives it back safely, waiting out that lease (ADR-0098 D3).
     #[error(
-        "peer `{name}` is the last placed to lead its range (`LEADS`), and taking a range's last \
-         placement needs every lease on that range to have lapsed first, which this build cannot \
-         establish; place another peer on the range first"
+        "peer `{name}` is the last placed to lead its range (`LEADS`), and dropping or moving it \
+         would let the store line write the range while its leader still holds a lease; give the \
+         range back with `LEADS NONE`, or place another peer on the range first"
     )]
     PlacementCannotBeDropped {
         /// The peer's name.
