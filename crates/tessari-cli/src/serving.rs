@@ -49,7 +49,7 @@ pub(crate) fn serve(
     )?;
     let secured = match &clients {
         crate::tls::Clients::Tls { cert, key, .. } => Some(crate::tls::credential(cert, key)?),
-        crate::tls::Clients::Plaintext { .. } => None,
+        crate::tls::Clients::Plaintext => None,
     };
     // A cluster configuration with no seed address is legal, and it is legal
     // because the catalog is the other half of the answer: a node whose
@@ -279,18 +279,12 @@ pub(crate) fn serve(
                 cert.display()
             );
         }
-        crate::tls::Clients::Plaintext { chosen } => {
+        crate::tls::Clients::Plaintext => {
             let reach = crate::tls::reach(&client_addresses);
             eprintln!(
                 "tessaridb — clients in the clear, {reach}: --tls-cert and --tls-key would \
                  encrypt them, and --require-client-tls refuses to start without them"
             );
-            if *chosen {
-                eprintln!(
-                    "tessaridb — --client-plaintext is retired: the clear is already the \
-                     default, and the next release refuses the flag"
-                );
-            }
         }
     }
     // Said only when there is something to say. Every deployment today is a

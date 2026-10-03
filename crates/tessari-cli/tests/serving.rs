@@ -679,7 +679,6 @@ fn a_node_told_about_a_cluster_opens_its_peer_door_and_still_serves_clients() {
         .arg(&store)
         .args(["--serve", WIRE_WITH_PEERS])
         .args(["--cluster-credential", &leaf])
-        .arg("--client-plaintext")
         .args(["--cluster-key", &key])
         .args(["--cluster-authority", &authority])
         .args(["--cluster-address", PEERS])
@@ -776,7 +775,6 @@ fn a_peer_address_that_cannot_be_taken_is_a_failure_to_start_and_not_a_warning()
         .arg(&store)
         .args(["--serve", "127.0.0.1:0"])
         .args(["--cluster-credential", &leaf])
-        .arg("--client-plaintext")
         .args(["--cluster-key", &key])
         .args(["--cluster-authority", &authority])
         .args(["--cluster-address", "127.0.0.1:1"])
@@ -823,7 +821,6 @@ fn a_clustered_node_with_no_seed_and_no_peer_refuses_to_start() {
         .arg(&store)
         .args(["--serve", "127.0.0.1:0"])
         .args(["--cluster-credential", &leaf])
-        .arg("--client-plaintext")
         .args(["--cluster-key", &key])
         .args(["--cluster-authority", &authority])
         .args(["--cluster-address", "127.0.0.1:0"])
@@ -1050,44 +1047,35 @@ fn a_node_told_to_require_client_tls_refuses_to_start_without_a_certificate() {
             .env_remove("TESSARIDB_CLIENT_PLAINTEXT"),
     );
     assert!(by_variable.contains("--tls-cert"), "{by_variable}");
-
-    let two_answers = refused_start(
-        Command::new(TESSARIDB)
-            .arg(&store)
-            .args([
-                "--serve",
-                "127.0.0.1:0",
-                "--require-client-tls",
-                "--client-plaintext",
-            ])
-            .env_remove("TESSARIDB_REQUIRE_CLIENT_TLS"),
-    );
-    assert!(two_answers.contains("two answers"), "{two_answers}");
 }
 
 #[test]
-fn client_plaintext_still_starts_a_node_and_says_it_is_retired() {
-    // A 0.22 deployment that set the flag keeps starting for one release.
+fn client_plaintext_is_refused_at_start_as_retired() {
+    // Deprecated in 0.23.0-beta with a date: "the next release refuses it".
+    // The clear is the default without a certificate, so the flag and the
+    // variable change nothing a node does — a deployment still carrying them
+    // is told so once, at start, rather than started on a word it ignores.
     let directory = tempfile::tempdir().unwrap();
-    let log = directory.path().join("node.log");
-    let args: Vec<std::ffi::OsString> = [
-        directory.path().join("store").as_os_str(),
-        "--serve".as_ref(),
-        "127.0.0.1:0".as_ref(),
-        "--client-plaintext".as_ref(),
-    ]
-    .iter()
-    .map(|part| part.to_os_string())
-    .collect();
-    let _running = started_without_client_settings(&args, &log);
-    let said = said_within(&log, "retired", Duration::from_secs(20));
-    assert!(
-        said.contains("wire protocol on"),
-        "the node did not start: {said}"
+    let store = directory.path().join("store");
+    let by_flag = refused_start(
+        Command::new(TESSARIDB)
+            .arg(&store)
+            .args(["--serve", "127.0.0.1:0", "--client-plaintext"])
+            .env_remove("TESSARIDB_CLIENT_PLAINTEXT"),
     );
     assert!(
-        said.contains("--client-plaintext is retired"),
-        "the retirement is said at start: {said}"
+        by_flag.contains("--client-plaintext") && by_flag.contains("retired"),
+        "{by_flag}"
+    );
+    let by_variable = refused_start(
+        Command::new(TESSARIDB)
+            .arg(&store)
+            .args(["--serve", "127.0.0.1:0"])
+            .env("TESSARIDB_CLIENT_PLAINTEXT", "1"),
+    );
+    assert!(
+        by_variable.contains("TESSARIDB_CLIENT_PLAINTEXT") && by_variable.contains("retired"),
+        "{by_variable}"
     );
 }
 
@@ -1313,7 +1301,6 @@ fn a_joiner_restarted_without_its_seed_still_finds_the_leader() {
             .arg(&stores[index])
             .args(["--serve", NAMED[index].0])
             .args(["--cluster-credential", leaf])
-            .arg("--client-plaintext")
             .args(["--cluster-key", key])
             .args(["--cluster-authority", authority])
             .args(["--cluster-address", NAMED[index].1]);
@@ -1554,7 +1541,6 @@ fn a_row_waiting_on_a_join_token_is_bound_by_the_node_that_offers_it() {
             .arg(&stores[index])
             .args(["--serve", UNBOUND[index].0])
             .args(["--cluster-credential", leaf])
-            .arg("--client-plaintext")
             .args(["--cluster-key", key])
             .args(["--cluster-authority", authority])
             .args(["--cluster-address", UNBOUND[index].1]);
@@ -1705,7 +1691,6 @@ fn a_node_dials_the_peer_its_catalog_declares() {
         .arg(&store)
         .args(["--serve", WIRE_WITH_DIALLING])
         .args(["--cluster-credential", &leaf])
-        .arg("--client-plaintext")
         .args(["--cluster-key", &key])
         .args(["--cluster-authority", &authority])
         .args(["--cluster-address", PEERS_FOR_DIALLING])
@@ -2146,7 +2131,6 @@ fn a_cluster_of_rows_by(
             stores[index].as_os_str(),
             "--serve".as_ref(),
             band[index].0.as_ref(),
-            "--client-plaintext".as_ref(),
             "--cluster-credential".as_ref(),
             leaf.as_ref(),
             "--cluster-key".as_ref(),
@@ -2844,7 +2828,6 @@ fn a_node_joins_a_cluster_it_was_only_given_an_address_for() {
             .arg(&stores[index])
             .args(["--serve", client])
             .args(["--cluster-credential", leaf])
-            .arg("--client-plaintext")
             .args(["--cluster-key", key])
             .args(["--cluster-authority", authority])
             .args(["--cluster-address", peer]);
@@ -3402,7 +3385,6 @@ fn spawn_refusing(
         .arg(&stores[index])
         .args(["--serve", REFUSING[index].0])
         .args(["--cluster-credential", leaf])
-        .arg("--client-plaintext")
         .args(["--cluster-key", key])
         .args(["--cluster-authority", authority])
         .args(["--cluster-address", REFUSING[index].1])

@@ -34,8 +34,8 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   --require-client-tls refuse to start unless --tls-cert and --tls-key are
                   given, for a deployment that forbids the clear; or
                   TESSARIDB_REQUIRE_CLIENT_TLS=1; off by default
-  --client-plaintext retired: the clear is the default without a certificate;
-                  accepted in this release only, and the next refuses it
+  --client-plaintext refused since 0.24.0-beta: the clear is the default without
+                  a certificate, so the flag is dropped rather than given
   --tls-authority <file> with --at: speak TLS and trust the node by these
                   certificates, PEM; default TESSARIDB_TLS_AUTHORITY
   --cluster-credential <file> this node's peer credential, PEM, with --serve
@@ -346,7 +346,12 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                     .ok_or_else(|| "--tls-key wants a path".to_owned())?;
                 serving.tls.key = Some(PathBuf::from(path));
             }
-            "--client-plaintext" => serving.tls.plaintext = true,
+            "--client-plaintext" => {
+                return Err(format!(
+                    "--client-plaintext {}",
+                    crate::tls::PLAINTEXT_RETIRED
+                ));
+            }
             "--require-client-tls" => serving.tls.require = true,
             "--join-token" => {
                 serving.join_token = Some(
@@ -513,11 +518,9 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
     // And again: a certificate named on a process that serves nothing is one
     // somebody believes is encrypting their clients.
     if serving.tls != crate::tls::Given::default() && !matches!(source, Source::Serve) {
-        return Err(
-            "--tls-cert, --tls-key, --require-client-tls and --client-plaintext say how a \
+        return Err("--tls-cert, --tls-key and --require-client-tls say how a \
              serving node speaks to its clients, and this serves nothing"
-                .to_owned(),
-        );
+            .to_owned());
     }
     // The client's half: trusting a node by a certificate is something only a
     // connection to one can do.
