@@ -2297,7 +2297,8 @@ replicated to another on its own (§7d).
 cluster where two nodes lead two shards — or two namespaces — a transaction
 writing both is refused with **`SpansLeaderships`**, naming both nodes. It is not
 a redirect: the node it would send you to leads only part of the transaction
-too, and would refuse it back. Write each leader's part as its own transaction.
+too, and would refuse it back. Commit it with `COMMIT ACROSS LEADERS` (§7d), or
+write each leader's part as its own transaction.
 A transaction that one other node leads entirely is still redirected there.
 
 **A write sent to the wrong leader is redirected, not refused** (from
@@ -9020,7 +9021,87 @@ range alone (**`LeaseSpent`**), and a lapsed lease on the store no longer refuse
 a write whose every range has a live leader of its own.
 
 A transaction that writes ranges led by two different nodes is refused as
-**`SpansLeaderships`**, naming both; write each leader's ranges separately.
+**`SpansLeaderships`**, naming both, unless it asks to commit across them —
+the next section.
+
+### A transaction across leaders: `COMMIT ACROSS LEADERS`
+
+```
+BEGIN;
+  CREATE orders:'a17' = { total: 40 };
+  CREATE orders:'h17' = { total: 40 };
+COMMIT ACROSS LEADERS;
+```
+
+A transaction that writes ranges led by different nodes commits **whole or not
+at all** when it says so. The clause goes on the `COMMIT`, or on a single write —
+`CREATE … ACROSS LEADERS` — beside `ACKNOWLEDGE` and in either order; a write
+inside `BEGIN` that says it lets its transaction's `COMMIT` reach across leaders
+as though the `COMMIT` had said it. It is permission, never a cost: a
+transaction that asks and turns out to touch one leader's ranges commits in one
+step exactly as it would have without it, and one that spans leaders without
+asking is refused `SpansLeaderships`, whose message names the clause.
+
+**How it commits.** The node the transaction ran on drives it. The leader of
+the first range it writes holds the transaction's **record**, written
+`PENDING` before anything else. Every leader of a range it writes is then sent
+that range's writes and runs on them every check its own commit runs — its
+fence, the schema, uniqueness, bounds, the user's grants — and the conflict
+check against everything committed there since the transaction read; it
+answers *prepared* once a majority of its range's voters hold the writes as
+**intents**. Only when every leader answered *prepared* is the record turned
+`COMMITTED`, held by a majority, and only then is the caller told. Each leader
+then turns its intents into ordinary versions in its own log. Any refusal,
+timeout or unreachable leader turns the record `ABORTED` instead, and the
+intents are dropped. **Every step waits for a majority whatever `ACKNOWLEDGE`
+says** — a prepare or an outcome that a failover can lose is not one.
+
+The cost is that work: two majority rounds and a round trip to each leader it
+writes, several times a commit one leader takes alone. Use it where the
+records must change together, and keep the rest in one leader's ranges.
+
+**What the caller is told.** Committed, or one of:
+
+- **`AcrossAborted`** — a leader refused its part (the refusal is quoted), or
+  the record was aborted before the decision landed. **Nothing of the
+  transaction applies anywhere.** A conflict is retriable as it always is.
+- **`AcrossInDoubt`** — the decision was sent and could not be confirmed. The
+  record decides it: committed if the decision landed, aborted once its
+  liveness lapses if it did not. Read the records to learn which; do not
+  simply repeat a write that is not idempotent.
+- **`AcrossNotHeldHere`** — the node the transaction ran on holds no copy of a
+  range it writes. The half of the conflict check a leader cannot make is
+  made on that copy, so run the transaction on a node that holds every range
+  it writes.
+- **`AcrossUnavailable`** — the node knows no peers to carry the parts to.
+
+**While it is in flight.** An intent is a lock: any other write to a record
+holding one is refused **`Conflict`** — retriable, and the message says an
+intent refused it — rather than made to wait. A reader never sees half of it:
+each read decides once, from its own snapshot, whether the whole transaction
+is visible, and when it is not it reads the version under every one of its
+records. That is atomic visibility, not a single order across ranges: two
+readers on two ranges are not ordered against each other, and write skew stays
+admitted as it is under the store's snapshot isolation. An index of a table
+holding such a transaction's records answers through the checked path until
+its parts have all landed on this node, and a traversal over its edges is
+refused **`AcrossSettling`** — retriable — for that moment.
+
+**When a node dies part-way.** The record, the intents and the decision are
+log records held by a majority, so whoever leads each range next continues
+from them. A driver that dies leaves its record `PENDING`; once the record's
+liveness has lapsed — four rounds of the failover policy — a leader holding
+its intents aborts it, through the record's own leader, so exactly one
+outcome is ever recorded. A decided record is forgotten once every leader's
+resolution is itself held by a majority. A snapshot backup carries a
+transaction as its cut sees it, so a restore answers as a reader at that
+moment did.
+
+**Seeing it.** `INFO FOR NODE` reports `cluster.across`: `committed`,
+`aborted` and `in_doubt` as counted by the node that drove them, and `pending`
+records and transactions `with_intents` as the settling round last sampled
+them. `/metrics` carries `tessari_transactions_across_leaders_total{outcome}`,
+`tessari_transactions_pending` and `tessari_transactions_with_intents`.
 
 **A node subscribed to less than the store does not lead the store.** The
 store's leader writes every range no row places, and a leader collects from
