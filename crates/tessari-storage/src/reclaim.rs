@@ -84,12 +84,16 @@ impl Store {
         // first one at or below the floor is the one a reader there resolves to.
         let mut current: Option<RecordId> = None;
         let mut kept_for_current = false;
+        // Whether a version from a transaction across leaders was kept above
+        // the one being judged, for the current record.
+        let mut kept_above_across = false;
 
         for (key, value) in self.backend().scan(&request)? {
             let decoded = RecordKey::decode(key.as_slice())?;
             if current.as_ref() != Some(&decoded.id) {
                 current = Some(decoded.id.clone());
                 kept_for_current = false;
+                kept_above_across = false;
             }
             if decoded.version > floor {
                 // A reader between this version and the floor still needs it.
@@ -98,19 +102,26 @@ impl Store {
             // An intent is never the version a reader resolves to and is never
             // reclaimed: its record decides it, and until then the version under
             // it is what every reader reads (ADR-0112 D5).
-            if crate::intents::is_intent(&StampedValue::decode(value.as_slice())?) {
+            let stored = StampedValue::decode(value.as_slice())?;
+            if crate::intents::is_intent(&stored) {
                 continue;
             }
             if !kept_for_current {
+                // A version resolved from a transaction across leaders is one a
+                // reader passes over while its snapshot lacks a part of that
+                // transaction, reading the one under it — so that one is kept
+                // too, and the search goes on (ADR-0112 D9).
+                if stored.provenance().is_some() {
+                    kept_above_across = true;
+                    continue;
+                }
                 kept_for_current = true;
                 // The version every reader at the floor resolves to. It survives
                 // — unless it says the record is gone, in which case removing it
                 // gives every one of those readers the same answer for less
-                // space.
-                if matches!(
-                    StampedValue::decode(value.as_slice())?.into_value(),
-                    RecordValue::Tombstone
-                ) {
+                // space. Not under a kept cross-leader version: a reader passing
+                // over that one must find the record gone, not an older value.
+                if !kept_above_across && matches!(stored.into_value(), RecordValue::Tombstone) {
                     batch = batch.delete(RecordKey::keyspace(), key);
                     removed.records = removed.records.saturating_add(1);
                     removed.versions = removed.versions.saturating_add(1);

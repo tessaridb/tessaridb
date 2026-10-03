@@ -143,6 +143,10 @@ pub enum KeyKind {
     /// intent of one transaction by a prefix read, and every transaction with
     /// intents standing by a walk of the kind (ADR-0112 D7).
     IntentOf,
+    /// Where one transaction across leaders' part in one range landed on this
+    /// node — the local version its prepare applied at — which is how a reader
+    /// tells whether its snapshot holds the whole transaction (ADR-0112 D6a).
+    AcrossPart,
 }
 
 impl KeyKind {
@@ -191,6 +195,7 @@ impl KeyKind {
         Self::ServedReach,
         Self::TransactionRecord,
         Self::IntentOf,
+        Self::AcrossPart,
     ];
 
     /// The leading byte that identifies this kind on disk.
@@ -244,6 +249,7 @@ impl KeyKind {
             Self::ServedReach => 0x3f,
             Self::TransactionRecord => 0x50,
             Self::IntentOf => 0x51,
+            Self::AcrossPart => 0x52,
         }
     }
 
@@ -290,7 +296,8 @@ impl KeyKind {
             | Self::LogRetention
             | Self::ServedReach
             | Self::TransactionRecord
-            | Self::IntentOf => Keyspace::META,
+            | Self::IntentOf
+            | Self::AcrossPart => Keyspace::META,
         }
     }
 
@@ -341,6 +348,7 @@ impl KeyKind {
             Self::ServedReach => "served-reach",
             Self::TransactionRecord => "transaction-record",
             Self::IntentOf => "intent-of",
+            Self::AcrossPart => "across-part",
         }
     }
 
@@ -440,6 +448,7 @@ mod tests {
             (KeyKind::ServedReach, 0x3f),
             (KeyKind::TransactionRecord, 0x50),
             (KeyKind::IntentOf, 0x51),
+            (KeyKind::AcrossPart, 0x52),
         ];
         assert_eq!(expected.len(), KeyKind::ALL.len(), "a kind is untested");
         for (kind, tag) in expected {

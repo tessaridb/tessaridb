@@ -90,8 +90,9 @@ impl Fixture {
             participants: if provisional {
                 Vec::new()
             } else {
+                // The home applying a prepare of these writes records (D6a).
                 vec![Participant {
-                    range: Reach::Namespace(self.namespace),
+                    range: Reach::Database(self.namespace, self.database),
                     prepared_at: Some(Sequence::new(1)),
                 }]
             },

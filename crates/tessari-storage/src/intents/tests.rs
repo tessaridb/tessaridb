@@ -85,11 +85,24 @@ impl Fixture {
                     }]
                 },
             });
-        let batch = WriteBatch::new().put(
+        let mut batch = WriteBatch::new().put(
             tessari_encoding::RecordKey::keyspace(),
             key.encode(),
             value.encode(),
         );
+        if !provisional {
+            // Where its one part landed, as applying its prepare records it: a
+            // resolved version is read only by a snapshot holding every part.
+            let part = tessari_encoding::AcrossPartKey {
+                transaction: TransactionId::new([9; TRANSACTION_ID_LEN]),
+                range: Reach::Namespace(self.namespace),
+            };
+            batch = batch.put(
+                tessari_encoding::AcrossPartKey::keyspace(),
+                part.encode(),
+                version.encode(),
+            );
+        }
         self.store.backend().apply(batch)?;
         Ok(())
     }

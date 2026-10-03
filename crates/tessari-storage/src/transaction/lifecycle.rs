@@ -34,6 +34,7 @@ impl<'a> Transaction<'a> {
             floors: std::cell::RefCell::new(BTreeMap::new()),
             guarded: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             across: None,
+            decided: std::cell::RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -185,9 +186,9 @@ impl<'a> Transaction<'a> {
         for (index, pair) in asked.into_iter().zip(found) {
             let Some((_, value)) = pair else { continue };
             let mut stored = StampedValue::decode(value.as_slice())?;
-            if crate::intents::is_intent(&stored) {
-                // The rare record a transaction across leaders is writing: read
-                // the version under the intent, one record at a time.
+            if self.passes_over(&stored)? {
+                // The rare record a transaction across leaders wrote that this
+                // one does not see: read the version under, one at a time.
                 let Some(under) = self.read_stamped_at(&addresses[index])? else {
                     continue;
                 };
@@ -430,10 +431,11 @@ impl<'a> Transaction<'a> {
     /// stamp. One decode site for the reason the codec gives for its splitters
     /// — two readings of one byte string is a thing that can come to disagree.
     ///
-    /// An intent is passed over and the version under it answers (ADR-0112
-    /// D5): only a transaction's record can make an intent a value. One read
-    /// per intent standing on the record, which is none for every record no
-    /// transaction across leaders is writing.
+    /// A version of a transaction across leaders this one does not see — an
+    /// intent not yet committed, or any version of one whose parts this
+    /// snapshot does not all hold — is passed over and the version under it
+    /// answers (ADR-0112 D5, D6a). One read per such version, which is none for
+    /// every record no transaction across leaders wrote.
     pub(super) fn first_in_range(
         &self,
         mut range: KeyRange,
@@ -450,7 +452,7 @@ impl<'a> Transaction<'a> {
                 return Ok(None);
             };
             let decoded_value = StampedValue::decode(value.as_slice())?;
-            if crate::intents::is_intent(&decoded_value) {
+            if self.passes_over(&decoded_value)? {
                 range = KeyRange::from_bounds(Bound::Excluded(key.clone()), range.end().clone());
                 continue;
             }

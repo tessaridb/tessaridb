@@ -92,3 +92,25 @@ fn an_intent_key_round_trips_and_one_transaction_is_one_prefix() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn a_part_key_round_trips_for_every_kind_of_range() -> Result<()> {
+    let transaction = TransactionId::new([7; TRANSACTION_ID_LEN]);
+    for range in [
+        Reach::Store,
+        Reach::Namespace(NamespaceId::new(2)),
+        Reach::Database(NamespaceId::new(2), tessari_types::DatabaseId::new(3)),
+        Reach::Shard(
+            NamespaceId::new(2),
+            tessari_types::DatabaseId::new(3),
+            tessari_types::TableId::new(4),
+            tessari_types::ShardId::new(5),
+        ),
+    ] {
+        let key = AcrossPartKey { transaction, range };
+        let bytes = key.encode();
+        assert_eq!(bytes.as_slice()[0], 0x52);
+        assert_eq!(AcrossPartKey::decode(bytes.as_slice())?, key);
+    }
+    Ok(())
+}

@@ -804,12 +804,21 @@ impl Transaction<'_> {
                 .as_ref()
                 .is_some_and(|provenance| provenance.provisional)
                 && !self.resolves(provenance.as_ref());
+            // ADR-0112 D6a: a version resolved from a transaction this one
+            // does not see is one it read the version under instead of. Writing
+            // over it would lose that transaction's write — an increment read
+            // from the old value — so it is refused as a conflict, and passes
+            // once this node's copies hold the transaction's every part.
+            let unseen = match provenance.as_ref() {
+                Some(resolved) if !resolved.provisional => !self.sees(resolved)?,
+                _ => false,
+            };
             // ADR-0112 D5: a standing intent refuses the write whatever this
             // writer's snapshot. An intent prepared before the snapshot is not
             // newer than it, and replacing the value under it would lose the
             // write the transaction across leaders is about to commit.
             // Retriable: the intent resolves.
-            if version > self.snapshot || intent {
+            if version > self.snapshot || intent || unseen {
                 return Err(Error::Conflict {
                     id: address.id.clone(),
                     snapshot: self.snapshot,

@@ -8,8 +8,8 @@
 //! `across_model` requires of both sides before anything can prepare.
 
 use tessari_encoding::{
-    Decision, IntentOfKey, LogRecord, Part, Provenance, RecordKey, StampedValue, StoreKey,
-    StoreValue, TransactionRecord, TransactionRecordKey,
+    AcrossPartKey, Decision, IntentOfKey, LogRecord, Part, Provenance, RecordKey, StampedValue,
+    StoreKey, StoreValue, TransactionRecord, TransactionRecordKey,
 };
 use tessari_kv::WriteBatch;
 use tessari_types::Sequence;
@@ -207,6 +207,13 @@ pub(crate) fn settle(
                     problem: "a write that is not an intent of its transaction",
                 });
             }
+            // Where this part landed here, in the batch that lands it (D6a): a
+            // reader's snapshot at or past `version` holds every intent below.
+            let part = AcrossPartKey {
+                transaction: across.transaction,
+                range: crate::catalog::home_of(record)?,
+            };
+            let batch = batch.put(AcrossPartKey::keyspace(), part.encode(), version.encode());
             // Each intent indexed under its transaction, in the batch that
             // lands it (D7): what lets this node resolve its own intents later.
             Ok(record.mutations().iter().fold(batch, |batch, mutation| {

@@ -1,10 +1,10 @@
 //! The key of one transaction across leaders' record (ADR-0112).
 
 use tessari_kv::Key;
-use tessari_types::{DatabaseId, NamespaceId, RecordId, Sequence, TableId};
+use tessari_types::{DatabaseId, NamespaceId, Reach, RecordId, Sequence, TableId};
 
 use crate::error::Result;
-use crate::keys::StoreKey;
+use crate::keys::{StoreKey, put_reach, take_reach};
 use crate::kind::KeyKind;
 use crate::order::{KeyReader, KeyWriter};
 use crate::value::{TRANSACTION_ID_LEN, TransactionId, TransactionRecord};
@@ -124,6 +124,52 @@ impl StoreKey for IntentOfKey {
             table,
             id,
         })
+    }
+}
+
+/// Where one transaction across leaders' part in one range landed on this node
+/// (ADR-0112 D6a).
+///
+/// ```text
+/// <0x52> <transaction:16> <range reach>
+/// ```
+///
+/// Written in the batch that applies the range's prepare, with the local
+/// version that batch commits at as its value — so a reader whose snapshot is
+/// at or past that version holds every intent the prepare wrote, and one whose
+/// snapshot is before it holds none. A reader of one of the transaction's
+/// versions asks this key for each other range the transaction wrote and this
+/// node holds; one missing or past its snapshot makes the whole transaction
+/// invisible to it. Read only by point lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcrossPartKey {
+    /// The transaction.
+    pub transaction: TransactionId,
+    /// The range its part was prepared in.
+    pub range: Reach,
+}
+
+impl StoreKey for AcrossPartKey {
+    type Value = Sequence;
+
+    const KIND: KeyKind = KeyKind::AcrossPart;
+
+    fn encode(&self) -> Key {
+        let mut writer = KeyWriter::with_capacity(TRANSACTION_ID_LEN.saturating_add(24));
+        writer
+            .put_u8(Self::KIND.tag())
+            .put_fixed(&self.transaction.bytes());
+        put_reach(&mut writer, self.range);
+        Key::from(writer.finish())
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        let transaction = TransactionId::new(reader.take_fixed::<TRANSACTION_ID_LEN>()?);
+        let range = take_reach(&mut reader)?;
+        reader.finish()?;
+        Ok(Self { transaction, range })
     }
 }
 

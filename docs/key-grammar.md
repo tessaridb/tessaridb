@@ -113,6 +113,7 @@ because renumbering after data exists is a full rebuild.
 | `0x43` | `TopicBytes` (payload bytes a size-retained topic holds) | `index` | implemented — see §6.2d |
 | `0x50` | `TransactionRecord` (one transaction across leaders) | `meta` | implemented — see §6.5 |
 | `0x51` | `IntentOf` (an intent this node holds, by transaction) | `meta` | implemented — see §6.5 |
+| `0x52` | `AcrossPart` (where a transaction's part in one range landed here) | `meta` | implemented — see §6.5 |
 
 `0x40` and `0x41` open a fifth family, `0x4_`: what the planner keeps about an
 index. Both keys are an index prefix with no suffix (`<tag> <namespace:u32>
@@ -892,6 +893,19 @@ first, so a participant finds every intent of one transaction by a prefix read
 — which is how it resolves its own intents after the coordinator that knew
 their addresses is gone. The value is the intent's version.
 
+```
+<0x52> <transaction:16> <range reach>   → <version:u64>
+```
+
+`AcrossPart` records where one transaction's part in one range landed on this
+node: written in the batch that applies the range's prepare, with that batch's
+local version as its value. A reader that meets a version of the transaction
+asks it for every other range the transaction wrote and this node holds; a
+snapshot at or past each part's version holds the whole transaction, and one
+before any of them sees none of it — it reads the version under (ADR-0112 D6a).
+A resolved version carries the transaction's participants in its provenance
+(§7), so this needs no copy of the record.
+
 **Intents have no key kind of their own.** A participant's prepared write is a
 *provisional* version under the record's own `0x01` key, marked in the
 version's provenance (§7), so it sits where every read already walks versions
@@ -911,7 +925,7 @@ error naming the version found and the versions supported.
 | Field | Meaning |
 |---|---|
 | `codec-version` | `0x01` for this format. Not a payload byte. |
-| `flags` | bit 0 = tombstone, for value types that have versions. Bit 6 = the value belongs to a transaction across leaders (ADR-0112): on a log record, the section saying which of its records this is; on a record version, its provenance — `<transaction:16> <kind:1> <coordinator reach>`, kind `0` resolved, `1` provisional (an intent). The other bits are defined per value type in the codec; an undefined bit is reserved, and so is bit 0 for value types that cannot be deleted. |
+| `flags` | bit 0 = tombstone, for value types that have versions. Bit 6 = the value belongs to a transaction across leaders (ADR-0112): on a log record, the section saying which of its records this is; on a record version, its provenance — `<transaction:16> <kind:1> <coordinator reach>`, kind `0` resolved, `1` provisional (an intent); a resolved version follows it with `<count:u32>` participants, each `<range reach> <known:u8> [<prepared at:u64>]`, so a reader can tell whether its snapshot holds the whole transaction (ADR-0112 D6a). The other bits are defined per value type in the codec; an undefined bit is reserved, and so is bit 0 for value types that cannot be deleted. |
 | `payload` | opaque to this layer; the document codec (SG2.T4) owns it |
 
 Policies, stated rather than left to be discovered:

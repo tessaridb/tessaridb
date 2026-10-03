@@ -220,9 +220,11 @@ impl Transaction<'_> {
                 continue;
             }
             let stored = StampedValue::decode(value.as_slice())?;
-            // An intent does not settle its record: the version under it, next
-            // in this same walk, does (ADR-0112 D5).
-            if crate::intents::is_intent(&stored) {
+            // A version this transaction does not see — an intent, or one of a
+            // transaction across leaders whose parts this snapshot does not all
+            // hold — does not settle its record: the version under it, next in
+            // this same walk, does (ADR-0112 D5, D6a).
+            if self.passes_over(&stored)? {
                 continue;
             }
             *resolved = Some(decoded.id.clone());

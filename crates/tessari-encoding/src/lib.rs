@@ -71,7 +71,7 @@ pub use order::{KeyReader, KeyWriter};
 pub use payload::{decode as decode_payload, encode as encode_payload};
 pub use spatial_keys::{SpatialExtent, SpatialIndexKey};
 pub use topic_key::{TopicBytesKey, TopicEntryKey, TopicHeadKey, TopicOffsetKey};
-pub use transaction_key::{IntentOfKey, TransactionRecordKey};
+pub use transaction_key::{AcrossPartKey, IntentOfKey, TransactionRecordKey};
 pub use value::{
     Across, CODEC_VERSION, Decision, FormatVersion, LogRecord, Mutation, Part, Participant,
     Provenance, RecordValue, StampedValue, StoreValue, TRANSACTION_ID_LEN, TransactionId,
