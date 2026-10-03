@@ -72,6 +72,9 @@ pub enum AcrossAsk {
         committed: bool,
         /// The records whose intents to resolve.
         records: Vec<RecordAddress>,
+        /// Every participant and where its prepare landed, as the committed
+        /// record names them; the resolved versions carry them (D6a).
+        participants: Vec<tessari_encoding::Participant>,
     },
 }
 
@@ -96,7 +99,7 @@ pub trait Participants: core::fmt::Debug + Send + Sync {
 }
 
 /// What the leader did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AcrossAnswer {
     /// The intents landed at this position and a majority holds them.
     Prepared(Sequence),
@@ -104,8 +107,9 @@ pub enum AcrossAnswer {
     Decided(Sequence),
     /// The resolution landed at this position, or there was nothing left.
     Resolved(Option<Sequence>),
-    /// The record's outcome, as it now stands.
-    Outcome(tessari_encoding::Decision),
+    /// The record as it now stands — its outcome, and for a committed one
+    /// where every prepare landed, which a resolution needs.
+    Outcome(TransactionRecord),
 }
 
 impl Session<'_> {
@@ -186,10 +190,11 @@ impl Session<'_> {
                 transaction,
                 committed,
                 records,
+                participants,
             } => {
                 let resolved = store
                     .begin()?
-                    .resolve_across(*transaction, *committed, records)
+                    .resolve_across(*transaction, *committed, records, participants)
                     .map_err(advised)?;
                 Ok(AcrossAnswer::Resolved(
                     resolved.map(|landed| landed.sequence),
@@ -218,7 +223,7 @@ impl Session<'_> {
         let record = match standing {
             Some(record) if record.decision != tessari_encoding::Decision::Pending => record,
             Some(record) if record.deadline > now_millis() => {
-                return Ok(AcrossAnswer::Outcome(record.decision));
+                return Ok(AcrossAnswer::Outcome(record));
             }
             Some(record) => TransactionRecord {
                 decision: tessari_encoding::Decision::Aborted,
@@ -234,13 +239,12 @@ impl Session<'_> {
                 }],
             },
         };
-        let decision = record.decision;
         let deciding = AcrossAsk::Decide {
             transaction,
-            record,
+            record: record.clone(),
         };
         match self.answer_across(&deciding) {
-            Ok(_) => Ok(AcrossAnswer::Outcome(decision)),
+            Ok(_) => Ok(AcrossAnswer::Outcome(record)),
             // Decided between the read and the abort — the coordinator's own
             // decision won — so that decision is the one written again. Once:
             // a decided record never changes, so it cannot be refused twice.

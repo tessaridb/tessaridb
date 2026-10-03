@@ -34,6 +34,7 @@ fn resolving(committed: bool) -> Vec<u8> {
             TableId::new(3),
             RecordId::Int(1),
         )],
+        participants: Vec::new(),
     }
     .encode()
 }

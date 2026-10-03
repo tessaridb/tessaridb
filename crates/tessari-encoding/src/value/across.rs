@@ -119,7 +119,7 @@ pub struct Across {
 /// final version, which keeps the provenance with `provisional` clear. An
 /// intent therefore lives where readers already walk versions, and is never a
 /// second keyspace every read would have to consult.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Provenance {
     /// The transaction.
     pub transaction: TransactionId,
@@ -128,6 +128,12 @@ pub struct Provenance {
     pub provisional: bool,
     /// The range whose log holds its record.
     pub coordinator: Reach,
+    /// Every range the transaction wrote, with where its prepare landed — on a
+    /// resolved version, so a reader can tell whether its snapshot holds the
+    /// whole transaction without the record (ADR-0112 D6a). Empty on an
+    /// intent: its prepare is the first one known, and the record has the rest
+    /// once it commits.
+    pub participants: Vec<Participant>,
 }
 
 const PART_PREPARE: u8 = 1;
@@ -196,8 +202,14 @@ fn put_record(writer: &mut KeyWriter, record: &TransactionRecord) {
     writer.put_u64(record.deadline);
     // A count here, unlike in front of a log record's mutations: in a `Decide`
     // part the participants are followed by the mutations, so they need an end.
-    writer.put_u32(u32::try_from(record.participants.len()).unwrap_or(u32::MAX));
-    for participant in &record.participants {
+    put_participants(writer, &record.participants);
+}
+
+/// Append a count of participants and each one: its range, then its prepare
+/// position when known.
+fn put_participants(writer: &mut KeyWriter, participants: &[Participant]) {
+    writer.put_u32(u32::try_from(participants.len()).unwrap_or(u32::MAX));
+    for participant in participants {
         put_reach(writer, participant.range);
         match participant.prepared_at {
             Some(at) => writer.put_u8(1).put_u64(at.get()),
@@ -206,15 +218,8 @@ fn put_record(writer: &mut KeyWriter, record: &TransactionRecord) {
     }
 }
 
-/// Read a [`TransactionRecord`] written by [`put_record`].
-fn take_record(reader: &mut KeyReader<'_>) -> Result<TransactionRecord> {
-    let decision = match reader.take_u8()? {
-        DECISION_PENDING => Decision::Pending,
-        DECISION_COMMITTED => Decision::Committed,
-        DECISION_ABORTED => Decision::Aborted,
-        found => return Err(unknown("decision", found)),
-    };
-    let deadline = reader.take_u64()?;
+/// Read participants written by [`put_participants`].
+fn take_participants(reader: &mut KeyReader<'_>) -> Result<Vec<Participant>> {
     let count = reader.take_u32()?;
     let mut participants = Vec::new();
     for _ in 0..count {
@@ -226,6 +231,19 @@ fn take_record(reader: &mut KeyReader<'_>) -> Result<TransactionRecord> {
         };
         participants.push(Participant { range, prepared_at });
     }
+    Ok(participants)
+}
+
+/// Read a [`TransactionRecord`] written by [`put_record`].
+fn take_record(reader: &mut KeyReader<'_>) -> Result<TransactionRecord> {
+    let decision = match reader.take_u8()? {
+        DECISION_PENDING => Decision::Pending,
+        DECISION_COMMITTED => Decision::Committed,
+        DECISION_ABORTED => Decision::Aborted,
+        found => return Err(unknown("decision", found)),
+    };
+    let deadline = reader.take_u64()?;
+    let participants = take_participants(reader)?;
     Ok(TransactionRecord {
         decision,
         deadline,
@@ -253,8 +271,10 @@ impl StoreValue for TransactionRecord {
 }
 
 /// Append a version's [`Provenance`]: the transaction first, as on a log
-/// record, then whether it is an intent, then the coordinator's range.
-pub(super) fn put_provenance(writer: &mut KeyWriter, provenance: Provenance) {
+/// record, then whether it is an intent, then the coordinator's range, and on a
+/// resolved version the participants — an intent carries none, so an intent
+/// costs what it did.
+pub(super) fn put_provenance(writer: &mut KeyWriter, provenance: &Provenance) {
     writer.put_fixed(&provenance.transaction.bytes());
     writer.put_u8(if provenance.provisional {
         PROVISIONAL
@@ -262,6 +282,9 @@ pub(super) fn put_provenance(writer: &mut KeyWriter, provenance: Provenance) {
         RESOLVED
     });
     put_reach(writer, provenance.coordinator);
+    if !provenance.provisional {
+        put_participants(writer, &provenance.participants);
+    }
 }
 
 /// Read a version's [`Provenance`] written by [`put_provenance`].
@@ -276,10 +299,17 @@ pub(super) fn take_provenance(reader: &mut KeyReader<'_>) -> Result<Provenance> 
         PROVISIONAL => true,
         found => return Err(unknown("provenance", found)),
     };
+    let coordinator = take_reach(reader)?;
+    let participants = if provisional {
+        Vec::new()
+    } else {
+        take_participants(reader)?
+    };
     Ok(Provenance {
         transaction,
         provisional,
-        coordinator: take_reach(reader)?,
+        coordinator,
+        participants,
     })
 }
 

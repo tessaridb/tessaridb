@@ -76,6 +76,14 @@ impl Fixture {
                 transaction: TransactionId::new([9; TRANSACTION_ID_LEN]),
                 provisional,
                 coordinator: Reach::Namespace(self.namespace),
+                participants: if provisional {
+                    Vec::new()
+                } else {
+                    vec![tessari_encoding::Participant {
+                        range: Reach::Namespace(self.namespace),
+                        prepared_at: Some(version),
+                    }]
+                },
             });
         let batch = WriteBatch::new().put(
             tessari_encoding::RecordKey::keyspace(),

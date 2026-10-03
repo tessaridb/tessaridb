@@ -58,6 +58,7 @@ mod runtime;
 mod scanner;
 mod serving;
 mod session;
+mod settling_round;
 mod shutdown;
 mod store;
 mod streaming;

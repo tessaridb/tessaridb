@@ -95,7 +95,7 @@ impl LogRecord {
     #[must_use]
     pub fn with_provenance(mut self, provenance: super::Provenance) -> Self {
         for mutation in &mut self.mutations {
-            mutation.value = mutation.value.clone().from_transaction(provenance);
+            mutation.value = mutation.value.clone().from_transaction(provenance.clone());
         }
         self
     }

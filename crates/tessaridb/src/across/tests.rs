@@ -4,7 +4,7 @@ use tessari_encoding::{
     Mutation, Participant, RecordValue, StampedValue, TRANSACTION_ID_LEN, TransactionId,
     TransactionRecord, decode_payload, encode_payload,
 };
-use tessari_session::{AcrossAsk, Session};
+use tessari_session::{AcrossAnswer, AcrossAsk, Session};
 use tessari_storage::{Catalog, Decision, RecordAddress};
 use tessari_types::{Reach, RecordId, Value};
 
@@ -35,7 +35,7 @@ fn left_behind(decisions: &[Decision]) -> (Db, RecordAddress) {
     reading.rollback();
     let home = Reach::Database(namespace, database);
     let mut session: Session<'_> = db.session();
-    session
+    let prepared = session
         .answer_across(&AcrossAsk::Prepare {
             transaction: TRANSACTION,
             coordinator: home,
@@ -52,6 +52,9 @@ fn left_behind(decisions: &[Decision]) -> (Db, RecordAddress) {
             }],
         })
         .unwrap();
+    let AcrossAnswer::Prepared(prepared_at) = prepared else {
+        unreachable!("a prepare answers where it landed")
+    };
     for decision in decisions {
         session
             .answer_across(&AcrossAsk::Decide {
@@ -61,7 +64,7 @@ fn left_behind(decisions: &[Decision]) -> (Db, RecordAddress) {
                     deadline: 0,
                     participants: vec![Participant {
                         range: home,
-                        prepared_at: None,
+                        prepared_at: Some(prepared_at),
                     }],
                 },
             })

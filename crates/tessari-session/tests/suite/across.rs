@@ -132,6 +132,7 @@ fn the_three_records_commit_a_write_only_once_decided() {
     let resolving = AcrossAsk::Resolve {
         transaction: TRANSACTION,
         committed: true,
+        participants: record(&store, Decision::Committed).participants,
         records: vec![RecordAddress::new(
             namespace,
             database,
@@ -182,24 +183,26 @@ fn a_space_is_not_written_across_leaders() {
     );
 }
 
-fn settle(session: &mut Session<'_>, store: &Store) -> AcrossAnswer {
+/// The decision `Settle` answers with.
+fn settle(session: &mut Session<'_>, store: &Store) -> Decision {
     let (namespace, database, _) = ids(store, "notes");
-    session
+    match session
         .answer_across(&AcrossAsk::Settle {
             transaction: TRANSACTION,
             coordinator: Reach::Database(namespace, database),
         })
         .unwrap()
+    {
+        AcrossAnswer::Outcome(record) => record.decision,
+        other => panic!("Settle answered {other:?}"),
+    }
 }
 
 #[test]
 fn settling_a_record_nobody_wrote_aborts_it_for_good() {
     let store = store();
     let mut owner = signed_in(&store, "root");
-    assert_eq!(
-        settle(&mut owner, &store),
-        AcrossAnswer::Outcome(Decision::Aborted)
-    );
+    assert_eq!(settle(&mut owner, &store), Decision::Aborted);
     let held = store.transaction_record(TRANSACTION).unwrap().unwrap();
     assert_eq!(held.decision, Decision::Aborted);
     // A coordinator arriving late with its PENDING record is refused: the
@@ -221,10 +224,7 @@ fn settling_an_overdue_pending_record_aborts_it() {
             record: record(&store, Decision::Pending),
         })
         .unwrap();
-    assert_eq!(
-        settle(&mut owner, &store),
-        AcrossAnswer::Outcome(Decision::Aborted)
-    );
+    assert_eq!(settle(&mut owner, &store), Decision::Aborted);
     assert_eq!(
         store
             .transaction_record(TRANSACTION)
@@ -247,10 +247,7 @@ fn settling_a_live_pending_record_leaves_it_pending() {
             record: live,
         })
         .unwrap();
-    assert_eq!(
-        settle(&mut owner, &store),
-        AcrossAnswer::Outcome(Decision::Pending)
-    );
+    assert_eq!(settle(&mut owner, &store), Decision::Pending);
     assert_eq!(
         store
             .transaction_record(TRANSACTION)
@@ -275,7 +272,7 @@ fn settling_a_decided_record_answers_its_decision() {
     }
     assert_eq!(
         settle(&mut owner, &store),
-        AcrossAnswer::Outcome(Decision::Committed),
+        Decision::Committed,
         "an overdue deadline does not reopen a committed record"
     );
 }
@@ -300,10 +297,7 @@ fn settling_a_decided_record_writes_it_again_so_a_majority_holds_it() {
     let (namespace, database, _) = ids(&store, "notes");
     let log = store.own_log(Reach::Database(namespace, database)).unwrap();
     let before = store.committed_tail(log).unwrap();
-    assert_eq!(
-        settle(&mut owner, &store),
-        AcrossAnswer::Outcome(Decision::Aborted)
-    );
+    assert_eq!(settle(&mut owner, &store), Decision::Aborted);
     assert!(
         store.committed_tail(log).unwrap() > before,
         "the decision was answered without being written again"

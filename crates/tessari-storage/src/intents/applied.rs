@@ -87,6 +87,14 @@ impl Fixture {
             transaction: TRANSACTION,
             provisional,
             coordinator: Reach::Namespace(self.namespace),
+            participants: if provisional {
+                Vec::new()
+            } else {
+                vec![Participant {
+                    range: Reach::Namespace(self.namespace),
+                    prepared_at: Some(Sequence::new(1)),
+                }]
+            },
         }
     }
 

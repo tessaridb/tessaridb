@@ -97,9 +97,20 @@ impl Fixture {
     }
 
     fn resolve(&self, committed: bool) -> Result<Option<crate::transaction::Committed>> {
-        self.store
-            .begin()?
-            .resolve_across(TRANSACTION, committed, &[self.address()])
+        self.store.begin()?.resolve_across(
+            TRANSACTION,
+            committed,
+            &[self.address()],
+            &self.prepared(),
+        )
+    }
+
+    /// The participants as a committed record names them.
+    fn prepared(&self) -> Vec<Participant> {
+        vec![Participant {
+            range: self.coordinator(),
+            prepared_at: Some(Sequence::new(1)),
+        }]
     }
 
     fn logged(&self, at: Sequence) -> Result<LogRecord> {
@@ -230,10 +241,12 @@ fn a_resolution_makes_the_value_once_and_then_finds_nothing_left() -> Result<()>
         .store
         .begin()?
         .read_stamped_at(&fixture.address())?
-        .map(|stored| stored.provenance());
+        .map(|stored| stored.provenance().cloned());
     assert!(matches!(
         stored,
-        Some(Some(provenance)) if !provenance.provisional && provenance.transaction == TRANSACTION
+        Some(Some(provenance)) if !provenance.provisional
+            && provenance.transaction == TRANSACTION
+            && provenance.participants == fixture.prepared()
     ));
     Ok(())
 }
@@ -247,6 +260,32 @@ fn an_aborted_resolution_leaves_the_old_value_and_frees_the_record() -> Result<(
     let mut writer = fixture.store.begin()?;
     writer.put(fixture.address(), b"after".to_vec());
     writer.commit()?;
+    Ok(())
+}
+
+#[test]
+fn a_committed_resolution_must_say_where_every_prepare_landed() -> Result<()> {
+    // Its versions carry the positions a reader decides by (D6a); one written
+    // without them would be visible to nobody's satisfaction, or to everyone.
+    let fixture = Fixture::new()?;
+    fixture.prepare(fixture.seen()?)?;
+    let unplaced = [Participant {
+        range: fixture.coordinator(),
+        prepared_at: None,
+    }];
+    for participants in [&unplaced[..], &[]] {
+        let refused = fixture.store.begin()?.resolve_across(
+            TRANSACTION,
+            true,
+            &[fixture.address()],
+            participants,
+        );
+        assert!(
+            matches!(refused, Err(Error::AcrossMalformed { .. })),
+            "{refused:?}"
+        );
+    }
+    assert_eq!(fixture.read()?, Some(b"old".to_vec()));
     Ok(())
 }
 
@@ -283,10 +322,11 @@ fn a_participant_resolves_every_intent_it_holds_without_being_told_where() -> Re
         fixture.store.standing_across()?,
         vec![(TRANSACTION, fixture.coordinator())]
     );
-    let resolved = fixture
-        .store
-        .begin()?
-        .resolve_across(TRANSACTION, true, &[])?;
+    let resolved =
+        fixture
+            .store
+            .begin()?
+            .resolve_across(TRANSACTION, true, &[], &fixture.prepared())?;
     assert!(resolved.is_some());
     assert_eq!(fixture.read()?, Some(b"new".to_vec()));
     assert!(

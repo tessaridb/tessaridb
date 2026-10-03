@@ -483,7 +483,7 @@ impl<'a> Transaction<'a> {
         let stored = StampedValue::decode(value.as_slice())?;
         Ok(Some((
             RecordKey::decode(key.as_slice())?.version,
-            stored.provenance(),
+            stored.provenance().cloned(),
             stored.into_value(),
         )))
     }

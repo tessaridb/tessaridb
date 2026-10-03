@@ -12,11 +12,17 @@
 //!
 //! The kind says which ask it is, because a settle is not a record the log
 //! keeps and so has no section of its own: it travels as a prepare's section
-//! with no writes. `seen` is a prepare's (ADR-0112 D3a) and zero otherwise. An
-//! aborted resolution names its records with tombstones, which it never writes.
+//! with no writes. `seen` is a prepare's (ADR-0112 D3a) and zero otherwise. A
+//! resolution travels as a decision's section — the outcome and the
+//! participants with their prepare positions, which its versions carry (D6a)
+//! — and names its records with tombstones, which it never writes.
+//!
+//! An answer is a tag and a position, except an outcome, which is the tag and
+//! the record as it stands.
 
 use tessari_encoding::{
     Across, Decision, LogRecord, Mutation, Part, RecordValue, StampedValue, StoreValue,
+    TransactionRecord,
 };
 use tessari_storage::RecordAddress;
 use tessari_types::Sequence;
@@ -32,9 +38,7 @@ const PREPARED: u8 = 1;
 const DECIDED: u8 = 2;
 const RESOLVED: u8 = 3;
 const NOTHING_LEFT: u8 = 4;
-const OUTCOME_PENDING: u8 = 5;
-const OUTCOME_COMMITTED: u8 = 6;
-const OUTCOME_ABORTED: u8 = 7;
+const OUTCOME: u8 = 5;
 
 impl AcrossAsk {
     /// The bytes a peer frame carries.
@@ -84,14 +88,21 @@ impl AcrossAsk {
                 transaction,
                 committed,
                 records,
+                participants,
             } => (
                 ASK_RESOLVE,
                 Sequence::ZERO,
                 LogRecord::new(records.iter().map(named).collect()).across(Across {
                     transaction: *transaction,
-                    part: Part::Resolve {
-                        committed: *committed,
-                    },
+                    part: Part::Decide(TransactionRecord {
+                        decision: if *committed {
+                            Decision::Committed
+                        } else {
+                            Decision::Aborted
+                        },
+                        deadline: 0,
+                        participants: participants.clone(),
+                    }),
                 }),
             ),
         };
@@ -140,9 +151,10 @@ impl AcrossAsk {
                 transaction: across.transaction,
                 record: decided,
             },
-            (ASK_RESOLVE, Part::Resolve { committed }) => Self::Resolve {
+            (ASK_RESOLVE, Part::Decide(outcome)) => Self::Resolve {
                 transaction: across.transaction,
-                committed,
+                committed: outcome.decision == Decision::Committed,
+                participants: outcome.participants,
                 records: record
                     .mutations()
                     .iter()
@@ -178,21 +190,26 @@ fn named(address: &RecordAddress) -> Mutation {
 }
 
 impl AcrossAnswer {
-    /// The bytes a peer frame carries: a tag and a position.
+    /// The bytes a peer frame carries: a tag and a position, or a tag and the
+    /// record for an outcome.
     #[must_use]
-    pub fn encode(&self) -> [u8; 9] {
+    pub fn encode(&self) -> Vec<u8> {
         let (tag, at) = match self {
             Self::Prepared(at) => (PREPARED, at.get()),
             Self::Decided(at) => (DECIDED, at.get()),
             Self::Resolved(Some(at)) => (RESOLVED, at.get()),
             Self::Resolved(None) => (NOTHING_LEFT, 0),
-            Self::Outcome(Decision::Pending) => (OUTCOME_PENDING, 0),
-            Self::Outcome(Decision::Committed) => (OUTCOME_COMMITTED, 0),
-            Self::Outcome(Decision::Aborted) => (OUTCOME_ABORTED, 0),
+            Self::Outcome(record) => {
+                let encoded = record.encode();
+                let mut bytes = Vec::with_capacity(encoded.as_slice().len().saturating_add(1));
+                bytes.push(OUTCOME);
+                bytes.extend_from_slice(encoded.as_slice());
+                return bytes;
+            }
         };
-        let mut bytes = [0; 9];
-        bytes[0] = tag;
-        bytes[1..].copy_from_slice(&at.to_be_bytes());
+        let mut bytes = Vec::with_capacity(9);
+        bytes.push(tag);
+        bytes.extend_from_slice(&at.to_be_bytes());
         bytes
     }
 
@@ -202,6 +219,11 @@ impl AcrossAnswer {
     ///
     /// A refusal in words for bytes that are not an answer.
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
+        if let Some((&OUTCOME, record)) = bytes.split_first() {
+            return TransactionRecord::decode(record)
+                .map(Self::Outcome)
+                .map_err(|why| why.to_string());
+        }
         let (tag, at) = bytes
             .split_first()
             .filter(|(_, at)| at.len() == 8)
@@ -214,9 +236,6 @@ impl AcrossAnswer {
             DECIDED => Ok(Self::Decided(at)),
             RESOLVED => Ok(Self::Resolved(Some(at))),
             NOTHING_LEFT => Ok(Self::Resolved(None)),
-            OUTCOME_PENDING => Ok(Self::Outcome(Decision::Pending)),
-            OUTCOME_COMMITTED => Ok(Self::Outcome(Decision::Committed)),
-            OUTCOME_ABORTED => Ok(Self::Outcome(Decision::Aborted)),
             found => Err(format!("a cross-leader answer of unknown kind {found}")),
         }
     }

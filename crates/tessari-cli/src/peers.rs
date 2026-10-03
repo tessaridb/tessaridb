@@ -180,6 +180,17 @@ pub(crate) fn host(
             },
         ));
     }
+    // The fourth: finishing transactions across leaders whose coordinator
+    // never came back. It asks other nodes too, so it waits on nobody's behalf.
+    {
+        let db = std::sync::Arc::clone(&db);
+        let stop = peer_stops.clone();
+        hosting.spawn(supervise::supervised(
+            "the settling round",
+            peer_stops.clone(),
+            move || crate::settling_round::settle_across(std::sync::Arc::clone(&db), stop.clone()),
+        ));
+    }
     {
         let db = std::sync::Arc::clone(&db);
         let stop = peer_stops.clone();

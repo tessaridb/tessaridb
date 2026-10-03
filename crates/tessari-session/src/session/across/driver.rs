@@ -144,12 +144,20 @@ impl Session<'_> {
             Decision::Committed
         };
         let decided = deciding(self, &record);
-        let committed = record.decision == Decision::Committed;
+        let committed = record.decision == Decision::Committed && decided.is_ok();
+        // A committed resolution's versions carry where every prepare landed
+        // (D6a); an aborted one writes no versions and needs none.
+        let participants = if committed {
+            record.participants.clone()
+        } else {
+            Vec::new()
+        };
         let resolves: Vec<AcrossAsk> = parts
             .iter()
             .map(|part| AcrossAsk::Resolve {
                 transaction: id,
-                committed: committed && decided.is_ok(),
+                committed,
+                participants: participants.clone(),
                 records: part
                     .writes
                     .iter()

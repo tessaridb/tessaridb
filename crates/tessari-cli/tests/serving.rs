@@ -3569,8 +3569,18 @@ fn a_transaction_across_two_shard_leaders_commits_whole_or_is_refused() {
         "a transaction spanning two leaders without asking: {refused:?}"
     );
     // Asked, it commits whole: both records, on both leaders and on the node
-    // that leads neither.
-    let committed = asked(ACROSS[0].0, &spanning("COMMIT ACROSS LEADERS", "x"), None);
+    // that leads neither. Asked again while it is refused: on a cluster this
+    // young a follower may not yet hold a shard's log, so a prepare's majority
+    // wait runs out and the transaction aborts with nothing applied — the
+    // retriable refusal a client answers by asking again.
+    let mut committed = Err(String::from("never asked"));
+    let began = Instant::now();
+    while committed.is_err() && began.elapsed() < Duration::from_secs(60) {
+        committed = asked(ACROSS[0].0, &spanning("COMMIT ACROSS LEADERS", "x"), None);
+        if committed.is_err() {
+            std::thread::sleep(POLL);
+        }
+    }
     assert!(
         committed.is_ok(),
         "a transaction across leaders: {committed:?}{}",

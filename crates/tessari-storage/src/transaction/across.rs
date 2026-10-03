@@ -8,8 +8,8 @@
 //! does not order.
 
 use tessari_encoding::{
-    Across, LogId, LogKey, LogRecord, Part, Provenance, RecordValue, StoreKey, StoreValue,
-    TransactionId, TransactionRecord,
+    Across, LogId, LogKey, LogRecord, Part, Participant, Provenance, RecordValue, StoreKey,
+    StoreValue, TransactionId, TransactionRecord,
 };
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{Reach, Sequence};
@@ -47,6 +47,9 @@ pub(super) struct Work {
     /// For a prepare: the participant log's position the transaction's node
     /// had applied (ADR-0112 D3a).
     seen: Option<Sequence>,
+    /// For a committed resolution: every participant and where its prepare
+    /// landed, which each resolved version carries (D6a).
+    participants: Vec<Participant>,
 }
 
 impl Transaction<'_> {
@@ -75,6 +78,7 @@ impl Transaction<'_> {
             },
             coordinator,
             seen: Some(seen),
+            participants: Vec::new(),
         });
         self.commit_placed()
     }
@@ -109,6 +113,7 @@ impl Transaction<'_> {
             },
             coordinator,
             seen: None,
+            participants: Vec::new(),
         });
         self.commit_placed()
     }
@@ -117,18 +122,36 @@ impl Transaction<'_> {
     /// committed, their values become versions; aborted, they are dropped.
     /// No records means every intent of the transaction this node holds.
     ///
+    /// A committed resolution names `participants` as the committed record
+    /// does, every prepare position known: each version it writes carries
+    /// them, which is how a reader that holds no copy of the record decides
+    /// whether its snapshot holds the whole transaction (D6a).
+    ///
     /// Idempotent: a record whose intent is already gone is passed over, and
     /// `None` answers a call that found nothing left to resolve.
     ///
     /// # Errors
     ///
-    /// Whatever a commit returns.
+    /// Whatever a commit returns, and [`Error::AcrossMalformed`] for a
+    /// committed resolution missing a participant's prepare position.
     pub fn resolve_across(
         mut self,
         transaction: TransactionId,
         committed: bool,
         records: &[RecordAddress],
+        participants: &[Participant],
     ) -> Result<Option<Committed>> {
+        if committed
+            && (participants.is_empty()
+                || participants
+                    .iter()
+                    .any(|participant| participant.prepared_at.is_none()))
+        {
+            return Err(Error::AcrossMalformed {
+                part: "resolve",
+                problem: "a committed resolution that does not say where every prepare landed",
+            });
+        }
         self.writes.clear();
         // No records named: every intent of the transaction this node holds,
         // read off its index — how a participant resolves after the
@@ -166,6 +189,11 @@ impl Transaction<'_> {
             },
             coordinator,
             seen: None,
+            participants: if committed {
+                participants.to_vec()
+            } else {
+                Vec::new()
+            },
         });
         self.commit_placed().map(Some)
     }
@@ -268,6 +296,7 @@ impl Transaction<'_> {
             transaction: work.across.transaction,
             provisional,
             coordinator: work.coordinator,
+            participants: work.participants.clone(),
         };
         record
             .with_provenance(provenance)
@@ -291,7 +320,7 @@ impl Transaction<'_> {
 
     /// Whether `provenance` is an intent this commit itself resolves, which
     /// the conflict check must not refuse it for.
-    pub(super) fn resolves(&self, provenance: Option<Provenance>) -> bool {
+    pub(super) fn resolves(&self, provenance: Option<&Provenance>) -> bool {
         match (&self.across, provenance) {
             (Some(work), Some(provenance)) => {
                 matches!(work.across.part, Part::Resolve { .. })

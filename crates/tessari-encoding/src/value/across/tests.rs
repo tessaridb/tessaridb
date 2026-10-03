@@ -97,24 +97,41 @@ fn a_record_outside_any_such_transaction_says_so() -> Result<()> {
 
 #[test]
 fn a_version_keeps_the_transaction_it_was_resolved_from() -> Result<()> {
-    for provisional in [true, false] {
-        versions_keep(Provenance {
-            transaction: TRANSACTION,
-            provisional,
-            coordinator: coordinator(),
-        })?;
-    }
+    // An intent knows only its own range; a resolved version carries every
+    // participant and where its prepare landed, so a reader can decide without
+    // the record (ADR-0112 D6a).
+    versions_keep(&Provenance {
+        transaction: TRANSACTION,
+        provisional: true,
+        coordinator: coordinator(),
+        participants: Vec::new(),
+    })?;
+    versions_keep(&Provenance {
+        transaction: TRANSACTION,
+        provisional: false,
+        coordinator: coordinator(),
+        participants: vec![
+            Participant {
+                range: coordinator(),
+                prepared_at: Some(Sequence::new(7)),
+            },
+            Participant {
+                range: Reach::Store,
+                prepared_at: None,
+            },
+        ],
+    })?;
     Ok(())
 }
 
-fn versions_keep(provenance: Provenance) -> Result<()> {
+fn versions_keep(provenance: &Provenance) -> Result<()> {
     let shapes = [
         StampedValue::new(RecordValue::Present(b"payload".to_vec())),
         StampedValue::new(RecordValue::Present(b"payload".to_vec())).expiring(99),
         StampedValue::new(RecordValue::Tombstone),
     ];
     for shape in shapes {
-        let resolved = shape.clone().from_transaction(provenance);
+        let resolved = shape.clone().from_transaction(provenance.clone());
         let decoded = StampedValue::decode(resolved.encode().as_slice())?;
         assert_eq!(decoded, resolved);
         assert_eq!(decoded.provenance(), Some(provenance));

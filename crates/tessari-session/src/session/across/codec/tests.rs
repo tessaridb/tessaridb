@@ -41,11 +41,16 @@ fn every_request_travels_and_arrives_as_itself() -> Result<(), String> {
             transaction: TRANSACTION,
             committed: false,
             records: vec![address(1), address(2)],
+            participants: Vec::new(),
         },
         AcrossAsk::Resolve {
             transaction: TRANSACTION,
             committed: true,
             records: Vec::new(),
+            participants: vec![Participant {
+                range,
+                prepared_at: Some(Sequence::new(3)),
+            }],
         },
         AcrossAsk::Settle {
             transaction: TRANSACTION,
@@ -60,14 +65,24 @@ fn every_request_travels_and_arrives_as_itself() -> Result<(), String> {
 
 #[test]
 fn every_answer_travels_and_arrives_as_itself() -> Result<(), String> {
+    let outcome = |decision| {
+        AcrossAnswer::Outcome(TransactionRecord {
+            decision,
+            deadline: 9,
+            participants: vec![Participant {
+                range: Reach::Database(NamespaceId::new(1), DatabaseId::new(2)),
+                prepared_at: Some(Sequence::new(4)),
+            }],
+        })
+    };
     for answer in [
         AcrossAnswer::Prepared(Sequence::new(5)),
         AcrossAnswer::Decided(Sequence::new(6)),
         AcrossAnswer::Resolved(Some(Sequence::new(7))),
         AcrossAnswer::Resolved(None),
-        AcrossAnswer::Outcome(Decision::Pending),
-        AcrossAnswer::Outcome(Decision::Committed),
-        AcrossAnswer::Outcome(Decision::Aborted),
+        outcome(Decision::Pending),
+        outcome(Decision::Committed),
+        outcome(Decision::Aborted),
     ] {
         assert_eq!(AcrossAnswer::decode(&answer.encode())?, answer);
     }

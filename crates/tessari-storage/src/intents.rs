@@ -21,7 +21,7 @@ use crate::store::Store;
 pub(crate) fn is_intent(version: &StampedValue) -> bool {
     version
         .provenance()
-        .is_some_and(|provenance: Provenance| provenance.provisional)
+        .is_some_and(|provenance: &Provenance| provenance.provisional)
 }
 
 impl Store {
@@ -194,6 +194,8 @@ pub(crate) fn settle(
             mutation.value.provenance().is_some_and(|provenance| {
                 provenance.transaction == across.transaction
                     && provenance.provisional == provisional
+                    // A resolved version says where every prepare landed (D6a).
+                    && (provisional || !provenance.participants.is_empty())
             })
         })
     };

@@ -800,8 +800,10 @@ impl Transaction<'_> {
             };
             // A resolution writes over its own intents; anybody else's intent,
             // and this one's on a record it does not resolve, refuses.
-            let intent = provenance.is_some_and(|provenance| provenance.provisional)
-                && !self.resolves(provenance);
+            let intent = provenance
+                .as_ref()
+                .is_some_and(|provenance| provenance.provisional)
+                && !self.resolves(provenance.as_ref());
             // ADR-0112 D5: a standing intent refuses the write whatever this
             // writer's snapshot. An intent prepared before the snapshot is not
             // newer than it, and replacing the value under it would lose the

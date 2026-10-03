@@ -280,15 +280,15 @@ impl StampedValue {
 
     /// This version, as resolved from a transaction across leaders.
     #[must_use]
-    pub const fn from_transaction(mut self, provenance: Provenance) -> Self {
+    pub fn from_transaction(mut self, provenance: Provenance) -> Self {
         self.provenance = Some(provenance);
         self
     }
 
     /// The transaction across leaders this version came from, if any.
     #[must_use]
-    pub const fn provenance(&self) -> Option<Provenance> {
-        self.provenance
+    pub const fn provenance(&self) -> Option<&Provenance> {
+        self.provenance.as_ref()
     }
 
     /// What the record became at this version.
@@ -396,7 +396,7 @@ impl StoreValue for StampedValue {
         } else {
             STAMP_COUNT_LEN.saturating_add(entries.len().saturating_mul(STAMP_ENTRY_LEN))
         };
-        let provenance = self.provenance.map(|provenance| {
+        let provenance = self.provenance.as_ref().map(|provenance| {
             let mut writer = KeyWriter::with_capacity(PROVENANCE_CAPACITY);
             across::put_provenance(&mut writer, provenance);
             writer.finish()

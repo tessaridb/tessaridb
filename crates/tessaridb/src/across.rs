@@ -8,6 +8,8 @@
 //! finishes its own intents, so nobody needs the addresses only the coordinator
 //! knew.
 
+use std::collections::BTreeSet;
+
 use tessari_session::{AcrossAnswer, AcrossAsk};
 use tessari_storage::Decision;
 
@@ -37,6 +39,10 @@ impl Db {
     pub fn settle_across(&self) -> Result<SettledAcross> {
         let store = self.store();
         let mut settled = SettledAcross::default();
+        // A leader that did not answer is not asked again this pass: a node
+        // that hangs costs one peer link's patience per pass, not one per
+        // transaction it coordinates.
+        let mut silent: BTreeSet<[u8; tessari_storage::NODE_ID_LEN]> = BTreeSet::new();
         let now = now_millis();
         for (transaction, record) in store.pending_across()? {
             let Some(coordinator) = record.participants.first().map(|part| part.range) else {
@@ -49,7 +55,7 @@ impl Db {
                 transaction,
                 coordinator,
             }) {
-                Ok(AcrossAnswer::Outcome(Decision::Aborted)) => {
+                Ok(AcrossAnswer::Outcome(decided)) if decided.decision == Decision::Aborted => {
                     settled.aborted = settled.aborted.saturating_add(1);
                 }
                 Ok(_) => {}
@@ -65,7 +71,12 @@ impl Db {
                 transaction,
                 coordinator,
             };
-            let answered = match store.leader_of(coordinator)? {
+            let leader = store.leader_of(coordinator)?;
+            let answered = match leader {
+                Some(node) if silent.contains(&node) => {
+                    settled.unreachable = settled.unreachable.saturating_add(1);
+                    continue;
+                }
                 None => self
                     .session()
                     .answer_across(&asked)
@@ -75,22 +86,28 @@ impl Db {
                     None => Err("this node carries nothing to other nodes".to_owned()),
                 },
             };
-            let committed = match answered {
-                Ok(AcrossAnswer::Outcome(Decision::Committed)) => true,
-                Ok(AcrossAnswer::Outcome(Decision::Aborted)) => false,
+            let record = match answered {
+                Ok(AcrossAnswer::Outcome(record)) if record.decision != Decision::Pending => record,
                 Ok(_) => continue,
                 Err(why) => {
+                    silent.extend(leader);
                     settled.unreachable = settled.unreachable.saturating_add(1);
                     settled.last_refusal = Some(why);
                     continue;
                 }
             };
+            let committed = record.decision == Decision::Committed;
             // Refused where this node does not lead the intents' home, which is
             // the design: their leader resolves them and this copy follows.
             match self.session().answer_across(&AcrossAsk::Resolve {
                 transaction,
                 committed,
                 records: Vec::new(),
+                participants: if committed {
+                    record.participants
+                } else {
+                    Vec::new()
+                },
             }) {
                 Ok(AcrossAnswer::Resolved(Some(_))) => {
                     settled.resolved = settled.resolved.saturating_add(1);
