@@ -31,7 +31,7 @@ impl Transaction<'_> {
     /// Whether a reader passes over `stored` for the version under it: an
     /// intent of a transaction this one does not see, or a version resolved
     /// from one.
-    pub(super) fn passes_over(&self, stored: &StampedValue) -> Result<bool> {
+    pub(crate) fn passes_over(&self, stored: &StampedValue) -> Result<bool> {
         match stored.provenance() {
             None => Ok(false),
             Some(provenance) => Ok(!self.sees(provenance)?),
@@ -101,6 +101,9 @@ mod forgetting;
 
 #[cfg(test)]
 mod indexes;
+
+#[cfg(test)]
+mod restoring;
 
 #[cfg(test)]
 mod tests;

@@ -106,6 +106,13 @@ pub enum Part {
         /// The range whose log holds the transaction record.
         coordinator: Reach,
     },
+    /// The transaction's part in `range` had landed where a snapshot was read
+    /// (ADR-0112 D9a). Only a restored state carries it: a log records the
+    /// prepare itself.
+    Landed {
+        /// The participant range whose part had landed.
+        range: Reach,
+    },
 }
 
 /// The section a log record carries when it belongs to a transaction across
@@ -146,6 +153,7 @@ const PART_PREPARE: u8 = 1;
 const PART_DECIDE: u8 = 2;
 const PART_RESOLVE: u8 = 3;
 const PART_FORGET: u8 = 4;
+const PART_LANDED: u8 = 5;
 
 const RESOLVED: u8 = 0;
 const PROVISIONAL: u8 = 1;
@@ -173,6 +181,10 @@ pub(super) fn put(writer: &mut KeyWriter, across: &Across) {
             writer.put_u8(PART_FORGET);
             put_reach(writer, *coordinator);
         }
+        Part::Landed { range } => {
+            writer.put_u8(PART_LANDED);
+            put_reach(writer, *range);
+        }
     }
 }
 
@@ -199,6 +211,9 @@ pub(super) fn take(reader: &mut KeyReader<'_>) -> Result<Across> {
         },
         PART_FORGET => Part::Forget {
             coordinator: take_reach(reader)?,
+        },
+        PART_LANDED => Part::Landed {
+            range: take_reach(reader)?,
         },
         found => return Err(unknown("part", found)),
     };

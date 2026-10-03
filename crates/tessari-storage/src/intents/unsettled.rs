@@ -70,7 +70,7 @@ pub(super) fn reconcile(
         Part::Decide(decided) if decided.decision != Decision::Committed => return Ok(batch),
         Part::Resolve { committed: false } | Part::Forget { .. } => return Ok(batch),
         Part::Decide(decided) => Some(decided.clone()),
-        Part::Prepare { .. } | Part::Resolve { .. } => store
+        Part::Prepare { .. } | Part::Resolve { .. } | Part::Landed { .. } => store
             .transaction_record(transaction)?
             .filter(|standing| standing.decision == Decision::Committed),
     };
@@ -91,7 +91,7 @@ pub(super) fn reconcile(
     };
 
     let landing = match across.part {
-        Part::Prepare { .. } => Some(crate::catalog::home_of(record)?),
+        Part::Prepare { .. } | Part::Landed { .. } => Some(crate::catalog::home_of(record)?),
         _ => None,
     };
     let missing = part_missing(store, transaction, &committed.participants, landing)?;
@@ -212,7 +212,7 @@ fn intent_tables(store: &Store, across: &Across, record: &LogRecord) -> Result<B
             Part::Resolve { .. } => {
                 standing.remove(&intent);
             }
-            Part::Decide(_) | Part::Forget { .. } => {}
+            Part::Decide(_) | Part::Forget { .. } | Part::Landed { .. } => {}
         }
     }
     standing

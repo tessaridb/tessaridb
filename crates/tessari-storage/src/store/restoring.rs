@@ -71,12 +71,26 @@ impl Store {
         self.writing.land_all(self.backend.as_ref());
         crate::schema::validate(self, record)?;
         let version = Sequence::new(self.committed_version()?.get().saturating_add(1));
-        self.derive_and_land(
+        let landed = self.derive_and_land(
             record,
             crate::log::state_batch(version, record),
             version,
             crate::gate::Landing::Synced,
-        )
+        );
+        // A state writes a decided record as `PENDING` and then its decision
+        // (ADR-0112 D9a). Copied onto a store already holding the decision —
+        // a follower copying its leader's state again — the first is refused
+        // and the second lands as it stands; any other refusal is a real one.
+        match (landed, record.part_of()) {
+            (
+                Err(crate::error::Error::AcrossDecided { .. }),
+                Some(tessari_encoding::Across {
+                    part: tessari_encoding::Part::Decide(decided),
+                    ..
+                }),
+            ) if decided.decision == tessari_encoding::Decision::Pending => Ok(()),
+            (landed, _) => landed,
+        }
     }
 
     /// Finish a restored state: where each log stood, where its history

@@ -910,6 +910,17 @@ before any of them sees none of it — it reads the version under (ADR-0112 D6a)
 A resolved version carries the transaction's participants in its provenance
 (§7), so this needs no copy of the record.
 
+None of `0x50`–`0x52` is a record, so a state snapshot does not walk them; it
+carries them after its records as log records with an across part, which a
+restore applies as a log apply would (ADR-0112 D9a). A record's state is the
+version a reader at the snapshot sees; a version of a transaction that reader
+does not see, and any intent, follows as the `Prepare` or committed `Resolve`
+that wrote it; each `0x50` follows as a `Decide` (`PENDING`, then its outcome);
+and each `0x52` landed by the snapshot's version follows as a `Landed` part,
+which writes the marker and nothing else, and keeps a marker already held. A
+restored store then decides as the source did at the cut, and the log above
+the cut applies on top of it.
+
 ```
 <0x53> <table:u32> <transaction:16>   → <transaction record>
 ```

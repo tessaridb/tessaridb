@@ -341,6 +341,14 @@ pub(crate) fn home_of(record: &LogRecord) -> Result<Reach> {
     {
         return Ok(*coordinator);
     }
+    // A landed part restored from a snapshot names its range (ADR-0112 D9a).
+    if let Some(tessari_encoding::Across {
+        part: tessari_encoding::Part::Landed { range },
+        ..
+    }) = record.part_of()
+    {
+        return Ok(*range);
+    }
     let mut home = None;
     for mutation in record.mutations() {
         let own = match carried_to(mutation)? {

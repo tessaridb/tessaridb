@@ -34,7 +34,12 @@ pub(crate) fn is_intent(version: &StampedValue) -> bool {
 pub(crate) fn writes_versions(record: &LogRecord) -> bool {
     !matches!(
         record.part_of().map(|across| &across.part),
-        Some(Part::Decide(_) | Part::Resolve { committed: false } | Part::Forget { .. })
+        Some(
+            Part::Decide(_)
+                | Part::Resolve { committed: false }
+                | Part::Forget { .. }
+                | Part::Landed { .. }
+        )
     )
 }
 
@@ -53,6 +58,7 @@ pub(crate) fn derives_nothing(record: &LogRecord) -> bool {
                 | Part::Decide(_)
                 | Part::Resolve { committed: false }
                 | Part::Forget { .. }
+                | Part::Landed { .. }
         )
     )
 }
@@ -99,9 +105,12 @@ pub(crate) fn settle(
                 transaction: across.transaction,
                 range: crate::catalog::home_of(record)?,
             };
-            let batch = batch.put(AcrossPartKey::keyspace(), part.encode(), version.encode());
+            let batch = landed(store, &part, batch, version)?;
             // Each intent indexed under its transaction, in the batch that
             // lands it (D7): what lets this node resolve its own intents later.
+            // A state copied onto a store that held it (D9a) lands the intent
+            // again, above the record the copy rewrote; the index names the
+            // new one, and the old stays as history a running snapshot may read.
             let batch = record.mutations().iter().fold(batch, |batch, mutation| {
                 batch.put(
                     IntentOfKey::keyspace(),
@@ -210,7 +219,45 @@ pub(crate) fn settle(
             }
             Ok(batch.delete(TransactionRecordKey::keyspace(), key.encode()))
         }
+        Part::Landed { range } => {
+            if !record.mutations().is_empty() {
+                return Err(Error::AcrossMalformed {
+                    part: "landed",
+                    problem: "a landed part that carries writes",
+                });
+            }
+            // A part a snapshot held, at the version its restore gives it
+            // (D9a): what a reader of the restored store asks, as a reader of
+            // the source asked the prepare's own marker.
+            let part = AcrossPartKey {
+                transaction: across.transaction,
+                range: *range,
+            };
+            let batch = landed(store, &part, batch, version)?;
+            unsettled::reconcile(store, across, record, batch)
+        }
     }
+}
+
+/// Mark `part` landed at `version`, unless it is marked already: the marker is
+/// where the part first landed here, and moving it up — a state copied onto a
+/// store that held it (D9a) — would hide the transaction from a snapshot that
+/// already saw it.
+fn landed(
+    store: &Store,
+    part: &AcrossPartKey,
+    batch: WriteBatch,
+    version: Sequence,
+) -> Result<WriteBatch> {
+    let key = part.encode();
+    if store
+        .backend()
+        .get(AcrossPartKey::keyspace(), &key)?
+        .is_some()
+    {
+        return Ok(batch);
+    }
+    Ok(batch.put(AcrossPartKey::keyspace(), key, version.encode()))
 }
 
 /// The index key of one intent.

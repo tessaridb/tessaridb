@@ -30,6 +30,16 @@
 //!
 //! The reader belongs to one caller on one thread; the shard maps it learns are
 //! its own and are not shared.
+//!
+//! # A transaction across leaders
+//!
+//! A record's state is the version a reader at the snapshot sees, which is not
+//! always its newest: a version of a transaction the snapshot does not show
+//! yet is passed over for the one under it, and an intent is not a value. Those
+//! travel after the records, with what the reader decided from, in [`tail`]
+//! (ADR-0112 D9a).
+
+mod tail;
 
 use std::collections::BTreeMap;
 use std::ops::Bound;
@@ -81,6 +91,8 @@ pub struct StateReader<'a> {
     maps: BTreeMap<TableId, Option<Arc<ShardMap>>>,
     /// A record read past the end of the chunk it could not join.
     held: Option<Mutation>,
+    /// What follows the records of transactions across leaders.
+    tail: tail::Tail,
 }
 
 impl<'a> StateReader<'a> {
@@ -110,6 +122,7 @@ impl<'a> StateReader<'a> {
                     finished: false,
                     maps: BTreeMap::new(),
                     held: None,
+                    tail: tail::Tail::default(),
                 });
             }
         }
@@ -199,28 +212,33 @@ impl StateReader<'_> {
                 {
                     continue;
                 }
-                self.decided = Some(prefix);
                 if derived(&stored) {
+                    self.decided = Some(prefix);
                     continue;
                 }
                 let value = StampedValue::decode(value.as_slice())?;
+                // A version of a transaction this snapshot does not show is
+                // passed over for the one under it, as a reader passes over
+                // it; an intent the snapshot does show is the record, but
+                // restored as the intent it is. Both go after the records.
+                let shown = !self.view.passes_over(&value)?;
+                let provisional = crate::intents::is_intent(&value);
+                if shown {
+                    self.decided = Some(prefix);
+                }
+                if !shown || provisional {
+                    let at = stored.version;
+                    if let Some(mutation) = self.carried(stored, value)? {
+                        self.tail.hold(at, mutation);
+                    }
+                    continue;
+                }
                 if matches!(value.value(), RecordValue::Tombstone) {
                     continue;
                 }
-                let shard = self.shard_of(&stored)?;
-                let mutation = Mutation {
-                    namespace: stored.namespace,
-                    database: stored.database,
-                    table: stored.table,
-                    id: stored.id,
-                    shard,
-                    value,
-                };
-                if self.within != Reach::Store
-                    && !crate::catalog::carried_to(&mutation)?.reaches(self.within)
-                {
+                let Some(mutation) = self.carried(stored, value)? else {
                     continue;
-                }
+                };
                 // The catalog is restored in chunks of its own, and all of it
                 // before any other record. A restore derives each chunk against
                 // what is already committed, as an apply does, so an index or an
@@ -242,9 +260,29 @@ impl StateReader<'_> {
             }
         }
         if mutations.is_empty() {
-            return Ok(None);
+            return self.tail.next(self.store, self.version, self.within);
         }
         Ok(Some(LogRecord::new(mutations)))
+    }
+
+    /// `stored` as a mutation of the state, or `None` when it falls outside
+    /// the part of the store read.
+    fn carried(&mut self, stored: RecordKey, value: StampedValue) -> Result<Option<Mutation>> {
+        let shard = self.shard_of(&stored)?;
+        let mutation = Mutation {
+            namespace: stored.namespace,
+            database: stored.database,
+            table: stored.table,
+            id: stored.id,
+            shard,
+            value,
+        };
+        if self.within != Reach::Store
+            && !crate::catalog::carried_to(&mutation)?.reaches(self.within)
+        {
+            return Ok(None);
+        }
+        Ok(Some(mutation))
     }
 
     /// The shard of a split table a record falls in, as the catalog at the

@@ -3634,6 +3634,65 @@ fn a_transaction_across_two_shard_leaders_commits_whole_or_is_refused() {
         .is_ok_and(|ids| ids.is_empty()),
         "the refused transaction left a record behind"
     );
+    // G053 C7: a snapshot taken on the node that leads neither shard restores
+    // to the cut it was taken at, shard by shard — the transaction across
+    // leaders whole in it (ADR-0112 D9a).
+    let answers = asked(ACROSS[2].0, "BACKUP;", None).unwrap();
+    let Some(Answer::Value {
+        value: tessari_types::Value::Bytes(file),
+        ..
+    }) = answers.last()
+    else {
+        panic!("a snapshot is bytes: {answers:?}");
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let restored = tessaridb::Db::open(directory.path().join("restored")).unwrap();
+    tessari_backup::read_state(restored.store(), || Ok(std::io::Cursor::new(file.clone())))
+        .unwrap();
+    // Read whole on both and split by the table's `SPLIT AT 'g', 'p'`: an
+    // identity compared with text in a `WHERE` matches nothing, so a shard
+    // cannot be selected by its bounds in the statement.
+    let read = "SELECT id FROM orders ORDER BY id;";
+    let source = read_at(ACROSS[2].0, read).unwrap();
+    let outcomes = restored
+        .session()
+        .run(&format!("USE NAMESPACE prod; USE DATABASE shop; {read}"))
+        .unwrap();
+    let Some(tessari_session::Outcome::Records { records, .. }) = outcomes.last() else {
+        panic!("a read answers records: {outcomes:?}");
+    };
+    let copy: Vec<String> = records
+        .iter()
+        .map(|(id, _)| id.to_string().trim_matches('\'').to_owned())
+        .collect();
+    let shard_of = |id: &String| match id.as_str() {
+        below if below < "g" => 1,
+        below if below < "p" => 2,
+        _ => 3,
+    };
+    for shard in 1..=3 {
+        let held = |ids: &[String]| -> Vec<String> {
+            ids.iter()
+                .filter(|id| shard_of(id) == shard)
+                .cloned()
+                .collect()
+        };
+        assert_eq!(held(&copy), held(&source), "the restored shard {shard}");
+    }
+    assert!(
+        ["ax", "hx"]
+            .iter()
+            .all(|id| copy.iter().any(|held| held == id)),
+        "the restored copy lacks the transaction across leaders: {copy:?}"
+    );
+    assert!(
+        read_at(
+            ACROSS[2].0,
+            "SELECT id FROM orders WHERE n = 7 ORDER BY id;"
+        )
+        .is_ok_and(|ids| ids == ["ax", "hx"]),
+        "the snapshot's node changed under the comparison"
+    );
 }
 
 /// The cross-leader measurement's addresses, a band of its own.

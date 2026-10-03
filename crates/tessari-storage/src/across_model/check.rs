@@ -93,65 +93,34 @@ fn atomic(state: &State, seen: [Writer; 2]) -> bool {
 }
 
 /// What a restore of a backup taken by the lagging node right now would hold.
+///
+/// D9a: the backup carries the cut as it stands, and the restore decides as a
+/// reader of that cut does (D6a) — T1 is shown only where the cut knows it
+/// committed and holds its part in both ranges. Without the rule each range
+/// restores whatever its own prefix says, which is what a copy of the newest
+/// versions did.
 fn restored(state: &State, rules: Rules, applied: [usize; 2]) -> [Writer; 2] {
-    let mut cut = applied;
-    if rules.backup_closes_over_the_transaction {
-        let a = &state.log(Range::A)[..cut[Range::A.slot()]];
-        // D12: a cut holding the record's Forget holds no record to tell a
-        // restore that T1's intents are values, so it reaches every
-        // participant's resolution instead.
-        let forgot = a.contains(&Entry::Forget);
-        let holds_commit = record_in(a) == Some(Decision::Committed)
-            || forgot
-            || Range::BOTH.iter().any(|range| {
-                state.log(*range)[..cut[range.slot()]]
-                    .contains(&Entry::Resolved { committed: true })
-            });
-        if holds_commit {
-            for range in Range::BOTH {
-                let needed = if forgot {
-                    resolution(state.log(range))
-                } else {
-                    closure(state.log(range), range)
-                };
-                let slot = range.slot();
-                cut[slot] = cut[slot].max(needed);
-            }
-        }
-    }
-    let committed =
-        record_in(&state.log(Range::A)[..cut[Range::A.slot()]]) == Some(Decision::Committed);
+    let prefix = |range: Range| &state.log(range)[..applied[range.slot()]];
+    let committed = record_in(prefix(Range::A)) == Some(Decision::Committed)
+        || Range::BOTH
+            .iter()
+            .any(|range| prefix(*range).contains(&Entry::Resolved { committed: true }));
+    let landed = Range::BOTH.iter().all(|range| {
+        prefix(*range)
+            .iter()
+            .any(|entry| matches!(entry, Entry::Intent { .. }))
+    });
+    let shown = committed && (landed || !rules.restore_reads_by_the_snapshot);
     let mut seen = [Writer::Initial; 2];
     for range in Range::BOTH {
-        let prefix = &state.log(range)[..cut[range.slot()]];
-        seen[range.slot()] = versions(prefix)
+        seen[range.slot()] = versions(prefix(range))
             .iter()
             .rev()
             .find_map(|version| match version {
                 Shown::Plain(writer) => Some(*writer),
-                Shown::Resolved => Some(Writer::T1),
-                Shown::Intent => committed.then_some(Writer::T1),
+                Shown::Resolved | Shown::Intent => shown.then_some(Writer::T1),
             })
             .unwrap_or(Writer::Initial);
     }
     seen
-}
-
-/// How far into a range's log a cut must reach to hold T1's resolution there.
-fn resolution(log: &[Entry]) -> usize {
-    log.iter()
-        .position(|entry| matches!(entry, Entry::Resolved { .. }))
-        .map_or(0, |at| at.saturating_add(1))
-}
-
-/// How far into a range's log a cut must reach to hold T1's part there: the
-/// intent, and in `A` the committed decision too.
-fn closure(log: &[Entry], range: Range) -> usize {
-    let target = |entry: &Entry| match range {
-        Range::A => *entry == Entry::Record(Decision::Committed),
-        Range::B => matches!(entry, Entry::Intent { .. }),
-    };
-    log.iter()
-        .position(target)
-        .map_or(0, |at| at.saturating_add(1))
 }

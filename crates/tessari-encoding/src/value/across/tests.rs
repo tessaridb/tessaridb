@@ -61,6 +61,9 @@ fn every_part_round_trips_with_its_mutations_behind_it() -> Result<()> {
         Part::Forget {
             coordinator: coordinator(),
         },
+        Part::Landed {
+            range: coordinator(),
+        },
     ];
     for part in parts {
         let across = Across {

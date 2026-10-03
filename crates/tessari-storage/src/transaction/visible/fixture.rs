@@ -119,21 +119,36 @@ impl Fixture {
 
     /// Apply one record of the transaction in `home`'s log, as a follower does.
     pub(super) fn apply(&self, home: usize, part: Part, mutations: Vec<Mutation>) -> Result<()> {
+        self.apply_on(&self.store, home, part, mutations)
+    }
+
+    /// [`Self::apply`] onto `store` — a copy restored from this one, which
+    /// continues each log from where it stood.
+    pub(super) fn apply_on(
+        &self,
+        store: &Store,
+        home: usize,
+        part: Part,
+        mutations: Vec<Mutation>,
+    ) -> Result<()> {
         let record = LogRecord::new(mutations).across(Across {
             transaction: TRANSACTION,
             part,
         });
         let at = self.homes[home].at.get().saturating_add(1);
-        self.store
-            .apply_record_in(self.homes[home].log, Sequence::new(at), &record)?;
+        store.apply_record_in(self.homes[home].log, Sequence::new(at), &record)?;
         self.homes[home].at.set(at);
         Ok(())
     }
 
     pub(super) fn prepare(&self, home: usize) -> Result<()> {
+        self.prepare_on(&self.store, home)
+    }
+
+    pub(super) fn prepare_on(&self, store: &Store, home: usize) -> Result<()> {
         let coordinator = self.range(0);
         let write = self.write(home, true);
-        self.apply(home, Part::Prepare { coordinator }, vec![write])
+        self.apply_on(store, home, Part::Prepare { coordinator }, vec![write])
     }
 
     pub(super) fn decide(&self, decision: Decision) -> Result<()> {
@@ -151,8 +166,12 @@ impl Fixture {
     }
 
     pub(super) fn resolve(&self, home: usize) -> Result<()> {
+        self.resolve_on(&self.store, home)
+    }
+
+    pub(super) fn resolve_on(&self, store: &Store, home: usize) -> Result<()> {
         let write = self.write(home, false);
-        self.apply(home, Part::Resolve { committed: true }, vec![write])
+        self.apply_on(store, home, Part::Resolve { committed: true }, vec![write])
     }
 }
 

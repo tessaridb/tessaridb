@@ -15,7 +15,7 @@
 //! - **T2**, an ordinary single-range commit of key `b`, racing T1.
 //! - **A reading transaction** on a node whose copies of both logs lag their
 //!   leaders independently, reading the two keys in either order.
-//! - **A backup** taken by that node at every reachable moment (D9).
+//! - **A backup** taken by that node at every reachable moment (D9a).
 //! - **Forgetting** the decided record once every participant says its
 //!   intents are gone (D12), while `B`'s leader may hold a resolution no
 //!   majority holds yet and die with it — a resolution waits for its leader
@@ -65,9 +65,10 @@ pub(crate) struct Rules {
     /// D6: a visible transaction is read from a copy holding its prepare, or
     /// from the leader — never from a copy behind it.
     pub(crate) visible_reads_its_own_version: bool,
-    /// D9: a backup's cut includes every participant's prepare and the
-    /// decision of any transaction it holds part of.
-    pub(crate) backup_closes_over_the_transaction: bool,
+    /// D9a: a backup carries its cut as it stands, and its restore shows T1
+    /// only where that cut knows T1 committed and holds both its parts — the
+    /// reading rule of D6a applied to the restored copy.
+    pub(crate) restore_reads_by_the_snapshot: bool,
     /// D12: a participant says its intents are gone only once a majority
     /// holds its resolution, so a successor cannot find one standing.
     pub(crate) forget_waits_for_a_majority: bool,
@@ -82,7 +83,7 @@ impl Rules {
         pending_is_invisible: true,
         one_decision_per_reader: true,
         visible_reads_its_own_version: true,
-        backup_closes_over_the_transaction: true,
+        restore_reads_by_the_snapshot: true,
         forget_waits_for_a_majority: true,
     };
 }
@@ -248,8 +249,8 @@ mod tests {
                 &[Violation::FracturedRead],
             ),
             (
-                "a backup closes over the transaction",
-                |rules| rules.backup_closes_over_the_transaction = false,
+                "a restore reads by the snapshot",
+                |rules| rules.restore_reads_by_the_snapshot = false,
                 &[Violation::FracturedRestore],
             ),
             (

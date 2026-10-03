@@ -311,9 +311,12 @@ impl Transaction<'_> {
         let provisional = match work.across.part {
             Part::Prepare { .. } => true,
             Part::Resolve { committed: true } => false,
-            // A decision and a forgetting have no versions, and an aborted
-            // resolution's are never written.
-            Part::Decide(_) | Part::Resolve { committed: false } | Part::Forget { .. } => {
+            // A decision, a forgetting and a landed part have no versions, and
+            // an aborted resolution's are never written.
+            Part::Decide(_)
+            | Part::Resolve { committed: false }
+            | Part::Forget { .. }
+            | Part::Landed { .. } => {
                 return record.across(work.across.clone());
             }
         };
