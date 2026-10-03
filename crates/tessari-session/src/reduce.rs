@@ -17,17 +17,18 @@
 //! anything it is unsure of. A partial is not tested again: it **is** the
 //! answer's input. So every doubt declines the page instead — a condition that
 //! answers neither yes nor no, an evaluation that fails, a comparison across
-//! two kinds (a note the asker would have shown), a float offered to `sum` or
-//! `mean` (float addition depends on its order, and the merge changes the
-//! order) — and a declined page sends the whole read back to gathering records,
-//! which answers it as before, refusal and note included.
+//! two kinds (a note the asker would have shown), a total past what a float or
+//! a decimal holds — and a declined page sends the whole read back to gathering
+//! records, which answers it as before, refusal and note included. A float is
+//! not a doubt: `sum`, `mean`, `variance` and `stddev` hold their float totals
+//! exactly, so a merge answers the bits one walk does (ADR-0114).
 
 use std::collections::BTreeMap;
 
 use tessari_encoding::decode_payload;
 use tessari_ql::Aggregate;
 use tessari_storage::Store;
-use tessari_types::{Number, RecordId, Value};
+use tessari_types::{RecordId, Value};
 
 use crate::accumulate::Accumulator;
 use crate::condition::boolean;
@@ -57,7 +58,7 @@ pub struct Reduce {
 /// One fold of a [`Reduce`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Folded {
-    /// Which fold — one of the five that merge exactly.
+    /// Which fold — one of the seven that merge exactly.
     pub fold: Aggregate,
     /// What it folds over; `None` for `count(*)`.
     pub over: Option<Portable>,
@@ -73,6 +74,8 @@ impl Folded {
             Aggregate::Mean,
             Aggregate::Min,
             Aggregate::Max,
+            Aggregate::Variance,
+            Aggregate::Stddev,
         ]
         .into_iter()
         .find(|fold| fold.spelling() == spelling)?;
@@ -166,7 +169,7 @@ pub fn reducing(
                 .collect();
             (id.clone(), held)
         });
-        for ((fold, over), accumulator) in folds.iter().zip(entry.1.iter_mut()) {
+        for ((_, over), accumulator) in folds.iter().zip(entry.1.iter_mut()) {
             let value = match over {
                 None => Value::Bool(true),
                 Some(over) => {
@@ -177,7 +180,7 @@ pub fn reducing(
                     value
                 }
             };
-            if !exact(*fold, &value) || accumulator.offer(&value).is_err() {
+            if accumulator.offer(&value).is_err() {
                 return Ok(None);
             }
         }
@@ -195,21 +198,6 @@ pub fn reducing(
         partials.push(Partial { key, first, states });
     }
     Ok(Some(partials))
-}
-
-/// Whether offering `value` to this fold occurrence keeps it mergeable: a float
-/// offered to `sum` or `mean` does not, because its total depends on the order
-/// it was added in and a merge changes that order.
-pub(crate) fn merges_exactly(kind: &tessari_ql::ExprKind, value: &Value) -> bool {
-    match kind {
-        tessari_ql::ExprKind::Fold { fold, .. } => exact(*fold, value),
-        _ => true,
-    }
-}
-
-fn exact(fold: Aggregate, value: &Value) -> bool {
-    !(matches!(fold, Aggregate::Sum | Aggregate::Mean)
-        && matches!(value, Value::Number(Number::Float(_))))
 }
 
 /// What a grouping read asks the leaders to fold, when every part of it can be

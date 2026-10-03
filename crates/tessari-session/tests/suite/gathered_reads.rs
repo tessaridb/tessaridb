@@ -369,7 +369,7 @@ fn a_gathered_read_answers_what_a_node_holding_every_shard_answers() {
 }
 
 /// Grouping reads whose every fold merges exactly, so the leaders fold them.
-const FOLDED: [&str; 7] = [
+const FOLDED: [&str; 10] = [
     "SELECT count(*) AS n FROM ledger;",
     "SELECT sum(total) AS sum, note FROM ledger GROUP BY note;",
     "SELECT count(*) AS n, min(total) AS low, max(total) AS high, mean(total) AS avg FROM ledger;",
@@ -377,6 +377,10 @@ const FOLDED: [&str; 7] = [
     "SELECT mean(total) * 2 AS twice FROM ledger;",
     "SELECT min(note) AS first, max(note) AS last FROM ledger;",
     "SELECT count(peer) AS linked FROM ledger;",
+    // Floats, held exactly, so they fold on the leaders too (ADR-0114).
+    "SELECT sum(total * 0.1) AS tenth, note FROM ledger GROUP BY note;",
+    "SELECT sum(total * 0.1) AS tenth, mean(total * 0.1) AS average FROM ledger;",
+    "SELECT variance(total) AS spread, stddev(total * 0.1) AS deviation FROM ledger;",
 ];
 
 /// ADR-0097 D2 — a grouping read is folded on the leaders, so no record of a
@@ -399,11 +403,79 @@ fn a_grouping_read_is_folded_on_the_leader_and_no_record_travels() {
     let read = "SELECT median(total) AS middle FROM ledger;";
     assert_eq!(answer(&mut follower, read).0, answer(&mut whole, read).0);
     assert_eq!(pair.sent(), 5, "{read}");
-    // A float offered to `sum` declines the fold, because float addition depends
-    // on its order; the read gathers records and answers the whole node's total.
-    let read = "SELECT sum(total * 0.5) AS half FROM ledger;";
+}
+
+/// A leader still running `0.24`: it folds a total only when its shard met no
+/// float, and then sends it as `[exact, all integers]`, with no float form.
+#[derive(Debug)]
+struct Folding024(Arc<FromTheLeader>);
+
+impl Gather for Folding024 {
+    fn gather(&self, asked: &Asked<'_>) -> Result<Gathered, Unanswered> {
+        let mut gathered = self.0.gather(asked)?;
+        let (Some(reduce), Some(Reduced::Partials(partials))) =
+            (asked.reduce, gathered.reduced.as_mut())
+        else {
+            return Ok(gathered);
+        };
+        for partial in partials.iter_mut() {
+            for (folded, state) in reduce.folds.iter().zip(partial.states.iter_mut()) {
+                if folded.fold != tessari_ql::Aggregate::Sum {
+                    continue;
+                }
+                let Value::Array(held) = state else {
+                    panic!("{state:?}")
+                };
+                if held[2] == Value::Bool(true) {
+                    gathered.reduced = Some(Reduced::Declined);
+                    return Ok(gathered);
+                }
+                *state = Value::Array(vec![held[0].clone(), held[1].clone()]);
+            }
+        }
+        Ok(gathered)
+    }
+}
+
+/// ADR-0114 across a rolling upgrade: a `0.24` leader's exact-only total still
+/// folds, and when a float on this node makes the float form the answer — a
+/// form that leader never sent — the read gathers the records and answers what
+/// the whole node answers, rather than a total missing a part.
+#[test]
+fn a_total_an_older_leader_sent_without_its_float_form_is_gathered_when_a_float_needs_it() {
+    let leader = leader();
+    signed_in(&leader, "root")
+        .run(
+            "USE NAMESPACE prod; USE DATABASE shop;\n\
+             DEFINE TABLE mixed (x number) IDENTITY uuid SPLIT AT 'g', 'p';\n\
+             CREATE mixed:'a' = { x: 1 }; CREATE mixed:'b' = { x: 3 };\n\
+             CREATE mixed:'h' = { x: 0.5 }; CREATE mixed:'k' = { x: 2 };\n\
+             CREATE mixed:'z' = { x: 4 };",
+        )
+        .unwrap();
+    let follower = follower_of_the_middle_of(&leader, "mixed");
+    let pair = pair_of(leader, follower);
+    let mut follower = signed_in(&pair.follower, "reader")
+        .gathering(Arc::new(Folding024(Arc::clone(&pair.gatherer))));
+    follower
+        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    let mut whole = pair.on_the_leader("reader");
+    // Every remote shard is whole numbers, so the older leaders fold; this
+    // node's own shard holds 0.5, so the answer is the float total.
+    let read = "SELECT sum(x) AS total, count(*) AS n FROM mixed;";
+    let (gathered, notes) = answer(&mut follower, read);
+    assert_eq!(gathered, answer(&mut whole, read).0, "{read}");
+    assert!(format!("{gathered:?}").contains("10.5"), "{gathered:?}");
+    assert_eq!(pair.sent(), 3, "the records of the two remote shards");
+    assert!(
+        notes.iter().any(|note| note.kind() == "gathered"),
+        "{notes:?}"
+    );
+    // Without a float anywhere, the older leaders' exact totals are the answer.
+    let read = "SELECT sum(x) AS total FROM mixed WHERE x > 1;";
     assert_eq!(answer(&mut follower, read).0, answer(&mut whole, read).0);
-    assert_eq!(pair.sent(), 5, "{read}");
+    assert_eq!(pair.sent(), 0, "{read}: records travelled");
 }
 
 /// A leader that folded more records than a gather may hold into one group.

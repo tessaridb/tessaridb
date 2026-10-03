@@ -5,11 +5,10 @@ use std::sync::Arc;
 
 use rust_decimal::Decimal;
 use tessari_kv::{KvBackend, MemoryBackend};
-use tessari_ql::{ExprKind, Span};
 use tessari_storage::{Catalog, Store, Window};
 use tessari_types::{DatabaseId, NamespaceId, Number, RecordId, Value};
 
-use super::{Folded, Partial, Reduce, merges_exactly, reducing};
+use super::{Folded, Partial, Reduce, reducing};
 use crate::session::Session;
 
 /// A collection of two records, and every one of them as stored.
@@ -74,6 +73,19 @@ fn decimal(held: i64) -> Value {
     Value::Number(Number::Decimal(Decimal::from(held)))
 }
 
+/// An exact float total as it travels: its parts and no infinity.
+fn floats(parts: &[f64]) -> Value {
+    Value::Array(vec![
+        Value::Array(
+            parts
+                .iter()
+                .map(|part| Value::Number(Number::Float(*part)))
+                .collect(),
+        ),
+        Value::None,
+    ])
+}
+
 #[test]
 fn exact_folds_answer_one_state_each_for_the_group() {
     let partials = reduced(
@@ -95,8 +107,18 @@ fn exact_folds_answer_one_state_each_for_the_group() {
             first: RecordId::from("a"),
             states: vec![
                 Value::from(2_i64),
-                Value::Array(vec![decimal(3), Value::Bool(true)]),
-                Value::Array(vec![decimal(3), Value::from(2_i64)]),
+                Value::Array(vec![
+                    decimal(3),
+                    Value::Bool(true),
+                    Value::Bool(false),
+                    floats(&[3.0])
+                ]),
+                Value::Array(vec![
+                    decimal(3),
+                    Value::from(2_i64),
+                    Value::Bool(false),
+                    floats(&[3.0])
+                ]),
                 Value::from("x"),
                 Value::from("y"),
             ],
@@ -104,12 +126,43 @@ fn exact_folds_answer_one_state_each_for_the_group() {
     );
 }
 
+/// ADR-0114 — a float is held exactly, so `sum`, `mean` and the spreads fold
+/// on the leader instead of declining.
 #[test]
-fn a_float_offered_to_sum_or_mean_declines() {
-    assert_eq!(reduced(&[("mean", Some("f"))], None, None), None);
-    assert_eq!(reduced(&[("sum", Some("f"))], None, None), None);
-    // `min` and `max` keep a value rather than adding it, so order cannot move them.
-    assert!(reduced(&[("min", Some("f"))], None, None).is_some());
+fn a_float_is_folded_exactly_rather_than_declined() {
+    let partials = reduced(
+        &[
+            ("sum", Some("f")),
+            ("mean", Some("f")),
+            ("variance", Some("f")),
+            ("stddev", Some("n")),
+        ],
+        None,
+        None,
+    )
+    .expect("folded");
+    assert_eq!(
+        partials[0].states,
+        vec![
+            // Once a float arrives the float total answers, so the exact one
+            // is not carried and travels as `NONE`.
+            Value::Array(vec![
+                Value::None,
+                Value::Bool(false),
+                Value::Bool(true),
+                floats(&[2.0])
+            ]),
+            Value::Array(vec![
+                Value::None,
+                Value::from(2_i64),
+                Value::Bool(true),
+                floats(&[2.0])
+            ]),
+            // 0.5 and 1.5: their squares 0.25 and 2.25 total 2.5.
+            Value::Array(vec![Value::from(2_i64), floats(&[2.0]), floats(&[2.5])]),
+            Value::Array(vec![Value::from(2_i64), floats(&[3.0]), floats(&[5.0])]),
+        ]
+    );
 }
 
 #[test]
@@ -135,25 +188,12 @@ fn a_field_the_asker_cannot_see_is_absent_to_the_fold() {
         partials[0].states,
         vec![
             Value::from(0_i64),
-            Value::Array(vec![decimal(0), Value::Bool(true)])
+            Value::Array(vec![
+                decimal(0),
+                Value::Bool(true),
+                Value::Bool(false),
+                floats(&[])
+            ])
         ]
     );
-}
-
-#[test]
-fn the_asker_keeps_its_own_floats_out_of_a_merge_too() {
-    let fold = |fold| ExprKind::Fold {
-        fold,
-        over: None,
-        at: None,
-        span: Span::new(0, 0),
-    };
-    let float = Value::Number(Number::float(0.5));
-    assert!(!merges_exactly(&fold(tessari_ql::Aggregate::Sum), &float));
-    assert!(!merges_exactly(&fold(tessari_ql::Aggregate::Mean), &float));
-    assert!(merges_exactly(&fold(tessari_ql::Aggregate::Max), &float));
-    assert!(merges_exactly(
-        &fold(tessari_ql::Aggregate::Sum),
-        &Value::from(1_i64)
-    ));
 }

@@ -28,6 +28,7 @@ use tessari_encoding::NODE_ID_LEN;
 use tessari_storage::{Catalog, ShardMap, ShardSpan, Transaction, Window};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, ShardId, TableId};
 
+use crate::accumulate::Accumulator;
 use crate::aggregate::{Groups, merge_partials, occurrences};
 use crate::condition::boolean;
 use crate::error::{Error, Result};
@@ -511,16 +512,7 @@ impl Session<'_> {
                         }
                         kept.push((record_id, record));
                     }
-                    if !self.fold_into(
-                        transaction,
-                        &mut groups,
-                        kept,
-                        &occurrences,
-                        &select.group,
-                        true,
-                    )? {
-                        return Ok(None);
-                    }
+                    self.fold_into(transaction, &mut groups, kept, &occurrences, &select.group)?;
                     if !full {
                         break;
                     }
@@ -532,6 +524,15 @@ impl Session<'_> {
             }
         }
         in_time(folded)?;
+        // A `0.24` leader sent an exact total without its float form, and a
+        // float elsewhere in the group made the float form the answer: only the
+        // records can give it.
+        if groups
+            .values()
+            .any(|(_, held)| held.iter().flatten().any(Accumulator::lacks_float))
+        {
+            return Ok(None);
+        }
         Ok(Some((groups, missing.note())))
     }
 }

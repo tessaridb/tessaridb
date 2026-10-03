@@ -211,7 +211,7 @@ fn bounding_the_source_of_a_collecting_read_answers() {
 /// A statistical fold keeps the exemption, which is what makes it a
 /// classification rather than a retreat from one.
 ///
-/// `variance` reduces to three numbers by Welford's recurrence however long the
+/// `variance` reduces to a count and two exact totals however long the
 /// group is, so the sentence the exemption rests on is still true of it. If the
 /// fix for `collect` had been "folding no longer exempts", this read would have
 /// started demanding a `LIMIT` that bounds nothing it needs.

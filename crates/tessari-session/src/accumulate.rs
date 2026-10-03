@@ -69,6 +69,7 @@
 
 mod arithmetic;
 mod counter;
+pub(crate) mod exact;
 mod partial;
 use rust_decimal::Decimal;
 #[cfg(test)]
@@ -78,7 +79,8 @@ use tessari_types::{Number, Value};
 
 use crate::aggregate::{approximate, present};
 use crate::error::Result;
-pub(crate) use arithmetic::{Welford, add_exact, add_float, failed, middle, summable};
+pub(crate) use arithmetic::{Moments, add_exact, add_float, failed, middle, summable};
+pub(crate) use exact::ExactSum;
 
 /// A running value that may already have failed, holding why.
 ///
@@ -98,8 +100,8 @@ pub(crate) enum Accumulator {
     Sum {
         /// The exact running total.
         exact: Running<Decimal>,
-        /// The same total as a float, summed in the order the values arrived.
-        float: Running<f64>,
+        /// The same total as floats, held exactly (ADR-0114).
+        float: Running<ExactSum>,
         /// Whether any number offered was a float.
         saw_float: bool,
         /// Whether every number offered was an integer.
@@ -111,6 +113,11 @@ pub(crate) enum Accumulator {
     Mean {
         /// The exact running total.
         exact: Running<Decimal>,
+        /// The same total as floats, held exactly — the answer once a float
+        /// arrives, as `sum`'s is (ADR-0114 D3).
+        float: Running<ExactSum>,
+        /// Whether any number offered was a float.
+        saw_float: bool,
         /// How many numbers it holds.
         counted: i64,
         /// Where to point a failure.
@@ -123,12 +130,12 @@ pub(crate) enum Accumulator {
         /// The value holding that end so far.
         held: Option<Value>,
     },
-    /// Welford's running `(count, mean, M2)`, and whether to take its root.
+    /// A count and two exact totals, and whether to take the root.
     Spread {
         /// Whether the answer is `stddev` rather than `variance`.
         rooted: bool,
         /// The running state, or why it stopped being computable.
-        running: Running<Welford>,
+        running: Running<Moments>,
         /// Where to point a failure.
         span: Span,
     },
@@ -179,13 +186,15 @@ impl Accumulator {
             Aggregate::Count => Self::Count { seen: 0 },
             Aggregate::Sum => Self::Sum {
                 exact: Ok(Decimal::ZERO),
-                float: Ok(0.0_f64),
+                float: Ok(ExactSum::default()),
                 saw_float: false,
                 all_integer: true,
                 span,
             },
             Aggregate::Mean => Self::Mean {
                 exact: Ok(Decimal::ZERO),
+                float: Ok(ExactSum::default()),
+                saw_float: false,
                 counted: 0,
                 span,
             },
@@ -199,12 +208,12 @@ impl Accumulator {
             },
             Aggregate::Variance => Self::Spread {
                 rooted: false,
-                running: Ok(Welford::new()),
+                running: Ok(Moments::default()),
                 span,
             },
             Aggregate::Stddev => Self::Spread {
                 rooted: true,
-                running: Ok(Welford::new()),
+                running: Ok(Moments::default()),
                 span,
             },
             Aggregate::Median => Self::Middle {
@@ -249,19 +258,25 @@ impl Accumulator {
                 if !matches!(number, Number::Integer(_)) {
                     *all_integer = false;
                 }
-                add_exact(exact, number);
+                exact_unless_float(exact, number, *saw_float);
                 add_float(float, number);
             }
             Self::Mean {
                 exact,
+                float,
+                saw_float,
                 counted,
                 span,
             } => {
                 let Some(number) = summable(value, "mean", *span)? else {
                     return Ok(());
                 };
+                if matches!(number, Number::Float(_)) {
+                    *saw_float = true;
+                }
                 *counted = counted.saturating_add(1);
-                add_exact(exact, number);
+                exact_unless_float(exact, number, *saw_float);
+                add_float(float, number);
             }
             Self::Extreme { smallest, held } => {
                 if !present(value) {
@@ -350,7 +365,11 @@ impl Accumulator {
                 span,
             } => {
                 if *saw_float {
-                    let total = float.map_err(|reason| failed("sum", reason, *span))?;
+                    let total = float
+                        .as_ref()
+                        .map_err(|reason| failed("sum", reason, *span))?
+                        .total()
+                        .map_err(|reason| failed("sum", reason, *span))?;
                     return Ok(Value::Number(Number::float(total)));
                 }
                 let total = exact.map_err(|reason| failed("sum", reason, *span))?;
@@ -364,6 +383,8 @@ impl Accumulator {
             }
             Self::Mean {
                 exact,
+                float,
+                saw_float,
                 counted,
                 span,
             } => {
@@ -371,6 +392,15 @@ impl Accumulator {
                     // An average of no numbers is not a number, and zero would
                     // be a claim.
                     return Ok(Value::None);
+                }
+                if *saw_float {
+                    let total = float
+                        .as_ref()
+                        .map_err(|reason| failed("mean", reason, *span))?
+                        .total()
+                        .map_err(|reason| failed("mean", reason, *span))?;
+                    let counted = arithmetic::count(u64::try_from(*counted).unwrap_or(0));
+                    return Ok(Value::Number(Number::float(total / counted)));
                 }
                 let total = exact.map_err(|reason| failed("mean", reason, *span))?;
                 let averaged = total
@@ -385,8 +415,13 @@ impl Accumulator {
                 span,
             } => {
                 let fold = if *rooted { "stddev" } else { "variance" };
-                let state = running.map_err(|reason| failed(fold, reason, *span))?;
-                let Some(spread) = state.variance() else {
+                let state = running
+                    .as_ref()
+                    .map_err(|reason| failed(fold, reason, *span))?;
+                let Some(spread) = state
+                    .variance()
+                    .map_err(|reason| failed(fold, reason, *span))?
+                else {
                     return Ok(Value::None);
                 };
                 let answer = if *rooted { spread.sqrt() } else { spread };
@@ -420,6 +455,19 @@ impl Accumulator {
             Self::Middle { held, .. } | Self::Every { held } => held.len(),
             Self::Counter { held, .. } => held.len(),
         }
+    }
+}
+
+/// Add to the exact total while it can still be the answer.
+///
+/// Once a float has arrived the float total answers, whatever follows, so the
+/// exact one is dropped rather than carried: converting each float to a decimal
+/// was most of what a `sum` over floats cost (ADR-0114, measured).
+fn exact_unless_float(exact: &mut Running<Decimal>, number: &Number, saw_float: bool) {
+    if saw_float {
+        *exact = Err("a total a float answers instead");
+    } else {
+        add_exact(exact, number);
     }
 }
 
@@ -597,7 +645,7 @@ mod tests {
     ///
     /// `variance` and `stddev` are the only folds whose reference is a
     /// **different algorithm** rather than a different arrangement of the same
-    /// arithmetic — two passes against Welford's recurrence — and two float
+    /// arithmetic — two passes against exact totals rounded once — and two float
     /// algorithms do not agree in the last bits. Demanding that they did would
     /// force the oracle to become a copy of the implementation, which proves
     /// nothing; so these two are compared within a relative tolerance and every
@@ -698,13 +746,13 @@ mod tests {
         );
     }
 
-    /// Welford earns its place against the form it replaced.
+    /// The exact totals earn their place against the float form.
     ///
-    /// `E[x²] − E[x]²` over these three values subtracts two numbers that agree
-    /// to fifteen significant digits and answers `0` — or a negative number,
-    /// whose square root is not a number at all. The true variance is `1`. This
-    /// is the whole reason the algorithm is not the one-line textbook version,
-    /// so it is pinned rather than left as a remark in a comment.
+    /// `E[x²] − E[x]²` in floats over these three values subtracts two numbers
+    /// that agree to fifteen significant digits and answers `0` — or a negative
+    /// number, whose square root is not a number at all. The same subtraction on
+    /// exact totals loses nothing (ADR-0114 D4), so the answer is the true one,
+    /// to the bit.
     #[test]
     fn the_spread_survives_numbers_the_textbook_form_cancels_away() {
         let values = vec![float(1e9 + 4.0), float(1e9 + 7.0), float(1e9 + 13.0)];
@@ -713,11 +761,64 @@ mod tests {
         else {
             panic!("variance did not answer a float")
         };
-        assert!(
-            (variance - 21.0).abs() < 1e-6,
+        assert_eq!(
+            variance.to_bits(),
+            21.0_f64.to_bits(),
             "variance answered {variance}; the deviations are -4, -1 and 5 about a \
              mean of 1e9+8, so the sample variance is 42/2 = 21"
         );
+    }
+
+    /// ADR-0114 — a float fold answers the same bits whatever order its values
+    /// arrive in and however its group is split and merged, which is what lets
+    /// it travel to the shards.
+    #[test]
+    fn a_float_fold_answers_the_same_bits_in_any_order_and_any_split() {
+        let values: Vec<Value> = [0.1, 1e16, 0.2, -1e16, 0.3, 2.5e-7, 123_456.789, -0.05]
+            .iter()
+            .map(|held| float(*held))
+            .chain([integer(7), decimal("0.25")])
+            .collect();
+        let bits = |answer: &Value| match answer {
+            Value::Number(Number::Float(held)) => held.to_bits(),
+            other => panic!("not a float: {other:?}"),
+        };
+        for aggregate in [
+            Aggregate::Sum,
+            Aggregate::Mean,
+            Aggregate::Variance,
+            Aggregate::Stddev,
+        ] {
+            let walked = incrementally(aggregate, &values).unwrap();
+            let mut reversed = values.clone();
+            reversed.reverse();
+            assert_eq!(
+                bits(&walked),
+                bits(&incrementally(aggregate, &reversed).unwrap()),
+                "{aggregate:?} reversed"
+            );
+            for cut in 0..=values.len() {
+                let (left, right) = values.split_at(cut);
+                let mut first = Accumulator::for_aggregate(aggregate, span());
+                left.iter().for_each(|value| first.offer(value).unwrap());
+                let mut second = Accumulator::for_aggregate(aggregate, span());
+                right.iter().for_each(|value| second.offer(value).unwrap());
+                // The second part travels as its state and is merged first,
+                // so the merge also reverses the parts' order.
+                let mut merged = Accumulator::for_aggregate(aggregate, span());
+                assert!(merged.merge(&second.state().unwrap()).unwrap());
+                assert!(merged.merge(&first.state().unwrap()).unwrap());
+                assert_eq!(
+                    bits(&walked),
+                    bits(&merged.finish().unwrap()),
+                    "{aggregate:?} split at {cut}"
+                );
+            }
+        }
+        // The float total is the exact sum rounded once: 0.1 + 0.2 + 0.3 in
+        // floats is 0.6000000000000001 added in order, and 0.6 exactly summed.
+        let answer = incrementally(Aggregate::Sum, &[float(0.1), float(0.2), float(0.3)]).unwrap();
+        assert_eq!(bits(&answer), 0.6_f64.to_bits());
     }
 
     /// The two ends of `median`, and the empty group.

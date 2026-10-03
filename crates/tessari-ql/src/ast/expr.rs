@@ -466,8 +466,8 @@ pub enum Aggregate {
 /// It is a property of the fold and not a rule about aggregation, for the same
 /// reason [`crate::Purity`] is a property of the function: a single rule would
 /// get one of them wrong in silence. `count`, `sum`, `mean`, `min`, `max`,
-/// `variance` and `stddev` all reduce one value at a time — Welford's algorithm
-/// carries `(count, mean, M2)` and is three numbers however long the group is.
+/// `variance` and `stddev` all reduce one value at a time — a spread carries a
+/// count and two exact totals, bounded however long the group is.
 /// `collect` and `median` cannot: `collect`'s answer **is** the collection, and
 /// an exact median has to see every value before it knows which one is the
 /// middle.

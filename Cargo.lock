@@ -1799,6 +1799,7 @@ dependencies = [
  "argon2",
  "log",
  "md-5",
+ "proptest",
  "rust_decimal",
  "sha1",
  "sha2",

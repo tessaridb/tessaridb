@@ -17,13 +17,23 @@
 //! of turn — is [`Unanswered::Refused`] naming what happened, and the session
 //! refuses the whole read. A page that says more follows and holds nothing is
 //! refused too: following it would ask the same question forever.
+//!
+//! # A fold an older leader cannot read is not asked of it
+//!
+//! `variance` and `stddev` fold on a leader from `0.25` (ADR-0114 D5). A leader
+//! still running `0.24` would refuse the whole request as malformed — during a
+//! rolling upgrade, a read both releases answered would fail. So a fold request
+//! goes only to a leader whose greeting says it reads every fold in it; any
+//! other leader is answered here as having declined, and the read gathers the
+//! records, as it did before.
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::sync::{Arc, Weak};
 
-use tessari_encoding::NODE_ID_LEN;
-use tessari_session::{Asked, Gather as Gathers, Gathered, Unanswered};
+use tessari_encoding::{NODE_ID_LEN, NodeVersion};
+use tessari_ql::Aggregate;
+use tessari_session::{Asked, Gather as Gathers, Gathered, Reduce, Unanswered};
 use tessari_storage::{Catalog, Reach};
 
 use crate::driver::{Published, leader_of_range};
@@ -142,6 +152,21 @@ impl Gathers for Gathering {
                 "the leader's endpoint is not an address: {endpoint}"
             ))
         })?;
+        if let Some(reduce) = asked.reduce {
+            let heard = self
+                .routing
+                .current()
+                .at(&endpoint)
+                .map(|heard| heard.said.build);
+            if !reads_every_fold(reduce, heard) {
+                return Ok(Gathered {
+                    records: Vec::new(),
+                    node,
+                    reduced: Some(tessari_session::Reduced::Declined),
+                    counted: None,
+                });
+            }
+        }
         let said = (self.greeting)().map_err(|why| Unanswered::Refused(why.to_string()))?;
         let mut page = Gather {
             namespace: asked.namespace,
@@ -287,5 +312,62 @@ impl Gathers for Gathering {
                 None => page.after = records.last().map(|(id, _)| id.clone()),
             }
         }
+    }
+}
+
+/// The first build whose leaders fold `variance` and `stddev` (ADR-0114 D5).
+const SPREADS_FOLD_FROM: NodeVersion = NodeVersion {
+    major: 0,
+    minor: 25,
+    patch: 0,
+};
+
+/// Whether a leader that greeted as `build` reads every fold `reduce` asks
+/// for; a leader not heard from is not assumed to.
+fn reads_every_fold(reduce: &Reduce, build: Option<NodeVersion>) -> bool {
+    let spreads = reduce
+        .folds
+        .iter()
+        .any(|folded| matches!(folded.fold, Aggregate::Variance | Aggregate::Stddev));
+    !spreads || build.is_some_and(|build| build >= SPREADS_FOLD_FROM)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NodeVersion, Reduce, reads_every_fold};
+
+    fn asking(folds: &[&str]) -> Reduce {
+        Reduce {
+            visible: None,
+            condition: None,
+            keys: Vec::new(),
+            folds: folds
+                .iter()
+                .filter_map(|fold| tessari_session::Folded::named(fold, None))
+                .collect(),
+        }
+    }
+
+    const fn build(minor: u32) -> Option<NodeVersion> {
+        Some(NodeVersion {
+            major: 0,
+            minor,
+            patch: 0,
+        })
+    }
+
+    #[test]
+    fn a_spread_is_asked_only_of_a_leader_that_folds_one() {
+        let spread = asking(&["count", "variance"]);
+        assert_eq!(spread.folds.len(), 2);
+        assert!(!reads_every_fold(&spread, build(24)));
+        assert!(!reads_every_fold(&spread, None));
+        assert!(reads_every_fold(&spread, build(25)));
+        assert!(reads_every_fold(&asking(&["stddev"]), build(26)));
+        // What a `0.24` leader already folds is still asked of it.
+        assert!(reads_every_fold(
+            &asking(&["count", "sum", "mean"]),
+            build(24)
+        ));
     }
 }
