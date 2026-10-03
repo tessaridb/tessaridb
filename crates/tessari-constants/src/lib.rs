@@ -454,6 +454,16 @@ pub const GREETING_SECONDS: u64 = 10;
 /// went silent must not hold the caller's connection forever.
 pub const COORDINATED_SECONDS: u64 = 120;
 
+/// How many rounds of the failover policy a transaction across leaders'
+/// `PENDING` record stays live before anyone may abort it (ADR-0112 D7).
+///
+/// In rounds rather than seconds so it moves with the policy an operator set:
+/// a cluster tuned to fail over in a second should not hold intents for a
+/// minute behind a coordinator that died. More than one round, because the
+/// coordinator waits for a majority on every prepare and a slow follower is
+/// not a dead coordinator.
+pub const ACROSS_LAPSE_ROUNDS: u32 = 4;
+
 /// How long a sign-in waits to ask the cluster's one budget (ADR-0108 D5)
 /// before deciding on this node's own count.
 ///

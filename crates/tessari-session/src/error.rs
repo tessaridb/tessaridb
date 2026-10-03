@@ -1289,6 +1289,44 @@ pub enum Error {
         span: Span,
     },
 
+    /// A transaction across leaders was not committed, and nothing of it was
+    /// applied anywhere (ADR-0112): a participant refused its prepare, or the
+    /// record was aborted before the decision landed. The reason is the
+    /// refusal as the participant gave it.
+    #[error(
+        "the transaction across leaders (at {span}) was not committed, and nothing of it applies: {reason}"
+    )]
+    AcrossAborted {
+        /// Why, in the words of the node that refused.
+        reason: String,
+        /// Where the commit is.
+        span: Span,
+    },
+
+    /// A transaction across leaders whose decision was sent and not confirmed
+    /// (ADR-0112 D4, D7). Its record decides it: committed if the decision
+    /// landed, aborted once the record's liveness lapses if it did not. The
+    /// caller is told it does not know rather than told either.
+    #[error(
+        "the transaction across leaders (at {span}) is in doubt — its record decides it: {reason}"
+    )]
+    AcrossInDoubt {
+        /// What could not be confirmed.
+        reason: String,
+        /// Where the commit is.
+        span: Span,
+    },
+
+    /// A transaction across leaders asked of a node that knows no peers to
+    /// carry its records to.
+    #[error(
+        "this node carries nothing to other nodes, so the commit at {span} cannot reach across leaders"
+    )]
+    AcrossUnavailable {
+        /// Where the commit is.
+        span: Span,
+    },
+
     /// A staleness bound says how far behind an answering node may be. A bound
     /// tighter than the interval at which a node learns anything about its peers
     /// is a promise nothing can check — it would be enforced against a picture

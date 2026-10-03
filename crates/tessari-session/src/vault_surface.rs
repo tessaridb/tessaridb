@@ -144,6 +144,7 @@ impl Session<'_> {
                 kind,
                 span,
                 acknowledge: None,
+                across: false,
             }],
             span,
         })

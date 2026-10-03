@@ -95,6 +95,7 @@ impl Parser<'_> {
                 },
                 span: condition.span,
                 acknowledge: None,
+                across: false,
             });
         }
         // `$id` stands in as an identity, because it is written where one is

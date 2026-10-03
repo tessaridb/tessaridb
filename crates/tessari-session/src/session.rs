@@ -118,6 +118,10 @@ pub struct Session<'a> {
     /// for, carried to its `COMMIT` (ADR-0106 D2) — a level asked of one write
     /// is asked of the transaction that lands it.
     pub(crate) acknowledge_open: Option<tessari_types::Acknowledge>,
+    /// Whether a write in the open transaction said `ACROSS LEADERS`, which
+    /// lets its `COMMIT` reach across leaders as though the `COMMIT` had said
+    /// it (ADR-0112 D1).
+    pub(crate) across_open: bool,
     /// How many events deep this session runs: zero for a caller's session,
     /// one more for each event body a write ran (ADR-0110 D5).
     pub(crate) event_depth: u8,
@@ -161,6 +165,7 @@ impl<'a> Session<'a> {
             sink: crate::backup_to::Sink::none(),
             landed: false,
             acknowledge_open: None,
+            across_open: false,
             event_depth: 0,
         }
     }
@@ -339,6 +344,7 @@ impl<'a> Session<'a> {
                     },
                     span,
                     acknowledge: None,
+                    across: false,
                 },
             );
         }
@@ -652,6 +658,7 @@ impl<'a> Session<'a> {
             sink: crate::backup_to::Sink::none(),
             landed: false,
             acknowledge_open: None,
+            across_open: false,
             event_depth: 0,
         };
         probe.acting_as(id)?;

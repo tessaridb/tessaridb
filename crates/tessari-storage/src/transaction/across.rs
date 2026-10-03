@@ -17,6 +17,26 @@ use tessari_types::{Reach, Sequence};
 use super::{Committed, RecordAddress, Transaction};
 use crate::error::{Error, Result};
 
+/// One home a transaction across leaders writes — the database, or the shard
+/// of a split table, an ordinary commit of these records would be filed in —
+/// and who writes it.
+///
+/// By home and not by leader: a participant's prepare must land in the log
+/// its records' ordinary commits land in, or the walk after `seen` (ADR-0112
+/// D3a) would read a log nobody writes them into.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AcrossPart {
+    /// The home.
+    pub home: Reach,
+    /// The node leading it, or `None` when this node may write it itself.
+    pub leader: Option<[u8; tessari_encoding::NODE_ID_LEN]>,
+    /// This node's applied position of the home's log, read before the
+    /// conflict check on this node's copy.
+    pub seen: Sequence,
+    /// The writes that fall in it, as a commit would carry them.
+    pub writes: Vec<tessari_encoding::Mutation>,
+}
+
 /// What this commit is, for a transaction across leaders.
 #[derive(Debug, Clone)]
 pub(super) struct Work {
@@ -152,6 +172,70 @@ impl Transaction<'_> {
         Ok(provenance
             .filter(|provenance| provenance.provisional && provenance.transaction == transaction)
             .map(|provenance| (value, provenance.coordinator)))
+    }
+
+    /// Split this transaction's writes into the homes they fall in, name who
+    /// leads each, read this node's position of each home's log, and then —
+    /// in that order — run the conflict check on this node's copy (ADR-0112
+    /// D3a). The participant leaders make the other half.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::AcrossNotHeldHere`] for a home this node holds no copy of, a
+    /// conflict on this copy, and the substrate's failures.
+    pub fn across_plan(&self) -> Result<Vec<AcrossPart>> {
+        let me = self.store.node_identity()?.id;
+        let placement = self.placement()?;
+        let record = self.log_record(me, &placement)?;
+        let mut homes: std::collections::BTreeMap<Reach, Vec<tessari_encoding::Mutation>> =
+            std::collections::BTreeMap::new();
+        for mutation in record.mutations() {
+            let home = crate::catalog::home_of(&LogRecord::new(vec![mutation.clone()]))?;
+            homes.entry(home).or_default().push(mutation.clone());
+        }
+        let mut reading = self.store.begin()?;
+        let catalog = crate::catalog::Catalog::new(&mut reading);
+        let held = catalog.leaderships()?;
+        let placed: std::collections::BTreeSet<Reach> = catalog
+            .replicas()?
+            .into_iter()
+            .filter_map(|peer| peer.leads)
+            .collect();
+        drop(reading);
+        let served = self.store.served();
+        let mut parts = Vec::with_capacity(homes.len());
+        for (home, writes) in homes {
+            if served.is_some_and(|over| !over.contains(home)) {
+                return Err(Error::AcrossNotHeldHere { range: home });
+            }
+            let leader = match self.store.led(&held, &placed, home, &me)? {
+                crate::store::Led::Elsewhere(leader) => Some(leader.node),
+                crate::store::Led::Here | crate::store::Led::Unled | crate::store::Led::Shared => {
+                    None
+                }
+            };
+            // The log a commit into this home is filed in — the line's, under a
+            // leadership, as `settle` decides it — read on this node's copy.
+            let log = if self.store.epoch_under(&placed, home) > tessari_types::Epoch::ZERO
+                || leader.is_some()
+            {
+                LogId::line(home)
+            } else {
+                self.store.own_log(home)?
+            };
+            let seen = self.store.committed_tail(log)?;
+            parts.push(AcrossPart {
+                home,
+                leader,
+                seen,
+                writes,
+            });
+        }
+        // After every position was read: a commit landing between a read and
+        // this check is either below its position — and seen here — or above
+        // it, and seen by the participant's walk.
+        self.check_for_conflicts()?;
+        Ok(parts)
     }
 
     /// Mark a record this commit is about to write with what it is, and every

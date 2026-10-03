@@ -59,6 +59,7 @@ impl<'a> Session<'a> {
                 }
                 *open = Some((store.begin()?, span));
                 self.acknowledge_open = None;
+                self.across_open = false;
                 Ok(Outcome::Done)
             }
             StatementKind::Commit => {
@@ -68,6 +69,11 @@ impl<'a> Session<'a> {
                 // The strongest level the transaction's writes or its `COMMIT`
                 // asked for (ADR-0106 D2).
                 let asked = statement.acknowledge.max(self.acknowledge_open.take());
+                let across = statement.across || std::mem::take(&mut self.across_open);
+                if across && let Some(parts) = Self::across_parts(&transaction)? {
+                    self.drive_across(store, transaction, parts, span)?;
+                    return Ok(Outcome::Done);
+                }
                 let waiting = self.acknowledgement_for(&mut transaction, asked, span)?;
                 Self::commit_acknowledged(store, transaction, waiting, span)?;
                 Ok(Outcome::Done)
@@ -77,6 +83,7 @@ impl<'a> Session<'a> {
                     return Err(Error::NoOpenTransaction { span });
                 };
                 self.acknowledge_open = None;
+                self.across_open = false;
                 transaction.rollback();
                 Ok(Outcome::Done)
             }
@@ -88,6 +95,7 @@ impl<'a> Session<'a> {
                     return Err(Error::NoOpenTransaction { span });
                 };
                 self.acknowledge_open = None;
+                self.across_open = false;
                 transaction.dry_run().map_err(advised)?;
                 Ok(Outcome::Done)
             }
@@ -129,6 +137,7 @@ impl<'a> Session<'a> {
                 // A transaction is one snapshot too, for the same reason.
                 (None, Some((transaction, _))) => {
                     self.acknowledge_open = self.acknowledge_open.max(statement.acknowledge);
+                    self.across_open |= statement.across;
                     let gather = self.gather.take();
                     let outcome = self.execute(transaction, other, span);
                     self.gather = gather;
@@ -143,6 +152,12 @@ impl<'a> Session<'a> {
                     loop {
                         let mut transaction = store.begin()?;
                         let outcome = self.execute(&mut transaction, other, span)?;
+                        if statement.across
+                            && let Some(parts) = Self::across_parts(&transaction)?
+                        {
+                            self.drive_across(store, transaction, parts, span)?;
+                            return Ok(outcome);
+                        }
                         let waiting = self.acknowledgement_for(
                             &mut transaction,
                             statement.acknowledge,

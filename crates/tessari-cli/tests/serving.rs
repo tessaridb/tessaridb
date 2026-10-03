@@ -3509,6 +3509,94 @@ fn each_node_leads_its_own_shard_and_sends_the_others_to_their_leaders() {
     }
 }
 
+/// The cross-leader scenario's addresses, its own band (G053 SG3).
+const ACROSS: Band = [
+    ("127.0.0.1:47986", "127.0.0.1:47987"),
+    ("127.0.0.1:47988", "127.0.0.1:47989"),
+    ("127.0.0.1:47990", "127.0.0.1:47991"),
+];
+
+#[test]
+#[ignore = "real cadences across three processes — three shard lines have to \
+            be elected before a transaction can span two of them. G053 SG3's \
+            own validation, run explicitly: cargo test -p tessari-cli --test \
+            serving a_transaction_across_two_shard_leaders -- --ignored"]
+fn a_transaction_across_two_shard_leaders_commits_whole_or_is_refused() {
+    let cluster = a_cluster_declared(
+        &ACROSS,
+        PLACED,
+        [
+            " LEADS SHARD prod.shop.orders 1",
+            " LEADS SHARD prod.shop.orders 2",
+            " LEADS SHARD prod.shop.orders 3",
+        ],
+    );
+    // Shard 1 begins below 'g' and n0 leads it; shard 2 begins at 'g' and n1
+    // leads it.
+    for (index, prefix) in ["a", "h"].iter().enumerate() {
+        if let Err(last) = until_taken(ACROSS[index].0, prefix, Duration::from_secs(120)) {
+            panic!(
+                "node {index} never took a write into its own shard; last: {last}{}",
+                what_the_nodes_said(&ACROSS, &cluster.logs)
+            );
+        }
+    }
+    // And n0 knows n1 leads shard 2 — its row has to replicate first, and
+    // until it has, n0 would take shard 2 for a range nobody leads.
+    if let Err(last) = until_sent_to(
+        ACROSS[0].0,
+        "hknown",
+        cluster.ids[1],
+        ACROSS[1].1,
+        Duration::from_secs(90),
+    ) {
+        panic!(
+            "node 0 never learned that node 1 leads shard 2; last: {last}{}",
+            what_the_nodes_said(&ACROSS, &cluster.logs)
+        );
+    }
+    let spanning = |commit: &str, key: &str| {
+        format!(
+            "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
+             CREATE orders:'a{key}' = {{ n: 7 }}; CREATE orders:'h{key}' = {{ n: 7 }}; \
+             {commit};"
+        )
+    };
+    // Unasked, it is refused for spanning two leaders, and nothing lands.
+    let refused = asked(ACROSS[0].0, &spanning("COMMIT", "plain"), None);
+    assert!(
+        matches!(&refused, Err(why) if why.contains("COMMIT ACROSS LEADERS")),
+        "a transaction spanning two leaders without asking: {refused:?}"
+    );
+    // Asked, it commits whole: both records, on both leaders and on the node
+    // that leads neither.
+    let committed = asked(ACROSS[0].0, &spanning("COMMIT ACROSS LEADERS", "x"), None);
+    assert!(
+        committed.is_ok(),
+        "a transaction across leaders: {committed:?}{}",
+        what_the_nodes_said(&ACROSS, &cluster.logs)
+    );
+    for (surface, _) in &ACROSS {
+        let both = until(Duration::from_secs(30), || {
+            read_at(surface, "SELECT id FROM orders WHERE n = 7 ORDER BY id;")
+                .is_ok_and(|ids| ids == ["ax", "hx"])
+        });
+        assert!(
+            both,
+            "{surface} never held both records; it reads {:?}",
+            read_at(surface, "SELECT id FROM orders WHERE n = 7 ORDER BY id;")
+        );
+    }
+    assert!(
+        read_at(
+            ACROSS[1].0,
+            "SELECT id FROM orders WHERE id = 'aplain' OR id = 'hplain';"
+        )
+        .is_ok_and(|ids| ids.is_empty()),
+        "the refused transaction left a record behind"
+    );
+}
+
 #[test]
 #[ignore = "real cadences across three processes — a shard leader is killed and \
             its second candidate elected. It is G032 S4.2's own validation and is \

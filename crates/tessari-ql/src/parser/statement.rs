@@ -275,9 +275,12 @@ impl Parser<'_> {
             _ if self.eat_word("seal") => self.seal_statement(start)?,
             _ => return Err(self.error_here("a statement")),
         };
-        // Only a write, or the `COMMIT` of several, waits for copies — a read
-        // that named a level would be asking for something nothing does.
-        let acknowledge = if matches!(
+        // Only a write, or the `COMMIT` of several, waits for copies or commits
+        // across leaders — a read that named either would be asking for
+        // something nothing does. The two clauses come in either order, each
+        // at most once.
+        let (mut acknowledge, mut across) = (None, false);
+        if matches!(
             kind,
             StatementKind::Create { .. }
                 | StatementKind::Insert { .. }
@@ -287,14 +290,20 @@ impl Parser<'_> {
                 | StatementKind::Relate { .. }
                 | StatementKind::Commit
         ) {
-            self.acknowledge_clause()?
-        } else {
-            None
-        };
+            for _ in 0..2 {
+                if !across && self.eat_word("across") {
+                    self.expect_word("leaders", "`LEADERS` after `ACROSS`")?;
+                    across = true;
+                } else if acknowledge.is_none() {
+                    acknowledge = self.acknowledge_clause()?;
+                }
+            }
+        }
         Ok(Statement {
             kind,
             span: start.to(self.span_behind()),
             acknowledge,
+            across,
         })
     }
 }

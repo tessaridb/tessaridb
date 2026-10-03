@@ -80,6 +80,7 @@ impl Detached {
             // For the sink's reason: it belongs to a transaction this request
             // opened, and none travels with a detached session.
             acknowledge_open: None,
+            across_open: false,
             event_depth: 0,
         }
     }

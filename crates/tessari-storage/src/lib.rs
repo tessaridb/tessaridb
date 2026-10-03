@@ -127,8 +127,8 @@ pub use statistics::{estimate_equality, estimate_range};
 pub use store::{Health, Store};
 pub use tessari_encoding::{BUILD_VERSION, IndexStatistics, LogId, NODE_ID_LEN, Roles, Writer};
 pub use transaction::{
-    Committed, Expansion, FieldedPostings, Nearby, Neighbour, RecordAddress, Region, SearchCounts,
-    StoredRecord, Transaction, Window,
+    AcrossPart, Committed, Expansion, FieldedPostings, Nearby, Neighbour, RecordAddress, Region,
+    SearchCounts, StoredRecord, Transaction, Window,
 };
 pub use vault::{OpenVault, SealState};
 pub use views::ViewState;

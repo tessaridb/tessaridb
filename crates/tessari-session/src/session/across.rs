@@ -27,6 +27,7 @@ use tessari_storage::{Catalog, Kind, RecordAddress, Store, TableKind, Verb};
 use tessari_types::{Acknowledge, DatabaseId, NamespaceId, Reach, Sequence, TableId};
 
 mod codec;
+mod driver;
 
 use super::{Session, advised};
 use crate::error::{Error, Result};

@@ -11,7 +11,7 @@
 //! be to do nothing.
 
 use tessari_kv::ErrorCategory;
-use tessari_types::{Epoch, FieldKind, RecordId, Sequence, article};
+use tessari_types::{Epoch, FieldKind, Reach, RecordId, Sequence, article};
 
 /// Result alias for every fallible operation in this crate.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -332,8 +332,8 @@ pub enum Error {
     /// named, sorted, so the caller can see which ranges went where.
     #[error(
         "this transaction writes ranges led by {} different nodes ({}), and no \
-         node may commit it — write each leader's ranges in a transaction of \
-         their own",
+         node may commit it alone — commit it with `COMMIT ACROSS LEADERS`, or \
+         write each leader's ranges in a transaction of their own",
         nodes.len(),
         nodes
             .iter()
@@ -944,6 +944,17 @@ pub enum Error {
         start: Sequence,
     },
 
+    /// A transaction may write across leaders only into ranges the node it
+    /// runs on holds a copy of: the half of the conflict check a participant
+    /// cannot make is made on that copy (ADR-0112 D3a).
+    #[error(
+        "this node holds no copy of {range:?}, so a transaction here cannot write it across leaders"
+    )]
+    AcrossNotHeldHere {
+        /// The range written.
+        range: Reach,
+    },
+
     /// Every identifier at this level has been handed out.
     ///
     /// Ids are never reused after a drop, so the space is consumed by creations
@@ -1073,6 +1084,9 @@ impl Error {
             | Self::ConcurrentVersions { .. }
             | Self::AcrossDecided { .. }
             | Self::AcrossReadTooOld { .. } => ErrorCategory::Conflict,
+            // The request is fine and this node is the wrong place to run it,
+            // which is what a client sent to a whole holder fixes.
+            Self::AcrossNotHeldHere { .. } => ErrorCategory::Validation,
             Self::CommitContention { .. } => ErrorCategory::Busy,
             // Unavailable rather than Busy or Conflict, because it is the only
             // one of the three that is true: the write was not wrong and

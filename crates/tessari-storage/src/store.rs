@@ -36,6 +36,7 @@ mod adoption;
 mod apply;
 mod history;
 mod leadership;
+pub(crate) use leadership::Led;
 mod leases;
 mod logs;
 mod opening;

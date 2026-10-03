@@ -660,7 +660,7 @@ impl Transaction<'_> {
     /// cannot hold two until the engine decides what a write meeting a
     /// concurrency does, which is S3's question and not this criterion's
     /// (Q-645).
-    fn log_record(
+    pub(super) fn log_record(
         &self,
         node: [u8; tessari_encoding::NODE_ID_LEN],
         placement: &Placement,
@@ -788,7 +788,7 @@ impl Transaction<'_> {
     /// This is the write-write detection, and it is only sound because the
     /// commit batch asserts the tail has not moved either — together they turn
     /// check-then-write into a compare-and-set over the whole commit.
-    fn check_for_conflicts(&self) -> Result<()> {
+    pub(super) fn check_for_conflicts(&self) -> Result<()> {
         // A guarded read is held to the same rule as a write: whatever decided
         // this transaction's writes must not have changed under it.
         let guarded = self.guarded.borrow();

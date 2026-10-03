@@ -58,6 +58,10 @@ pub struct Statement {
     /// over its namespace's (ADR-0106 D2). `None` on everything else, and on a
     /// write that said nothing.
     pub acknowledge: Option<tessari_types::Acknowledge>,
+    /// Whether this write — or this `COMMIT` — said `ACROSS LEADERS`: it may
+    /// commit across ranges led by different nodes, atomically, rather than be
+    /// refused for spanning them (ADR-0112 D1). `false` on everything else.
+    pub across: bool,
 }
 
 /// What an `INFO FOR` asks about.
