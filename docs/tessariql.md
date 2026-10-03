@@ -9236,10 +9236,23 @@ BEGIN; CREATE event:2 = { kind: 'login' }; COMMIT ACKNOWLEDGE MAJORITY;
 
 - `LEADER` answers once the leader holds the write durably. A leader lost before
   a follower collected it takes the write with it.
+- `LOCAL MAJORITY` answers once a majority of the voters **in the leader's
+  region** hold it durably (from `0.25.0-beta`). A member row says its region —
+  `DEFINE REPLICA … REGION 'eu'`, `ALTER REPLICA n1 REGION 'eu'` or `REGION NONE`,
+  shown on `INFO FOR NODE` — and the leader counts itself by its own row. It
+  waits only for copies that need not cross a region, and holds against losing
+  any node outside the region and a minority within it while the leader lives.
+  **It is not promised to survive a failover**: the majority that elects the next
+  leader need not include a node of that region holding the write. On a node
+  whose own row names no region it is refused before anything is written
+  (`LocalMajorityWithoutRegion`).
 - `MAJORITY` answers once a majority of the range's **voters** — the
   `coordinating` members, the leader among them — hold it durably. Whichever
   majority elects the next leader holds the write, so a lost leader loses
   nothing that was acknowledged.
+
+The three are ordered `LEADER` < `LOCAL MAJORITY` < `MAJORITY`: a namespace's
+level admits any request at or above it, and one below only with `OR WEAKER`.
 
 **`MAJORITY` is the default for a namespace kept on more than one node**; a
 namespace with `REPLICATION NONE`, or a store standing alone, is its own

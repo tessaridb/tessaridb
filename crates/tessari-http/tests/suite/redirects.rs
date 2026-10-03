@@ -73,6 +73,7 @@ fn one_of_two(addressed: bool) -> Arc<Db> {
             join: None,
             releasing: false,
             preferred: false,
+            region: None,
         })
         .unwrap();
     catalog

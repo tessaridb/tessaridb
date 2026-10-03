@@ -210,3 +210,112 @@ fn a_read_waits_for_no_copies() {
         "a read waited for followers to hold nothing"
     );
 }
+
+/// A store in region `eu` whose namespace `prod` says `acknowledge`, beside one
+/// voter in `eu` and one in `us`, both replicating `prod` (G057 C3).
+fn regional(acknowledge: &str, mine: &str) -> Store {
+    let store = Store::open(Arc::new(MemoryBackend::new())).unwrap();
+    let me: String = store
+        .node_identity()
+        .unwrap()
+        .id
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let mut session = Session::new(&store);
+    session
+        .run(&format!(
+            "DEFINE NAMESPACE prod REPLICATION FACTOR 3 {acknowledge}; \
+             USE NAMESPACE prod; DEFINE DATABASE app; USE DATABASE app; \
+             DEFINE COLLECTION t; \
+             BEGIN; \
+             DEFINE REPLICA me AT 'm:9001' NODE '{me}' ROLES coordinating \
+                 REPLICATES NAMESPACE prod {mine}; \
+             DEFINE REPLICA first AT 'a:9001' NODE '{FIRST}' ROLES coordinating \
+                 REPLICATES NAMESPACE prod REGION 'eu'; \
+             DEFINE REPLICA second AT 'b:9001' NODE '{SECOND}' ROLES coordinating \
+                 REPLICATES NAMESPACE prod REGION 'us'; \
+             COMMIT;"
+        ))
+        .unwrap();
+    store.hold(Epoch::new(1), Lease::taken(Duration::from_secs(60)));
+    store
+}
+
+/// G057 C3 — `LOCAL MAJORITY` waits for a majority of the voters in this
+/// node's region: here itself and `first`, so `first` alone acknowledges it,
+/// and `second`, in another region, does not count.
+#[test]
+fn a_local_majority_is_a_majority_of_the_leaders_region() {
+    let store = regional("", "REGION 'eu'");
+    acknowledged_by(&store, FIRST);
+    let mut session = writing(&store);
+    session
+        .run("CREATE t:1 = { a: 1 } ACKNOWLEDGE LOCAL MAJORITY;")
+        .unwrap_or_else(|why| panic!("first is eu's majority with this node: {why}"));
+
+    let store = regional("", "REGION 'eu'");
+    acknowledged_by(&store, SECOND);
+    let mut session = writing(&store);
+    let refused = session.run("CREATE t:1 = { a: 1 } ACKNOWLEDGE LOCAL MAJORITY;");
+    assert!(
+        matches!(
+            &refused,
+            Err(Error::NotAcknowledgedInTime { needed: 2, .. })
+        ),
+        "a voter in us acknowledged an eu majority: {refused:?}"
+    );
+    // The same copy is a majority of the whole cluster: second and this node.
+    session
+        .run("CREATE t:2 = { a: 2 } ACKNOWLEDGE MAJORITY;")
+        .unwrap_or_else(|why| panic!("{why}"));
+    // And the region is on the row `INFO FOR NODE` reports, as written.
+    let outcomes = Session::new(&store).run("INFO FOR NODE;").unwrap();
+    let report = format!("{outcomes:?}");
+    assert!(report.contains("\"region\": String(\"us\")"), "{report}");
+}
+
+/// A node whose own row names no region has no local majority to wait for —
+/// refused by name before anything is written, never read as "the whole
+/// cluster" or "nobody".
+#[test]
+fn a_local_majority_on_a_node_with_no_region_is_refused_before_writing() {
+    let store = regional("", "");
+    let mut session = writing(&store);
+    let refused = session.run("CREATE t:1 = { a: 1 } ACKNOWLEDGE LOCAL MAJORITY;");
+    assert!(
+        matches!(&refused, Err(Error::LocalMajorityWithoutRegion { .. })),
+        "{refused:?}"
+    );
+    assert_eq!(held(&mut session), 0, "a refused write was written");
+}
+
+/// `LOCAL MAJORITY` sits between the two: weaker than `MAJORITY`, stronger
+/// than `LEADER` — as a namespace default and as a request.
+#[test]
+fn a_local_majority_is_weaker_than_a_majority_and_stronger_than_the_leader() {
+    let store = regional("ACKNOWLEDGE MAJORITY", "REGION 'eu'");
+    let mut session = writing(&store);
+    let refused = session.run("CREATE t:1 = { a: 1 } ACKNOWLEDGE LOCAL MAJORITY;");
+    assert!(
+        matches!(&refused, Err(Error::AcknowledgeBelowNamespace { .. })),
+        "{refused:?}"
+    );
+
+    let store = regional("ACKNOWLEDGE LOCAL MAJORITY", "REGION 'eu'");
+    acknowledged_by(&store, FIRST);
+    let mut session = writing(&store);
+    session
+        .run("CREATE t:1 = { a: 1 };")
+        .unwrap_or_else(|why| panic!("the namespace default is eu's majority: {why}"));
+    let refused = session.run("CREATE t:2 = { a: 2 } ACKNOWLEDGE LEADER;");
+    assert!(
+        matches!(&refused, Err(Error::AcknowledgeBelowNamespace { .. })),
+        "{refused:?}"
+    );
+    // Stronger than the default is always admitted — and it is MAJORITY's
+    // wait: first and this node are a majority of three too.
+    session
+        .run("CREATE t:3 = { a: 3 } ACKNOWLEDGE MAJORITY;")
+        .unwrap_or_else(|why| panic!("{why}"));
+}

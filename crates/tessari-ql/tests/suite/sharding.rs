@@ -187,13 +187,32 @@ fn a_placement_is_moved_by_alter_replica_and_removed_by_leads_none() {
     }
 }
 
+/// G057 C3: a peer row may say which region the peer stands in.
+#[test]
+fn a_peer_row_may_name_its_region() {
+    let parsed =
+        parse("DEFINE REPLICA b AT 'b:9001' ROLES coordinating REPLICATES STORE REGION 'eu-west';")
+            .unwrap();
+    let Some(StatementKind::DefineReplica { region, .. }) = parsed
+        .statements
+        .into_iter()
+        .next()
+        .map(|statement| statement.kind)
+    else {
+        panic!("not a replica declaration")
+    };
+    assert_eq!(region.as_deref(), Some("eu-west"));
+    assert!(parse("DEFINE REPLICA b AT 'b:9001' REGION;").is_err());
+}
+
 #[test]
 fn a_peer_row_is_amended_one_clause_at_a_time() {
     use tessari_ql::ReplicaChange;
     let parsed = parse(
         "ALTER REPLICA b AT 'b2:9001'; ALTER REPLICA b ROLES serving, writable; \
          ALTER REPLICA b CLIENTS AT 'b2:9080'; ALTER REPLICA b CLIENTS NONE; \
-         ALTER REPLICA b HTTP AT 'http://b2:8000'; ALTER REPLICA b HTTP NONE;",
+         ALTER REPLICA b HTTP AT 'http://b2:8000'; ALTER REPLICA b HTTP NONE; \
+         ALTER REPLICA b REGION 'eu'; ALTER REPLICA b REGION NONE;",
     )
     .unwrap();
     let changes: Vec<ReplicaChange> = parsed
@@ -219,6 +238,9 @@ fn a_peer_row_is_amended_one_clause_at_a_time() {
         ReplicaChange::HttpAt(Some("http://b2:8000".to_owned()))
     );
     assert_eq!(changes[5], ReplicaChange::HttpAt(None));
+    // G057 C3: the region a local majority counts the peer in.
+    assert_eq!(changes[6], ReplicaChange::Region(Some("eu".to_owned())));
+    assert_eq!(changes[7], ReplicaChange::Region(None));
     // One clause each, and every one says what it changes.
     for refused in [
         "ALTER REPLICA b AT;",

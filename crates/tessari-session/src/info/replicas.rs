@@ -86,6 +86,12 @@ pub(crate) fn described_replica(
                 .as_deref()
                 .map_or(Value::Null, Value::from),
         ),
+        // The region a `LOCAL MAJORITY` counts it in (G057 C3), in the spelling
+        // `REGION` takes; `NULL` when its row names none.
+        (
+            "region".to_owned(),
+            replica.region.as_deref().map_or(Value::Null, Value::from),
+        ),
         // A join token waiting to bind it: when it stops binding, in
         // milliseconds since the Unix epoch, and never its digest — the digest
         // is what a token is checked against, and nothing reading this needs it.

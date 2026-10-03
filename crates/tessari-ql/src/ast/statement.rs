@@ -744,6 +744,9 @@ pub enum StatementKind {
         /// The one certificate allowed to bind this row (`FINGERPRINT`), its
         /// SHA-256 as 64 lowercase hexadecimal digits (ADR-0108 D9).
         fingerprint: Option<String>,
+        /// The region the peer stands in (`REGION 'eu'`), when said — what a
+        /// `LOCAL MAJORITY` counts its voters by (G057 C3).
+        region: Option<String>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },

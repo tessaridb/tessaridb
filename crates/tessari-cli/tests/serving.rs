@@ -6067,6 +6067,85 @@ fn acknowledged_writes_at_a_majority_survive_followers_that_had_not_received_the
     );
 }
 
+/// G057 C3's cluster: a band of its own, clear of every other in this file.
+const LOCAL_REGIONS: Band = [
+    ("127.0.0.1:47940", "127.0.0.1:47941"),
+    ("127.0.0.1:47942", "127.0.0.1:47943"),
+    ("127.0.0.1:47944", "127.0.0.1:47945"),
+];
+
+/// G057 C3: `LOCAL MAJORITY` counts the voters in the leader's region, across
+/// three processes. With the leader and one follower in `eu` and the other in
+/// `us`, stopping the `eu` follower leaves a local-majority write unconfirmed
+/// while a majority write is acknowledged through `us`; stopping the `us`
+/// follower instead leaves the local majority whole.
+#[test]
+#[ignore = "three processes and SIGSTOP — G057 C3, run explicitly: cargo test -p \
+            tessari-cli --test serving a_local_majority_counts -- --ignored --nocapture"]
+fn a_local_majority_counts_the_voters_of_the_leaders_region() {
+    let cluster = a_cluster_declared(&LOCAL_REGIONS, "", ["", "", ""]);
+    let leader = the_node_a_majority_granted(&LOCAL_REGIONS);
+    for index in 0..LOCAL_REGIONS.len() {
+        caught_up(&LOCAL_REGIONS, index, "1", &cluster);
+    }
+    let followers: Vec<usize> = (0..LOCAL_REGIONS.len())
+        .filter(|index| *index != leader)
+        .collect();
+    let (local, remote) = (followers[0], followers[1]);
+    let mut client = Client::connect(LOCAL_REGIONS[leader].0).unwrap();
+    client
+        .run(
+            &format!(
+                "ALTER REPLICA n{leader} REGION 'eu'; ALTER REPLICA n{local} REGION 'eu'; \
+                 ALTER REPLICA n{remote} REGION 'us';"
+            ),
+            None,
+        )
+        .unwrap();
+    let pid = |index: usize| {
+        cluster.running[index]
+            .as_ref()
+            .expect("the follower runs")
+            .0
+            .id()
+    };
+    let signal = |what: &str, pid: u32| {
+        let sent = Command::new("kill")
+            .args([what, &pid.to_string()])
+            .status()
+            .expect("kill runs");
+        assert!(sent.success(), "{what} {pid}");
+    };
+    let write = |client: &mut Client, key: &str, level: &str| {
+        client.run(&into_item(key, &format!(" ACKNOWLEDGE {level}")), None)
+    };
+
+    signal("-STOP", pid(local));
+    let unconfirmed = write(&mut client, "l1", "LOCAL MAJORITY");
+    let majority = write(&mut client, "m1", "MAJORITY");
+    signal("-CONT", pid(local));
+    assert!(
+        matches!(&unconfirmed, Err(why) if why.to_string().contains("is committed on this node")),
+        "eu's other voter was stopped, and a local majority was acknowledged: {unconfirmed:?}{}",
+        what_the_nodes_said(&LOCAL_REGIONS, &cluster.logs)
+    );
+    assert!(
+        majority.is_ok(),
+        "us holds it, and a majority was refused: {majority:?}{}",
+        what_the_nodes_said(&LOCAL_REGIONS, &cluster.logs)
+    );
+
+    caught_up(&LOCAL_REGIONS, local, "m1", &cluster);
+    signal("-STOP", pid(remote));
+    let local_held = write(&mut client, "l2", "LOCAL MAJORITY");
+    signal("-CONT", pid(remote));
+    assert!(
+        local_held.is_ok(),
+        "only us was stopped, and the local majority was refused: {local_held:?}{}",
+        what_the_nodes_said(&LOCAL_REGIONS, &cluster.logs)
+    );
+}
+
 /// Busy threads in this process, `TESSARIDB_TEST_CPU_LOAD` of them, for a
 /// measurement taken under CPU pressure; dropping the guard stops them.
 struct Load(

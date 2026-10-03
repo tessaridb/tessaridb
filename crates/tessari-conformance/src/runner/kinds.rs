@@ -158,6 +158,7 @@ pub(crate) fn kind_name(error: &Error) -> &'static str {
         Error::FailoverRefused { .. } => "FailoverRefused",
         Error::AcknowledgeBelowNamespace { .. } => "AcknowledgeBelowNamespace",
         Error::MajorityUnreachable { .. } => "MajorityUnreachable",
+        Error::LocalMajorityWithoutRegion { .. } => "LocalMajorityWithoutRegion",
         Error::NotAcknowledgedInTime { .. } => "NotAcknowledgedInTime",
         _ => "Unnamed",
     }

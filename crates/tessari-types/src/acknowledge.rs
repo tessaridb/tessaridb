@@ -3,7 +3,8 @@
 //!
 //! Named for what the caller is TOLD, because that is the whole contract: a
 //! `LEADER` write is durable on the leader when it is acknowledged, a
-//! `MAJORITY` write on a majority of the range's voters. Either way the write is
+//! `LOCAL MAJORITY` write on a majority of the voters in the leader's region,
+//! a `MAJORITY` write on a majority of the range's voters. Either way the write is
 //! applied and readable on the leader at its local commit (D3); what the level
 //! decides is when the answer comes back, and so what a failover can lose.
 
@@ -17,6 +18,9 @@ const LEADER: &str = "leader";
 /// The word a majority-level acknowledgement is stored and written as.
 const MAJORITY: &str = "majority";
 
+/// The words a local-majority acknowledgement is stored and written as.
+const LOCAL_MAJORITY: &str = "local majority";
+
 /// The suffix a namespace that admits weaker requests is stored with.
 const OR_WEAKER: &str = " or weaker";
 
@@ -29,6 +33,13 @@ pub enum Acknowledge {
     /// Durable on the leader. A failover can lose it — the window the
     /// replication lag is wide.
     Leader,
+    /// Durable on a majority of the voters in the leader's region, the leader
+    /// counting as one (G057 C3) — the latency of a majority that need not
+    /// cross a region. It survives losing any node outside that region and a
+    /// minority inside it while the leader lives; unlike [`Self::Majority`] it
+    /// is NOT promised to survive a failover, because the majority that elects
+    /// the next leader need not include a node of that region that holds it.
+    LocalMajority,
     /// Durable on a majority of the range's voters, the leader counting as one.
     /// Any majority that elects the next leader meets it, so a failover keeps it.
     Majority,
@@ -55,6 +66,7 @@ impl Acknowledge {
     const fn word(self) -> &'static str {
         match self {
             Self::Leader => LEADER,
+            Self::LocalMajority => LOCAL_MAJORITY,
             Self::Majority => MAJORITY,
         }
     }
@@ -62,6 +74,7 @@ impl Acknowledge {
     fn from_word(word: &str) -> Option<Self> {
         match word {
             LEADER => Some(Self::Leader),
+            LOCAL_MAJORITY => Some(Self::LocalMajority),
             MAJORITY => Some(Self::Majority),
             _ => None,
         }
@@ -74,6 +87,7 @@ impl fmt::Display for Acknowledge {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Leader => f.write_str("ACKNOWLEDGE LEADER"),
+            Self::LocalMajority => f.write_str("ACKNOWLEDGE LOCAL MAJORITY"),
             Self::Majority => f.write_str("ACKNOWLEDGE MAJORITY"),
         }
     }
@@ -140,7 +154,11 @@ mod tests {
 
     #[test]
     fn every_acknowledgement_survives_the_value_it_is_stored_as() {
-        for level in [Acknowledge::Leader, Acknowledge::Majority] {
+        for level in [
+            Acknowledge::Leader,
+            Acknowledge::LocalMajority,
+            Acknowledge::Majority,
+        ] {
             assert_eq!(Acknowledge::from_value(&level.to_value()), Some(level));
             for or_weaker in [false, true] {
                 let stated = Acknowledgement { level, or_weaker };

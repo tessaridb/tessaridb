@@ -643,6 +643,7 @@ mod tests {
             join: None,
             releasing: false,
             preferred: false,
+            region: None,
         }
     }
 
