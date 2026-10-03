@@ -100,6 +100,12 @@ pub enum Part {
         /// The record's outcome this resolution applies.
         committed: bool,
     },
+    /// The decided record deleted, every participant's resolution being held
+    /// by a majority (ADR-0112 D12) — written in the coordinator's range.
+    Forget {
+        /// The range whose log holds the transaction record.
+        coordinator: Reach,
+    },
 }
 
 /// The section a log record carries when it belongs to a transaction across
@@ -139,6 +145,7 @@ pub struct Provenance {
 const PART_PREPARE: u8 = 1;
 const PART_DECIDE: u8 = 2;
 const PART_RESOLVE: u8 = 3;
+const PART_FORGET: u8 = 4;
 
 const RESOLVED: u8 = 0;
 const PROVISIONAL: u8 = 1;
@@ -161,6 +168,10 @@ pub(super) fn put(writer: &mut KeyWriter, across: &Across) {
         }
         Part::Resolve { committed } => {
             writer.put_u8(PART_RESOLVE).put_u8(u8::from(*committed));
+        }
+        Part::Forget { coordinator } => {
+            writer.put_u8(PART_FORGET);
+            put_reach(writer, *coordinator);
         }
     }
 }
@@ -185,6 +196,9 @@ pub(super) fn take(reader: &mut KeyReader<'_>) -> Result<Across> {
                 1 => true,
                 found => return Err(unknown("resolution", found)),
             },
+        },
+        PART_FORGET => Part::Forget {
+            coordinator: take_reach(reader)?,
         },
         found => return Err(unknown("part", found)),
     };

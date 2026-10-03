@@ -17,6 +17,7 @@ use tessari_types::Sequence;
 use crate::error::{Error, Result};
 use crate::store::Store;
 
+mod standing;
 mod unsettled;
 
 /// Whether a stored version is an intent rather than a value.
@@ -26,128 +27,6 @@ pub(crate) fn is_intent(version: &StampedValue) -> bool {
         .is_some_and(|provenance: &Provenance| provenance.provisional)
 }
 
-impl Store {
-    /// The record of one transaction across leaders as this node holds it.
-    ///
-    /// # Errors
-    ///
-    /// Whatever the backend or the codec returns.
-    pub fn transaction_record(
-        &self,
-        transaction: tessari_encoding::TransactionId,
-    ) -> Result<Option<TransactionRecord>> {
-        let key = TransactionRecordKey { transaction };
-        Ok(self
-            .backend()
-            .get(TransactionRecordKey::keyspace(), &key.encode())?
-            .map(|value| TransactionRecord::decode(value.as_slice()))
-            .transpose()?)
-    }
-
-    /// Every record `transaction` holds an intent on here, from its index.
-    ///
-    /// # Errors
-    ///
-    /// Whatever the backend or the codec returns.
-    pub(crate) fn intents_of(
-        &self,
-        transaction: tessari_encoding::TransactionId,
-    ) -> Result<Vec<crate::transaction::RecordAddress>> {
-        let found = self.backend().scan(&tessari_kv::ScanRequest {
-            keyspace: IntentOfKey::keyspace(),
-            range: tessari_kv::KeyRange::prefix(&IntentOfKey::prefix_of(transaction)),
-            direction: tessari_kv::ScanDirection::Forward,
-            limit: None,
-        })?;
-        found
-            .into_iter()
-            .map(|(key, _)| {
-                let held = IntentOfKey::decode(key.as_slice())?;
-                Ok(crate::transaction::RecordAddress::new(
-                    held.namespace,
-                    held.database,
-                    held.table,
-                    held.id,
-                ))
-            })
-            .collect()
-    }
-
-    /// Every transaction across leaders with an intent standing here, and the
-    /// range its record lives in — read off one of its intents, which every
-    /// prepare stamped with it.
-    ///
-    /// # Errors
-    ///
-    /// Whatever the backend or the codec returns.
-    pub fn standing_across(
-        &self,
-    ) -> Result<Vec<(tessari_encoding::TransactionId, tessari_types::Reach)>> {
-        let found = self.backend().scan(&tessari_kv::ScanRequest {
-            keyspace: IntentOfKey::keyspace(),
-            range: tessari_kv::KeyRange::prefix(&IntentOfKey::prefix()),
-            direction: tessari_kv::ScanDirection::Forward,
-            limit: None,
-        })?;
-        let mut standing: Vec<(tessari_encoding::TransactionId, tessari_types::Reach)> = Vec::new();
-        for (key, version) in found {
-            let held = IntentOfKey::decode(key.as_slice())?;
-            if standing
-                .last()
-                .is_some_and(|(seen, _)| *seen == held.transaction)
-            {
-                continue;
-            }
-            let intent = RecordKey::new(
-                held.namespace,
-                held.database,
-                held.table,
-                held.id,
-                Sequence::decode(version.as_slice())?,
-            );
-            let Some(stored) = self
-                .backend()
-                .get(RecordKey::keyspace(), &intent.encode())?
-            else {
-                continue;
-            };
-            if let Some(provenance) = StampedValue::decode(stored.as_slice())?.provenance() {
-                standing.push((held.transaction, provenance.coordinator));
-            }
-        }
-        Ok(standing)
-    }
-
-    /// Every transaction record this node holds that is still `PENDING`.
-    ///
-    /// # Errors
-    ///
-    /// Whatever the backend or the codec returns.
-    pub fn pending_across(
-        &self,
-    ) -> Result<Vec<(tessari_encoding::TransactionId, TransactionRecord)>> {
-        let found = self.backend().scan(&tessari_kv::ScanRequest {
-            keyspace: TransactionRecordKey::keyspace(),
-            range: tessari_kv::KeyRange::prefix(&[
-                tessari_encoding::KeyKind::TransactionRecord.tag()
-            ]),
-            direction: tessari_kv::ScanDirection::Forward,
-            limit: None,
-        })?;
-        let mut pending = Vec::new();
-        for (key, value) in found {
-            let record = TransactionRecord::decode(value.as_slice())?;
-            if record.decision == Decision::Pending {
-                pending.push((
-                    TransactionRecordKey::decode(key.as_slice())?.transaction,
-                    record,
-                ));
-            }
-        }
-        Ok(pending)
-    }
-}
-
 /// Whether applying `record` writes its mutations as versions.
 ///
 /// A decision carries none, and an aborted resolution names the records whose
@@ -155,7 +34,7 @@ impl Store {
 pub(crate) fn writes_versions(record: &LogRecord) -> bool {
     !matches!(
         record.part_of().map(|across| &across.part),
-        Some(Part::Decide(_) | Part::Resolve { committed: false })
+        Some(Part::Decide(_) | Part::Resolve { committed: false } | Part::Forget { .. })
     )
 }
 
@@ -169,7 +48,12 @@ pub(crate) fn writes_versions(record: &LogRecord) -> bool {
 pub(crate) fn derives_nothing(record: &LogRecord) -> bool {
     matches!(
         record.part_of().map(|across| &across.part),
-        Some(Part::Prepare { .. } | Part::Decide(_) | Part::Resolve { committed: false })
+        Some(
+            Part::Prepare { .. }
+                | Part::Decide(_)
+                | Part::Resolve { committed: false }
+                | Part::Forget { .. }
+        )
     )
 }
 
@@ -298,6 +182,33 @@ pub(crate) fn settle(
                     .delete(IntentOfKey::keyspace(), indexed);
             }
             unsettled::reconcile(store, across, record, batch)
+        }
+        Part::Forget { .. } => {
+            if !record.mutations().is_empty() {
+                return Err(Error::AcrossMalformed {
+                    part: "forget",
+                    problem: "a forgetting that carries writes",
+                });
+            }
+            // Only a decided record is forgotten (D12): forgetting a PENDING
+            // one would let a lapse find it absent and abort a transaction
+            // its coordinator is still deciding. An absent one was forgotten
+            // already, and forgetting it again changes nothing.
+            let key = TransactionRecordKey {
+                transaction: across.transaction,
+            };
+            let standing = store
+                .backend()
+                .get(TransactionRecordKey::keyspace(), &key.encode())?
+                .map(|value| TransactionRecord::decode(value.as_slice()))
+                .transpose()?;
+            if standing.is_some_and(|record| record.decision == Decision::Pending) {
+                return Err(Error::AcrossMalformed {
+                    part: "forget",
+                    problem: "a record that has not decided",
+                });
+            }
+            Ok(batch.delete(TransactionRecordKey::keyspace(), key.encode()))
         }
     }
 }

@@ -24,6 +24,9 @@ pub struct SettledAcross {
     pub resolved: usize,
     /// Transactions whose outcome could not be asked for this pass.
     pub unreachable: usize,
+    /// Decided records this node forgot, every participant's intents being
+    /// gone for good (ADR-0112 D12).
+    pub forgotten: usize,
     /// The last refusal met this pass, for the node to log.
     pub last_refusal: Option<String>,
 }
@@ -44,6 +47,10 @@ impl Db {
         // transaction it coordinates.
         let mut silent: BTreeSet<[u8; tessari_storage::NODE_ID_LEN]> = BTreeSet::new();
         let now = now_millis();
+        // First, so a record resolved in this pass is forgotten in the next:
+        // forgetting asks every participant, and a pass that has just
+        // resolved here would only be told so a moment later.
+        self.forget_decided(&mut settled, &mut silent)?;
         let pending = store.pending_across()?;
         let pending_seen = pending.len();
         for (transaction, record) in pending {
@@ -75,28 +82,18 @@ impl Db {
                 transaction,
                 coordinator,
             };
-            let leader = store.leader_of(coordinator)?;
-            let answered = match leader {
-                Some(node) if silent.contains(&node) => {
-                    settled.unreachable = settled.unreachable.saturating_add(1);
-                    continue;
+            let record = match self.ask_leader_of(coordinator, &asked, &mut silent)? {
+                Some(Ok(AcrossAnswer::Outcome(record))) if record.decision != Decision::Pending => {
+                    record
                 }
-                None => self
-                    .session()
-                    .answer_across(&asked)
-                    .map_err(|why| why.to_string()),
-                Some(node) => match self.participants.get() {
-                    Some(carrier) => carrier.ask(node, None, &asked),
-                    None => Err("this node carries nothing to other nodes".to_owned()),
-                },
-            };
-            let record = match answered {
-                Ok(AcrossAnswer::Outcome(record)) if record.decision != Decision::Pending => record,
-                Ok(_) => continue,
-                Err(why) => {
-                    silent.extend(leader);
+                Some(Ok(_)) => continue,
+                Some(Err(why)) => {
                     settled.unreachable = settled.unreachable.saturating_add(1);
                     settled.last_refusal = Some(why);
+                    continue;
+                }
+                None => {
+                    settled.unreachable = settled.unreachable.saturating_add(1);
                     continue;
                 }
             };
@@ -131,6 +128,86 @@ impl Db {
             left(standing_seen, settled.resolved),
         );
         Ok(settled)
+    }
+}
+
+impl Db {
+    /// Forget each decided record whose range this node leads once every
+    /// participant answers that its intents are gone for good (ADR-0112 D12).
+    fn forget_decided(
+        &self,
+        settled: &mut SettledAcross,
+        silent: &mut BTreeSet<[u8; tessari_storage::NODE_ID_LEN]>,
+    ) -> Result<()> {
+        let store = self.store();
+        for (transaction, record) in store.decided_across()? {
+            let Some(coordinator) = record.participants.first().map(|part| part.range) else {
+                continue;
+            };
+            if store.leader_of(coordinator)?.is_some() {
+                continue;
+            }
+            let mut gone = true;
+            for participant in &record.participants {
+                let asked = AcrossAsk::Holds {
+                    transaction,
+                    range: participant.range,
+                };
+                match self.ask_leader_of(participant.range, &asked, silent)? {
+                    Some(Ok(AcrossAnswer::Holding(false))) => {}
+                    Some(Err(why)) => {
+                        settled.last_refusal = Some(why);
+                        gone = false;
+                        break;
+                    }
+                    _ => {
+                        gone = false;
+                        break;
+                    }
+                }
+            }
+            if !gone {
+                continue;
+            }
+            match self.session().answer_across(&AcrossAsk::Forget {
+                transaction,
+                coordinator,
+            }) {
+                Ok(AcrossAnswer::Forgotten(_)) => {
+                    settled.forgotten = settled.forgotten.saturating_add(1);
+                }
+                Ok(_) => {}
+                Err(why) => settled.last_refusal = Some(why.to_string()),
+            }
+        }
+        Ok(())
+    }
+
+    /// Ask `range`'s leader — this node itself when it leads it. `None` when
+    /// that leader did not answer earlier in this pass and is not asked again;
+    /// a leader that does not answer now joins `silent`.
+    fn ask_leader_of(
+        &self,
+        range: tessari_types::Reach,
+        asked: &AcrossAsk,
+        silent: &mut BTreeSet<[u8; tessari_storage::NODE_ID_LEN]>,
+    ) -> Result<Option<std::result::Result<AcrossAnswer, String>>> {
+        let leader = self.store().leader_of(range)?;
+        let answered = match leader {
+            Some(node) if silent.contains(&node) => return Ok(None),
+            None => self
+                .session()
+                .answer_across(asked)
+                .map_err(|why| why.to_string()),
+            Some(node) => match self.participants.get() {
+                Some(carrier) => carrier.ask(node, None, asked),
+                None => Err("this node carries nothing to other nodes".to_owned()),
+            },
+        };
+        if answered.is_err() {
+            silent.extend(leader);
+        }
+        Ok(Some(answered))
     }
 }
 

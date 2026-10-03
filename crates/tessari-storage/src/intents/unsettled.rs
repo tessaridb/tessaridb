@@ -68,7 +68,7 @@ pub(super) fn reconcile(
     // intent, land a part or remove an intent moves a mark.
     let decided = match &across.part {
         Part::Decide(decided) if decided.decision != Decision::Committed => return Ok(batch),
-        Part::Resolve { committed: false } => return Ok(batch),
+        Part::Resolve { committed: false } | Part::Forget { .. } => return Ok(batch),
         Part::Decide(decided) => Some(decided.clone()),
         Part::Prepare { .. } | Part::Resolve { .. } => store
             .transaction_record(transaction)?
@@ -212,7 +212,7 @@ fn intent_tables(store: &Store, across: &Across, record: &LogRecord) -> Result<B
             Part::Resolve { .. } => {
                 standing.remove(&intent);
             }
-            Part::Decide(_) => {}
+            Part::Decide(_) | Part::Forget { .. } => {}
         }
     }
     standing

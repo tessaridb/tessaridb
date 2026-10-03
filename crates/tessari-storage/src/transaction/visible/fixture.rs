@@ -145,6 +145,11 @@ impl Fixture {
         self.apply(0, Part::Decide(record), Vec::new())
     }
 
+    pub(super) fn forget(&self) -> Result<()> {
+        let coordinator = self.range(0);
+        self.apply(0, Part::Forget { coordinator }, Vec::new())
+    }
+
     pub(super) fn resolve(&self, home: usize) -> Result<()> {
         let write = self.write(home, false);
         self.apply(home, Part::Resolve { committed: true }, vec![write])

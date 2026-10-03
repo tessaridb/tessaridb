@@ -118,6 +118,31 @@ impl Transaction<'_> {
         self.commit_placed()
     }
 
+    /// Forget `transaction`'s decided record, in the coordinator's range, once
+    /// every participant's resolution is held by a majority (ADR-0112 D12).
+    ///
+    /// # Errors
+    ///
+    /// Whatever a commit returns, and [`Error::AcrossMalformed`] for a record
+    /// that has not decided.
+    pub fn forget_across(
+        mut self,
+        transaction: TransactionId,
+        coordinator: Reach,
+    ) -> Result<Committed> {
+        self.writes.clear();
+        self.across = Some(Work {
+            across: Across {
+                transaction,
+                part: Part::Forget { coordinator },
+            },
+            coordinator,
+            seen: None,
+            participants: Vec::new(),
+        });
+        self.commit_placed()
+    }
+
     /// Resolve `transaction`'s intents on `records` as the record decided:
     /// committed, their values become versions; aborted, they are dropped.
     /// No records means every intent of the transaction this node holds.
@@ -286,9 +311,9 @@ impl Transaction<'_> {
         let provisional = match work.across.part {
             Part::Prepare { .. } => true,
             Part::Resolve { committed: true } => false,
-            // A decision has no versions, and an aborted resolution's are
-            // never written.
-            Part::Decide(_) | Part::Resolve { committed: false } => {
+            // A decision and a forgetting have no versions, and an aborted
+            // resolution's are never written.
+            Part::Decide(_) | Part::Resolve { committed: false } | Part::Forget { .. } => {
                 return record.across(work.across.clone());
             }
         };

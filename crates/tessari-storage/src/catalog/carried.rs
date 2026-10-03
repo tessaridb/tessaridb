@@ -334,6 +334,13 @@ pub(crate) fn home_of(record: &LogRecord) -> Result<Reach> {
                 problem: "a record that names no participant",
             });
     }
+    if let Some(tessari_encoding::Across {
+        part: tessari_encoding::Part::Forget { coordinator },
+        ..
+    }) = record.part_of()
+    {
+        return Ok(*coordinator);
+    }
     let mut home = None;
     for mutation in record.mutations() {
         let own = match carried_to(mutation)? {

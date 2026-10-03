@@ -56,6 +56,14 @@ fn every_request_travels_and_arrives_as_itself() -> Result<(), String> {
             transaction: TRANSACTION,
             coordinator: range,
         },
+        AcrossAsk::Holds {
+            transaction: TRANSACTION,
+            range,
+        },
+        AcrossAsk::Forget {
+            transaction: TRANSACTION,
+            coordinator: range,
+        },
     ];
     for ask in asks {
         assert_eq!(AcrossAsk::decode(&ask.encode())?, ask);
@@ -83,6 +91,9 @@ fn every_answer_travels_and_arrives_as_itself() -> Result<(), String> {
         outcome(Decision::Pending),
         outcome(Decision::Committed),
         outcome(Decision::Aborted),
+        AcrossAnswer::Holding(true),
+        AcrossAnswer::Holding(false),
+        AcrossAnswer::Forgotten(Sequence::new(8)),
     ] {
         assert_eq!(AcrossAnswer::decode(&answer.encode())?, answer);
     }

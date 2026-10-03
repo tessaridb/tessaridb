@@ -58,6 +58,9 @@ fn every_part_round_trips_with_its_mutations_behind_it() -> Result<()> {
         Part::Decide(record_of(Decision::Aborted)),
         Part::Resolve { committed: true },
         Part::Resolve { committed: false },
+        Part::Forget {
+            coordinator: coordinator(),
+        },
     ];
     for part in parts {
         let across = Across {

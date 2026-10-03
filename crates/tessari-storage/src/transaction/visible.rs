@@ -97,6 +97,9 @@ impl Transaction<'_> {
 mod fixture;
 
 #[cfg(test)]
+mod forgetting;
+
+#[cfg(test)]
 mod indexes;
 
 #[cfg(test)]

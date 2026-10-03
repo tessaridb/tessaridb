@@ -63,6 +63,24 @@ pub enum AcrossAsk {
         /// The range holding its record.
         coordinator: Reach,
     },
+    /// Whether the transaction's intents here are gone for good: none stands,
+    /// and a majority holds this range's log through its tail, so no
+    /// successor can find one a resolution removed (D12). Asked of a
+    /// participant range's leader by the coordinator range's leader.
+    Holds {
+        /// The transaction.
+        transaction: TransactionId,
+        /// The participant range asked about.
+        range: Reach,
+    },
+    /// Forget the decided record, every participant having answered that its
+    /// intents are gone (D12).
+    Forget {
+        /// The transaction.
+        transaction: TransactionId,
+        /// The range holding its record.
+        coordinator: Reach,
+    },
     /// Resolve the transaction's intents on these records as decided (D4) —
     /// every intent of it this node holds, when no record is named.
     Resolve {
@@ -110,6 +128,10 @@ pub enum AcrossAnswer {
     /// The record as it now stands — its outcome, and for a committed one
     /// where every prepare landed, which a resolution needs.
     Outcome(TransactionRecord),
+    /// Whether an intent of the transaction may still stand here (D12).
+    Holding(bool),
+    /// The record's forgetting landed at this position and a majority holds it.
+    Forgotten(Sequence),
 }
 
 impl Session<'_> {
@@ -186,6 +208,26 @@ impl Session<'_> {
                 transaction,
                 coordinator,
             } => self.settle_across(*transaction, *coordinator),
+            AcrossAsk::Holds { transaction, range } => {
+                self.holds_across(*transaction, *range, span)
+            }
+            AcrossAsk::Forget {
+                transaction,
+                coordinator,
+            } => {
+                let mut forgetting = store.begin()?;
+                let waiting = self.acknowledgement_in(
+                    &mut forgetting,
+                    Some(*coordinator),
+                    Some(Acknowledge::Majority),
+                    span,
+                )?;
+                let committed = forgetting
+                    .forget_across(*transaction, *coordinator)
+                    .map_err(advised)?;
+                Self::await_acknowledged(store, committed, waiting, span)?;
+                Ok(AcrossAnswer::Forgotten(committed.sequence))
+            }
             AcrossAsk::Resolve {
                 transaction,
                 committed,
@@ -253,6 +295,33 @@ impl Session<'_> {
             }
             Err(refused) => Err(refused),
         }
+    }
+
+    /// Whether `transaction` may still hold an intent in `range` here: one
+    /// stands, or this range's log through its tail is not yet held by a
+    /// majority — a resolution waits for its leader alone, and a successor
+    /// missing it would settle the intent against a forgotten record (D12).
+    fn holds_across(
+        &mut self,
+        transaction: TransactionId,
+        range: Reach,
+        span: Span,
+    ) -> Result<AcrossAnswer> {
+        let store = self.store;
+        if store.holds_intents_of(transaction)? {
+            return Ok(AcrossAnswer::Holding(true));
+        }
+        let mut reading = store.begin()?;
+        let waiting =
+            self.acknowledgement_in(&mut reading, Some(range), Some(Acknowledge::Majority), span)?;
+        reading.rollback();
+        let log = store.own_log(range)?;
+        let tail = tessari_storage::Committed {
+            log,
+            sequence: store.committed_tail(log)?,
+        };
+        Self::await_acknowledged(store, tail, waiting, span)?;
+        Ok(AcrossAnswer::Holding(false))
     }
 
     /// Refuse writes this session's user could not have made here, or into a

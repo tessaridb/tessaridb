@@ -94,8 +94,16 @@ fn an_overdue_pending_record_is_aborted_and_its_intent_dropped() {
     assert!(db.store().standing_across().unwrap().is_empty());
     assert_eq!(
         db.settle_across().unwrap(),
+        SettledAcross {
+            forgotten: 1,
+            ..SettledAcross::default()
+        },
+        "a second pass forgets the decided record nothing holds an intent of"
+    );
+    assert_eq!(
+        db.settle_across().unwrap(),
         SettledAcross::default(),
-        "a second pass finds nothing left"
+        "a third pass finds nothing left"
     );
 }
 
@@ -189,4 +197,24 @@ fn a_pass_that_finishes_a_transaction_publishes_none_left() {
         (held.across_pending, held.across_with_intents),
         (Some(0), Some(0))
     );
+}
+
+#[test]
+fn a_decided_record_is_forgotten_only_once_no_intent_of_it_stands() {
+    let (db, address) = left_behind(&[Decision::Pending, Decision::Committed]);
+    // The intent stands when the pass asks, so the record is kept; the same
+    // pass then resolves the intent.
+    let first = db.settle_across().unwrap();
+    assert_eq!((first.resolved, first.forgotten), (1, 0), "{first:?}");
+    assert!(
+        db.store()
+            .transaction_record(TRANSACTION)
+            .unwrap()
+            .is_some()
+    );
+    let second = db.settle_across().unwrap();
+    assert_eq!(second.forgotten, 1, "{second:?}");
+    assert_eq!(db.store().transaction_record(TRANSACTION).unwrap(), None);
+    // What readers see is untouched by forgetting.
+    assert_eq!(note(&db, &address), Value::from("new"));
 }

@@ -33,12 +33,16 @@ const ASK_PREPARE: u8 = 1;
 const ASK_DECIDE: u8 = 2;
 const ASK_RESOLVE: u8 = 3;
 const ASK_SETTLE: u8 = 4;
+const ASK_HOLDS: u8 = 5;
+const ASK_FORGET: u8 = 6;
 
 const PREPARED: u8 = 1;
 const DECIDED: u8 = 2;
 const RESOLVED: u8 = 3;
 const NOTHING_LEFT: u8 = 4;
 const OUTCOME: u8 = 5;
+const HOLDING: u8 = 6;
+const FORGOTTEN: u8 = 7;
 
 impl AcrossAsk {
     /// The bytes a peer frame carries.
@@ -80,6 +84,31 @@ impl AcrossAsk {
                 LogRecord::new(Vec::new()).across(Across {
                     transaction: *transaction,
                     part: Part::Prepare {
+                        coordinator: *coordinator,
+                    },
+                }),
+            ),
+            Self::Holds { transaction, range } => (
+                ASK_HOLDS,
+                Sequence::ZERO,
+                // The range rides where a prepare names its coordinator: the
+                // one reach the section carries.
+                LogRecord::new(Vec::new()).across(Across {
+                    transaction: *transaction,
+                    part: Part::Prepare {
+                        coordinator: *range,
+                    },
+                }),
+            ),
+            Self::Forget {
+                transaction,
+                coordinator,
+            } => (
+                ASK_FORGET,
+                Sequence::ZERO,
+                LogRecord::new(Vec::new()).across(Across {
+                    transaction: *transaction,
+                    part: Part::Forget {
                         coordinator: *coordinator,
                     },
                 }),
@@ -137,6 +166,18 @@ impl AcrossAsk {
         Ok(match (*kind, across.part) {
             (ASK_SETTLE, Part::Prepare { coordinator }) if record.mutations().is_empty() => {
                 Self::Settle {
+                    transaction: across.transaction,
+                    coordinator,
+                }
+            }
+            (ASK_HOLDS, Part::Prepare { coordinator }) if record.mutations().is_empty() => {
+                Self::Holds {
+                    transaction: across.transaction,
+                    range: coordinator,
+                }
+            }
+            (ASK_FORGET, Part::Forget { coordinator }) if record.mutations().is_empty() => {
+                Self::Forget {
                     transaction: across.transaction,
                     coordinator,
                 }
@@ -199,6 +240,8 @@ impl AcrossAnswer {
             Self::Decided(at) => (DECIDED, at.get()),
             Self::Resolved(Some(at)) => (RESOLVED, at.get()),
             Self::Resolved(None) => (NOTHING_LEFT, 0),
+            Self::Holding(holds) => (HOLDING, u64::from(*holds)),
+            Self::Forgotten(at) => (FORGOTTEN, at.get()),
             Self::Outcome(record) => {
                 let encoded = record.encode();
                 let mut bytes = Vec::with_capacity(encoded.as_slice().len().saturating_add(1));
@@ -236,6 +279,12 @@ impl AcrossAnswer {
             DECIDED => Ok(Self::Decided(at)),
             RESOLVED => Ok(Self::Resolved(Some(at))),
             NOTHING_LEFT => Ok(Self::Resolved(None)),
+            HOLDING => match at.get() {
+                0 => Ok(Self::Holding(false)),
+                1 => Ok(Self::Holding(true)),
+                found => Err(format!("a cross-leader holding answer of {found}")),
+            },
+            FORGOTTEN => Ok(Self::Forgotten(at)),
             found => Err(format!("a cross-leader answer of unknown kind {found}")),
         }
     }

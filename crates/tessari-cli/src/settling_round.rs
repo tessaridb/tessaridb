@@ -33,6 +33,11 @@ pub(crate) async fn settle_across(
                         settled.resolved
                     );
                 }
+                // Every decided transaction ends here, so it is routine and
+                // said at `debug`: a count at `info` would repeat each second.
+                if settled.forgotten > 0 {
+                    log::debug!("forgot {} decided cross-leader records", settled.forgotten);
+                }
                 if let Some(why) = settled.last_refusal {
                     log::debug!(
                         "a cross-leader transaction is finished elsewhere or later \
