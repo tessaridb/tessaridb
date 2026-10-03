@@ -35,6 +35,7 @@ const ASK_RESOLVE: u8 = 3;
 const ASK_SETTLE: u8 = 4;
 const ASK_HOLDS: u8 = 5;
 const ASK_FORGET: u8 = 6;
+const ASK_LOOKUP: u8 = 7;
 
 const PREPARED: u8 = 1;
 const DECIDED: u8 = 2;
@@ -80,6 +81,19 @@ impl AcrossAsk {
                 coordinator,
             } => (
                 ASK_SETTLE,
+                Sequence::ZERO,
+                LogRecord::new(Vec::new()).across(Across {
+                    transaction: *transaction,
+                    part: Part::Prepare {
+                        coordinator: *coordinator,
+                    },
+                }),
+            ),
+            Self::Lookup {
+                transaction,
+                coordinator,
+            } => (
+                ASK_LOOKUP,
                 Sequence::ZERO,
                 LogRecord::new(Vec::new()).across(Across {
                     transaction: *transaction,
@@ -166,6 +180,12 @@ impl AcrossAsk {
         Ok(match (*kind, across.part) {
             (ASK_SETTLE, Part::Prepare { coordinator }) if record.mutations().is_empty() => {
                 Self::Settle {
+                    transaction: across.transaction,
+                    coordinator,
+                }
+            }
+            (ASK_LOOKUP, Part::Prepare { coordinator }) if record.mutations().is_empty() => {
+                Self::Lookup {
                     transaction: across.transaction,
                     coordinator,
                 }

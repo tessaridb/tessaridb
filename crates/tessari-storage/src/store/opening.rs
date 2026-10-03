@@ -82,6 +82,7 @@ impl Store {
             lines: Arc::new(crate::lines::Lines::default()),
             tailmarks: Arc::new(crate::tailmarks::TailMarks::default()),
             writing,
+            decisions: Arc::default(),
         };
         // Last, because it reads the catalog: the format is settled and the
         // identity exists by the time this asks which node it is.

@@ -50,7 +50,19 @@ impl Transaction<'_> {
                 Some(record) if record.decision == Decision::Committed => {
                     self.holds_every_part(provenance, &record.participants)?
                 }
-                _ => false,
+                Some(record) if record.decision == Decision::Aborted => false,
+                // Undecided here, or not here yet: the caller may already
+                // have been told (D13c), so the record's leader is asked
+                // (D13d) — answered once, kept below for this transaction.
+                _ => match self
+                    .store
+                    .asked_decision(provenance.transaction, provenance.coordinator)
+                {
+                    Some(record) if record.decision == Decision::Committed => {
+                        self.holds_every_part(provenance, &record.participants)?
+                    }
+                    _ => false,
+                },
             }
         } else {
             // A resolved version exists only after the decision, and carries

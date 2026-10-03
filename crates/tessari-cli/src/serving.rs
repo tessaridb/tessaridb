@@ -194,6 +194,9 @@ pub(crate) fn serve(
         // The same carriage takes a transaction's records to the leaders of the
         // ranges it writes (ADR-0112).
         db.participating_through(coordinator);
+        // And readers that meet an intent their copy cannot decide ask the
+        // record's leader through it (ADR-0112 D13d).
+        db.decide_reads_through_leaders();
     }
     if let Some(folder) = &serving.backups {
         db.back_up_into(std::sync::Arc::from(folder.as_path()));

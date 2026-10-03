@@ -213,6 +213,46 @@ impl Db {
     }
 }
 
+/// Answers a reader that meets an intent its copy cannot decide by asking the
+/// record's range's leader (ADR-0112 D13d).
+///
+/// Weak, because the store this is installed on is held by the `Db` it asks
+/// through: a strong pointer back would keep both alive after the node let go.
+#[derive(Debug)]
+struct LeadersDecide(std::sync::Weak<Db>);
+
+impl tessari_storage::Decisions for LeadersDecide {
+    fn decided(
+        &self,
+        transaction: tessari_storage::TransactionId,
+        coordinator: tessari_types::Reach,
+    ) -> Option<tessari_storage::TransactionRecord> {
+        let db = self.0.upgrade()?;
+        let asked = AcrossAsk::Lookup {
+            transaction,
+            coordinator,
+        };
+        match db.ask_leader_of(coordinator, &asked, &mut BTreeSet::new()) {
+            Ok(Some(Ok(AcrossAnswer::Outcome(record)))) if record.decision != Decision::Pending => {
+                Some(record)
+            }
+            _ => None,
+        }
+    }
+}
+
+impl Db {
+    /// Let this node's readers ask a transaction's record leader when their
+    /// copy of the record cannot decide an intent (ADR-0112 D13d) — installed
+    /// with the carriage that reaches the leaders.
+    pub fn decide_reads_through_leaders(self: &std::sync::Arc<Self>) {
+        self.store()
+            .answer_decisions_with(std::sync::Arc::new(LeadersDecide(
+                std::sync::Arc::downgrade(self),
+            )));
+    }
+}
+
 /// Milliseconds since the Unix epoch; zero for a clock before it.
 fn now_millis() -> u64 {
     std::time::SystemTime::now()

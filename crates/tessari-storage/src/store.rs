@@ -316,6 +316,9 @@ pub struct Store {
     /// The turn every writer of a log record in this process takes, shared by
     /// every handle — see `crate::gate` for why writers queue rather than race.
     writing: Arc<crate::gate::WriteGate>,
+    /// Who answers a reader meeting an intent its copy cannot decide
+    /// (ADR-0112 D13d), installed once by the node — see `crate::decisions`.
+    pub(crate) decisions: crate::decisions::Installed,
 }
 
 /// The format this store was written in, if it has been written at all.

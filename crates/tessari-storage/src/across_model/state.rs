@@ -8,6 +8,9 @@ use super::{Decision, Entry, Range, Writer};
 pub(super) enum Coordinator {
     /// Nothing written yet.
     Idle,
+    /// `B`'s prepare sent; `A`'s record and its own prepare not yet written —
+    /// one commit in `A`'s range (D13a), racing `B`'s delivery.
+    Starting,
     /// `PENDING` written, prepares sent, collecting replies (one per range).
     Waiting { replies: [Option<bool>; 2] },
     /// It recorded (or tried to record) a decision and reported it.
@@ -34,6 +37,10 @@ pub(super) struct Reader {
     pub(super) seen: [Option<Writer>; 2],
     /// Its one decision about T1, once taken (D6).
     pub(super) decided: Option<bool>,
+    /// Whether it began after the caller was told T1 committed (D13).
+    pub(super) began_after_answer: Option<bool>,
+    /// Whether each key was read at its leader — the whole log.
+    pub(super) at_leader: [bool; 2],
 }
 
 /// The whole world, one point in the exploration.
@@ -53,6 +60,8 @@ pub(super) struct State {
     /// A resolution `B`'s leader has applied and no majority holds yet — its
     /// outcome — lost if that leader dies before it replicates.
     pub(super) tail: Option<bool>,
+    /// What the caller was told: `Some(true)` committed, `Some(false)` not.
+    pub(super) told: Option<bool>,
 }
 
 impl State {
@@ -69,6 +78,7 @@ impl State {
             second: Second::Idle,
             reader: Reader::default(),
             tail: None,
+            told: None,
         }
     }
 

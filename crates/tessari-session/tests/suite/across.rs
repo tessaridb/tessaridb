@@ -303,3 +303,55 @@ fn settling_a_decided_record_writes_it_again_so_a_majority_holds_it() {
         "the decision was answered without being written again"
     );
 }
+
+/// The decision `Lookup` answers a reader with (ADR-0112 D13d).
+fn look_up(session: &mut Session<'_>, store: &Store) -> Decision {
+    let (namespace, database, _) = ids(store, "notes");
+    match session
+        .answer_across(&AcrossAsk::Lookup {
+            transaction: TRANSACTION,
+            coordinator: Reach::Database(namespace, database),
+        })
+        .unwrap()
+    {
+        AcrossAnswer::Outcome(record) => record.decision,
+        other => panic!("Lookup answered {other:?}"),
+    }
+}
+
+/// D13d: a reader asking is not a participant giving up — an absent or
+/// `PENDING` record is answered as undecided and left as it was, where
+/// `Settle` would abort it; a decided one is answered as decided.
+#[test]
+fn a_readers_lookup_never_aborts_and_answers_a_decision() {
+    let store = store();
+    let mut owner = signed_in(&store, "root");
+    assert_eq!(look_up(&mut owner, &store), Decision::Pending);
+    assert!(
+        store.transaction_record(TRANSACTION).unwrap().is_none(),
+        "a lookup wrote a record"
+    );
+    owner
+        .answer_across(&AcrossAsk::Decide {
+            transaction: TRANSACTION,
+            record: record(&store, Decision::Pending),
+        })
+        .unwrap();
+    assert_eq!(look_up(&mut owner, &store), Decision::Pending);
+    assert_eq!(
+        store
+            .transaction_record(TRANSACTION)
+            .unwrap()
+            .unwrap()
+            .decision,
+        Decision::Pending,
+        "a lookup decided a live transaction"
+    );
+    owner
+        .answer_across(&AcrossAsk::Decide {
+            transaction: TRANSACTION,
+            record: record(&store, Decision::Committed),
+        })
+        .unwrap();
+    assert_eq!(look_up(&mut owner, &store), Decision::Committed);
+}

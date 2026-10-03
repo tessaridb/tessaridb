@@ -8,6 +8,22 @@ pub(super) fn always(state: &State, rules: Rules) -> Result<(), Violation> {
     if state.two_outcomes() {
         return Err(Violation::TwoOutcomes);
     }
+    if let Some(told) = state.told
+        && let Some(outcome) = state.outcome()
+        && told != (outcome == Decision::Committed)
+    {
+        return Err(Violation::ToldAgainstTheRecord);
+    }
+    // D13: a reader that began after the caller was told T1 committed, and
+    // read every key at its leader, sees T1 on every key.
+    if state.reader.began_after_answer == Some(true)
+        && state.reader.at_leader == [true, true]
+        && state.reader.seen != [Some(Writer::T1); 2]
+        && state.reader.seen.iter().all(Option::is_some)
+        && !state.reader.seen.contains(&Some(Writer::T2))
+    {
+        return Err(Violation::AcknowledgedUnseen);
+    }
     let seen_t1 = state.reader.seen.contains(&Some(Writer::T1));
     if seen_t1 && state.record() == Some(Decision::Aborted) {
         return Err(Violation::DirtyRead);
@@ -34,6 +50,15 @@ pub(super) fn finally(state: &State) -> Result<(), Violation> {
     let committed = match state.outcome() {
         Some(Decision::Committed) => true,
         Some(Decision::Aborted) => false,
+        // D7 since D13a: a coordinator that died before `A` held its record
+        // leaves no record — T1 never was, provided no intent stands for one.
+        None if state.record().is_none()
+            && !Range::BOTH
+                .iter()
+                .any(|range| intent_stands(state.log(*range))) =>
+        {
+            false
+        }
         Some(Decision::Pending) | None => return Err(Violation::LeftInDoubt),
     };
     for range in Range::BOTH {

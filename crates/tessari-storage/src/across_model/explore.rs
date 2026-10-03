@@ -27,6 +27,8 @@ pub(crate) struct Explored {
     pub(crate) second_after: bool,
     /// A run forgot T1's record.
     pub(crate) forgotten: bool,
+    /// A reader that began after the answer saw T1 whole at the leaders.
+    pub(crate) acknowledged_seen: bool,
 }
 
 /// Every state reachable under `rules`, or the first one that breaks an
@@ -43,6 +45,9 @@ pub(crate) fn explore(rules: Rules, world: World) -> Result<Explored, Found> {
         };
         check::always(&state, rules).map_err(found)?;
         explored.read_whole |= state.reader.seen == [Some(Writer::T1); 2];
+        explored.acknowledged_seen |= state.reader.began_after_answer == Some(true)
+            && state.reader.at_leader == [true, true]
+            && state.reader.seen == [Some(Writer::T1); 2];
         let next = successors(&state, rules, world);
         if next.is_empty() {
             check::finally(&state).map_err(found)?;

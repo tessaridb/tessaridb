@@ -9,7 +9,10 @@
 //! deadline is an abort). Every prepare is answered only once a majority holds
 //! it; the decision is `COMMITTED` only once every prepare answered, and the
 //! caller is told only once a majority holds the decision. Resolutions follow
-//! and do not hold the caller: a lost one is the record's to finish.
+//! and do not hold the caller (D13c): this node's own part is resolved before
+//! the answer, the other leaders' behind it, and a reader there that meets an
+//! intent before its resolution asks the record's leader (D13d). A lost
+//! resolution is the record's to finish.
 //!
 //! # Parallel where it is only waiting
 //!
@@ -79,7 +82,7 @@ impl Session<'_> {
         transaction.rollback();
         let user = self.identity.user().cloned();
         let id = fresh_id();
-        let answered = self.drive(carrier.as_ref(), &parts, (id, lapse), user.as_ref(), span);
+        let answered = self.drive(&carrier, &parts, (id, lapse), user.as_ref(), span);
         // Counted where the client hears it (ADR-0112 D11), whichever way.
         store.across_finished(match &answered {
             Ok(()) => AcrossOutcome::Committed,
@@ -92,12 +95,13 @@ impl Session<'_> {
     /// The protocol itself, from the `PENDING` record to the resolutions.
     fn drive(
         &mut self,
-        carrier: &dyn Participants,
+        carrying: &std::sync::Arc<dyn Participants>,
         parts: &[AcrossPart],
         (id, lapse): (TransactionId, u64),
         user: Option<&tessari_storage::UserDefinition>,
         span: Span,
     ) -> Result<()> {
+        let carrier = carrying.as_ref();
         let Some(first) = parts.first() else {
             return Ok(());
         };
@@ -201,11 +205,11 @@ impl Session<'_> {
         match (decided, refused) {
             // Aborted, and said so: the intents can go.
             (Ok(_), Some(refusal)) => {
-                self.resolve_parts(carrier, parts, user, &resolves);
+                self.resolve_parts(carrying, parts, user, resolves);
                 Err(Error::AcrossAborted { refusal, span })
             }
             (Ok(_), None) => {
-                self.resolve_parts(carrier, parts, user, &resolves);
+                self.resolve_parts(carrying, parts, user, resolves);
                 Ok(())
             }
             // The record had already been decided — a lapse aborted it while
@@ -294,24 +298,60 @@ impl Session<'_> {
     /// Resolve every part, best effort: a resolution that does not land is
     /// the record's to finish (ADR-0112 D7), so a failure here is logged and
     /// changes nothing the caller is told.
+    ///
+    /// This node's own parts are resolved before the caller is answered — a
+    /// local write, no majority wait. The other leaders' are asked on a thread
+    /// of their own and not waited for (D13c): their readers ask the record's
+    /// leader until the resolution lands (D13d).
     fn resolve_parts(
         &mut self,
-        carrier: &dyn Participants,
+        carrying: &std::sync::Arc<dyn Participants>,
         parts: &[AcrossPart],
         user: Option<&tessari_storage::UserDefinition>,
-        resolves: &[AcrossAsk],
+        resolves: Vec<AcrossAsk>,
     ) {
-        for (answer, part) in self
-            .ask_parts(carrier, parts, user, resolves)
-            .into_iter()
-            .zip(parts)
-        {
-            if let Err(why) = answer {
-                log::warn!(
-                    "a cross-leader resolution for {:?} did not land and is left to its record: {why}",
-                    part.home
-                );
+        let mut remote = Vec::new();
+        for (part, asked) in parts.iter().zip(resolves) {
+            match part.leader {
+                None => {
+                    if let Err(why) = self.answer_across(&asked) {
+                        log::warn!(
+                            "a cross-leader resolution for {:?} did not land and is left to its \
+                             record: {why}",
+                            part.home
+                        );
+                    }
+                }
+                Some(node) => remote.push((node, part.home, asked)),
             }
+        }
+        if remote.is_empty() {
+            return;
+        }
+        let carrier = std::sync::Arc::clone(carrying);
+        let user = user.cloned();
+        let behind = std::thread::Builder::new()
+            .name("across-resolve".to_owned())
+            .spawn(move || {
+                std::thread::scope(|scope| {
+                    for (node, home, asked) in &remote {
+                        let (carrier, user) = (&carrier, user.as_ref());
+                        scope.spawn(move || {
+                            if let Err(why) = carrier.ask(*node, user, asked) {
+                                log::warn!(
+                                    "a cross-leader resolution for {home:?} did not land and is \
+                                     left to its record: {}",
+                                    why.reason
+                                );
+                            }
+                        });
+                    }
+                });
+            });
+        // No thread to be had: the resolutions are the record's to finish,
+        // which the housekeeping of every participant does (D7).
+        if let Err(why) = behind {
+            log::warn!("cross-leader resolutions left to their records: {why}");
         }
     }
 }

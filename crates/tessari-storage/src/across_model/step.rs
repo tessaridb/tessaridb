@@ -21,10 +21,12 @@ pub(super) fn successors(state: &State, rules: Rules, world: World) -> Vec<State
         }
     }
     lapse(state, &mut next);
+    // D7, in both worlds since D13a: `B` may hold an intent before `A` holds
+    // the record that would decide it.
+    settle_absent(state, &mut next);
     match world {
         World::Reading => second(state, rules, &mut next),
         World::Forgetting => {
-            settle_absent(state, &mut next);
             replicate(state, &mut next);
             forget(state, rules, &mut next);
         }
@@ -35,14 +37,37 @@ pub(super) fn successors(state: &State, rules: Rules, world: World) -> Vec<State
 fn coordinate(state: &State, rules: Rules, next: &mut Vec<State>) {
     match &state.coordinator {
         Coordinator::Idle => {
-            // D4: the record is written PENDING before any prepare leaves.
+            // D13a: `B`'s prepare leaves at once; `A`'s record and its own
+            // prepare follow as one commit.
             let mut begun = state.clone();
-            begun.logs[Range::A.slot()].push(Entry::Record(Decision::Pending));
-            begun.prepares = [1, 1];
-            begun.coordinator = Coordinator::Waiting {
-                replies: [None, None],
-            };
+            begun.prepares = [0, 1];
+            begun.coordinator = Coordinator::Starting;
             next.push(begun);
+        }
+        Coordinator::Starting => {
+            let mut written = state.clone();
+            if state.record().is_none() && !state.forgotten() {
+                // PENDING and `A`'s intent, by compare-and-set on *absent*: a
+                // participant that settled the record first wins (D7).
+                let log = written.log(Range::A).to_vec();
+                let valid = latest_committed(&log) == Writer::Initial && !intent_stands(&log);
+                written.logs[Range::A.slot()].push(Entry::Record(Decision::Pending));
+                if valid {
+                    written.logs[Range::A.slot()].push(Entry::Intent { valid });
+                }
+                written.replies[Range::A.slot()] = Some(valid);
+                written.coordinator = Coordinator::Waiting {
+                    replies: [None, None],
+                };
+            } else {
+                // The record was decided without it: an abort, reported.
+                written.told = Some(false);
+                written.coordinator = Coordinator::Done;
+            }
+            next.push(written);
+            let mut crashed = state.clone();
+            crashed.coordinator = Coordinator::Crashed;
+            next.push(crashed);
         }
         Coordinator::Waiting { replies } => {
             for range in Range::BOTH {
@@ -63,8 +88,19 @@ fn coordinate(state: &State, rules: Rules, next: &mut Vec<State>) {
                 None
             };
             if let Some(outcome) = outcome {
+                // D13b/c: the decision and `A`'s own resolution are one commit,
+                // and the caller is told once a majority holds it.
                 let mut decided = state.clone();
                 decide(&mut decided, rules, outcome);
+                let recorded = decided.record();
+                if let Some(committed @ (Decision::Committed | Decision::Aborted)) = recorded
+                    && decided.intent_stands_at_leader(Range::A)
+                {
+                    decided.logs[Range::A.slot()].push(Entry::Resolved {
+                        committed: committed == Decision::Committed,
+                    });
+                }
+                decided.told = Some(recorded == Some(Decision::Committed));
                 decided.coordinator = Coordinator::Done;
                 next.push(decided);
             }
@@ -240,6 +276,10 @@ fn read_at(state: &State, rules: Rules, range: Range, applied: usize) -> State {
     let mut after = state.clone();
     let copy = &state.log(range)[..applied];
     let other_read = state.reader.seen[range.other().slot()].is_some();
+    if after.reader.began_after_answer.is_none() {
+        after.reader.began_after_answer = Some(state.told == Some(true));
+    }
+    after.reader.at_leader[slot] = applied == state.log(range).len();
     let mut seen = None;
     for version in versions(copy).iter().rev() {
         let committed_known = match version {
@@ -248,7 +288,10 @@ fn read_at(state: &State, rules: Rules, range: Range, applied: usize) -> State {
                 break;
             }
             Shown::Resolved => true,
-            // Asked of the record's leader over the peer link.
+            // D13d: asked of the record's leader over the peer link — or,
+            // without the rule, read from this node's copy of the record,
+            // which a copy that has not collected the decision yet lacks.
+            Shown::Intent if !rules.readers_ask_the_record_leader => false,
             Shown::Intent => match state.record() {
                 Some(Decision::Committed) => true,
                 Some(Decision::Pending) => !rules.pending_is_invisible,

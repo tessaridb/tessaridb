@@ -21,6 +21,12 @@
 //!   majority holds yet and die with it — a resolution waits for its leader
 //!   alone.
 //!
+//! - **The caller's answer** (D13), told at the decision rather than after
+//!   the resolutions, while the coordinator's own range takes its record and
+//!   its prepare in one commit and the decision with its own resolution in
+//!   another — and a reader that starts after the answer, reading at the
+//!   leaders, must see T1.
+//!
 //! Each rule the ADR relies on is a switch in [`Rules`]. The protocol is
 //! checked with all of them on; then each is turned off alone and the explorer
 //! must find the violation that rule exists to prevent. A rule whose removal
@@ -72,6 +78,10 @@ pub(crate) struct Rules {
     /// D12: a participant says its intents are gone only once a majority
     /// holds its resolution, so a successor cannot find one standing.
     pub(crate) forget_waits_for_a_majority: bool,
+    /// D13d: a reader meeting an intent asks the record's leader for T1's
+    /// decision rather than reading its own copy of the record, which may not
+    /// hold the decision yet when the caller was already told.
+    pub(crate) readers_ask_the_record_leader: bool,
 }
 
 impl Rules {
@@ -85,6 +95,7 @@ impl Rules {
         visible_reads_its_own_version: true,
         restore_reads_by_the_snapshot: true,
         forget_waits_for_a_majority: true,
+        readers_ask_the_record_leader: true,
     };
 }
 
@@ -171,6 +182,11 @@ pub(crate) enum Violation {
     FracturedRestore,
     /// A finished run left a record pending or an intent standing.
     LeftInDoubt,
+    /// The caller was told an outcome the record does not hold.
+    ToldAgainstTheRecord,
+    /// A reader that began after the caller was told T1 committed, reading
+    /// every key at its leader, did not see T1 (D13).
+    AcknowledgedUnseen,
 }
 
 #[cfg(test)]
@@ -200,12 +216,20 @@ mod tests {
         // were generated at all.
         assert!(explored.read_whole, "no reader ever saw T1 whole");
         assert!(
+            explored.acknowledged_seen,
+            "no reader that began after the answer read T1 at the leaders"
+        );
+        assert!(
             explored.committed && explored.aborted,
             "both outcomes must be reached"
         );
         assert!(explored.second_after, "T2 never committed on top of T1");
+        // The floor proves the interleavings were generated. It was 100 000
+        // until D13 merged `A`'s record with its prepare and its decision with
+        // its resolution, which removed `A`'s prepare message and its
+        // duplicates: 31 664 states measured at that change.
         assert!(
-            explored.states > 100_000,
+            explored.states > 30_000,
             "only {} states were explored",
             explored.states
         );
@@ -214,7 +238,7 @@ mod tests {
 
     #[test]
     fn every_rule_is_load_bearing() -> Result<(), String> {
-        let cases: [Case; 8] = [
+        let cases: [Case; 9] = [
             (
                 "decide by compare-and-set",
                 |rules| rules.decide_by_compare_and_set = false,
@@ -264,6 +288,14 @@ mod tests {
                     Violation::ResolvedAgainstTheRecord,
                     Violation::FracturedRestore,
                 ],
+            ),
+            (
+                "readers ask the record's leader",
+                |rules| rules.readers_ask_the_record_leader = false,
+                // Told at the decision, a participant's own copy of the record
+                // may not hold it yet: the answer said committed, and a
+                // reader at the leaders sees nothing of T1.
+                &[Violation::AcknowledgedUnseen],
             ),
         ];
         for (name, remove, expected) in cases {

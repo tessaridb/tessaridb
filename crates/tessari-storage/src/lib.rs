@@ -35,6 +35,7 @@ mod catalog;
 mod catalog_rows_tests;
 mod collections;
 mod covering;
+mod decisions;
 mod error;
 mod expiry;
 mod failover;
@@ -95,6 +96,7 @@ pub use catalog::{
 pub use catalog::VaultRoot;
 pub use collections::{Collection, Collections, Currency, Upstream, UpstreamReport};
 pub use covering::MEASURED_RELATION;
+pub use decisions::Decisions;
 pub use expiry::Expired;
 pub use lapse::Lapsed;
 pub use log_holds::LogHold;

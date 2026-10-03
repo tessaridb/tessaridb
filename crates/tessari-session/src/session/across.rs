@@ -66,6 +66,15 @@ pub enum AcrossAsk {
         /// The range holding its record.
         coordinator: Reach,
     },
+    /// The record's outcome for a reader (ADR-0112 D13d): a decided record
+    /// answered as `Settle` answers it — written again at `MAJORITY` first —
+    /// and an undecided or absent one answered as it stands, never aborted.
+    Lookup {
+        /// The transaction.
+        transaction: TransactionId,
+        /// The range holding its record.
+        coordinator: Reach,
+    },
     /// Whether the transaction's intents here are gone for good: none stands,
     /// and a majority holds this range's log through its tail, so no
     /// successor can find one a resolution removed (D12). Asked of a
@@ -211,6 +220,10 @@ impl Session<'_> {
                 transaction,
                 coordinator,
             } => self.settle_across(*transaction, *coordinator),
+            AcrossAsk::Lookup {
+                transaction,
+                coordinator,
+            } => self.lookup_across(*transaction, *coordinator),
             AcrossAsk::Holds { transaction, range } => {
                 self.holds_across(*transaction, *range, span)
             }
@@ -297,6 +310,27 @@ impl Session<'_> {
                 self.settle_across(transaction, coordinator)
             }
             Err(refused) => Err(refused),
+        }
+    }
+
+    /// `transaction`'s outcome for a reader: decided → as `Settle` answers it,
+    /// so only an outcome a majority holds is ever read; undecided or absent →
+    /// the record as it stands, `PENDING`, with nothing written (D13d).
+    fn lookup_across(
+        &mut self,
+        transaction: TransactionId,
+        coordinator: Reach,
+    ) -> Result<AcrossAnswer> {
+        match self.store.transaction_record(transaction)? {
+            Some(record) if record.decision != tessari_encoding::Decision::Pending => {
+                self.settle_across(transaction, coordinator)
+            }
+            Some(record) => Ok(AcrossAnswer::Outcome(record)),
+            None => Ok(AcrossAnswer::Outcome(TransactionRecord {
+                decision: tessari_encoding::Decision::Pending,
+                deadline: 0,
+                participants: Vec::new(),
+            })),
         }
     }
 

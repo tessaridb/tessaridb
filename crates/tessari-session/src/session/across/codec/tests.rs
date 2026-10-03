@@ -56,6 +56,10 @@ fn every_request_travels_and_arrives_as_itself() -> Result<(), String> {
             transaction: TRANSACTION,
             coordinator: range,
         },
+        AcrossAsk::Lookup {
+            transaction: TRANSACTION,
+            coordinator: range,
+        },
         AcrossAsk::Holds {
             transaction: TRANSACTION,
             range,
