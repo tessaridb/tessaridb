@@ -303,6 +303,16 @@ impl tessari_session::Elsewhere for Published {
         })
     }
 
+    /// Who the last round heard leading `range`'s line.
+    fn leading(&self, range: tessari_types::Reach) -> Option<tessari_session::Peer> {
+        let (endpoint, node, epoch) = self.current().leading(range)?;
+        Some(tessari_session::Peer {
+            endpoint,
+            node,
+            epoch,
+        })
+    }
+
     /// What the last round heard the node at `endpoint` greet as.
     fn build_at(&self, endpoint: &str) -> Option<NodeVersion> {
         self.current().at(endpoint).map(|heard| heard.said.build)

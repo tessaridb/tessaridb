@@ -110,4 +110,14 @@ pub trait Elsewhere: core::fmt::Debug + Send + Sync {
     /// Required for [`Self::writable`]'s reason: a default answering `None`
     /// would compile and quietly keep every node on the slower records.
     fn build_at(&self, endpoint: &str) -> Option<NodeVersion>;
+
+    /// The peer heard leading the placed range `range`'s line, if any.
+    ///
+    /// The fifth question, asked by a node about a range it holds none of — so
+    /// its own catalog has no leadership row for it — when it must ask that
+    /// range's leader something (ADR-0112 D13d): only the greetings say.
+    ///
+    /// Required for [`Self::writable`]'s reason: a default answering `None`
+    /// would compile and leave such a node asking nobody.
+    fn leading(&self, range: tessari_types::Reach) -> Option<Peer>;
 }

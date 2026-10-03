@@ -234,7 +234,26 @@ impl Db {
         asked: &AcrossAsk,
         silent: &mut BTreeSet<[u8; tessari_storage::NODE_ID_LEN]>,
     ) -> Result<Option<std::result::Result<AcrossAnswer, String>>> {
-        let leader = self.store().leader_of(range)?;
+        let leader = match self.store().leader_of(range)? {
+            Some(node) => Some(node),
+            // A range this node holds none of: its leadership rows live in
+            // logs this node never collects, so its catalog cannot say who
+            // leads it — and this node must not answer for it. The peers'
+            // greetings say (ADR-0112 D13d).
+            None if self
+                .store()
+                .served()
+                .is_some_and(|over| !over.contains(range)) =>
+            {
+                match self.heard_leading(range)? {
+                    Some(node) => Some(node),
+                    None => {
+                        return Ok(Some(Err(format!("no leader of {range:?} has been heard"))));
+                    }
+                }
+            }
+            None => None,
+        };
         let answered = match leader {
             Some(node) if silent.contains(&node) => return Ok(None),
             None => self
@@ -252,6 +271,33 @@ impl Db {
             silent.extend(leader);
         }
         Ok(Some(answered))
+    }
+}
+
+impl Db {
+    /// The node heard leading the line `range` is judged on — the most
+    /// specific placed range containing it, else the store line.
+    fn heard_leading(
+        &self,
+        range: tessari_types::Reach,
+    ) -> Result<Option<[u8; tessari_storage::NODE_ID_LEN]>> {
+        let Some(elsewhere) = self.elsewhere.get() else {
+            return Ok(None);
+        };
+        let mut reading = self.store().begin()?;
+        let placed: BTreeSet<tessari_types::Reach> = tessari_storage::Catalog::new(&mut reading)
+            .replicas()?
+            .into_iter()
+            .filter_map(|peer| peer.leads)
+            .collect();
+        reading.rollback();
+        let line = tessari_storage::governing(&placed, range);
+        let heard = if line == tessari_types::Reach::Store {
+            elsewhere.writable()
+        } else {
+            elsewhere.leading(line)
+        };
+        Ok(heard.map(|peer| peer.node))
     }
 }
 

@@ -4677,6 +4677,95 @@ fn a_transaction_whose_participant_leader_dies_is_kept_whole_by_its_successor() 
     }
 }
 
+/// The D13d scenario's addresses, its own band (G057 SG4).
+const ACROSS_UNHELD: Band = [
+    ("127.0.0.1:47952", "127.0.0.1:47953"),
+    ("127.0.0.1:47954", "127.0.0.1:47955"),
+    ("127.0.0.1:47956", "127.0.0.1:47957"),
+];
+
+#[test]
+#[ignore = "real cadences across three processes — two shard lines elected,             one led by a node that holds only its own shard. G057 SG4's own             validation of ADR-0112 D13d, run explicitly: cargo test -p \
+            tessari-cli --test serving a_participant_leader_without_the_record \
+            -- --ignored"]
+fn a_participant_leader_without_the_record_reads_the_commit_it_was_part_of() {
+    // Node 1 leads shard 2 and holds nothing else, so it never holds the
+    // record of a transaction node 0 coordinates from shard 1. Its copy has
+    // the intent from its own prepare; the resolution follows the caller's
+    // answer (D13c). A read at node 1 right after the answer must see the
+    // write all the same — node 1 asks the record's leader (D13d) — because a
+    // reader that began after the caller was told, reading at the leaders,
+    // sees the transaction.
+    let leads = |shard: u32, over: &str| {
+        format!(
+            "ROLES serving, writable, coordinating REPLICATES {over} \
+             LEADS SHARD prod.shop.orders {shard}"
+        )
+    };
+    let cluster = a_cluster_of_rows(
+        &ACROSS_UNHELD,
+        PLACED,
+        [
+            leads(1, "STORE"),
+            leads(2, "SHARD prod.shop.orders 2"),
+            "ROLES serving, writable, coordinating REPLICATES STORE".to_owned(),
+        ],
+    );
+    let logs = cluster.logs.clone();
+    for (index, prefix) in [(0, "a"), (1, "h")] {
+        if let Err(last) = until_taken(ACROSS_UNHELD[index].0, prefix, Duration::from_secs(120)) {
+            panic!(
+                "node {index} never took its shard; last: {last}{}",
+                what_the_nodes_said(&ACROSS_UNHELD, &logs)
+            );
+        }
+    }
+    if let Err(last) = until_sent_to(
+        ACROSS_UNHELD[0].0,
+        "hknown",
+        cluster.ids[1],
+        ACROSS_UNHELD[1].1,
+        Duration::from_secs(90),
+    ) {
+        panic!(
+            "node 0 never learned that node 1 leads shard 2; last: {last}{}",
+            what_the_nodes_said(&ACROSS_UNHELD, &logs)
+        );
+    }
+    let mut missed = Vec::new();
+    let mut committed = 0_u32;
+    let began = Instant::now();
+    let mut attempt = 0_u32;
+    while committed < 30 && began.elapsed() < Duration::from_secs(120) {
+        attempt = attempt.saturating_add(1);
+        let script = format!(
+            "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
+             CREATE orders:'au{attempt}' = {{ n: 1 }}; CREATE orders:'hu{attempt}' = {{ n: 1 }}; \
+             COMMIT ACROSS LEADERS;"
+        );
+        if asked(ACROSS_UNHELD[0].0, &script, None).is_err() {
+            std::thread::sleep(POLL);
+            continue;
+        }
+        committed = committed.saturating_add(1);
+        let read = format!("SELECT * FROM orders:'hu{attempt}';");
+        match read_at(ACROSS_UNHELD[1].0, &read) {
+            Ok(ids) if ids == [format!("hu{attempt}")] => {}
+            other => missed.push((attempt, other)),
+        }
+    }
+    assert_eq!(
+        committed, 30,
+        "too few transactions across leaders committed"
+    );
+    assert!(
+        missed.is_empty(),
+        "node 1 did not see a commit it was part of, read right after the \
+         answer: {missed:?}{}",
+        what_the_nodes_said_beyond_greetings(&logs)
+    );
+}
+
 // ---- G033 S3.1: a read gathered across shards, across three processes ------
 
 /// The gathering cluster's addresses — a band of its own, below the hand-run
