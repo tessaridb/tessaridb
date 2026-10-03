@@ -91,6 +91,15 @@ impl LogRecord {
         self
     }
 
+    /// Stamp every version in this record with where it came from (ADR-0112).
+    #[must_use]
+    pub fn with_provenance(mut self, provenance: super::Provenance) -> Self {
+        for mutation in &mut self.mutations {
+            mutation.value = mutation.value.clone().from_transaction(provenance);
+        }
+        self
+    }
+
     /// Which record of a transaction across leaders this is, if it is one.
     #[must_use]
     pub const fn part_of(&self) -> Option<&Across> {

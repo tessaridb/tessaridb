@@ -919,6 +919,31 @@ pub enum Error {
         problem: &'static str,
     },
 
+    /// A transaction across leaders already has an outcome, and the change
+    /// asked of its record would contradict it (ADR-0112 D4, D7). The loser of
+    /// a coordinator racing a lapse meets this, and reads the record to learn
+    /// what was decided.
+    #[error("the transaction across leaders is already {decided}")]
+    AcrossDecided {
+        /// The outcome the record holds: `committed` or `aborted`, or `pending`
+        /// when a first record was asked of one that exists.
+        decided: &'static str,
+    },
+
+    /// A participant's log no longer holds the position after the one the
+    /// transaction's node had seen of it, so whether anything was committed
+    /// over the transaction's writes in between cannot be answered (ADR-0112
+    /// D3a). Retriable: a new transaction reads a newer position.
+    #[error(
+        "the participant log starts at {start}, after the position {seen} the transaction had seen"
+    )]
+    AcrossReadTooOld {
+        /// The position the transaction's node had applied.
+        seen: Sequence,
+        /// The oldest position the participant still holds.
+        start: Sequence,
+    },
+
     /// Every identifier at this level has been handed out.
     ///
     /// Ids are never reused after a drop, so the space is consumed by creations
@@ -1045,7 +1070,9 @@ impl Error {
         match self {
             Self::Conflict { .. }
             | Self::LogDivergence { .. }
-            | Self::ConcurrentVersions { .. } => ErrorCategory::Conflict,
+            | Self::ConcurrentVersions { .. }
+            | Self::AcrossDecided { .. }
+            | Self::AcrossReadTooOld { .. } => ErrorCategory::Conflict,
             Self::CommitContention { .. } => ErrorCategory::Busy,
             // Unavailable rather than Busy or Conflict, because it is the only
             // one of the three that is true: the write was not wrong and

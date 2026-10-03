@@ -320,7 +320,8 @@ impl Transaction<'_> {
     }
 
     fn settle(mut self, settle: Settle) -> Result<Committed> {
-        if self.writes.is_empty() {
+        // A decision across leaders writes no records and is still a commit.
+        if self.writes.is_empty() && !self.is_across() {
             // The log position, not this transaction's snapshot. Nothing was
             // committed, so neither answer is a position anything was written
             // at — but the return names a log position, and the snapshot stopped
@@ -452,6 +453,9 @@ impl Transaction<'_> {
                 }
                 self.refuse_if_fenced_since(store_line, &placed, &ranges)?;
                 let tail = self.store.committed_tail(log)?;
+                // A prepare's half of the conflict check that its own node
+                // could not make (ADR-0112 D3a), under the same turn.
+                self.written_since_seen(log)?;
                 self.check_for_conflicts()?;
                 // Beside the conflict check, inside the loop, and for the same
                 // reason: both ask whether the committed state this attempt builds
@@ -679,7 +683,7 @@ impl Transaction<'_> {
                 },
             });
         }
-        Ok(LogRecord::new(mutations))
+        Ok(self.mark_across(LogRecord::new(mutations)))
     }
 
     /// Refuse the commit if any written record's stored versions disagree, and
@@ -791,9 +795,13 @@ impl Transaction<'_> {
         for address in self.writes.keys().chain(guarded.iter()) {
             // The newest version as stored, intents included — one read, as
             // before intents existed.
-            let Some((version, intent)) = self.newest_stored(address)? else {
+            let Some((version, provenance, _)) = self.newest_stored_value(address)? else {
                 continue;
             };
+            // A resolution writes over its own intents; anybody else's intent,
+            // and this one's on a record it does not resolve, refuses.
+            let intent = provenance.is_some_and(|provenance| provenance.provisional)
+                && !self.resolves(provenance);
             // ADR-0112 D5: a standing intent refuses the write whatever this
             // writer's snapshot. An intent prepared before the snapshot is not
             // newer than it, and replacing the value under it would lose the

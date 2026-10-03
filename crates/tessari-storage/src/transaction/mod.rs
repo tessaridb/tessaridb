@@ -25,6 +25,7 @@
 //!
 //! Both are demonstrated by the test suite rather than described only here.
 
+mod across;
 mod address;
 mod adjacency;
 mod commit;
@@ -88,6 +89,9 @@ pub struct Transaction<'a> {
     /// when this transaction commits (ADR-0088 §6 amendment). Owned by this one
     /// transaction on one thread, so an ordinary set.
     guarded: RefCell<BTreeSet<RecordAddress>>,
+    /// Which record of a transaction across leaders this commit writes, when
+    /// it writes one (ADR-0112) — set only by the three methods in `across`.
+    across: Option<across::Work>,
 }
 
 impl Transaction<'_> {

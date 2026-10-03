@@ -8,8 +8,8 @@
 //! `across_model` requires of both sides before anything can prepare.
 
 use tessari_encoding::{
-    LogRecord, Part, Provenance, RecordKey, StampedValue, StoreKey, StoreValue,
-    TransactionRecordKey,
+    Decision, LogRecord, Part, Provenance, RecordKey, StampedValue, StoreKey, StoreValue,
+    TransactionRecord, TransactionRecordKey,
 };
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 
@@ -89,6 +89,28 @@ pub(crate) fn settle(store: &Store, record: &LogRecord, batch: WriteBatch) -> Re
             let key = TransactionRecordKey {
                 transaction: across.transaction,
             };
+            // Compare-and-set on the record as it stands (D4, D7): a first
+            // record is `PENDING`, a pending one may be renewed or decided, and
+            // a decided one never changes — so a coordinator and a lapse racing
+            // to decide record one outcome, and the loser is told it.
+            let standing = store
+                .backend()
+                .get(TransactionRecordKey::keyspace(), &key.encode())?
+                .map(|value| TransactionRecord::decode(value.as_slice()))
+                .transpose()?;
+            let refused = match standing.as_ref().map(|record| record.decision) {
+                None => (decided.decision != Decision::Pending).then_some("absent"),
+                Some(Decision::Pending) => None,
+                Some(Decision::Committed) => {
+                    (decided.decision != Decision::Committed).then_some("committed")
+                }
+                Some(Decision::Aborted) => {
+                    (decided.decision != Decision::Aborted).then_some("aborted")
+                }
+            };
+            if let Some(decided) = refused {
+                return Err(Error::AcrossDecided { decided });
+            }
             Ok(batch.put(
                 TransactionRecordKey::keyspace(),
                 key.encode(),

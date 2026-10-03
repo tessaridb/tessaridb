@@ -33,6 +33,7 @@ impl<'a> Transaction<'a> {
             reading_at: std::cell::Cell::new(None),
             floors: std::cell::RefCell::new(BTreeMap::new()),
             guarded: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            across: None,
         }
     }
 
@@ -458,15 +459,17 @@ impl<'a> Transaction<'a> {
         }
     }
 
-    /// A record's newest version as stored, and whether it is an intent.
+    /// A record's newest version as stored — an intent included — with where
+    /// it came from and what it holds.
     ///
     /// Asked by the conflict check, which must see what readers pass over: a
     /// write landing on a standing intent would replace a value a transaction
-    /// across leaders has prepared, whatever this writer's snapshot.
-    pub(super) fn newest_stored(
+    /// across leaders has prepared, whatever this writer's snapshot. And by a
+    /// resolution, which reads the intent it turns into a value.
+    pub(super) fn newest_stored_value(
         &self,
         address: &RecordAddress,
-    ) -> Result<Option<(Sequence, bool)>> {
+    ) -> Result<Option<(Sequence, Option<tessari_encoding::Provenance>, RecordValue)>> {
         let request = ScanRequest {
             keyspace: RecordKey::keyspace(),
             range: KeyRange::prefix(&address.versions_prefix()),
@@ -477,9 +480,11 @@ impl<'a> Transaction<'a> {
         let Some((key, value)) = found.first() else {
             return Ok(None);
         };
+        let stored = StampedValue::decode(value.as_slice())?;
         Ok(Some((
             RecordKey::decode(key.as_slice())?.version,
-            crate::intents::is_intent(&StampedValue::decode(value.as_slice())?),
+            stored.provenance(),
+            stored.into_value(),
         )))
     }
 }

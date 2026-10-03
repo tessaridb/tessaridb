@@ -194,6 +194,9 @@ fn a_committed_transaction_becomes_the_value_and_leaves_no_intent() -> Result<()
         "an intent is not a value"
     );
     assert!(fixture.intent_left()?);
+    // A record is written PENDING before it is decided, as the coordinator
+    // writes it.
+    fixture.apply(Part::Decide(decided(Decision::Pending)), vec![])?;
     fixture.apply(Part::Decide(decided(Decision::Committed)), vec![])?;
     assert_eq!(
         record_of(&fixture.store)?,
@@ -210,6 +213,9 @@ fn a_committed_transaction_becomes_the_value_and_leaves_no_intent() -> Result<()
 fn an_aborted_transaction_leaves_the_old_value_and_no_intent() -> Result<()> {
     let mut fixture = Fixture::new()?;
     fixture.prepare()?;
+    // A record is written PENDING before it is decided, as the coordinator
+    // writes it.
+    fixture.apply(Part::Decide(decided(Decision::Pending)), vec![])?;
     fixture.apply(Part::Decide(decided(Decision::Aborted)), vec![])?;
     // An aborted resolution names the record; the value it carries is never
     // written.
@@ -261,6 +267,9 @@ fn an_intent_derives_no_index_entry_and_its_resolution_does() -> Result<()> {
     let mut fixture = Fixture::new()?;
     let before = fixture.index_entries()?;
     fixture.prepare()?;
+    // A record is written PENDING before it is decided, as the coordinator
+    // writes it.
+    fixture.apply(Part::Decide(decided(Decision::Pending)), vec![])?;
     fixture.apply(Part::Decide(decided(Decision::Committed)), vec![])?;
     assert_eq!(
         fixture.index_entries()?,
