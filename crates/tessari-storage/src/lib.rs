@@ -23,6 +23,8 @@
 // `expect_used` and `as_conversions` govern production code; a test states its own expectations.
 #![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
+#[cfg(test)]
+mod across_model;
 mod adjacency;
 mod attempts;
 mod audit;
