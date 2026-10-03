@@ -9442,7 +9442,7 @@ What is promised, and what is not:
   across two leaders — once every node runs it: an older node does not know
   them, and a decision only half the cluster can read is not one it makes.
 
-Measured on three local processes going from 0.23.0-beta to this release: each
+Measured on three local processes going from 0.23.0-beta to 0.24.0-beta: each
 node replaced in turn, writes landing after every step, and every node holding
 every record at the end.
 
@@ -9593,7 +9593,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.23.0", "build": "0.23.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.24.0", "build": "0.24.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

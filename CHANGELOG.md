@@ -12,6 +12,75 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.24.0-beta — 2026-10-04
+
+The cluster keeps every acknowledged write and runs itself (G053).
+
+### Added
+
+- **A transaction across leaders** (ADR-0112). `COMMIT ACROSS LEADERS` — or
+  `… ACROSS LEADERS` on a single write — commits a transaction that writes
+  ranges led by different nodes whole or not at all: the leader of its first
+  range holds its record, every range's leader prepares its part as intents
+  held by a majority, and the record turns `COMMITTED` only once every part is
+  prepared. Readers see it whole or not at all. A driver that dies leaves a
+  record that lapses and is aborted, so nothing is held for ever. Unasked, such
+  a transaction is still refused `SpansLeaderships`, which now names the clause.
+  New refusals: `AcrossAborted`, `AcrossInDoubt`, `AcrossNotHeldHere`,
+  `AcrossUnavailable`, and the retriable `AcrossSettling` on a traversal.
+  Over HTTP an abort answers with the status of the refusal behind it — `409`
+  when asking again can succeed — and in doubt is `409`. Measured on three
+  processes on one Linux host: about 10 ms at the median against 1.6 ms for one
+  write.
+  <!-- landed: cross-range-transactions -->
+- **A table that splits and merges itself.** `ALTER TABLE … SPLIT AUTOMATICALLY
+  ABOVE n RECORDS [OR w WRITES PER SECOND] MERGE BELOW m RECORDS` lets the store
+  line's leader keep the shards within bounds, one change per table per pass,
+  each the `SPLIT AT` or `MERGE SHARD` an operator would type. `SPLIT MANUALLY`
+  stops it (ADR-0113 D2).
+- **`IDENTITY uuid SPREAD`** begins each generated identity with a bucket from
+  its random part, so new records land over every shard instead of the last one
+  (ADR-0113 D1).
+- **`DEFINE FAILOVER … BALANCE LEADERSHIPS`** — the store line's leader moves a
+  node's own placement onto an idle voter when that node leads two lines more,
+  at most once per two leases (ADR-0113 D3).
+- **Giving a range back to the store line.** `LEADS NONE` on the last row
+  placing a range marks it releasing; the store's leader is elected on the
+  range's line and folds the placement away, so no instant has two writers
+  (ADR-0098 D3).
+- **`LEADS … PREFERRED`** names the candidate that should lead a range; a leader
+  that is not preferred hands it over once the preferred one is caught up and
+  audible, at most once every 30 seconds.
+- **What the cluster is doing, observable.** `INFO FOR NODE` reports
+  `cluster.leaders`, `cluster.across` and `cluster.balanced`; peers report
+  `releasing` and `preferred`; `INFO FOR TABLE` reports what the balancer
+  `sampled`. `/metrics` counts redirects, `NotHeldHere` reads, majority waits,
+  transactions across leaders by outcome, shard sizes and balancer moves. The
+  console's cluster map shows all of it.
+- **Upgrading a cluster one node at a time** is specified and tested: followers
+  first, the store line's leader last, one minor version at a time, forward
+  only, and new features turned on after the last node.
+
+### Removed
+
+- **`--client-plaintext`** and `TESSARIDB_CLIENT_PLAINTEXT=1` are refused at start,
+  as `0.23.0-beta` announced: the clear has been the default without a
+  certificate since then, so a deployment still carrying either drops it.
+
+### Fixed
+
+- **Replication on Linux is no longer ~80 ms late.** The peer link left Nagle's
+  algorithm on, so a frame written in pieces waited for a delayed ACK; follower
+  lag p50 went from 82 ms to 11 ms. The client surfaces set `TCP_NODELAY` too.
+- A gathered read whose leaders fold slowly is refused `TimedOut` at its
+  `TIMEOUT` rather than answered late (Q-856).
+- **A node restarted after a crash binds its port at once on Linux.** Its old
+  connections wait out `TIME_WAIT` on the port, and the listeners did not ask
+  for `SO_REUSEADDR`, so the restart was refused for about a minute. A second
+  live listener on the port is still refused.
+- `PlacementCannotBeDropped` names `LEADS NONE`, the way this release gives a
+  range's last placement back.
+
 ## 0.23.0-beta — 2026-10-03
 
 ### Changed
