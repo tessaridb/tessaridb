@@ -972,6 +972,39 @@ pub enum Error {
         span: Span,
     },
 
+    /// A weighted path met an edge whose weight is not a cost (G055 W6).
+    ///
+    /// A weight that is absent drops the edge — absence narrows — but one that is
+    /// not a number, or is below zero, is a mistake in the data the path would
+    /// otherwise answer around: a negative step makes "the cheapest path" a walk
+    /// that loops, and every shortest-path method refuses it.
+    #[error(
+        "`WEIGHT {field}` met an edge whose `{field}` is {found}, and a step's cost is a number of zero or more (at {span})"
+    )]
+    PathWeight {
+        /// The weight field.
+        field: String,
+        /// What it held.
+        found: String,
+        /// Where the path was written.
+        span: Span,
+    },
+
+    /// `PATH TO` over an edge table rather than a declared edge kind (G055 W6).
+    ///
+    /// A path search walks backwards as well as forwards, which is the adjacency
+    /// a declared graph keeps beside each node in both directions; an edge table
+    /// is a set of records found through an index.
+    #[error(
+        "`PATH TO` walks a declared edge kind — `{table}` is an edge table; declare the graph with `DEFINE EDGE … IN <graph>` (at {span})"
+    )]
+    PathOverEdgeTable {
+        /// The edge table named.
+        table: String,
+        /// Where it was named.
+        span: Span,
+    },
+
     /// A read needs records this node does not hold (G031 S3.3, ADR-0081).
     ///
     /// The node was served part of what its catalog describes — one shard of a

@@ -276,7 +276,19 @@ impl Session<'_> {
                 direction,
                 hops,
                 depth,
+                path,
             } => {
+                // The parser has established one hop to a named table and a
+                // `DEPTH` beside every `PATH TO` (G055 W6).
+                if let (Some(path), Some(hop), Some(depth)) = (path, hops.first(), depth) {
+                    let (found, note) =
+                        self.shortest_path(transaction, (from, *direction, hop, *depth), path)?;
+                    reporting.collected.extend(note);
+                    return Ok((
+                        Prepared::Held(found, Plan::new(AccessPath::Graph)),
+                        Searched::default(),
+                    ));
+                }
                 let found = self.traverse(transaction, from, *direction, hops, *depth)?;
                 Ok((
                     Prepared::Held(found, Plan::new(AccessPath::Graph)),

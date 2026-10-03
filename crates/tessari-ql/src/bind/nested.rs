@@ -68,7 +68,13 @@ pub(crate) fn bind_select(select: &mut Select, binding: &Binding<'_>) -> Result<
             bind_identity(lower, *span, binding)?;
             bind_identity(upper, *span, binding)?;
         }
-        Source::Traverse { from, .. } => bind_target(from, binding)?,
+        Source::Traverse { from, path, .. } => {
+            bind_target(from, binding)?;
+            // `PATH TO users:$who` — the far end is a record like the start.
+            if let Some(path) = path {
+                bind_target(&mut path.to, binding)?;
+            }
+        }
         Source::Where { condition, .. } => bind_expr(condition, binding)?,
         Source::Join {
             left,

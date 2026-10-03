@@ -5,7 +5,7 @@
 //! answers nothing says so rather than returning an empty list, which would be
 //! indistinguishable from a read that found nothing.
 
-use tessari_types::{RecordId, Value, article};
+use tessari_types::{Number, RecordId, Value, article};
 
 use crate::plan::Plan;
 
@@ -383,6 +383,17 @@ pub enum Note {
         /// How many positions the read passed over.
         missed: u64,
     },
+    /// The answer is a shortest path, and this is what it costs (G055 W6).
+    ///
+    /// The records are the path, start to end; the note says how many steps
+    /// it took and what they cost — the sum of the weights a weighted path
+    /// read, or the steps again.
+    Path {
+        /// Edges walked.
+        steps: u64,
+        /// Their total weight; the step count for an unweighted path.
+        cost: Number,
+    },
     /// Windows a `FILL` answered with although nothing was written in them
     /// (ADR-0088 §2). Their `count` is `0`, so each row can be told apart too.
     Filled {
@@ -405,6 +416,7 @@ impl Note {
             Self::Gathered { .. } => "gathered",
             Self::Lapsed { .. } => "lapsed",
             Self::Filled { .. } => "filled",
+            Self::Path { .. } => "path",
         }
     }
 
@@ -442,6 +454,10 @@ impl Note {
                 if *missed == 1 { "" } else { "s" },
                 "its",
                 if *missed == 1 { "it" } else { "them" },
+            ),
+            Self::Path { steps, cost } => format!(
+                "this is the shortest path within the bound: {steps} step{} costing {cost}",
+                if *steps == 1 { "" } else { "s" },
             ),
             Self::Filled { windows } => format!(
                 "{windows} window{} of this answer held no records and {} filled as the \

@@ -64,6 +64,7 @@ mod geometry_query;
 mod grants;
 mod graph_container;
 mod graph_engine;
+mod graph_paths;
 mod graphs;
 mod held;
 mod highlighting;

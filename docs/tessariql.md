@@ -1855,7 +1855,41 @@ and a count of the answer is a count of the others.
 A chain could mean the whole chain again or only its last step, and a walk
 ending on the edges themselves has nothing for a second round to start from;
 both are refused rather than answered one way in silence. Repeating a *pattern*
-is a different feature and is not in this language yet. Neither is `PATH`.
+is a different feature and is not in this language yet.
+
+### The shortest path: `PATH TO`
+
+```
+SELECT * FROM place:1->road->place PATH TO place:9 DEPTH 6;
+SELECT * FROM place:1->road->place PATH TO place:9 DEPTH 6 WEIGHT km;
+```
+
+The answer is the path's records, **start to end, in order** — the start alone
+when it is the end, nothing when no path fits within `DEPTH`. A `path` note says
+how many steps it took and what they cost: the steps again, or with `WEIGHT` the
+sum of that edge field along the way (from `0.22.0-beta`).
+
+**One path, by a rule.** The cheapest, then the fewest steps, then the one whose
+record ids, read in order, come first — so the same graph always answers the
+same path, whatever order the store reads it in.
+
+**`DEPTH` is required and is the bound on the work**, as it is for every repeated
+walk; `PATH TO` without it is refused by name (`PathNeedsDepth`) — a path search
+with no bound costs whatever lies between two records. The search reads the
+subgraph reachable from the start within `DEPTH` steps, each node once. A
+weighted path is the cheapest path *within that many steps*, not the cheapest
+path: its rounds (cheapest way to the end in at most `k` steps, for `k` up to
+`DEPTH`) are what honour the cap, where a plain shortest-path search would answer
+a cheaper path one step too long. They stop as soon as a round improves nothing,
+so `DEPTH 1000000` over a small graph costs the graph.
+
+**A weight is a number of zero or more.** An edge without the field is no step
+for a weighted path — absence narrows — and one holding text or a negative
+number is refused (`PathWeight`): a negative step makes the cheapest path a walk
+that loops. The step walks a **declared** edge kind (`DEFINE EDGE … IN`); an edge
+table is refused (`PathOverEdgeTable`). A deleted node drops out of every path,
+and the records answered are read under the reader's grants, as a `DEPTH` walk
+reads them.
 
 ### A table and its columns in one statement
 
@@ -7983,7 +8017,7 @@ note gets exactly the records it would have got before notes existed. The `notes
 key is absent when there is nothing to say, which is almost always — a note is
 worth reading because it is rare.
 
-There are six today:
+The kinds include:
 
 | kind | what happened |
 |---|---|
@@ -7993,6 +8027,7 @@ There are six today:
 | `compared-across-kinds` | the read compared values of two different kinds — a number against the text of one, say — so it answered about the records whose kinds happened to line up |
 | `cursor-walked` | an `AFTER` page was reached by reading the records rather than seeking to the anchor, so it cost what the read costs and not what the page costs (§5, *Resuming a page from a record*) |
 | `nearing-ceiling` | a held read is four fifths of the way to the ceiling that will refuse it, so a view reading fine today stops working as the table grows (§6d) |
+| `path` | the answer is a shortest path, and this is how many steps it took and what they cost (§4a, *The shortest path*) |
 
 **`fell-back` fires on an index that declined, never on a table that has none.**
 A bounded ordered read over an unindexed table is the most ordinary read in the
@@ -9425,7 +9460,7 @@ be, because it is confined to the run its fixed values name.
 | a join on anything but an equality, or on more than one pair | `ON a.x = b.y` is what an index can serve and what a map can be keyed by; a join predicate that is neither is a nested loop with a filter, which is the shape the equality was chosen to avoid |
 | a join of more than two tables | the row is `{ left: …, right: … }`, so a third side is a shape decision (nest or flatten) and an order decision, and neither is worth taking before something needs it |
 | `FETCH` through something already fetched, and cycles | one level, so the work is bounded by the references the answer already holds — one request, whatever their number — and a cycle is impossible rather than handled |
-| a variable-length traversal (`->{1..3}`), a filter inside a traversal, shortest path | a written-out chain is a fixed number of steps the reader can count. A bound turns the walk into a search with a termination rule, a frontier and an answer that may or may not include the shorter paths — a language surface to design once rather than a clause |
+| a variable-length traversal (`->{1..3}`), a filter inside a traversal (`PATH TO` answers the shortest path, §4a) | a written-out chain is a fixed number of steps the reader can count. A bound turns the walk into a search with a termination rule, a frontier and an answer that may or may not include the shorter paths — a language surface to design once rather than a clause |
 | a traversal whose arrows change direction | `a->follows->users<-follows<-users` — "who follows somebody ada follows" — is a real question, and a useful one. It needs a rule for what each step's anchor *is* when the direction turns, and a chain where every arrow reads the same way is the one a reader can follow without one |
 | a traversal that answers with the path rather than its end | the answer would be a list of records rather than a record, which is a shape for rows and not for records — the same wall the join met, and the same milestone |
 | several distinct edges between one pair in one table | an edge is identified by its endpoints, which is what makes `RELATE` idempotent; one edge table per relation is the spelling |

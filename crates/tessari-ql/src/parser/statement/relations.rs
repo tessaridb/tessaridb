@@ -3,8 +3,8 @@
 use super::Parser;
 
 use crate::ast::{
-    Direction, EdgeClause, EdgeEndpoints, EdgeOrdering, ExprKind, Hop, RangeExpr, RecordTarget,
-    Source, StatementKind,
+    Direction, EdgeClause, EdgeEndpoints, EdgeOrdering, ExprKind, Hop, PathTo, RangeExpr,
+    RecordTarget, Source, StatementKind,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct};
@@ -100,12 +100,43 @@ impl Parser<'_> {
                 None => break,
             }
         }
+        // `PATH TO <record>` before the bound: the shortest path to one record
+        // rather than everything within reach (G055 W6). Contextual words, so
+        // nothing that was a name before stops being one.
+        let path_at = self.span_here();
+        let path_to = if self.eat_word("path") {
+            if !self.eat_keyword(Keyword::To) {
+                return Err(self.error_here("`TO` after `PATH`"));
+            }
+            Some(self.record_target()?)
+        } else {
+            None
+        };
         let depth = self.depth_bound(&hops)?;
+        let path = match path_to {
+            Some(to) => {
+                if depth.is_none() {
+                    return Err(Error::PathNeedsDepth { span: path_at });
+                }
+                let weight = if self.eat_word("weight") {
+                    Some(self.name()?)
+                } else {
+                    None
+                };
+                Some(Box::new(PathTo {
+                    to,
+                    weight,
+                    span: path_at,
+                }))
+            }
+            None => None,
+        };
         Ok(Source::Traverse {
             from,
             direction,
             hops,
             depth,
+            path,
         })
     }
 

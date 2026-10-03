@@ -44,6 +44,7 @@ mod lent;
 mod nearest;
 mod ordered;
 mod partition;
+mod paths;
 mod phrase;
 mod produce;
 mod projection;

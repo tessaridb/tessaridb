@@ -460,6 +460,19 @@ pub enum Error {
         span: Span,
     },
 
+    /// `PATH TO` with no `DEPTH` (G055 W6).
+    ///
+    /// A path search with no bound is the one walk whose work the statement
+    /// cannot show: it costs whatever the graph happens to hold between two
+    /// records. So the bound is written, as a literal, like every repeated walk.
+    #[error(
+        "`PATH TO` needs `DEPTH n` after it — the most steps the path may take, written out (at {span})"
+    )]
+    PathNeedsDepth {
+        /// Where `PATH` is.
+        span: Span,
+    },
+
     /// `vector<0>`.
     ///
     /// The only value such a field could hold is the empty array, which no
@@ -882,6 +895,7 @@ impl Error {
             | Self::EmptyPeriod { span, .. }
             | Self::EmptyRetention { span, .. }
             | Self::DepthNeedsOneHopToATable { span }
+            | Self::PathNeedsDepth { span }
             | Self::DepthBelowOne { span }
             | Self::VectorWidthBelowOne { span }
             | Self::VectorWidthAboveTheCeiling { span, .. }

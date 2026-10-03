@@ -93,6 +93,18 @@ compares carries no pre-release suffix.
   answers the route `value` with itself, so `DEFINE FIELD value ON kv … ANALYZER`,
   `DEFINE INDEX … FIELDS value SEARCH` and `WHERE value MATCHES …` serve it.
 
+- **The shortest path in a declared graph** (G055). `SELECT * FROM a:1->kind->t
+  PATH TO t:9 DEPTH n [WEIGHT field]` answers the path's records start to end,
+  with a `path` note giving its steps and cost: the cheapest within `n` steps,
+  then the fewest steps, then the smallest sequence of ids, so one graph always
+  answers one path. `DEPTH` is required (`PathNeedsDepth`) and bounds the work to
+  the subgraph reachable within it, each node read once; a weighted path is
+  rounds of the cheapest way to the end within `k` steps, which a plain shortest-
+  path search cannot honour under a step cap, and they stop when a round improves
+  nothing. A weight is a number of zero or more (`PathWeight`); an edge with none
+  is no step; the edge is a declared kind (`PathOverEdgeTable`). Asserted equal,
+  path for path, to a brute force over every simple path on 40 generated graphs.
+
 ### Changed
 
 - **A record read by identity is scored** (G055, Q-869): `search::score` and
@@ -118,7 +130,7 @@ compares carries no pre-release suffix.
   (one record in a hundred: 27.9 → 22.9 ms against 16.0 ms exact; the rest is the
   walk reading the whole graph before its first step).
 
-- **1511 conformance cases** define the language and run in the build.
+- **1516 conformance cases** define the language and run in the build.
 
 ## 0.21.0-beta — 2026-10-03
 
