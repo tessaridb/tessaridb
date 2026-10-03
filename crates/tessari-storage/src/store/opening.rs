@@ -70,6 +70,8 @@ impl Store {
             divergences: Arc::new(AtomicU64::new(0)),
             discarded: Arc::new(AtomicU64::new(0)),
             campaigns: Arc::new(AtomicU64::new(0)),
+            tally: Arc::default(),
+            sampled: Arc::default(),
             retention: crate::retention::ProcessRetention::shared(),
             log_holds: crate::log_holds::LogHolds::shared(),
             followers: Arc::new(Followers::default()),

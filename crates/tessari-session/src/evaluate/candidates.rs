@@ -54,7 +54,7 @@ impl Session<'_> {
         // cannot use is one this statement does not have, and saying so here
         // keeps the reason in the one place that asks the catalog rather than
         // spread across every candidate that could have been built from it.
-        let declared = if transaction.indexes_are_current()? {
+        let declared = if transaction.indexes_are_current_for(table)? {
             Catalog::new(transaction).field_indexes_on(table)?
         } else {
             Vec::new()

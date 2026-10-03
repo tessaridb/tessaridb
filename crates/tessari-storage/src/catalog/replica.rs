@@ -50,6 +50,8 @@ const FIELD_CLIENTS: &str = "clients";
 const FIELD_HTTP: &str = "http";
 const FIELD_FINGERPRINT: &str = "fingerprint";
 const FIELD_JOIN: &str = "join";
+const FIELD_RELEASING: &str = "releasing";
+const FIELD_PREFERRED: &str = "preferred";
 const FIELD_DIGEST: &str = "digest";
 const FIELD_EXPIRES: &str = "expires";
 
@@ -168,6 +170,19 @@ pub struct ReplicaDefinition {
     /// A join token waiting to bind this row (`CREATE JOIN TOKEN`), as its
     /// digest and its expiry; cleared by the binding that spends it.
     pub join: Option<JoinTicket>,
+    /// The placement is being given back to the store line (ADR-0098 D3).
+    ///
+    /// Set by `ALTER REPLICA … LEADS NONE` on the last row placing a range.
+    /// [`Self::leads`] is kept, so the range stays carved out of the store
+    /// line on every node and nobody else writes it; this row's node no longer
+    /// stands for it, and the store line's leader stands instead. Once it
+    /// leads the range too it folds the placement away
+    /// ([`Catalog::finish_release`]). Written only when true.
+    pub releasing: bool,
+    /// `LEADS … PREFERRED`: the candidate a non-preferred leader of the range
+    /// hands it to once this one is caught up (G053 SG5b). Written only when
+    /// true.
+    pub preferred: bool,
 }
 
 /// A one-time join token as the catalog keeps it: never the token itself.
@@ -223,6 +238,12 @@ impl ReplicaDefinition {
                 Value::from(fingerprint.as_str()),
             );
         }
+        if self.releasing {
+            fields.insert(FIELD_RELEASING.to_owned(), Value::Bool(true));
+        }
+        if self.preferred {
+            fields.insert(FIELD_PREFERRED.to_owned(), Value::Bool(true));
+        }
         if let Some(join) = &self.join {
             fields.insert(
                 FIELD_JOIN.to_owned(),
@@ -267,7 +288,23 @@ impl ReplicaDefinition {
             http: text_in(fields, FIELD_HTTP)?,
             fingerprint: text_in(fields, FIELD_FINGERPRINT)?,
             join: join_in(fields)?,
+            releasing: flag_in(fields, FIELD_RELEASING)?,
+            preferred: flag_in(fields, FIELD_PREFERRED)?,
         })
+    }
+}
+
+/// A flag written only when true: absent is false, and anything present that
+/// is not true or false is refused rather than read as either.
+fn flag_in(fields: &BTreeMap<String, Value>, field: &'static str) -> Result<bool> {
+    match fields.get(field) {
+        None => Ok(false),
+        Some(Value::Bool(set)) => Ok(*set),
+        Some(other) => Err(Error::CatalogMalformed {
+            entity: ENTITY,
+            field,
+            found: other.type_name(),
+        }),
     }
 }
 
@@ -399,6 +436,8 @@ impl Catalog<'_, '_> {
             http: None,
             fingerprint: None,
             join: None,
+            releasing: false,
+            preferred: false,
         })
     }
 
@@ -545,20 +584,73 @@ impl Catalog<'_, '_> {
 
     /// Replace the range a peer's row places (ADR-0098).
     ///
-    /// Answers `false` when there is no row under that name.
+    /// Answers `false` when there is no row under that name. `None` on the
+    /// last row placing a range marks it releasing rather than dropping it
+    /// (ADR-0098 D3); naming the range a releasing row holds withdraws that.
     ///
     /// # Errors
     ///
-    /// Returns an error when the stored definitions cannot be read.
-    pub fn alter_replica_leads(&mut self, name: &str, leads: Option<Reach>) -> Result<bool> {
+    /// [`Error::PlacementCannotBeDropped`] when the last row placing a range
+    /// is moved to another one, and an error when the stored definitions
+    /// cannot be read.
+    pub fn alter_replica_leads(
+        &mut self,
+        name: &str,
+        leads: Option<Reach>,
+        preferred: bool,
+    ) -> Result<bool> {
         let Some(mut definition) = self.replica_row(name)? else {
             return Ok(false);
         };
+        let preferred = preferred && leads.is_some();
         if definition.leads == leads {
+            if definition.releasing || definition.preferred != preferred {
+                definition.releasing = false;
+                definition.preferred = preferred;
+                self.write_replica(&definition);
+            }
+            return Ok(true);
+        }
+        // The last row placing a range gives it back to the store line rather
+        // than dropping it (ADR-0098 D3): the range stays carved while the
+        // store's leader is elected on its line, and is folded away then.
+        if leads.is_none()
+            && definition.leads.is_some()
+            && !self.has_another_candidate(&definition)?
+        {
+            definition.releasing = true;
+            definition.preferred = false;
+            self.write_replica(&definition);
             return Ok(true);
         }
         self.keeps_a_candidate(&definition)?;
         definition.leads = leads;
+        definition.releasing = false;
+        definition.preferred = preferred;
+        self.write_replica(&definition);
+        Ok(true)
+    }
+
+    /// Fold a released placement away, once the store line's leader leads
+    /// the range as well (ADR-0098 D3): the range returns to the store line,
+    /// which the same node leads, so no instant has two writers.
+    ///
+    /// Answers `false` when no row under that name is releasing — the hand-back
+    /// was withdrawn, or already folded.
+    ///
+    /// # Errors
+    ///
+    /// The store's, reading or decoding the row.
+    pub fn finish_release(&mut self, name: &str) -> Result<bool> {
+        let Some(mut definition) = self.replica_row(name)? else {
+            return Ok(false);
+        };
+        if !definition.releasing {
+            return Ok(false);
+        }
+        definition.leads = None;
+        definition.releasing = false;
+        definition.preferred = false;
         self.write_replica(&definition);
         Ok(true)
     }
@@ -597,19 +689,20 @@ impl Catalog<'_, '_> {
     /// change reaches it — two writers on one range for up to a lease
     /// (ADR-0082, ADR-0098).
     fn keeps_a_candidate(&self, row: &ReplicaDefinition) -> Result<()> {
-        let Some(range) = row.leads else {
-            return Ok(());
-        };
-        let other = self
-            .replicas()?
-            .iter()
-            .any(|peer| peer.name != row.name && peer.leads == Some(range));
-        if other {
+        if row.leads.is_none() || self.has_another_candidate(row)? {
             return Ok(());
         }
         Err(Error::PlacementCannotBeDropped {
             name: row.name.clone(),
         })
+    }
+
+    /// Whether a row other than `row` places `row`'s range.
+    fn has_another_candidate(&self, row: &ReplicaDefinition) -> Result<bool> {
+        Ok(self
+            .replicas()?
+            .iter()
+            .any(|peer| peer.name != row.name && peer.leads.is_some() && peer.leads == row.leads))
     }
 
     /// Every declared peer, in name order.
@@ -861,6 +954,8 @@ mod tests {
             http: None,
             fingerprint: None,
             join: None,
+            releasing: false,
+            preferred: false,
         }
     }
 

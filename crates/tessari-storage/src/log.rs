@@ -166,6 +166,11 @@ pub(crate) fn state_batch(version: Sequence, record: &LogRecord) -> WriteBatch {
 
 /// Every mutation of `record`, written at `version`.
 fn put_records(mut batch: WriteBatch, version: Sequence, record: &LogRecord) -> WriteBatch {
+    // A decision, and an aborted resolution, name records without giving them
+    // a value (ADR-0112): `crate::intents::settle` does what they do instead.
+    if !crate::intents::writes_versions(record) {
+        return batch;
+    }
     for mutation in record.mutations() {
         let key = RecordKey::new(
             mutation.namespace,

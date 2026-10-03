@@ -108,6 +108,19 @@ pub enum Error {
         offset: usize,
     },
 
+    /// A log record's cross-leader section carried a byte this build does not
+    /// know (ADR-0112).
+    ///
+    /// Incompatible for the reason an unknown reach is: the byte sits in a
+    /// fixed slot, so it is a later build's meaning rather than damage.
+    #[error("cross-leader section holds an unknown {what} byte 0x{found:02x}")]
+    UnknownAcross {
+        /// Which field held it.
+        what: &'static str,
+        /// The byte found.
+        found: u8,
+    },
+
     /// An adjacency key carried a direction byte this build does not know.
     #[error("adjacency key holds an unknown direction byte 0x{found:02x}")]
     UnknownDirection {
@@ -310,6 +323,7 @@ impl Error {
             | Self::UnknownIndexTag { .. }
             | Self::UnknownNodeIdentity { .. }
             | Self::UnknownReach { .. }
+            | Self::UnknownAcross { .. }
             | Self::UnsupportedFormatVersion { .. } => ErrorCategory::Incompatible,
         }
     }

@@ -81,7 +81,9 @@ impl Client {
     /// reached, and [`Error::NotThisProtocol`] or [`Error::WrongVersion`] when
     /// whatever answered is not a node this build speaks to.
     pub fn connect(address: impl ToSocketAddrs) -> Result<Self> {
-        Self::greeted(Transport::Plain(TcpStream::connect(address)?))
+        let socket = TcpStream::connect(address)?;
+        socket.set_nodelay(true)?;
+        Self::greeted(Transport::Plain(socket))
     }
 
     /// Connect over TLS, trusting `roots`, and exchange greetings.
@@ -104,6 +106,7 @@ impl Client {
         let mut session = rustls::ClientConnection::new(Arc::new(settings), name)
             .map_err(|why| Error::Tls(why.to_string()))?;
         let mut socket = TcpStream::connect(address)?;
+        socket.set_nodelay(true)?;
         // Completed here rather than on the first write, so a certificate the
         // client will not trust is reported as that and not as a greeting
         // that never came back.

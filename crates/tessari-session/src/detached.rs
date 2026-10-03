@@ -29,6 +29,7 @@ pub struct Detached {
     consumer: Option<Consumer>,
     elsewhere: Option<Arc<dyn Elsewhere>>,
     gather: Option<Arc<dyn Gather>>,
+    participants: Option<Arc<dyn crate::Participants>>,
     backups: Option<Arc<std::path::Path>>,
     at_rest: Option<Arc<tessari_vault::AtRestKey>>,
     budget: Option<Arc<dyn crate::throttle::Budget>>,
@@ -46,6 +47,7 @@ impl Session<'_> {
             consumer: self.consumer,
             elsewhere: self.elsewhere,
             gather: self.gather,
+            participants: self.participants,
             backups: self.backups,
             at_rest: self.at_rest,
             budget: self.budget,
@@ -66,6 +68,7 @@ impl Detached {
             consumer: self.consumer,
             elsewhere: self.elsewhere,
             gather: self.gather,
+            participants: self.participants,
             backups: self.backups,
             at_rest: self.at_rest,
             budget: self.budget,
@@ -77,6 +80,7 @@ impl Detached {
             // For the sink's reason: it belongs to a transaction this request
             // opened, and none travels with a detached session.
             acknowledge_open: None,
+            across_open: false,
             event_depth: 0,
         }
     }

@@ -74,6 +74,7 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         periods: [tessari_types::Duration; 5],
+        balance_leaderships: bool,
         span: Span,
     ) -> Result<Outcome> {
         let mut held = [std::time::Duration::ZERO; 5];
@@ -105,7 +106,7 @@ impl Session<'_> {
         // any write reaches this point, and refusing again would make a
         // single-node deployment unable to configure itself.
         let epoch = self.store.leading().unwrap_or(tessari_types::Epoch::ZERO);
-        catalog.set_failover(policy, epoch, version)?;
+        catalog.set_failover(policy, epoch, version, balance_leaderships)?;
         Ok(Outcome::Done)
     }
 
@@ -179,6 +180,8 @@ impl Session<'_> {
             http: peer.http.map(str::to_owned),
             fingerprint: peer.fingerprint.map(str::to_owned),
             join: None,
+            releasing: false,
+            preferred: peer.preferred,
         })?;
         Ok(Outcome::Done)
     }
@@ -268,12 +271,12 @@ impl Session<'_> {
     ) -> Result<Outcome> {
         use tessari_ql::ReplicaChange;
         let amended = match change {
-            ReplicaChange::Leads(leads) => {
-                let leads = match leads {
+            ReplicaChange::Leads { range, preferred } => {
+                let leads = match range {
                     None => None,
                     Some(named) => Some(self.reach_of(transaction, named)?),
                 };
-                Catalog::new(transaction).alter_replica_leads(&name.text, leads)?
+                Catalog::new(transaction).alter_replica_leads(&name.text, leads, *preferred)?
             }
             // Read before the row is touched, so a misspelled role changes
             // nothing — `DEFINE REPLICA`'s order.

@@ -481,6 +481,41 @@ fn a_fold_over_more_records_than_a_gather_holds_answers() {
     }
 }
 
+/// A leader that folds as [`FoldingMany`] does, slowly.
+#[derive(Debug)]
+struct FoldingSlowly;
+
+impl Gather for FoldingSlowly {
+    fn gather(&self, asked: &Asked<'_>) -> Result<Gathered, Unanswered> {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        FoldingMany.gather(asked)
+    }
+}
+
+/// Q-856 (G053 SG8): a folded read keeps its `TIMEOUT` while it waits on the
+/// leaders' folds — refused, never answered late as if nothing was asked.
+#[test]
+fn a_folded_read_past_its_timeout_is_refused_between_the_leaders_folds() {
+    let pair = pair();
+    let mut follower = signed_in(&pair.follower, "reader").gathering(Arc::new(FoldingSlowly));
+    follower
+        .run("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    match refused(
+        &mut follower,
+        "SELECT note, count(*) AS n, sum(total) AS sum FROM ledger GROUP BY note TIMEOUT 50ms;",
+    ) {
+        tessari_session::Error::TimedOut { after, .. } => assert_eq!(after, "50ms"),
+        other => panic!("expected TimedOut, got {other:?}"),
+    }
+    // Within its ceiling, the same read answers.
+    let (rows, _) = answer(
+        &mut follower,
+        "SELECT note, count(*) AS n, sum(total) AS sum FROM ledger GROUP BY note TIMEOUT 1h;",
+    );
+    assert_eq!(rows.len(), 3, "{rows:?}");
+}
+
 /// G050 C4, end to end: a shard holding one record past the ceiling, folded by
 /// the real leader-side code and merged here.
 #[test]

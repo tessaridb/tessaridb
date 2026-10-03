@@ -2199,7 +2199,30 @@ sharding **by time**: older shards stop receiving writes. That is useful when th
 point is to keep old records apart from new ones. It is not how writes are
 spread: for that, name records by a key whose leading part varies — a tenant, a
 region, an account — and split on that, or let the table do it with
-`PARTITION BY` (below).
+`PARTITION BY` or `SPREAD` (below).
+
+### Spreading generated identities over the shards: `IDENTITY uuid SPREAD`
+
+```
+DEFINE TABLE orders (total int) IDENTITY uuid SPREAD SPLIT AT '40', '80', 'c0';
+```
+
+A table that names its records with `SPREAD` begins each identity with a
+**bucket** — two hex digits taken from the UUID's random part — so a new record
+is `orders:'3f:01926f…'` and new records land evenly over the 256 buckets, each
+bucket keeping creation order. The split points choose how many shards share the
+buckets: `'40', '80', 'c0'` is four shards with a quarter each. A bucket costs
+nothing at read time, because a read on a node holding part of the table fans
+out per shard, not per bucket. What it gives up: `ORDER BY id` is no longer
+creation order across buckets.
+
+- **`SpreadNeedsGeneratedUuid`** — `SPREAD` on a table that does not declare
+  `IDENTITY uuid`; the bucket is taken from a generated UUID.
+
+With `PARTITION BY` the bucket follows the region — `'de:3f:01926f…'` — so a
+region spreads within its own span. A record named by hand is not checked for a
+bucket. `INFO FOR TABLE` reports `spread: true`, and its `definition` re-creates
+the clause.
 
 ### Splitting and merging a table that holds records: `ALTER TABLE … SPLIT AT` · `MERGE SHARD`
 
@@ -2274,7 +2297,8 @@ replicated to another on its own (§7d).
 cluster where two nodes lead two shards — or two namespaces — a transaction
 writing both is refused with **`SpansLeaderships`**, naming both nodes. It is not
 a redirect: the node it would send you to leads only part of the transaction
-too, and would refuse it back. Write each leader's part as its own transaction.
+too, and would refuse it back. Commit it with `COMMIT ACROSS LEADERS` (§7d), or
+write each leader's part as its own transaction.
 A transaction that one other node leads entirely is still redirected there.
 
 **A write sent to the wrong leader is redirected, not refused** (from
@@ -2317,6 +2341,41 @@ name — follow it on the node that writes it. A feed over an unsplit table is
 unchanged and its changes carry no cursor. If a table is split while a feed
 follows it, the feed ends with a refusal and you subscribe again from the last
 change handled.
+
+### A table that splits and merges itself: `ALTER TABLE … SPLIT AUTOMATICALLY`
+
+```
+ALTER TABLE events SPLIT AUTOMATICALLY ABOVE 100000 RECORDS
+    OR 500 WRITES PER SECOND
+    MERGE BELOW 20000 RECORDS;
+ALTER TABLE events SPLIT MANUALLY;
+```
+
+A split table can ask the cluster to keep its shards within bounds. The node
+leading the store line looks every few seconds: a shard holding more records
+than `ABOVE`, or taking more writes a second than `OR … WRITES PER SECOND`, is
+split — at the record half the bound into it, so a much larger shard splits again
+on later passes — and two neighbouring shards holding fewer than `MERGE BELOW`
+together are merged. At most one change per table per pass, and each is exactly
+the `ALTER TABLE … SPLIT AT` or `MERGE SHARD` an operator would type: it is in
+the log, every node applies it, a feed over the table ends with the usual refusal,
+and the node logs it. `SPLIT MANUALLY` stops it. It is off unless asked.
+
+- **`AutoSplitOnAnUnsplitTable`** — the table has no `SPLIT AT`; there is no
+  shard to split.
+- **`AutoSplitWouldOscillate`** — the merge bound is at least half the split
+  bound, so the halves of a split would merge straight back.
+
+Counting a shard walks its records up to the bound, so a pass costs each shard
+at most its bound. `INFO FOR TABLE` reports the bounds as `auto_split`, and its
+`definition` re-creates them as this statement. On the store's leader — the node
+that counts — it also reports `sampled`: each shard's `records` as the last pass
+counted them (`complete: false` means *at least* that many, the count having
+stopped one past the bound), its `writes_per_second`, and the `last_act` the
+balancer took on the table. `/metrics` carries the same counts as
+`tessari_shard_records{table, shard}` and the leadership balancer's moves as
+`tessari_balancer_moves_total`, both read from what the pass counted rather than
+counted again by a scrape.
 
 ### Partitioning a table by region: `PARTITION BY`
 
@@ -8962,7 +9021,94 @@ range alone (**`LeaseSpent`**), and a lapsed lease on the store no longer refuse
 a write whose every range has a live leader of its own.
 
 A transaction that writes ranges led by two different nodes is refused as
-**`SpansLeaderships`**, naming both; write each leader's ranges separately.
+**`SpansLeaderships`**, naming both, unless it asks to commit across them —
+the next section.
+
+### A transaction across leaders: `COMMIT ACROSS LEADERS`
+
+```
+BEGIN;
+  CREATE orders:'a17' = { total: 40 };
+  CREATE orders:'h17' = { total: 40 };
+COMMIT ACROSS LEADERS;
+```
+
+A transaction that writes ranges led by different nodes commits **whole or not
+at all** when it says so. The clause goes on the `COMMIT`, or on a single write —
+`CREATE … ACROSS LEADERS` — beside `ACKNOWLEDGE` and in either order; a write
+inside `BEGIN` that says it lets its transaction's `COMMIT` reach across leaders
+as though the `COMMIT` had said it. It is permission, never a cost: a
+transaction that asks and turns out to touch one leader's ranges commits in one
+step exactly as it would have without it, and one that spans leaders without
+asking is refused `SpansLeaderships`, whose message names the clause.
+
+**How it commits.** The node the transaction ran on drives it. The leader of
+the first range it writes holds the transaction's **record**, written
+`PENDING` before anything else. Every leader of a range it writes is then sent
+that range's writes and runs on them every check its own commit runs — its
+fence, the schema, uniqueness, bounds, the user's grants — and the conflict
+check against everything committed there since the transaction read; it
+answers *prepared* once a majority of its range's voters hold the writes as
+**intents**. Only when every leader answered *prepared* is the record turned
+`COMMITTED`, held by a majority, and only then is the caller told. Each leader
+then turns its intents into ordinary versions in its own log. Any refusal,
+timeout or unreachable leader turns the record `ABORTED` instead, and the
+intents are dropped. **Every step waits for a majority whatever `ACKNOWLEDGE`
+says** — a prepare or an outcome that a failover can lose is not one.
+
+The cost is that work: two majority rounds and a round trip to each leader it
+writes, several times a commit one leader takes alone. Use it where the
+records must change together, and keep the rest in one leader's ranges.
+
+**What the caller is told.** Committed, or one of:
+
+- **`AcrossAborted`** — a leader refused its part (the refusal is quoted), or
+  the record was aborted before the decision landed. **Nothing of the
+  transaction applies anywhere.** A conflict is retriable as it always is.
+- **`AcrossInDoubt`** — the decision was sent and could not be confirmed. The
+  record decides it: committed if the decision landed, aborted once its
+  liveness lapses if it did not. Read the records to learn which; do not
+  simply repeat a write that is not idempotent.
+- **`AcrossNotHeldHere`** — the node the transaction ran on holds no copy of a
+  range it writes. The half of the conflict check a leader cannot make is
+  made on that copy, so run the transaction on a node that holds every range
+  it writes.
+- **`AcrossUnavailable`** — the node knows no peers to carry the parts to.
+
+Over HTTP an abort answers with the status of the refusal that caused it — a
+conflict, a lapse or a leader not reached is `409` and worth retrying, a grant
+the caller lacks is `403`, and a write the schema refuses is `400` — judged on
+the node that refused and carried back with its words. In doubt is `409`, as a
+commit a majority did not confirm in time is: the store is the one that does
+not know, and a read of the records says what to do next.
+
+**While it is in flight.** An intent is a lock: any other write to a record
+holding one is refused **`Conflict`** — retriable, and the message says an
+intent refused it — rather than made to wait. A reader never sees half of it:
+each read decides once, from its own snapshot, whether the whole transaction
+is visible, and when it is not it reads the version under every one of its
+records. That is atomic visibility, not a single order across ranges: two
+readers on two ranges are not ordered against each other, and write skew stays
+admitted as it is under the store's snapshot isolation. An index of a table
+holding such a transaction's records answers through the checked path until
+its parts have all landed on this node, and a traversal over its edges is
+refused **`AcrossSettling`** — retriable — for that moment.
+
+**When a node dies part-way.** The record, the intents and the decision are
+log records held by a majority, so whoever leads each range next continues
+from them. A driver that dies leaves its record `PENDING`; once the record's
+liveness has lapsed — four rounds of the failover policy — a leader holding
+its intents aborts it, through the record's own leader, so exactly one
+outcome is ever recorded. A decided record is forgotten once every leader's
+resolution is itself held by a majority. A snapshot backup carries a
+transaction as its cut sees it, so a restore answers as a reader at that
+moment did.
+
+**Seeing it.** `INFO FOR NODE` reports `cluster.across`: `committed`,
+`aborted` and `in_doubt` as counted by the node that drove them, and `pending`
+records and transactions `with_intents` as the settling round last sampled
+them. `/metrics` carries `tessari_transactions_across_leaders_total{outcome}`,
+`tessari_transactions_pending` and `tessari_transactions_with_intents`.
 
 **A node subscribed to less than the store does not lead the store.** The
 store's leader writes every range no row places, and a leader collects from
@@ -8993,12 +9139,56 @@ throughout: the move completed 11–20 s after it committed — one collection o
 the store's log plus one 10-second lease — and no write was taken for at most
 6.2 s. A row that is no longer a range's last candidate can also be dropped.
 
-**The last row placing a range is not taken away** — neither by `LEADS NONE`,
-by `LEADS` naming another range, nor by `DROP REPLICA`
-(**`PlacementCannotBeDropped`**): the node committing the change would hand the
-range back to the store's leader at once, while the range's own leader goes on
-writing under its lease until it hears of the change. Place another row on the
-range first.
+**Giving a range back to the store line.** `LEADS NONE` on the **last** row
+placing a range does not drop the placement — dropping it would let the store's
+leader write the range at once while the range's own leader goes on writing
+under its lease until it hears of the change. The row is marked **releasing**
+instead (`INFO FOR NODE` reports `releasing: true` beside its `leads`):
+
+1. the range stays carved out of the store line on every node, so nobody but
+   its own line writes it;
+2. the releasing node stops standing for it, and voters that have applied the
+   change refuse it a renewal, so its lease runs out;
+3. the store line's leader — when it is placed on no range of its own — stands
+   for the range on the range's line and is elected once that lease has lapsed,
+   exactly as a moved placement's new candidate is;
+4. leading both, it folds the placement away (`handed back to the store line`
+   in its log), and the range is the store line's again — led by the same node,
+   so no instant has two writers.
+
+Writes into the range are refused for about a lease and an election while this
+happens, and land on the store's leader afterwards. Measured on three local
+processes with a writer running throughout: the store's leader took the range
+about 3.7 s after the release, and every write the writer was told was taken was
+held once. `ALTER REPLICA b LEADS <the same range>` withdraws a release that has
+not folded yet; placing another row on the range makes it an ordinary move.
+
+The last row is still not moved to **another** range, nor dropped with `DROP
+REPLICA` (**`PlacementCannotBeDropped`**): give the range back with `LEADS NONE`
+first, or place another row on it.
+
+**Preferring one candidate — `PREFERRED`.** When several rows place one range,
+the election decides which leads, and any of them may win. Written after the
+placement, `PREFERRED` names the one that should:
+
+```
+DEFINE REPLICA b AT 'b:9001' LEADS SHARD prod.shop.orders 2 PREFERRED;
+ALTER REPLICA c LEADS SHARD prod.shop.orders 2 PREFERRED;
+```
+
+A leader that is not preferred, hearing a preferred candidate of its range that
+is caught up with it on the range's line, stops renewing; its lease runs out and
+the preferred candidate is elected — the same hand-over a moved placement takes,
+so writes into the range are refused for about a lease and an election. It hands
+the range over only to a candidate that is caught up and audible, stays off the
+range's line for four leases afterwards so it does not win it back in the gap,
+and hands over at most once every 30 seconds, so a preferred node that keeps
+failing cannot have the range thrown back and forth. Measured on three local
+processes: the preferred candidate took the range about 2.6 s after it was
+placed. Several preferred rows on one range are equals. Restating the placement
+without the word clears it, and `LEADS NONE` clears it with the placement;
+`INFO FOR NODE` reports `preferred` on each peer. The leadership balancer never
+moves a preferred placement.
 
 
 ### How many copies hold a write before it is acknowledged
@@ -9110,6 +9300,35 @@ from the defaults — a cluster nobody has configured runs the built-in periods,
 and reporting those as a set policy would make it impossible to see whether a
 policy ever arrived.
 
+**Balancing who leads what — `BALANCE LEADERSHIPS`.** One clause after `LEASE`,
+optional, and off unless written:
+
+```
+DEFINE FAILOVER AWARENESS 1s COLLECTION 1s ROUND 200ms CAMPAIGN 100ms LEASE 800ms
+    BALANCE LEADERSHIPS;
+```
+
+With it, the store line's leader evens out the **lines** each node leads — the
+store line and every range placed with `LEADS`. A peer row places one range, so
+the imbalance that arises is a node leading the store line *and* the range its
+own row places (after a failover, or a move) while another voter leads nothing.
+The store's leader then moves that placement, exactly as `ALTER REPLICA idle
+LEADS <range>; ALTER REPLICA busy LEADS NONE;` would, in one transaction through
+the log:
+
+- only when the busiest node leads at least two lines more than the target;
+- only onto a voter — a `coordinating` peer bound to its node, `REPLICATES` a
+  reach that holds the range, and placed on nothing else;
+- only the busiest node's own placement, and only while it leads it — a node
+  still leading a range it was moved off is a move in flight;
+- at most once per two `LEASE` periods, the hand-over bound.
+
+Each move is a line in the store leader's log (`balanced leaderships: moved the
+placement of …`) and a change to the peer rows `INFO FOR NODE` reports as
+`leads`. Because the statement replaces the set, a later `DEFINE FAILOVER`
+without the clause turns the balancer off; `cluster.failover.balance_leaderships`
+says which.
+
 
 ### A peer certificate the cluster no longer accepts
 
@@ -9201,6 +9420,31 @@ amended by dropping it and declaring it again — the drop removes the node. The
 removed nodes are listed under `cluster.tombstoned` in `INFO FOR NODE`, and,
 like revocations, reach every node whatever it follows.
 
+
+### Upgrading a cluster one node at a time
+
+A cluster moves to the next **minor** release without stopping: replace one
+node at a time — stop it, start the new release on the **same store** — the
+followers first and the store line's leader last, and wait for each to answer
+before the next. Each replaced node opens the store the previous release wrote
+and catches up; the cluster takes writes throughout, except that a write sent
+while the leader itself is being replaced is refused until a leader is elected
+again.
+
+What is promised, and what is not:
+
+- **One minor version at a time** (0.23 → 0.24). Two steps are two upgrades.
+- **Forward only.** A store a later release has written is not promised to open
+  under an earlier one; take a snapshot before you start.
+- **New features after the last node.** While both releases run, use only what
+  both understand. Turn on what the new release adds — `BALANCE LEADERSHIPS`,
+  `LEADS … PREFERRED`, giving a range back with `LEADS NONE`, a transaction
+  across two leaders — once every node runs it: an older node does not know
+  them, and a decision only half the cluster can read is not one it makes.
+
+Measured on three local processes going from 0.23.0-beta to 0.24.0-beta: each
+node replaced in turn, writes landing after every step, and every node holding
+every record at the end.
 
 ### Which peers vote, and what a node that votes for nobody does
 
@@ -9349,7 +9593,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.23.0", "build": "0.23.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.24.0", "build": "0.24.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],
@@ -9603,8 +9847,7 @@ with a doubling wait (`SignInThrottled`), its counts kept per store.
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
 | **hash** sharding | shards are spans of identities, which is what keeps a span read one walk. Spreading writes by hash forfeits that order and is a second method the map can carry later, not a change to the first. §4 |
 | more of a gathered read **pushed to the shards' leaders** | a `WHERE`, a `LIMIT`, an `ORDER BY … LIMIT` over record-only keys and the folds that merge exactly (`count`, `sum`, `mean`, `min`, `max`) travel; `variance`, `stddev`, `median`, `collect`, the counter folds and a fold over floats gather the records and run here, and a suggestion is withheld on a node holding part of the table. Merging those exactly is each its own piece of work. A join side and a `FETCH` are not gathered at all. §7d |
-| **choosing among a range's candidates, and giving a range back to the store** | `LEADS` elects a leader per placed range and `ALTER REPLICA` moves a placement between rows, but there is no preference among candidates and no rebalancing, and a range's last placement cannot be removed: that needs every lease on the range to have lapsed first. §7d |
-| a change feed over a split table **on a node that does not write all of it** | a feed merges one writer's logs in that writer's order, and two writers' orders are unrelated counters — so a shard led elsewhere, or a follower, is refused by name rather than merged by a guess. Following it there needs an order across writers. §4 |
+| a change feed over a split table **on a node that does not write all of it** | a feed merges one writer's logs in that writer's order, and two writers' orders are unrelated counters — so a shard led elsewhere, or a follower, is refused by name rather than merged by a guess. Following it there needs an order across writers, and a transaction across leaders does not supply one: it commits whole, and each leader's log keeps its own count. §4 |
 | **an index serving a branch of a fused read** (`ORDER BY FUSE`) | every branch is ranked over every record that passed the `WHERE`, which is exact and costs the filtered read. A branch served from the search walk or the vector graph would stop early, and a fused order needs each branch's places down to its depth — the bound is the depth, not the `LIMIT`, and proving the walk answers the same places is its own piece of work. §5 |
 | a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |
 | a bucket narrowed by **content type** — `HOLDS image/png` | the store has no content type for a file. A file's record holds its size, its chunk count and when it was written, and nothing anywhere reads the bytes to decide what they are — so the clause could only enforce the caller's own claim about the caller's own bytes, which is the assertion §6a refuses `CREATE`, `UPDATE` and `SET` in order to avoid, wearing a constraint's clothes. The honest version detects the type by reading the leading bytes against a table of signatures, which is real work with a real failure mode of its own: plain text, CSV and SVG have no signature, and a `HOLDS text/plain` that cannot be checked is worse than no clause at all. The ceiling shipped without it because `MAX` compares against a number the store computes itself. §6a |

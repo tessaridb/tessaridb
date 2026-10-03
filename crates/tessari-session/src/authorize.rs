@@ -358,7 +358,7 @@ impl<'a> Session<'a> {
     /// deliberately: it opens its own transaction, so a script that alters its
     /// own user mid-transaction does not re-authorize against a change nobody
     /// has committed yet.
-    fn refresh(&mut self, store: &Store) -> Result<bool> {
+    pub(crate) fn refresh(&mut self, store: &Store) -> Result<bool> {
         let signed = self.identity.user().map(|user| user.id);
         let mut transaction = store.begin()?;
         let catalog = Catalog::new(&mut transaction);

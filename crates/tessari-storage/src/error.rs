@@ -11,7 +11,7 @@
 //! be to do nothing.
 
 use tessari_kv::ErrorCategory;
-use tessari_types::{Epoch, FieldKind, RecordId, Sequence, article};
+use tessari_types::{Epoch, FieldKind, Reach, RecordId, Sequence, article};
 
 /// Result alias for every fallible operation in this crate.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -122,20 +122,19 @@ pub enum Error {
         table: String,
     },
 
-    /// Another transaction committed to a record this one wrote.
+    /// Another transaction committed to a record this one wrote, or holds it.
     ///
     /// Under snapshot isolation the first committer wins. Nothing was written.
-    #[error(
-        "write conflict on record {id}: it was committed at sequence {committed} \
-         after this transaction's snapshot {snapshot}"
-    )]
+    #[error("write conflict on record {id}: {}", conflict_reason(.with, .snapshot, .committed))]
     Conflict {
         /// The record that was written by both transactions.
         id: RecordId,
         /// The snapshot this transaction read at.
         snapshot: Sequence,
-        /// The sequence the winning transaction committed at.
+        /// The version of the record that refused this write.
         committed: Sequence,
+        /// What that version is.
+        with: ConflictWith,
     },
 
     /// The commit could not claim a sequence within its attempt budget.
@@ -332,8 +331,8 @@ pub enum Error {
     /// named, sorted, so the caller can see which ranges went where.
     #[error(
         "this transaction writes ranges led by {} different nodes ({}), and no \
-         node may commit it — write each leader's ranges in a transaction of \
-         their own",
+         node may commit it alone — commit it with `COMMIT ACROSS LEADERS`, or \
+         write each leader's ranges in a transaction of their own",
         nodes.len(),
         nodes
             .iter()
@@ -348,15 +347,16 @@ pub enum Error {
     },
 
     /// The last peer row placing a range (`LEADS`) was asked to be dropped or
-    /// moved.
+    /// moved to another range.
     ///
     /// Refused rather than taken: the node committing the drop would hand the
     /// range back to the store line at once while the range's own leader goes
-    /// on writing under its lease until the drop reaches it (ADR-0082).
+    /// on writing under its lease until the drop reaches it (ADR-0082). `LEADS
+    /// NONE` gives it back safely, waiting out that lease (ADR-0098 D3).
     #[error(
-        "peer `{name}` is the last placed to lead its range (`LEADS`), and taking a range's last \
-         placement needs every lease on that range to have lapsed first, which this build cannot \
-         establish; place another peer on the range first"
+        "peer `{name}` is the last placed to lead its range (`LEADS`), and dropping or moving it \
+         would let the store line write the range while its leader still holds a lease; give the \
+         range back with `LEADS NONE`, or place another peer on the range first"
     )]
     PlacementCannotBeDropped {
         /// The peer's name.
@@ -771,6 +771,42 @@ pub enum Error {
         table: String,
     },
 
+    /// `SPLIT AUTOMATICALLY` on a table with no shard map (ADR-0113 D2).
+    #[error(
+        "table `{table}` is not split, so there is no shard to split or merge — \
+         declare it with `SPLIT AT` first"
+    )]
+    AutoSplitOnAnUnsplitTable {
+        /// The table.
+        table: String,
+    },
+
+    /// `SPLIT AUTOMATICALLY` whose merge bound is at least half its split
+    /// bound: the halves of a split would merge straight back (ADR-0113 D2).
+    #[error(
+        "table `{table}` would split above {above} records and merge the halves \
+         back below {merge_below} — the merge bound must be under half the split bound"
+    )]
+    AutoSplitWouldOscillate {
+        /// The table.
+        table: String,
+        /// The split bound.
+        above: u64,
+        /// The merge bound.
+        merge_below: u64,
+    },
+
+    /// `SPREAD` on a table whose identity is not generated as a UUID: the
+    /// bucket is taken from a UUID's random part (ADR-0113 D1).
+    #[error(
+        "table `{table}` spreads its identities, so the store names its records as a \
+         bucket and a uuid — declare it `IDENTITY uuid SPREAD`"
+    )]
+    SpreadNeedsGeneratedUuid {
+        /// The table being declared.
+        table: String,
+    },
+
     /// A record of a partitioned table whose identity does not begin with its
     /// partition field's value and `:`, or whose value is not text without `:`.
     ///
@@ -907,6 +943,54 @@ pub enum Error {
         found: &'static str,
     },
 
+    /// A log record of a transaction across leaders contradicts itself — a
+    /// prepared write that is not an intent of that transaction, or a
+    /// resolution carrying one (ADR-0112). The writer produced it, so it is an
+    /// integrity problem rather than a caller's mistake.
+    #[error("a cross-leader {part} record is malformed: {problem}")]
+    AcrossMalformed {
+        /// Which record it was: `prepare`, `decide` or `resolve`.
+        part: &'static str,
+        /// What was wrong with it.
+        problem: &'static str,
+    },
+
+    /// A transaction across leaders already has an outcome, and the change
+    /// asked of its record would contradict it (ADR-0112 D4, D7). The loser of
+    /// a coordinator racing a lapse meets this, and reads the record to learn
+    /// what was decided.
+    #[error("the transaction across leaders is already {decided}")]
+    AcrossDecided {
+        /// The outcome the record holds: `committed` or `aborted`, or `pending`
+        /// when a first record was asked of one that exists.
+        decided: &'static str,
+    },
+
+    /// A participant's log no longer holds the position after the one the
+    /// transaction's node had seen of it, so whether anything was committed
+    /// over the transaction's writes in between cannot be answered (ADR-0112
+    /// D3a). Retriable: a new transaction reads a newer position.
+    #[error(
+        "the participant log starts at {start}, after the position {seen} the transaction had seen"
+    )]
+    AcrossReadTooOld {
+        /// The position the transaction's node had applied.
+        seen: Sequence,
+        /// The oldest position the participant still holds.
+        start: Sequence,
+    },
+
+    /// A transaction may write across leaders only into ranges the node it
+    /// runs on holds a copy of: the half of the conflict check a participant
+    /// cannot make is made on that copy (ADR-0112 D3a).
+    #[error(
+        "this node holds no copy of {range:?}, so a transaction here cannot write it across leaders"
+    )]
+    AcrossNotHeldHere {
+        /// The range written.
+        range: Reach,
+    },
+
     /// Every identifier at this level has been handed out.
     ///
     /// Ids are never reused after a drop, so the space is consumed by creations
@@ -1016,6 +1100,45 @@ pub enum Error {
     Encoding(#[from] tessari_encoding::Error),
 }
 
+/// What a write conflicted with — what the refusal's words say (Q-917).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictWith {
+    /// A transaction that committed after this one's snapshot.
+    Commit,
+    /// An intent of a transaction across leaders, standing until its record
+    /// decides it (ADR-0112 D5).
+    Intent(tessari_encoding::TransactionId),
+    /// A version of a transaction across leaders this one read past, because
+    /// not every part of it has arrived on this node (ADR-0112 D6a).
+    Unseen(tessari_encoding::TransactionId),
+}
+
+/// The second half of a conflict's message: what refused the write.
+fn conflict_reason(with: &ConflictWith, snapshot: &Sequence, committed: &Sequence) -> String {
+    let named = |transaction: &tessari_encoding::TransactionId| {
+        transaction
+            .bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    match with {
+        ConflictWith::Commit => format!(
+            "it was committed at sequence {committed} after this transaction's snapshot {snapshot}"
+        ),
+        ConflictWith::Intent(transaction) => format!(
+            "transaction {} across leaders holds an intent on it until its record \
+             decides; run this transaction again once it has",
+            named(transaction)
+        ),
+        ConflictWith::Unseen(transaction) => format!(
+            "transaction {} across leaders wrote it and has not all arrived on this \
+             node, so this transaction read the value under it; run it again in a moment",
+            named(transaction)
+        ),
+    }
+}
+
 impl Error {
     /// Whether this is a key that did not open what it was given — for an
     /// unseal, a wrong passphrase.
@@ -1033,7 +1156,12 @@ impl Error {
         match self {
             Self::Conflict { .. }
             | Self::LogDivergence { .. }
-            | Self::ConcurrentVersions { .. } => ErrorCategory::Conflict,
+            | Self::ConcurrentVersions { .. }
+            | Self::AcrossDecided { .. }
+            | Self::AcrossReadTooOld { .. } => ErrorCategory::Conflict,
+            // The request is fine and this node is the wrong place to run it,
+            // which is what a client sent to a whole holder fixes.
+            Self::AcrossNotHeldHere { .. } => ErrorCategory::Validation,
             Self::CommitContention { .. } => ErrorCategory::Busy,
             // Unavailable rather than Busy or Conflict, because it is the only
             // one of the three that is true: the write was not wrong and
@@ -1067,6 +1195,9 @@ impl Error {
             | Self::NodeTombstoned { .. }
             | Self::SplitNeedsGeneratedUuid { .. }
             | Self::PartitionNeedsGeneratedUuid { .. }
+            | Self::SpreadNeedsGeneratedUuid { .. }
+            | Self::AutoSplitOnAnUnsplitTable { .. }
+            | Self::AutoSplitWouldOscillate { .. }
             | Self::PartitionMismatch { .. }
             | Self::SplitPointsOutOfOrder { .. }
             | Self::SplitOnAKindThatIsNotRecords { .. }
@@ -1085,7 +1216,9 @@ impl Error {
             // position that can never come back.
             | Self::BelowLogStart { .. }
             | Self::VersionInTheFuture { .. } => ErrorCategory::Validation,
-            Self::CatalogMalformed { .. } => ErrorCategory::Corruption,
+            Self::CatalogMalformed { .. } | Self::AcrossMalformed { .. } => {
+                ErrorCategory::Corruption
+            }
             // A dependency this process needs is not reachable, which is what
             // `Unavailable` names. Not `Internal`: nothing here is a bug in the
             // store, and not `Validation`: no caller supplied anything wrong.
@@ -1163,6 +1296,7 @@ mod tests {
             id: RecordId::from("r"),
             snapshot: Sequence::new(5),
             committed: Sequence::new(9),
+            with: ConflictWith::Commit,
         };
         assert_eq!(error.category(), ErrorCategory::Conflict);
         assert!(!error.is_retryable());

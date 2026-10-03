@@ -36,7 +36,9 @@ mod adoption;
 mod apply;
 mod history;
 mod leadership;
+pub(crate) use leadership::Led;
 mod leases;
+mod lines;
 mod logs;
 mod opening;
 mod parts;
@@ -121,6 +123,39 @@ pub struct Health {
     /// granted, which is the ordinary state of a store standing alone and is
     /// not a value of zero.
     pub lease_remaining: Option<std::time::Duration>,
+    /// Reads that reached this node holding none of what they asked for
+    /// (`NotHeldHere`), since this process opened the store (G053 C6).
+    ///
+    /// A client routing well keeps this near zero; a number climbing says the
+    /// reads are aimed at the wrong node, which nothing else here shows.
+    pub not_held_here: u64,
+    /// Commits that waited for a majority of voters to hold them (G053 C6).
+    pub acknowledgement_waits: u64,
+    /// Of those, the ones answered `NotAcknowledgedInTime` — committed here,
+    /// not confirmed by a majority within one round.
+    pub acknowledgement_timeouts: u64,
+    /// The time those waits took, summed, so a scrape divides it by the count.
+    pub acknowledgement_waited: std::time::Duration,
+    /// Transactions across leaders this node coordinated that committed, since
+    /// this process opened the store (ADR-0112 D11).
+    pub across_committed: u64,
+    /// Of those it coordinated, the ones that aborted.
+    pub across_aborted: u64,
+    /// And the ones whose decision was sent and not confirmed — the client was
+    /// told the outcome is in doubt, and the record's range finishes it.
+    pub across_in_doubt: u64,
+    /// Transaction records `PENDING` here as the last settling pass left them,
+    /// or `None` before the first pass — sampled on the pass's cadence rather
+    /// than counted per request, because the records are kept for a while and a
+    /// walk of them per scrape would grow with them.
+    pub across_pending: Option<u64>,
+    /// Transactions holding intents here as the last settling pass left them,
+    /// or `None` before the first pass. Above zero for longer than a pass or
+    /// two is a transaction waiting on a coordinator range that does not answer.
+    pub across_with_intents: Option<u64>,
+    /// Placements the leadership balancer moved since this process opened the
+    /// store (ADR-0113 D3, D4).
+    pub balancer_moves: u64,
 }
 
 impl Health {
@@ -216,6 +251,12 @@ pub struct Store {
     discarded: Arc<AtomicU64>,
     /// Leadership rounds stood since this process opened the store.
     campaigns: Arc<AtomicU64>,
+    /// `NotHeldHere` answers and majority waits since this process opened the
+    /// store, shared with every handle for the reason the counters above are.
+    tally: Arc<crate::tally::ClusterTally>,
+    /// What the balancing pass last measured of each balanced table's shards
+    /// (ADR-0113 D4), shared with every handle like the tally beside it.
+    sampled: Arc<crate::sampled_shards::SampledShards>,
     /// How many log records this process keeps where no statement said
     /// (ADR-0094 D2). Shared with every handle for the reason the counters
     /// beside it are.

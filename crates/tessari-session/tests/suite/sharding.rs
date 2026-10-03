@@ -507,6 +507,8 @@ fn a_row_that_places_a_leader_cannot_be_dropped_and_one_that_does_not_can() {
         matches!(refused, tessari_storage::Error::PlacementCannotBeDropped { ref name } if name == "b"),
         "{refused:?}"
     );
+    // The refusal names the way out this build has: give the range back.
+    assert!(refused.to_string().contains("`LEADS NONE`"), "{refused}");
     session.run("DROP REPLICA d;").unwrap();
     assert_eq!(
         peer_field(&mut session, "leads"),
@@ -607,8 +609,8 @@ fn the_last_placement_on_a_range_is_not_taken_away() {
         )
         .unwrap();
     for taking in [
-        "ALTER REPLICA a LEADS NONE;",
         "ALTER REPLICA a LEADS SHARD prod.shop.orders 2;",
+        "DROP REPLICA a;",
     ] {
         let refused = refusal(&mut session, taking);
         assert!(
@@ -629,6 +631,109 @@ fn the_last_placement_on_a_range_is_not_taken_away() {
     assert_eq!(
         peer_field(&mut session, "leads"),
         vec![("a".to_owned(), Some("SHARD prod.shop.orders 1".to_owned()))]
+    );
+}
+
+/// Each peer's `releasing` flag as `INFO FOR NODE` reports it.
+fn releasing(session: &mut Session<'_>) -> Vec<(String, bool)> {
+    flag(session, "releasing")
+}
+
+/// Each peer's boolean `field` as `INFO FOR NODE` reports it.
+fn flag(session: &mut Session<'_>, field: &str) -> Vec<(String, bool)> {
+    let Value::Object(report) = report(session, "INFO FOR NODE;") else {
+        panic!("not a report");
+    };
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster group: {report:?}");
+    };
+    let Some(Value::Array(peers)) = cluster.get("peers") else {
+        panic!("no peer list: {cluster:?}");
+    };
+    peers
+        .iter()
+        .map(|peer| {
+            let Value::Object(fields) = peer else {
+                panic!("a peer is an object");
+            };
+            let Some(Value::String(name)) = fields.get("name") else {
+                panic!("a peer has a name");
+            };
+            (name.clone(), fields.get(field) == Some(&Value::Bool(true)))
+        })
+        .collect()
+}
+
+#[test]
+fn the_last_placement_given_up_is_released_to_the_store_line_and_still_carved() {
+    // ADR-0098 D3: `LEADS NONE` on the last row placing a range is accepted
+    // as a hand-back. The row keeps the range — so every node keeps it carved
+    // and nobody but the range's own line writes it — and says it is
+    // releasing; the store's leader folds it away once it leads the range.
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run(
+            "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g'; \
+             DEFINE REPLICA a AT 'a:9001' LEADS SHARD prod.shop.orders 1;",
+        )
+        .unwrap();
+    session.run("ALTER REPLICA a LEADS NONE;").unwrap();
+    assert_eq!(
+        peer_field(&mut session, "leads"),
+        vec![("a".to_owned(), Some("SHARD prod.shop.orders 1".to_owned()))]
+    );
+    assert_eq!(releasing(&mut session), vec![("a".to_owned(), true)]);
+    // Asked again, the row is taken back from releasing.
+    session
+        .run("ALTER REPLICA a LEADS SHARD prod.shop.orders 1;")
+        .unwrap();
+    assert_eq!(releasing(&mut session), vec![("a".to_owned(), false)]);
+    // A row that is not the last candidate gives its placement up outright.
+    session
+        .run("DEFINE REPLICA b AT 'b:9001' LEADS SHARD prod.shop.orders 1; ALTER REPLICA a LEADS NONE;")
+        .unwrap();
+    assert_eq!(
+        peer_field(&mut session, "leads"),
+        vec![
+            ("a".to_owned(), None),
+            ("b".to_owned(), Some("SHARD prod.shop.orders 1".to_owned())),
+        ]
+    );
+    assert_eq!(
+        releasing(&mut session),
+        vec![("a".to_owned(), false), ("b".to_owned(), false)]
+    );
+}
+
+#[test]
+fn a_candidate_is_preferred_where_it_is_placed_and_restating_without_it_clears_it() {
+    // G053 SG5b: `PREFERRED` belongs to the placement — written with it,
+    // restated without it to clear it, and gone with `LEADS NONE`.
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run(
+            "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g'; \
+             DEFINE REPLICA a AT 'a:9001' LEADS SHARD prod.shop.orders 1; \
+             DEFINE REPLICA b AT 'b:9001' LEADS SHARD prod.shop.orders 1 PREFERRED;",
+        )
+        .unwrap();
+    assert_eq!(
+        flag(&mut session, "preferred"),
+        vec![("a".to_owned(), false), ("b".to_owned(), true)]
+    );
+    session
+        .run("ALTER REPLICA a LEADS SHARD prod.shop.orders 1 PREFERRED; ALTER REPLICA b LEADS SHARD prod.shop.orders 1;")
+        .unwrap();
+    assert_eq!(
+        flag(&mut session, "preferred"),
+        vec![("a".to_owned(), true), ("b".to_owned(), false)]
+    );
+    session.run("ALTER REPLICA a LEADS NONE;").unwrap();
+    assert_eq!(
+        flag(&mut session, "preferred"),
+        vec![("a".to_owned(), false), ("b".to_owned(), false)]
     );
 }
 

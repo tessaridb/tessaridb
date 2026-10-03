@@ -87,6 +87,23 @@ pub trait Holding: Origin + Send + Sync + 'static {
         assertion: &Assertion,
         asked: &Coordinate,
     ) -> std::result::Result<tessaridb::Coordinated, String>;
+
+    /// Write one record of a transaction across leaders `from` carried here
+    /// for a caller it verified, under an assertion the door has already
+    /// believed (ADR-0112). `asked` is the record as
+    /// [`tessari_session::AcrossAsk::encode`] wrote it; the answer is the
+    /// [`tessari_session::AcrossAnswer`] encoded.
+    ///
+    /// # Errors
+    ///
+    /// The reason this node will not write it, in words and with its kind,
+    /// which the asking node passes on as *not prepared*.
+    fn across(
+        &self,
+        from: [u8; NODE_ID_LEN],
+        assertion: &Assertion,
+        asked: &[u8],
+    ) -> std::result::Result<Vec<u8>, tessari_session::PartRefused>;
 }
 
 /// How one served connection ended, for the loop that decides what next.
@@ -148,7 +165,15 @@ impl Peers {
                 accepted = listener.accept() => accepted,
             };
             let socket = match accepted {
-                Ok((socket, _)) => socket,
+                Ok((socket, _)) => {
+                    // A frame written in pieces must not wait for the peer's
+                    // delayed acknowledgement: the replication stream rides
+                    // this socket, and on Linux that wait is 40 ms a record.
+                    if let Err(why) = socket.set_nodelay(true) {
+                        log::warn!("a peer connection could not turn off Nagle's algorithm: {why}");
+                    }
+                    socket
+                }
                 Err(why) if passes(&why) => {
                     log::warn!("accepting a peer failed ({why}); resting before the next");
                     tokio::time::sleep(ACCEPT_PAUSE).await;
@@ -332,6 +357,50 @@ impl<H: Holding> Connection<H> {
             // A request carried here for a caller (ADR-0108 D1–D3). Believed
             // against the certificate THIS handshake proved, so the signer is
             // the peer on this connection and no other.
+            // A record of a transaction across leaders, carried here as a
+            // coordinated request is (ADR-0112) and believed by the same rule.
+            Some((tag, body)) if tag == PeerFrame::Across.tag() => {
+                let shown = shown.as_ref().ok_or(Error::Unidentified)?;
+                let carried = crate::across::Carried::decode(&body)?;
+                let believed = carried
+                    .signed
+                    .verify(
+                        shown,
+                        said.node,
+                        self.me,
+                        (carried.digest(), now_ms()),
+                        &self.replays,
+                    )
+                    .copied();
+                let (tag, reply) = match believed {
+                    Err(why) => {
+                        log::warn!(
+                            "a cross-leader record carried from {} was refused: {why}",
+                            tessari_types::uuid_to_text(&said.node)
+                        );
+                        // This node will not act for the caller as asserted,
+                        // and asking again changes nothing.
+                        let refused = tessari_session::PartRefused {
+                            kind: tessari_session::RefusalKind::Forbidden,
+                            reason: why.to_string(),
+                        };
+                        (PeerFrame::NotAcross.tag(), refused.encode())
+                    }
+                    Ok(assertion) => {
+                        let holding = Arc::clone(&self.holding);
+                        let from = said.node;
+                        let answered = self
+                            .store(move || Ok(holding.across(from, &assertion, &carried.asked)))
+                            .await?;
+                        match answered {
+                            Ok(answer) => (PeerFrame::AcrossDone.tag(), answer),
+                            Err(refused) => (PeerFrame::NotAcross.tag(), refused.encode()),
+                        }
+                    }
+                };
+                bounded(frame_async::write_tagged(&mut link, tag, &reply)).await??;
+                None
+            }
             Some((tag, body)) if tag == PeerFrame::Coordinate.tag() => {
                 let shown = shown.as_ref().ok_or(Error::Unidentified)?;
                 let asked = Coordinate::decode(&body)?;
@@ -573,6 +642,7 @@ mod tests {
     use crate::link::tests::{Authority, THERE, hello, settled, voted};
     use crate::link::{Ask, Credential};
     use crate::peer::Purpose;
+    use tessari_session::RefusalKind;
     use tessari_types::{Epoch, Reach};
 
     const HERE: [u8; NODE_ID_LEN] = [7_u8; NODE_ID_LEN];
@@ -631,6 +701,18 @@ mod tests {
             _: &crate::coordination::Coordinate,
         ) -> std::result::Result<tessaridb::Coordinated, String> {
             Err("this test door carries no requests".to_owned())
+        }
+
+        fn across(
+            &self,
+            _: [u8; NODE_ID_LEN],
+            _: &crate::assertion::Assertion,
+            _: &[u8],
+        ) -> std::result::Result<Vec<u8>, tessari_session::PartRefused> {
+            Err(tessari_session::PartRefused {
+                kind: tessari_session::RefusalKind::Invalid,
+                reason: "this test door writes no cross-leader records".to_owned(),
+            })
         }
     }
 
@@ -730,6 +812,65 @@ mod tests {
             == Some(Vote::Granted {
                 hold: tessari_storage::LEASE_TTL
             })));
+    }
+
+    /// What the door answers a carried cross-leader record with, as the kind
+    /// of refusal the asking node is handed — the holder here refuses every
+    /// record as invalid (Q-924).
+    fn across_refused(
+        (door, authority): (&Served, &Authority),
+        signer: &Credential,
+        link: Credential,
+    ) -> Option<RefusalKind> {
+        use crate::assertion::{Assertion, Principal, now_ms, request_digest};
+        let asked = b"a record the holder refuses".to_vec();
+        let carried = crate::across::Carried {
+            signed: Assertion {
+                from: THERE,
+                to: HERE,
+                principal: Principal::Anonymous,
+                request: request_digest(None, None, crate::across::ACROSS, &asked),
+                nonce: [9; 16],
+                issued_ms: now_ms(),
+                expires_ms: now_ms().saturating_add(10_000),
+            }
+            .sign(&signer.key)
+            .expect("signed"),
+            asked,
+        };
+        match crate::link::tests::call_with(
+            door.address,
+            link,
+            &authority.der(),
+            HERE,
+            &hello(THERE),
+            Ask::Across(&carried),
+        ) {
+            Err(Error::RefusedAcross(refused)) => Some(refused.kind),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_refused_cross_leader_record_comes_back_with_the_kind_of_its_refusal() {
+        let authority = Authority::new();
+        let door = served(&authority);
+        let mine = peer(&authority);
+        let same = |credential: &Credential| Credential {
+            chain: credential.chain.clone(),
+            key: credential.key.clone_key(),
+        };
+        // Believed, and refused by the node holding the range: its own kind.
+        assert_eq!(
+            across_refused((&door, &authority), &mine, same(&mine)),
+            Some(RefusalKind::Invalid)
+        );
+        // Signed by a key the connection did not prove: the door will not act
+        // for that caller, and asking again changes nothing.
+        assert_eq!(
+            across_refused((&door, &authority), &peer(&authority), same(&mine)),
+            Some(RefusalKind::Forbidden)
+        );
     }
 
     #[test]

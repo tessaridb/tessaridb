@@ -72,6 +72,21 @@ pub(crate) fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> 
     if let Some(field) = &definition.partition {
         shape.insert("partition".to_owned(), Value::from(field.as_str()));
     }
+    // Present only on a table that splits and merges itself (ADR-0113 D2).
+    if let Some(policy) = definition.auto_split {
+        let number = |held: u64| Value::from(i64::try_from(held).unwrap_or(i64::MAX));
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("above".to_owned(), number(policy.above));
+        if let Some(writes) = policy.writes_per_second {
+            fields.insert("writes_per_second".to_owned(), number(writes));
+        }
+        fields.insert("merge_below".to_owned(), number(policy.merge_below));
+        shape.insert("auto_split".to_owned(), Value::Object(fields));
+    }
+    // Present only on a table whose identities spread (ADR-0113 D1).
+    if definition.spread {
+        shape.insert("spread".to_owned(), Value::Bool(true));
+    }
     // Present only on a split table (G031, ADR-0080). Each bound is the literal
     // the clause takes — `'g'`, `uuid '…'` — so what the report prints is what
     // the next declaration types, and `NONE` marks an open end rather than a
@@ -201,4 +216,33 @@ pub(crate) fn described_index(index: &IndexDefinition) -> Value {
         described.insert("vector".to_owned(), Value::from(distance.name()));
     }
     Value::Object(described)
+}
+
+/// A balanced table's shards as the balancing pass last measured them
+/// (ADR-0113 D4): each shard's records — at least that many when the count
+/// stopped at the bound — and its writes a second, and the last act.
+pub(crate) fn described_sample(sampled: &tessari_storage::SampledTable) -> Value {
+    let number = |held: u64| Value::from(i64::try_from(held).unwrap_or(i64::MAX));
+    let shards = sampled
+        .shards
+        .iter()
+        .map(|shard| {
+            Value::Object(BTreeMap::from([
+                ("id".to_owned(), Value::from(i64::from(shard.shard.get()))),
+                ("records".to_owned(), number(shard.records)),
+                ("complete".to_owned(), Value::Bool(shard.complete)),
+                (
+                    "writes_per_second".to_owned(),
+                    shard.writes_per_second.map_or(Value::Null, number),
+                ),
+            ]))
+        })
+        .collect();
+    Value::Object(BTreeMap::from([
+        ("shards".to_owned(), Value::Array(shards)),
+        (
+            "last_act".to_owned(),
+            sampled.last_act.as_deref().map_or(Value::Null, Value::from),
+        ),
+    ]))
 }

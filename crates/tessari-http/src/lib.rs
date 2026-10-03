@@ -75,8 +75,8 @@ use tessaridb::feed::Commits;
 use tokio_util::sync::CancellationToken;
 
 use crate::incoming::Incoming;
-pub use respond::Answer;
 pub use respond::scripts::render_coordinated;
+pub use respond::{Answer, refusal_kind};
 
 /// One wire session over a byte stream: given the stream, it runs until the
 /// session ends (ADR-0089).
@@ -127,7 +127,7 @@ impl Node {
         db: Arc<Db>,
         address: &str,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let listener = TcpListener::bind(address)?;
+        let listener = tessari_serve::listen(address)?;
         // The runtime's listener requires it, and nothing here reads it blocking.
         listener.set_nonblocking(true)?;
         let committed = Arc::clone(db.commits());
@@ -540,6 +540,9 @@ fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
     // writes passes through, which is what keeps "what a refusal is" a single
     // decision rather than one taken again at each route.
     stopping.answered(reply.status >= 400);
+    if let Some(settled) = reply.settled {
+        stopping.redirected(settled);
+    }
 
     // Reported at the same single place, and at a level the status decides: a
     // 404 is traffic and a 500 is an event, and an operator filtering by level

@@ -558,10 +558,11 @@ const ACCEPTED_NEGATIONS: &[(&str, &str)] = &[
     // in W317, the sentence became false, and this test is what said so —
     // which is the whole reason the record carries a deletion condition rather
     // than a permanent blessing.
-    (
-        "No lag figure, and no leadership for other nodes.",
-        "True: there is no follower loop, so a non-writing node's copy has no last collection to measure a lag from; and `cluster.lease` is this node's own lease, never a peer's.",
-    ),
+    //
+    // So did "No lag figure, and no leadership for other nodes" and the reason
+    // given beside it (G053 C6): the leader pushes each commit, so a follower's
+    // records-behind is a lag figure, and `cluster.leaders` reads each range's
+    // leadership off the log. The pane draws both, and the sentences went.
     // The two entries that stood here said the store recorded no events for any
     // of these, and cited Q-685's measurement. The measurement was of three READ
     // surfaces and the conclusion drawn from it was wrong (Q-739): every commit
@@ -577,10 +578,6 @@ const ACCEPTED_NEGATIONS: &[(&str, &str)] = &[
     (
         "The history could not be read — the node refused it, or this build does not answer INFO FOR HISTORY.",
         "Not a claim about the engine at all: it is what the sheet says when the second question failed, and it deliberately does NOT say the record has no history. A refusal and an empty history are different facts and render differently — that separation is the point of the sentence, and the reason it is worded as an inability rather than an absence.",
-    ),
-    (
-        "Nothing pulls a replica forward on a timer, so a node that is not writing has no last collection its copy could be measured from; and this node knows which lease it holds, never which lease somebody else holds.",
-        "True: the same two absences as the heading above it, stated as the reason rather than as the claim. Recorded separately because the splitter ends a sentence at the strong tag, so a heading and its explanation are two entries.",
     ),
     // The entry that stood here claimed BOTH halves of Q-683 — a drain with no
     // statement and a hand-over with none — and W370 made the first half false.

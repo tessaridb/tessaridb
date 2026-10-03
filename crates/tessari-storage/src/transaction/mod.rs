@@ -25,6 +25,7 @@
 //!
 //! Both are demonstrated by the test suite rather than described only here.
 
+mod across;
 mod address;
 mod adjacency;
 mod commit;
@@ -36,7 +37,9 @@ mod retention;
 mod scan;
 mod search;
 mod spatial;
+mod visible;
 
+pub use across::AcrossPart;
 pub use address::{RecordAddress, StoredRecord};
 pub(crate) use address::{after, resuming_after};
 pub use adjacency::Neighbour;
@@ -88,6 +91,12 @@ pub struct Transaction<'a> {
     /// when this transaction commits (ADR-0088 §6 amendment). Owned by this one
     /// transaction on one thread, so an ordinary set.
     guarded: RefCell<BTreeSet<RecordAddress>>,
+    /// Which record of a transaction across leaders this commit writes, when
+    /// it writes one (ADR-0112) — set only by the three methods in `across`.
+    across: Option<across::Work>,
+    /// Whether this transaction sees each transaction across leaders it has
+    /// met, decided the first time and kept (ADR-0112 D6a, `visible`).
+    decided: RefCell<BTreeMap<tessari_encoding::TransactionId, bool>>,
 }
 
 impl Transaction<'_> {

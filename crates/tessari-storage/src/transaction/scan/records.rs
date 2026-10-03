@@ -219,11 +219,16 @@ impl Transaction<'_> {
             if decoded.version > self.snapshot || resolved.as_ref() == Some(&decoded.id) {
                 continue;
             }
+            let stored = StampedValue::decode(value.as_slice())?;
+            // A version this transaction does not see — an intent, or one of a
+            // transaction across leaders whose parts this snapshot does not all
+            // hold — does not settle its record: the version under it, next in
+            // this same walk, does (ADR-0112 D5, D6a).
+            if self.passes_over(&stored)? {
+                continue;
+            }
             *resolved = Some(decoded.id.clone());
-            taken.push((
-                decoded.id,
-                StampedValue::decode(value.as_slice())?.into_visible_at(self.reading_at()),
-            ));
+            taken.push((decoded.id, stored.into_visible_at(self.reading_at())));
         }
         Ok(taken)
     }

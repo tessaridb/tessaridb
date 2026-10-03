@@ -3,7 +3,7 @@
 use std::sync::atomic::Ordering;
 
 use tessari_encoding::{LogId, NODE_ID_LEN};
-use tessari_types::Sequence;
+use tessari_types::{Sequence, TableId};
 
 use crate::catalog::Reach;
 use crate::error::Result;
@@ -49,6 +49,8 @@ impl Store {
         // The log this node's history on the line is in (ADR-0107): the line's
         // once a leadership has written it, its own on a store standing alone.
         let own = self.history_log(UNPARTITIONED_REPORT_HOME)?;
+        let (across_committed, across_aborted, across_in_doubt) = self.tally.outcomes();
+        let (across_pending, across_with_intents) = self.tally.standing();
         Ok(Health {
             background_errors: self.backend.background_errors()?,
             committed: self.committed_tail(own)?,
@@ -57,7 +59,59 @@ impl Store {
             discarded_writes: self.discarded.load(Ordering::Relaxed),
             campaigns: self.campaigns.load(Ordering::Relaxed),
             lease_remaining: self.lease.remaining(),
+            not_held_here: self.tally.not_held_here(),
+            acknowledgement_waits: self.tally.waits(),
+            acknowledgement_timeouts: self.tally.timeouts(),
+            acknowledgement_waited: self.tally.waited(),
+            across_committed,
+            across_aborted,
+            across_in_doubt,
+            across_pending,
+            across_with_intents,
+            balancer_moves: self.tally.balancer_moves(),
         })
+    }
+
+    /// Record one placement the leadership balancer moved (ADR-0113 D3).
+    pub fn leadership_moved(&self) {
+        self.tally.moved();
+    }
+
+    /// Publish what the balancing pass measured of every balanced table's
+    /// shards (ADR-0113 D4); a table left out is no longer balanced and drops.
+    pub fn shards_measured(&self, tables: Vec<(TableId, crate::SampledTable)>) {
+        self.sampled.publish(tables);
+    }
+
+    /// What the balancing pass last measured, one entry per balanced table in
+    /// table order — empty on a node that does not balance.
+    #[must_use]
+    pub fn sampled_shards(&self) -> Vec<(TableId, crate::SampledTable)> {
+        self.sampled.all()
+    }
+
+    /// Record how one transaction across leaders this node coordinated ended
+    /// for its client. Called where the driver answers, and nowhere else.
+    pub fn across_finished(&self, outcome: crate::tally::AcrossOutcome) {
+        self.tally.finished(outcome);
+    }
+
+    /// Record what a settling pass left standing here: records still
+    /// `PENDING`, and transactions still holding intents.
+    pub fn across_sampled(&self, pending: u64, with_intents: u64) {
+        self.tally.sampled(pending, with_intents);
+    }
+
+    /// Record one read that reached this node holding none of what it asked
+    /// for. Called where the `NotHeldHere` refusal is made, and nowhere else.
+    pub fn answered_not_held_here(&self) {
+        self.tally.held_elsewhere();
+    }
+
+    /// Record one commit that waited `waited` for a majority, and whether it
+    /// ran out of time. Called where the wait happens, and nowhere else.
+    pub fn acknowledgement_waited(&self, waited: std::time::Duration, timed_out: bool) {
+        self.tally.waited_for(waited, timed_out);
     }
 
     /// Record what a follower has been given.

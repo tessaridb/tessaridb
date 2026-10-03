@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.23.0-beta"
+version = "0.24.0-beta"
 edition = "2024"
 rust-version = "1.98"
 license = "BUSL-1.1"
@@ -12,29 +12,33 @@ repository = "https://github.com/tessaridb/tessaridb"
 publish = false
 
 [workspace.dependencies]
-tessari-types = { path = "crates/tessari-types", version = "0.23.0-beta" }
-tessari-constants = { path = "crates/tessari-constants", version = "0.23.0-beta" }
-tessari-kv = { path = "crates/tessari-kv", version = "0.23.0-beta" }
-tessari-encoding = { path = "crates/tessari-encoding", version = "0.23.0-beta" }
-tessari-geo = { path = "crates/tessari-geo", version = "0.23.0-beta" }
-tessari-storage = { path = "crates/tessari-storage", version = "0.23.0-beta" }
-tessari-lsm = { path = "crates/tessari-lsm", version = "0.23.0-beta" }
-tessari-ql = { path = "crates/tessari-ql", version = "0.23.0-beta" }
-tessari-session = { path = "crates/tessari-session", version = "0.23.0-beta" }
-tessari-conformance = { path = "crates/tessari-conformance", version = "0.23.0-beta" }
-tessaridb = { path = "crates/tessaridb", version = "0.23.0-beta" }
-tessari-backup = { path = "crates/tessari-backup", version = "0.23.0-beta" }
-tessari-wire = { path = "crates/tessari-wire", version = "0.23.0-beta" }
-tessari-http = { path = "crates/tessari-http", version = "0.23.0-beta" }
-tessari-ingest = { path = "crates/tessari-ingest", version = "0.23.0-beta" }
-tessari-serve = { path = "crates/tessari-serve", version = "0.23.0-beta" }
-tessari-vault = { path = "crates/tessari-vault", version = "0.23.0-beta" }
+tessari-types = { path = "crates/tessari-types", version = "0.24.0-beta" }
+tessari-constants = { path = "crates/tessari-constants", version = "0.24.0-beta" }
+tessari-kv = { path = "crates/tessari-kv", version = "0.24.0-beta" }
+tessari-encoding = { path = "crates/tessari-encoding", version = "0.24.0-beta" }
+tessari-geo = { path = "crates/tessari-geo", version = "0.24.0-beta" }
+tessari-storage = { path = "crates/tessari-storage", version = "0.24.0-beta" }
+tessari-lsm = { path = "crates/tessari-lsm", version = "0.24.0-beta" }
+tessari-ql = { path = "crates/tessari-ql", version = "0.24.0-beta" }
+tessari-session = { path = "crates/tessari-session", version = "0.24.0-beta" }
+tessari-conformance = { path = "crates/tessari-conformance", version = "0.24.0-beta" }
+tessaridb = { path = "crates/tessaridb", version = "0.24.0-beta" }
+tessari-backup = { path = "crates/tessari-backup", version = "0.24.0-beta" }
+tessari-wire = { path = "crates/tessari-wire", version = "0.24.0-beta" }
+tessari-http = { path = "crates/tessari-http", version = "0.24.0-beta" }
+tessari-ingest = { path = "crates/tessari-ingest", version = "0.24.0-beta" }
+tessari-serve = { path = "crates/tessari-serve", version = "0.24.0-beta" }
+tessari-vault = { path = "crates/tessari-vault", version = "0.24.0-beta" }
 
 thiserror = "2"
 # The serving runtime (ADR-0085). Default features off here, so every crate names
 # only what it uses: a library takes `rt` and `sync`, and only the binary asks for
 # the multi-threaded scheduler, the signal driver and the macros.
 tokio = { version = "1", default-features = false }
+# A listening socket a restarted node can take straight back (Linux refuses a
+# port while the killed process's connections wait out TIME_WAIT). Already in
+# the tree under tokio's `net`, so naming it adds no crate.
+socket2 = { version = "0.6", default-features = false }
 # `CancellationToken`, the one signal every stage of a shutdown waits on.
 tokio-util = { version = "0.7", default-features = false }
 # The shared concurrent maps: `DashMap` where nothing needs order,

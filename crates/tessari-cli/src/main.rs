@@ -36,6 +36,7 @@
 #![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 mod arguments;
+mod balancing_round;
 mod bootstrap;
 mod collection_round;
 mod consumers;
@@ -58,6 +59,7 @@ mod runtime;
 mod scanner;
 mod serving;
 mod session;
+mod settling_round;
 mod shutdown;
 mod store;
 mod streaming;

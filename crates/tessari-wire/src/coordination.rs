@@ -43,7 +43,7 @@ use crate::keys::PeerKeys;
 use crate::link::{Answered, Ask, call_within};
 
 /// How long an assertion this node makes is good for.
-const LIFE_MILLIS: u64 = 10_000;
+pub(crate) const LIFE_MILLIS: u64 = 10_000;
 
 /// A request, the assertion it travels under, and where its caller waits.
 #[derive(Debug, Clone, PartialEq)]
@@ -269,21 +269,46 @@ impl Coordinator {
     }
 }
 
-impl Coordinates for Coordinator {
-    fn coordinate(&self, asked: &Coordination<'_>) -> std::result::Result<Coordinated, String> {
-        if asked.to == self.me {
+impl Coordinator {
+    /// This node's id, which every assertion it makes is from.
+    pub(crate) const fn me(&self) -> [u8; NODE_ID_LEN] {
+        self.me
+    }
+
+    /// The credentials this node dials with.
+    pub(crate) const fn keys(&self) -> &PeerKeys {
+        &self.keys
+    }
+
+    /// Where `to` answers, the one credential snapshot that both signs and
+    /// dials, and this node's greeting — everything a carried request needs
+    /// before it is built.
+    ///
+    /// One snapshot signs and dials: the far end checks the assertion against
+    /// the certificate this connection presents, so a rotation landing between
+    /// the two would refuse a request that was honest.
+    pub(crate) fn dialling(
+        &self,
+        to: [u8; NODE_ID_LEN],
+    ) -> std::result::Result<(String, crate::link::Credential, crate::peer::Hello), String> {
+        if to == self.me {
             return Err("this node is the one that answers; it does not ask itself".to_owned());
         }
         let db = self.db.upgrade().ok_or("this node is stopping")?;
         let endpoint = db
-            .member(&asked.to)
+            .member(&to)
             .map_err(|why| why.to_string())?
             .map(|row| row.endpoint)
             .ok_or("the node that answers is not declared here")?;
-        // One snapshot signs and dials: the far end checks the assertion
-        // against the certificate this connection presents, so a rotation
-        // landing between the two would refuse a request that was honest.
         let mine = self.keys.duplicate();
+        let said = (self.greeting)().map_err(|why| why.to_string())?;
+        Ok((endpoint, mine, said))
+    }
+}
+
+impl Coordinates for Coordinator {
+    fn coordinate(&self, asked: &Coordination<'_>) -> std::result::Result<Coordinated, String> {
+        let (endpoint, mine, said) = self.dialling(asked.to)?;
         let request = Coordinate {
             signed: Assertion {
                 from: self.me,
@@ -312,7 +337,6 @@ impl Coordinates for Coordinator {
             parameters: asked.parameters.clone(),
             surface: asked.surface,
         };
-        let said = (self.greeting)().map_err(|why| why.to_string())?;
         match call_within(
             endpoint.as_str(),
             (&self.keys, mine),

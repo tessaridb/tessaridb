@@ -12,6 +12,7 @@ publish.workspace = true
 [dependencies]
 # The client surfaces' TLS (ADR-0108 D4): the same rustls the peer link uses.
 rustls.workspace = true
+socket2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 

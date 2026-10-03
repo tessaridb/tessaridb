@@ -98,6 +98,16 @@ impl Deadline {
         })
     }
 
+    /// Refuse once this deadline has passed, with `produced` records made so
+    /// far — for a stage that works without handing records to a consumer, the
+    /// folded gather among them (Q-856).
+    pub(crate) fn check(self, produced: u64) -> Result<()> {
+        if Instant::now() < self.at {
+            return Ok(());
+        }
+        Err(self.passed(produced))
+    }
+
     /// The refusal this deadline raises once it has passed.
     fn passed(self, produced: u64) -> Error {
         Error::TimedOut {

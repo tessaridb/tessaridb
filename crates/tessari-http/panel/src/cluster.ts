@@ -192,25 +192,35 @@ export const cluster = (): Node =>
                     {},
                     "A split table's shards and placements change while it serves.",
                 ),
-                " ALTER TABLE … SPLIT AT and MERGE SHARD change the map in place, " +
-                    "PARTITION BY gives each region its shard, and ALTER REPLICA … LEADS " +
-                    "moves a placement.",
+                " Each change is a statement, and the store's leader can make some itself.",
+            ),
+            behindDisclosure(
+                "Which statements change them",
+                note(
+                    "ALTER TABLE … SPLIT AT and MERGE SHARD change the map in place, and " +
+                        "SPLIT AUTOMATICALLY lets the store's leader do it by size and load. " +
+                        "IDENTITY uuid SPREAD spreads new records over the shards, PARTITION BY " +
+                        "gives each region its shard. ALTER REPLICA … LEADS moves a placement, " +
+                        "LEADS NONE gives a range back to the store line, PREFERRED names the " +
+                        "candidate that should lead it, and DEFINE FAILOVER … BALANCE LEADERSHIPS " +
+                        "evens out who leads what.",
+                ),
             ),
             note(
                 el(
                     "strong",
                     {},
-                    "No lag figure, and no leadership for other nodes.",
+                    "Lag is per follower, and leadership is what the log recorded.",
                 ),
             ),
             behindDisclosure(
-                "Why neither is drawn",
+                "What the two figures are, and are not",
                 note(
-                    "Nothing pulls a replica forward on a timer, so a node that is not writing " +
-                        "has no last collection its copy could be measured from; and this node " +
-                        "knows which lease it holds, never which lease somebody else holds. A " +
-                        "number invented for either would be the dashboard drawn ahead of the " +
-                        "engine, which is what makes the rest of a console untrustworthy.",
+                    "A follower's lag is how many records it is short of this node's tail, as " +
+                        "this node last served it — the leader pushes each commit, so a level " +
+                        "follower reads 0. A leadership is the row the winner wrote under its own " +
+                        "epoch, so it says which node led a range as of that epoch; whether that " +
+                        "node is alive now is its lease, which only it can report.",
                 ),
             ),
         ),

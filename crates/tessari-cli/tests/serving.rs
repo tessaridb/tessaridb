@@ -679,7 +679,6 @@ fn a_node_told_about_a_cluster_opens_its_peer_door_and_still_serves_clients() {
         .arg(&store)
         .args(["--serve", WIRE_WITH_PEERS])
         .args(["--cluster-credential", &leaf])
-        .arg("--client-plaintext")
         .args(["--cluster-key", &key])
         .args(["--cluster-authority", &authority])
         .args(["--cluster-address", PEERS])
@@ -776,7 +775,6 @@ fn a_peer_address_that_cannot_be_taken_is_a_failure_to_start_and_not_a_warning()
         .arg(&store)
         .args(["--serve", "127.0.0.1:0"])
         .args(["--cluster-credential", &leaf])
-        .arg("--client-plaintext")
         .args(["--cluster-key", &key])
         .args(["--cluster-authority", &authority])
         .args(["--cluster-address", "127.0.0.1:1"])
@@ -823,7 +821,6 @@ fn a_clustered_node_with_no_seed_and_no_peer_refuses_to_start() {
         .arg(&store)
         .args(["--serve", "127.0.0.1:0"])
         .args(["--cluster-credential", &leaf])
-        .arg("--client-plaintext")
         .args(["--cluster-key", &key])
         .args(["--cluster-authority", &authority])
         .args(["--cluster-address", "127.0.0.1:0"])
@@ -979,12 +976,17 @@ fn started_without_client_settings(args: &[std::ffi::OsString], log: &std::path:
     Running(child)
 }
 
-/// What `log` holds once it says `needle`, or when `patience` runs out.
+/// What `log` holds once the line saying `needle` is whole, or when
+/// `patience` runs out — a line is written in pieces, so the needle alone can
+/// be read before the rest of its line has arrived.
 fn said_within(log: &std::path::Path, needle: &str, patience: Duration) -> String {
     let began = Instant::now();
     loop {
         let said = std::fs::read_to_string(log).unwrap_or_default();
-        if said.contains(needle) || began.elapsed() > patience {
+        let whole = said
+            .find(needle)
+            .is_some_and(|at| said.get(at..).is_some_and(|rest| rest.contains('\n')));
+        if whole || began.elapsed() > patience {
             return said;
         }
         std::thread::yield_now();
@@ -1045,44 +1047,35 @@ fn a_node_told_to_require_client_tls_refuses_to_start_without_a_certificate() {
             .env_remove("TESSARIDB_CLIENT_PLAINTEXT"),
     );
     assert!(by_variable.contains("--tls-cert"), "{by_variable}");
-
-    let two_answers = refused_start(
-        Command::new(TESSARIDB)
-            .arg(&store)
-            .args([
-                "--serve",
-                "127.0.0.1:0",
-                "--require-client-tls",
-                "--client-plaintext",
-            ])
-            .env_remove("TESSARIDB_REQUIRE_CLIENT_TLS"),
-    );
-    assert!(two_answers.contains("two answers"), "{two_answers}");
 }
 
 #[test]
-fn client_plaintext_still_starts_a_node_and_says_it_is_retired() {
-    // A 0.22 deployment that set the flag keeps starting for one release.
+fn client_plaintext_is_refused_at_start_as_retired() {
+    // Deprecated in 0.23.0-beta with a date: "the next release refuses it".
+    // The clear is the default without a certificate, so the flag and the
+    // variable change nothing a node does — a deployment still carrying them
+    // is told so once, at start, rather than started on a word it ignores.
     let directory = tempfile::tempdir().unwrap();
-    let log = directory.path().join("node.log");
-    let args: Vec<std::ffi::OsString> = [
-        directory.path().join("store").as_os_str(),
-        "--serve".as_ref(),
-        "127.0.0.1:0".as_ref(),
-        "--client-plaintext".as_ref(),
-    ]
-    .iter()
-    .map(|part| part.to_os_string())
-    .collect();
-    let _running = started_without_client_settings(&args, &log);
-    let said = said_within(&log, "retired", Duration::from_secs(20));
-    assert!(
-        said.contains("wire protocol on"),
-        "the node did not start: {said}"
+    let store = directory.path().join("store");
+    let by_flag = refused_start(
+        Command::new(TESSARIDB)
+            .arg(&store)
+            .args(["--serve", "127.0.0.1:0", "--client-plaintext"])
+            .env_remove("TESSARIDB_CLIENT_PLAINTEXT"),
     );
     assert!(
-        said.contains("--client-plaintext is retired"),
-        "the retirement is said at start: {said}"
+        by_flag.contains("--client-plaintext") && by_flag.contains("retired"),
+        "{by_flag}"
+    );
+    let by_variable = refused_start(
+        Command::new(TESSARIDB)
+            .arg(&store)
+            .args(["--serve", "127.0.0.1:0"])
+            .env("TESSARIDB_CLIENT_PLAINTEXT", "1"),
+    );
+    assert!(
+        by_variable.contains("TESSARIDB_CLIENT_PLAINTEXT") && by_variable.contains("retired"),
+        "{by_variable}"
     );
 }
 
@@ -1308,7 +1301,6 @@ fn a_joiner_restarted_without_its_seed_still_finds_the_leader() {
             .arg(&stores[index])
             .args(["--serve", NAMED[index].0])
             .args(["--cluster-credential", leaf])
-            .arg("--client-plaintext")
             .args(["--cluster-key", key])
             .args(["--cluster-authority", authority])
             .args(["--cluster-address", NAMED[index].1]);
@@ -1549,7 +1541,6 @@ fn a_row_waiting_on_a_join_token_is_bound_by_the_node_that_offers_it() {
             .arg(&stores[index])
             .args(["--serve", UNBOUND[index].0])
             .args(["--cluster-credential", leaf])
-            .arg("--client-plaintext")
             .args(["--cluster-key", key])
             .args(["--cluster-authority", authority])
             .args(["--cluster-address", UNBOUND[index].1]);
@@ -1700,7 +1691,6 @@ fn a_node_dials_the_peer_its_catalog_declares() {
         .arg(&store)
         .args(["--serve", WIRE_WITH_DIALLING])
         .args(["--cluster-credential", &leaf])
-        .arg("--client-plaintext")
         .args(["--cluster-key", &key])
         .args(["--cluster-authority", &authority])
         .args(["--cluster-address", PEERS_FOR_DIALLING])
@@ -1798,6 +1788,17 @@ fn counted(address: &str) -> Result<usize, String> {
 /// does — so the quiet-cluster assertion below and an operator's dashboard
 /// cannot disagree about the number.
 fn campaigns(address: &str) -> Result<i64, String> {
+    let cluster = cluster_report(address)?;
+    match cluster.get("campaigns") {
+        Some(tessari_types::Value::Number(tessari_types::Number::Integer(stood))) => Ok(*stood),
+        other => Err(format!("campaigns is {other:?}")),
+    }
+}
+
+/// The `cluster` group of `address`'s `INFO FOR NODE`.
+fn cluster_report(
+    address: &str,
+) -> Result<std::collections::BTreeMap<String, tessari_types::Value>, String> {
     let mut client = Client::connect(address).map_err(|why| why.to_string())?;
     let answers = client
         .run("INFO FOR NODE;", None)
@@ -1809,12 +1810,9 @@ fn campaigns(address: &str) -> Result<i64, String> {
     else {
         return Err(format!("not a report: {answers:?}"));
     };
-    let Some(tessari_types::Value::Object(cluster)) = report.get("cluster") else {
-        return Err(format!("no cluster group: {report:?}"));
-    };
-    match cluster.get("campaigns") {
-        Some(tessari_types::Value::Number(tessari_types::Number::Integer(stood))) => Ok(*stood),
-        other => Err(format!("campaigns is {other:?}")),
+    match report.get("cluster") {
+        Some(tessari_types::Value::Object(cluster)) => Ok(cluster.clone()),
+        _ => Err(format!("no cluster group: {report:?}")),
     }
 }
 
@@ -1877,18 +1875,38 @@ impl Three {
         args.extend(extra.iter().map(std::ffi::OsString::from));
         self.running[index] = Some(started(&args, &self.logs[index]));
     }
+
+    /// Stop node `index` and start `binary` on its store with the arguments
+    /// it was first started with — one step of a rolling upgrade.
+    fn replace_with(&mut self, index: usize, binary: &std::ffi::OsStr) {
+        self.running[index] = None;
+        self.running[index] = Some(started_by(
+            binary,
+            &self.started_with[index],
+            &self.logs[index],
+        ));
+    }
 }
 
 /// Start the shipped binary with `args`, its standard error appended to `log`.
 fn started(args: &[std::ffi::OsString], log: &std::path::Path) -> Running {
+    // A cluster measurement is taken against the release build when one is
+    // named (G053 SG1): the debug binary's timings describe the debug build.
+    let binary = std::env::var_os("TESSARIDB_TEST_BIN").unwrap_or_else(|| TESSARIDB.into());
+    started_by(&binary, args, log)
+}
+
+/// Start `binary` with `args`, its standard error appended to `log`.
+fn started_by(
+    binary: &std::ffi::OsStr,
+    args: &[std::ffi::OsString],
+    log: &std::path::Path,
+) -> Running {
     let writing = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(log)
         .unwrap();
-    // A cluster measurement is taken against the release build when one is
-    // named (G053 SG1): the debug binary's timings describe the debug build.
-    let binary = std::env::var_os("TESSARIDB_TEST_BIN").unwrap_or_else(|| TESSARIDB.into());
     let child = Command::new(binary)
         .args(args)
         .stdout(Stdio::null())
@@ -1982,6 +2000,17 @@ fn a_cluster_declared(band: &Band, preamble: &str, leads: [&str; 3]) -> Three {
 /// shard is a row that is not `REPLICATES STORE`). Each node declares its own
 /// roles as its row states them.
 fn a_cluster_of_rows(band: &Band, preamble: &str, rows: [String; 3]) -> Three {
+    a_cluster_of_rows_by(None, band, preamble, rows)
+}
+
+/// [`a_cluster_of_rows`] run by `binary` when one is named — an older release,
+/// for a rolling upgrade (G053 SG8).
+fn a_cluster_of_rows_by(
+    binary: Option<&std::ffi::OsStr>,
+    band: &Band,
+    preamble: &str,
+    rows: [String; 3],
+) -> Three {
     let directory = tempfile::tempdir().unwrap();
     let minted = Minted::new();
 
@@ -2102,7 +2131,6 @@ fn a_cluster_of_rows(band: &Band, preamble: &str, rows: [String; 3]) -> Three {
             stores[index].as_os_str(),
             "--serve".as_ref(),
             band[index].0.as_ref(),
-            "--client-plaintext".as_ref(),
             "--cluster-credential".as_ref(),
             leaf.as_ref(),
             "--cluster-key".as_ref(),
@@ -2117,7 +2145,10 @@ fn a_cluster_of_rows(band: &Band, preamble: &str, rows: [String; 3]) -> Three {
         .iter()
         .map(|arg| (*arg).to_owned())
         .collect();
-        running.push(Some(started(&args, &log)));
+        running.push(Some(match binary {
+            Some(binary) => started_by(binary, &args, &log),
+            None => started(&args, &log),
+        }));
         logs.push(log);
         started_with.push(args);
     }
@@ -2797,7 +2828,6 @@ fn a_node_joins_a_cluster_it_was_only_given_an_address_for() {
             .arg(&stores[index])
             .args(["--serve", client])
             .args(["--cluster-credential", leaf])
-            .arg("--client-plaintext")
             .args(["--cluster-key", key])
             .args(["--cluster-authority", authority])
             .args(["--cluster-address", peer]);
@@ -3355,7 +3385,6 @@ fn spawn_refusing(
         .arg(&stores[index])
         .args(["--serve", REFUSING[index].0])
         .args(["--cluster-credential", leaf])
-        .arg("--client-plaintext")
         .args(["--cluster-key", key])
         .args(["--cluster-authority", authority])
         .args(["--cluster-address", REFUSING[index].1])
@@ -3504,6 +3533,973 @@ fn each_node_leads_its_own_shard_and_sends_the_others_to_their_leaders() {
     }
 }
 
+/// Three nodes leading one shard of `orders` each, once node 0 and node 1 have
+/// each taken a write into their own shard and node 0 knows node 1 leads
+/// shard 2 — the shape a transaction across two leaders needs.
+fn two_shard_leaders(band: &Band) -> Three {
+    let cluster = a_cluster_declared(
+        band,
+        PLACED,
+        [
+            " LEADS SHARD prod.shop.orders 1",
+            " LEADS SHARD prod.shop.orders 2",
+            " LEADS SHARD prod.shop.orders 3",
+        ],
+    );
+    // Shard 1 begins below 'g' and n0 leads it; shard 2 begins at 'g' and n1
+    // leads it.
+    for (index, prefix) in ["a", "h"].iter().enumerate() {
+        if let Err(last) = until_taken(band[index].0, prefix, Duration::from_secs(120)) {
+            panic!(
+                "node {index} never took a write into its own shard; last: {last}{}",
+                what_the_nodes_said(band, &cluster.logs)
+            );
+        }
+    }
+    // And n0 knows n1 leads shard 2 — its row has to replicate first, and
+    // until it has, n0 would take shard 2 for a range nobody leads.
+    if let Err(last) = until_sent_to(
+        band[0].0,
+        "hknown",
+        cluster.ids[1],
+        band[1].1,
+        Duration::from_secs(90),
+    ) {
+        panic!(
+            "node 0 never learned that node 1 leads shard 2; last: {last}{}",
+            what_the_nodes_said(band, &cluster.logs)
+        );
+    }
+    cluster
+}
+
+/// The cross-leader scenario's addresses, its own band (G053 SG3).
+const ACROSS: Band = [
+    ("127.0.0.1:47986", "127.0.0.1:47987"),
+    ("127.0.0.1:47988", "127.0.0.1:47989"),
+    ("127.0.0.1:47990", "127.0.0.1:47991"),
+];
+
+#[test]
+#[ignore = "real cadences across three processes — three shard lines have to \
+            be elected before a transaction can span two of them. G053 SG3's \
+            own validation, run explicitly: cargo test -p tessari-cli --test \
+            serving a_transaction_across_two_shard_leaders -- --ignored"]
+fn a_transaction_across_two_shard_leaders_commits_whole_or_is_refused() {
+    let cluster = two_shard_leaders(&ACROSS);
+    let spanning = |commit: &str, key: &str| {
+        format!(
+            "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
+             CREATE orders:'a{key}' = {{ n: 7 }}; CREATE orders:'h{key}' = {{ n: 7 }}; \
+             {commit};"
+        )
+    };
+    // Unasked, it is refused for spanning two leaders, and nothing lands.
+    let refused = asked(ACROSS[0].0, &spanning("COMMIT", "plain"), None);
+    assert!(
+        matches!(&refused, Err(why) if why.contains("COMMIT ACROSS LEADERS")),
+        "a transaction spanning two leaders without asking: {refused:?}"
+    );
+    // Asked, it commits whole: both records, on both leaders and on the node
+    // that leads neither. Asked again while it is refused: on a cluster this
+    // young a follower may not yet hold a shard's log, so a prepare's majority
+    // wait runs out and the transaction aborts with nothing applied — the
+    // retriable refusal a client answers by asking again.
+    let mut committed = Err(String::from("never asked"));
+    let began = Instant::now();
+    while committed.is_err() && began.elapsed() < Duration::from_secs(60) {
+        committed = asked(ACROSS[0].0, &spanning("COMMIT ACROSS LEADERS", "x"), None);
+        if committed.is_err() {
+            std::thread::sleep(POLL);
+        }
+    }
+    assert!(
+        committed.is_ok(),
+        "a transaction across leaders: {committed:?}{}",
+        what_the_nodes_said(&ACROSS, &cluster.logs)
+    );
+    // The node that coordinated it counted it, where `/metrics` reads it too
+    // (ADR-0112 D11).
+    let across = cluster_report(ACROSS[0].0).map(|report| report.get("across").cloned());
+    let Ok(Some(tessari_types::Value::Object(across))) = across else {
+        panic!("no across group: {across:?}");
+    };
+    assert!(
+        matches!(
+            across.get("committed"),
+            Some(tessari_types::Value::Number(tessari_types::Number::Integer(done))) if *done >= 1
+        ),
+        "the coordinator did not count its commit: {across:?}"
+    );
+    for (surface, _) in &ACROSS {
+        let both = until(Duration::from_secs(30), || {
+            read_at(surface, "SELECT id FROM orders WHERE n = 7 ORDER BY id;")
+                .is_ok_and(|ids| ids == ["ax", "hx"])
+        });
+        assert!(
+            both,
+            "{surface} never held both records; it reads {:?}",
+            read_at(surface, "SELECT id FROM orders WHERE n = 7 ORDER BY id;")
+        );
+    }
+    assert!(
+        read_at(
+            ACROSS[1].0,
+            "SELECT id FROM orders WHERE id = 'aplain' OR id = 'hplain';"
+        )
+        .is_ok_and(|ids| ids.is_empty()),
+        "the refused transaction left a record behind"
+    );
+    // G053 C7: a snapshot taken on the node that leads neither shard restores
+    // to the cut it was taken at, shard by shard — the transaction across
+    // leaders whole in it (ADR-0112 D9a).
+    let answers = asked(ACROSS[2].0, "BACKUP;", None).unwrap();
+    let Some(Answer::Value {
+        value: tessari_types::Value::Bytes(file),
+        ..
+    }) = answers.last()
+    else {
+        panic!("a snapshot is bytes: {answers:?}");
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let restored = tessaridb::Db::open(directory.path().join("restored")).unwrap();
+    tessari_backup::read_state(restored.store(), || Ok(std::io::Cursor::new(file.clone())))
+        .unwrap();
+    // Read whole on both and split by the table's `SPLIT AT 'g', 'p'`: an
+    // identity compared with text in a `WHERE` matches nothing, so a shard
+    // cannot be selected by its bounds in the statement.
+    let read = "SELECT id FROM orders ORDER BY id;";
+    let source = read_at(ACROSS[2].0, read).unwrap();
+    let outcomes = restored
+        .session()
+        .run(&format!("USE NAMESPACE prod; USE DATABASE shop; {read}"))
+        .unwrap();
+    let Some(tessari_session::Outcome::Records { records, .. }) = outcomes.last() else {
+        panic!("a read answers records: {outcomes:?}");
+    };
+    let copy: Vec<String> = records
+        .iter()
+        .map(|(id, _)| id.to_string().trim_matches('\'').to_owned())
+        .collect();
+    let shard_of = |id: &String| match id.as_str() {
+        below if below < "g" => 1,
+        below if below < "p" => 2,
+        _ => 3,
+    };
+    for shard in 1..=3 {
+        let held = |ids: &[String]| -> Vec<String> {
+            ids.iter()
+                .filter(|id| shard_of(id) == shard)
+                .cloned()
+                .collect()
+        };
+        assert_eq!(held(&copy), held(&source), "the restored shard {shard}");
+    }
+    assert!(
+        ["ax", "hx"]
+            .iter()
+            .all(|id| copy.iter().any(|held| held == id)),
+        "the restored copy lacks the transaction across leaders: {copy:?}"
+    );
+    assert!(
+        read_at(
+            ACROSS[2].0,
+            "SELECT id FROM orders WHERE n = 7 ORDER BY id;"
+        )
+        .is_ok_and(|ids| ids == ["ax", "hx"]),
+        "the snapshot's node changed under the comparison"
+    );
+}
+
+/// The automatic-split scenario's addresses, its own band (G053 SG4b).
+const BALANCED: Band = [
+    ("127.0.0.1:48010", "127.0.0.1:48011"),
+    ("127.0.0.1:48012", "127.0.0.1:48013"),
+    ("127.0.0.1:48014", "127.0.0.1:48015"),
+];
+
+#[test]
+#[ignore = "real cadences across three processes — the balancing round runs \
+            every few seconds on the store line's leader. G053 SG4b's own \
+            validation, run explicitly: cargo test -p tessari-cli --test serving \
+            a_table_split_by_the_store_while_it_is_written -- --ignored"]
+fn a_table_split_by_the_store_while_it_is_written_keeps_every_record_on_every_node() {
+    // G053 C4: a table that asked to split itself is split by the store
+    // line's leader while a writer keeps writing, and every acknowledged
+    // record is on every node afterwards — the set, not a count.
+    // Declared once, through the cluster: a node holding a namespace of its
+    // own is refused the store's copy, so a tenancy written into every node's
+    // declaration would stop the store line from collecting at all.
+    let cluster = a_cluster_declared(&BALANCED, "", ["", "", ""]);
+    let tenancy = "DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
+                   DEFINE DATABASE shop; USE DATABASE shop; \
+                   DEFINE TABLE events (n int) IDENTITY uuid SPREAD SPLIT AT '80'; \
+                   ALTER TABLE events SPLIT AUTOMATICALLY ABOVE 40 RECORDS MERGE BELOW 10 RECORDS;";
+    // Sent to whichever node leads the store line: a catalog change is
+    // redirected there, and this client does not follow a redirect.
+    let led_by = |script: &str| {
+        BALANCED
+            .iter()
+            .find_map(|(surface, _)| asked(surface, script, None).ok())
+    };
+    let declared = until(Duration::from_secs(90), || led_by(tenancy).is_some());
+    assert!(
+        declared,
+        "the tenancy was never declared{}",
+        what_the_nodes_said(&BALANCED, &cluster.logs)
+    );
+    let mut acknowledged = Vec::new();
+    let began = Instant::now();
+    while began.elapsed() < Duration::from_secs(20) || acknowledged.len() < 300 {
+        assert!(
+            began.elapsed() < Duration::from_secs(120),
+            "only {} writes taken in two minutes{}",
+            acknowledged.len(),
+            what_the_nodes_said(&BALANCED, &cluster.logs)
+        );
+        // A create answers with the identity it was given.
+        if let Some(answers) =
+            led_by("USE NAMESPACE prod; USE DATABASE shop; CREATE events = { n: 1 };")
+            && let Some(Answer::Keys(keys)) = answers.last()
+        {
+            acknowledged.extend(keys.iter().map(|id| id.trim_matches('\'').to_owned()));
+        }
+    }
+    acknowledged.sort();
+    // The table changed shape while it was written: more shards than declared.
+    let shards = led_by("USE NAMESPACE prod; USE DATABASE shop; INFO FOR TABLE events;")
+        .map(|answers| format!("{answers:?}").matches("Integer(").count());
+    let split = until(Duration::from_secs(30), || {
+        read_at(BALANCED[0].0, "SELECT id FROM events;").is_ok()
+            && cluster.logs.iter().any(|log| {
+                std::fs::read_to_string(log)
+                    .is_ok_and(|text| text.contains("balanced table shards"))
+            })
+    });
+    assert!(
+        split,
+        "no node balanced the table ({shards:?}){}",
+        what_the_nodes_said(&BALANCED, &cluster.logs)
+    );
+    for (surface, _) in &BALANCED {
+        let level = until(Duration::from_secs(60), || {
+            read_at(surface, "SELECT id FROM events ORDER BY id;").is_ok_and(|mut ids| {
+                ids.sort();
+                ids == acknowledged
+            })
+        });
+        assert!(
+            level,
+            "{surface} does not hold exactly the {} acknowledged records: it holds {:?}",
+            acknowledged.len(),
+            read_at(surface, "SELECT id FROM events ORDER BY id;").map(|ids| ids.len())
+        );
+    }
+}
+
+/// The leadership balancer's addresses, its own band (G053 SG4c).
+const LEADING: Band = [
+    ("127.0.0.1:48016", "127.0.0.1:48017"),
+    ("127.0.0.1:48018", "127.0.0.1:48019"),
+    ("127.0.0.1:48020", "127.0.0.1:48021"),
+];
+
+#[test]
+#[ignore = "real cadences across three processes — a placement moved by the \
+            store line's leader has to be handed over and its new candidate \
+            elected. G053 SG4c's own validation, run explicitly: cargo test -p \
+            tessari-cli --test serving a_node_leading_two_lines -- --ignored"]
+fn a_node_leading_two_lines_hands_its_placed_range_to_an_idle_voter() {
+    // G053 C4 / ADR-0113 D3: with `BALANCE LEADERSHIPS` asked for, the store
+    // line's leader placed on shard 2 too leads two lines while a voter leads
+    // none — and moves that placement onto the idle voter, which takes it.
+    let cluster = a_cluster_declared(&LEADING, "", ["", "", ""]);
+    let policy = "DEFINE FAILOVER AWARENESS 1s COLLECTION 1s ROUND 200ms CAMPAIGN 100ms \
+                  LEASE 800ms BALANCE LEADERSHIPS;";
+    // The store leader is the node that takes a catalog change; the others
+    // redirect it, and this client does not follow a redirect.
+    let mut leader = None;
+    let declared = until(Duration::from_secs(90), || {
+        leader = LEADING
+            .iter()
+            .position(|(surface, _)| asked(surface, &format!("{PLACED} {policy}"), None).is_ok());
+        leader.is_some()
+    });
+    assert!(
+        declared,
+        "the schema and the policy were never declared{}",
+        what_the_nodes_said(&LEADING, &cluster.logs)
+    );
+    let crowded = leader.unwrap_or_default();
+    let placed = until(Duration::from_secs(30), || {
+        asked(
+            LEADING[crowded].0,
+            &format!("ALTER REPLICA n{crowded} LEADS SHARD prod.shop.orders 2;"),
+            None,
+        )
+        .is_ok()
+    });
+    assert!(
+        placed,
+        "the store leader n{crowded} could not be placed on shard 2{}",
+        what_the_nodes_said(&LEADING, &cluster.logs)
+    );
+    // The imbalance existed: the store leader led shard 2 as well.
+    let crowded_led = until(Duration::from_secs(60), || {
+        !shard_two_epochs(&cluster.logs[crowded]).is_empty()
+    });
+    assert!(
+        crowded_led,
+        "n{crowded} never led shard 2{}",
+        what_the_nodes_said(&LEADING, &cluster.logs)
+    );
+    // Moved, by the balancer, onto another node that now leads it.
+    let mut taker = None;
+    let moved = until(Duration::from_secs(90), || {
+        taker = (0..LEADING.len())
+            .filter(|other| *other != crowded)
+            .find(|other| !shard_two_epochs(&cluster.logs[*other]).is_empty());
+        taker.is_some()
+            && cluster.logs.iter().any(|log| {
+                std::fs::read_to_string(log)
+                    .is_ok_and(|text| text.contains("balanced leaderships: moved the placement"))
+            })
+    });
+    assert!(
+        moved,
+        "the placement was never moved off n{crowded}{}",
+        what_the_nodes_said(&LEADING, &cluster.logs)
+    );
+    let taker = taker.unwrap_or_default();
+    if let Err(last) = until_taken(LEADING[taker].0, "hb", Duration::from_secs(60)) {
+        panic!(
+            "n{taker} never took a write into shard 2; last: {last}{}",
+            what_the_nodes_said(&LEADING, &cluster.logs)
+        );
+    }
+}
+
+/// The hand-back scenario's addresses, its own band (G053 SG5).
+const HANDING_BACK: Band = [
+    ("127.0.0.1:48022", "127.0.0.1:48023"),
+    ("127.0.0.1:48024", "127.0.0.1:48025"),
+    ("127.0.0.1:48026", "127.0.0.1:48027"),
+];
+
+#[test]
+#[ignore = "real cadences across three processes — a range given back is won \
+            by the store line's leader on its own line once the old lease \
+            lapses. G053 SG5's own validation, run explicitly: cargo test -p \
+            tessari-cli --test serving a_range_given_back -- --ignored"]
+fn a_range_given_back_to_the_store_line_keeps_every_write_it_took() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    // G053 C5 / ADR-0098 D3: the LAST placement of shard 2 is given up while
+    // a writer keeps writing into it. The store line's leader takes the range
+    // on its own line and folds the placement away; every write the writer
+    // was told was taken is held once by it, and writes go on landing there.
+    let cluster = a_cluster_declared(&HANDING_BACK, "", ["", "", ""]);
+    let logs = cluster.logs.clone();
+    let mut leader = None;
+    let declared = until(Duration::from_secs(90), || {
+        leader = HANDING_BACK
+            .iter()
+            .position(|(surface, _)| asked(surface, PLACED, None).is_ok());
+        leader.is_some()
+    });
+    assert!(
+        declared,
+        "the schema was never declared{}",
+        what_the_nodes_said(&HANDING_BACK, &logs)
+    );
+    let store_leader = leader.unwrap_or_default();
+    let placed = (store_leader + 1) % HANDING_BACK.len();
+    let on_the_store_leader = |script: &str| {
+        until(Duration::from_secs(60), || {
+            HANDING_BACK
+                .iter()
+                .any(|(surface, _)| asked(surface, script, None).is_ok())
+        })
+    };
+    assert!(on_the_store_leader(&format!(
+        "ALTER REPLICA n{placed} LEADS SHARD prod.shop.orders 2;"
+    )));
+    if let Err(last) = until_taken(HANDING_BACK[placed].0, "h", Duration::from_secs(120)) {
+        panic!(
+            "n{placed} never took shard 2; last: {last}{}",
+            what_the_nodes_said(&HANDING_BACK, &logs)
+        );
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let taken = Arc::new(Mutex::new(Vec::<String>::new()));
+    let undecided = Arc::new(Mutex::new(Vec::<String>::new()));
+    let writer = {
+        let (stop, taken, undecided) = (
+            Arc::clone(&stop),
+            Arc::clone(&taken),
+            Arc::clone(&undecided),
+        );
+        std::thread::spawn(move || {
+            let mut longest = Duration::ZERO;
+            let mut last = Instant::now();
+            let mut attempt = 0_u32;
+            while !stop.load(Ordering::Relaxed) {
+                attempt = attempt.saturating_add(1);
+                let key = format!("hw{attempt:06}");
+                let took = HANDING_BACK.iter().any(|(surface, _)| {
+                    Client::connect(surface).is_ok_and(|mut client| {
+                        match client.run(&into_orders(&key), None) {
+                            Ok(_) => true,
+                            Err(why) => {
+                                if why.to_string().contains("is committed on this node") {
+                                    undecided.lock().unwrap().push(key.clone());
+                                }
+                                false
+                            }
+                        }
+                    })
+                });
+                if took {
+                    longest = longest.max(last.elapsed());
+                    last = Instant::now();
+                    taken.lock().unwrap().push(key);
+                }
+                std::thread::sleep(POLL);
+            }
+            longest
+        })
+    };
+    let began = Instant::now();
+    assert!(on_the_store_leader(&format!(
+        "ALTER REPLICA n{placed} LEADS NONE;"
+    )));
+    // The store line's leader takes the range, and folds the placement away.
+    if let Err(last) = until_taken(HANDING_BACK[store_leader].0, "hz", Duration::from_secs(120)) {
+        panic!(
+            "the store leader n{store_leader} never took shard 2; last: {last}{}",
+            what_the_nodes_said(&HANDING_BACK, &logs)
+        );
+    }
+    let folded = until(Duration::from_secs(60), || {
+        std::fs::read_to_string(&logs[store_leader])
+            .is_ok_and(|text| text.contains("handed back to the store line"))
+    });
+    assert!(
+        folded,
+        "n{store_leader} never folded the placement away{}",
+        what_the_nodes_said(&HANDING_BACK, &logs)
+    );
+    eprintln!(
+        "HANDBACK store leader took shard 2 {:?} after the release",
+        began.elapsed()
+    );
+    // Writes go on landing after the fold.
+    let before = taken.lock().unwrap().len();
+    let resumed = until(Duration::from_secs(30), || {
+        taken.lock().unwrap().len() >= before + 5
+    });
+    stop.store(true, Ordering::Relaxed);
+    let longest = writer.join().unwrap();
+    assert!(resumed, "the writer stopped after the fold");
+    let taken = taken.lock().unwrap().clone();
+    eprintln!(
+        "HANDBACK {} writes taken, the longest stretch with none taken {longest:?}",
+        taken.len()
+    );
+    let mut held = read_at(
+        HANDING_BACK[store_leader].0,
+        "SELECT * FROM orders:'hw'..'hx';",
+    )
+    .unwrap();
+    held.sort();
+    let mut once = held.clone();
+    once.dedup();
+    assert_eq!(once, held, "a write held twice by the store leader");
+    let undecided = undecided.lock().unwrap().clone();
+    let missing: Vec<_> = taken.iter().filter(|key| !held.contains(key)).collect();
+    assert!(
+        missing.is_empty(),
+        "taken writes lost by the hand-back: {missing:?}"
+    );
+    let refused_but_held: Vec<_> = held
+        .iter()
+        .filter(|key| !taken.contains(key) && !undecided.contains(key))
+        .collect();
+    assert!(
+        refused_but_held.is_empty(),
+        "writes refused outright are held: {refused_but_held:?}"
+    );
+    // And every node holds them: the range is the store line's again, and
+    // the store line reaches every holder of the store.
+    for (surface, _) in &HANDING_BACK {
+        let level = until(Duration::from_secs(60), || {
+            read_at(surface, "SELECT * FROM orders:'hw'..'hx';")
+                .is_ok_and(|on| taken.iter().all(|key| on.contains(key)))
+        });
+        assert!(
+            level,
+            "{surface} lacks taken writes: holds {:?}{}",
+            read_at(surface, "SELECT * FROM orders:'hw'..'hx';"),
+            what_the_nodes_said(&HANDING_BACK, &logs)
+        );
+    }
+}
+
+/// The candidate-preference scenario's addresses, its own band (G053 SG5b).
+const PREFERRING: Band = [
+    ("127.0.0.1:48028", "127.0.0.1:48029"),
+    ("127.0.0.1:48030", "127.0.0.1:48031"),
+    ("127.0.0.1:48032", "127.0.0.1:48033"),
+];
+
+#[test]
+#[ignore = "real cadences across three processes — the range's leader hands it \
+            to the preferred candidate once that one is caught up. G053 SG5b's \
+            own validation, run explicitly: cargo test -p tessari-cli --test \
+            serving a_preferred_candidate -- --ignored"]
+fn a_preferred_candidate_is_handed_the_range_by_its_leader_and_keeps_it() {
+    // G053 C5: shard 2 led by n_x; n_y placed on it PREFERRED. Once n_y is
+    // caught up, n_x stops renewing and n_y is elected, takes writes, and is
+    // not displaced again.
+    let cluster = a_cluster_declared(&PREFERRING, "", ["", "", ""]);
+    let logs = cluster.logs.clone();
+    let on_the_store_leader = |script: &str| {
+        until(Duration::from_secs(90), || {
+            PREFERRING
+                .iter()
+                .any(|(surface, _)| asked(surface, script, None).is_ok())
+        })
+    };
+    assert!(
+        on_the_store_leader(PLACED),
+        "the schema was never declared{}",
+        what_the_nodes_said(&PREFERRING, &logs)
+    );
+    let (first, preferred) = (1_usize, 2_usize);
+    assert!(on_the_store_leader(&format!(
+        "ALTER REPLICA n{first} LEADS SHARD prod.shop.orders 2;"
+    )));
+    if let Err(last) = until_taken(PREFERRING[first].0, "h", Duration::from_secs(120)) {
+        panic!(
+            "n{first} never took shard 2; last: {last}{}",
+            what_the_nodes_said(&PREFERRING, &logs)
+        );
+    }
+    let began = Instant::now();
+    assert!(on_the_store_leader(&format!(
+        "ALTER REPLICA n{preferred} LEADS SHARD prod.shop.orders 2 PREFERRED;"
+    )));
+    let handed = until(Duration::from_secs(60), || {
+        !shard_two_epochs(&logs[preferred]).is_empty()
+            && std::fs::read_to_string(&logs[first])
+                .is_ok_and(|text| text.contains("to its preferred candidate"))
+    });
+    assert!(
+        handed,
+        "n{first} never handed shard 2 to n{preferred}{}",
+        what_the_nodes_said(&PREFERRING, &logs)
+    );
+    eprintln!(
+        "PREFERRED took shard 2 {:?} after it was placed",
+        began.elapsed()
+    );
+    if let Err(last) = until_taken(PREFERRING[preferred].0, "hp", Duration::from_secs(60)) {
+        panic!(
+            "n{preferred} never took a write into shard 2; last: {last}{}",
+            what_the_nodes_said(&PREFERRING, &logs)
+        );
+    }
+    // Still there a while later: the old leader did not take it back.
+    std::thread::sleep(Duration::from_secs(5));
+    let (old, new) = (
+        shard_two_epochs(&logs[first]),
+        shard_two_epochs(&logs[preferred]),
+    );
+    assert!(
+        old.iter().max() < new.iter().max(),
+        "n{first} led shard 2 again after the hand-over: {old:?} vs {new:?}"
+    );
+    if let Err(last) = until_taken(PREFERRING[preferred].0, "hq", Duration::from_secs(30)) {
+        panic!("n{preferred} lost shard 2; last: {last}");
+    }
+}
+
+/// The rolling upgrade's addresses, its own band (G053 SG8).
+const UPGRADING: Band = [
+    ("127.0.0.1:48034", "127.0.0.1:48035"),
+    ("127.0.0.1:48036", "127.0.0.1:48037"),
+    ("127.0.0.1:48038", "127.0.0.1:48039"),
+];
+
+#[test]
+#[ignore = "needs the previous minor release's binary — build the tag it names \
+            and run: TESSARIDB_UPGRADE_FROM=<that binary> cargo test -p \
+            tessari-cli --test serving a_rolling_upgrade -- --ignored. G053 C8"]
+fn a_rolling_upgrade_across_one_minor_version_keeps_every_record() {
+    // G053 C8: three nodes on the previous minor release; each is replaced in
+    // turn by this build on its own store — followers first, the store's
+    // leader last — and the cluster takes writes after every step. At the
+    // end every node runs this build and holds every record written.
+    let from = std::env::var_os("TESSARIDB_UPGRADE_FROM")
+        .expect("TESSARIDB_UPGRADE_FROM names the previous release's binary");
+    let every = "ROLES serving, writable, coordinating REPLICATES STORE";
+    let mut cluster = a_cluster_of_rows_by(
+        Some(&from),
+        &UPGRADING,
+        "",
+        [every.to_owned(), every.to_owned(), every.to_owned()],
+    );
+    let logs = cluster.logs.clone();
+    // The node a write lands on, and so the store line's leader.
+    let write = |script: &str| {
+        UPGRADING
+            .iter()
+            .position(|(surface, _)| asked(surface, script, None).is_ok())
+    };
+    let schema = "DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
+                  DEFINE DATABASE shop; USE DATABASE shop; DEFINE TABLE notes (n int);";
+    assert!(
+        until(Duration::from_secs(90), || write(schema).is_some()),
+        "the schema was never declared on the old release{}",
+        what_the_nodes_said(&UPGRADING, &logs)
+    );
+    let mut written: Vec<String> = Vec::new();
+    let mut leader = 0;
+    let write_batch = |step: &str, written: &mut Vec<String>, leader: &mut usize| {
+        for n in 0..5 {
+            let key = format!("{step}{n}");
+            let script = format!(
+                "USE NAMESPACE prod; USE DATABASE shop; CREATE notes:'{key}' = {{ n: {n} }};"
+            );
+            let mut landed = None;
+            assert!(
+                until(Duration::from_secs(90), || {
+                    landed = write(&script);
+                    landed.is_some()
+                }),
+                "{key} was never written{}",
+                what_the_nodes_said(&UPGRADING, &logs)
+            );
+            *leader = landed.unwrap_or_default();
+            written.push(key);
+        }
+    };
+    // Which build answers: only this one reports a peer's `preferred` flag
+    // (G053 SG5b) — the version string alone does not move between the two.
+    let this_build = |surface: &str| {
+        value_at(surface, "INFO FOR NODE;").is_ok_and(|report| report.contains("\"preferred\""))
+    };
+    assert!(
+        UPGRADING.iter().all(|(surface, _)| {
+            value_at(surface, "INFO FOR NODE;")
+                .is_ok_and(|report| !report.contains("\"preferred\""))
+        }),
+        "a node answered as this build, or not at all, before it was replaced"
+    );
+    write_batch("a", &mut written, &mut leader);
+    // Followers first, the store's leader last.
+    let mut order: Vec<usize> = (0..UPGRADING.len())
+        .filter(|node| *node != leader)
+        .collect();
+    order.push(leader);
+    for (step, node) in order.into_iter().enumerate() {
+        cluster.replace_with(node, std::ffi::OsStr::new(TESSARIDB));
+        assert!(listening(UPGRADING[node].0, Duration::from_secs(30)));
+        assert!(
+            until(Duration::from_secs(30), || this_build(UPGRADING[node].0)),
+            "n{node} does not answer as this build after its replacement"
+        );
+        let tag = ["b", "c", "d"][step];
+        write_batch(tag, &mut written, &mut leader);
+        eprintln!("UPGRADE step {step}: n{node} replaced, writes landing on n{leader}");
+    }
+    written.sort();
+    for (surface, _) in &UPGRADING {
+        let level = until(Duration::from_secs(60), || {
+            read_at(surface, "SELECT id FROM notes ORDER BY id;").is_ok_and(|mut ids| {
+                ids.sort();
+                ids == written
+            })
+        });
+        assert!(
+            level,
+            "{surface} does not hold every record after the upgrade: {:?}{}",
+            read_at(surface, "SELECT id FROM notes;"),
+            what_the_nodes_said(&UPGRADING, &logs)
+        );
+    }
+}
+
+/// The cross-leader measurement's addresses, a band of its own.
+const ACROSS_TIMED: Band = [
+    ("127.0.0.1:47998", "127.0.0.1:47999"),
+    ("127.0.0.1:48000", "127.0.0.1:48001"),
+    ("127.0.0.1:48002", "127.0.0.1:48003"),
+];
+
+#[test]
+#[ignore = "a measurement, not a check: three processes and six hundred \
+            commits, and its numbers mean something only from a release \
+            binary run alone — TESSARIDB_TEST_BIN=target/release/tessaridb \
+            cargo test -p tessari-cli --test serving cross_leader_commit_latency \
+            -- --ignored --nocapture"]
+fn cross_leader_commit_latency_against_one_leader_at_majority() {
+    // G053 SG3f: what committing across two leaders costs beside the commits
+    // it is compared with — one write and a two-record transaction on one
+    // leader, both acknowledged by a majority (the namespace's default). All
+    // three from node 0, which leads shard 1; the transaction across leaders
+    // also writes shard 2, led by node 1.
+    let cluster = two_shard_leaders(&ACROSS_TIMED);
+    let on = ACROSS_TIMED[0].0;
+    let mut client = Client::connect(on).unwrap();
+    let across = |key: &str| {
+        format!(
+            "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
+             CREATE orders:'a{key}' = {{ n: 1 }}; CREATE orders:'h{key}' = {{ n: 1 }}; \
+             COMMIT ACROSS LEADERS;"
+        )
+    };
+    // Warm: the first transaction across leaders may be refused while a
+    // follower does not yet hold a shard's log (the across test's own note).
+    let began = Instant::now();
+    while client.run(&across("warm"), None).is_err() {
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "no transaction across leaders ever committed{}",
+            what_the_nodes_said(&ACROSS_TIMED, &cluster.logs)
+        );
+        std::thread::sleep(POLL);
+    }
+    let timed = |client: &mut Client, script: &str| {
+        let began = Instant::now();
+        client.run(script, None).map(|_| began.elapsed())
+    };
+    // In three runs rather than interleaved: a transaction across leaders
+    // answers once its resolutions are at their leaders, not at a majority, so
+    // a write right after one waits for a majority to hold those as well — an
+    // interleaved run charged that to the write measured after it.
+    let mut refused = 0_usize;
+    let mut across_taken = Vec::new();
+    for index in 0..200 {
+        match timed(&mut client, &across(&format!("t{index:04}"))) {
+            Ok(took) => across_taken.push(took),
+            Err(_) => refused = refused.saturating_add(1),
+        }
+    }
+    let one_taken: Vec<Duration> = (0..200)
+        .map(|index| {
+            timed(
+                &mut client,
+                &format!(
+                    "USE NAMESPACE prod; USE DATABASE shop; CREATE orders:'b{index:04}' = {{ n: 1 }};"
+                ),
+            )
+            .unwrap()
+        })
+        .collect();
+    let pair_taken: Vec<Duration> = (0..200)
+        .map(|index| {
+            timed(
+                &mut client,
+                &format!(
+                    "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
+                     CREATE orders:'c{index:04}' = {{ n: 1 }}; \
+                     CREATE orders:'d{index:04}' = {{ n: 1 }}; COMMIT;"
+                ),
+            )
+            .unwrap()
+        })
+        .collect();
+    let (across_p50, across_p99) = percentiles(across_taken);
+    let (one_p50, one_p99) = percentiles(one_taken);
+    let (pair_p50, pair_p99) = percentiles(pair_taken);
+    eprintln!(
+        "ACROSS across_us p50={across_p50} p99={across_p99} refused={refused} \
+         one_write_us p50={one_p50} p99={one_p99} one_leader_pair_us p50={pair_p50} p99={pair_p99}"
+    );
+    assert_eq!(
+        refused, 0,
+        "a warm cluster refused a transaction across leaders"
+    );
+}
+
+/// The abandoned cluster's addresses — the across test's own shape, a band of
+/// its own so the two can run in one invocation.
+const ABANDONED: Band = [
+    ("127.0.0.1:47992", "127.0.0.1:47993"),
+    ("127.0.0.1:47994", "127.0.0.1:47995"),
+    ("127.0.0.1:47996", "127.0.0.1:47997"),
+];
+
+#[test]
+#[ignore = "three processes, a SIGSTOP and a kill -9 — a coordinator dies between its \
+            prepares and its decision and its successor finishes the transaction. \
+            G053 SG3f, run explicitly: cargo test -p tessari-cli --test serving \
+            a_transaction_whose_coordinator_died -- --ignored"]
+fn a_transaction_whose_coordinator_died_mid_prepare_leaves_nothing_standing() {
+    // Shard 1 has two candidates, n0 and n2, so it outlives its leader; shard
+    // 2 has one, n1.
+    let mut cluster = a_cluster_declared(
+        &ABANDONED,
+        PLACED,
+        [
+            " LEADS SHARD prod.shop.orders 1",
+            " LEADS SHARD prod.shop.orders 2",
+            " LEADS SHARD prod.shop.orders 1",
+        ],
+    );
+    if let Err(last) = until_taken(ABANDONED[1].0, "h", Duration::from_secs(120)) {
+        panic!(
+            "node 1 never took shard 2; last: {last}{}",
+            what_the_nodes_said(&ABANDONED, &cluster.logs)
+        );
+    }
+    let began = Instant::now();
+    let mut leader = None;
+    while began.elapsed() < Duration::from_secs(120) && leader.is_none() {
+        leader = [0, 2]
+            .into_iter()
+            .find(|index| until_taken(ABANDONED[*index].0, "a", Duration::from_millis(1)).is_ok());
+        std::thread::sleep(POLL);
+    }
+    let Some(leader) = leader else {
+        panic!(
+            "neither candidate took shard 1{}",
+            what_the_nodes_said(&ABANDONED, &cluster.logs)
+        );
+    };
+    let successor = if leader == 0 { 2 } else { 0 };
+    // The transaction runs on shard 1's leader, which has to know who leads
+    // shard 2 — that row has to replicate to it first.
+    if let Err(last) = until_sent_to(
+        ABANDONED[leader].0,
+        "hknown",
+        cluster.ids[1],
+        ABANDONED[1].1,
+        Duration::from_secs(90),
+    ) {
+        panic!(
+            "node {leader} never learned that node 1 leads shard 2; last: {last}{}",
+            what_the_nodes_said(&ABANDONED, &cluster.logs)
+        );
+    }
+    let signal = |what: &str, pid: &str| {
+        let sent = Command::new("kill")
+            .args([what, pid])
+            .status()
+            .expect("kill runs");
+        assert!(sent.success(), "{what} {pid}");
+    };
+    // n1 is paused, so shard 1's leader — the coordinator, since shard 1 is
+    // the first part — writes the record PENDING and its own intent at a
+    // majority, and then waits on a prepare n1 cannot read.
+    let participant = cluster.running[1]
+        .as_ref()
+        .expect("node 1 runs")
+        .0
+        .id()
+        .to_string();
+    signal("-STOP", &participant);
+    let surface = ABANDONED[leader].0;
+    let driving = std::thread::spawn(move || {
+        asked(
+            surface,
+            "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
+             CREATE orders:'ak' = { n: 8 }; CREATE orders:'hk' = { n: 8 }; \
+             COMMIT ACROSS LEADERS;",
+            None,
+        )
+    });
+    // The local prepare takes milliseconds and the remote one is held for as
+    // long as the pause lasts. The kill comes before the record's lapse —
+    // four failover rounds, about two seconds here — or the coordinator
+    // would abort its own record and nothing would be left to a successor.
+    std::thread::sleep(Duration::from_millis(500));
+    cluster.running[leader] = None;
+    let answered = driving.join().expect("the client thread ends");
+    assert!(
+        answered.is_err(),
+        "the coordinator was killed before it could answer: {answered:?}"
+    );
+    signal("-CONT", &participant);
+    // Nobody restarts the coordinator. Its successor takes shard 1, finds the
+    // record overdue, aborts it and drops the intent — and until then a
+    // standing intent refuses every writer, so writing the record again is
+    // only possible once it has.
+    let mut last = String::new();
+    let rewritten = until(Duration::from_secs(180), || {
+        [(successor, "ak"), (1, "hk")].iter().all(|(at, key)| {
+            match asked(
+                ABANDONED[*at].0,
+                &format!(
+                    "USE NAMESPACE prod; USE DATABASE shop; UPSERT orders:'{key}' = {{ n: 9 }};"
+                ),
+                None,
+            ) {
+                Ok(_) => true,
+                Err(why) => {
+                    last = format!("{key}: {why}");
+                    false
+                }
+            }
+        })
+    });
+    assert!(
+        rewritten,
+        "the abandoned transaction's records could never be written again; last: \
+         {last}{}",
+        what_the_nodes_said_beyond_greetings(&cluster.logs)
+    );
+    for at in [successor, 1] {
+        let surface = ABANDONED[at].0;
+        let settled = until(Duration::from_secs(30), || {
+            read_at(surface, "SELECT id FROM orders WHERE n = 9 ORDER BY id;")
+                .is_ok_and(|ids| ids == ["ak", "hk"])
+        });
+        assert!(
+            settled,
+            "{surface} never held the rewritten records; it reads {:?}",
+            read_at(surface, "SELECT id FROM orders WHERE n >= 8 ORDER BY id;")
+        );
+        assert!(
+            read_at(surface, "SELECT id FROM orders WHERE n = 8;").is_ok_and(|ids| ids.is_empty()),
+            "{surface} shows a write of the abandoned transaction"
+        );
+    }
+    // Read whole: the diagnostic tail would drop a line this early. The
+    // successor finished the transaction — and the coordinator did not, which
+    // is what makes this a test of a coordinator that never came back. Its
+    // abort may land in one pass and its resolution in the next, when the
+    // abort's copies took longer than the pass to acknowledge.
+    let said = |at: usize| std::fs::read_to_string(&cluster.logs[at]).unwrap_or_default();
+    assert!(
+        said(successor).contains("finished cross-leader transactions")
+            && !said(leader).contains("finished cross-leader transactions"),
+        "the successor, and only the successor, finishes the abandoned transaction{}",
+        what_the_nodes_said_beyond_greetings(&cluster.logs)
+    );
+}
+
+/// Every line each node wrote except the greeting cadence, which in a
+/// three-minute run is most of the file and buries what a cross-leader
+/// failure says.
+fn what_the_nodes_said_beyond_greetings(logs: &[std::path::PathBuf]) -> String {
+    let mut out = String::new();
+    for (index, path) in logs.iter().enumerate() {
+        let read = std::fs::read_to_string(path).unwrap_or_default();
+        out.push_str(&format!("\n--- node {index} ---\n"));
+        for line in read.lines().filter(|line| {
+            !line.contains("greeted at epoch")
+                && !line.contains("greeting_round")
+                && !line.contains("tessari_wire::node connection ")
+        }) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 #[test]
 #[ignore = "real cadences across three processes — a shard leader is killed and \
             its second candidate elected. It is G032 S4.2's own validation and is \
@@ -3556,6 +4552,127 @@ fn a_shard_placed_on_two_nodes_survives_losing_its_leader() {
         panic!(
             "shard 1's leader stopped taking writes when shard 2's died; last: {last}{}",
             what_the_nodes_said(&SHARD_FAILOVER, &logs)
+        );
+    }
+}
+
+/// The participant-failover cluster's addresses, a band of its own.
+const ACROSS_PARTICIPANT: Band = [
+    ("127.0.0.1:48004", "127.0.0.1:48005"),
+    ("127.0.0.1:48006", "127.0.0.1:48007"),
+    ("127.0.0.1:48008", "127.0.0.1:48009"),
+];
+
+#[test]
+#[ignore = "real cadences across three processes — two shard lines elected, a \
+            participant leader killed and its other candidate elected. G053 \
+            SG3f's own validation, run explicitly: cargo test -p tessari-cli \
+            --test serving a_transaction_whose_participant_leader -- --ignored"]
+fn a_transaction_whose_participant_leader_dies_is_kept_whole_by_its_successor() {
+    // Shard 1 is led by node 0, which coordinates; shard 2 may be led by node 1
+    // or node 2. The participant's leader is killed as soon as the client is
+    // told the commit — its resolution may or may not have reached a majority
+    // by then, and either way the survivor has to end up holding the whole
+    // transaction while node 0 never shows half of it.
+    let mut cluster = a_cluster_declared(
+        &ACROSS_PARTICIPANT,
+        PLACED,
+        [
+            " LEADS SHARD prod.shop.orders 1",
+            " LEADS SHARD prod.shop.orders 2",
+            " LEADS SHARD prod.shop.orders 2",
+        ],
+    );
+    let logs = cluster.logs.clone();
+    if let Err(last) = until_taken(ACROSS_PARTICIPANT[0].0, "a", Duration::from_secs(120)) {
+        panic!(
+            "node 0 never took shard 1; last: {last}{}",
+            what_the_nodes_said(&ACROSS_PARTICIPANT, &logs)
+        );
+    }
+    let began = Instant::now();
+    let mut leader = None;
+    while began.elapsed() < Duration::from_secs(120) && leader.is_none() {
+        leader = [1, 2].into_iter().find(|index| {
+            until_taken(ACROSS_PARTICIPANT[*index].0, "h", Duration::from_millis(1)).is_ok()
+        });
+        std::thread::sleep(POLL);
+    }
+    let Some(leader) = leader else {
+        panic!(
+            "neither candidate took shard 2{}",
+            what_the_nodes_said(&ACROSS_PARTICIPANT, &logs)
+        );
+    };
+    let survivor = if leader == 1 { 2 } else { 1 };
+    if let Err(last) = until_sent_to(
+        ACROSS_PARTICIPANT[0].0,
+        "hknown",
+        cluster.ids[leader],
+        ACROSS_PARTICIPANT[leader].1,
+        Duration::from_secs(90),
+    ) {
+        panic!(
+            "node 0 never learned who leads shard 2; last: {last}{}",
+            what_the_nodes_said(&ACROSS_PARTICIPANT, &logs)
+        );
+    }
+    let script = "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
+                  CREATE orders:'ap' = { n: 11 }; CREATE orders:'hp' = { n: 11 }; \
+                  COMMIT ACROSS LEADERS;";
+    let mut committed = Err(String::from("never asked"));
+    let asking = Instant::now();
+    while committed.is_err() && asking.elapsed() < Duration::from_secs(60) {
+        committed = asked(ACROSS_PARTICIPANT[0].0, script, None);
+        if committed.is_err() {
+            std::thread::sleep(POLL);
+        }
+    }
+    assert!(
+        committed.is_ok(),
+        "a transaction across leaders: {committed:?}{}",
+        what_the_nodes_said(&ACROSS_PARTICIPANT, &logs)
+    );
+    cluster.running[leader] = None;
+    // Whole or absent on node 0 at every look, and whole on both survivors
+    // once the successor has taken shard 2 and finished what it holds.
+    let read = "SELECT id FROM orders WHERE n = 11 ORDER BY id;";
+    let settled = until(Duration::from_secs(180), || {
+        let at_zero = read_at(ACROSS_PARTICIPANT[0].0, read);
+        if let Ok(ids) = &at_zero {
+            assert!(
+                ids.is_empty() || ids == &["ap", "hp"],
+                "node 0 showed half a transaction: {ids:?}"
+            );
+        }
+        at_zero.is_ok_and(|ids| ids == ["ap", "hp"])
+            && read_at(ACROSS_PARTICIPANT[survivor].0, read).is_ok_and(|ids| ids == ["ap", "hp"])
+    });
+    assert!(
+        settled,
+        "the survivors never both held the whole transaction: node 0 {:?}, node \
+         {survivor} {:?}{}",
+        read_at(ACROSS_PARTICIPANT[0].0, read),
+        read_at(ACROSS_PARTICIPANT[survivor].0, read),
+        what_the_nodes_said_beyond_greetings(&logs)
+    );
+    // Which way it went, for whoever runs this: the window that leaves an
+    // intent on the successor is not forced, so a run says whether it opened.
+    eprintln!(
+        "ACROSS_PARTICIPANT the successor finished intents itself: {}",
+        std::fs::read_to_string(&logs[survivor])
+            .unwrap_or_default()
+            .contains("finished cross-leader transactions")
+    );
+    // And shard 2 takes writes again under its successor.
+    if let Err(last) = until_taken(
+        ACROSS_PARTICIPANT[survivor].0,
+        "i",
+        Duration::from_secs(120),
+    ) {
+        panic!(
+            "shard 2's other candidate never took it; last: {last}{}",
+            what_the_nodes_said(&ACROSS_PARTICIPANT, &logs)
         );
     }
 }
@@ -4579,6 +5696,12 @@ const ACKED_AT_THE_LEADER: Band = [
     ("127.0.0.1:47794", "127.0.0.1:47795"),
     ("127.0.0.1:47796", "127.0.0.1:47797"),
 ];
+/// The stalled-followers cluster's addresses, past every other band.
+const STALLED: Band = [
+    ("127.0.0.1:47980", "127.0.0.1:47981"),
+    ("127.0.0.1:47982", "127.0.0.1:47983"),
+    ("127.0.0.1:47984", "127.0.0.1:47985"),
+];
 const KILLED: Band = [
     ("127.0.0.1:47798", "127.0.0.1:47799"),
     ("127.0.0.1:47800", "127.0.0.1:47801"),
@@ -4703,6 +5826,16 @@ fn acknowledged_writes_measured(clause: &str, band: &Band) -> (usize, usize) {
         "ACKNOWLEDGED clause={clause:?} one_writer_us p50={one_p50} p99={one_p99} \
          sixteen_writers_us p50={many_p50} p99={many_p99} lag_us p50={lag_p50} p99={lag_p99}"
     );
+    // A follower holds a commit within milliseconds of it. On Linux a peer
+    // socket left with Nagle's algorithm on waits for the delayed
+    // acknowledgement — 40 ms a step, 80 ms measured before the peer door set
+    // TCP_NODELAY — so this bound is the guard for that, and it is loose enough
+    // for the measurement's own 5 ms poll and a new connection per poll.
+    assert!(
+        lag_p99 < 25_000,
+        "a follower took {lag_p99} µs at p99 to hold a commit{}",
+        what_the_nodes_said(band, &cluster.logs)
+    );
 
     // Keep writing, kill the leader uncatchably, and count what the next
     // leader does not hold of what was acknowledged.
@@ -4803,6 +5936,110 @@ fn acknowledged_writes_at_a_majority_survive_the_leader() {
 }
 
 // ---- G053 SG2b: a failover in about a second -------------------------------
+
+/// G053 C2, the discriminating half: with BOTH followers paused no write can
+/// reach a majority, so a `MAJORITY` write must not be acknowledged; the leader
+/// is then killed and nothing acknowledged may be missing from its successor.
+///
+/// The kill test above cannot fail any more on its own: followers receive a
+/// commit within milliseconds, so a kill between two writes almost never
+/// catches one unreplicated, and removing the wait left it green. Here the
+/// followers hold nothing new until the leader is gone, so every write the
+/// leader acknowledged without a majority is lost — red with the wait removed.
+#[test]
+#[ignore = "three processes, SIGSTOP and a kill -9 — G053 C2, run explicitly: \
+            TESSARIDB_TEST_BIN=$PWD/target/release/tessaridb cargo test -p tessari-cli \
+            --test serving acknowledged_writes_at_a_majority -- --ignored --nocapture"]
+fn acknowledged_writes_at_a_majority_survive_followers_that_had_not_received_them() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    let _load = Load::from_env();
+    let mut cluster = a_cluster_declared(&STALLED, "", ["", "", ""]);
+    let leader = the_node_a_majority_granted(&STALLED);
+    for index in 0..STALLED.len() {
+        caught_up(&STALLED, index, "1", &cluster);
+    }
+    let followers: Vec<usize> = (0..STALLED.len())
+        .filter(|index| *index != leader)
+        .collect();
+    let paused: Vec<u32> = followers
+        .iter()
+        .map(|index| {
+            cluster.running[*index]
+                .as_ref()
+                .expect("the follower runs")
+                .0
+                .id()
+        })
+        .collect();
+    let signal = |what: &str, pid: u32| {
+        let sent = Command::new("kill")
+            .args([what, &pid.to_string()])
+            .status()
+            .expect("kill runs");
+        assert!(sent.success(), "{what} {pid}");
+    };
+    for pid in &paused {
+        signal("-STOP", *pid);
+    }
+
+    // Write at MAJORITY while no follower can hold anything new.
+    let stop = Arc::new(AtomicBool::new(false));
+    let outcomes = Arc::new(Mutex::new((Vec::<String>::new(), 0_usize, 0_usize)));
+    let writer = {
+        let (stop, outcomes) = (Arc::clone(&stop), Arc::clone(&outcomes));
+        let on = STALLED[leader].0;
+        std::thread::spawn(move || {
+            let mut client = Client::connect(on).unwrap();
+            let mut index = 0_u32;
+            while !stop.load(Ordering::Relaxed) {
+                index = index.saturating_add(1);
+                let key = format!("p{index:05}");
+                let answered = client.run(&into_item(&key, " ACKNOWLEDGE MAJORITY"), None);
+                let mut outcomes = outcomes.lock().unwrap();
+                match answered {
+                    Ok(_) => outcomes.0.push(key),
+                    Err(why) if why.to_string().contains("is committed on this node") => {
+                        outcomes.1 = outcomes.1.saturating_add(1);
+                    }
+                    Err(_) => {
+                        outcomes.2 = outcomes.2.saturating_add(1);
+                        break;
+                    }
+                }
+            }
+        })
+    };
+    std::thread::sleep(Duration::from_millis(1500));
+    drop(cluster.running[leader].take());
+    stop.store(true, Ordering::Relaxed);
+    writer.join().unwrap();
+    for pid in &paused {
+        signal("-CONT", *pid);
+    }
+    let (acknowledged, unconfirmed, other) = outcomes.lock().unwrap().clone();
+
+    let successor = the_node_that_takes(&STALLED, &followers, "after", &cluster);
+    let held = item_ids_at(STALLED[successor].0).unwrap();
+    let missing: Vec<&String> = acknowledged
+        .iter()
+        .filter(|key| !held.contains(key))
+        .collect();
+    eprintln!(
+        "STALLED acknowledged={} unconfirmed={unconfirmed} other={other} missing={}",
+        acknowledged.len(),
+        missing.len()
+    );
+    assert!(
+        unconfirmed > 0,
+        "no write waited for a majority and was told it is committed but unconfirmed"
+    );
+    assert!(
+        missing.is_empty(),
+        "{} writes acknowledged at MAJORITY are missing from the successor: {missing:?}",
+        missing.len()
+    );
+}
 
 /// Busy threads in this process, `TESSARIDB_TEST_CPU_LOAD` of them, for a
 /// measurement taken under CPU pressure; dropping the guard stops them.

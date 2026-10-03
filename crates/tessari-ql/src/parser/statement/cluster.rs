@@ -213,7 +213,8 @@ impl Parser<'_> {
     /// clears there. The reasoning is in the specification, § *Draining this
     /// node*, and is not restated here: two copies of one argument drift, and
     /// the document is the one a reader of the language actually opens.
-    /// `DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s CAMPAIGN 1s LEASE 30s`
+    /// `DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s CAMPAIGN 1s LEASE 30s
+    /// [BALANCE LEADERSHIPS]`
     ///
     /// **In this order, and all five.** A fixed order rather than clauses in any
     /// arrangement, because these five are read together as a set — four
@@ -238,12 +239,17 @@ impl Parser<'_> {
         let round = self.period("round")?;
         let campaign = self.period("campaign")?;
         let lease = self.period("lease")?;
+        let balance_leaderships = self.eat_word("balance");
+        if balance_leaderships {
+            self.expect_word("leaderships", "`LEADERSHIPS` after `BALANCE`")?;
+        }
         Ok(StatementKind::DefineFailover {
             awareness,
             collection,
             round,
             campaign,
             lease,
+            balance_leaderships,
         })
     }
 
@@ -455,6 +461,7 @@ impl Parser<'_> {
         } else {
             None
         };
+        let preferred = leads.is_some() && self.eat_word("preferred");
         // ADR-0108 D9: the certificate that may bind this row, when it is not
         // bound by `NODE` and not to wait on a join token.
         let fingerprint = if self.eat_word("fingerprint") {
@@ -471,6 +478,7 @@ impl Parser<'_> {
             node,
             replicates,
             leads,
+            preferred,
             fingerprint,
             if_not_exists,
         })
@@ -480,11 +488,17 @@ impl Parser<'_> {
     /// `DEFINE REPLICA` uses for the same clause (Q-892).
     pub(super) fn replica_change(&mut self) -> Result<ReplicaChange> {
         if self.eat_word("leads") {
-            return Ok(ReplicaChange::Leads(if self.eat_keyword(Keyword::None) {
-                None
-            } else {
-                Some(self.placed_range()?)
-            }));
+            if self.eat_keyword(Keyword::None) {
+                return Ok(ReplicaChange::Leads {
+                    range: None,
+                    preferred: false,
+                });
+            }
+            let range = Some(self.placed_range()?);
+            return Ok(ReplicaChange::Leads {
+                range,
+                preferred: self.eat_word("preferred"),
+            });
         }
         if self.eat_word("at") {
             return Ok(ReplicaChange::At(self.text("the endpoint, as text")?.0));

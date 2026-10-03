@@ -579,19 +579,40 @@ fn the_paging_table_is_the_baseline_it_cites() {
     }
 }
 
-/// Every absence claim in a document, by the id it carries.
+/// Every claim of one kind in a document — `absent` or `landed` — by the id it
+/// carries.
 ///
 /// The ids are HTML comments — invisible rendered, and the only way two
 /// documents can be compared on what they say is *missing* rather than on what
 /// they say exists. Prose cannot be diffed; a set of ids can.
-fn absences(document: &str) -> BTreeSet<String> {
+fn marked(document: &str, kind: &str) -> BTreeSet<String> {
+    let opening = format!("<!-- {kind}:");
     read(document)
         .lines()
         .filter_map(|line| {
-            let rest = line.trim().strip_prefix("<!-- absent:")?;
+            let rest = line.trim().strip_prefix(opening.as_str())?;
             Some(rest.trim_end_matches("-->").trim().to_owned())
         })
         .collect()
+}
+
+/// What a document says is missing now.
+///
+/// The README states the present. The CHANGELOG is a history, so an absence a
+/// release recorded stays written in that release; the release that fills it
+/// says `landed` with the same id, and only the absences nothing has landed
+/// since are still missing. A `landed` id no release ever said was absent is a
+/// typo that would cancel nothing — or, renamed, the wrong thing — so it is
+/// refused rather than ignored.
+fn absences(document: &str) -> BTreeSet<String> {
+    let absent = marked(document, "absent");
+    let landed = marked(document, "landed");
+    let unknown: Vec<_> = landed.difference(&absent).collect();
+    assert!(
+        unknown.is_empty(),
+        "{document} says {unknown:?} landed, and no release said it was absent"
+    );
+    absent.difference(&landed).cloned().collect()
 }
 
 #[test]

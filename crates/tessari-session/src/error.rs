@@ -972,6 +972,26 @@ pub enum Error {
         span: Span,
     },
 
+    /// A graph traversal met an edge table where a transaction across leaders
+    /// is part-way on this node (Q-919).
+    ///
+    /// The traversal follows the table's direction indexes, which hold that
+    /// transaction's resolution while readers do not see it yet, or miss an
+    /// edge readers already see. A traversal has no scan to fall back to, so
+    /// it is refused rather than answered through edges the read itself would
+    /// not show. Retriable: it lasts until the transaction's last part lands
+    /// here, and the store reports it rather than waiting.
+    #[error(
+        "edges in `{table}` are settling a transaction across leaders on this node — \
+         read again in a moment (at {span})"
+    )]
+    AcrossSettling {
+        /// The edge table.
+        table: String,
+        /// Where the traversal was written.
+        span: Span,
+    },
+
     /// A weighted path met an edge whose weight is not a cost (G055 W6).
     ///
     /// A weight that is absent drops the edge — absence narrows — but one that is
@@ -1286,6 +1306,45 @@ pub enum Error {
         /// How many copies were needed, this node's included.
         needed: usize,
         /// Where the write is.
+        span: Span,
+    },
+
+    /// A transaction across leaders was not committed, and nothing of it was
+    /// applied anywhere (ADR-0112): a participant refused its prepare, or the
+    /// record was aborted before the decision landed. The refusal is this
+    /// node's own, kept whole, or another node's words with the kind of no it
+    /// was, so a surface answers it as the refusal it is (Q-924).
+    #[error(
+        "the transaction across leaders (at {span}) was not committed, and nothing of it applies: {refusal}"
+    )]
+    AcrossAborted {
+        /// Why, as the node that refused gave it.
+        refusal: crate::session::AcrossRefusal,
+        /// Where the commit is.
+        span: Span,
+    },
+
+    /// A transaction across leaders whose decision was sent and not confirmed
+    /// (ADR-0112 D4, D7). Its record decides it: committed if the decision
+    /// landed, aborted once the record's liveness lapses if it did not. The
+    /// caller is told it does not know rather than told either.
+    #[error(
+        "the transaction across leaders (at {span}) is in doubt — its record decides it: {reason}"
+    )]
+    AcrossInDoubt {
+        /// What could not be confirmed.
+        reason: String,
+        /// Where the commit is.
+        span: Span,
+    },
+
+    /// A transaction across leaders asked of a node that knows no peers to
+    /// carry its records to.
+    #[error(
+        "this node carries nothing to other nodes, so the commit at {span} cannot reach across leaders"
+    )]
+    AcrossUnavailable {
+        /// Where the commit is.
         span: Span,
     },
 
@@ -2233,6 +2292,21 @@ pub enum Error {
         /// The name as written.
         name: String,
         /// Where it was written.
+        span: Span,
+    },
+
+    /// A transaction across leaders wrote into a table whose engine keeps
+    /// something beside its records — a vault, a bucket, a space, a topic, a
+    /// queue, a series or a vector or geo store — which a prepared write would
+    /// bypass (ADR-0112). Only tables, collections and edges commit across
+    /// leaders.
+    #[error(
+        "{table:?} cannot be written across leaders: only tables, collections and edges can (at {span})"
+    )]
+    AcrossKind {
+        /// The table.
+        table: String,
+        /// Where the write was.
         span: Span,
     },
 

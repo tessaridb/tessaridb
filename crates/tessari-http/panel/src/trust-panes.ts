@@ -80,6 +80,13 @@ const failover = (): Node =>
       period("ROUND", "200ms"),
       period("CAMPAIGN", "100ms"),
       period("LEASE", "800ms"),
+      // The statement replaces the whole set, so leaving this unticked turns
+      // the leadership balancer off (ADR-0113 D3).
+      field(
+        "balance leaderships",
+        el("input", { id: "failover-balance", type: "checkbox" }),
+        { class: "tick" },
+      ),
     ),
     says("failover-says"),
     row("default", button("failover-apply", "Set the policy", "default", { disabled: true })),

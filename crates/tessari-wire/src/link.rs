@@ -87,7 +87,7 @@ impl Peers {
     /// Returns the socket's own failure.
     pub fn bind(address: impl ToSocketAddrs, keys: &PeerKeys) -> Result<Self> {
         Ok(Self {
-            listener: TcpListener::bind(address)?,
+            listener: tessari_serve::listen(address)?,
             settings: keys.door(),
             keys: keys.clone(),
         })
@@ -150,6 +150,7 @@ impl Peers {
         log: &dyn Origin,
     ) -> Result<Met> {
         let (mut socket, _) = self.listener.accept()?;
+        socket.set_nodelay(true)?;
         let bound = Some(Duration::from_secs(GREETING_SECONDS));
         socket.set_read_timeout(bound)?;
         socket.set_write_timeout(bound)?;
@@ -404,6 +405,9 @@ pub enum Ask<'a> {
     /// A join token, offered to the node that may bind this one's row
     /// (ADR-0108 D9).
     Join(&'a [u8; 32]),
+    /// One record of a transaction across leaders, for its range's leader to
+    /// write (ADR-0112).
+    Across(&'a crate::across::Carried),
 }
 
 /// What the other end answered with.
@@ -428,6 +432,8 @@ pub enum Answered {
     Attempted(bool),
     /// Whether a row now names the asker.
     Joined(bool),
+    /// What a range's leader wrote for a transaction across leaders.
+    Across(tessari_session::AcrossAnswer),
 }
 
 /// Reach the peer `at` on `address`, and exchange greetings.
@@ -537,7 +543,10 @@ fn connect(address: impl ToSocketAddrs, bound: Duration) -> Result<TcpStream> {
     let mut failed = None;
     for at in address.to_socket_addrs()? {
         match TcpStream::connect_timeout(&at, bound) {
-            Ok(socket) => return Ok(socket),
+            Ok(socket) => {
+                socket.set_nodelay(true)?;
+                return Ok(socket);
+            }
             Err(why) => failed = Some(why),
         }
     }
@@ -613,6 +622,26 @@ fn exchange(
                     [permitted] => Ok((heard, Answered::Attempted(*permitted == 1))),
                     _ => Err(Error::Malformed),
                 },
+                Some(_) => Err(Error::OutOfTurn { tag }),
+                None => Err(Error::UnknownFrame { tag }),
+            }
+        }
+        Ask::Across(carried) => {
+            frame::write_tagged(&mut link, PeerFrame::Across.tag(), &carried.encode())?;
+            let (tag, body) = answer(&mut link)?;
+            match PeerFrame::from_tag(tag) {
+                Some(PeerFrame::AcrossDone) => Ok((
+                    heard,
+                    Answered::Across(
+                        tessari_session::AcrossAnswer::decode(&body)
+                            .map_err(|_| Error::Malformed)?,
+                    ),
+                )),
+                // The leader's refusal — its kind, then its words — which the
+                // coordinator treats as *not prepared* and answers its caller
+                // by the kind (Q-924).
+                Some(PeerFrame::NotAcross) => Err(tessari_session::PartRefused::decode(&body)
+                    .map_or(Error::Malformed, Error::RefusedAcross)),
                 Some(_) => Err(Error::OutOfTurn { tag }),
                 None => Err(Error::UnknownFrame { tag }),
             }

@@ -317,6 +317,38 @@ fn named(mutation: &Mutation, value: Option<&Value>) -> Carried {
 /// the same reason: a record whose home cannot be proven is filed nowhere rather
 /// than filed wrongly.
 pub(crate) fn home_of(record: &LogRecord) -> Result<Reach> {
+    // A decision carries no writes to derive a home from. It belongs to the
+    // coordinator's range — its record's first participant (ADR-0112 D2) — so
+    // it is fenced and logged exactly as a write into that range would be.
+    if let Some(tessari_encoding::Across {
+        part: tessari_encoding::Part::Decide(decided),
+        ..
+    }) = record.part_of()
+    {
+        return decided
+            .participants
+            .first()
+            .map(|coordinator| coordinator.range)
+            .ok_or(crate::error::Error::AcrossMalformed {
+                part: "decide",
+                problem: "a record that names no participant",
+            });
+    }
+    if let Some(tessari_encoding::Across {
+        part: tessari_encoding::Part::Forget { coordinator },
+        ..
+    }) = record.part_of()
+    {
+        return Ok(*coordinator);
+    }
+    // A landed part restored from a snapshot names its range (ADR-0112 D9a).
+    if let Some(tessari_encoding::Across {
+        part: tessari_encoding::Part::Landed { range },
+        ..
+    }) = record.part_of()
+    {
+        return Ok(*range);
+    }
     let mut home = None;
     for mutation in record.mutations() {
         let own = match carried_to(mutation)? {

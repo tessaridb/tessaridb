@@ -15,9 +15,14 @@ use tessari_serve::tls::{self, Pem};
 pub(crate) const TLS_CERT: &str = "TESSARIDB_TLS_CERT";
 /// Its private key, PEM.
 pub(crate) const TLS_KEY: &str = "TESSARIDB_TLS_KEY";
-/// `1` to serve clients in the clear as a choice. Accepted for one release
-/// after ADR-0111 made the clear the default; it changes nothing but the notice.
+/// Retired in 0.24.0-beta: `1` used to serve clients in the clear as a
+/// choice, and the clear has been the default without a certificate since
+/// ADR-0111, so a node told it now refuses to start.
 pub(crate) const CLIENT_PLAINTEXT: &str = "TESSARIDB_CLIENT_PLAINTEXT";
+
+/// Why `--client-plaintext` or its variable is refused.
+pub(crate) const PLAINTEXT_RETIRED: &str = "was retired in 0.24.0-beta: a node serves its \
+     clients in the clear by default when it has no certificate, so drop it";
 /// `1` to refuse to start without a client certificate.
 pub(crate) const REQUIRE_CLIENT_TLS: &str = "TESSARIDB_REQUIRE_CLIENT_TLS";
 /// The certificates `--at` trusts a node by, PEM.
@@ -28,27 +33,29 @@ pub(crate) const TLS_AUTHORITY: &str = "TESSARIDB_TLS_AUTHORITY";
 pub(crate) struct Given {
     pub(crate) cert: Option<PathBuf>,
     pub(crate) key: Option<PathBuf>,
-    pub(crate) plaintext: bool,
     pub(crate) require: bool,
 }
 
 impl Given {
     /// The flags, with the environment filling what they left out.
     ///
-    /// Per field rather than all-or-nothing, so a container that sets the two
-    /// paths in its environment can still be told `--client-plaintext` — which
-    /// the judgement then refuses as two answers, rather than one of them being
-    /// silently dropped here.
+    /// Per field rather than all-or-nothing, so a container that sets one
+    /// path in its environment and the other by flag gets both.
+    ///
+    /// # Errors
+    ///
+    /// A switch that is not `1` or `0`, and the retired plaintext variable set.
     pub(crate) fn with_environment(
         self,
         read: impl Fn(&str) -> Option<String>,
     ) -> Result<Self, String> {
-        let plaintext = switch(&read, CLIENT_PLAINTEXT)?;
+        if switch(&read, CLIENT_PLAINTEXT)? {
+            return Err(format!("{CLIENT_PLAINTEXT}=1 {PLAINTEXT_RETIRED}"));
+        }
         let require = switch(&read, REQUIRE_CLIENT_TLS)?;
         Ok(Self {
             cert: self.cert.or_else(|| read(TLS_CERT).map(PathBuf::from)),
             key: self.key.or_else(|| read(TLS_KEY).map(PathBuf::from)),
-            plaintext: self.plaintext || plaintext,
             require: self.require || require,
         })
     }
@@ -75,30 +82,19 @@ pub(crate) enum Clients {
         key: PathBuf,
         required: bool,
     },
-    /// In the clear; `chosen` when somebody said so with the retired
-    /// `--client-plaintext` rather than by default.
-    Plaintext { chosen: bool },
+    /// In the clear, which is what a node with no certificate does.
+    Plaintext,
 }
 
 /// Judge what was given.
 ///
 /// # Errors
 ///
-/// Half a certificate, a certificate beside `--client-plaintext`, the switch
-/// beside `--client-plaintext`, and the switch with no certificate are refused
-/// rather than started.
+/// Half a certificate, and the switch with no certificate, are refused rather
+/// than started.
 pub(crate) fn decide(given: Given) -> Result<Clients, String> {
-    let Given {
-        cert,
-        key,
-        plaintext,
-        require,
-    } = given;
+    let Given { cert, key, require } = given;
     match (cert, key) {
-        (Some(_), Some(_)) if plaintext => Err(
-            "--tls-cert and --client-plaintext are two answers to one question; give one"
-                .to_owned(),
-        ),
         (Some(cert), Some(key)) => Ok(Clients::Tls {
             cert,
             key,
@@ -106,16 +102,11 @@ pub(crate) fn decide(given: Given) -> Result<Clients, String> {
         }),
         (Some(_), None) => Err("--tls-cert was given without --tls-key".to_owned()),
         (None, Some(_)) => Err("--tls-key was given without --tls-cert".to_owned()),
-        (None, None) if require && plaintext => Err(
-            "--require-client-tls and --client-plaintext are two answers to one question; \
-             give one"
-                .to_owned(),
-        ),
         (None, None) if require => Err(format!(
             "--require-client-tls ({REQUIRE_CLIENT_TLS}=1) serves clients over TLS only: give \
              --tls-cert and --tls-key ({TLS_CERT} and {TLS_KEY})"
         )),
-        (None, None) => Ok(Clients::Plaintext { chosen: plaintext }),
+        (None, None) => Ok(Clients::Plaintext),
     }
 }
 
@@ -193,35 +184,31 @@ mod tests {
         CLIENT_PLAINTEXT, Clients, Given, REQUIRE_CLIENT_TLS, TLS_CERT, TLS_KEY, decide, reach,
     };
 
-    fn given(cert: Option<&str>, key: Option<&str>, plaintext: bool) -> Given {
+    fn given(cert: Option<&str>, key: Option<&str>) -> Given {
         Given {
             cert: cert.map(PathBuf::from),
             key: key.map(PathBuf::from),
-            plaintext,
             require: false,
         }
     }
 
-    fn requiring(cert: Option<&str>, key: Option<&str>, plaintext: bool) -> Given {
+    fn requiring(cert: Option<&str>, key: Option<&str>) -> Given {
         Given {
             require: true,
-            ..given(cert, key, plaintext)
+            ..given(cert, key)
         }
     }
 
     #[test]
-    fn a_node_told_nothing_serves_its_clients_in_the_clear_and_says_it_was_not_chosen() {
+    fn a_node_told_nothing_serves_its_clients_in_the_clear() {
         // ADR-0111 D2: single node and cluster alike — the cluster refusal is gone.
-        assert_eq!(
-            decide(given(None, None, false)),
-            Ok(Clients::Plaintext { chosen: false })
-        );
+        assert_eq!(decide(given(None, None)), Ok(Clients::Plaintext));
     }
 
     #[test]
     fn a_certificate_serves_tls_and_says_whether_it_was_required() {
         assert_eq!(
-            decide(given(Some("c.pem"), Some("k.pem"), false)),
+            decide(given(Some("c.pem"), Some("k.pem"))),
             Ok(Clients::Tls {
                 cert: PathBuf::from("c.pem"),
                 key: PathBuf::from("k.pem"),
@@ -229,7 +216,7 @@ mod tests {
             })
         );
         assert_eq!(
-            decide(requiring(Some("c.pem"), Some("k.pem"), false)),
+            decide(requiring(Some("c.pem"), Some("k.pem"))),
             Ok(Clients::Tls {
                 cert: PathBuf::from("c.pem"),
                 key: PathBuf::from("k.pem"),
@@ -240,30 +227,31 @@ mod tests {
 
     #[test]
     fn a_node_required_to_serve_tls_refuses_to_start_without_a_certificate() {
-        let refused = decide(requiring(None, None, false)).expect_err("required and absent");
+        let refused = decide(requiring(None, None)).expect_err("required and absent");
         assert!(
             refused.contains("--tls-cert") && refused.contains("--require-client-tls"),
             "{refused}"
         );
-        let refused = decide(requiring(None, None, true)).expect_err("two answers");
-        assert!(refused.contains("two answers"), "{refused}");
     }
 
     #[test]
-    fn client_plaintext_is_still_accepted_and_marked_chosen() {
-        assert_eq!(
-            decide(given(None, None, true)),
-            Ok(Clients::Plaintext { chosen: true })
+    fn the_retired_plaintext_variable_is_refused_and_its_zero_is_harmless() {
+        let on = |name: &str| (name == CLIENT_PLAINTEXT).then(|| "1".to_owned());
+        let refused = Given::default().with_environment(on).expect_err("retired");
+        assert!(
+            refused.contains(CLIENT_PLAINTEXT) && refused.contains("retired"),
+            "{refused}"
         );
+        let off = |name: &str| (name == CLIENT_PLAINTEXT).then(|| "0".to_owned());
+        assert_eq!(Given::default().with_environment(off), Ok(Given::default()));
     }
 
     #[test]
-    fn half_a_certificate_and_two_answers_are_refused() {
+    fn half_a_certificate_is_refused() {
         for (asked, named) in [
-            (given(Some("c.pem"), None, false), "without --tls-key"),
-            (given(None, Some("k.pem"), false), "without --tls-cert"),
-            (given(Some("c.pem"), Some("k.pem"), true), "two answers"),
-            (requiring(Some("c.pem"), None, false), "without --tls-key"),
+            (given(Some("c.pem"), None), "without --tls-key"),
+            (given(None, Some("k.pem")), "without --tls-cert"),
+            (requiring(Some("c.pem"), None), "without --tls-key"),
         ] {
             let refused = decide(asked).expect_err(named);
             assert!(refused.contains(named), "{refused}");
@@ -277,34 +265,24 @@ mod tests {
             TLS_KEY => Some("env-key.pem".to_owned()),
             _ => None,
         };
-        let merged = given(Some("flag-cert.pem"), None, false)
+        let merged = given(Some("flag-cert.pem"), None)
             .with_environment(environment)
             .expect("a readable environment");
-        assert_eq!(
-            merged,
-            given(Some("flag-cert.pem"), Some("env-key.pem"), false)
-        );
+        assert_eq!(merged, given(Some("flag-cert.pem"), Some("env-key.pem")));
 
-        for (variable, read) in [
-            (
-                CLIENT_PLAINTEXT,
-                (|g: &Given| g.plaintext) as fn(&Given) -> bool,
-            ),
-            (REQUIRE_CLIENT_TLS, |g: &Given| g.require),
-        ] {
-            let on = |name: &str| (name == variable).then(|| "1".to_owned());
-            assert!(read(&Given::default().with_environment(on).expect("1")));
-            let off = |name: &str| (name == variable).then(|| "0".to_owned());
-            assert!(!read(&Given::default().with_environment(off).expect("0")));
-            let misspelled = |name: &str| (name == variable).then(|| "yes".to_owned());
-            let refused = Given::default()
-                .with_environment(misspelled)
-                .expect_err("yes is not 1 or 0");
-            assert!(
-                refused.contains(variable) && refused.contains("yes"),
-                "{refused}"
-            );
-        }
+        let variable = REQUIRE_CLIENT_TLS;
+        let on = |name: &str| (name == variable).then(|| "1".to_owned());
+        assert!(Given::default().with_environment(on).expect("1").require);
+        let off = |name: &str| (name == variable).then(|| "0".to_owned());
+        assert!(!Given::default().with_environment(off).expect("0").require);
+        let misspelled = |name: &str| (name == variable).then(|| "yes".to_owned());
+        let refused = Given::default()
+            .with_environment(misspelled)
+            .expect_err("yes is not 1 or 0");
+        assert!(
+            refused.contains(variable) && refused.contains("yes"),
+            "{refused}"
+        );
     }
 
     #[test]

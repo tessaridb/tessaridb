@@ -10,8 +10,8 @@ use crate::error::{Error, Result};
 use crate::session::Session;
 
 use super::{
-    described_consumer, described_failover, described_follower, described_replica, guarantees,
-    running_state,
+    described_consumer, described_failover, described_follower, described_leaders,
+    described_replica, guarantees, running_state,
 };
 
 impl Session<'_> {
@@ -77,6 +77,7 @@ impl Session<'_> {
         // that can drift.
         let held = self.store.health()?;
         let campaigns = held.campaigns;
+        let across = across_report(&held);
         let lease = match held.lease_remaining {
             Some(left) => tessari_types::Duration::new(
                 i64::try_from(left.as_secs()).unwrap_or(i64::MAX),
@@ -128,6 +129,7 @@ impl Session<'_> {
                 ),
             ]))
         });
+        let leaders = described_leaders(&Catalog::new(transaction))?;
         let followers = self
             .store
             .follower_lag()?
@@ -216,6 +218,9 @@ impl Session<'_> {
                     // what was declared. Joining them would put a lag figure on
                     // a peer that has never asked for anything.
                     ("followers".to_owned(), Value::Array(followers)),
+                    // Each range's leader as the log recorded it, so an
+                    // operator reads who leads what without asking every node.
+                    ("leaders".to_owned(), leaders),
                     // The follower's own side (ADR-0094 D4): where this node
                     // stands against the peer it collects from. `null` on a
                     // node that has never collected nor copied, which is a
@@ -255,12 +260,40 @@ impl Session<'_> {
                         "campaigns".to_owned(),
                         Value::from(i64::try_from(campaigns).unwrap_or(i64::MAX)),
                     ),
+                    // Transactions across leaders (ADR-0112 D11): how the ones
+                    // this node coordinated ended, and what the last settling
+                    // pass left standing here — `null` before the first pass,
+                    // which is not a count of zero.
+                    ("across".to_owned(), across),
                     // The periods this cluster waits before it replaces a
                     // leader, with the pair that orders two of them. Beside the
                     // lease and the epoch because it is what those two are
                     // measured against: a lease counting down says how long,
                     // and this says how long it was ever meant to be.
                     ("failover".to_owned(), failover),
+                    // Each balanced table's shards as this node's balancing
+                    // pass last counted them (ADR-0113 D4) — empty on every
+                    // node but the store line's leader, which is the one that
+                    // counts.
+                    (
+                        "balanced".to_owned(),
+                        Value::Array(
+                            self.store
+                                .sampled_shards()
+                                .iter()
+                                .map(|(_, sampled)| {
+                                    let mut described = super::described_sample(sampled);
+                                    if let Value::Object(fields) = &mut described {
+                                        fields.insert(
+                                            "table".to_owned(),
+                                            Value::from(sampled.name.as_str()),
+                                        );
+                                    }
+                                    described
+                                })
+                                .collect(),
+                        ),
+                    ),
                 ])),
             ),
         ]))
@@ -397,4 +430,18 @@ impl Session<'_> {
                 .collect(),
         )
     }
+}
+
+/// The `across` group of `INFO FOR NODE`, from the same `health()` the
+/// `/metrics` scrape reads.
+fn across_report(held: &tessari_storage::Health) -> Value {
+    let count = |held: u64| Value::from(i64::try_from(held).unwrap_or(i64::MAX));
+    let sampled = |held: Option<u64>| held.map_or(Value::Null, count);
+    Value::Object(BTreeMap::from([
+        ("committed".to_owned(), count(held.across_committed)),
+        ("aborted".to_owned(), count(held.across_aborted)),
+        ("in_doubt".to_owned(), count(held.across_in_doubt)),
+        ("pending".to_owned(), sampled(held.across_pending)),
+        ("with_intents".to_owned(), sampled(held.across_with_intents)),
+    ]))
 }

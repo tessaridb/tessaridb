@@ -19,8 +19,8 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
-        notes: &mut Vec<Note>,
-        noticed: &Noticed,
+        (notes, noticed): (&mut Vec<Note>, &Noticed),
+        within: Option<crate::budget::Deadline>,
     ) -> Result<Option<(Groups, Plan)>> {
         let Some(mut reduce) = crate::reduce::reduce_of(select) else {
             return Ok(None);
@@ -33,8 +33,14 @@ impl Session<'_> {
         let (_, id) = self.resolve_table(transaction, table)?;
         self.refuse_reading_a_vault(transaction, id, table)?;
         reduce.visible = self.visible_in(transaction, id)?;
-        let Some((groups, note)) =
-            self.gather_folded(transaction, id, &reduce, select, condition, noticed)?
+        let Some((groups, note)) = self.gather_folded(
+            transaction,
+            id,
+            &reduce,
+            (select, condition),
+            noticed,
+            within,
+        )?
         else {
             return Ok(None);
         };

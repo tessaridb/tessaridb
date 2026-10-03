@@ -64,8 +64,8 @@ pub(crate) use change::{CatalogChange, catalog_change, defined_index};
 pub use consumer::{ConsumerDefinition, Feed, Mapped, OnFailure};
 pub(crate) use decoded::DecodedTables;
 pub use definition::{
-    CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, DatabaseDefinition, EdgeDeclaration, EdgeOrder,
-    EngineField, EngineMember, EventDeclaration, GEO_FIELD, IndexDefinition, IndexShape,
+    AutoSplit, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, DatabaseDefinition, EdgeDeclaration,
+    EdgeOrder, EngineField, EngineMember, EventDeclaration, GEO_FIELD, IndexDefinition, IndexShape,
     NamespaceDefinition, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration,
     RECORD_LEVEL, RollupCompute, RollupDeclaration, RollupFold, SearchCosts, SeriesDeclaration,
     StoredKind, TableDefinition, TableKind, TableShape, UNIT_WEIGHT, VECTOR_FIELD, VaultCustody,
@@ -93,7 +93,7 @@ pub use user::{Role, UserDefinition, Verb};
 pub use vault::VaultRoot;
 pub use words::{WordSet, WordSetKind};
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::transaction::{RecordAddress, Transaction};
 use system::Level;
 
@@ -285,6 +285,43 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             return Ok(false);
         };
         definition.schemafull = schemafull;
+        self.write(system::TABLES, id.get(), &definition.to_value());
+        Ok(true)
+    }
+
+    /// Set or clear when the table's shards split and merge without being
+    /// asked (ADR-0113 D2), keeping everything else about it.
+    ///
+    /// Answers `false` when there is no table under that id.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::AutoSplitOnAnUnsplitTable`] for a table with no shard map,
+    /// whose shards nothing could split; [`Error::AutoSplitWouldOscillate`]
+    /// when a split's two halves would merge straight back.
+    pub fn set_auto_split(&mut self, id: TableId, policy: Option<AutoSplit>) -> Result<bool> {
+        let Some(mut definition) = self.table(id)? else {
+            return Ok(false);
+        };
+        if let Some(policy) = policy {
+            if definition.shards.is_none() {
+                return Err(Error::AutoSplitOnAnUnsplitTable {
+                    table: definition.name,
+                });
+            }
+            // A shard just above the bound splits into halves of about half
+            // of it each; if those two together were under the merge bound
+            // the next pass would merge them again, and the table would
+            // change shape every pass.
+            if policy.merge_below.saturating_mul(2) >= policy.above {
+                return Err(Error::AutoSplitWouldOscillate {
+                    table: definition.name,
+                    above: policy.above,
+                    merge_below: policy.merge_below,
+                });
+            }
+        }
+        definition.auto_split = policy;
         self.write(system::TABLES, id.get(), &definition.to_value());
         Ok(true)
     }

@@ -4,8 +4,8 @@ use super::Parser;
 use tessari_types::Number;
 
 use crate::ast::{
-    Credential, Name, NamespaceChange, Password, ReachRef, StatementKind, TableChange, UserChange,
-    UserGrant,
+    AutoSplit, Credential, Name, NamespaceChange, Password, ReachRef, StatementKind, TableChange,
+    UserChange, UserGrant,
 };
 use crate::error::Result;
 use crate::token::{Keyword, Punct, Token};
@@ -98,7 +98,24 @@ impl Parser<'_> {
             // ADR-0095. `split` and `at` contextual, as in `DEFINE TABLE`; a
             // point is a literal for the reason `split_points` gives.
             if self.eat_word("split") {
-                self.expect_word("at", "`AT` and the identity a new shard begins at")?;
+                // ADR-0113 D2: the store line's leader splits and merges, or
+                // stops doing so.
+                if self.eat_word("automatically") {
+                    return Ok(StatementKind::AlterTable {
+                        table,
+                        change: TableChange::SplitAutomatically(self.auto_split()?),
+                    });
+                }
+                if self.eat_word("manually") {
+                    return Ok(StatementKind::AlterTable {
+                        table,
+                        change: TableChange::SplitManually,
+                    });
+                }
+                self.expect_word(
+                    "at",
+                    "`AT` and the identity a new shard begins at, `AUTOMATICALLY` or `MANUALLY`",
+                )?;
                 return Ok(StatementKind::AlterTable {
                     table,
                     change: TableChange::Split(self.split_points()?),
@@ -267,6 +284,36 @@ impl Parser<'_> {
     }
 
     /// A shard's number, as `INFO FOR TABLE` reports it.
+    /// `ABOVE n RECORDS [OR w WRITES PER SECOND] MERGE BELOW m RECORDS` after
+    /// `SPLIT AUTOMATICALLY` — every bound written, since a threshold the
+    /// store chose would decide when a table changes shape (ADR-0113 D2).
+    fn auto_split(&mut self) -> Result<AutoSplit> {
+        self.expect_word("above", "`ABOVE` and how many records a shard may hold")?;
+        let above = self.whole_number("how many records a shard may hold")?;
+        self.expect_word("records", "`RECORDS` after the count")?;
+        let writes_per_second = if self.eat_keyword(Keyword::Or) {
+            let writes = self.whole_number("how many writes a second a shard may take")?;
+            self.expect_word("writes", "`WRITES PER SECOND` after the rate")?;
+            self.expect_word("per", "`PER SECOND` after `WRITES`")?;
+            self.expect_word("second", "`SECOND` after `WRITES PER`")?;
+            Some(writes)
+        } else {
+            None
+        };
+        self.expect_keyword(
+            Keyword::Merge,
+            "`MERGE BELOW` and the count two shards merge under",
+        )?;
+        self.expect_word("below", "`BELOW` and the count two shards merge under")?;
+        let merge_below = self.whole_number("the count two shards merge under")?;
+        self.expect_word("records", "`RECORDS` after the count")?;
+        Ok(AutoSplit {
+            above,
+            writes_per_second,
+            merge_below,
+        })
+    }
+
     pub(super) fn shard_number(&mut self) -> Result<u32> {
         let expected = "the shard's number, as `INFO FOR TABLE` reports it";
         let Some(Token::Number(Number::Integer(shard))) = self.peek() else {

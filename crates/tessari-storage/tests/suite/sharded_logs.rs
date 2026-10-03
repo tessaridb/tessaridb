@@ -53,6 +53,7 @@ impl Split {
             conflict: None,
             split,
             partition: None,
+            spread: false,
         };
         let orders = catalog
             .create_table(

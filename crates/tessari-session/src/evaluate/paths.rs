@@ -155,6 +155,7 @@ impl Session<'_> {
                     table: hop.edges.name.text.clone(),
                     span: hop.edges.span,
                 })?;
+        super::graph::edges_settled(transaction, kind.edges, &hop.edges)?;
         let Some(target) = hop.target.as_ref() else {
             return Ok((Vec::new(), None));
         };

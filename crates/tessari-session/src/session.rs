@@ -9,6 +9,8 @@
 //! is the only thing entitled to say what a name currently means.
 
 mod acknowledging;
+mod across;
+pub use across::{AcrossAnswer, AcrossAsk, AcrossRefusal, PartRefused, Participants, RefusalKind};
 mod atomic;
 mod step;
 
@@ -81,6 +83,10 @@ pub struct Session<'a> {
     /// transaction or a `VERSION` read — see [`Session::step`] — so a read
     /// there refuses exactly as it did before gathering existed.
     pub(crate) gather: Option<Arc<dyn Gather>>,
+    /// Who carries a record of a transaction across leaders to the leader of
+    /// its range (ADR-0112). A fact about the process, like `gather`; `None`
+    /// on a node told of no peers, where a commit across leaders is refused.
+    pub(crate) participants: Option<Arc<dyn Participants>>,
     /// Where `BACKUP … TO` may write, when the node was given a folder.
     ///
     /// A fact about the process, like `gather`, so it is taken at the session;
@@ -112,6 +118,10 @@ pub struct Session<'a> {
     /// for, carried to its `COMMIT` (ADR-0106 D2) — a level asked of one write
     /// is asked of the transaction that lands it.
     pub(crate) acknowledge_open: Option<tessari_types::Acknowledge>,
+    /// Whether a write in the open transaction said `ACROSS LEADERS`, which
+    /// lets its `COMMIT` reach across leaders as though the `COMMIT` had said
+    /// it (ADR-0112 D1).
+    pub(crate) across_open: bool,
     /// How many events deep this session runs: zero for a caller's session,
     /// one more for each event body a write ran (ADR-0110 D5).
     pub(crate) event_depth: u8,
@@ -147,6 +157,7 @@ impl<'a> Session<'a> {
             consumer: None,
             elsewhere: None,
             gather: None,
+            participants: None,
             backups: None,
             at_rest: None,
             budget: None,
@@ -154,6 +165,7 @@ impl<'a> Session<'a> {
             sink: crate::backup_to::Sink::none(),
             landed: false,
             acknowledge_open: None,
+            across_open: false,
             event_depth: 0,
         }
     }
@@ -181,6 +193,14 @@ impl<'a> Session<'a> {
     #[must_use]
     pub fn gathering(mut self, gather: Arc<dyn Gather>) -> Self {
         self.gather = Some(gather);
+        self
+    }
+
+    /// Open this session able to carry the records of a transaction across
+    /// leaders to the leaders of its ranges (ADR-0112).
+    #[must_use]
+    pub fn participating(mut self, participants: Arc<dyn Participants>) -> Self {
+        self.participants = Some(participants);
         self
     }
 
@@ -324,6 +344,7 @@ impl<'a> Session<'a> {
                     },
                     span,
                     acknowledge: None,
+                    across: false,
                 },
             );
         }
@@ -627,6 +648,7 @@ impl<'a> Session<'a> {
             // answer a bounded read differently from the session that spawned it.
             elsewhere: self.elsewhere.clone(),
             gather: self.gather.clone(),
+            participants: self.participants.clone(),
             // A probe answers who may do what and never writes a file.
             backups: None,
             at_rest: None,
@@ -636,6 +658,7 @@ impl<'a> Session<'a> {
             sink: crate::backup_to::Sink::none(),
             landed: false,
             acknowledge_open: None,
+            across_open: false,
             event_depth: 0,
         };
         probe.acting_as(id)?;

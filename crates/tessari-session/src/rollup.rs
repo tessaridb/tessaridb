@@ -90,6 +90,7 @@ impl Session<'_> {
                 conflict: None,
                 split: Vec::new(),
                 partition: None,
+                spread: false,
             },
             declared.if_not_exists,
             span,

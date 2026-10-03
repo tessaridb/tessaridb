@@ -1035,6 +1035,27 @@ fn a_policy_is_set_by_a_statement_and_reads_back_with_the_pair_that_orders_it() 
 }
 
 #[test]
+fn a_policy_asks_for_balanced_leaderships_and_one_that_does_not_turns_it_off() {
+    // ADR-0113 D3. The statement replaces the set, so leaving the clause out
+    // of the next policy is how an operator turns the balancer off again.
+    let store = closed(&backend());
+    let balancing = |store: &Store| {
+        policy(&reported(store)).and_then(|held| held.get("balance_leaderships").cloned())
+    };
+    owner(&store)
+        .run(
+            "DEFINE FAILOVER AWARENESS 12s COLLECTION 11s ROUND 2s CAMPAIGN 3s \
+             LEASE 40s BALANCE LEADERSHIPS;",
+        )
+        .unwrap();
+    assert_eq!(balancing(&store), Some(Value::Bool(true)));
+    owner(&store)
+        .run("DEFINE FAILOVER AWARENESS 12s COLLECTION 11s ROUND 2s CAMPAIGN 3s LEASE 40s;")
+        .unwrap();
+    assert_eq!(balancing(&store), Some(Value::Bool(false)));
+}
+
+#[test]
 fn a_second_policy_under_one_leadership_carries_the_next_version() {
     // The case the epoch alone cannot tell apart, and the reason the version
     // field exists at all: one leader setting the policy twice writes the same
@@ -1558,4 +1579,56 @@ fn a_node_reports_how_it_serves_its_clients() {
     assert_eq!(clients(Some(Arc::new(Required))), transport(true, true));
     assert_eq!(clients(Some(Arc::new(Clear))), transport(false, false));
     assert_eq!(clients(None), Value::Null);
+}
+
+/// Each range's leader as the log recorded it (G053 C6): the store's, and a
+/// namespace led by another node. Spelled as the statements spell a reach, so
+/// an operator reads `NAMESPACE prod` and not an id, and carrying the epoch it was decided under — a claim about the log,
+/// not about who is alive.
+#[test]
+fn a_node_reports_who_the_log_says_leads_each_range() {
+    let store = closed(&backend());
+    owner(&store)
+        .run("DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE orders;")
+        .unwrap();
+    let me = store.node_identity().unwrap().id;
+    let other = [7_u8; 16];
+    let mut transaction = store.begin().unwrap();
+    let mut catalog = tessari_storage::Catalog::new(&mut transaction);
+    let prod = catalog.namespace_id("prod").unwrap().expect("prod");
+    catalog
+        .record_leadership(
+            tessari_storage::Reach::Store,
+            me,
+            tessari_types::Epoch::new(3),
+        )
+        .unwrap();
+    catalog
+        .record_leadership(
+            tessari_storage::Reach::Namespace(prod),
+            other,
+            tessari_types::Epoch::new(5),
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+
+    let report = reported(&store);
+    let Some(Value::Object(cluster)) = report.get("cluster") else {
+        panic!("no cluster group: {report:?}");
+    };
+    let leader = |range: &str, node: [u8; 16], epoch: i64| {
+        Value::Object(std::collections::BTreeMap::from([
+            ("range".to_owned(), Value::from(range)),
+            ("node".to_owned(), Value::Uuid(node)),
+            ("epoch".to_owned(), Value::from(epoch)),
+        ]))
+    };
+    assert_eq!(
+        cluster.get("leaders"),
+        Some(&Value::Array(vec![
+            leader("STORE", me, 3),
+            leader("NAMESPACE prod", other, 5),
+        ])),
+        "{cluster:?}"
+    );
 }

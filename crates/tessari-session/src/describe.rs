@@ -418,6 +418,19 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
     write_conflict(script, definition);
     write_split(script, definition);
     script.push_str(";\n");
+    // Its own statement, as an operator writes it: a table restored without it
+    // would stop splitting itself with nothing in an error state (ADR-0113 D2).
+    if let Some(policy) = definition.auto_split {
+        let _ = write!(
+            script,
+            "ALTER TABLE {name} SPLIT AUTOMATICALLY ABOVE {} RECORDS",
+            policy.above
+        );
+        if let Some(writes) = policy.writes_per_second {
+            let _ = write!(script, " OR {writes} WRITES PER SECOND");
+        }
+        let _ = writeln!(script, " MERGE BELOW {} RECORDS;", policy.merge_below);
+    }
     Ok(())
 }
 
@@ -453,6 +466,10 @@ fn write_conflict(script: &mut String, definition: &TableDefinition) {
 /// *called*, which no later read can undo.
 fn write_identity(script: &mut String, definition: &TableDefinition) {
     let _ = write!(script, " IDENTITY {}", definition.identity);
+    // And so is the bucket a spread identity begins with (ADR-0113 D1).
+    if definition.spread {
+        script.push_str(" SPREAD");
+    }
     // Part of the naming scheme too: a table restored without it would go on
     // accepting records whose identity and region disagree (ADR-0096).
     if let Some(field) = &definition.partition {

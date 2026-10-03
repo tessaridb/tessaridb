@@ -112,4 +112,36 @@ impl tessari_wire::Holding for PeerDoor {
             tessaridb::Surface::Http => tessari_http::render_coordinated(&self.db, &ran),
         })
     }
+
+    // A record of a transaction across leaders another node carried here
+    // (ADR-0112): judged as a coordinated request is — the account and the
+    // reach — then written as that user, whose grants here decide.
+    fn across(
+        &self,
+        from: [u8; tessari_storage::NODE_ID_LEN],
+        assertion: &tessari_wire::Assertion,
+        asked: &[u8],
+    ) -> Result<Vec<u8>, tessari_session::PartRefused> {
+        use tessari_session::{PartRefused, RefusalKind};
+        let asked = tessari_session::AcrossAsk::decode(asked).map_err(|reason| PartRefused {
+            kind: RefusalKind::Invalid,
+            reason,
+        })?;
+        let mut session =
+            tessari_wire::admit_asserted(&self.db, from, assertion).map_err(|reason| {
+                PartRefused {
+                    kind: RefusalKind::Forbidden,
+                    reason,
+                }
+            })?;
+        // The kind is judged here, where the refusal is whole, by the mapping
+        // the HTTP surface answers with (Q-924).
+        session
+            .answer_across(&asked)
+            .map(|answer| answer.encode().to_vec())
+            .map_err(|refused| PartRefused {
+                kind: tessari_http::refusal_kind(&refused),
+                reason: refused.to_string(),
+            })
+    }
 }

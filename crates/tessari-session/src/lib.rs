@@ -96,7 +96,9 @@ pub use plan::{Expected, Plan};
 pub use pushdown::{OrderKey, Ordered, Pushed, keeping, leading};
 pub use reduce::{Folded, Partial, Portable, Reduce, Reduced, reducing};
 pub use script::{ScriptTaken, write_script};
-pub use session::{Atomic, Session};
+pub use session::{
+    AcrossAnswer, AcrossAsk, AcrossRefusal, Atomic, PartRefused, Participants, RefusalKind, Session,
+};
 pub use tessari_ql::Parameters;
 pub use ticket::Ticket;
 pub use vault_surface::{VaultAct, VaultTarget};

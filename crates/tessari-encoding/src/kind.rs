@@ -134,6 +134,23 @@ pub enum KeyKind {
     /// written by this build unreadable by an older one, over a fact neither
     /// needs to agree on.
     ServedReach,
+    /// The record of one transaction across leaders: its outcome and its
+    /// participants, keyed by its id (ADR-0112). The first kind of the `0x5_`
+    /// family, which is what this store keeps about such transactions.
+    TransactionRecord,
+    /// One intent a transaction across leaders holds on this node, keyed by
+    /// the transaction and then the record — so a participant finds every
+    /// intent of one transaction by a prefix read, and every transaction with
+    /// intents standing by a walk of the kind (ADR-0112 D7).
+    IntentOf,
+    /// Where one transaction across leaders' part in one range landed on this
+    /// node — the local version its prepare applied at — which is how a reader
+    /// tells whether its snapshot holds the whole transaction (ADR-0112 D6a).
+    AcrossPart,
+    /// A table where a committed transaction across leaders is part-way here —
+    /// its readers and its indexes disagree about it — keyed by the table first,
+    /// so a read asks about its own table with one prefix seek (Q-919).
+    AcrossUnsettled,
 }
 
 impl KeyKind {
@@ -180,12 +197,17 @@ impl KeyKind {
         Self::LogStart,
         Self::LogRetention,
         Self::ServedReach,
+        Self::TransactionRecord,
+        Self::IntentOf,
+        Self::AcrossPart,
+        Self::AcrossUnsettled,
     ];
 
     /// The leading byte that identifies this kind on disk.
     ///
     /// Tags are grouped by family — `0x0_` data, `0x1_` index, `0x2_` log,
-    /// `0x3_` meta, `0x4_` what the planner keeps about an index — so a hex dump
+    /// `0x3_` meta, `0x4_` what the planner keeps about an index, `0x5_`
+    /// transactions across leaders — so a hex dump
     /// is readable and each family can grow.
     /// `0x00` is never assigned: it is the escape byte of the variable-length
     /// encoding and is kept free as a sorts-before-everything sentinel.
@@ -230,6 +252,10 @@ impl KeyKind {
             Self::LogStart => 0x3d,
             Self::LogRetention => 0x3e,
             Self::ServedReach => 0x3f,
+            Self::TransactionRecord => 0x50,
+            Self::IntentOf => 0x51,
+            Self::AcrossPart => 0x52,
+            Self::AcrossUnsettled => 0x53,
         }
     }
 
@@ -274,7 +300,11 @@ impl KeyKind {
             | Self::VersionPosition
             | Self::LogStart
             | Self::LogRetention
-            | Self::ServedReach => Keyspace::META,
+            | Self::ServedReach
+            | Self::TransactionRecord
+            | Self::IntentOf
+            | Self::AcrossPart
+            | Self::AcrossUnsettled => Keyspace::META,
         }
     }
 
@@ -323,6 +353,10 @@ impl KeyKind {
             Self::LogStart => "log-start",
             Self::LogRetention => "log-retention",
             Self::ServedReach => "served-reach",
+            Self::TransactionRecord => "transaction-record",
+            Self::IntentOf => "intent-of",
+            Self::AcrossPart => "across-part",
+            Self::AcrossUnsettled => "across-unsettled",
         }
     }
 
@@ -420,6 +454,10 @@ mod tests {
             (KeyKind::LogStart, 0x3d),
             (KeyKind::LogRetention, 0x3e),
             (KeyKind::ServedReach, 0x3f),
+            (KeyKind::TransactionRecord, 0x50),
+            (KeyKind::IntentOf, 0x51),
+            (KeyKind::AcrossPart, 0x52),
+            (KeyKind::AcrossUnsettled, 0x53),
         ];
         assert_eq!(expected.len(), KeyKind::ALL.len(), "a kind is untested");
         for (kind, tag) in expected {

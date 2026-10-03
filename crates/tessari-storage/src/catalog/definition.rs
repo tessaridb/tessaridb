@@ -10,6 +10,7 @@
 //! of a scan knows what it is without its caller having to remember which key it
 //! came from.
 
+mod auto_split;
 mod declarations;
 mod engine;
 mod events;
@@ -26,6 +27,7 @@ use tessari_types::{
 
 use super::ShardMap;
 use crate::error::{Error, Result};
+pub use auto_split::AutoSplit;
 pub use declarations::{
     EdgeDeclaration, EdgeOrder, QueueDeclaration, SeriesDeclaration, VaultCustody,
     VaultDeclaration, VectorDeclaration, ViewDeclaration,
@@ -95,6 +97,8 @@ const FIELD_ACKNOWLEDGE: &str = "acknowledge";
 const FIELD_CONFLICT: &str = "conflict";
 const FIELD_SHARDS: &str = "shards";
 const FIELD_PARTITION: &str = "partition";
+const FIELD_SPREAD: &str = "spread";
+const FIELD_AUTO_SPLIT: &str = "auto_split";
 const FIELD_EVENTS: &str = "events";
 
 /// A namespace: the outermost tenancy level.
@@ -526,6 +530,8 @@ mod tests {
             conflict: None,
             shards: None,
             partition: None,
+            spread: false,
+            auto_split: None,
             // Not the default either, for the identity's reason: an empty list
             // round trips through a field that was never written.
             events: vec![super::EventDeclaration {
@@ -644,6 +650,8 @@ mod tests {
             graph: None,
             shards: None,
             partition: None,
+            spread: false,
+            auto_split: None,
             events: Vec::new(),
             kind: TableKind::Edge(Some(EdgeDeclaration {
                 from: TableId::new(4),
@@ -704,6 +712,8 @@ mod tests {
             graph: None,
             shards: None,
             partition: None,
+            spread: false,
+            auto_split: None,
             events: Vec::new(),
             // Deliberately the second distance rather than the first: a store
             // that round tripped as `cosine` whatever it was declared with

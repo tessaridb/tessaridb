@@ -121,6 +121,14 @@ pub enum PeerFrame {
     Join,
     /// The answer: whether a row is now bound to the asker.
     Joined,
+    /// A node asking a range's leader to write one record of a transaction
+    /// across leaders — prepare, decide or resolve — for a caller it verified,
+    /// under a signed assertion (ADR-0108, ADR-0112).
+    Across,
+    /// What the leader wrote, and where.
+    AcrossDone,
+    /// The leader declining, with its reason.
+    NotAcross,
 }
 
 impl PeerFrame {
@@ -166,6 +174,9 @@ impl PeerFrame {
             Self::Attempted => 28,
             Self::Join => 29,
             Self::Joined => 30,
+            Self::Across => 31,
+            Self::AcrossDone => 32,
+            Self::NotAcross => 33,
         }
     }
 
@@ -196,6 +207,9 @@ impl PeerFrame {
             28 => Some(Self::Attempted),
             29 => Some(Self::Join),
             30 => Some(Self::Joined),
+            31 => Some(Self::Across),
+            32 => Some(Self::AcrossDone),
+            33 => Some(Self::NotAcross),
             _ => None,
         }
     }
@@ -712,6 +726,9 @@ mod tests {
             (PeerFrame::Attempted, 28),
             (PeerFrame::Join, 29),
             (PeerFrame::Joined, 30),
+            (PeerFrame::Across, 31),
+            (PeerFrame::AcrossDone, 32),
+            (PeerFrame::NotAcross, 33),
         ];
         for (kind, tag) in expected {
             assert_eq!(kind.tag(), tag, "{kind:?}");

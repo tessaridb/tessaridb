@@ -244,7 +244,13 @@ impl Session<'_> {
                     });
                 }
                 let searched = self.searched_for(transaction, id, &[condition])?;
-                let declared = Catalog::new(transaction).field_indexes_on(id)?;
+                // The gate the read's own enumeration passes (`candidates`): an
+                // index the read may not believe is one it does not have.
+                let declared = if transaction.indexes_are_current_for(id)? {
+                    Catalog::new(transaction).field_indexes_on(id)?
+                } else {
+                    Vec::new()
+                };
                 let offered = self.enumerate(transaction, condition, &declared, &searched)?;
                 // The same guard the read applies, from the same function: a
                 // winner that does not beat reading the table is not the path

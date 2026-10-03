@@ -56,8 +56,10 @@ use crate::redact::Visible;
 use crate::session::Session;
 pub(crate) use consumers::{described_consumer, guarantees, running_state};
 pub(crate) use measures::{refining, reported};
-pub(crate) use replicas::{described_failover, described_follower, described_replica};
-pub(crate) use shapes::{described_field, described_index, shape_of};
+pub(crate) use replicas::{
+    described_failover, described_follower, described_leaders, described_replica,
+};
+pub(crate) use shapes::{described_field, described_index, described_sample, shape_of};
 pub(crate) use users::{
     described_authorities, described_grant, described_user, named_database, named_namespace,
 };

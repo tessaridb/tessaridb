@@ -296,9 +296,11 @@ fn erase_statement(statement: &mut Statement) {
         StatementKind::AlterReplica { name, change } => {
             erase_name(name);
             match change {
-                crate::ReplicaChange::Leads(Some(reach)) => erase_reach(reach),
+                crate::ReplicaChange::Leads {
+                    range: Some(reach), ..
+                } => erase_reach(reach),
                 crate::ReplicaChange::Roles(roles) => roles.iter_mut().for_each(erase_name),
-                crate::ReplicaChange::Leads(None)
+                crate::ReplicaChange::Leads { range: None, .. }
                 | crate::ReplicaChange::At(_)
                 | crate::ReplicaChange::ClientsAt(_)
                 | crate::ReplicaChange::HttpAt(_) => {}

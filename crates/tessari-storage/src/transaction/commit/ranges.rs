@@ -137,6 +137,18 @@ impl Transaction<'_> {
     }
 
     pub(crate) fn ranges_written(&self, placement: &Placement) -> Result<BTreeSet<Reach>> {
+        let mut ranges: BTreeSet<Reach> = self.records_ranges(placement)?;
+        // A decision across leaders writes no records, and is still a write into
+        // its coordinator's range: it is admitted, fenced and refused there
+        // exactly as a record written into that range would be (ADR-0112 D4).
+        if let Some(coordinator) = self.decision_range() {
+            ranges.insert(coordinator);
+        }
+        Ok(ranges)
+    }
+
+    /// The ranges the buffered records fall in.
+    fn records_ranges(&self, placement: &Placement) -> Result<BTreeSet<Reach>> {
         self.writes
             .iter()
             .map(|(address, value)| match value {

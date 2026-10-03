@@ -58,6 +58,10 @@ pub struct Statement {
     /// over its namespace's (ADR-0106 D2). `None` on everything else, and on a
     /// write that said nothing.
     pub acknowledge: Option<tessari_types::Acknowledge>,
+    /// Whether this write — or this `COMMIT` — said `ACROSS LEADERS`: it may
+    /// commit across ranges led by different nodes, atomically, rather than be
+    /// refused for spanning them (ADR-0112 D1). `false` on everything else.
+    pub across: bool,
 }
 
 /// What an `INFO FOR` asks about.
@@ -568,8 +572,14 @@ pub enum NamespaceChange {
 /// again tombstones that node (ADR-0108 D9).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplicaChange {
-    /// `LEADS SHARD prod.shop.orders 2`, or `LEADS NONE` (ADR-0098).
-    Leads(Option<ReachRef>),
+    /// `LEADS SHARD prod.shop.orders 2 [PREFERRED]`, or `LEADS NONE`
+    /// (ADR-0098; `PREFERRED`, G053 SG5b).
+    Leads {
+        /// The range placed, or `None` to give the placement up.
+        range: Option<ReachRef>,
+        /// Whether this candidate is the one the range's leader yields to.
+        preferred: bool,
+    },
     /// `AT 'b2:9001'` — where its peer door answers now.
     At(String),
     /// `ROLES serving, writable` — what it is for, as the words written.
@@ -693,6 +703,26 @@ pub enum TableChange {
     /// `MERGE SHARD 4, 5` — two neighbouring live shards are retired and one is
     /// minted in their place, by the numbers `INFO FOR TABLE` reports.
     MergeShards(u32, u32),
+    /// `SPLIT AUTOMATICALLY ABOVE 100000 RECORDS [OR 500 WRITES PER SECOND]
+    /// MERGE BELOW 20000 RECORDS` — the store line's leader splits and merges
+    /// the table's shards itself, each act an `ALTER TABLE` in the log
+    /// (ADR-0113 D2).
+    SplitAutomatically(AutoSplit),
+    /// `SPLIT MANUALLY` — the shards change only by statement again.
+    SplitManually,
+}
+
+/// When a table's shards are split and merged without being asked
+/// (ADR-0113 D2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutoSplit {
+    /// A shard holding more records than this is split.
+    pub above: u32,
+    /// A shard taking more writes a second than this is split, however small.
+    pub writes_per_second: Option<u32>,
+    /// Two neighbouring shards holding fewer records than this together are
+    /// merged.
+    pub merge_below: u32,
 }
 
 /// Which endpoint of an edge a traversal starts from.

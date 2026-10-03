@@ -91,6 +91,7 @@ pub(crate) fn serve(
                 Answer {
                     kind: frame::Kind::Refusal,
                     body: BUSY.as_bytes().to_vec(),
+                    redirect: None,
                 }
             }
         };
@@ -159,6 +160,9 @@ impl Read for Patient<'_> {
 /// Write one answer and count it, as the task's `reply` does.
 fn reply(writer: &mut impl Write, counting: &Stopping, answer: &Answer) -> Result<()> {
     counting.answered(answer.kind == frame::Kind::Refusal);
+    if let Some(settled) = answer.redirect {
+        counting.redirected(settled);
+    }
     frame::write(writer, answer.kind, &answer.body)
 }
 

@@ -71,6 +71,8 @@ fn one_of_two(addressed: bool) -> Arc<Db> {
             http: addressed.then(|| THEIR_HTTP.to_owned()),
             fingerprint: None,
             join: None,
+            releasing: false,
+            preferred: false,
         })
         .unwrap();
     catalog
@@ -264,4 +266,57 @@ fn a_half_committed_script_over_http_is_a_409_and_not_a_redirect() {
     assert_eq!(status, 409, "{body}");
     assert_eq!(location, None);
     assert!(body.contains("already"), "{body}");
+}
+
+/// G053 C6: a redirect is counted on the surface that sent it, as settled when
+/// it names a leadership — on the wire by the node's own counter, over HTTP in
+/// the scrape an operator reads.
+#[test]
+fn a_redirect_is_counted_on_the_surface_that_sent_it() {
+    let db = one_of_two(true);
+
+    let node = Arc::new(tessari_wire::Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap());
+    let address = node.address().unwrap();
+    let counted = node.stopping();
+    let serving = Arc::clone(&node);
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        drop(runtime.block_on(serving.serve(tokio_util::sync::CancellationToken::new())));
+    });
+    let mut client = Client::connect(address).unwrap();
+    client.run(INTO_MINE, None).unwrap();
+    assert_eq!(
+        counted.redirects(),
+        (0, 0),
+        "a write taken here is no redirect"
+    );
+    let served = client
+        .run_routed(INTO_THEIRS, None, &Parameters::new())
+        .unwrap();
+    assert!(matches!(served, Served::Elsewhere(_)), "{served:?}");
+    assert_eq!(counted.redirects(), (1, 0));
+
+    let address = http(&db);
+    let (status, _, body) = post_script(&address, INTO_THEIRS);
+    assert_eq!(status, 307, "{body}");
+    let mut stream = TcpStream::connect(&address).unwrap();
+    stream
+        .write_all(
+            format!("GET /metrics HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .unwrap();
+    let mut scrape = String::new();
+    stream.read_to_string(&mut scrape).unwrap();
+    assert!(
+        scrape.contains("tessari_redirects_total{surface=\"http\",kind=\"settled\"} 1\n"),
+        "{scrape}"
+    );
+    assert!(
+        scrape.contains("tessari_redirects_total{surface=\"http\",kind=\"transient\"} 0\n"),
+        "{scrape}"
+    );
 }

@@ -71,6 +71,12 @@ pub(crate) fn described_replica(
                 Some(reach) => Value::from(spelled_reach(reach, catalog)?.as_str()),
             },
         ),
+        // Whether that placement is being given back to the store line
+        // (ADR-0098 D3): the range stays carved until the store's leader leads
+        // it too and folds the placement away.
+        ("releasing".to_owned(), Value::Bool(replica.releasing)),
+        // `PREFERRED` (G053 SG5b): the candidate the range's leader hands it to.
+        ("preferred".to_owned(), Value::Bool(replica.preferred)),
         // The certificate allowed to bind this row (ADR-0108 D9), in the
         // spelling `FINGERPRINT` takes.
         (
@@ -134,6 +140,29 @@ pub(crate) fn spelled_reach(reach: Reach, catalog: &Catalog<'_, '_>) -> Result<S
     })
 }
 
+/// Each range's leader as the log recorded it (G053 C6), in range order.
+///
+/// From the `leaderships` rows the winner wrote under its own epoch — so this
+/// is *as of epoch E, node N led range R*, a claim about the log and never about
+/// who is alive now; the lease and the follower rows answer that.
+pub(crate) fn described_leaders(catalog: &Catalog<'_, '_>) -> Result<Value> {
+    let mut described = Vec::new();
+    for held in catalog.leaderships()? {
+        described.push(Value::Object(BTreeMap::from([
+            (
+                "range".to_owned(),
+                Value::from(spelled_reach(held.range, catalog)?.as_str()),
+            ),
+            ("node".to_owned(), Value::Uuid(held.node)),
+            (
+                "epoch".to_owned(),
+                Value::from(i64::try_from(held.epoch.get()).unwrap_or(i64::MAX)),
+            ),
+        ])));
+    }
+    Ok(Value::Array(described))
+}
+
 /// One namespace's name, or its id when the catalog no longer holds it.
 pub(crate) fn namespace_named(namespace: NamespaceId, catalog: &Catalog<'_, '_>) -> Result<String> {
     Ok(catalog
@@ -185,6 +214,10 @@ pub(crate) fn described_failover(held: &tessari_storage::FailoverDefinition) -> 
         (
             "version".to_owned(),
             Value::from(i64::try_from(held.version).unwrap_or(i64::MAX)),
+        ),
+        (
+            "balance_leaderships".to_owned(),
+            Value::Bool(held.balance_leaderships),
         ),
     ]))
 }

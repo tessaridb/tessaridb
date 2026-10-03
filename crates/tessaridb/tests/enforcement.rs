@@ -496,7 +496,20 @@ const TABLES: &[Table] = &[
         // `Administer`. A fingerprint and an expiry are public by construction
         // — every peer sees both in the handshake. Re-classification trigger:
         // the reader carrying a private key or anything a handshake withholds.
-        expected: 36,
+        //
+        // 37 since a transaction commits across leaders (G053 SG3, ADR-0112):
+        // `Db::participating_through` installs, once, who carries a record of
+        // such a transaction to the leader of its range. Classified
+        // **ENFORCED, at the answering end, on `coordinate_through`'s ground**:
+        // the record is written there in a session acting as the asserted user,
+        // after the door believed a signature by the proven peer over the
+        // record's own bytes (`across::tests::*`) and the account and reach
+        // were judged as for a carried request; a prepare is refused unless
+        // that user's tenancy, authority and grants permit every table it
+        // writes (`across::a_user_without_the_write_grant_cannot_prepare`,
+        // `across::nobody_signed_in_cannot_prepare_on_a_closed_store`).
+        // Re-classification trigger: coordinate_through's.
+        expected: 37,
         count: |text| public_functions(&block(text, "impl Db")),
     },
     Table {
@@ -958,7 +971,58 @@ const TABLES: &[Table] = &[
         // derivation. Re-classification trigger: any other caller reachable
         // from a session or a route, because `succeeded` hands a guesser its
         // allowance back.
-        expected: 62,
+        //
+        // 64 since the cluster counters (G053 C6): `Store::answered_not_held_here`
+        // and `Store::acknowledgement_waited`. Classified **not a data path**,
+        // on `campaigned`'s ground: each adds to a counter in this process's
+        // memory that `health()` reports, and reads or writes no record,
+        // catalog entry or grant. Their callers are the session's
+        // `not_held_here` refusal and `commit_acknowledged` after the wait.
+        // Re-classification trigger: a caller reachable from a statement that
+        // could move a counter an operator alerts on without the event.
+        //
+        // 65 since a transaction commits across leaders (G053 SG3, ADR-0112):
+        // `Store::leader_of` names the node leading a range, judged by the
+        // write gate's own `led`. **Exempt on the ground of the four name-only
+        // methods above**: it reads leadership and membership rows — node ids
+        // and reaches — and no record, field or grant; its caller is the
+        // housekeeping pass that asks a coordinator range's leader for an
+        // outcome. Re-classification trigger: a statement surfacing it to a
+        // caller who may not read the cluster's topology.
+        //
+        // 67 since transactions across leaders are observable (ADR-0112 D11):
+        // `Store::across_finished` and `Store::across_sampled`. Classified **not
+        // a data path**, on the cluster counters' ground: each writes a counter
+        // or a sampled gauge in this process's memory that `health()` reports,
+        // and reads or writes no record, catalog entry or grant. Their callers
+        // are the coordinator driver as it answers its client and the settling
+        // pass after its walk. Re-classification trigger: a caller reachable
+        // from a statement that could move what an operator alerts on without
+        // the transactions it counts.
+        //
+        // 68 since a table can split and merge itself (ADR-0113 D2):
+        // `Store::leads`, whether this node leads a range by the write gate's
+        // own `led`. **Exempt on the ground `Store::leader_of` is**: it reads
+        // leadership and membership rows and no record, field or grant; its
+        // caller is the balancing pass deciding whether to act at all.
+        // Re-classification trigger: the same as `leader_of`'s.
+        //
+        // 69 since leaderships can be balanced (ADR-0113 D3):
+        // `Store::line_leaders`, who leads the store line and each placed
+        // range by the same `led`. **Exempt on `Store::leader_of`'s ground**:
+        // leadership and membership rows only, no record, field or grant; its
+        // caller is the balancing pass counting lines. Re-classification
+        // trigger: the same as `leader_of`'s.
+        //
+        // 72 since the balancer is observable (ADR-0113 D4):
+        // `Store::leadership_moved`, `Store::shards_measured` and
+        // `Store::sampled_shards`. **Not data paths**, on the cluster counters'
+        // ground: they write or read a counter and an in-memory sample this
+        // process reports, and no record, catalog entry or grant. Their callers
+        // are the balancing pass after its walk and the INFO and `/metrics`
+        // reports. Re-classification trigger: a caller reachable from a
+        // statement that could change what an operator reads without the pass.
+        expected: 72,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1151,7 +1215,30 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 143 since the sign-in failure counts are the store's (Q-852):
     // `Store::attempts`, not a data path, classified above.
-    assert_eq!(total, 143, "the counted tables no longer sum to 143");
+    //
+    // 145 since the cluster counters (G053 C6): `Store::answered_not_held_here`
+    // and `Store::acknowledgement_waited`, not data paths, classified above.
+    //
+    // 146 since a transaction commits across leaders (G053 SG3, ADR-0112):
+    // `Db::participating_through`, enforced at the answering end, classified
+    // above.
+    //
+    // 147 since a participant finishes its own intents (G053 SG3 d3):
+    // `Store::leader_of`, exempt, classified above.
+    //
+    // 149 since transactions across leaders are observable (ADR-0112 D11):
+    // `Store::across_finished` and `Store::across_sampled`, not data paths,
+    // classified above.
+    //
+    // 150 since a table can split and merge itself (ADR-0113 D2):
+    // `Store::leads`, exempt, classified above.
+    //
+    // 151 since leaderships can be balanced (ADR-0113 D3):
+    // `Store::line_leaders`, exempt, classified above.
+    //
+    // 154 since the balancer is observable (ADR-0113 D4): three `Store`
+    // methods, not data paths, classified above.
+    assert_eq!(total, 154, "the counted tables no longer sum to 154");
 }
 
 /// Every `.rs` file under a directory.

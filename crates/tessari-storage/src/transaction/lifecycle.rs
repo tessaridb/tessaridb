@@ -33,6 +33,8 @@ impl<'a> Transaction<'a> {
             reading_at: std::cell::Cell::new(None),
             floors: std::cell::RefCell::new(BTreeMap::new()),
             guarded: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            across: None,
+            decided: std::cell::RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -183,9 +185,16 @@ impl<'a> Transaction<'a> {
             .first_of_each(RecordKey::keyspace(), &ranges)?;
         for (index, pair) in asked.into_iter().zip(found) {
             let Some((_, value)) = pair else { continue };
-            if let RecordValue::Present(payload) =
-                StampedValue::decode(value.as_slice())?.into_visible_at(self.reading_at())
-            {
+            let mut stored = StampedValue::decode(value.as_slice())?;
+            if self.passes_over(&stored)? {
+                // The rare record a transaction across leaders wrote that this
+                // one does not see: read the version under, one at a time.
+                let Some(under) = self.read_stamped_at(&addresses[index])? else {
+                    continue;
+                };
+                stored = under;
+            }
+            if let RecordValue::Present(payload) = stored.into_visible_at(self.reading_at()) {
                 answers[index] = Some(payload);
             }
         }
@@ -229,6 +238,22 @@ impl<'a> Transaction<'a> {
         Ok(self.snapshot == self.store.committed_version()?)
     }
 
+    /// Whether an index of one table may answer a read taken through this
+    /// transaction: [`Transaction::indexes_are_current`], and no transaction
+    /// across leaders part-way in the table here (Q-919).
+    ///
+    /// Between a committed transaction's parts landing here, an index may hold
+    /// a resolution its readers cannot see yet, or miss an intent they already
+    /// do; either way it would answer about records the read itself would not
+    /// show. The answer is about the present, as the position check is.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the committed version or the mark cannot be read.
+    pub fn indexes_are_current_for(&self, table: TableId) -> Result<bool> {
+        Ok(self.indexes_are_current()? && !self.store.across_unsettled(table)?)
+    }
+
     /// Whether this transaction has written to one table without committing.
     ///
     /// Asked by a read that would otherwise be served from an index: an
@@ -239,16 +264,6 @@ impl<'a> Transaction<'a> {
         self.writes.keys().any(|address| {
             address.namespace == namespace && address.database == database && address.table == table
         })
-    }
-
-    /// The newest version of a record, whatever its sequence.
-    pub(super) fn read_newest(
-        &self,
-        address: &RecordAddress,
-    ) -> Result<Option<(Sequence, RecordValue)>> {
-        Ok(self
-            .read_newest_stamped(address)?
-            .map(|(version, stamped)| (version, stamped.into_value())))
     }
 
     /// The same version, with the causal context its writer had seen.
@@ -379,8 +394,12 @@ impl<'a> Transaction<'a> {
         let mut held: Vec<(Sequence, CausalStamp)> = Vec::new();
         for (key, value) in self.store.backend().scan(&request)? {
             let version = RecordKey::decode(key.as_slice())?.version;
-            let stamp = StampedValue::decode(value.as_slice())?.stamp().clone();
-            held.push((version, stamp));
+            let stored = StampedValue::decode(value.as_slice())?;
+            // An intent is not a version anybody wrote yet (ADR-0112 D5).
+            if crate::intents::is_intent(&stored) {
+                continue;
+            }
+            held.push((version, stored.stamp().clone()));
         }
         Ok(held)
     }
@@ -427,10 +446,51 @@ impl<'a> Transaction<'a> {
     /// narrower type would start failing the day commits began carrying a
     /// stamp. One decode site for the reason the codec gives for its splitters
     /// — two readings of one byte string is a thing that can come to disagree.
-    fn first_in_range(&self, range: KeyRange) -> Result<Option<(Sequence, StampedValue)>> {
+    ///
+    /// A version of a transaction across leaders this one does not see — an
+    /// intent not yet committed, or any version of one whose parts this
+    /// snapshot does not all hold — is passed over and the version under it
+    /// answers (ADR-0112 D5, D6a). One read per such version, which is none for
+    /// every record no transaction across leaders wrote.
+    pub(super) fn first_in_range(
+        &self,
+        mut range: KeyRange,
+    ) -> Result<Option<(Sequence, StampedValue)>> {
+        loop {
+            let request = ScanRequest {
+                keyspace: RecordKey::keyspace(),
+                range: range.clone(),
+                direction: ScanDirection::Forward,
+                limit: Some(1),
+            };
+            let found = self.store.backend().scan(&request)?;
+            let Some((key, value)) = found.first() else {
+                return Ok(None);
+            };
+            let decoded_value = StampedValue::decode(value.as_slice())?;
+            if self.passes_over(&decoded_value)? {
+                range = KeyRange::from_bounds(Bound::Excluded(key.clone()), range.end().clone());
+                continue;
+            }
+            let decoded_key = RecordKey::decode(key.as_slice())?;
+            return Ok(Some((decoded_key.version, decoded_value)));
+        }
+    }
+
+    /// A record's newest version as stored — an intent included — with where
+    /// it came from and what it holds.
+    ///
+    /// Asked by the conflict check, which must see what readers pass over: a
+    /// write landing on a standing intent would replace a value a transaction
+    /// across leaders has prepared, whatever this writer's snapshot. And by a
+    /// resolution, which reads the intent it turns into a value.
+    pub(super) fn newest_stored_value(
+        &self,
+        address: &RecordAddress,
+    ) -> Result<Option<(Sequence, Option<tessari_encoding::Provenance>, RecordValue)>> {
         let request = ScanRequest {
             keyspace: RecordKey::keyspace(),
-            range,
+            range: KeyRange::prefix(&address.versions_prefix()),
             direction: ScanDirection::Forward,
             limit: Some(1),
         };
@@ -438,9 +498,12 @@ impl<'a> Transaction<'a> {
         let Some((key, value)) = found.first() else {
             return Ok(None);
         };
-        let decoded_key = RecordKey::decode(key.as_slice())?;
-        let decoded_value = StampedValue::decode(value.as_slice())?;
-        Ok(Some((decoded_key.version, decoded_value)))
+        let stored = StampedValue::decode(value.as_slice())?;
+        Ok(Some((
+            RecordKey::decode(key.as_slice())?.version,
+            stored.provenance().cloned(),
+            stored.into_value(),
+        )))
     }
 }
 

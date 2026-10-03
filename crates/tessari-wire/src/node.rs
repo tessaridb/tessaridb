@@ -110,7 +110,7 @@ impl Node {
     ///
     /// Returns the operating system's failure when the address cannot be bound.
     pub fn bind(db: Arc<Db>, address: impl ToSocketAddrs) -> Result<Self> {
-        let listener = TcpListener::bind(address)?;
+        let listener = tessari_serve::listen(address)?;
         // The runtime's listener requires it, and nothing here reads it blocking.
         listener.set_nonblocking(true)?;
         let committed = Arc::clone(db.commits());
@@ -255,7 +255,14 @@ impl Node {
                 break;
             }
             let stream = match accepted {
-                Ok((stream, _)) => stream,
+                Ok((stream, _)) => {
+                    // A reply written in pieces must not wait for the peer's
+                    // delayed acknowledgement (Q-762).
+                    if let Err(why) = stream.set_nodelay(true) {
+                        log::warn!("a connection could not turn off Nagle's algorithm: {why}");
+                    }
+                    stream
+                }
                 Err(why) if passes(&why) => {
                     log::warn!("accepting a connection failed ({why}); resting before the next");
                     tokio::time::sleep(ACCEPT_PAUSE).await;

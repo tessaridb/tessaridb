@@ -110,6 +110,9 @@ impl<'a> Session<'a> {
             consumer: self.consumer.clone(),
             elsewhere: self.elsewhere.clone(),
             gather: None,
+            // An event body runs inside the writer's transaction, which commits
+            // across leaders or not as a whole; the body never coordinates.
+            participants: None,
             backups: None,
             at_rest: None,
             budget: self.budget.clone(),
@@ -117,6 +120,7 @@ impl<'a> Session<'a> {
             sink: crate::backup_to::Sink::none(),
             landed: false,
             acknowledge_open: None,
+            across_open: false,
             event_depth: self.event_depth.saturating_add(1),
         };
         // The record as the writer may read it: a read of it, authorized as the
@@ -173,6 +177,7 @@ impl<'a> Session<'a> {
                     },
                     span: Span::new(0, 0),
                     acknowledge: None,
+                    across: false,
                 }],
                 span: Span::new(0, 0),
             }

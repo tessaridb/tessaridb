@@ -11,6 +11,8 @@
 
 mod a_catalog_record_is_not_a_users_row;
 mod acknowledge;
+mod across;
+mod across_indexes;
 mod administration_audit;
 mod advice;
 mod alone;
@@ -128,6 +130,7 @@ mod sign_in_throttle;
 mod spatial_index;
 mod spatial_nearest_reads;
 mod spatial_reads;
+mod spread;
 mod staleness;
 mod state_script;
 mod store_named_records;

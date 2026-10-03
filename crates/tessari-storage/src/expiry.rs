@@ -182,11 +182,14 @@ impl Store {
                 if seen.as_ref() == Some(&decoded.id) {
                     continue;
                 }
+                let stored = StampedValue::decode(value.as_slice())?;
+                // An intent says nothing about whether the record is there; the
+                // version under it, next in this walk, does (ADR-0112 D5).
+                if crate::intents::is_intent(&stored) {
+                    continue;
+                }
                 seen = Some(decoded.id.clone());
-                if matches!(
-                    StampedValue::decode(value.as_slice())?.into_value(),
-                    RecordValue::Present(_)
-                ) {
+                if matches!(stored.into_value(), RecordValue::Present(_)) {
                     mutations.push(Mutation {
                         namespace,
                         database,

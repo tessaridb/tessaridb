@@ -287,6 +287,7 @@ impl Select<Sourced> {
                     kind: StatementKind::Select(Box::new(select)),
                     span: BUILT,
                     acknowledge: None,
+                    across: false,
                 }],
                 span: BUILT,
             },

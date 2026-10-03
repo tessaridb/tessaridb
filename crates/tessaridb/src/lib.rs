@@ -126,16 +126,20 @@ impl core::fmt::Display for NotAValue {
 
 impl std::error::Error for NotAValue {}
 
+mod across;
+mod balance;
 mod coordinate;
 pub mod feed;
 
+pub use across::SettledAcross;
+pub use balance::{Balanced, LeadershipMoves, Moved, ShardSamples};
 pub use coordinate::{Coordinate, Coordinated, Coordination, Surface};
 pub use tessari_lsm::{AtRestKey, Durability, StoreConfig};
 pub use tessari_session::redact::{Visible, seen};
 pub use tessari_session::travels;
 pub use tessari_session::{
-    AccessPath, Detached, Error, Exactness, Nearest, Note, Outcome, Parameters, Result, Session,
-    Suggestion, Ticket, VaultAct, VaultTarget,
+    AccessPath, AcrossRefusal, Detached, Error, Exactness, Nearest, Note, Outcome, Parameters,
+    PartRefused, RefusalKind, Result, Session, Suggestion, Ticket, VaultAct, VaultTarget,
 };
 /// The store's own refusals, which [`Error::Store`] carries — named so a surface
 /// can tell the one that means *go there* (`WriteIsElsewhere`) from the rest.
@@ -195,6 +199,8 @@ pub struct Db {
     /// by the process that knows its peers and handed to every session opened
     /// here — so every surface that serves a read, whichever it is, gathers.
     gather: std::sync::OnceLock<Arc<dyn tessari_session::Gather>>,
+    /// Who carries a record of a transaction across leaders (ADR-0112).
+    participants: std::sync::OnceLock<Arc<dyn tessari_session::Participants>>,
     /// Who carries a request this node cannot answer to the node that can
     /// (ADR-0108 D1), set once by the process that knows its peers.
     coordinate: std::sync::OnceLock<Arc<dyn Coordinate>>,
@@ -233,6 +239,7 @@ impl Db {
         Ok(Self {
             store: Store::open(backend)?,
             gather: std::sync::OnceLock::new(),
+            participants: std::sync::OnceLock::new(),
             coordinate: std::sync::OnceLock::new(),
             elsewhere: std::sync::OnceLock::new(),
             budget: std::sync::OnceLock::new(),
@@ -286,6 +293,7 @@ impl Db {
         Ok(Self {
             store: Store::open(backend)?,
             gather: std::sync::OnceLock::new(),
+            participants: std::sync::OnceLock::new(),
             coordinate: std::sync::OnceLock::new(),
             elsewhere: std::sync::OnceLock::new(),
             budget: std::sync::OnceLock::new(),
@@ -310,6 +318,10 @@ impl Db {
         };
         let session = match self.elsewhere.get() {
             Some(known) => session.among(Arc::clone(known)),
+            None => session,
+        };
+        let session = match self.participants.get() {
+            Some(participants) => session.participating(Arc::clone(participants)),
             None => session,
         };
         let session = match self.budget.get() {
@@ -361,6 +373,17 @@ impl Db {
     /// Answers `false`, and changes nothing, when one was already set.
     pub fn gather_through(&self, gather: Arc<dyn tessari_session::Gather>) -> bool {
         self.gather.set(gather).is_ok()
+    }
+
+    /// Let every session opened here carry the records of a transaction across
+    /// leaders through `participants` (ADR-0112). Once per process, as
+    /// [`Db::gather_through`]; answers `false`, and changes nothing, when it
+    /// was already set.
+    pub fn participating_through(
+        &self,
+        participants: Arc<dyn tessari_session::Participants>,
+    ) -> bool {
+        self.participants.set(participants).is_ok()
     }
 
     /// Let every session opened here know its peers through `elsewhere`
@@ -576,6 +599,7 @@ impl Db {
         Self {
             store,
             gather: std::sync::OnceLock::new(),
+            participants: std::sync::OnceLock::new(),
             coordinate: std::sync::OnceLock::new(),
             elsewhere: std::sync::OnceLock::new(),
             budget: std::sync::OnceLock::new(),

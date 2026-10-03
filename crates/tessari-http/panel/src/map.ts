@@ -66,6 +66,10 @@ export interface Peer {
     readonly node?: string;
     readonly replicates?: string;
     readonly leads?: string | null;
+    /** The placement is being given back to the store line (ADR-0098 D3). */
+    readonly releasing?: boolean;
+    /** `LEADS … PREFERRED`: the candidate its range's leader hands it to. */
+    readonly preferred?: boolean;
     readonly roles?: readonly string[];
 }
 
@@ -78,7 +82,31 @@ interface Upstream {
 
 /** One follower this node has served, as `cluster.followers` reports it. */
 interface Follower {
+    readonly node?: unknown;
     readonly behind?: unknown;
+}
+
+/** One range's leader as the log recorded it, as `cluster.leaders` reports it. */
+interface Leader {
+    readonly range?: unknown;
+    readonly node?: unknown;
+    readonly epoch?: unknown;
+}
+
+/** Transactions across leaders, as `cluster.across` reports them. */
+interface Across {
+    readonly committed?: unknown;
+    readonly aborted?: unknown;
+    readonly in_doubt?: unknown;
+    readonly pending?: unknown;
+    readonly with_intents?: unknown;
+}
+
+/** One balanced table as the balancing pass last counted it (ADR-0113 D4). */
+interface Balanced {
+    readonly table?: unknown;
+    readonly shards?: readonly { readonly id?: unknown; readonly records?: unknown; readonly complete?: unknown }[];
+    readonly last_act?: unknown;
 }
 
 /** What `INFO FOR NODE` answered, in the shape the map reads. */
@@ -92,8 +120,12 @@ export interface Seen {
         readonly campaigns?: unknown;
         readonly desired?: readonly string[] | null;
         readonly followers?: readonly Follower[];
+        readonly leaders?: readonly Leader[];
         readonly upstream?: Upstream | null;
         readonly peers?: readonly Peer[];
+        readonly across?: Across;
+        readonly failover?: { readonly balance_leaderships?: unknown } | null;
+        readonly balanced?: readonly Balanced[];
     };
 }
 
@@ -243,6 +275,74 @@ function furthest(followers: readonly Follower[]): string | null {
     return most === null ? null : `${most} record(s)`;
 }
 
+/** One node id in the spelling every field compares by: no hyphens, lower case. */
+function bare(node: unknown): string | null {
+    return typeof node === "string" ? node.split("-").join("").toLowerCase() : null;
+}
+
+/**
+ * The ranges the log says `node` leads, each with the epoch it was decided
+ * under, or `null` when none — a claim about the log, never about who is alive.
+ */
+function leading(leaders: readonly Leader[], node: unknown): string | null {
+    const mine = bare(node);
+    if (mine === null) {
+        return null;
+    }
+    const ranges = leaders
+        .filter((one) => bare(one.node) === mine)
+        .map((one) => `${told(one.range)} (epoch ${told(one.epoch)})`);
+    return ranges.length === 0 ? null : ranges.join(", ");
+}
+
+/** Each follower and how many records it is short, or `null` when none has collected. */
+function behindEach(followers: readonly Follower[]): string | null {
+    const each = followers
+        .filter((one) => typeof one.behind === "number")
+        .map((one) => `${(bare(one.node) ?? "?").slice(0, 8)}… ${told(one.behind)} behind`);
+    return each.length === 0 ? null : each.join(", ");
+}
+
+/** A peer's placement, with what the operator said about it. */
+function placement(peer: Peer): string | null {
+    const range = told(peer.leads);
+    if (range === null) {
+        return null;
+    }
+    const said = [range];
+    if (peer.preferred === true) {
+        said.push("preferred");
+    }
+    if (peer.releasing === true) {
+        said.push("being given back to the store line");
+    }
+    return said.join(", ");
+}
+
+/**
+ * Each balanced table with its shards' records as the last pass counted them,
+ * `≥` where the count stopped at the bound, and the last act — or `null` on a
+ * node that does not count.
+ */
+function balancedTables(balanced: readonly Balanced[] | undefined): string | null {
+    const each = (balanced ?? []).map((one) => {
+        const shards = (one.shards ?? [])
+            .map((shard) => `${shard.complete === false ? "≥" : ""}${told(shard.records) ?? "?"}`)
+            .join(" / ");
+        const act = told(one.last_act);
+        return `${told(one.table) ?? "?"}: ${shards}${act === null ? "" : ` (last: ${act})`}`;
+    });
+    return each.length === 0 ? null : each.join("; ");
+}
+
+/** How the transactions across leaders this node coordinated ended. */
+function ended(across: Across | undefined): string | null {
+    if (across === undefined) {
+        return null;
+    }
+    return `${told(across.committed) ?? "?"} committed, ${told(across.aborted) ?? "?"} aborted, ${told(across.in_doubt) ?? "?"} in doubt`;
+}
+
 /** What copies of the leader's state installed, or `null` before the first. */
 function copied(upstream: Upstream | null | undefined): string | null {
     if (typeof upstream?.copies !== "number" || upstream.copies === 0) {
@@ -272,10 +372,22 @@ export function draw(into: HTMLElement, seen: Seen): void {
                 String((cluster.followers ?? []).length),
             ),
             fact("furthest follower behind", furthest(cluster.followers ?? [])),
+            fact("each follower", behindEach(cluster.followers ?? [])),
+            fact("leads, as the log records", leading(cluster.leaders ?? [], seen.id)),
             // Absent on a node that follows nobody: `in sync` there would be a
             // state it has never been in.
             fact("sync with its upstream", cluster.upstream?.state ?? null),
             fact("copied from its upstream", copied(cluster.upstream)),
+            fact("across leaders, coordinated here", ended(cluster.across)),
+            // `null` until the node's settling pass has looked, so the map says
+            // nothing rather than a zero nobody measured.
+            fact("records still pending here", told(cluster.across?.pending)),
+            fact("transactions holding intents here", told(cluster.across?.with_intents)),
+            fact(
+                "balances leaderships",
+                cluster.failover?.balance_leaderships === true ? "yes, when one node leads two lines more" : null,
+            ),
+            fact("balanced tables, records per shard", balancedTables(cluster.balanced)),
             wanted === null ? null : fact("declared for it", wanted.join(", ")),
         ],
         "self",
@@ -306,7 +418,8 @@ export function draw(into: HTMLElement, seen: Seen): void {
                     ),
                     fact("id", told(peer.node)),
                     fact("replicates", told(peer.replicates)),
-                    fact("leads", told(peer.leads)),
+                    fact("leads", placement(peer)),
+                    fact("leads, as the log records", leading(cluster.leaders ?? [], peer.node)),
                 ],
                 "peer",
                 {

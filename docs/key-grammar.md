@@ -111,6 +111,10 @@ because renumbering after data exists is a full rebuild.
 | `0x41` | `IndexChanges` | `index` | implemented — entries one value index has gained or lost on this node (G055); never in the log |
 | `0x42` | `SearchSurface` (surface forms of stemmed terms) | `index` | implemented — see §6.2b-6 |
 | `0x43` | `TopicBytes` (payload bytes a size-retained topic holds) | `index` | implemented — see §6.2d |
+| `0x50` | `TransactionRecord` (one transaction across leaders) | `meta` | implemented — see §6.5 |
+| `0x51` | `IntentOf` (an intent this node holds, by transaction) | `meta` | implemented — see §6.5 |
+| `0x52` | `AcrossPart` (where a transaction's part in one range landed here) | `meta` | implemented — see §6.5 |
+| `0x53` | `AcrossUnsettled` (a table whose indexes and readers disagree about a transaction) | `meta` | implemented — see §6.5 |
 
 `0x40` and `0x41` open a fifth family, `0x4_`: what the planner keeps about an
 index. Both keys are an index prefix with no suffix (`<tag> <namespace:u32>
@@ -119,6 +123,11 @@ and decide which access path a read takes and never which records it returns.
 `0x42` sits in that family by number only: it is a search index's derived
 entry, written with its postings like `0x1f`, not a planner summary. `0x43`
 is a topic's, beside `0x1e`, likewise by number only.
+
+`0x50` opens a sixth family, `0x5_`: what this store keeps about transactions
+whose writes fall in ranges led by different nodes (ADR-0112). The family was
+opened rather than `0x44` taken because the `0x3_` meta family is full and
+`0x4_` is the planner's.
 
 ### 3c. The spatial entry
 
@@ -860,6 +869,82 @@ A singleton holding the log position whose effects are durably present in the
 state. It is written **in the same batch as the state it describes** — that is
 what makes recovery a resumable replay instead of a guess (ADR-0001).
 
+### 6.5 `TransactionRecord` — keyspace `meta`
+
+```
+<0x50> <transaction:16>
+   1        16
+```
+
+The record of one transaction across leaders: its outcome (`PENDING`,
+`COMMITTED`, `ABORTED`), the instant after which a pending one may be aborted by
+anyone, and every range it writes with where its prepare landed there.
+Fixed width and read by point lookup only — a reader meeting an intent asks for
+its transaction's record by id. It is node-local state derived by applying the
+coordinator range's log, as a catalog row is; the log record is the replicated
+truth. A decided record is deleted by a `Forget` record in the same log once
+every participant has answered that its intents are gone and its log through
+the tail is held by a majority (ADR-0112 D12) — so the kind holds transactions
+in flight and recently decided, not every transaction ever committed.
+
+```
+<0x51> <transaction:16> <namespace:u32> <database:u32> <table:u32> <record-id>   → <version:u64>
+```
+
+`IntentOf` indexes the intents themselves: written in the batch that lands an
+intent and deleted in the batch that resolves it, keyed by the transaction
+first, so a participant finds every intent of one transaction by a prefix read
+— which is how it resolves its own intents after the coordinator that knew
+their addresses is gone. The value is the intent's version.
+
+```
+<0x52> <transaction:16> <range reach>   → <version:u64>
+```
+
+`AcrossPart` records where one transaction's part in one range landed on this
+node: written in the batch that applies the range's prepare, with that batch's
+local version as its value. A reader that meets a version of the transaction
+asks it for every other range the transaction wrote and this node holds; a
+snapshot at or past each part's version holds the whole transaction, and one
+before any of them sees none of it — it reads the version under (ADR-0112 D6a).
+A resolved version carries the transaction's participants in its provenance
+(§7), so this needs no copy of the record.
+
+None of `0x50`–`0x52` is a record, so a state snapshot does not walk them; it
+carries them after its records as log records with an across part, which a
+restore applies as a log apply would (ADR-0112 D9a). A record's state is the
+version a reader at the snapshot sees; a version of a transaction that reader
+does not see, and any intent, follows as the `Prepare` or committed `Resolve`
+that wrote it; each `0x50` follows as a `Decide` (`PENDING`, then its outcome);
+and each `0x52` landed by the snapshot's version follows as a `Landed` part,
+which writes the marker and nothing else, and keeps a marker already held. A
+restored store then decides as the source did at the cut, and the log above
+the cut applies on top of it.
+
+```
+<0x53> <table:u32> <transaction:16>   → <transaction record>
+```
+
+`AcrossUnsettled` marks a table where a committed transaction is part-way on
+this node. Index entries carry no version and are derived only by a committed
+resolution, while a reader sees the transaction only once every part this node
+holds has landed — so between the two an index holds a resolution readers do
+not see yet, or misses an intent they already do. A table is marked while the
+transaction is known committed here, touched the table here, and either has an
+intent standing in it or has a part not landed; the mark is recomputed in the
+batch of every record that can change that. An index read of a marked table
+takes the checked path, and a traversal over a marked edge table is refused as
+retriable (`AcrossSettling`). The table leads, so a read asks about its own
+table with one prefix seek; a table id is unique in the store. The value is the
+committed record, whose participants a later part needs when the record itself
+is not on this node.
+
+**Intents have no key kind of their own.** A participant's prepared write is a
+*provisional* version under the record's own `0x01` key, marked in the
+version's provenance (§7), so it sits where every read already walks versions
+and no read consults a second keyspace. Its resolution replaces it with the
+final version.
+
 ## 7. Value layout
 
 Every stored value begins with a codec version. The first byte is format
@@ -873,7 +958,7 @@ error naming the version found and the versions supported.
 | Field | Meaning |
 |---|---|
 | `codec-version` | `0x01` for this format. Not a payload byte. |
-| `flags` | bit 0 = tombstone, for value types that have versions. Every other bit is reserved, and so is bit 0 for value types that cannot be deleted. |
+| `flags` | bit 0 = tombstone, for value types that have versions. Bit 6 = the value belongs to a transaction across leaders (ADR-0112): on a log record, the section saying which of its records this is; on a record version, its provenance — `<transaction:16> <kind:1> <coordinator reach>`, kind `0` resolved, `1` provisional (an intent); a resolved version follows it with `<count:u32>` participants, each `<range reach> <known:u8> [<prepared at:u64>]`, so a reader can tell whether its snapshot holds the whole transaction (ADR-0112 D6a). The other bits are defined per value type in the codec; an undefined bit is reserved, and so is bit 0 for value types that cannot be deleted. |
 | `payload` | opaque to this layer; the document codec (SG2.T4) owns it |
 
 Policies, stated rather than left to be discovered:

@@ -72,6 +72,8 @@ fn declare(store: &Store, node: [u8; NODE_ID_LEN], reach: Reach) {
             http: None,
             fingerprint: None,
             join: None,
+            releasing: false,
+            preferred: false,
         })
         .unwrap();
     transaction.commit().unwrap();
@@ -87,9 +89,16 @@ fn named(follower: &Store, heard: [u8; NODE_ID_LEN], read: &str) -> Option<Peer>
     session
         .run("USE NAMESPACE prod; USE DATABASE shop;")
         .unwrap();
+    let before = follower.health().unwrap().not_held_here;
     match session.run(read) {
         Err(tessari_session::Error::NotHeldHere { table, holder, .. }) => {
             assert_eq!(table, "ledger", "{read}");
+            // G053 C6: each refusal is counted once, where it is made.
+            assert_eq!(
+                Some(follower.health().unwrap().not_held_here),
+                before.checked_add(1),
+                "{read}"
+            );
             holder
         }
         other => panic!("{read}: expected NotHeldHere, got {other:?}"),

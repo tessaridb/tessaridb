@@ -49,7 +49,7 @@ pub(crate) fn serve(
     )?;
     let secured = match &clients {
         crate::tls::Clients::Tls { cert, key, .. } => Some(crate::tls::credential(cert, key)?),
-        crate::tls::Clients::Plaintext { .. } => None,
+        crate::tls::Clients::Plaintext => None,
     };
     // A cluster configuration with no seed address is legal, and it is legal
     // because the catalog is the other half of the answer: a node whose
@@ -177,7 +177,7 @@ pub(crate) fn serve(
         // an assertion signed with this node's key, for a caller who cannot
         // follow a redirect (ADR-0108 D1–D3). No password crosses.
         let speaking = std::sync::Arc::downgrade(&db);
-        db.coordinate_through(std::sync::Arc::new(tessari_wire::Coordinator::new(
+        let coordinator = std::sync::Arc::new(tessari_wire::Coordinator::new(
             &db,
             me,
             surface.keys.clone(),
@@ -187,7 +187,13 @@ pub(crate) fn serve(
                     .ok_or(tessari_wire::GreetingUnavailable::Stopping)
                     .and_then(|db| greeting(&db).map_err(tessari_wire::GreetingUnavailable::Store))
             }),
-        )));
+        ));
+        let carrying: std::sync::Arc<dyn tessaridb::Coordinate> =
+            std::sync::Arc::<tessari_wire::Coordinator>::clone(&coordinator);
+        db.coordinate_through(carrying);
+        // The same carriage takes a transaction's records to the leaders of the
+        // ranges it writes (ADR-0112).
+        db.participating_through(coordinator);
     }
     if let Some(folder) = &serving.backups {
         db.back_up_into(std::sync::Arc::from(folder.as_path()));
@@ -273,18 +279,12 @@ pub(crate) fn serve(
                 cert.display()
             );
         }
-        crate::tls::Clients::Plaintext { chosen } => {
+        crate::tls::Clients::Plaintext => {
             let reach = crate::tls::reach(&client_addresses);
             eprintln!(
                 "tessaridb — clients in the clear, {reach}: --tls-cert and --tls-key would \
                  encrypt them, and --require-client-tls refuses to start without them"
             );
-            if *chosen {
-                eprintln!(
-                    "tessaridb — --client-plaintext is retired: the clear is already the \
-                     default, and the next release refuses the flag"
-                );
-            }
         }
     }
     // Said only when there is something to say. Every deployment today is a

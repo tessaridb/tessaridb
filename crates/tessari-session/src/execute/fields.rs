@@ -36,6 +36,7 @@ impl Session<'_> {
                 conflict: None,
                 split: Vec::new(),
                 partition: None,
+                spread: false,
             },
             if_not_exists,
             span,

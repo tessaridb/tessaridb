@@ -217,43 +217,14 @@ impl Store {
         let mut elsewhere: Vec<crate::catalog::LeadershipDefinition> = Vec::new();
         let mut leads_one_here = false;
         for range in ranges {
-            let Some(leader) = crate::catalog::covering(&held, *range) else {
-                continue;
-            };
-            // A row on another line says nothing about this range (Q-858): a
-            // placement carves its range out of every coarser line, so the
-            // store leader's row — the only one a placed range's first leader
-            // holds until its own win is recorded — must not send it elsewhere.
-            let line = crate::catalog::governing(&placed, *range);
-            if crate::catalog::governing(&placed, leader.range) != line {
-                continue;
-            }
-            // Per line (ADR-0082): a row's epoch is on the line its range is
-            // governed by, and only this node's epoch on that same line orders
-            // against it. Two lines' epochs are two unrelated counters.
-            let mine = self.leading_of(crate::catalog::governing(&placed, leader.range));
-            if leader.node == *me || mine.is_some_and(|mine| mine > leader.epoch) {
-                leads_one_here = true;
-                continue;
-            }
-            // G027 S2.3 — asked HERE, on the range that is about to be refused,
-            // and not in front of the loop. A range declared `MULTI MASTER` has
-            // no single leader to be writing *elsewhere* from: the row naming
-            // another node is a second master, which is what the declaration
-            // says the range admits. Reading it costs a catalog lookup, so it is
-            // paid only by a write that was otherwise going to be redirected —
-            // a leader writing its own range never reaches this line, because
-            // `leader.node == *me` sent it back round.
-            //
-            // Per range and not once for the transaction, because a transaction
-            // touching a declared range and an undeclared one must still be
-            // refused for the undeclared one. Exempting on the first offender
-            // would let the second travel under its cover.
-            if self.admits_two_writers(*range)? {
-                continue;
-            }
-            if !elsewhere.iter().any(|held| held.node == leader.node) {
-                elsewhere.push(*leader);
+            match self.led(&held, &placed, *range, me)? {
+                Led::Unled | Led::Shared => {}
+                Led::Here => leads_one_here = true,
+                Led::Elsewhere(leader) => {
+                    if !elsewhere.iter().any(|held| held.node == leader.node) {
+                        elsewhere.push(leader);
+                    }
+                }
             }
         }
         if elsewhere.len() > 1 || (leads_one_here && !elsewhere.is_empty()) {
@@ -409,5 +380,115 @@ impl Store {
         }
         self.configure_node(Some(desired), None, None)?;
         Ok(Some(desired))
+    }
+}
+
+/// Who may write one range, as the write gate judges it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Led {
+    /// No leadership row covers it on its own line: nobody is fenced off it.
+    Unled,
+    /// This node leads it.
+    Here,
+    /// The range admits a second writer (`MULTI MASTER`), so nobody is fenced
+    /// off it — the gate passes over it as over an unled one.
+    Shared,
+    /// Another node leads it.
+    Elsewhere(crate::catalog::LeadershipDefinition),
+}
+
+impl Store {
+    /// The node leading `range` when it is not this one, judged as the write
+    /// gate judges it; `None` when this node may write it.
+    ///
+    /// # Errors
+    ///
+    /// The substrate's failure, and a decoding failure when a stored definition
+    /// cannot be read.
+    pub fn leader_of(&self, range: Reach) -> Result<Option<[u8; NODE_ID_LEN]>> {
+        let me = self.node_identity()?.id;
+        let mut transaction = self.begin()?;
+        let catalog = crate::catalog::Catalog::new(&mut transaction);
+        let held = catalog.leaderships()?;
+        let placed: BTreeSet<Reach> = catalog
+            .replicas()?
+            .into_iter()
+            .filter_map(|peer| peer.leads)
+            .collect();
+        drop(transaction);
+        Ok(match self.led(&held, &placed, range, &me)? {
+            Led::Elsewhere(leader) => Some(leader.node),
+            Led::Here | Led::Unled | Led::Shared => None,
+        })
+    }
+
+    /// Whether this node leads `range`, judged as the write gate judges it — or
+    /// stands alone, naming no peer, where nothing is led and it writes
+    /// everything. A clustered range nobody leads yet is not this node's.
+    ///
+    /// # Errors
+    ///
+    /// The substrate's failure, and a decoding failure when a stored definition
+    /// cannot be read.
+    pub fn leads(&self, range: Reach) -> Result<bool> {
+        let me = self.node_identity()?.id;
+        let mut transaction = self.begin()?;
+        let catalog = crate::catalog::Catalog::new(&mut transaction);
+        let held = catalog.leaderships()?;
+        let peers = catalog.replicas()?;
+        drop(transaction);
+        let placed: BTreeSet<Reach> = peers.iter().filter_map(|peer| peer.leads).collect();
+        Ok(match self.led(&held, &placed, range, &me)? {
+            Led::Here => true,
+            Led::Unled => peers.is_empty(),
+            Led::Elsewhere(_) | Led::Shared => false,
+        })
+    }
+
+    /// Who leads `range`, judged exactly as the write gate judges it — the one
+    /// answer [`Self::refuse_if_led_elsewhere`] and a transaction across
+    /// leaders both read, so the two cannot come to disagree about a range.
+    pub(crate) fn led(
+        &self,
+        held: &[crate::catalog::LeadershipDefinition],
+        placed: &BTreeSet<Reach>,
+        range: Reach,
+        me: &[u8; NODE_ID_LEN],
+    ) -> Result<Led> {
+        let Some(leader) = crate::catalog::covering(held, range) else {
+            return Ok(Led::Unled);
+        };
+        // A row on another line says nothing about this range (Q-858): a
+        // placement carves its range out of every coarser line, so the
+        // store leader's row — the only one a placed range's first leader
+        // holds until its own win is recorded — must not send it elsewhere.
+        let line = crate::catalog::governing(placed, range);
+        if crate::catalog::governing(placed, leader.range) != line {
+            return Ok(Led::Unled);
+        }
+        // Per line (ADR-0082): a row's epoch is on the line its range is
+        // governed by, and only this node's epoch on that same line orders
+        // against it. Two lines' epochs are two unrelated counters.
+        let mine = self.leading_of(crate::catalog::governing(placed, leader.range));
+        if leader.node == *me || mine.is_some_and(|mine| mine > leader.epoch) {
+            return Ok(Led::Here);
+        }
+        // G027 S2.3 — asked HERE, on the range that is about to be refused,
+        // and not in front of the loop. A range declared `MULTI MASTER` has
+        // no single leader to be writing *elsewhere* from: the row naming
+        // another node is a second master, which is what the declaration
+        // says the range admits. Reading it costs a catalog lookup, so it is
+        // paid only by a write that was otherwise going to be redirected —
+        // a leader writing its own range never reaches this line, because
+        // `leader.node == *me` sent it back round.
+        //
+        // Per range and not once for the transaction, because a transaction
+        // touching a declared range and an undeclared one must still be
+        // refused for the undeclared one. Exempting on the first offender
+        // would let the second travel under its cover.
+        if self.admits_two_writers(range)? {
+            return Ok(Led::Shared);
+        }
+        Ok(Led::Elsewhere(*leader))
     }
 }

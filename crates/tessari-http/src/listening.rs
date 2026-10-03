@@ -26,8 +26,14 @@ pub(crate) trait Accept: Send + 'static {
 impl Accept for TcpListener {
     type Io = TcpStream;
 
-    fn accept(&mut self) -> impl Future<Output = io::Result<(TcpStream, SocketAddr)>> + Send {
-        Self::accept(self)
+    async fn accept(&mut self) -> io::Result<(TcpStream, SocketAddr)> {
+        let (stream, from) = Self::accept(self).await?;
+        // A response written in pieces must not wait for the client's delayed
+        // acknowledgement (Q-762).
+        if let Err(why) = stream.set_nodelay(true) {
+            log::warn!("an HTTP connection could not turn off Nagle's algorithm: {why}");
+        }
+        Ok((stream, from))
     }
 
     fn local_addr(&self) -> io::Result<SocketAddr> {

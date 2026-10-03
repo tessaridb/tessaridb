@@ -161,7 +161,11 @@ fn a_placement_is_moved_by_alter_replica_and_removed_by_leads_none() {
         .map(|statement| match &statement.kind {
             StatementKind::AlterReplica {
                 name,
-                change: tessari_ql::ReplicaChange::Leads(leads),
+                change:
+                    tessari_ql::ReplicaChange::Leads {
+                        range: leads,
+                        preferred: false,
+                    },
             } => (name.text.clone(), leads.clone()),
             other => panic!("{other:?}"),
         })

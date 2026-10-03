@@ -1722,6 +1722,7 @@ fn declaring(policy: Option<ConflictPolicy>) -> (Store, NamespaceId, DatabaseId,
                 conflict: policy,
                 split: Vec::new(),
                 partition: None,
+                spread: false,
             },
         )
         .unwrap();
@@ -1971,7 +1972,7 @@ fn set_policy(store: &Store, epoch: u64, version: u64, round: u64) -> Sequence {
     .unwrap();
     let mut transaction = store.begin().unwrap();
     Catalog::new(&mut transaction)
-        .set_failover(policy, Epoch::new(epoch), version)
+        .set_failover(policy, Epoch::new(epoch), version, false)
         .unwrap();
     transaction.commit().unwrap()
 }
@@ -2035,6 +2036,7 @@ fn a_later_policy_replaces_the_row_and_the_replica_ends_on_the_later_one() {
         policy: arrived.policy,
         epoch: Epoch::new(4),
         version: 1,
+        balance_leaderships: false,
     };
     assert!(
         !earlier.supersedes(&arrived),

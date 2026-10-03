@@ -20,7 +20,7 @@ use tessari_types::{Epoch, Reach, Sequence, ShardId, TableId};
 
 use super::{RecordAddress, Transaction};
 use crate::catalog::ShardMap;
-use crate::error::{Error, Result};
+use crate::error::{ConflictWith, Error, Result};
 
 /// What a test runs inside a commit, handed the store the commit is writing.
 #[cfg(test)]
@@ -320,7 +320,8 @@ impl Transaction<'_> {
     }
 
     fn settle(mut self, settle: Settle) -> Result<Committed> {
-        if self.writes.is_empty() {
+        // A decision across leaders writes no records and is still a commit.
+        if self.writes.is_empty() && !self.is_across() {
             // The log position, not this transaction's snapshot. Nothing was
             // committed, so neither answer is a position anything was written
             // at — but the return names a log position, and the snapshot stopped
@@ -452,6 +453,9 @@ impl Transaction<'_> {
                 }
                 self.refuse_if_fenced_since(store_line, &placed, &ranges)?;
                 let tail = self.store.committed_tail(log)?;
+                // A prepare's half of the conflict check that its own node
+                // could not make (ADR-0112 D3a), under the same turn.
+                self.written_since_seen(log)?;
                 self.check_for_conflicts()?;
                 // Beside the conflict check, inside the loop, and for the same
                 // reason: both ask whether the committed state this attempt builds
@@ -512,35 +516,41 @@ impl Transaction<'_> {
                 // history by and an election compares (ADR-0059); zero for a
                 // node nobody made a leader.
                 carried.set_epoch(epoch);
-                // Index entries are derived here rather than carried in the record,
-                // and they are derived inside the loop because they depend on the
-                // committed state this attempt is building on (see `crate::index`).
-                let batch = crate::index::maintain(
-                    self.store,
-                    carried,
-                    crate::log::apply_batch(log, commit_at, commit_version, carried),
-                )?;
-                // Adjacency is derived in the same place and for the same reason: a
-                // replica reaches its state by replaying this record, so entries the
-                // leader merely added to its own batch would never exist on a
-                // follower — a walk that finds nothing there while the leader is
-                // correct, with nothing in an error state.
-                let batch = crate::adjacency::maintain(self.store, carried, batch)?;
-                // And the record counts, in the same batch and for the third time
-                // for the same reason: the planner on a follower must read the same
-                // number as the planner on the leader, or one query takes two access
-                // paths depending on which node answered it.
-                let batch =
-                    crate::cardinality::maintain(self.store, carried, batch, commit_version)?;
-                // The expiry index, last and in the same batch as the records it
-                // describes: an entry written anywhere else is an entry that can be
-                // left behind (G035).
-                let batch = crate::lapse::maintain(self.store, carried, batch)?;
-                // And a limited space's modified-order index, which the evictions
-                // above read on the next commit (G036).
-                let batch = crate::bounded::maintain(self.store, carried, batch, commit_version)?;
-                // And a topic's positions, dense in commit order (G037).
-                let batch = crate::topic::maintain(self.store, carried, batch)?;
+                let written = crate::log::apply_batch(log, commit_at, commit_version, carried);
+                // A record of a transaction across leaders is checked and settled
+                // here as a follower's apply settles it, and an intent derives
+                // nothing until its resolution does (ADR-0112).
+                let written = crate::intents::settle(self.store, carried, written, commit_version)?;
+                let batch = if crate::intents::derives_nothing(carried) {
+                    written
+                } else {
+                    // Index entries are derived here rather than carried in the record,
+                    // and they are derived inside the loop because they depend on the
+                    // committed state this attempt is building on (see `crate::index`).
+                    let batch = crate::index::maintain(self.store, carried, written)?;
+                    // Adjacency is derived in the same place and for the same reason: a
+                    // replica reaches its state by replaying this record, so entries the
+                    // leader merely added to its own batch would never exist on a
+                    // follower — a walk that finds nothing there while the leader is
+                    // correct, with nothing in an error state.
+                    let batch = crate::adjacency::maintain(self.store, carried, batch)?;
+                    // And the record counts, in the same batch and for the third time
+                    // for the same reason: the planner on a follower must read the same
+                    // number as the planner on the leader, or one query takes two access
+                    // paths depending on which node answered it.
+                    let batch =
+                        crate::cardinality::maintain(self.store, carried, batch, commit_version)?;
+                    // The expiry index, last and in the same batch as the records it
+                    // describes: an entry written anywhere else is an entry that can be
+                    // left behind (G035).
+                    let batch = crate::lapse::maintain(self.store, carried, batch)?;
+                    // And a limited space's modified-order index, which the evictions
+                    // above read on the next commit (G036).
+                    let batch =
+                        crate::bounded::maintain(self.store, carried, batch, commit_version)?;
+                    // And a topic's positions, dense in commit order (G037).
+                    crate::topic::maintain(self.store, carried, batch)?
+                };
                 // Everything above this ran. This is the whole difference between a
                 // rehearsal and a write, and it is one line so that it can only ever
                 // be the whole difference.
@@ -650,7 +660,7 @@ impl Transaction<'_> {
     /// cannot hold two until the engine decides what a write meeting a
     /// concurrency does, which is S3's question and not this criterion's
     /// (Q-645).
-    fn log_record(
+    pub(super) fn log_record(
         &self,
         node: [u8; tessari_encoding::NODE_ID_LEN],
         placement: &Placement,
@@ -673,7 +683,7 @@ impl Transaction<'_> {
                 },
             });
         }
-        Ok(LogRecord::new(mutations))
+        Ok(self.mark_across(LogRecord::new(mutations)))
     }
 
     /// Refuse the commit if any written record's stored versions disagree, and
@@ -778,21 +788,48 @@ impl Transaction<'_> {
     /// This is the write-write detection, and it is only sound because the
     /// commit batch asserts the tail has not moved either — together they turn
     /// check-then-write into a compare-and-set over the whole commit.
-    fn check_for_conflicts(&self) -> Result<()> {
+    pub(super) fn check_for_conflicts(&self) -> Result<()> {
         // A guarded read is held to the same rule as a write: whatever decided
         // this transaction's writes must not have changed under it.
         let guarded = self.guarded.borrow();
         for address in self.writes.keys().chain(guarded.iter()) {
-            let Some((version, _)) = self.read_newest(address)? else {
+            // The newest version as stored, intents included — one read, as
+            // before intents existed.
+            let Some((version, provenance, _)) = self.newest_stored_value(address)? else {
                 continue;
             };
-            if version > self.snapshot {
-                return Err(Error::Conflict {
-                    id: address.id.clone(),
-                    snapshot: self.snapshot,
-                    committed: version,
-                });
-            }
+            // A resolution writes over its own intents; anybody else's intent,
+            // and this one's on a record it does not resolve, refuses.
+            let intent = provenance
+                .as_ref()
+                .is_some_and(|provenance| provenance.provisional)
+                && !self.resolves(provenance.as_ref());
+            // ADR-0112 D6a: a version resolved from a transaction this one
+            // does not see is one it read the version under instead of. Writing
+            // over it would lose that transaction's write — an increment read
+            // from the old value — so it is refused as a conflict, and passes
+            // once this node's copies hold the transaction's every part.
+            let unseen = match provenance.as_ref() {
+                Some(resolved) if !resolved.provisional => !self.sees(resolved)?,
+                _ => false,
+            };
+            // ADR-0112 D5: a standing intent refuses the write whatever this
+            // writer's snapshot. An intent prepared before the snapshot is not
+            // newer than it, and replacing the value under it would lose the
+            // write the transaction across leaders is about to commit.
+            // Retriable: the intent resolves.
+            let with = match provenance {
+                Some(held) if intent => ConflictWith::Intent(held.transaction),
+                Some(held) if unseen => ConflictWith::Unseen(held.transaction),
+                _ if version > self.snapshot => ConflictWith::Commit,
+                _ => continue,
+            };
+            return Err(Error::Conflict {
+                id: address.id.clone(),
+                snapshot: self.snapshot,
+                committed: version,
+                with,
+            });
         }
         Ok(())
     }

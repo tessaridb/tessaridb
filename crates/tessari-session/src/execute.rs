@@ -60,6 +60,7 @@ struct Peer<'a> {
     node: Option<[u8; NODE_ID_LEN]>,
     replicates: Option<&'a ReachRef>,
     leads: Option<&'a ReachRef>,
+    preferred: bool,
     fingerprint: Option<&'a str>,
 }
 
@@ -140,6 +141,7 @@ impl Session<'_> {
                 graph,
                 split,
                 partition,
+                spread,
                 conflict,
                 if_not_exists,
             } => {
@@ -166,6 +168,7 @@ impl Session<'_> {
                         conflict: *conflict,
                         split: split.clone(),
                         partition: partition.as_ref().map(|field| field.text.clone()),
+                        spread: *spread,
                     },
                     *if_not_exists,
                     span,
@@ -337,9 +340,11 @@ impl Session<'_> {
                 round,
                 campaign,
                 lease,
+                balance_leaderships,
             } => self.define_failover(
                 transaction,
                 [*awareness, *collection, *round, *campaign, *lease],
+                *balance_leaderships,
                 span,
             ),
             StatementKind::RevokeCertificate { fingerprint } => {
@@ -354,6 +359,7 @@ impl Session<'_> {
                 node,
                 replicates,
                 leads,
+                preferred,
                 fingerprint,
                 if_not_exists,
             } => self.define_replica(
@@ -367,6 +373,7 @@ impl Session<'_> {
                     node: *node,
                     replicates: replicates.as_ref(),
                     leads: leads.as_ref(),
+                    preferred: *preferred,
                     fingerprint: fingerprint.as_deref(),
                 },
                 *if_not_exists,
@@ -630,6 +637,21 @@ impl Session<'_> {
                             ShardId::new(*first),
                             ShardId::new(*second),
                         )?;
+                        return Ok(Outcome::Done);
+                    }
+                    TableChange::SplitAutomatically(policy) => {
+                        Catalog::new(transaction).set_auto_split(
+                            id,
+                            Some(tessari_storage::AutoSplit {
+                                above: u64::from(policy.above),
+                                writes_per_second: policy.writes_per_second.map(u64::from),
+                                merge_below: u64::from(policy.merge_below),
+                            }),
+                        )?;
+                        return Ok(Outcome::Done);
+                    }
+                    TableChange::SplitManually => {
+                        Catalog::new(transaction).set_auto_split(id, None)?;
                         return Ok(Outcome::Done);
                     }
                     TableChange::Schemafull | TableChange::Schemaless => {}
@@ -897,6 +919,7 @@ impl Session<'_> {
                     conflict: None,
                     split: Vec::new(),
                     partition: None,
+                    spread: false,
                 },
                 *if_not_exists,
                 span,
@@ -920,6 +943,7 @@ impl Session<'_> {
                     conflict: None,
                     split: Vec::new(),
                     partition: None,
+                    spread: false,
                 },
                 *if_not_exists,
                 span,
@@ -995,6 +1019,7 @@ impl Session<'_> {
                         conflict: None,
                         split: Vec::new(),
                         partition: None,
+                        spread: false,
                     },
                     *if_not_exists,
                     span,
@@ -1030,6 +1055,7 @@ impl Session<'_> {
                     conflict: None,
                     split: Vec::new(),
                     partition: None,
+                    spread: false,
                 },
                 *if_not_exists,
                 span,
@@ -1086,6 +1112,7 @@ impl Session<'_> {
                     conflict: None,
                     split: Vec::new(),
                     partition: None,
+                    spread: false,
                 },
                 *if_not_exists,
                 span,

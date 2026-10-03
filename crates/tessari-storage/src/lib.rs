@@ -23,6 +23,8 @@
 // `expect_used` and `as_conversions` govern production code; a test states its own expectations.
 #![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
+#[cfg(test)]
+mod across_model;
 mod adjacency;
 mod attempts;
 mod audit;
@@ -44,6 +46,7 @@ mod holds;
 mod index;
 #[cfg(test)]
 mod index_unchanged_tests;
+mod intents;
 mod lapse;
 mod lease;
 mod lines;
@@ -55,6 +58,7 @@ mod pruning;
 mod reclaim;
 mod retention;
 mod running;
+mod sampled_shards;
 mod schema;
 mod sealing;
 mod series;
@@ -65,13 +69,14 @@ mod state;
 mod statistics;
 mod store;
 mod tailmarks;
+mod tally;
 mod topic;
 mod transaction;
 mod vault;
 mod views;
 
 pub use catalog::{
-    AnalyzerDefinition, Authority, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, Catalog,
+    AnalyzerDefinition, Authority, AutoSplit, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, Catalog,
     ConsumerDefinition, DatabaseDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeKindDefinition,
     EdgeOrder, EngineField, EngineMember, EventDeclaration, Eviction, FailoverDefinition,
     FailoverStamp, Feed, FieldDefinition, FieldShape, GEO_FIELD, GrantDefinition, GraphDefinition,
@@ -102,7 +107,7 @@ pub use audit::{
     Administered, AuditDevice, AuditTrail, DeviceRefused, VaultRead, administered,
     entries as audit_entries, reads_by,
 };
-pub use error::{Error, Result};
+pub use error::{ConflictWith, Error, Result};
 pub use failover::Failover;
 pub use feed::{Change, ChangeKind, Changes, History, Merged, Subject, Subscription, Watch};
 pub use followers::FollowerLag;
@@ -112,6 +117,7 @@ pub use ordering::{Horizon, MergedHistory, Page, in_writer_order};
 pub use pruning::{Pruned, Trimmed};
 pub use reclaim::Reclaimed;
 pub use running::{Progress, Running};
+pub use sampled_shards::{SampledShard, SampledTable};
 pub use schema::{Violation, violations};
 pub use sealing::{
     KEYS_FIELD, VAULT_RECIPIENT, add_recipient, initialise_root, mint_own_vault_key,
@@ -121,10 +127,14 @@ pub use sealing::{
 pub use state::{StateReader, TopicHead};
 pub use statistics::{estimate_equality, estimate_range};
 pub use store::{Health, Store};
-pub use tessari_encoding::{BUILD_VERSION, IndexStatistics, LogId, NODE_ID_LEN, Roles, Writer};
+pub use tally::AcrossOutcome;
+pub use tessari_encoding::{
+    BUILD_VERSION, Decision, IndexStatistics, LogId, NODE_ID_LEN, Roles, TransactionId,
+    TransactionRecord, Writer,
+};
 pub use transaction::{
-    Committed, Expansion, FieldedPostings, Nearby, Neighbour, RecordAddress, Region, SearchCounts,
-    StoredRecord, Transaction, Window,
+    AcrossPart, Committed, Expansion, FieldedPostings, Nearby, Neighbour, RecordAddress, Region,
+    SearchCounts, StoredRecord, Transaction, Window,
 };
 pub use vault::{OpenVault, SealState};
 pub use views::ViewState;

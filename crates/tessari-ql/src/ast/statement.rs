@@ -125,6 +125,10 @@ pub enum StatementKind {
         /// customers (region string, …) IDENTITY uuid PARTITION BY region`
         /// (ADR-0096). A record of it is named `'<region>:<uuid>'`.
         partition: Option<Name>,
+        /// Whether a generated identity begins with a bucket of two hex digits
+        /// so new records spread over the table's shards: `IDENTITY uuid
+        /// SPREAD` (ADR-0113 D1).
+        spread: bool,
         /// What the table does with a write it cannot order, when the statement
         /// said: `DEFINE TABLE ledger (…) LAST WRITER WINS` (G027 S3.2).
         ///
@@ -679,6 +683,10 @@ pub enum StatementKind {
         campaign: Duration,
         /// How long a granted leadership is held before it must be renewed.
         lease: Duration,
+        /// `BALANCE LEADERSHIPS`: the store line's leader moves a placement
+        /// off a node leading more lines than another voter (ADR-0113 D3).
+        /// Absent is off, because the statement replaces the set.
+        balance_leaderships: bool,
     },
     /// `REVOKE CERTIFICATE '<sha256>'` — a peer certificate refused by every
     /// node from the moment the catalog reaches it (ADR-0108 D6).
@@ -730,6 +738,9 @@ pub enum StatementKind {
         /// already — so the parser takes `NAMESPACE`, `DATABASE` and `SHARD`
         /// only. `None` is the row as it has always been.
         leads: Option<ReachRef>,
+        /// `PREFERRED` after the placement: the candidate a non-preferred
+        /// leader of that range hands it to once caught up (G053 SG5b).
+        preferred: bool,
         /// The one certificate allowed to bind this row (`FINGERPRINT`), its
         /// SHA-256 as 64 lowercase hexadecimal digits (ADR-0108 D9).
         fingerprint: Option<String>,
