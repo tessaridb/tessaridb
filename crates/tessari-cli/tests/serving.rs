@@ -979,12 +979,17 @@ fn started_without_client_settings(args: &[std::ffi::OsString], log: &std::path:
     Running(child)
 }
 
-/// What `log` holds once it says `needle`, or when `patience` runs out.
+/// What `log` holds once the line saying `needle` is whole, or when
+/// `patience` runs out — a line is written in pieces, so the needle alone can
+/// be read before the rest of its line has arrived.
 fn said_within(log: &std::path::Path, needle: &str, patience: Duration) -> String {
     let began = Instant::now();
     loop {
         let said = std::fs::read_to_string(log).unwrap_or_default();
-        if said.contains(needle) || began.elapsed() > patience {
+        let whole = said
+            .find(needle)
+            .is_some_and(|at| said.get(at..).is_some_and(|rest| rest.contains('\n')));
+        if whole || began.elapsed() > patience {
             return said;
         }
         std::thread::yield_now();
