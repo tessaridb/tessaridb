@@ -907,6 +907,18 @@ pub enum Error {
         found: &'static str,
     },
 
+    /// A log record of a transaction across leaders contradicts itself — a
+    /// prepared write that is not an intent of that transaction, or a
+    /// resolution carrying one (ADR-0112). The writer produced it, so it is an
+    /// integrity problem rather than a caller's mistake.
+    #[error("a cross-leader {part} record is malformed: {problem}")]
+    AcrossMalformed {
+        /// Which record it was: `prepare`, `decide` or `resolve`.
+        part: &'static str,
+        /// What was wrong with it.
+        problem: &'static str,
+    },
+
     /// Every identifier at this level has been handed out.
     ///
     /// Ids are never reused after a drop, so the space is consumed by creations
@@ -1085,7 +1097,9 @@ impl Error {
             // position that can never come back.
             | Self::BelowLogStart { .. }
             | Self::VersionInTheFuture { .. } => ErrorCategory::Validation,
-            Self::CatalogMalformed { .. } => ErrorCategory::Corruption,
+            Self::CatalogMalformed { .. } | Self::AcrossMalformed { .. } => {
+                ErrorCategory::Corruption
+            }
             // A dependency this process needs is not reachable, which is what
             // `Unavailable` names. Not `Internal`: nothing here is a bug in the
             // store, and not `Validation`: no caller supplied anything wrong.

@@ -512,35 +512,41 @@ impl Transaction<'_> {
                 // history by and an election compares (ADR-0059); zero for a
                 // node nobody made a leader.
                 carried.set_epoch(epoch);
-                // Index entries are derived here rather than carried in the record,
-                // and they are derived inside the loop because they depend on the
-                // committed state this attempt is building on (see `crate::index`).
-                let batch = crate::index::maintain(
-                    self.store,
-                    carried,
-                    crate::log::apply_batch(log, commit_at, commit_version, carried),
-                )?;
-                // Adjacency is derived in the same place and for the same reason: a
-                // replica reaches its state by replaying this record, so entries the
-                // leader merely added to its own batch would never exist on a
-                // follower — a walk that finds nothing there while the leader is
-                // correct, with nothing in an error state.
-                let batch = crate::adjacency::maintain(self.store, carried, batch)?;
-                // And the record counts, in the same batch and for the third time
-                // for the same reason: the planner on a follower must read the same
-                // number as the planner on the leader, or one query takes two access
-                // paths depending on which node answered it.
-                let batch =
-                    crate::cardinality::maintain(self.store, carried, batch, commit_version)?;
-                // The expiry index, last and in the same batch as the records it
-                // describes: an entry written anywhere else is an entry that can be
-                // left behind (G035).
-                let batch = crate::lapse::maintain(self.store, carried, batch)?;
-                // And a limited space's modified-order index, which the evictions
-                // above read on the next commit (G036).
-                let batch = crate::bounded::maintain(self.store, carried, batch, commit_version)?;
-                // And a topic's positions, dense in commit order (G037).
-                let batch = crate::topic::maintain(self.store, carried, batch)?;
+                let written = crate::log::apply_batch(log, commit_at, commit_version, carried);
+                // A record of a transaction across leaders is checked and settled
+                // here as a follower's apply settles it, and an intent derives
+                // nothing until its resolution does (ADR-0112).
+                let written = crate::intents::settle(self.store, carried, written)?;
+                let batch = if crate::intents::derives_nothing(carried) {
+                    written
+                } else {
+                    // Index entries are derived here rather than carried in the record,
+                    // and they are derived inside the loop because they depend on the
+                    // committed state this attempt is building on (see `crate::index`).
+                    let batch = crate::index::maintain(self.store, carried, written)?;
+                    // Adjacency is derived in the same place and for the same reason: a
+                    // replica reaches its state by replaying this record, so entries the
+                    // leader merely added to its own batch would never exist on a
+                    // follower — a walk that finds nothing there while the leader is
+                    // correct, with nothing in an error state.
+                    let batch = crate::adjacency::maintain(self.store, carried, batch)?;
+                    // And the record counts, in the same batch and for the third time
+                    // for the same reason: the planner on a follower must read the same
+                    // number as the planner on the leader, or one query takes two access
+                    // paths depending on which node answered it.
+                    let batch =
+                        crate::cardinality::maintain(self.store, carried, batch, commit_version)?;
+                    // The expiry index, last and in the same batch as the records it
+                    // describes: an entry written anywhere else is an entry that can be
+                    // left behind (G035).
+                    let batch = crate::lapse::maintain(self.store, carried, batch)?;
+                    // And a limited space's modified-order index, which the evictions
+                    // above read on the next commit (G036).
+                    let batch =
+                        crate::bounded::maintain(self.store, carried, batch, commit_version)?;
+                    // And a topic's positions, dense in commit order (G037).
+                    crate::topic::maintain(self.store, carried, batch)?
+                };
                 // Everything above this ran. This is the whole difference between a
                 // rehearsal and a write, and it is one line so that it can only ever
                 // be the whole difference.

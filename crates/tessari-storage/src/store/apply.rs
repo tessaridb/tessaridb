@@ -211,6 +211,13 @@ impl Store {
         version: Sequence,
         landing: Landing,
     ) -> Result<()> {
+        // A record of a transaction across leaders is checked and settled here,
+        // and an intent derives nothing until its resolution does (ADR-0112).
+        let batch = crate::intents::settle(self, record, batch)?;
+        if crate::intents::derives_nothing(record) {
+            self.writing.apply(batch, self.backend.as_ref(), landing)?;
+            return Ok(());
+        }
         let batch = crate::index::maintain(self, record, batch)?;
         // Derived here as well as in the commit, because that is the whole
         // reason it is derived from the record: a follower that skipped this
