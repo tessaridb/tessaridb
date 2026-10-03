@@ -114,3 +114,23 @@ fn a_part_key_round_trips_for_every_kind_of_range() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn an_unsettled_table_key_round_trips_and_groups_by_table() -> Result<()> {
+    let key = |table: u32, fill: u8| AcrossUnsettledKey {
+        table: tessari_types::TableId::new(table),
+        transaction: TransactionId::new([fill; TRANSACTION_ID_LEN]),
+    };
+    for held in [key(3, 0x01), key(3, 0xfe)] {
+        let bytes = held.encode();
+        assert_eq!(bytes.as_slice()[0], 0x53);
+        assert_eq!(AcrossUnsettledKey::decode(bytes.as_slice())?, held);
+        // Every transaction unsettled in one table shares the table's prefix,
+        // which is the one seek a read asks with.
+        assert!(bytes.as_slice().starts_with(&AcrossUnsettledKey::prefix_of(
+            tessari_types::TableId::new(3)
+        )));
+    }
+    assert!(key(3, 0xfe).encode().as_slice() < key(4, 0x01).encode().as_slice());
+    Ok(())
+}

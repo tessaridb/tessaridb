@@ -147,6 +147,10 @@ pub enum KeyKind {
     /// node — the local version its prepare applied at — which is how a reader
     /// tells whether its snapshot holds the whole transaction (ADR-0112 D6a).
     AcrossPart,
+    /// A table where a committed transaction across leaders is part-way here —
+    /// its readers and its indexes disagree about it — keyed by the table first,
+    /// so a read asks about its own table with one prefix seek (Q-919).
+    AcrossUnsettled,
 }
 
 impl KeyKind {
@@ -196,6 +200,7 @@ impl KeyKind {
         Self::TransactionRecord,
         Self::IntentOf,
         Self::AcrossPart,
+        Self::AcrossUnsettled,
     ];
 
     /// The leading byte that identifies this kind on disk.
@@ -250,6 +255,7 @@ impl KeyKind {
             Self::TransactionRecord => 0x50,
             Self::IntentOf => 0x51,
             Self::AcrossPart => 0x52,
+            Self::AcrossUnsettled => 0x53,
         }
     }
 
@@ -297,7 +303,8 @@ impl KeyKind {
             | Self::ServedReach
             | Self::TransactionRecord
             | Self::IntentOf
-            | Self::AcrossPart => Keyspace::META,
+            | Self::AcrossPart
+            | Self::AcrossUnsettled => Keyspace::META,
         }
     }
 
@@ -349,6 +356,7 @@ impl KeyKind {
             Self::TransactionRecord => "transaction-record",
             Self::IntentOf => "intent-of",
             Self::AcrossPart => "across-part",
+            Self::AcrossUnsettled => "across-unsettled",
         }
     }
 
@@ -449,6 +457,7 @@ mod tests {
             (KeyKind::TransactionRecord, 0x50),
             (KeyKind::IntentOf, 0x51),
             (KeyKind::AcrossPart, 0x52),
+            (KeyKind::AcrossUnsettled, 0x53),
         ];
         assert_eq!(expected.len(), KeyKind::ALL.len(), "a kind is untested");
         for (kind, tag) in expected {

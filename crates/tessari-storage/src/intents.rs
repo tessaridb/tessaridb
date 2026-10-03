@@ -17,6 +17,8 @@ use tessari_types::Sequence;
 use crate::error::{Error, Result};
 use crate::store::Store;
 
+mod unsettled;
+
 /// Whether a stored version is an intent rather than a value.
 pub(crate) fn is_intent(version: &StampedValue) -> bool {
     version
@@ -216,13 +218,14 @@ pub(crate) fn settle(
             let batch = batch.put(AcrossPartKey::keyspace(), part.encode(), version.encode());
             // Each intent indexed under its transaction, in the batch that
             // lands it (D7): what lets this node resolve its own intents later.
-            Ok(record.mutations().iter().fold(batch, |batch, mutation| {
+            let batch = record.mutations().iter().fold(batch, |batch, mutation| {
                 batch.put(
                     IntentOfKey::keyspace(),
                     intent_of(across.transaction, mutation).encode(),
                     version.encode(),
                 )
-            }))
+            });
+            unsettled::reconcile(store, across, record, batch)
         }
         Part::Decide(decided) => {
             if !record.mutations().is_empty() {
@@ -259,11 +262,12 @@ pub(crate) fn settle(
             if let Some(decided) = refused {
                 return Err(Error::AcrossDecided { decided });
             }
-            Ok(batch.put(
+            let batch = batch.put(
                 TransactionRecordKey::keyspace(),
                 key.encode(),
                 decided.encode(),
-            ))
+            );
+            unsettled::reconcile(store, across, record, batch)
         }
         Part::Resolve { committed } => {
             if *committed && !carries(false) {
@@ -293,7 +297,7 @@ pub(crate) fn settle(
                     .delete(RecordKey::keyspace(), intent.encode())
                     .delete(IntentOfKey::keyspace(), indexed);
             }
-            Ok(batch)
+            unsettled::reconcile(store, across, record, batch)
         }
     }
 }

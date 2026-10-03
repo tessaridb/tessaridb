@@ -238,6 +238,22 @@ impl<'a> Transaction<'a> {
         Ok(self.snapshot == self.store.committed_version()?)
     }
 
+    /// Whether an index of one table may answer a read taken through this
+    /// transaction: [`Transaction::indexes_are_current`], and no transaction
+    /// across leaders part-way in the table here (Q-919).
+    ///
+    /// Between a committed transaction's parts landing here, an index may hold
+    /// a resolution its readers cannot see yet, or miss an intent they already
+    /// do; either way it would answer about records the read itself would not
+    /// show. The answer is about the present, as the position check is.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the committed version or the mark cannot be read.
+    pub fn indexes_are_current_for(&self, table: TableId) -> Result<bool> {
+        Ok(self.indexes_are_current()? && !self.store.across_unsettled(table)?)
+    }
+
     /// Whether this transaction has written to one table without committing.
     ///
     /// Asked by a read that would otherwise be served from an index: an

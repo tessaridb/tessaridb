@@ -173,5 +173,73 @@ impl StoreKey for AcrossPartKey {
     }
 }
 
+/// A table where a committed transaction across leaders is part-way on this
+/// node: readers and the table's indexes disagree about it (Q-919).
+///
+/// ```text
+/// <0x53> <table:u32> <transaction:16>
+/// ```
+///
+/// Index entries carry no version and are derived only by a committed
+/// resolution, while a reader sees a committed transaction only once this node
+/// holds every part of it (D6a). So an intent of a transaction readers already
+/// see is missing from the index, and a resolution this node holds while a
+/// part is still missing is in the index and hidden from readers — and a read
+/// that believed the index would answer either way wrongly. The table leads so
+/// a read asks about its own table with one prefix seek; a table's id is unique
+/// in the store, so it needs no tenancy beside it. Written and deleted in
+/// the batches that move the transaction here; the value is its committed
+/// record, whose participants a later part needs when the record itself is not
+/// on this node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcrossUnsettledKey {
+    /// The table.
+    pub table: TableId,
+    /// The transaction.
+    pub transaction: TransactionId,
+}
+
+impl AcrossUnsettledKey {
+    /// The prefix every transaction unsettled in one table shares.
+    #[must_use]
+    pub fn prefix_of(table: TableId) -> Vec<u8> {
+        let mut writer = KeyWriter::with_capacity(5);
+        writer
+            .put_u8(KeyKind::AcrossUnsettled.tag())
+            .put_u32(table.get());
+        writer.finish()
+    }
+
+    /// The prefix every key of this kind shares.
+    #[must_use]
+    pub fn prefix() -> Vec<u8> {
+        vec![KeyKind::AcrossUnsettled.tag()]
+    }
+}
+
+impl StoreKey for AcrossUnsettledKey {
+    type Value = TransactionRecord;
+
+    const KIND: KeyKind = KeyKind::AcrossUnsettled;
+
+    fn encode(&self) -> Key {
+        let mut writer = KeyWriter::with_capacity(TRANSACTION_ID_LEN.saturating_add(5));
+        writer
+            .put_u8(Self::KIND.tag())
+            .put_u32(self.table.get())
+            .put_fixed(&self.transaction.bytes());
+        Key::from(writer.finish())
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        let table = TableId::new(reader.take_u32()?);
+        let transaction = TransactionId::new(reader.take_fixed::<TRANSACTION_ID_LEN>()?);
+        reader.finish()?;
+        Ok(Self { table, transaction })
+    }
+}
+
 #[cfg(test)]
 mod tests;

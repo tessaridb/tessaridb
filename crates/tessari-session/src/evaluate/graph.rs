@@ -211,6 +211,7 @@ impl Session<'_> {
                 span: hop.edges.span,
             });
         }
+        edges_settled(transaction, edge_table, &hop.edges)?;
         let Some(index) = self.index_on_path(
             transaction,
             edge_table,
@@ -295,6 +296,7 @@ impl Session<'_> {
                     table: hop.edges.name.text.clone(),
                     span: hop.edges.span,
                 })?;
+        edges_settled(transaction, declared.edges, &hop.edges)?;
         let along = match direction {
             Direction::Outgoing => AdjacencyDirection::Out,
             Direction::Incoming => AdjacencyDirection::In,
@@ -368,4 +370,28 @@ impl Session<'_> {
             .collect();
         Ok((reached.into_iter().collect(), next))
     }
+}
+
+/// Refuse a hop over `table` while its edges are indexed at another moment
+/// than the reader sees them.
+///
+/// A traversal checks its snapshot's position once, at its start; this is the
+/// other half, per edge table: a transaction across leaders part-way in it
+/// here, whose edges the table's indexes and its readers disagree about
+/// (Q-919). A traversal has no scan to fall back to, so either is a refusal.
+pub(super) fn edges_settled(
+    transaction: &Transaction<'_>,
+    table: TableId,
+    named: &tessari_ql::TableRef,
+) -> Result<()> {
+    if transaction.indexes_are_current_for(table)? {
+        return Ok(());
+    }
+    let table = named.name.text.clone();
+    let span = named.span;
+    Err(if transaction.indexes_are_current()? {
+        Error::AcrossSettling { table, span }
+    } else {
+        Error::NoHistoricalTraversal { table, span }
+    })
 }

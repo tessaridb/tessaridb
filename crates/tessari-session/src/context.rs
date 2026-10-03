@@ -229,7 +229,7 @@ impl Session<'_> {
         table: TableId,
         path: &Path,
     ) -> Result<Option<IndexDefinition>> {
-        if !transaction.indexes_are_current()? {
+        if !transaction.indexes_are_current_for(table)? {
             return Ok(None);
         }
         Ok(Catalog::new(transaction)
@@ -264,7 +264,7 @@ impl Session<'_> {
         table: TableId,
         path: &Path,
     ) -> Result<Option<IndexDefinition>> {
-        if !transaction.indexes_are_current()? {
+        if !transaction.indexes_are_current_for(table)? {
             return Ok(None);
         }
         let indexes = Catalog::new(transaction).field_indexes_on(table)?;

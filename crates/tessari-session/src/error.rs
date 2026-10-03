@@ -972,6 +972,26 @@ pub enum Error {
         span: Span,
     },
 
+    /// A graph traversal met an edge table where a transaction across leaders
+    /// is part-way on this node (Q-919).
+    ///
+    /// The traversal follows the table's direction indexes, which hold that
+    /// transaction's resolution while readers do not see it yet, or miss an
+    /// edge readers already see. A traversal has no scan to fall back to, so
+    /// it is refused rather than answered through edges the read itself would
+    /// not show. Retriable: it lasts until the transaction's last part lands
+    /// here, and the store reports it rather than waiting.
+    #[error(
+        "edges in `{table}` are settling a transaction across leaders on this node — \
+         read again in a moment (at {span})"
+    )]
+    AcrossSettling {
+        /// The edge table.
+        table: String,
+        /// Where the traversal was written.
+        span: Span,
+    },
+
     /// A weighted path met an edge whose weight is not a cost (G055 W6).
     ///
     /// A weight that is absent drops the edge — absence narrows — but one that is

@@ -253,7 +253,7 @@ impl Session<'_> {
         let mut decided = unconditioned
             && !query.is_empty()
             && super::postings::decidable(&query)
-            && transaction.indexes_are_current()?;
+            && indexes_agree(transaction, &resolved.members)?;
         for member in &resolved.members {
             let mut expansions = Vec::with_capacity(probes.len());
             for probe in &probes {
@@ -347,7 +347,7 @@ impl Session<'_> {
         // Q-870: whether the postings can decide this read, member by member.
         let decidable = condition.is_none()
             && super::postings::decidable(&query)
-            && transaction.indexes_are_current()?;
+            && indexes_agree(transaction, &resolved.members)?;
         let mut from_postings = decidable;
         let mut found = Vec::new();
         for (at, member) in resolved.members.iter().enumerate() {
@@ -603,4 +603,16 @@ fn groups_of(
             })
             .collect(),
     }
+}
+
+/// Whether every member's index may answer at this transaction's snapshot:
+/// none behind the tail, and none in a table where a transaction across
+/// leaders is part-way here (Q-919).
+fn indexes_agree(transaction: &Transaction<'_>, members: &[Member]) -> Result<bool> {
+    for member in members {
+        if !transaction.indexes_are_current_for(member.index.table)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }

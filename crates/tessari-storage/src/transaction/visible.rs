@@ -94,4 +94,10 @@ impl Transaction<'_> {
 }
 
 #[cfg(test)]
+mod fixture;
+
+#[cfg(test)]
+mod indexes;
+
+#[cfg(test)]
 mod tests;

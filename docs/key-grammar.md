@@ -114,6 +114,7 @@ because renumbering after data exists is a full rebuild.
 | `0x50` | `TransactionRecord` (one transaction across leaders) | `meta` | implemented — see §6.5 |
 | `0x51` | `IntentOf` (an intent this node holds, by transaction) | `meta` | implemented — see §6.5 |
 | `0x52` | `AcrossPart` (where a transaction's part in one range landed here) | `meta` | implemented — see §6.5 |
+| `0x53` | `AcrossUnsettled` (a table whose indexes and readers disagree about a transaction) | `meta` | implemented — see §6.5 |
 
 `0x40` and `0x41` open a fifth family, `0x4_`: what the planner keeps about an
 index. Both keys are an index prefix with no suffix (`<tag> <namespace:u32>
@@ -905,6 +906,24 @@ snapshot at or past each part's version holds the whole transaction, and one
 before any of them sees none of it — it reads the version under (ADR-0112 D6a).
 A resolved version carries the transaction's participants in its provenance
 (§7), so this needs no copy of the record.
+
+```
+<0x53> <table:u32> <transaction:16>   → <transaction record>
+```
+
+`AcrossUnsettled` marks a table where a committed transaction is part-way on
+this node. Index entries carry no version and are derived only by a committed
+resolution, while a reader sees the transaction only once every part this node
+holds has landed — so between the two an index holds a resolution readers do
+not see yet, or misses an intent they already do. A table is marked while the
+transaction is known committed here, touched the table here, and either has an
+intent standing in it or has a part not landed; the mark is recomputed in the
+batch of every record that can change that. An index read of a marked table
+takes the checked path, and a traversal over a marked edge table is refused as
+retriable (`AcrossSettling`). The table leads, so a read asks about its own
+table with one prefix seek; a table id is unique in the store. The value is the
+committed record, whose participants a later part needs when the record itself
+is not on this node.
 
 **Intents have no key kind of their own.** A participant's prepared write is a
 *provisional* version under the record's own `0x01` key, marked in the

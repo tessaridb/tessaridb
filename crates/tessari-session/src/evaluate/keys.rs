@@ -75,7 +75,7 @@ pub(crate) fn ordered_index_on(
     table: TableId,
     key: &tessari_ql::FieldPath,
 ) -> Result<Option<tessari_storage::IndexDefinition>> {
-    if !transaction.indexes_are_current()? {
+    if !transaction.indexes_are_current_for(table)? {
         return Ok(None);
     }
     Ok(Catalog::new(transaction)

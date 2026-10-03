@@ -486,7 +486,8 @@ pub(crate) fn failure(error: &Error) -> Answer {
         | Error::RestoreTargetExists { .. }
         | Error::NoVaultRoot
         | Error::NoBackupFolder
-        | Error::ShardMapMoved { .. } => 409,
+        | Error::ShardMapMoved { .. }
+        | Error::AcrossSettling { .. } => 409,
         // A substrate or decoding failure. Anything reaching here is a bug.
         //
         // A backup the writer could not write is a device speaking, not a
@@ -712,6 +713,13 @@ mod tests {
             ),
             // Written right, and the data says no. Retriable after a change —
             // the file's own definition of the 409 it already gives `Store`.
+            (
+                409,
+                Error::AcrossSettling {
+                    table: "follows".to_owned(),
+                    span: at,
+                },
+            ),
             (
                 409,
                 Error::RecordExists {
