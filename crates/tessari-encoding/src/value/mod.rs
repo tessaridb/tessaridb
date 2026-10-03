@@ -21,6 +21,11 @@ use tessari_kv::Value;
 use crate::causal::CausalStamp;
 use crate::error::{Error, Result};
 use crate::node::NODE_ID_LEN;
+use crate::order::{KeyReader, KeyWriter};
+pub use across::{
+    Across, Decision, Part, Participant, Provenance, TRANSACTION_ID_LEN, TransactionId,
+    TransactionRecord,
+};
 pub use format::FormatVersion;
 pub use log_record::{LogRecord, Mutation};
 
@@ -89,8 +94,21 @@ const FLAG_ORDER: u8 = 0b0001_0000;
 /// written before this bit existed, so nothing on disk is rewritten.
 const FLAG_EXPIRES: u8 = 0b0010_0000;
 
+/// Bit 6 of the flags byte: the value belongs to a transaction across leaders
+/// (ADR-0112) — on a log record, the section saying which record of it this is;
+/// on a record version, the transaction it was resolved from.
+///
+/// One meaning on both types, written the same way first (the transaction id),
+/// so a decode routed to the wrong type still reads a transaction rather than
+/// a plausible something else. Clear means no such transaction, which is every
+/// value written before this bit existed, so nothing on disk is rewritten.
+const FLAG_ACROSS: u8 = 0b0100_0000;
+
 /// Bytes an expiry instant occupies when a version carries one.
 const EXPIRES_LEN: usize = 8;
+
+/// Room a version's provenance takes: the transaction id and the widest reach.
+const PROVENANCE_CAPACITY: usize = TRANSACTION_ID_LEN.saturating_add(17);
 
 /// Bytes of header that precede every payload.
 const HEADER_LEN: usize = 2;
@@ -226,6 +244,9 @@ pub struct StampedValue {
     stamp: CausalStamp,
     /// The millisecond this version stops being answered at, when it has one.
     expires: Option<u64>,
+    /// The transaction across leaders this version was resolved from, while
+    /// its record stands (ADR-0112 D5).
+    provenance: Option<Provenance>,
 }
 
 impl StampedValue {
@@ -241,6 +262,7 @@ impl StampedValue {
             value,
             stamp: CausalStamp::new(),
             expires: None,
+            provenance: None,
         }
     }
 
@@ -251,7 +273,21 @@ impl StampedValue {
             value,
             stamp,
             expires: None,
+            provenance: None,
         }
+    }
+
+    /// This version, as resolved from a transaction across leaders.
+    #[must_use]
+    pub const fn from_transaction(mut self, provenance: Provenance) -> Self {
+        self.provenance = Some(provenance);
+        self
+    }
+
+    /// The transaction across leaders this version came from, if any.
+    #[must_use]
+    pub const fn provenance(&self) -> Option<Provenance> {
+        self.provenance
     }
 
     /// What the record became at this version.
@@ -279,7 +315,10 @@ impl StampedValue {
 /// byte string is a thing that can come to disagree with itself, and here the
 /// disagreement would be about whether two writes saw each other.
 fn split_stamp(bytes: &[u8]) -> Result<(CausalStamp, u8, &[u8])> {
-    let (flags, payload) = split_header(bytes, FLAG_TOMBSTONE | FLAG_STAMP | FLAG_EXPIRES)?;
+    let (flags, payload) = split_header(
+        bytes,
+        FLAG_TOMBSTONE | FLAG_STAMP | FLAG_EXPIRES | FLAG_ACROSS,
+    )?;
     if flags & FLAG_STAMP == 0 {
         return Ok((CausalStamp::new(), flags, payload));
     }
@@ -356,12 +395,21 @@ impl StoreValue for StampedValue {
         } else {
             STAMP_COUNT_LEN.saturating_add(entries.len().saturating_mul(STAMP_ENTRY_LEN))
         };
+        let provenance = self.provenance.map(|provenance| {
+            let mut writer = KeyWriter::with_capacity(PROVENANCE_CAPACITY);
+            across::put_provenance(&mut writer, provenance);
+            writer.finish()
+        });
+        if provenance.is_some() {
+            flags |= FLAG_ACROSS;
+        }
         let payload = self.value.payload();
         let expires_len = if expires.is_some() { EXPIRES_LEN } else { 0 };
         let mut buffer = with_header(
             flags,
             stamp_len
                 .saturating_add(expires_len)
+                .saturating_add(provenance.as_ref().map_or(0, Vec::len))
                 .saturating_add(payload.len()),
         );
         if !entries.is_empty() {
@@ -378,6 +426,11 @@ impl StoreValue for StampedValue {
         if let Some(at) = expires {
             buffer.extend_from_slice(&at.to_be_bytes());
         }
+        // After the expiry and before the payload, the order every other
+        // optional field keeps: fixed-width prefixes first, then the body.
+        if let Some(provenance) = &provenance {
+            buffer.extend_from_slice(provenance);
+        }
         buffer.extend_from_slice(payload);
         Value::from(buffer)
     }
@@ -385,38 +438,44 @@ impl StoreValue for StampedValue {
     fn decode(bytes: &[u8]) -> Result<Self> {
         let (stamp, flags, rest) = split_stamp(bytes)?;
         let tombstone = flags & FLAG_TOMBSTONE != 0;
-        if flags & FLAG_EXPIRES != 0 {
+        let (expires, rest) = if flags & FLAG_EXPIRES == 0 {
+            (None, rest)
+        } else {
             if tombstone {
                 // No writer puts an instant on a deletion, so one that carries it
                 // was written by something this build does not understand.
                 return Err(Error::ReservedFlags { flags });
             }
-            let (expires, payload) = expiry::split(bytes.len(), rest)?;
-            return Ok(Self {
-                value: RecordValue::Present(payload.to_vec()),
-                stamp,
-                expires: Some(expires),
-            });
-        }
-        let payload = rest;
-        if !tombstone {
-            return Ok(Self {
-                value: RecordValue::Present(payload.to_vec()),
-                stamp,
-                expires: None,
-            });
-        }
-        if payload.is_empty() {
-            return Ok(Self {
-                value: RecordValue::Tombstone,
-                stamp,
-                expires: None,
-            });
-        }
-        Err(Error::TombstoneWithPayload { len: payload.len() })
+            let (expires, rest) = expiry::split(bytes.len(), rest)?;
+            (Some(expires), rest)
+        };
+        let (provenance, payload) = if flags & FLAG_ACROSS == 0 {
+            (None, rest)
+        } else {
+            let mut reader = KeyReader::new(crate::kind::KeyKind::Record, rest);
+            let provenance = across::take_provenance(&mut reader)?;
+            (
+                Some(provenance),
+                rest.get(reader.position()..).unwrap_or_default(),
+            )
+        };
+        let value = if !tombstone {
+            RecordValue::Present(payload.to_vec())
+        } else if payload.is_empty() {
+            RecordValue::Tombstone
+        } else {
+            return Err(Error::TombstoneWithPayload { len: payload.len() });
+        };
+        Ok(Self {
+            value,
+            stamp,
+            expires,
+            provenance,
+        })
     }
 }
 
+mod across;
 mod expiry;
 
 mod format;

@@ -1,8 +1,8 @@
 //! A log record: the mutations one commit made, with its epoch and order.
 
 use super::{
-    EPOCH_LEN, FLAG_EPOCH, FLAG_ORDER, FLAG_SHARDS, HEADER_LEN, ORDER_LEN, StampedValue,
-    StoreValue, split_header, with_header,
+    Across, EPOCH_LEN, FLAG_ACROSS, FLAG_EPOCH, FLAG_ORDER, FLAG_SHARDS, HEADER_LEN, ORDER_LEN,
+    StampedValue, StoreValue, split_header, with_header,
 };
 use crate::error::{Error, Result};
 use crate::order::{KeyReader, KeyWriter};
@@ -44,6 +44,9 @@ pub struct LogRecord {
     epoch: Epoch,
     /// Where this commit stands among every commit its writer made, in any log.
     order: Option<Sequence>,
+    /// Which record of a transaction across leaders this is, when it is one
+    /// (ADR-0112).
+    across: Option<Across>,
     mutations: Vec<Mutation>,
 }
 
@@ -76,8 +79,22 @@ impl LogRecord {
         Self {
             epoch,
             order: None,
+            across: None,
             mutations,
         }
+    }
+
+    /// Mark this record as one of a transaction across leaders (ADR-0112).
+    #[must_use]
+    pub fn across(mut self, across: Across) -> Self {
+        self.across = Some(across);
+        self
+    }
+
+    /// Which record of a transaction across leaders this is, if it is one.
+    #[must_use]
+    pub const fn part_of(&self) -> Option<&Across> {
+        self.across.as_ref()
     }
 
     /// State where its writer committed this record among all its commits
@@ -146,7 +163,8 @@ impl LogRecord {
 /// the reason this record carries no mutation count either. Answers the flags as
 /// well, because whether each mutation carries a shard is one of them.
 fn split_epoch(bytes: &[u8]) -> Result<(u8, Epoch, &[u8])> {
-    let (flags, payload) = split_header(bytes, FLAG_EPOCH | FLAG_SHARDS | FLAG_ORDER)?;
+    let (flags, payload) =
+        split_header(bytes, FLAG_EPOCH | FLAG_SHARDS | FLAG_ORDER | FLAG_ACROSS)?;
     if flags & FLAG_EPOCH == 0 {
         return Ok((flags, Epoch::ZERO, payload));
     }
@@ -197,6 +215,11 @@ impl StoreValue for LogRecord {
     /// exist.
     fn encode(&self) -> Value {
         let mut writer = KeyWriter::with_capacity(self.mutations.len().saturating_mul(32));
+        // In front of the mutations and inside the payload, so the epoch and the
+        // order keep their fixed offsets and a record without it keeps its bytes.
+        if let Some(across) = &self.across {
+            super::across::put(&mut writer, across);
+        }
         // Decided over the whole record, because the field is per mutation or
         // not at all: a decoder has to know before the first mutation whether
         // each one carries it.
@@ -235,6 +258,11 @@ impl StoreValue for LogRecord {
         } else {
             flags
         };
+        let flags = if self.across.is_some() {
+            flags | FLAG_ACROSS
+        } else {
+            flags
+        };
         let mut buffer = with_header(
             flags,
             payload
@@ -261,6 +289,11 @@ impl StoreValue for LogRecord {
         // built with only names the entity in a truncation error, and no kind
         // tag is consumed here — this is a value payload, not a key.
         let mut reader = KeyReader::new(crate::kind::KeyKind::LogEntry, payload);
+        let across = if flags & FLAG_ACROSS == 0 {
+            None
+        } else {
+            Some(super::across::take(&mut reader)?)
+        };
         let mut mutations = Vec::new();
         while reader.remaining() > 0 {
             let namespace = NamespaceId::new(reader.take_u32()?);
@@ -288,6 +321,7 @@ impl StoreValue for LogRecord {
         Ok(Self {
             epoch,
             order,
+            across,
             mutations,
         })
     }
