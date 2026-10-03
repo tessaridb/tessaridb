@@ -362,6 +362,16 @@ pub trait Origin {
     fn reached_on(&self, _range: Reach) -> Result<Option<crate::grant::Reached>> {
         Ok(None)
     }
+
+    /// Answer a peer's sign-in try from this store's failure table — the
+    /// cluster's while this node leads the store line (ADR-0108 D5).
+    ///
+    /// Defaults to `false`, the safe direction for [`Self::joined`]'s reason: a
+    /// door with no store behind it makes a name wait rather than letting a
+    /// guess through uncounted.
+    fn attempted(&self, _asked: &crate::budget::Attempt) -> bool {
+        false
+    }
 }
 
 /// A door with no log behind it.
@@ -547,6 +557,10 @@ impl<'a> Serving<'a> {
 }
 
 impl Origin for Serving<'_> {
+    fn attempted(&self, asked: &crate::budget::Attempt) -> bool {
+        asked.answered(self.log)
+    }
+
     // The line's one history as this store holds it (ADR-0107): its tail and
     // the leadership that wrote it, the pair a greeting carries for its own line.
     fn reached_on(&self, range: Reach) -> Result<Option<crate::grant::Reached>> {

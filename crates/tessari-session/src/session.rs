@@ -482,7 +482,7 @@ impl<'a> Session<'a> {
             .budget
             .as_ref()
             .and_then(|budget| budget.permit(name))
-            .unwrap_or_else(|| throttle::attempts().permit(name));
+            .unwrap_or_else(|| self.store.attempts().permit(name));
         if !permitted {
             log::warn!("sign-in for {name} refused: too many recent failures");
             return Err(Error::SignInThrottled);
@@ -526,7 +526,7 @@ impl<'a> Session<'a> {
             return Err(Error::SignInRefused);
         }
         log::info!("signed in as {name}");
-        throttle::attempts().succeeded(name);
+        self.store.attempts().succeeded(name);
         if let Some(budget) = &self.budget {
             budget.succeeded(name);
         }
@@ -536,7 +536,7 @@ impl<'a> Session<'a> {
 
     /// Count a missed try as `name` here and, in a cluster, in the shared table.
     fn missed(&self, name: &str) {
-        throttle::attempts().failed(name);
+        self.store.attempts().failed(name);
         if let Some(budget) = &self.budget {
             budget.failed(name);
         }

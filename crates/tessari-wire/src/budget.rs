@@ -74,18 +74,18 @@ impl Attempt {
         Ok(Self { kind, name })
     }
 
-    /// The leader's answer, from this process's own table: whether the name
-    /// may try now, and `true` for a report.
+    /// The leader's answer, from `store`'s own table: whether the name may
+    /// try now, and `true` for a report.
     #[must_use]
-    pub fn answered(&self) -> bool {
+    pub fn answered(&self, store: &tessari_storage::Store) -> bool {
         match self.kind {
-            Try::Permit => tessari_session::permit_shared(&self.name),
+            Try::Permit => tessari_session::permit_shared(store, &self.name),
             Try::Failed => {
-                tessari_session::failed_shared(&self.name);
+                tessari_session::failed_shared(store, &self.name);
                 true
             }
             Try::Succeeded => {
-                tessari_session::succeeded_shared(&self.name);
+                tessari_session::succeeded_shared(store, &self.name);
                 true
             }
         }
@@ -192,14 +192,15 @@ mod tests {
 
     #[test]
     fn misses_a_peer_reports_make_the_next_try_wait_here() {
-        // A name no other test uses, because the table is the process's own.
-        let name = "budget-test-a-name-nobody-else-uses";
+        let db = tessaridb::Db::in_memory().expect("an in-memory store");
+        let store = db.store();
+        let name = "ada";
         let asked = |kind| {
             Attempt {
                 kind,
                 name: name.to_owned(),
             }
-            .answered()
+            .answered(store)
         };
         assert!(asked(Try::Permit), "a fresh name was made to wait");
         for _ in 0..FREE_SIGN_IN_FAILURES {

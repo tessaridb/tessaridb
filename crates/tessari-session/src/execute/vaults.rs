@@ -174,7 +174,7 @@ impl Session<'_> {
         let Some(root) = Catalog::new(transaction).vault_root()? else {
             return Err(Error::NoVaultRoot);
         };
-        let moved = guessed(&root, || {
+        let moved = guessed(self.store, &root, || {
             root.0
                 .rewrap(current, new)
                 .map_err(tessari_storage::Error::Vault)
@@ -459,11 +459,11 @@ pub(crate) fn unseal_throttled(
     root: &tessari_storage::VaultRoot,
     passphrase: &str,
 ) -> Result<()> {
-    guessed(root, || store.vault().unseal(&root.0, passphrase))
+    guessed(store, root, || store.vault().unseal(&root.0, passphrase))
 }
 
 /// Try `attempt`, which checks a passphrase against `root`, under the bounds
-/// sign-in has.
+/// sign-in has, counting misses in `store`'s table.
 ///
 /// A passphrase is guessed exactly as a password is — an attempt costs the
 /// guesser nothing and costs this node an Argon2id derivation — so it gets the
@@ -474,11 +474,12 @@ pub(crate) fn unseal_throttled(
 /// tries, not three each. Unseal and change share it, so a change is not a
 /// second, unthrottled way to test a guess.
 pub(super) fn guessed<T>(
+    store: &tessari_storage::Store,
     root: &tessari_storage::VaultRoot,
     attempt: impl FnOnce() -> tessari_storage::Result<T>,
 ) -> Result<T> {
     let key = passphrase_key(root);
-    if !crate::throttle::attempts().permit(&key) {
+    if !store.attempts().permit(&key) {
         log::warn!("unseal refused: too many recent wrong passphrases");
         return Err(Error::PassphraseThrottled);
     }
@@ -488,13 +489,13 @@ pub(super) fn guessed<T>(
     };
     match attempt() {
         Ok(held) => {
-            crate::throttle::attempts().succeeded(&key);
+            store.attempts().succeeded(&key);
             Ok(held)
         }
         Err(refused) => {
             if refused.is_wrong_key() {
                 log::warn!("unseal refused: wrong passphrase");
-                crate::throttle::attempts().failed(&key);
+                store.attempts().failed(&key);
             }
             Err(refused.into())
         }

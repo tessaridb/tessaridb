@@ -24,6 +24,7 @@
 #![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 mod adjacency;
+mod attempts;
 mod audit;
 mod bounded;
 mod cardinality;
@@ -96,6 +97,7 @@ pub use retention::{Retention, RetentionSource};
 pub use topic::{Message, Messages};
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
 // the field but cannot name its type has a public API it cannot use.
+pub use attempts::Attempts;
 pub use audit::{
     Administered, AuditDevice, AuditTrail, DeviceRefused, VaultRead, administered,
     entries as audit_entries, reads_by,

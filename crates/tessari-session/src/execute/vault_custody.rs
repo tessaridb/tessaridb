@@ -42,7 +42,7 @@ impl Session<'_> {
         span: Span,
     ) -> Result<Outcome> {
         let (_, definition, root) = self.own_vault(transaction, name, span)?;
-        guessed(&root, || {
+        guessed(self.store, &root, || {
             tessari_storage::unseal_own_vault(self.store, &definition, &root.0, passphrase)
         })?;
         Ok(Outcome::Value(Value::from("unsealed")))
@@ -72,7 +72,7 @@ impl Session<'_> {
         span: Span,
     ) -> Result<Outcome> {
         let (id, definition, root) = self.own_vault(transaction, name, span)?;
-        let moved = guessed(&root, || {
+        let moved = guessed(self.store, &root, || {
             tessari_storage::rewrap_own_vault(&definition, &root.0, current, new)
         })?;
         Catalog::new(transaction).set_vault(

@@ -171,6 +171,15 @@ compares carries no pre-release suffix.
 
 - **1539 conformance cases** define the language and run in the build.
 
+### Fixed
+
+- **Sign-in and passphrase misses are counted per store**, not per process. An
+  application that opened two stores had misses as `ada` at one make a user
+  called `ada` at the other wait for guesses nobody made at it; each store now
+  keeps its own failure counts, shared by every connection to it. The ceiling on
+  concurrent password checks stays one per process, since it bounds the
+  process's memory.
+
 ## 0.21.0-beta — 2026-10-03
 
 ### Added
