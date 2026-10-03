@@ -153,6 +153,9 @@ pub struct Health {
     /// or `None` before the first pass. Above zero for longer than a pass or
     /// two is a transaction waiting on a coordinator range that does not answer.
     pub across_with_intents: Option<u64>,
+    /// Placements the leadership balancer moved since this process opened the
+    /// store (ADR-0113 D3, D4).
+    pub balancer_moves: u64,
 }
 
 impl Health {
@@ -251,6 +254,9 @@ pub struct Store {
     /// `NotHeldHere` answers and majority waits since this process opened the
     /// store, shared with every handle for the reason the counters above are.
     tally: Arc<crate::tally::ClusterTally>,
+    /// What the balancing pass last measured of each balanced table's shards
+    /// (ADR-0113 D4), shared with every handle like the tally beside it.
+    sampled: Arc<crate::sampled_shards::SampledShards>,
     /// How many log records this process keeps where no statement said
     /// (ADR-0094 D2). Shared with every handle for the reason the counters
     /// beside it are.

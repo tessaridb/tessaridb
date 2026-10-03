@@ -212,6 +212,7 @@ pub(crate) fn metrics(
 
     if cluster {
         replication(&mut out, db);
+        balancing(&mut out, db);
         if let Some(census) = census {
             expiries(&mut out, census);
         }
@@ -274,6 +275,42 @@ fn sees_the_cluster(db: &Db, tokens: &Tokens, presented: &Presented) -> bool {
 /// nobody has no state, and a leader nobody has collected from has no
 /// followers. The state is one gauge per state with exactly one at 1, so a
 /// dashboard can alert on `stranded` or `copy failed` without parsing a label.
+/// What the balancer measured and did (ADR-0113 D4): each balanced table's
+/// shards as the last pass counted them — only on the node that counts — and
+/// the placements it moved. Read from what the pass published, never counted
+/// here: a walk per scrape would grow with the table.
+fn balancing(out: &mut String, db: &Db) {
+    let store = db.store();
+    let sampled = store.sampled_shards();
+    if !sampled.is_empty() {
+        out.push_str(
+            "# HELP tessari_shard_records Live records in a balanced table's shard at the last \
+             balancing pass, counted to one past the table's bound.\n",
+        );
+        out.push_str("# TYPE tessari_shard_records gauge\n");
+        for (_, table) in &sampled {
+            for shard in &table.shards {
+                out.push_str(&format!(
+                    "tessari_shard_records{{table=\"{}\",shard=\"{}\"}} {}\n",
+                    table.name,
+                    shard.shard.get(),
+                    shard.records
+                ));
+            }
+        }
+    }
+    if let Ok(held) = store.health() {
+        out.push_str(
+            "# HELP tessari_balancer_moves_total Placements the leadership balancer moved.\n",
+        );
+        out.push_str("# TYPE tessari_balancer_moves_total counter\n");
+        out.push_str(&format!(
+            "tessari_balancer_moves_total {}\n",
+            held.balancer_moves
+        ));
+    }
+}
+
 fn replication(out: &mut String, db: &Db) {
     let store = db.store();
     if let Some(held) = store.upstream() {

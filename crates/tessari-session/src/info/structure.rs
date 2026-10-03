@@ -11,8 +11,8 @@ use crate::error::{Error, Result};
 use crate::session::Session;
 
 use super::{
-    by_name, described_field, described_index, nameable, readable_field, readable_index, refining,
-    reported, shape_of,
+    by_name, described_field, described_index, described_sample, nameable, readable_field,
+    readable_index, refining, reported, shape_of,
 };
 
 impl Session<'_> {
@@ -207,6 +207,17 @@ impl Session<'_> {
         indexes.retain(|index| readable_index(&visible, index));
         let whole = declared == (fields.len(), indexes.len());
         let mut report = shape_of(&definition);
+        // What the balancing pass last measured of its shards (ADR-0113 D4),
+        // present only on the node that measures them — the store line's
+        // leader — and only once a pass has run.
+        if let Some((_, sampled)) = self
+            .store
+            .sampled_shards()
+            .into_iter()
+            .find(|(table, _)| *table == id)
+        {
+            report.insert("sampled".to_owned(), described_sample(&sampled));
+        }
         report.insert(
             "fields".to_owned(),
             Value::Array(fields.iter().map(described_field).collect()),

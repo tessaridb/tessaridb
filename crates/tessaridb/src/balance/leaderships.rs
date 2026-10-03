@@ -97,6 +97,7 @@ impl Db {
             return Ok(None);
         }
         writing.commit()?;
+        store.leadership_moved();
         moves.last = Some(Instant::now());
         Ok(Some(planned))
     }

@@ -3,7 +3,7 @@
 use std::sync::atomic::Ordering;
 
 use tessari_encoding::{LogId, NODE_ID_LEN};
-use tessari_types::Sequence;
+use tessari_types::{Sequence, TableId};
 
 use crate::catalog::Reach;
 use crate::error::Result;
@@ -68,7 +68,26 @@ impl Store {
             across_in_doubt,
             across_pending,
             across_with_intents,
+            balancer_moves: self.tally.balancer_moves(),
         })
+    }
+
+    /// Record one placement the leadership balancer moved (ADR-0113 D3).
+    pub fn leadership_moved(&self) {
+        self.tally.moved();
+    }
+
+    /// Publish what the balancing pass measured of every balanced table's
+    /// shards (ADR-0113 D4); a table left out is no longer balanced and drops.
+    pub fn shards_measured(&self, tables: Vec<(TableId, crate::SampledTable)>) {
+        self.sampled.publish(tables);
+    }
+
+    /// What the balancing pass last measured, one entry per balanced table in
+    /// table order — empty on a node that does not balance.
+    #[must_use]
+    pub fn sampled_shards(&self) -> Vec<(TableId, crate::SampledTable)> {
+        self.sampled.all()
     }
 
     /// Record how one transaction across leaders this node coordinated ended

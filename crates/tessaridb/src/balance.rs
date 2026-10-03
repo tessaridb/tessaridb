@@ -31,7 +31,10 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use tessari_storage::{Catalog, LogId, ShardMap, ShardSpan, TableDefinition, Transaction, Window};
+use tessari_storage::{
+    Catalog, LogId, SampledShard, SampledTable, ShardMap, ShardSpan, TableDefinition, Transaction,
+    Window,
+};
 use tessari_types::{Reach, RecordId, Sequence, ShardId, TableId};
 
 use crate::{Db, Result};
@@ -94,16 +97,25 @@ impl Db {
         let store = self.store();
         let mut balanced = Balanced::default();
         if !store.leads(Reach::Store)? {
+            // What this node measured while it led is not a measurement now.
+            store.shards_measured(Vec::new());
             return Ok(balanced);
         }
-        let tables = self.tables_balancing()?;
+        let named = self.tables_balancing()?;
+        let tables: Vec<TableDefinition> = named.iter().map(|(_, table)| table.clone()).collect();
         let rates = self.writes_since(&tables, samples)?;
-        for table in tables {
+        let mut published = Vec::with_capacity(named.len());
+        for (name, table) in named {
             let (Some(policy), Some(map)) = (table.auto_split, table.shards.as_ref()) else {
                 continue;
             };
             let above = usize::try_from(policy.above).unwrap_or(usize::MAX);
             let measured = self.measure(&table, map, above, &rates)?;
+            let mut sampled = SampledTable {
+                name,
+                shards: measured.iter().map(Measured::sampled).collect(),
+                last_act: None,
+            };
             let busy = |shard: &Measured| {
                 policy
                     .writes_per_second
@@ -134,6 +146,7 @@ impl Db {
                     .map(|pair| Act::Merge(pair[0].id, pair[1].id))
             };
             let Some(act) = act else {
+                published.push((table.id, sampled));
                 continue;
             };
             let mut writing = store.begin()?;
@@ -146,18 +159,24 @@ impl Db {
                     .map(|_| ()),
             };
             match done.and_then(|()| writing.commit().map(|_| ())) {
-                Ok(()) => match act {
-                    Act::Split(_) => balanced.split = balanced.split.saturating_add(1),
-                    Act::Merge(..) => balanced.merged = balanced.merged.saturating_add(1),
-                },
+                Ok(()) => {
+                    sampled.last_act = Some(act.described());
+                    match act {
+                        Act::Split(_) => balanced.split = balanced.split.saturating_add(1),
+                        Act::Merge(..) => balanced.merged = balanced.merged.saturating_add(1),
+                    }
+                }
                 Err(why) => balanced.last_refusal = Some(format!("table `{}`: {why}", table.name)),
             }
+            published.push((table.id, sampled));
         }
+        store.shards_measured(published);
         Ok(balanced)
     }
 
-    /// Every table that asked to be balanced and is split.
-    fn tables_balancing(&self) -> Result<Vec<TableDefinition>> {
+    /// Every table that asked to be balanced and is split, with the name an
+    /// operator writes it by.
+    fn tables_balancing(&self) -> Result<Vec<(String, TableDefinition)>> {
         let mut reading = self.store().begin()?;
         let catalog = Catalog::new(&mut reading);
         let mut found = Vec::new();
@@ -167,7 +186,13 @@ impl Db {
                     catalog
                         .tables_in(namespace.id, database.id)?
                         .into_iter()
-                        .filter(|table| table.auto_split.is_some() && table.shards.is_some()),
+                        .filter(|table| table.auto_split.is_some() && table.shards.is_some())
+                        .map(|table| {
+                            (
+                                format!("{}.{}.{}", namespace.name, database.name, table.name),
+                                table,
+                            )
+                        }),
                 );
             }
         }
@@ -297,6 +322,29 @@ impl Db {
 enum Act {
     Split(RecordId),
     Merge(ShardId, ShardId),
+}
+
+impl Act {
+    /// The act as an operator reads it in `INFO FOR TABLE`.
+    fn described(&self) -> String {
+        match self {
+            Self::Split(point) => format!("split at {}", point.to_literal()),
+            Self::Merge(first, second) => {
+                format!("merged shards {} and {}", first.get(), second.get())
+            }
+        }
+    }
+}
+
+impl Measured {
+    fn sampled(&self) -> SampledShard {
+        SampledShard {
+            shard: self.id,
+            records: u64::try_from(self.records).unwrap_or(u64::MAX),
+            complete: self.complete,
+            writes_per_second: self.writes_per_second,
+        }
+    }
 }
 
 /// The live records of a shard, counted to `limit`, and whether the count

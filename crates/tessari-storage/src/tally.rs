@@ -38,6 +38,8 @@ pub(crate) struct ClusterTally {
     across_pending: AtomicU64,
     /// Transactions with intents standing here, as the last pass left them.
     across_with_intents: AtomicU64,
+    /// Placements the leadership balancer moved (ADR-0113 D3).
+    balancer_moves: AtomicU64,
 }
 
 impl Default for ClusterTally {
@@ -52,11 +54,20 @@ impl Default for ClusterTally {
             across_in_doubt: AtomicU64::new(0),
             across_pending: AtomicU64::new(UNSAMPLED),
             across_with_intents: AtomicU64::new(UNSAMPLED),
+            balancer_moves: AtomicU64::new(0),
         }
     }
 }
 
 impl ClusterTally {
+    pub(crate) fn moved(&self) {
+        self.balancer_moves.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn balancer_moves(&self) -> u64 {
+        self.balancer_moves.load(Ordering::Relaxed)
+    }
+
     pub(crate) fn held_elsewhere(&self) {
         self.not_held_here.fetch_add(1, Ordering::Relaxed);
     }

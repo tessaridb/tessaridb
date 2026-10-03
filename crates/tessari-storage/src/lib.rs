@@ -58,6 +58,7 @@ mod pruning;
 mod reclaim;
 mod retention;
 mod running;
+mod sampled_shards;
 mod schema;
 mod sealing;
 mod series;
@@ -116,6 +117,7 @@ pub use ordering::{Horizon, MergedHistory, Page, in_writer_order};
 pub use pruning::{Pruned, Trimmed};
 pub use reclaim::Reclaimed;
 pub use running::{Progress, Running};
+pub use sampled_shards::{SampledShard, SampledTable};
 pub use schema::{Violation, violations};
 pub use sealing::{
     KEYS_FIELD, VAULT_RECIPIENT, add_recipient, initialise_root, mint_own_vault_key,

@@ -1013,7 +1013,16 @@ const TABLES: &[Table] = &[
         // leadership and membership rows only, no record, field or grant; its
         // caller is the balancing pass counting lines. Re-classification
         // trigger: the same as `leader_of`'s.
-        expected: 69,
+        //
+        // 72 since the balancer is observable (ADR-0113 D4):
+        // `Store::leadership_moved`, `Store::shards_measured` and
+        // `Store::sampled_shards`. **Not data paths**, on the cluster counters'
+        // ground: they write or read a counter and an in-memory sample this
+        // process reports, and no record, catalog entry or grant. Their callers
+        // are the balancing pass after its walk and the INFO and `/metrics`
+        // reports. Re-classification trigger: a caller reachable from a
+        // statement that could change what an operator reads without the pass.
+        expected: 72,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1226,7 +1235,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 151 since leaderships can be balanced (ADR-0113 D3):
     // `Store::line_leaders`, exempt, classified above.
-    assert_eq!(total, 151, "the counted tables no longer sum to 151");
+    //
+    // 154 since the balancer is observable (ADR-0113 D4): three `Store`
+    // methods, not data paths, classified above.
+    assert_eq!(total, 154, "the counted tables no longer sum to 154");
 }
 
 /// Every `.rs` file under a directory.

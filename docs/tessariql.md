@@ -2367,7 +2367,14 @@ and the node logs it. `SPLIT MANUALLY` stops it. It is off unless asked.
 
 Counting a shard walks its records up to the bound, so a pass costs each shard
 at most its bound. `INFO FOR TABLE` reports the bounds as `auto_split`, and its
-`definition` re-creates them as this statement.
+`definition` re-creates them as this statement. On the store's leader — the node
+that counts — it also reports `sampled`: each shard's `records` as the last pass
+counted them (`complete: false` means *at least* that many, the count having
+stopped one past the bound), its `writes_per_second`, and the `last_act` the
+balancer took on the table. `/metrics` carries the same counts as
+`tessari_shard_records{table, shard}` and the leadership balancer's moves as
+`tessari_balancer_moves_total`, both read from what the pass counted rather than
+counted again by a scrape.
 
 ### Partitioning a table by region: `PARTITION BY`
 

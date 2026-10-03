@@ -224,3 +224,53 @@ fn the_report_names_the_policy_and_its_definition_restores_it() {
     copy.session().run(&format!("{DECLARED} {script}")).unwrap();
     assert_eq!(table(&copy).auto_split, table(&db).auto_split);
 }
+
+#[test]
+fn what_a_pass_measured_is_reported_for_each_shard_with_its_last_act() {
+    // ADR-0113 D4: the counts the pass took, not a second walk.
+    let db = Db::in_memory().unwrap();
+    orders(
+        &db,
+        "SPLIT AUTOMATICALLY ABOVE 100 RECORDS MERGE BELOW 20 RECORDS",
+        400,
+    );
+    passes(&db, &mut ShardSamples::default());
+    let sampled = db.store().sampled_shards();
+    assert_eq!(sampled.len(), 1);
+    let (_, table) = &sampled[0];
+    assert_eq!(table.name, "prod.shop.orders");
+    assert_eq!(table.shards.len(), per_shard(&db).len());
+    assert!(table.shards.iter().all(|shard| shard.complete));
+    let counted: Vec<usize> = table
+        .shards
+        .iter()
+        .map(|shard| usize::try_from(shard.records).unwrap())
+        .collect();
+    assert_eq!(
+        counted,
+        per_shard(&db),
+        "the sample is the shards' own count"
+    );
+    assert!(
+        table
+            .last_act
+            .as_deref()
+            .is_some_and(|act| act.starts_with("split at ")),
+        "{:?}",
+        table.last_act
+    );
+    let outcomes = db
+        .session()
+        .run(&format!("{TENANCY} INFO FOR TABLE orders;"))
+        .unwrap();
+    let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
+        unreachable!("INFO FOR TABLE answers a value");
+    };
+    let Some(Value::Object(reported)) = fields.get("sampled") else {
+        unreachable!("no sample reported: {fields:?}");
+    };
+    let Some(Value::Array(shards)) = reported.get("shards") else {
+        unreachable!("no shards in the sample: {reported:?}");
+    };
+    assert_eq!(shards.len(), counted.len());
+}

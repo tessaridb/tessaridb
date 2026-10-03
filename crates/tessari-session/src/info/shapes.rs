@@ -217,3 +217,32 @@ pub(crate) fn described_index(index: &IndexDefinition) -> Value {
     }
     Value::Object(described)
 }
+
+/// A balanced table's shards as the balancing pass last measured them
+/// (ADR-0113 D4): each shard's records — at least that many when the count
+/// stopped at the bound — and its writes a second, and the last act.
+pub(crate) fn described_sample(sampled: &tessari_storage::SampledTable) -> Value {
+    let number = |held: u64| Value::from(i64::try_from(held).unwrap_or(i64::MAX));
+    let shards = sampled
+        .shards
+        .iter()
+        .map(|shard| {
+            Value::Object(BTreeMap::from([
+                ("id".to_owned(), Value::from(i64::from(shard.shard.get()))),
+                ("records".to_owned(), number(shard.records)),
+                ("complete".to_owned(), Value::Bool(shard.complete)),
+                (
+                    "writes_per_second".to_owned(),
+                    shard.writes_per_second.map_or(Value::Null, number),
+                ),
+            ]))
+        })
+        .collect();
+    Value::Object(BTreeMap::from([
+        ("shards".to_owned(), Value::Array(shards)),
+        (
+            "last_act".to_owned(),
+            sampled.last_act.as_deref().map_or(Value::Null, Value::from),
+        ),
+    ]))
+}
