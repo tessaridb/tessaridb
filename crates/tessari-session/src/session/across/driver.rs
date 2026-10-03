@@ -122,15 +122,21 @@ impl Session<'_> {
             .zip(&mut record.participants)
             .zip(&parts)
         {
-            match answer {
-                Ok(AcrossAnswer::Prepared(at)) => participant.prepared_at = Some(at),
-                Ok(other) => {
-                    refused.get_or_insert(format!("{:?} answered {other:?}", part.home));
+            let reason = match answer {
+                Ok(AcrossAnswer::Prepared(at)) => {
+                    participant.prepared_at = Some(at);
+                    continue;
                 }
-                Err(reason) => {
-                    refused.get_or_insert(reason);
-                }
-            }
+                Ok(other) => format!("{:?} answered {other:?}", part.home),
+                Err(reason) => reason,
+            };
+            // Said here because the caller may only ever hear that the
+            // decision is in doubt, and this is why it was an abort.
+            log::info!(
+                "a cross-leader prepare for {:?} was refused: {reason}",
+                part.home
+            );
+            refused.get_or_insert(reason);
         }
         record.decision = if refused.is_some() {
             Decision::Aborted

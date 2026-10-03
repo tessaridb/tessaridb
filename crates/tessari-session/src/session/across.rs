@@ -181,7 +181,7 @@ impl Session<'_> {
             AcrossAsk::Settle {
                 transaction,
                 coordinator,
-            } => self.settle_across(*transaction, *coordinator, span),
+            } => self.settle_across(*transaction, *coordinator),
             AcrossAsk::Resolve {
                 transaction,
                 committed,
@@ -200,51 +200,54 @@ impl Session<'_> {
 
     /// Answer `transaction`'s outcome here, at its coordinator range's
     /// leader, aborting a record that is overdue or was never written.
+    ///
+    /// A decided record is written again before it is answered. A write is
+    /// visible on its leader before its copies exist (ADR-0106 D3), so the
+    /// record as read may be held here alone; a participant that dropped its
+    /// intents on an abort a failover then lost would leave a transaction the
+    /// still-running coordinator can commit, half applied. Writing the same
+    /// decision at a majority makes the answer one a failover keeps, and with
+    /// it every entry of the log before it.
     fn settle_across(
         &mut self,
         transaction: TransactionId,
         coordinator: Reach,
-        span: Span,
     ) -> Result<AcrossAnswer> {
         let store = self.store;
         let standing = store.transaction_record(transaction)?;
-        let participants = match &standing {
-            Some(record) if record.decision != tessari_encoding::Decision::Pending => {
-                return Ok(AcrossAnswer::Outcome(record.decision));
-            }
+        let record = match standing {
+            Some(record) if record.decision != tessari_encoding::Decision::Pending => record,
             Some(record) if record.deadline > now_millis() => {
                 return Ok(AcrossAnswer::Outcome(record.decision));
             }
-            Some(record) => record.participants.clone(),
-            None => vec![tessari_encoding::Participant {
-                range: coordinator,
-                prepared_at: None,
-            }],
-        };
-        let aborting = AcrossAsk::Decide {
-            transaction,
-            record: TransactionRecord {
+            Some(record) => TransactionRecord {
                 decision: tessari_encoding::Decision::Aborted,
                 deadline: 0,
-                participants,
+                participants: record.participants,
+            },
+            None => TransactionRecord {
+                decision: tessari_encoding::Decision::Aborted,
+                deadline: 0,
+                participants: vec![tessari_encoding::Participant {
+                    range: coordinator,
+                    prepared_at: None,
+                }],
             },
         };
-        match self.answer_across(&aborting) {
-            Ok(_) => Ok(AcrossAnswer::Outcome(tessari_encoding::Decision::Aborted)),
+        let decision = record.decision;
+        let deciding = AcrossAsk::Decide {
+            transaction,
+            record,
+        };
+        match self.answer_across(&deciding) {
+            Ok(_) => Ok(AcrossAnswer::Outcome(decision)),
             // Decided between the read and the abort — the coordinator's own
-            // decision won — so the record says which.
+            // decision won — so that decision is the one written again. Once:
+            // a decided record never changes, so it cannot be refused twice.
             Err(Error::Store(tessari_storage::Error::AcrossDecided { .. })) => {
-                let decided = store
-                    .transaction_record(transaction)?
-                    .map_or(tessari_encoding::Decision::Aborted, |record| {
-                        record.decision
-                    });
-                Ok(AcrossAnswer::Outcome(decided))
+                self.settle_across(transaction, coordinator)
             }
-            Err(refused) => {
-                let _ = span;
-                Err(refused)
-            }
+            Err(refused) => Err(refused),
         }
     }
 

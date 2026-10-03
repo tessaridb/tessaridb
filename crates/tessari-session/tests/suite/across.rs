@@ -279,3 +279,33 @@ fn settling_a_decided_record_answers_its_decision() {
         "an overdue deadline does not reopen a committed record"
     );
 }
+
+#[test]
+fn settling_a_decided_record_writes_it_again_so_a_majority_holds_it() {
+    // A record read here may be committed on this node and on no other: a
+    // write is visible on its leader before its copies exist. Answering from
+    // it as it stands would let a participant act on an outcome a failover
+    // can still lose, so the answer is the decision written again at a
+    // majority — and a majority holding that holds everything before it.
+    let store = store();
+    let mut owner = signed_in(&store, "root");
+    for decision in [Decision::Pending, Decision::Aborted] {
+        owner
+            .answer_across(&AcrossAsk::Decide {
+                transaction: TRANSACTION,
+                record: record(&store, decision),
+            })
+            .unwrap();
+    }
+    let (namespace, database, _) = ids(&store, "notes");
+    let log = store.own_log(Reach::Database(namespace, database)).unwrap();
+    let before = store.committed_tail(log).unwrap();
+    assert_eq!(
+        settle(&mut owner, &store),
+        AcrossAnswer::Outcome(Decision::Aborted)
+    );
+    assert!(
+        store.committed_tail(log).unwrap() > before,
+        "the decision was answered without being written again"
+    );
+}

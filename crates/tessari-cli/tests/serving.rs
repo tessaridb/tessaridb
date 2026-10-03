@@ -3597,6 +3597,183 @@ fn a_transaction_across_two_shard_leaders_commits_whole_or_is_refused() {
     );
 }
 
+/// The abandoned cluster's addresses — the across test's own shape, a band of
+/// its own so the two can run in one invocation.
+const ABANDONED: Band = [
+    ("127.0.0.1:47992", "127.0.0.1:47993"),
+    ("127.0.0.1:47994", "127.0.0.1:47995"),
+    ("127.0.0.1:47996", "127.0.0.1:47997"),
+];
+
+#[test]
+#[ignore = "three processes, a SIGSTOP and a kill -9 — a coordinator dies between its \
+            prepares and its decision and its successor finishes the transaction. \
+            G053 SG3f, run explicitly: cargo test -p tessari-cli --test serving \
+            a_transaction_whose_coordinator_died -- --ignored"]
+fn a_transaction_whose_coordinator_died_mid_prepare_leaves_nothing_standing() {
+    // Shard 1 has two candidates, n0 and n2, so it outlives its leader; shard
+    // 2 has one, n1.
+    let mut cluster = a_cluster_declared(
+        &ABANDONED,
+        PLACED,
+        [
+            " LEADS SHARD prod.shop.orders 1",
+            " LEADS SHARD prod.shop.orders 2",
+            " LEADS SHARD prod.shop.orders 1",
+        ],
+    );
+    if let Err(last) = until_taken(ABANDONED[1].0, "h", Duration::from_secs(120)) {
+        panic!(
+            "node 1 never took shard 2; last: {last}{}",
+            what_the_nodes_said(&ABANDONED, &cluster.logs)
+        );
+    }
+    let began = Instant::now();
+    let mut leader = None;
+    while began.elapsed() < Duration::from_secs(120) && leader.is_none() {
+        leader = [0, 2]
+            .into_iter()
+            .find(|index| until_taken(ABANDONED[*index].0, "a", Duration::from_millis(1)).is_ok());
+        std::thread::sleep(POLL);
+    }
+    let Some(leader) = leader else {
+        panic!(
+            "neither candidate took shard 1{}",
+            what_the_nodes_said(&ABANDONED, &cluster.logs)
+        );
+    };
+    let successor = if leader == 0 { 2 } else { 0 };
+    // The transaction runs on shard 1's leader, which has to know who leads
+    // shard 2 — that row has to replicate to it first.
+    if let Err(last) = until_sent_to(
+        ABANDONED[leader].0,
+        "hknown",
+        cluster.ids[1],
+        ABANDONED[1].1,
+        Duration::from_secs(90),
+    ) {
+        panic!(
+            "node {leader} never learned that node 1 leads shard 2; last: {last}{}",
+            what_the_nodes_said(&ABANDONED, &cluster.logs)
+        );
+    }
+    let signal = |what: &str, pid: &str| {
+        let sent = Command::new("kill")
+            .args([what, pid])
+            .status()
+            .expect("kill runs");
+        assert!(sent.success(), "{what} {pid}");
+    };
+    // n1 is paused, so shard 1's leader — the coordinator, since shard 1 is
+    // the first part — writes the record PENDING and its own intent at a
+    // majority, and then waits on a prepare n1 cannot read.
+    let participant = cluster.running[1]
+        .as_ref()
+        .expect("node 1 runs")
+        .0
+        .id()
+        .to_string();
+    signal("-STOP", &participant);
+    let surface = ABANDONED[leader].0;
+    let driving = std::thread::spawn(move || {
+        asked(
+            surface,
+            "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
+             CREATE orders:'ak' = { n: 8 }; CREATE orders:'hk' = { n: 8 }; \
+             COMMIT ACROSS LEADERS;",
+            None,
+        )
+    });
+    // The local prepare takes milliseconds and the remote one is held for as
+    // long as the pause lasts. The kill comes before the record's lapse —
+    // four failover rounds, about two seconds here — or the coordinator
+    // would abort its own record and nothing would be left to a successor.
+    std::thread::sleep(Duration::from_millis(500));
+    cluster.running[leader] = None;
+    let answered = driving.join().expect("the client thread ends");
+    assert!(
+        answered.is_err(),
+        "the coordinator was killed before it could answer: {answered:?}"
+    );
+    signal("-CONT", &participant);
+    // Nobody restarts the coordinator. Its successor takes shard 1, finds the
+    // record overdue, aborts it and drops the intent — and until then a
+    // standing intent refuses every writer, so writing the record again is
+    // only possible once it has.
+    let mut last = String::new();
+    let rewritten = until(Duration::from_secs(180), || {
+        [(successor, "ak"), (1, "hk")].iter().all(|(at, key)| {
+            match asked(
+                ABANDONED[*at].0,
+                &format!(
+                    "USE NAMESPACE prod; USE DATABASE shop; UPSERT orders:'{key}' = {{ n: 9 }};"
+                ),
+                None,
+            ) {
+                Ok(_) => true,
+                Err(why) => {
+                    last = format!("{key}: {why}");
+                    false
+                }
+            }
+        })
+    });
+    assert!(
+        rewritten,
+        "the abandoned transaction's records could never be written again; last: \
+         {last}{}",
+        what_the_nodes_said_beyond_greetings(&cluster.logs)
+    );
+    for at in [successor, 1] {
+        let surface = ABANDONED[at].0;
+        let settled = until(Duration::from_secs(30), || {
+            read_at(surface, "SELECT id FROM orders WHERE n = 9 ORDER BY id;")
+                .is_ok_and(|ids| ids == ["ak", "hk"])
+        });
+        assert!(
+            settled,
+            "{surface} never held the rewritten records; it reads {:?}",
+            read_at(surface, "SELECT id FROM orders WHERE n >= 8 ORDER BY id;")
+        );
+        assert!(
+            read_at(surface, "SELECT id FROM orders WHERE n = 8;").is_ok_and(|ids| ids.is_empty()),
+            "{surface} shows a write of the abandoned transaction"
+        );
+    }
+    // Read whole: the diagnostic tail would drop a line this early. The
+    // successor finished the transaction — and the coordinator did not, which
+    // is what makes this a test of a coordinator that never came back. Its
+    // abort may land in one pass and its resolution in the next, when the
+    // abort's copies took longer than the pass to acknowledge.
+    let said = |at: usize| std::fs::read_to_string(&cluster.logs[at]).unwrap_or_default();
+    assert!(
+        said(successor).contains("finished cross-leader transactions")
+            && !said(leader).contains("finished cross-leader transactions"),
+        "the successor, and only the successor, finishes the abandoned transaction{}",
+        what_the_nodes_said_beyond_greetings(&cluster.logs)
+    );
+}
+
+/// Every line each node wrote except the greeting cadence, which in a
+/// three-minute run is most of the file and buries what a cross-leader
+/// failure says.
+fn what_the_nodes_said_beyond_greetings(logs: &[std::path::PathBuf]) -> String {
+    let mut out = String::new();
+    for (index, path) in logs.iter().enumerate() {
+        let read = std::fs::read_to_string(path).unwrap_or_default();
+        out.push_str(&format!("\n--- node {index} ---\n"));
+        for line in read.lines().filter(|line| {
+            !line.contains("greeted at epoch")
+                && !line.contains("greeting_round")
+                && !line.contains("tessari_wire::node connection ")
+        }) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 #[test]
 #[ignore = "real cadences across three processes — a shard leader is killed and \
             its second candidate elected. It is G032 S4.2's own validation and is \

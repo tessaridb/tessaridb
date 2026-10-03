@@ -3,9 +3,10 @@
 //! A coordinator that dies leaves its record `PENDING` and its intents
 //! standing. Nothing waits for it: every node, on its housekeeping cadence,
 //! aborts the overdue records of the ranges it leads, and resolves the intents
-//! it holds once their record says how — asking the record's range's leader
-//! when it does not hold the record's range itself. Each participant finishes
-//! its own intents, so nobody needs the addresses only the coordinator knew.
+//! it holds once their record's range's leader says how — never from a copy of
+//! the record, which may hold a decision no majority does yet. Each participant
+//! finishes its own intents, so nobody needs the addresses only the coordinator
+//! knew.
 
 use tessari_session::{AcrossAnswer, AcrossAsk};
 use tessari_storage::Decision;
@@ -56,37 +57,32 @@ impl Db {
             }
         }
         for (transaction, coordinator) in store.standing_across()? {
-            let committed = match store
-                .transaction_record(transaction)?
-                .map(|held| held.decision)
-            {
-                Some(Decision::Committed) => true,
-                Some(Decision::Aborted) => false,
-                Some(Decision::Pending) | None => {
-                    let asked = AcrossAsk::Settle {
-                        transaction,
-                        coordinator,
-                    };
-                    let answered = match store.leader_of(coordinator)? {
-                        None => self
-                            .session()
-                            .answer_across(&asked)
-                            .map_err(|why| why.to_string()),
-                        Some(node) => match self.participants.get() {
-                            Some(carrier) => carrier.ask(node, None, &asked),
-                            None => Err("this node carries nothing to other nodes".to_owned()),
-                        },
-                    };
-                    match answered {
-                        Ok(AcrossAnswer::Outcome(Decision::Committed)) => true,
-                        Ok(AcrossAnswer::Outcome(Decision::Aborted)) => false,
-                        Ok(_) => continue,
-                        Err(why) => {
-                            settled.unreachable = settled.unreachable.saturating_add(1);
-                            settled.last_refusal = Some(why);
-                            continue;
-                        }
-                    }
+            // Asked of the record's range's leader even when this node holds
+            // a copy of the record: a copy, or the leader's own read, may be a
+            // decision no majority holds yet, and only the leader's answer
+            // writes it again at one first (ADR-0112 D4).
+            let asked = AcrossAsk::Settle {
+                transaction,
+                coordinator,
+            };
+            let answered = match store.leader_of(coordinator)? {
+                None => self
+                    .session()
+                    .answer_across(&asked)
+                    .map_err(|why| why.to_string()),
+                Some(node) => match self.participants.get() {
+                    Some(carrier) => carrier.ask(node, None, &asked),
+                    None => Err("this node carries nothing to other nodes".to_owned()),
+                },
+            };
+            let committed = match answered {
+                Ok(AcrossAnswer::Outcome(Decision::Committed)) => true,
+                Ok(AcrossAnswer::Outcome(Decision::Aborted)) => false,
+                Ok(_) => continue,
+                Err(why) => {
+                    settled.unreachable = settled.unreachable.saturating_add(1);
+                    settled.last_refusal = Some(why);
+                    continue;
                 }
             };
             // Refused where this node does not lead the intents' home, which is
