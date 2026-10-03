@@ -12,6 +12,44 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.23.0-beta — 2026-10-03
+
+### Changed
+
+- **Client TLS is opt-in on every node** (G056, ADR-0111). A node that belongs
+  to a cluster no longer refuses to serve its clients in the clear: without
+  `--tls-cert` and `--tls-key` every node, single or clustered, serves them in
+  the clear and says so at start, naming whether the client surfaces are
+  reachable beyond this machine or on loopback only. With a certificate both
+  surfaces speak TLS 1.3 and nothing else, as before. **The peer link is mutual
+  TLS whatever the clients were given** — a caller presenting a certificate the
+  cluster's authority did not issue is refused at the door.
+
+### Added
+
+- **`--require-client-tls`** (or `TESSARIDB_REQUIRE_CLIENT_TLS=1`), off by
+  default: a node told this refuses to start without a client certificate, for a
+  deployment whose policy forbids the clear. Beside `--client-plaintext` it is
+  refused as two answers; any value of the variable but `1`, `0` or empty is
+  refused naming it.
+- `INFO FOR NODE` reports `clients: { tls, required }` beside `certificates`
+  (`null` from a process serving none).
+- The console shows a warning across the top of every page when it was reached
+  in the clear from another machine; a page opened from `localhost` does not
+  carry it, and its sign-in note says the password does not cross a network.
+
+### Deprecated
+
+- **`--client-plaintext`** / `TESSARIDB_CLIENT_PLAINTEXT` — the clear is now the
+  default without a certificate. Accepted in this release with a notice at start
+  and changing nothing else; refused from the next release.
+
+### Fixed
+
+- The specification said `REBUILD INDEX` moves a search member built before
+  `0.22.0-beta` onto the postings path. It cannot name a member; redefining the
+  search — `DROP SEARCH` and `DEFINE SEARCH` in one transaction — is what does.
+
 ## 0.22.0-beta — 2026-10-03
 
 ### Added

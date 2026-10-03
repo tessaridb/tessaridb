@@ -1605,7 +1605,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-backup"
-version = "0.22.0-beta"
+version = "0.23.0-beta"
 dependencies = [
  "tempfile",
  "tessari-encoding",
@@ -1619,7 +1619,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-bench"
-version = "0.22.0-beta"
+version = "0.23.0-beta"
 dependencies = [
  "tessari-backup",
  "tessari-kv",
@@ -1631,7 +1631,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-cli"
-version = "0.22.0-beta"
+version = "0.23.0-beta"
 dependencies = [
  "futures-util",
  "libc",
@@ -1660,7 +1660,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-conformance"
-version = "0.22.0-beta"
+version = "0.23.0-beta"
 dependencies = [
  "tempfile",
  "tessari-kv",
@@ -1673,11 +1673,11 @@ dependencies = [
 
 [[package]]
 name = "tessari-constants"
-version = "0.22.0-beta"
+version = "0.23.0-beta"
 
 [[package]]
 name = "tessari-encoding"
-version = "0.22.0-beta"
+version = "0.23.0-beta"
 dependencies = [
  "proptest",
  "rust_decimal",
@@ -1689,7 +1689,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-geo"
-version = "0.22.0-beta"
+version = "0.23.0-beta"
 dependencies = [
  "proptest",
  "tessari-types",
@@ -1698,7 +1698,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-http"
-version = "0.22.0-beta"
+version = "0.23.0-beta"
 dependencies = [
  "axum",
  "dashmap",
@@ -1726,7 +1726,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-ingest"
-version = "0.22.0-beta"
+version = "0.23.0-beta"
 dependencies = [
  "log",
  "rdkafka",
@@ -1739,14 +1739,14 @@ dependencies = [
 
 [[package]]
 name = "tessari-kv"
-version = "0.22.0-beta"
+version = "0.23.0-beta"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "tessari-lsm"
-version = "0.22.0-beta"
+version = "0.23.0-beta"
 dependencies = [
  "cc",
  "chacha20",
@@ -1765,7 +1765,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-ql"
-version = "0.22.0-beta"
+version = "0.23.0-beta"
 dependencies = [
  "rust_decimal",
  "tessari-types",
@@ -1774,7 +1774,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-query"
-version = "0.22.0-beta"
+version = "0.23.0-beta"
 dependencies = [
  "tessari-ql",
  "tessari-types",
@@ -1783,7 +1783,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-serve"
-version = "0.22.0-beta"
+version = "0.23.0-beta"
 dependencies = [
  "rcgen",
  "rustls",
@@ -1793,7 +1793,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-session"
-version = "0.22.0-beta"
+version = "0.23.0-beta"
 dependencies = [
  "argon2",
  "log",
@@ -1818,7 +1818,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-storage"
-version = "0.22.0-beta"
+version = "0.23.0-beta"
 dependencies = [
  "dashmap",
  "getrandom 0.4.3",
@@ -1835,7 +1835,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-types"
-version = "0.22.0-beta"
+version = "0.23.0-beta"
 dependencies = [
  "rust_decimal",
  "serde",
@@ -1844,7 +1844,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-vault"
-version = "0.22.0-beta"
+version = "0.23.0-beta"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -1857,7 +1857,7 @@ dependencies = [
 
 [[package]]
 name = "tessari-wire"
-version = "0.22.0-beta"
+version = "0.23.0-beta"
 dependencies = [
  "dashmap",
  "getrandom 0.4.3",
@@ -1884,7 +1884,7 @@ dependencies = [
 
 [[package]]
 name = "tessaridb"
-version = "0.22.0-beta"
+version = "0.23.0-beta"
 dependencies = [
  "tempfile",
  "tessari-encoding",
