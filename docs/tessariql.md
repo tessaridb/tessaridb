@@ -9074,6 +9074,10 @@ records must change together, and keep the rest in one leader's ranges.
   made on that copy, so run the transaction on a node that holds every range
   it writes.
 - **`AcrossUnavailable`** — the node knows no peers to carry the parts to.
+- **`AcrossKind`** — it writes a vault, a bucket, a space, a topic, a queue, a
+  series, or a vector or geo store: each keeps something beside its records
+  that a prepared write would bypass. Only tables, collections and edges commit
+  across leaders.
 
 Over HTTP an abort answers with the status of the refusal that caused it — a
 conflict, a lapse or a leader not reached is `409` and worth retrying, a grant
