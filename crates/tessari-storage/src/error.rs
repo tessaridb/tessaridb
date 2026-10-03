@@ -770,6 +770,17 @@ pub enum Error {
         table: String,
     },
 
+    /// `SPREAD` on a table whose identity is not generated as a UUID: the
+    /// bucket is taken from a UUID's random part (ADR-0113 D1).
+    #[error(
+        "table `{table}` spreads its identities, so the store names its records as a \
+         bucket and a uuid — declare it `IDENTITY uuid SPREAD`"
+    )]
+    SpreadNeedsGeneratedUuid {
+        /// The table being declared.
+        table: String,
+    },
+
     /// A record of a partitioned table whose identity does not begin with its
     /// partition field's value and `:`, or whose value is not text without `:`.
     ///
@@ -1158,6 +1169,7 @@ impl Error {
             | Self::NodeTombstoned { .. }
             | Self::SplitNeedsGeneratedUuid { .. }
             | Self::PartitionNeedsGeneratedUuid { .. }
+            | Self::SpreadNeedsGeneratedUuid { .. }
             | Self::PartitionMismatch { .. }
             | Self::SplitPointsOutOfOrder { .. }
             | Self::SplitOnAKindThatIsNotRecords { .. }

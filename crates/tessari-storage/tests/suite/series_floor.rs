@@ -102,6 +102,7 @@ impl Fixture {
                     conflict: None,
                     split: Vec::new(),
                     partition: None,
+                    spread: false,
                 },
             )
             .unwrap();

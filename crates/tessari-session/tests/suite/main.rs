@@ -130,6 +130,7 @@ mod sign_in_throttle;
 mod spatial_index;
 mod spatial_nearest_reads;
 mod spatial_reads;
+mod spread;
 mod staleness;
 mod state_script;
 mod store_named_records;

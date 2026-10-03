@@ -196,6 +196,13 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
                 table: name.to_owned(),
             });
         }
+        // A spread identity is a bucket and a UUID v7 (ADR-0113 D1): a counter
+        // has no random part to take the bucket from.
+        if shape.spread && shape.identity != tessari_types::IdentityKind::Uuid {
+            return Err(Error::SpreadNeedsGeneratedUuid {
+                table: name.to_owned(),
+            });
+        }
         let qualified = qualify(Level::Table, &[namespace.get(), database.get()], name);
         self.reserve_name(&qualified)?;
         let id = TableId::new(self.allocate(Level::Table)?);
@@ -211,6 +218,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             conflict: shape.conflict,
             shards,
             partition: shape.partition,
+            spread: shape.spread,
             events: Vec::new(),
         };
         self.write(system::TABLES, id.get(), &definition.to_value());

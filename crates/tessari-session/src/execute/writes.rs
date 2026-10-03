@@ -293,9 +293,9 @@ impl Session<'_> {
                 });
             }
         }
-        let (kind, partition) = Catalog::new(transaction).table(table)?.map_or_else(
-            || (IdentityKind::default(), None),
-            |found| (found.identity, found.partition),
+        let (kind, partition, spread) = Catalog::new(transaction).table(table)?.map_or_else(
+            || (IdentityKind::default(), None, false),
+            |found| (found.identity, found.partition, found.spread),
         );
         loop {
             let identity = match kind {
@@ -305,6 +305,16 @@ impl Session<'_> {
                 // lives there, where every writer meets it.
                 IdentityKind::Uuid => {
                     let minted = generate::uuid_v7(span)?;
+                    // A spread table's identity begins with a bucket of two
+                    // hex digits from the UUID's random tail, so new records
+                    // land across the table's shards rather than all in the one
+                    // holding the newest time (ADR-0113 D1).
+                    let uuid = match (spread, minted.last()) {
+                        (true, Some(random)) => {
+                            format!("{random:02x}:{}", tessari_types::uuid_to_text(&minted))
+                        }
+                        _ => tessari_types::uuid_to_text(&minted),
+                    };
                     match partition.as_deref().and_then(|field| match payload {
                         Value::Object(fields) => match fields.get(field) {
                             Some(Value::String(value)) => Some(value),
@@ -312,10 +322,8 @@ impl Session<'_> {
                         },
                         _ => None,
                     }) {
-                        Some(value) => RecordId::Text(format!(
-                            "{value}:{}",
-                            tessari_types::uuid_to_text(&minted)
-                        )),
+                        Some(value) => RecordId::Text(format!("{value}:{uuid}")),
+                        None if spread => RecordId::Text(uuid),
                         None => RecordId::Uuid(minted),
                     }
                 }

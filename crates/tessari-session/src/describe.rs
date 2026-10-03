@@ -453,6 +453,10 @@ fn write_conflict(script: &mut String, definition: &TableDefinition) {
 /// *called*, which no later read can undo.
 fn write_identity(script: &mut String, definition: &TableDefinition) {
     let _ = write!(script, " IDENTITY {}", definition.identity);
+    // And so is the bucket a spread identity begins with (ADR-0113 D1).
+    if definition.spread {
+        script.push_str(" SPREAD");
+    }
     // Part of the naming scheme too: a table restored without it would go on
     // accepting records whose identity and region disagree (ADR-0096).
     if let Some(field) = &definition.partition {

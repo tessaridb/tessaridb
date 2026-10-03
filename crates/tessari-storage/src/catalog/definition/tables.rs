@@ -5,7 +5,7 @@ use super::{
     EdgeDeclaration, FIELD_BUCKET, FIELD_CEILING, FIELD_COLLECTION, FIELD_CONFLICT, FIELD_DATABASE,
     FIELD_EDGE, FIELD_ENDPOINTS, FIELD_EVENTS, FIELD_GEO, FIELD_GRAPH, FIELD_ID, FIELD_IDENTITY,
     FIELD_NAME, FIELD_NAMESPACE, FIELD_PARTITION, FIELD_QUEUE, FIELD_SCHEMAFULL, FIELD_SERIES,
-    FIELD_SHARDS, FIELD_SPACE, FIELD_TOPIC, FIELD_VAULT, FIELD_VECTOR, FIELD_VIEW,
+    FIELD_SHARDS, FIELD_SPACE, FIELD_SPREAD, FIELD_TOPIC, FIELD_VAULT, FIELD_VECTOR, FIELD_VIEW,
     QueueDeclaration, SeriesDeclaration, StoredKind, TableKind, VaultCustody, VaultDeclaration,
     VectorDeclaration, ViewDeclaration, byte_count, ceiling, field_id, field_name, flag,
     identity_kind, number, object,
@@ -89,6 +89,9 @@ pub struct TableDefinition {
     /// The field whose value leads every record's identity, when the table was
     /// declared `PARTITION BY` it (ADR-0096); written only when present.
     pub partition: Option<String>,
+    /// Whether a generated identity begins with a bucket (`IDENTITY uuid
+    /// SPREAD`, ADR-0113 D1); written only when set.
+    pub spread: bool,
     /// What runs after each write of one of its records (ADR-0110), in name
     /// order; written only when there is one, so an entry without events is
     /// the bytes it always was.
@@ -245,6 +248,9 @@ impl TableDefinition {
         }
         if let Some(partition) = &self.partition {
             fields.insert(FIELD_PARTITION.to_owned(), Value::from(partition.as_str()));
+        }
+        if self.spread {
+            fields.insert(FIELD_SPREAD.to_owned(), Value::Bool(true));
         }
         if !self.events.is_empty() {
             fields.insert(
@@ -433,6 +439,17 @@ impl TableDefinition {
                     });
                 }
             },
+            spread: match fields.get(FIELD_SPREAD) {
+                None => false,
+                Some(Value::Bool(spread)) => *spread,
+                Some(_) => {
+                    return Err(Error::CatalogMalformed {
+                        entity: "table",
+                        field: FIELD_SPREAD,
+                        found: "a spread that is not true or false",
+                    });
+                }
+            },
             events: match fields.get(FIELD_EVENTS) {
                 None => Vec::new(),
                 Some(Value::Array(held)) => held
@@ -492,4 +509,8 @@ pub struct TableShape {
     /// The field whose value leads every record's identity, when the table is
     /// partitioned by one (`PARTITION BY region`, ADR-0096).
     pub partition: Option<String>,
+    /// Whether a generated identity begins with a bucket of two hex digits,
+    /// so new records spread over the table's shards (`IDENTITY uuid SPREAD`,
+    /// ADR-0113 D1).
+    pub spread: bool,
 }

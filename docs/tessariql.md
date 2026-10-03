@@ -2199,7 +2199,30 @@ sharding **by time**: older shards stop receiving writes. That is useful when th
 point is to keep old records apart from new ones. It is not how writes are
 spread: for that, name records by a key whose leading part varies — a tenant, a
 region, an account — and split on that, or let the table do it with
-`PARTITION BY` (below).
+`PARTITION BY` or `SPREAD` (below).
+
+### Spreading generated identities over the shards: `IDENTITY uuid SPREAD`
+
+```
+DEFINE TABLE orders (total int) IDENTITY uuid SPREAD SPLIT AT '40', '80', 'c0';
+```
+
+A table that names its records with `SPREAD` begins each identity with a
+**bucket** — two hex digits taken from the UUID's random part — so a new record
+is `orders:'3f:01926f…'` and new records land evenly over the 256 buckets, each
+bucket keeping creation order. The split points choose how many shards share the
+buckets: `'40', '80', 'c0'` is four shards with a quarter each. A bucket costs
+nothing at read time, because a read on a node holding part of the table fans
+out per shard, not per bucket. What it gives up: `ORDER BY id` is no longer
+creation order across buckets.
+
+- **`SpreadNeedsGeneratedUuid`** — `SPREAD` on a table that does not declare
+  `IDENTITY uuid`; the bucket is taken from a generated UUID.
+
+With `PARTITION BY` the bucket follows the region — `'de:3f:01926f…'` — so a
+region spreads within its own span. A record named by hand is not checked for a
+bucket. `INFO FOR TABLE` reports `spread: true`, and its `definition` re-creates
+the clause.
 
 ### Splitting and merging a table that holds records: `ALTER TABLE … SPLIT AT` · `MERGE SHARD`
 

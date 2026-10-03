@@ -72,6 +72,10 @@ pub(crate) fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> 
     if let Some(field) = &definition.partition {
         shape.insert("partition".to_owned(), Value::from(field.as_str()));
     }
+    // Present only on a table whose identities spread (ADR-0113 D1).
+    if definition.spread {
+        shape.insert("spread".to_owned(), Value::Bool(true));
+    }
     // Present only on a split table (G031, ADR-0080). Each bound is the literal
     // the clause takes — `'g'`, `uuid '…'` — so what the report prints is what
     // the next declaration types, and `NONE` marks an open end rather than a

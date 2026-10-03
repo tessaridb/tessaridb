@@ -68,6 +68,7 @@ impl Parser<'_> {
                 let mut conflict: Option<ConflictPolicy> = None;
                 let mut split: Option<Vec<RecordId>> = None;
                 let mut partition: Option<Name> = None;
+                let mut spread = false;
                 loop {
                     if strictness.is_none() && self.eat_keyword(Keyword::Schemafull) {
                         strictness = Some(true);
@@ -77,6 +78,10 @@ impl Parser<'_> {
                         edge = Some(self.edge_clause()?);
                     } else if identity.is_none() && self.eat_word("identity") {
                         identity = Some(self.identity_kind()?);
+                        // `SPREAD` — a contextual word, read only here, where
+                        // it says how the identity just named is generated
+                        // (ADR-0113 D1).
+                        spread = self.eat_word("spread");
                     } else if graph.is_none() && self.eat_keyword(Keyword::In) {
                         graph = Some(self.name()?);
                     // `LAST WRITER WINS` / `REFUSE CONFLICTS` — contextual
@@ -138,6 +143,7 @@ impl Parser<'_> {
                     graph,
                     split: split.unwrap_or_default(),
                     partition,
+                    spread,
                     conflict,
                     if_not_exists,
                 })

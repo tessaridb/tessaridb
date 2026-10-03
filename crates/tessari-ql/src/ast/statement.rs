@@ -125,6 +125,10 @@ pub enum StatementKind {
         /// customers (region string, …) IDENTITY uuid PARTITION BY region`
         /// (ADR-0096). A record of it is named `'<region>:<uuid>'`.
         partition: Option<Name>,
+        /// Whether a generated identity begins with a bucket of two hex digits
+        /// so new records spread over the table's shards: `IDENTITY uuid
+        /// SPREAD` (ADR-0113 D1).
+        spread: bool,
         /// What the table does with a write it cannot order, when the statement
         /// said: `DEFINE TABLE ledger (…) LAST WRITER WINS` (G027 S3.2).
         ///
