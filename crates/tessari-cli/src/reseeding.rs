@@ -101,6 +101,7 @@ mod tests {
             http: None,
             fingerprint: None,
             join: None,
+            releasing: false,
         }
     }
 

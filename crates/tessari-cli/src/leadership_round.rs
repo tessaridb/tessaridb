@@ -128,6 +128,7 @@ pub(crate) async fn stand_for_leadership(
                 published,
                 runtime,
                 periods,
+                leads_the_store: store.leads(tessari_types::Reach::Store).unwrap_or(false),
             },
             &mut on_a_line,
             now,
@@ -298,6 +299,9 @@ pub(crate) struct Candidate<'a> {
     runtime: &'a tokio::runtime::Handle,
     /// The periods the installed failover policy states (G053 SG2c).
     periods: tessari_storage::Failover,
+    /// Whether this node leads the store line, which makes it the candidate
+    /// for a range being given back to it (ADR-0098 D3).
+    leads_the_store: bool,
 }
 
 /// Stand for the one placed range this node's member row names, on that range's
@@ -315,7 +319,9 @@ pub(crate) fn stand_for_a_placed_range(
     on_a_line: &mut Option<(tessari_types::Reach, tessari_wire::Renewing)>,
     now: std::time::Instant,
 ) {
-    let Some(range) = tessari_wire::stands_for(candidate.declared, &candidate.me) else {
+    let Some(range) =
+        tessari_wire::campaign_line(candidate.declared, &candidate.me, candidate.leads_the_store)
+    else {
         *on_a_line = None;
         return;
     };
@@ -345,7 +351,13 @@ pub(crate) fn stand_for_a_placed_range(
     if peers.is_empty() {
         return;
     }
-    let said = match greeting(db) {
+    // The ballot names where this node stands on THIS range's line: a store
+    // leader taking a range back is placed nowhere, so its greeting names no
+    // line, and a voter would read it as holding none of the range.
+    let said = match greeting(db).and_then(|mut said| {
+        said.line = Some(crate::greeting_round::line_of(db.store(), range)?);
+        Ok(said)
+    }) {
         Ok(said) => said,
         Err(why) => {
             log::warn!("this node cannot say what it holds: {why}");

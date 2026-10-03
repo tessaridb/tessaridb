@@ -3863,6 +3863,172 @@ fn a_node_leading_two_lines_hands_its_placed_range_to_an_idle_voter() {
     }
 }
 
+/// The hand-back scenario's addresses, its own band (G053 SG5).
+const HANDING_BACK: Band = [
+    ("127.0.0.1:48022", "127.0.0.1:48023"),
+    ("127.0.0.1:48024", "127.0.0.1:48025"),
+    ("127.0.0.1:48026", "127.0.0.1:48027"),
+];
+
+#[test]
+#[ignore = "real cadences across three processes — a range given back is won \
+            by the store line's leader on its own line once the old lease \
+            lapses. G053 SG5's own validation, run explicitly: cargo test -p \
+            tessari-cli --test serving a_range_given_back -- --ignored"]
+fn a_range_given_back_to_the_store_line_keeps_every_write_it_took() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    // G053 C5 / ADR-0098 D3: the LAST placement of shard 2 is given up while
+    // a writer keeps writing into it. The store line's leader takes the range
+    // on its own line and folds the placement away; every write the writer
+    // was told was taken is held once by it, and writes go on landing there.
+    let cluster = a_cluster_declared(&HANDING_BACK, "", ["", "", ""]);
+    let logs = cluster.logs.clone();
+    let mut leader = None;
+    let declared = until(Duration::from_secs(90), || {
+        leader = HANDING_BACK
+            .iter()
+            .position(|(surface, _)| asked(surface, PLACED, None).is_ok());
+        leader.is_some()
+    });
+    assert!(
+        declared,
+        "the schema was never declared{}",
+        what_the_nodes_said(&HANDING_BACK, &logs)
+    );
+    let store_leader = leader.unwrap_or_default();
+    let placed = (store_leader + 1) % HANDING_BACK.len();
+    let on_the_store_leader = |script: &str| {
+        until(Duration::from_secs(60), || {
+            HANDING_BACK
+                .iter()
+                .any(|(surface, _)| asked(surface, script, None).is_ok())
+        })
+    };
+    assert!(on_the_store_leader(&format!(
+        "ALTER REPLICA n{placed} LEADS SHARD prod.shop.orders 2;"
+    )));
+    if let Err(last) = until_taken(HANDING_BACK[placed].0, "h", Duration::from_secs(120)) {
+        panic!(
+            "n{placed} never took shard 2; last: {last}{}",
+            what_the_nodes_said(&HANDING_BACK, &logs)
+        );
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let taken = Arc::new(Mutex::new(Vec::<String>::new()));
+    let undecided = Arc::new(Mutex::new(Vec::<String>::new()));
+    let writer = {
+        let (stop, taken, undecided) = (
+            Arc::clone(&stop),
+            Arc::clone(&taken),
+            Arc::clone(&undecided),
+        );
+        std::thread::spawn(move || {
+            let mut longest = Duration::ZERO;
+            let mut last = Instant::now();
+            let mut attempt = 0_u32;
+            while !stop.load(Ordering::Relaxed) {
+                attempt = attempt.saturating_add(1);
+                let key = format!("hw{attempt:06}");
+                let took = HANDING_BACK.iter().any(|(surface, _)| {
+                    Client::connect(surface).is_ok_and(|mut client| {
+                        match client.run(&into_orders(&key), None) {
+                            Ok(_) => true,
+                            Err(why) => {
+                                if why.to_string().contains("is committed on this node") {
+                                    undecided.lock().unwrap().push(key.clone());
+                                }
+                                false
+                            }
+                        }
+                    })
+                });
+                if took {
+                    longest = longest.max(last.elapsed());
+                    last = Instant::now();
+                    taken.lock().unwrap().push(key);
+                }
+                std::thread::sleep(POLL);
+            }
+            longest
+        })
+    };
+    let began = Instant::now();
+    assert!(on_the_store_leader(&format!(
+        "ALTER REPLICA n{placed} LEADS NONE;"
+    )));
+    // The store line's leader takes the range, and folds the placement away.
+    if let Err(last) = until_taken(HANDING_BACK[store_leader].0, "hz", Duration::from_secs(120)) {
+        panic!(
+            "the store leader n{store_leader} never took shard 2; last: {last}{}",
+            what_the_nodes_said(&HANDING_BACK, &logs)
+        );
+    }
+    let folded = until(Duration::from_secs(60), || {
+        std::fs::read_to_string(&logs[store_leader])
+            .is_ok_and(|text| text.contains("handed back to the store line"))
+    });
+    assert!(
+        folded,
+        "n{store_leader} never folded the placement away{}",
+        what_the_nodes_said(&HANDING_BACK, &logs)
+    );
+    eprintln!(
+        "HANDBACK store leader took shard 2 {:?} after the release",
+        began.elapsed()
+    );
+    // Writes go on landing after the fold.
+    let before = taken.lock().unwrap().len();
+    let resumed = until(Duration::from_secs(30), || {
+        taken.lock().unwrap().len() >= before + 5
+    });
+    stop.store(true, Ordering::Relaxed);
+    let longest = writer.join().unwrap();
+    assert!(resumed, "the writer stopped after the fold");
+    let taken = taken.lock().unwrap().clone();
+    eprintln!(
+        "HANDBACK {} writes taken, the longest stretch with none taken {longest:?}",
+        taken.len()
+    );
+    let mut held = read_at(
+        HANDING_BACK[store_leader].0,
+        "SELECT * FROM orders:'hw'..'hx';",
+    )
+    .unwrap();
+    held.sort();
+    let mut once = held.clone();
+    once.dedup();
+    assert_eq!(once, held, "a write held twice by the store leader");
+    let undecided = undecided.lock().unwrap().clone();
+    let missing: Vec<_> = taken.iter().filter(|key| !held.contains(key)).collect();
+    assert!(
+        missing.is_empty(),
+        "taken writes lost by the hand-back: {missing:?}"
+    );
+    let refused_but_held: Vec<_> = held
+        .iter()
+        .filter(|key| !taken.contains(key) && !undecided.contains(key))
+        .collect();
+    assert!(
+        refused_but_held.is_empty(),
+        "writes refused outright are held: {refused_but_held:?}"
+    );
+    // And every node holds them: the range is the store line's again, and
+    // the store line reaches every holder of the store.
+    for (surface, _) in &HANDING_BACK {
+        let level = until(Duration::from_secs(60), || {
+            read_at(surface, "SELECT * FROM orders:'hw'..'hx';")
+                .is_ok_and(|on| taken.iter().all(|key| on.contains(key)))
+        });
+        assert!(
+            level,
+            "{surface} lacks taken writes: holds {:?}{}",
+            read_at(surface, "SELECT * FROM orders:'hw'..'hx';"),
+            what_the_nodes_said(&HANDING_BACK, &logs)
+        );
+    }
+}
+
 /// The cross-leader measurement's addresses, a band of its own.
 const ACROSS_TIMED: Band = [
     ("127.0.0.1:47998", "127.0.0.1:47999"),

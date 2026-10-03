@@ -9044,12 +9044,33 @@ throughout: the move completed 11–20 s after it committed — one collection o
 the store's log plus one 10-second lease — and no write was taken for at most
 6.2 s. A row that is no longer a range's last candidate can also be dropped.
 
-**The last row placing a range is not taken away** — neither by `LEADS NONE`,
-by `LEADS` naming another range, nor by `DROP REPLICA`
-(**`PlacementCannotBeDropped`**): the node committing the change would hand the
-range back to the store's leader at once, while the range's own leader goes on
-writing under its lease until it hears of the change. Place another row on the
-range first.
+**Giving a range back to the store line.** `LEADS NONE` on the **last** row
+placing a range does not drop the placement — dropping it would let the store's
+leader write the range at once while the range's own leader goes on writing
+under its lease until it hears of the change. The row is marked **releasing**
+instead (`INFO FOR NODE` reports `releasing: true` beside its `leads`):
+
+1. the range stays carved out of the store line on every node, so nobody but
+   its own line writes it;
+2. the releasing node stops standing for it, and voters that have applied the
+   change refuse it a renewal, so its lease runs out;
+3. the store line's leader — when it is placed on no range of its own — stands
+   for the range on the range's line and is elected once that lease has lapsed,
+   exactly as a moved placement's new candidate is;
+4. leading both, it folds the placement away (`handed back to the store line`
+   in its log), and the range is the store line's again — led by the same node,
+   so no instant has two writers.
+
+Writes into the range are refused for about a lease and an election while this
+happens, and land on the store's leader afterwards. Measured on three local
+processes with a writer running throughout: the store's leader took the range
+about 3.7 s after the release, and every write the writer was told was taken was
+held once. `ALTER REPLICA b LEADS <the same range>` withdraws a release that has
+not folded yet; placing another row on the range makes it an ordinary move.
+
+The last row is still not moved to **another** range, nor dropped with `DROP
+REPLICA` (**`PlacementCannotBeDropped`**): give the range back with `LEADS NONE`
+first, or place another row on it.
 
 
 ### How many copies hold a write before it is acknowledged
@@ -9683,7 +9704,7 @@ with a doubling wait (`SignInThrottled`), its counts kept per store.
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
 | **hash** sharding | shards are spans of identities, which is what keeps a span read one walk. Spreading writes by hash forfeits that order and is a second method the map can carry later, not a change to the first. §4 |
 | more of a gathered read **pushed to the shards' leaders** | a `WHERE`, a `LIMIT`, an `ORDER BY … LIMIT` over record-only keys and the folds that merge exactly (`count`, `sum`, `mean`, `min`, `max`) travel; `variance`, `stddev`, `median`, `collect`, the counter folds and a fold over floats gather the records and run here, and a suggestion is withheld on a node holding part of the table. Merging those exactly is each its own piece of work. A join side and a `FETCH` are not gathered at all. §7d |
-| **choosing among a range's candidates, and giving a range back to the store** | `LEADS` elects a leader per placed range and `ALTER REPLICA` moves a placement between rows, but there is no preference among candidates and no rebalancing, and a range's last placement cannot be removed: that needs every lease on the range to have lapsed first. §7d |
+| **choosing among a range's candidates** | `LEADS` elects a leader per placed range, `ALTER REPLICA` moves a placement, `LEADS NONE` gives a range back to the store line, and `BALANCE LEADERSHIPS` evens out who leads what — but there is no preference among several candidates for one range. §7d |
 | a change feed over a split table **on a node that does not write all of it** | a feed merges one writer's logs in that writer's order, and two writers' orders are unrelated counters — so a shard led elsewhere, or a follower, is refused by name rather than merged by a guess. Following it there needs an order across writers. §4 |
 | **an index serving a branch of a fused read** (`ORDER BY FUSE`) | every branch is ranked over every record that passed the `WHERE`, which is exact and costs the filtered read. A branch served from the search walk or the vector graph would stop early, and a fused order needs each branch's places down to its depth — the bound is the depth, not the `LIMIT`, and proving the walk answers the same places is its own piece of work. §5 |
 | a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |

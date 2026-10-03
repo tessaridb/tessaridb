@@ -71,6 +71,7 @@ fn one_of_two(addressed: bool) -> Arc<Db> {
             http: addressed.then(|| THEIR_HTTP.to_owned()),
             fingerprint: None,
             join: None,
+            releasing: false,
         })
         .unwrap();
     catalog

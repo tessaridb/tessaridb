@@ -262,6 +262,62 @@ pub fn stands_for(declared: &[ReplicaDefinition], me: &[u8; NODE_ID_LEN]) -> Opt
         .and_then(|peer| peer.leads)
 }
 
+/// The range this node campaigns for: its placement, unless the row is giving
+/// it back to the store line (ADR-0098 D3).
+///
+/// [`stands_for`] still answers the placement: a releasing node holds the
+/// range's line and may lead it until its lease runs out, so it keeps saying
+/// so and keeps its records — it only stops asking to lead it again.
+#[must_use]
+pub fn campaigns_for(declared: &[ReplicaDefinition], me: &[u8; NODE_ID_LEN]) -> Option<Reach> {
+    declared
+        .iter()
+        .find(|peer| peer.node.as_ref() == Some(me))
+        .filter(|peer| !peer.releasing)
+        .and_then(|peer| peer.leads)
+}
+
+/// The ranges being given back to the store line: placed, and only by rows
+/// that are releasing them (ADR-0098 D3). The store line's leader stands for
+/// each on its own line, and folds the placement away once it leads it.
+#[must_use]
+pub fn released(declared: &[ReplicaDefinition]) -> Vec<Reach> {
+    declared
+        .iter()
+        .filter(|peer| peer.releasing)
+        .filter_map(|peer| peer.leads)
+        .filter(|range| {
+            !declared
+                .iter()
+                .any(|peer| !peer.releasing && peer.leads == Some(*range))
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// The one placed line a node campaigns on: its own placement, or — when it
+/// leads the store line and is placed nowhere — the first range being given
+/// back (ADR-0098 D3).
+///
+/// One at most, as [`stands_for`] keeps it (Q-797): a node never leads two
+/// placed lines, so a store leader with a placement of its own takes nothing
+/// back until that placement moves, and two released ranges fold one after the
+/// other. A voter asks the same question of the candidate (`places`), so the
+/// two sides cannot disagree about who may lead a released range.
+#[must_use]
+pub fn campaign_line(
+    declared: &[ReplicaDefinition],
+    me: &[u8; NODE_ID_LEN],
+    leads_the_store: bool,
+) -> Option<Reach> {
+    campaigns_for(declared, me).or_else(|| {
+        leads_the_store
+            .then(|| released(declared).first().copied())
+            .flatten()
+    })
+}
+
 /// Whether this node may stand for the store line, from its own member row.
 ///
 /// The store line's leader writes every table that no placement carves out, so

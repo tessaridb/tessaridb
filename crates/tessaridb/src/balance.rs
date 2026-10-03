@@ -36,6 +36,7 @@ use tessari_types::{Reach, RecordId, Sequence, ShardId, TableId};
 
 use crate::{Db, Result};
 
+mod handing_back;
 mod leaderships;
 pub use leaderships::{LeadershipMoves, Moved};
 

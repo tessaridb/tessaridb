@@ -29,6 +29,7 @@ fn row(n: u8, leads: Option<Reach>) -> ReplicaDefinition {
         http: None,
         fingerprint: None,
         join: None,
+        releasing: false,
     }
 }
 
@@ -127,4 +128,11 @@ fn a_second_move_waits_out_the_spacing_after_the_first() {
     };
     assert!(just.waits(std::time::Duration::from_secs(3600)));
     assert!(!just.waits(std::time::Duration::ZERO));
+}
+
+#[test]
+fn a_placement_being_given_back_is_not_moved_to_a_voter() {
+    let (mut rows, lines) = crowded();
+    rows[0].releasing = true;
+    assert_eq!(plan(&rows, &lines), None);
 }

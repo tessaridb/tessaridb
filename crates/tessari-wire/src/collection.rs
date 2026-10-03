@@ -574,15 +574,23 @@ impl Origin for Serving<'_> {
         }))
     }
 
-    // The rule a candidate stands by (`stands_for`), read from this node's own
-    // catalog. A catalog that cannot be read vouches for nothing.
+    // The rule a candidate stands by (`campaign_line`), read from this node's
+    // own catalog — and for a range being given back to the store line, the
+    // store line's leader as this catalog records it (ADR-0098 D3). A catalog
+    // that cannot be read vouches for nothing.
     fn places(&self, candidate: [u8; NODE_ID_LEN], range: Reach) -> bool {
         let Ok(mut transaction) = self.log.begin() else {
             return false;
         };
-        let declared = Catalog::new(&mut transaction).replicas();
+        let catalog = Catalog::new(&mut transaction);
+        let read = catalog
+            .replicas()
+            .and_then(|declared| Ok((declared, catalog.leader_of(Reach::Store)?)));
         transaction.rollback();
-        declared.is_ok_and(|declared| crate::stands_for(&declared, &candidate) == Some(range))
+        read.is_ok_and(|(declared, store)| {
+            let leads_the_store = store.is_some_and(|leader| leader.node == candidate);
+            crate::campaign_line(&declared, &candidate, leads_the_store) == Some(range)
+        })
     }
 
     fn gathered(&self, asker: [u8; NODE_ID_LEN], asked: &Gather) -> Result<Page> {

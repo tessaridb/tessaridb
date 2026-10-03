@@ -72,6 +72,7 @@ fn declare(store: &Store, node: [u8; NODE_ID_LEN], reach: Reach) {
             http: None,
             fingerprint: None,
             join: None,
+            releasing: false,
         })
         .unwrap();
     transaction.commit().unwrap();

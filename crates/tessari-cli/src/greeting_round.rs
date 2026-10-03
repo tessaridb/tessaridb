@@ -366,17 +366,27 @@ pub(crate) fn greeting(db: &Db) -> Result<tessari_wire::Hello, tessari_storage::
     // hears a live leader of the range by it. Read in the same transaction as
     // the policy, so a greeting is one reading of the catalog.
     if let Some(range) = tessari_wire::stands_for(&declared, &identity.id) {
-        let log = store.history_log(range)?;
-        said.line = Some(tessari_wire::Line {
-            range,
-            leading: store
-                .leading_of(range)
-                .unwrap_or(tessari_types::Epoch::ZERO),
-            tail: store.committed_tail(log)?,
-            tail_leadership: store.tail_leadership(log)?,
-        });
+        said.line = Some(line_of(store, range)?);
     }
     Ok(said)
+}
+
+/// Where this node stands on `range`'s line: the epoch it leads it under, if
+/// any, and its copy's tail and the leadership that wrote it — what a voter
+/// judges a ballot on that range by.
+pub(crate) fn line_of(
+    store: &tessari_storage::Store,
+    range: tessari_types::Reach,
+) -> tessari_storage::Result<tessari_wire::Line> {
+    let log = store.history_log(range)?;
+    Ok(tessari_wire::Line {
+        range,
+        leading: store
+            .leading_of(range)
+            .unwrap_or(tessari_types::Epoch::ZERO),
+        tail: store.committed_tail(log)?,
+        tail_leadership: store.tail_leadership(log)?,
+    })
 }
 
 /// A node id as it is written in a log line.

@@ -180,6 +180,7 @@ impl Session<'_> {
             http: peer.http.map(str::to_owned),
             fingerprint: peer.fingerprint.map(str::to_owned),
             join: None,
+            releasing: false,
         })?;
         Ok(Outcome::Done)
     }

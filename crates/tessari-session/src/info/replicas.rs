@@ -71,6 +71,10 @@ pub(crate) fn described_replica(
                 Some(reach) => Value::from(spelled_reach(reach, catalog)?.as_str()),
             },
         ),
+        // Whether that placement is being given back to the store line
+        // (ADR-0098 D3): the range stays carved until the store's leader leads
+        // it too and folds the placement away.
+        ("releasing".to_owned(), Value::Bool(replica.releasing)),
         // The certificate allowed to bind this row (ADR-0108 D9), in the
         // spelling `FINGERPRINT` takes.
         (

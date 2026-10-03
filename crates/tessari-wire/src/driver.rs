@@ -49,8 +49,9 @@ use tokio_util::sync::CancellationToken;
 use crate::directory::{Destination, Directory};
 use crate::joining::Seed;
 pub use leadership::{
-    Renewing, election_timeout, heard_a_leader, heard_a_leader_on, heard_a_newer_policy,
-    leader_of_range, stands, stands_for, stands_for_the_store, voters,
+    Renewing, campaign_line, campaigns_for, election_timeout, heard_a_leader, heard_a_leader_on,
+    heard_a_newer_policy, leader_of_range, released, stands, stands_for, stands_for_the_store,
+    voters,
 };
 
 /// How long to wait before the next pass, given when the last one started.
@@ -548,9 +549,10 @@ mod tests {
     use tessari_storage::{FailoverStamp, ReplicaDefinition};
 
     use super::{
-        Collecting, Published, Renewing, Seed, bootstrap_from, due_in, election_timeout, every,
-        heard_a_leader, heard_a_leader_on, heard_a_newer_policy, leader_of_range, names_a_peer,
-        stands, stands_for, stands_for_the_store, upstream, voters,
+        Collecting, Published, Renewing, Seed, bootstrap_from, campaign_line, campaigns_for,
+        due_in, election_timeout, every, heard_a_leader, heard_a_leader_on, heard_a_newer_policy,
+        leader_of_range, names_a_peer, released, stands, stands_for, stands_for_the_store,
+        upstream, voters,
     };
     use crate::campaign::Stood;
     use crate::directory::Directory;
@@ -639,6 +641,7 @@ mod tests {
             http: None,
             fingerprint: None,
             join: None,
+            releasing: false,
         }
     }
 
@@ -1906,5 +1909,32 @@ mod tests {
         second.leads = Some(shard(3));
         let declared = [first, named("b", "10.0.0.2:9000", ANOTHER), second];
         assert_eq!(stands_for(&declared, &NODE), Some(shard(2)));
+    }
+
+    /// ADR-0098 D3. A row giving its range back still holds the line and says
+    /// so, but no longer campaigns; the store line's leader, placed nowhere,
+    /// campaigns for it instead — and a store leader with a placement of its
+    /// own does not, so no node ever leads two placed lines.
+    #[test]
+    fn a_released_range_is_campaigned_for_by_the_store_leader_alone() {
+        let mut giving = named("a", "10.0.0.1:9000", NODE);
+        giving.leads = Some(shard(2));
+        giving.releasing = true;
+        let declared = [giving.clone(), named("b", "10.0.0.2:9000", ANOTHER)];
+        assert_eq!(stands_for(&declared, &NODE), Some(shard(2)));
+        assert_eq!(campaigns_for(&declared, &NODE), None);
+        assert_eq!(released(&declared), vec![shard(2)]);
+        assert_eq!(campaign_line(&declared, &NODE, false), None);
+        assert_eq!(campaign_line(&declared, &ANOTHER, true), Some(shard(2)));
+        assert_eq!(campaign_line(&declared, &ANOTHER, false), None);
+        // Placed elsewhere itself, the store leader takes nothing back.
+        let mut placed = named("b", "10.0.0.2:9000", ANOTHER);
+        placed.leads = Some(shard(3));
+        let declared = [giving.clone(), placed];
+        assert_eq!(campaign_line(&declared, &ANOTHER, true), Some(shard(3)));
+        // Another row still placing the range: it is not released at all.
+        let mut staying = named("b", "10.0.0.2:9000", ANOTHER);
+        staying.leads = Some(shard(2));
+        assert!(released(&[giving, staying]).is_empty());
     }
 }

@@ -1,6 +1,7 @@
 //! The balancing round: splitting and merging the shards of tables that asked
-//! for it (ADR-0113 D2), and moving a placement when the failover policy asks
-//! for balanced leaderships (D3).
+//! for it (ADR-0113 D2), folding away a placement given back to the store line
+//! once its leader leads the range (ADR-0098 D3), and moving a placement when
+//! the failover policy asks for balanced leaderships (ADR-0113 D3).
 //!
 //! A cadence of its own rather than a step of housekeeping, because a pass
 //! walks shards: on a big table that is the longest thing a node does in the
@@ -37,6 +38,14 @@ pub(crate) async fn balance(db: std::sync::Arc<Db>, stop: tokio_util::sync::Canc
                     }
                 }
                 Err(why) => log::warn!("this node cannot balance table shards: {why}"),
+            }
+            match db.hand_back_ranges() {
+                Ok(folded) => {
+                    for row in folded {
+                        log::info!("handed back to the store line: the placement of {row}");
+                    }
+                }
+                Err(why) => log::warn!("this node cannot hand ranges back: {why}"),
             }
             match db.balance_leaderships(&mut moves) {
                 Ok(Some(moved)) => log::info!(

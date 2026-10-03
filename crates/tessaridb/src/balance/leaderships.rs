@@ -122,7 +122,9 @@ fn plan(rows: &[ReplicaDefinition], lines: &[Line]) -> Option<Moved> {
     // leading a range it was moved off is a move in flight, and moving the
     // placement it holds now would not lower what it leads.
     let range = busiest.leads?;
-    if !lines.contains(&(range, busiest.node)) {
+    // A placement being given back to the store line is the operator's
+    // decision about that range; moving it to a voter would overrule it.
+    if busiest.releasing || !lines.contains(&(range, busiest.node)) {
         return None;
     }
     let (target, fewest) = voters
