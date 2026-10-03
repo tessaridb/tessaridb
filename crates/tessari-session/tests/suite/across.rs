@@ -181,3 +181,101 @@ fn a_space_is_not_written_across_leaders() {
         "{refused:?}"
     );
 }
+
+fn settle(session: &mut Session<'_>, store: &Store) -> AcrossAnswer {
+    let (namespace, database, _) = ids(store, "notes");
+    session
+        .answer_across(&AcrossAsk::Settle {
+            transaction: TRANSACTION,
+            coordinator: Reach::Database(namespace, database),
+        })
+        .unwrap()
+}
+
+#[test]
+fn settling_a_record_nobody_wrote_aborts_it_for_good() {
+    let store = store();
+    let mut owner = signed_in(&store, "root");
+    assert_eq!(
+        settle(&mut owner, &store),
+        AcrossAnswer::Outcome(Decision::Aborted)
+    );
+    let held = store.transaction_record(TRANSACTION).unwrap().unwrap();
+    assert_eq!(held.decision, Decision::Aborted);
+    // A coordinator arriving late with its PENDING record is refused: the
+    // abort stands.
+    let late = owner.answer_across(&AcrossAsk::Decide {
+        transaction: TRANSACTION,
+        record: record(&store, Decision::Pending),
+    });
+    assert!(late.is_err(), "{late:?}");
+}
+
+#[test]
+fn settling_an_overdue_pending_record_aborts_it() {
+    let store = store();
+    let mut owner = signed_in(&store, "root");
+    owner
+        .answer_across(&AcrossAsk::Decide {
+            transaction: TRANSACTION,
+            record: record(&store, Decision::Pending),
+        })
+        .unwrap();
+    assert_eq!(
+        settle(&mut owner, &store),
+        AcrossAnswer::Outcome(Decision::Aborted)
+    );
+    assert_eq!(
+        store
+            .transaction_record(TRANSACTION)
+            .unwrap()
+            .unwrap()
+            .decision,
+        Decision::Aborted
+    );
+}
+
+#[test]
+fn settling_a_live_pending_record_leaves_it_pending() {
+    let store = store();
+    let mut owner = signed_in(&store, "root");
+    let mut live = record(&store, Decision::Pending);
+    live.deadline = u64::MAX;
+    owner
+        .answer_across(&AcrossAsk::Decide {
+            transaction: TRANSACTION,
+            record: live,
+        })
+        .unwrap();
+    assert_eq!(
+        settle(&mut owner, &store),
+        AcrossAnswer::Outcome(Decision::Pending)
+    );
+    assert_eq!(
+        store
+            .transaction_record(TRANSACTION)
+            .unwrap()
+            .unwrap()
+            .decision,
+        Decision::Pending
+    );
+}
+
+#[test]
+fn settling_a_decided_record_answers_its_decision() {
+    let store = store();
+    let mut owner = signed_in(&store, "root");
+    for decision in [Decision::Pending, Decision::Committed] {
+        owner
+            .answer_across(&AcrossAsk::Decide {
+                transaction: TRANSACTION,
+                record: record(&store, decision),
+            })
+            .unwrap();
+    }
+    assert_eq!(
+        settle(&mut owner, &store),
+        AcrossAnswer::Outcome(Decision::Committed),
+        "an overdue deadline does not reopen a committed record"
+    );
+}

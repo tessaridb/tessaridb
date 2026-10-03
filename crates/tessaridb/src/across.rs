@@ -115,3 +115,6 @@ fn now_millis() -> u64 {
             u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
         })
 }
+
+#[cfg(test)]
+mod tests;
