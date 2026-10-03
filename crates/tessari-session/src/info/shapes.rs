@@ -72,6 +72,17 @@ pub(crate) fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> 
     if let Some(field) = &definition.partition {
         shape.insert("partition".to_owned(), Value::from(field.as_str()));
     }
+    // Present only on a table that splits and merges itself (ADR-0113 D2).
+    if let Some(policy) = definition.auto_split {
+        let number = |held: u64| Value::from(i64::try_from(held).unwrap_or(i64::MAX));
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert("above".to_owned(), number(policy.above));
+        if let Some(writes) = policy.writes_per_second {
+            fields.insert("writes_per_second".to_owned(), number(writes));
+        }
+        fields.insert("merge_below".to_owned(), number(policy.merge_below));
+        shape.insert("auto_split".to_owned(), Value::Object(fields));
+    }
     // Present only on a table whose identities spread (ADR-0113 D1).
     if definition.spread {
         shape.insert("spread".to_owned(), Value::Bool(true));

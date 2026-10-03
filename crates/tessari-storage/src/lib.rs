@@ -75,7 +75,7 @@ mod vault;
 mod views;
 
 pub use catalog::{
-    AnalyzerDefinition, Authority, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, Catalog,
+    AnalyzerDefinition, Authority, AutoSplit, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, Catalog,
     ConsumerDefinition, DatabaseDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeKindDefinition,
     EdgeOrder, EngineField, EngineMember, EventDeclaration, Eviction, FailoverDefinition,
     FailoverStamp, Feed, FieldDefinition, FieldShape, GEO_FIELD, GrantDefinition, GraphDefinition,

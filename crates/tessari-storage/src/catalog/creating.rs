@@ -219,6 +219,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             shards,
             partition: shape.partition,
             spread: shape.spread,
+            auto_split: None,
             events: Vec::new(),
         };
         self.write(system::TABLES, id.get(), &definition.to_value());

@@ -770,6 +770,31 @@ pub enum Error {
         table: String,
     },
 
+    /// `SPLIT AUTOMATICALLY` on a table with no shard map (ADR-0113 D2).
+    #[error(
+        "table `{table}` is not split, so there is no shard to split or merge — \
+         declare it with `SPLIT AT` first"
+    )]
+    AutoSplitOnAnUnsplitTable {
+        /// The table.
+        table: String,
+    },
+
+    /// `SPLIT AUTOMATICALLY` whose merge bound is at least half its split
+    /// bound: the halves of a split would merge straight back (ADR-0113 D2).
+    #[error(
+        "table `{table}` would split above {above} records and merge the halves \
+         back below {merge_below} — the merge bound must be under half the split bound"
+    )]
+    AutoSplitWouldOscillate {
+        /// The table.
+        table: String,
+        /// The split bound.
+        above: u64,
+        /// The merge bound.
+        merge_below: u64,
+    },
+
     /// `SPREAD` on a table whose identity is not generated as a UUID: the
     /// bucket is taken from a UUID's random part (ADR-0113 D1).
     #[error(
@@ -1170,6 +1195,8 @@ impl Error {
             | Self::SplitNeedsGeneratedUuid { .. }
             | Self::PartitionNeedsGeneratedUuid { .. }
             | Self::SpreadNeedsGeneratedUuid { .. }
+            | Self::AutoSplitOnAnUnsplitTable { .. }
+            | Self::AutoSplitWouldOscillate { .. }
             | Self::PartitionMismatch { .. }
             | Self::SplitPointsOutOfOrder { .. }
             | Self::SplitOnAKindThatIsNotRecords { .. }

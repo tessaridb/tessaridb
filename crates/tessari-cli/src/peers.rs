@@ -191,6 +191,19 @@ pub(crate) fn host(
             move || crate::settling_round::settle_across(std::sync::Arc::clone(&db), stop.clone()),
         ));
     }
+    // The fifth: splitting and merging the shards of tables that asked for it
+    // (ADR-0113 D2). Only the store line's leader acts.
+    {
+        let db = std::sync::Arc::clone(&db);
+        let stop = peer_stops.clone();
+        hosting.spawn(supervise::supervised(
+            "the balancing round",
+            peer_stops.clone(),
+            move || {
+                crate::balancing_round::balance_shards(std::sync::Arc::clone(&db), stop.clone())
+            },
+        ));
+    }
     {
         let db = std::sync::Arc::clone(&db);
         let stop = peer_stops.clone();

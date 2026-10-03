@@ -999,7 +999,14 @@ const TABLES: &[Table] = &[
         // pass after its walk. Re-classification trigger: a caller reachable
         // from a statement that could move what an operator alerts on without
         // the transactions it counts.
-        expected: 67,
+        //
+        // 68 since a table can split and merge itself (ADR-0113 D2):
+        // `Store::leads`, whether this node leads a range by the write gate's
+        // own `led`. **Exempt on the ground `Store::leader_of` is**: it reads
+        // leadership and membership rows and no record, field or grant; its
+        // caller is the balancing pass deciding whether to act at all.
+        // Re-classification trigger: the same as `leader_of`'s.
+        expected: 68,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1206,7 +1213,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // 149 since transactions across leaders are observable (ADR-0112 D11):
     // `Store::across_finished` and `Store::across_sampled`, not data paths,
     // classified above.
-    assert_eq!(total, 149, "the counted tables no longer sum to 149");
+    //
+    // 150 since a table can split and merge itself (ADR-0113 D2):
+    // `Store::leads`, exempt, classified above.
+    assert_eq!(total, 150, "the counted tables no longer sum to 150");
 }
 
 /// Every `.rs` file under a directory.

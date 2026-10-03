@@ -634,6 +634,21 @@ impl Session<'_> {
                         )?;
                         return Ok(Outcome::Done);
                     }
+                    TableChange::SplitAutomatically(policy) => {
+                        Catalog::new(transaction).set_auto_split(
+                            id,
+                            Some(tessari_storage::AutoSplit {
+                                above: u64::from(policy.above),
+                                writes_per_second: policy.writes_per_second.map(u64::from),
+                                merge_below: u64::from(policy.merge_below),
+                            }),
+                        )?;
+                        return Ok(Outcome::Done);
+                    }
+                    TableChange::SplitManually => {
+                        Catalog::new(transaction).set_auto_split(id, None)?;
+                        return Ok(Outcome::Done);
+                    }
                     TableChange::Schemafull | TableChange::Schemaless => {}
                 }
                 // A vault is declared strict and cannot be talked out of it.

@@ -127,10 +127,12 @@ impl core::fmt::Display for NotAValue {
 impl std::error::Error for NotAValue {}
 
 mod across;
+mod balance;
 mod coordinate;
 pub mod feed;
 
 pub use across::SettledAcross;
+pub use balance::{Balanced, ShardSamples};
 pub use coordinate::{Coordinate, Coordinated, Coordination, Surface};
 pub use tessari_lsm::{AtRestKey, Durability, StoreConfig};
 pub use tessari_session::redact::{Visible, seen};

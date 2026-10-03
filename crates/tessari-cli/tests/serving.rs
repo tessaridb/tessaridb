@@ -3695,6 +3695,92 @@ fn a_transaction_across_two_shard_leaders_commits_whole_or_is_refused() {
     );
 }
 
+/// The automatic-split scenario's addresses, its own band (G053 SG4b).
+const BALANCED: Band = [
+    ("127.0.0.1:48010", "127.0.0.1:48011"),
+    ("127.0.0.1:48012", "127.0.0.1:48013"),
+    ("127.0.0.1:48014", "127.0.0.1:48015"),
+];
+
+#[test]
+#[ignore = "real cadences across three processes — the balancing round runs \
+            every few seconds on the store line's leader. G053 SG4b's own \
+            validation, run explicitly: cargo test -p tessari-cli --test serving \
+            a_table_split_by_the_store_while_it_is_written -- --ignored"]
+fn a_table_split_by_the_store_while_it_is_written_keeps_every_record_on_every_node() {
+    // G053 C4: a table that asked to split itself is split by the store
+    // line's leader while a writer keeps writing, and every acknowledged
+    // record is on every node afterwards — the set, not a count.
+    // Declared once, through the cluster: a node holding a namespace of its
+    // own is refused the store's copy, so a tenancy written into every node's
+    // declaration would stop the store line from collecting at all.
+    let cluster = a_cluster_declared(&BALANCED, "", ["", "", ""]);
+    let tenancy = "DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
+                   DEFINE DATABASE shop; USE DATABASE shop; \
+                   DEFINE TABLE events (n int) IDENTITY uuid SPREAD SPLIT AT '80'; \
+                   ALTER TABLE events SPLIT AUTOMATICALLY ABOVE 40 RECORDS MERGE BELOW 10 RECORDS;";
+    // Sent to whichever node leads the store line: a catalog change is
+    // redirected there, and this client does not follow a redirect.
+    let led_by = |script: &str| {
+        BALANCED
+            .iter()
+            .find_map(|(surface, _)| asked(surface, script, None).ok())
+    };
+    let declared = until(Duration::from_secs(90), || led_by(tenancy).is_some());
+    assert!(
+        declared,
+        "the tenancy was never declared{}",
+        what_the_nodes_said(&BALANCED, &cluster.logs)
+    );
+    let mut acknowledged = Vec::new();
+    let began = Instant::now();
+    while began.elapsed() < Duration::from_secs(20) || acknowledged.len() < 300 {
+        assert!(
+            began.elapsed() < Duration::from_secs(120),
+            "only {} writes taken in two minutes{}",
+            acknowledged.len(),
+            what_the_nodes_said(&BALANCED, &cluster.logs)
+        );
+        // A create answers with the identity it was given.
+        if let Some(answers) =
+            led_by("USE NAMESPACE prod; USE DATABASE shop; CREATE events = { n: 1 };")
+            && let Some(Answer::Keys(keys)) = answers.last()
+        {
+            acknowledged.extend(keys.iter().map(|id| id.trim_matches('\'').to_owned()));
+        }
+    }
+    acknowledged.sort();
+    // The table changed shape while it was written: more shards than declared.
+    let shards = led_by("USE NAMESPACE prod; USE DATABASE shop; INFO FOR TABLE events;")
+        .map(|answers| format!("{answers:?}").matches("Integer(").count());
+    let split = until(Duration::from_secs(30), || {
+        read_at(BALANCED[0].0, "SELECT id FROM events;").is_ok()
+            && cluster.logs.iter().any(|log| {
+                std::fs::read_to_string(log)
+                    .is_ok_and(|text| text.contains("balanced table shards"))
+            })
+    });
+    assert!(
+        split,
+        "no node balanced the table ({shards:?}){}",
+        what_the_nodes_said(&BALANCED, &cluster.logs)
+    );
+    for (surface, _) in &BALANCED {
+        let level = until(Duration::from_secs(60), || {
+            read_at(surface, "SELECT id FROM events ORDER BY id;").is_ok_and(|mut ids| {
+                ids.sort();
+                ids == acknowledged
+            })
+        });
+        assert!(
+            level,
+            "{surface} does not hold exactly the {} acknowledged records: it holds {:?}",
+            acknowledged.len(),
+            read_at(surface, "SELECT id FROM events ORDER BY id;").map(|ids| ids.len())
+        );
+    }
+}
+
 /// The cross-leader measurement's addresses, a band of its own.
 const ACROSS_TIMED: Band = [
     ("127.0.0.1:47998", "127.0.0.1:47999"),

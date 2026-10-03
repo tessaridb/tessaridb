@@ -2341,6 +2341,34 @@ unchanged and its changes carry no cursor. If a table is split while a feed
 follows it, the feed ends with a refusal and you subscribe again from the last
 change handled.
 
+### A table that splits and merges itself: `ALTER TABLE … SPLIT AUTOMATICALLY`
+
+```
+ALTER TABLE events SPLIT AUTOMATICALLY ABOVE 100000 RECORDS
+    OR 500 WRITES PER SECOND
+    MERGE BELOW 20000 RECORDS;
+ALTER TABLE events SPLIT MANUALLY;
+```
+
+A split table can ask the cluster to keep its shards within bounds. The node
+leading the store line looks every few seconds: a shard holding more records
+than `ABOVE`, or taking more writes a second than `OR … WRITES PER SECOND`, is
+split — at the record half the bound into it, so a much larger shard splits again
+on later passes — and two neighbouring shards holding fewer than `MERGE BELOW`
+together are merged. At most one change per table per pass, and each is exactly
+the `ALTER TABLE … SPLIT AT` or `MERGE SHARD` an operator would type: it is in
+the log, every node applies it, a feed over the table ends with the usual refusal,
+and the node logs it. `SPLIT MANUALLY` stops it. It is off unless asked.
+
+- **`AutoSplitOnAnUnsplitTable`** — the table has no `SPLIT AT`; there is no
+  shard to split.
+- **`AutoSplitWouldOscillate`** — the merge bound is at least half the split
+  bound, so the halves of a split would merge straight back.
+
+Counting a shard walks its records up to the bound, so a pass costs each shard
+at most its bound. `INFO FOR TABLE` reports the bounds as `auto_split`, and its
+`definition` re-creates them as this statement.
+
 ### Partitioning a table by region: `PARTITION BY`
 
 A table can say which field decides where its records live:

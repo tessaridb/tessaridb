@@ -2,13 +2,13 @@
 
 use super::ShardMap;
 use super::{
-    EdgeDeclaration, FIELD_BUCKET, FIELD_CEILING, FIELD_COLLECTION, FIELD_CONFLICT, FIELD_DATABASE,
-    FIELD_EDGE, FIELD_ENDPOINTS, FIELD_EVENTS, FIELD_GEO, FIELD_GRAPH, FIELD_ID, FIELD_IDENTITY,
-    FIELD_NAME, FIELD_NAMESPACE, FIELD_PARTITION, FIELD_QUEUE, FIELD_SCHEMAFULL, FIELD_SERIES,
-    FIELD_SHARDS, FIELD_SPACE, FIELD_SPREAD, FIELD_TOPIC, FIELD_VAULT, FIELD_VECTOR, FIELD_VIEW,
-    QueueDeclaration, SeriesDeclaration, StoredKind, TableKind, VaultCustody, VaultDeclaration,
-    VectorDeclaration, ViewDeclaration, byte_count, ceiling, field_id, field_name, flag,
-    identity_kind, number, object,
+    EdgeDeclaration, FIELD_AUTO_SPLIT, FIELD_BUCKET, FIELD_CEILING, FIELD_COLLECTION,
+    FIELD_CONFLICT, FIELD_DATABASE, FIELD_EDGE, FIELD_ENDPOINTS, FIELD_EVENTS, FIELD_GEO,
+    FIELD_GRAPH, FIELD_ID, FIELD_IDENTITY, FIELD_NAME, FIELD_NAMESPACE, FIELD_PARTITION,
+    FIELD_QUEUE, FIELD_SCHEMAFULL, FIELD_SERIES, FIELD_SHARDS, FIELD_SPACE, FIELD_SPREAD,
+    FIELD_TOPIC, FIELD_VAULT, FIELD_VECTOR, FIELD_VIEW, QueueDeclaration, SeriesDeclaration,
+    StoredKind, TableKind, VaultCustody, VaultDeclaration, VectorDeclaration, ViewDeclaration,
+    byte_count, ceiling, field_id, field_name, flag, identity_kind, number, object,
 };
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
@@ -92,6 +92,10 @@ pub struct TableDefinition {
     /// Whether a generated identity begins with a bucket (`IDENTITY uuid
     /// SPREAD`, ADR-0113 D1); written only when set.
     pub spread: bool,
+    /// When the store line's leader splits and merges the table's shards
+    /// itself (`ALTER TABLE … SPLIT AUTOMATICALLY`, ADR-0113 D2); written only
+    /// when set.
+    pub auto_split: Option<super::AutoSplit>,
     /// What runs after each write of one of its records (ADR-0110), in name
     /// order; written only when there is one, so an entry without events is
     /// the bytes it always was.
@@ -251,6 +255,9 @@ impl TableDefinition {
         }
         if self.spread {
             fields.insert(FIELD_SPREAD.to_owned(), Value::Bool(true));
+        }
+        if let Some(policy) = self.auto_split {
+            fields.insert(FIELD_AUTO_SPLIT.to_owned(), policy.to_value());
         }
         if !self.events.is_empty() {
             fields.insert(
@@ -450,6 +457,10 @@ impl TableDefinition {
                     });
                 }
             },
+            auto_split: fields
+                .get(FIELD_AUTO_SPLIT)
+                .map(super::AutoSplit::from_value)
+                .transpose()?,
             events: match fields.get(FIELD_EVENTS) {
                 None => Vec::new(),
                 Some(Value::Array(held)) => held

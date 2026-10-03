@@ -422,6 +422,29 @@ impl Store {
         })
     }
 
+    /// Whether this node leads `range`, judged as the write gate judges it — or
+    /// stands alone, naming no peer, where nothing is led and it writes
+    /// everything. A clustered range nobody leads yet is not this node's.
+    ///
+    /// # Errors
+    ///
+    /// The substrate's failure, and a decoding failure when a stored definition
+    /// cannot be read.
+    pub fn leads(&self, range: Reach) -> Result<bool> {
+        let me = self.node_identity()?.id;
+        let mut transaction = self.begin()?;
+        let catalog = crate::catalog::Catalog::new(&mut transaction);
+        let held = catalog.leaderships()?;
+        let peers = catalog.replicas()?;
+        drop(transaction);
+        let placed: BTreeSet<Reach> = peers.iter().filter_map(|peer| peer.leads).collect();
+        Ok(match self.led(&held, &placed, range, &me)? {
+            Led::Here => true,
+            Led::Unled => peers.is_empty(),
+            Led::Elsewhere(_) | Led::Shared => false,
+        })
+    }
+
     /// Who leads `range`, judged exactly as the write gate judges it — the one
     /// answer [`Self::refuse_if_led_elsewhere`] and a transaction across
     /// leaders both read, so the two cannot come to disagree about a range.

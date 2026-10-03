@@ -29,10 +29,10 @@ pub mod test_support;
 mod token;
 
 pub use ast::{
-    Admitted, Aggregate, Answer, AnsweredBy, Approximation, ArithmeticOp, Assignment, BackupForm,
-    ColumnDeclaration, ConsumerSource, CreateTarget, Credential, DeleteBound, Direction,
-    EdgeClause, EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, Field, FieldMapping, FieldPath,
-    Fill, FillMode, Fusion, GroupClauses, Hop, Identity, InfoSubject, JoinSide, Name,
+    Admitted, Aggregate, Answer, AnsweredBy, Approximation, ArithmeticOp, Assignment, AutoSplit,
+    BackupForm, ColumnDeclaration, ConsumerSource, CreateTarget, Credential, DeleteBound,
+    Direction, EdgeClause, EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, Field, FieldMapping,
+    FieldPath, Fill, FillMode, Fusion, GroupClauses, Hop, Identity, InfoSubject, JoinSide, Name,
     NamespaceChange, OnFailure, Ordering, Password, PathTo, Projected, Projection, RangeExpr,
     ReachRef, RecordTarget, ReplicaChange, Retention, Script, SearchAsk, SearchCosts, SearchField,
     SearchMember, SearchOperator, Select, SetCondition, Source, SpaceBound, Statement,

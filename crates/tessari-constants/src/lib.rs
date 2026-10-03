@@ -491,6 +491,11 @@ pub const SIGN_IN_ASK_MILLIS: u64 = 500;
 /// round), because that is exactly when a stale reading costs the most.
 pub const AWARENESS_SECONDS: u64 = 1;
 
+/// How often the store line's leader looks at the shards of tables that split
+/// and merge themselves (ADR-0113 D2). A pass walks each such shard up to its
+/// bound, so it runs less often than the rounds that only ask a question.
+pub const BALANCE_SECONDS: u64 = 5;
+
 /// How often a follower collects the records it does not hold.
 ///
 /// Unit: seconds.
