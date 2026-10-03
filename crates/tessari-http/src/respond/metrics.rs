@@ -156,6 +156,41 @@ pub(crate) fn metrics(
                 "tessari_acknowledgement_wait_seconds_total {}\n",
                 held.acknowledgement_waited.as_secs_f64()
             ));
+            // ADR-0112 D11: how the transactions across leaders this node
+            // coordinated ended, by outcome.
+            out.push_str(
+                "# HELP tessari_transactions_across_leaders_total Transactions across leaders this \
+                 node coordinated, by how they ended for the client.\n",
+            );
+            out.push_str("# TYPE tessari_transactions_across_leaders_total counter\n");
+            for (outcome, ended) in [
+                ("committed", held.across_committed),
+                ("aborted", held.across_aborted),
+                ("in_doubt", held.across_in_doubt),
+            ] {
+                out.push_str(&format!(
+                    "tessari_transactions_across_leaders_total{{outcome=\"{outcome}\"}} {ended}\n"
+                ));
+            }
+            // What the last settling pass left standing here; absent before
+            // the first pass, for the lease's reason below — a series reading
+            // zero before anybody looked would be a claim nobody made.
+            if let Some(pending) = held.across_pending {
+                out.push_str(
+                    "# HELP tessari_transactions_pending Transaction records still PENDING here \
+                     at the last settling pass.\n",
+                );
+                out.push_str("# TYPE tessari_transactions_pending gauge\n");
+                out.push_str(&format!("tessari_transactions_pending {pending}\n"));
+            }
+            if let Some(holding) = held.across_with_intents {
+                out.push_str(
+                    "# HELP tessari_transactions_with_intents Transactions across leaders holding \
+                     intents here at the last settling pass.\n",
+                );
+                out.push_str("# TYPE tessari_transactions_with_intents gauge\n");
+                out.push_str(&format!("tessari_transactions_with_intents {holding}\n"));
+            }
             // Absent rather than zero on a node holding no lease, because a series
             // that is always zero on every standalone store would train whoever
             // watches it to ignore the one reading that matters. When it is here it

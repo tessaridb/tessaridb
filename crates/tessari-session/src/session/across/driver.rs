@@ -24,7 +24,9 @@ use tessari_encoding::{
     Decision, NODE_ID_LEN, Participant, TRANSACTION_ID_LEN, TransactionId, TransactionRecord,
 };
 use tessari_ql::Span;
-use tessari_storage::{AcrossPart, Catalog, Failover, RecordAddress, Store, Transaction};
+use tessari_storage::{
+    AcrossOutcome, AcrossPart, Catalog, Failover, RecordAddress, Store, Transaction,
+};
 
 use super::{AcrossAnswer, AcrossAsk, Participants};
 use crate::error::{Error, Result};
@@ -77,6 +79,25 @@ impl Session<'_> {
         transaction.rollback();
         let user = self.identity.user().cloned();
         let id = fresh_id();
+        let answered = self.drive(carrier.as_ref(), &parts, (id, lapse), user.as_ref(), span);
+        // Counted where the client hears it (ADR-0112 D11), whichever way.
+        store.across_finished(match &answered {
+            Ok(()) => AcrossOutcome::Committed,
+            Err(Error::AcrossInDoubt { .. }) => AcrossOutcome::InDoubt,
+            Err(_) => AcrossOutcome::Aborted,
+        });
+        answered
+    }
+
+    /// The protocol itself, from the `PENDING` record to the resolutions.
+    fn drive(
+        &mut self,
+        carrier: &dyn Participants,
+        parts: &[AcrossPart],
+        (id, lapse): (TransactionId, u64),
+        user: Option<&tessari_storage::UserDefinition>,
+        span: Span,
+    ) -> Result<()> {
         let Some(first) = parts.first() else {
             return Ok(());
         };
@@ -94,9 +115,9 @@ impl Session<'_> {
         };
         let deciding = |this: &mut Self, record: &TransactionRecord| {
             this.ask_one(
-                carrier.as_ref(),
+                carrier,
                 coordinator_leader,
-                user.as_ref(),
+                user,
                 &AcrossAsk::Decide {
                     transaction: id,
                     record: record.clone(),
@@ -115,12 +136,12 @@ impl Session<'_> {
                 writes: part.writes.clone(),
             })
             .collect();
-        let prepared = self.ask_parts(carrier.as_ref(), &parts, user.as_ref(), &prepares);
+        let prepared = self.ask_parts(carrier, parts, user, &prepares);
         let mut refused = None;
         for ((answer, participant), part) in prepared
             .into_iter()
             .zip(&mut record.participants)
-            .zip(&parts)
+            .zip(parts)
         {
             let reason = match answer {
                 Ok(AcrossAnswer::Prepared(at)) => {
@@ -175,11 +196,11 @@ impl Session<'_> {
         match (decided, refused) {
             // Aborted, and said so: the intents can go.
             (Ok(_), Some(reason)) => {
-                self.resolve_parts(carrier.as_ref(), &parts, user.as_ref(), &resolves);
+                self.resolve_parts(carrier, parts, user, &resolves);
                 Err(Error::AcrossAborted { reason, span })
             }
             (Ok(_), None) => {
-                self.resolve_parts(carrier.as_ref(), &parts, user.as_ref(), &resolves);
+                self.resolve_parts(carrier, parts, user, &resolves);
                 Ok(())
             }
             // The record had already been decided — a lapse aborted it while

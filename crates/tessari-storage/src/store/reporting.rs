@@ -49,6 +49,8 @@ impl Store {
         // The log this node's history on the line is in (ADR-0107): the line's
         // once a leadership has written it, its own on a store standing alone.
         let own = self.history_log(UNPARTITIONED_REPORT_HOME)?;
+        let (across_committed, across_aborted, across_in_doubt) = self.tally.outcomes();
+        let (across_pending, across_with_intents) = self.tally.standing();
         Ok(Health {
             background_errors: self.backend.background_errors()?,
             committed: self.committed_tail(own)?,
@@ -61,7 +63,24 @@ impl Store {
             acknowledgement_waits: self.tally.waits(),
             acknowledgement_timeouts: self.tally.timeouts(),
             acknowledgement_waited: self.tally.waited(),
+            across_committed,
+            across_aborted,
+            across_in_doubt,
+            across_pending,
+            across_with_intents,
         })
+    }
+
+    /// Record how one transaction across leaders this node coordinated ended
+    /// for its client. Called where the driver answers, and nowhere else.
+    pub fn across_finished(&self, outcome: crate::tally::AcrossOutcome) {
+        self.tally.finished(outcome);
+    }
+
+    /// Record what a settling pass left standing here: records still
+    /// `PENDING`, and transactions still holding intents.
+    pub fn across_sampled(&self, pending: u64, with_intents: u64) {
+        self.tally.sampled(pending, with_intents);
     }
 
     /// Record one read that reached this node holding none of what it asked

@@ -20,7 +20,7 @@ use tessari_types::{Epoch, Reach, Sequence, ShardId, TableId};
 
 use super::{RecordAddress, Transaction};
 use crate::catalog::ShardMap;
-use crate::error::{Error, Result};
+use crate::error::{ConflictWith, Error, Result};
 
 /// What a test runs inside a commit, handed the store the commit is writing.
 #[cfg(test)]
@@ -818,13 +818,18 @@ impl Transaction<'_> {
             // newer than it, and replacing the value under it would lose the
             // write the transaction across leaders is about to commit.
             // Retriable: the intent resolves.
-            if version > self.snapshot || intent || unseen {
-                return Err(Error::Conflict {
-                    id: address.id.clone(),
-                    snapshot: self.snapshot,
-                    committed: version,
-                });
-            }
+            let with = match provenance {
+                Some(held) if intent => ConflictWith::Intent(held.transaction),
+                Some(held) if unseen => ConflictWith::Unseen(held.transaction),
+                _ if version > self.snapshot => ConflictWith::Commit,
+                _ => continue,
+            };
+            return Err(Error::Conflict {
+                id: address.id.clone(),
+                snapshot: self.snapshot,
+                committed: version,
+                with,
+            });
         }
         Ok(())
     }

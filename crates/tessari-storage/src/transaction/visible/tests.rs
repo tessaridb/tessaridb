@@ -78,9 +78,20 @@ fn a_writer_may_not_build_on_a_version_it_could_not_see() -> Result<()> {
     writer.put(fixture.address(0), b"old+1".to_vec());
     let refused = writer.commit();
     assert!(
-        matches!(refused, Err(Error::Conflict { .. })),
+        matches!(
+            refused,
+            Err(Error::Conflict {
+                with: crate::ConflictWith::Unseen(_),
+                ..
+            })
+        ),
         "{refused:?}"
     );
+    let said = refused
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default();
+    assert!(said.contains("has not all arrived"), "{said}");
     // Once the node holds the whole transaction, the same write goes through.
     fixture.prepare(1)?;
     let mut writer = fixture.store.begin()?;

@@ -1803,6 +1803,17 @@ fn counted(address: &str) -> Result<usize, String> {
 /// does — so the quiet-cluster assertion below and an operator's dashboard
 /// cannot disagree about the number.
 fn campaigns(address: &str) -> Result<i64, String> {
+    let cluster = cluster_report(address)?;
+    match cluster.get("campaigns") {
+        Some(tessari_types::Value::Number(tessari_types::Number::Integer(stood))) => Ok(*stood),
+        other => Err(format!("campaigns is {other:?}")),
+    }
+}
+
+/// The `cluster` group of `address`'s `INFO FOR NODE`.
+fn cluster_report(
+    address: &str,
+) -> Result<std::collections::BTreeMap<String, tessari_types::Value>, String> {
     let mut client = Client::connect(address).map_err(|why| why.to_string())?;
     let answers = client
         .run("INFO FOR NODE;", None)
@@ -1814,12 +1825,9 @@ fn campaigns(address: &str) -> Result<i64, String> {
     else {
         return Err(format!("not a report: {answers:?}"));
     };
-    let Some(tessari_types::Value::Object(cluster)) = report.get("cluster") else {
-        return Err(format!("no cluster group: {report:?}"));
-    };
-    match cluster.get("campaigns") {
-        Some(tessari_types::Value::Number(tessari_types::Number::Integer(stood))) => Ok(*stood),
-        other => Err(format!("campaigns is {other:?}")),
+    match report.get("cluster") {
+        Some(tessari_types::Value::Object(cluster)) => Ok(cluster.clone()),
+        _ => Err(format!("no cluster group: {report:?}")),
     }
 }
 
@@ -3585,6 +3593,19 @@ fn a_transaction_across_two_shard_leaders_commits_whole_or_is_refused() {
         committed.is_ok(),
         "a transaction across leaders: {committed:?}{}",
         what_the_nodes_said(&ACROSS, &cluster.logs)
+    );
+    // The node that coordinated it counted it, where `/metrics` reads it too
+    // (ADR-0112 D11).
+    let across = cluster_report(ACROSS[0].0).map(|report| report.get("across").cloned());
+    let Ok(Some(tessari_types::Value::Object(across))) = across else {
+        panic!("no across group: {across:?}");
+    };
+    assert!(
+        matches!(
+            across.get("committed"),
+            Some(tessari_types::Value::Number(tessari_types::Number::Integer(done))) if *done >= 1
+        ),
+        "the coordinator did not count its commit: {across:?}"
     );
     for (surface, _) in &ACROSS {
         let both = until(Duration::from_secs(30), || {

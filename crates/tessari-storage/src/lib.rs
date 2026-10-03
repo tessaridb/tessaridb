@@ -106,7 +106,7 @@ pub use audit::{
     Administered, AuditDevice, AuditTrail, DeviceRefused, VaultRead, administered,
     entries as audit_entries, reads_by,
 };
-pub use error::{Error, Result};
+pub use error::{ConflictWith, Error, Result};
 pub use failover::Failover;
 pub use feed::{Change, ChangeKind, Changes, History, Merged, Subject, Subscription, Watch};
 pub use followers::FollowerLag;
@@ -125,6 +125,7 @@ pub use sealing::{
 pub use state::{StateReader, TopicHead};
 pub use statistics::{estimate_equality, estimate_range};
 pub use store::{Health, Store};
+pub use tally::AcrossOutcome;
 pub use tessari_encoding::{
     BUILD_VERSION, Decision, IndexStatistics, LogId, NODE_ID_LEN, Roles, TransactionId,
     TransactionRecord, Writer,

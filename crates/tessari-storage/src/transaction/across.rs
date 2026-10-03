@@ -368,6 +368,7 @@ impl Transaction<'_> {
                         id: address.id,
                         snapshot: seen,
                         committed: LogKey::decode(key.as_slice())?.sequence,
+                        with: crate::ConflictWith::Commit,
                     });
                 }
             }

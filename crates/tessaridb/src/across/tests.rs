@@ -128,3 +128,65 @@ fn a_committed_record_whose_resolution_was_lost_is_finished_here() {
     assert_eq!(note(&db, &address), Value::from("new"));
     assert!(db.store().standing_across().unwrap().is_empty());
 }
+
+#[test]
+fn a_pass_publishes_what_it_left_standing_and_nothing_before_the_first() {
+    let (db, _) = left_behind(&[Decision::Pending]);
+    let held = db.store().health().unwrap();
+    assert_eq!(
+        (held.across_pending, held.across_with_intents),
+        (None, None),
+        "no pass has looked yet, which is not the same as none"
+    );
+    // The coordinator is alive and renewed its record: nothing is overdue,
+    // so the pass leaves both the record and the intent standing.
+    let mut record = db.store().transaction_record(TRANSACTION).unwrap().unwrap();
+    record.deadline = u64::MAX;
+    db.session()
+        .answer_across(&AcrossAsk::Decide {
+            transaction: TRANSACTION,
+            record,
+        })
+        .unwrap();
+    assert_eq!(reported(&db, "pending"), Value::Null);
+    db.settle_across().unwrap();
+    let held = db.store().health().unwrap();
+    assert_eq!(
+        (held.across_pending, held.across_with_intents),
+        (Some(1), Some(1))
+    );
+    // `INFO FOR NODE` says the same, from the same `health()`.
+    assert_eq!(reported(&db, "pending"), Value::from(1_i64));
+    assert_eq!(reported(&db, "with_intents"), Value::from(1_i64));
+    assert_eq!(reported(&db, "in_doubt"), Value::from(0_i64));
+}
+
+/// One figure of `INFO FOR NODE`'s `cluster.across` group — `NONE` when the
+/// report, the group or the figure is missing, which no assertion here expects.
+fn reported(db: &Db, figure: &str) -> Value {
+    let outcomes = db.session().run("INFO FOR NODE;").unwrap();
+    let object = |value: Option<&Value>| match value {
+        Some(Value::Object(fields)) => Some(fields.clone()),
+        _ => None,
+    };
+    let report = match outcomes.first() {
+        Some(tessari_session::Outcome::Value(value)) => object(Some(value)),
+        _ => None,
+    };
+    report
+        .and_then(|report| object(report.get("cluster")))
+        .and_then(|cluster| object(cluster.get("across")))
+        .and_then(|across| across.get(figure).cloned())
+        .unwrap_or(Value::None)
+}
+
+#[test]
+fn a_pass_that_finishes_a_transaction_publishes_none_left() {
+    let (db, _) = left_behind(&[Decision::Pending]);
+    db.settle_across().unwrap();
+    let held = db.store().health().unwrap();
+    assert_eq!(
+        (held.across_pending, held.across_with_intents),
+        (Some(0), Some(0))
+    );
+}

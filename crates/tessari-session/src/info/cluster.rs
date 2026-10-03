@@ -77,6 +77,7 @@ impl Session<'_> {
         // that can drift.
         let held = self.store.health()?;
         let campaigns = held.campaigns;
+        let across = across_report(&held);
         let lease = match held.lease_remaining {
             Some(left) => tessari_types::Duration::new(
                 i64::try_from(left.as_secs()).unwrap_or(i64::MAX),
@@ -259,6 +260,11 @@ impl Session<'_> {
                         "campaigns".to_owned(),
                         Value::from(i64::try_from(campaigns).unwrap_or(i64::MAX)),
                     ),
+                    // Transactions across leaders (ADR-0112 D11): how the ones
+                    // this node coordinated ended, and what the last settling
+                    // pass left standing here — `null` before the first pass,
+                    // which is not a count of zero.
+                    ("across".to_owned(), across),
                     // The periods this cluster waits before it replaces a
                     // leader, with the pair that orders two of them. Beside the
                     // lease and the epoch because it is what those two are
@@ -401,4 +407,18 @@ impl Session<'_> {
                 .collect(),
         )
     }
+}
+
+/// The `across` group of `INFO FOR NODE`, from the same `health()` the
+/// `/metrics` scrape reads.
+fn across_report(held: &tessari_storage::Health) -> Value {
+    let count = |held: u64| Value::from(i64::try_from(held).unwrap_or(i64::MAX));
+    let sampled = |held: Option<u64>| held.map_or(Value::Null, count);
+    Value::Object(BTreeMap::from([
+        ("committed".to_owned(), count(held.across_committed)),
+        ("aborted".to_owned(), count(held.across_aborted)),
+        ("in_doubt".to_owned(), count(held.across_in_doubt)),
+        ("pending".to_owned(), sampled(held.across_pending)),
+        ("with_intents".to_owned(), sampled(held.across_with_intents)),
+    ]))
 }

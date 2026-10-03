@@ -89,6 +89,15 @@ interface Leader {
     readonly epoch?: unknown;
 }
 
+/** Transactions across leaders, as `cluster.across` reports them. */
+interface Across {
+    readonly committed?: unknown;
+    readonly aborted?: unknown;
+    readonly in_doubt?: unknown;
+    readonly pending?: unknown;
+    readonly with_intents?: unknown;
+}
+
 /** What `INFO FOR NODE` answered, in the shape the map reads. */
 export interface Seen {
     readonly id?: string;
@@ -103,6 +112,7 @@ export interface Seen {
         readonly leaders?: readonly Leader[];
         readonly upstream?: Upstream | null;
         readonly peers?: readonly Peer[];
+        readonly across?: Across;
     };
 }
 
@@ -280,6 +290,14 @@ function behindEach(followers: readonly Follower[]): string | null {
     return each.length === 0 ? null : each.join(", ");
 }
 
+/** How the transactions across leaders this node coordinated ended. */
+function ended(across: Across | undefined): string | null {
+    if (across === undefined) {
+        return null;
+    }
+    return `${told(across.committed) ?? "?"} committed, ${told(across.aborted) ?? "?"} aborted, ${told(across.in_doubt) ?? "?"} in doubt`;
+}
+
 /** What copies of the leader's state installed, or `null` before the first. */
 function copied(upstream: Upstream | null | undefined): string | null {
     if (typeof upstream?.copies !== "number" || upstream.copies === 0) {
@@ -315,6 +333,11 @@ export function draw(into: HTMLElement, seen: Seen): void {
             // state it has never been in.
             fact("sync with its upstream", cluster.upstream?.state ?? null),
             fact("copied from its upstream", copied(cluster.upstream)),
+            fact("across leaders, coordinated here", ended(cluster.across)),
+            // `null` until the node's settling pass has looked, so the map says
+            // nothing rather than a zero nobody measured.
+            fact("records still pending here", told(cluster.across?.pending)),
+            fact("transactions holding intents here", told(cluster.across?.with_intents)),
             wanted === null ? null : fact("declared for it", wanted.join(", ")),
         ],
         "self",

@@ -122,20 +122,19 @@ pub enum Error {
         table: String,
     },
 
-    /// Another transaction committed to a record this one wrote.
+    /// Another transaction committed to a record this one wrote, or holds it.
     ///
     /// Under snapshot isolation the first committer wins. Nothing was written.
-    #[error(
-        "write conflict on record {id}: it was committed at sequence {committed} \
-         after this transaction's snapshot {snapshot}"
-    )]
+    #[error("write conflict on record {id}: {}", conflict_reason(.with, .snapshot, .committed))]
     Conflict {
         /// The record that was written by both transactions.
         id: RecordId,
         /// The snapshot this transaction read at.
         snapshot: Sequence,
-        /// The sequence the winning transaction committed at.
+        /// The version of the record that refused this write.
         committed: Sequence,
+        /// What that version is.
+        with: ConflictWith,
     },
 
     /// The commit could not claim a sequence within its attempt budget.
@@ -1064,6 +1063,45 @@ pub enum Error {
     Encoding(#[from] tessari_encoding::Error),
 }
 
+/// What a write conflicted with — what the refusal's words say (Q-917).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictWith {
+    /// A transaction that committed after this one's snapshot.
+    Commit,
+    /// An intent of a transaction across leaders, standing until its record
+    /// decides it (ADR-0112 D5).
+    Intent(tessari_encoding::TransactionId),
+    /// A version of a transaction across leaders this one read past, because
+    /// not every part of it has arrived on this node (ADR-0112 D6a).
+    Unseen(tessari_encoding::TransactionId),
+}
+
+/// The second half of a conflict's message: what refused the write.
+fn conflict_reason(with: &ConflictWith, snapshot: &Sequence, committed: &Sequence) -> String {
+    let named = |transaction: &tessari_encoding::TransactionId| {
+        transaction
+            .bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    match with {
+        ConflictWith::Commit => format!(
+            "it was committed at sequence {committed} after this transaction's snapshot {snapshot}"
+        ),
+        ConflictWith::Intent(transaction) => format!(
+            "transaction {} across leaders holds an intent on it until its record \
+             decides; run this transaction again once it has",
+            named(transaction)
+        ),
+        ConflictWith::Unseen(transaction) => format!(
+            "transaction {} across leaders wrote it and has not all arrived on this \
+             node, so this transaction read the value under it; run it again in a moment",
+            named(transaction)
+        ),
+    }
+}
+
 impl Error {
     /// Whether this is a key that did not open what it was given — for an
     /// unseal, a wrong passphrase.
@@ -1218,6 +1256,7 @@ mod tests {
             id: RecordId::from("r"),
             snapshot: Sequence::new(5),
             committed: Sequence::new(9),
+            with: ConflictWith::Commit,
         };
         assert_eq!(error.category(), ErrorCategory::Conflict);
         assert!(!error.is_retryable());

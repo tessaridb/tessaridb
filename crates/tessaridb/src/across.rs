@@ -44,7 +44,9 @@ impl Db {
         // transaction it coordinates.
         let mut silent: BTreeSet<[u8; tessari_storage::NODE_ID_LEN]> = BTreeSet::new();
         let now = now_millis();
-        for (transaction, record) in store.pending_across()? {
+        let pending = store.pending_across()?;
+        let pending_seen = pending.len();
+        for (transaction, record) in pending {
             let Some(coordinator) = record.participants.first().map(|part| part.range) else {
                 continue;
             };
@@ -62,7 +64,9 @@ impl Db {
                 Err(why) => settled.last_refusal = Some(why.to_string()),
             }
         }
-        for (transaction, coordinator) in store.standing_across()? {
+        let standing = store.standing_across()?;
+        let standing_seen = standing.len();
+        for (transaction, coordinator) in standing {
             // Asked of the record's range's leader even when this node holds
             // a copy of the record: a copy, or the leader's own read, may be a
             // decision no majority holds yet, and only the leader's answer
@@ -116,6 +120,16 @@ impl Db {
                 Err(why) => settled.last_refusal = Some(why.to_string()),
             }
         }
+        // What this pass left standing, for the operator (ADR-0112 D11): the
+        // pass has just walked both, so publishing it costs no second walk,
+        // and a scrape reads a number instead of walking them itself.
+        let left = |seen: usize, finished: usize| {
+            u64::try_from(seen.saturating_sub(finished)).unwrap_or(u64::MAX)
+        };
+        store.across_sampled(
+            left(pending_seen, settled.aborted),
+            left(standing_seen, settled.resolved),
+        );
         Ok(settled)
     }
 }

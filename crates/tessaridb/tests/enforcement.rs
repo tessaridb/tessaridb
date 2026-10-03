@@ -989,7 +989,17 @@ const TABLES: &[Table] = &[
         // housekeeping pass that asks a coordinator range's leader for an
         // outcome. Re-classification trigger: a statement surfacing it to a
         // caller who may not read the cluster's topology.
-        expected: 65,
+        //
+        // 67 since transactions across leaders are observable (ADR-0112 D11):
+        // `Store::across_finished` and `Store::across_sampled`. Classified **not
+        // a data path**, on the cluster counters' ground: each writes a counter
+        // or a sampled gauge in this process's memory that `health()` reports,
+        // and reads or writes no record, catalog entry or grant. Their callers
+        // are the coordinator driver as it answers its client and the settling
+        // pass after its walk. Re-classification trigger: a caller reachable
+        // from a statement that could move what an operator alerts on without
+        // the transactions it counts.
+        expected: 67,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1192,7 +1202,11 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 147 since a participant finishes its own intents (G053 SG3 d3):
     // `Store::leader_of`, exempt, classified above.
-    assert_eq!(total, 147, "the counted tables no longer sum to 147");
+    //
+    // 149 since transactions across leaders are observable (ADR-0112 D11):
+    // `Store::across_finished` and `Store::across_sampled`, not data paths,
+    // classified above.
+    assert_eq!(total, 149, "the counted tables no longer sum to 149");
 }
 
 /// Every `.rs` file under a directory.

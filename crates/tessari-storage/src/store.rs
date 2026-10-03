@@ -135,6 +135,23 @@ pub struct Health {
     pub acknowledgement_timeouts: u64,
     /// The time those waits took, summed, so a scrape divides it by the count.
     pub acknowledgement_waited: std::time::Duration,
+    /// Transactions across leaders this node coordinated that committed, since
+    /// this process opened the store (ADR-0112 D11).
+    pub across_committed: u64,
+    /// Of those it coordinated, the ones that aborted.
+    pub across_aborted: u64,
+    /// And the ones whose decision was sent and not confirmed — the client was
+    /// told the outcome is in doubt, and the record's range finishes it.
+    pub across_in_doubt: u64,
+    /// Transaction records `PENDING` here as the last settling pass left them,
+    /// or `None` before the first pass — sampled on the pass's cadence rather
+    /// than counted per request, because the records are kept for a while and a
+    /// walk of them per scrape would grow with them.
+    pub across_pending: Option<u64>,
+    /// Transactions holding intents here as the last settling pass left them,
+    /// or `None` before the first pass. Above zero for longer than a pass or
+    /// two is a transaction waiting on a coordinator range that does not answer.
+    pub across_with_intents: Option<u64>,
 }
 
 impl Health {

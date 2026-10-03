@@ -2049,6 +2049,12 @@ Shown once. The node keeps only its digest.`);
     const each = followers.filter((one2) => typeof one2.behind === "number").map((one2) => `${(bare(one2.node) ?? "?").slice(0, 8)}… ${told2(one2.behind)} behind`);
     return each.length === 0 ? null : each.join(", ");
   }
+  function ended2(across) {
+    if (across === void 0) {
+      return null;
+    }
+    return `${told2(across.committed) ?? "?"} committed, ${told2(across.aborted) ?? "?"} aborted, ${told2(across.in_doubt) ?? "?"} in doubt`;
+  }
   function copied(upstream) {
     if (typeof upstream?.copies !== "number" || upstream.copies === 0) {
       return null;
@@ -2080,6 +2086,11 @@ Shown once. The node keeps only its digest.`);
         // state it has never been in.
         fact("sync with its upstream", cluster.upstream?.state ?? null),
         fact("copied from its upstream", copied(cluster.upstream)),
+        fact("across leaders, coordinated here", ended2(cluster.across)),
+        // `null` until the node's settling pass has looked, so the map says
+        // nothing rather than a zero nobody measured.
+        fact("records still pending here", told2(cluster.across?.pending)),
+        fact("transactions holding intents here", told2(cluster.across?.with_intents)),
         wanted2 === null ? null : fact("declared for it", wanted2.join(", "))
       ],
       "self",

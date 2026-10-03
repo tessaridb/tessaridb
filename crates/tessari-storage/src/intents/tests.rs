@@ -153,8 +153,25 @@ fn a_write_onto_a_standing_intent_is_refused_whatever_its_snapshot() -> Result<(
     writer.put(fixture.address("r"), b"lost".to_vec());
     let refused = writer.commit();
     assert!(
-        matches!(refused, Err(Error::Conflict { .. })),
+        matches!(
+            refused,
+            Err(Error::Conflict {
+                with: crate::ConflictWith::Intent(_),
+                ..
+            })
+        ),
         "{refused:?}"
+    );
+    // The words are the node's answer, so they say what happened: an intent
+    // holds the record — not a commit after this snapshot, which none was.
+    let said = refused
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default();
+    assert!(said.contains("intent"), "{said}");
+    assert!(
+        !said.contains("after this transaction's snapshot"),
+        "{said}"
     );
     Ok(())
 }
