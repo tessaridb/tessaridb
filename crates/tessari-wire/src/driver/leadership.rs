@@ -217,6 +217,46 @@ pub fn heard_a_leader_on(
             })
 }
 
+/// The preferred candidate this node should hand `range` to, when it leads the
+/// range without being preferred itself (G053 SG5b).
+///
+/// A candidate whose row places the range `PREFERRED`, heard within `within`
+/// under its own row, whose greeting's line for the range is not behind
+/// `mine` — this node's own position on the line. Caught up is the condition
+/// Raft's leadership transfer waits for: a leader that yielded to a candidate
+/// behind it would only make every voter refuse that candidate, and the range
+/// would sit leaderless until this node stood again.
+#[must_use]
+pub fn preferred_to_yield_to(
+    range: Reach,
+    me: [u8; NODE_ID_LEN],
+    declared: &[ReplicaDefinition],
+    heard: &Directory,
+    mine: crate::grant::Reached,
+    (now, within): (Instant, Duration),
+) -> Option<[u8; NODE_ID_LEN]> {
+    let mine_row = declared
+        .iter()
+        .find(|peer| peer.node.as_ref() == Some(&me))?;
+    if mine_row.preferred {
+        return None;
+    }
+    declared
+        .iter()
+        .filter(|peer| peer.preferred && !peer.releasing && peer.leads == Some(range))
+        .filter_map(|peer| Some((peer.node?, heard.at(&peer.endpoint)?)))
+        .find(|(node, seen)| {
+            *node != me
+                && seen.said.node == *node
+                && now.saturating_duration_since(seen.at) <= within
+                && seen
+                    .said
+                    .line
+                    .is_some_and(|line| line.range == range && !line.reached().behind(mine))
+        })
+        .map(|(node, _)| node)
+}
+
 /// Who to collect a placed range's logs from: the peer whose greeting says it
 /// holds a live lease on that range's line (ADR-0082).
 ///

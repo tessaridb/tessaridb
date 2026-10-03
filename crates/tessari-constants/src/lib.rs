@@ -496,6 +496,12 @@ pub const AWARENESS_SECONDS: u64 = 1;
 /// bound, so it runs less often than the rounds that only ask a question.
 pub const BALANCE_SECONDS: u64 = 5;
 
+/// How long a range's leader waits after handing the range to its preferred
+/// candidate before it may do so again (G053 SG5b). A preferred node that keeps
+/// failing to hold the range would otherwise have it handed back and forth,
+/// each hand-over a lease without a writer.
+pub const PREFERENCE_YIELD_SECONDS: u64 = 30;
+
 /// How often a follower collects the records it does not hold.
 ///
 /// Unit: seconds.

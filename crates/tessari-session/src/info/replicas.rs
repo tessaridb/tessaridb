@@ -75,6 +75,8 @@ pub(crate) fn described_replica(
         // (ADR-0098 D3): the range stays carved until the store's leader leads
         // it too and folds the placement away.
         ("releasing".to_owned(), Value::Bool(replica.releasing)),
+        // `PREFERRED` (G053 SG5b): the candidate the range's leader hands it to.
+        ("preferred".to_owned(), Value::Bool(replica.preferred)),
         // The certificate allowed to bind this row (ADR-0108 D9), in the
         // spelling `FINGERPRINT` takes.
         (

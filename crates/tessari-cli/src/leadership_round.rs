@@ -44,7 +44,9 @@ pub(crate) async fn stand_for_leadership(
     // The placed range's line, with its own cursor (ADR-0082). `None` until the
     // first tick finds a placement, and replaced when the placement names a
     // different range — a cursor carries one line's epochs and no other's.
-    let mut on_a_line: Option<(tessari_types::Reach, tessari_wire::Renewing)> = None;
+    let mut on_a_line: Option<OnALine> = None;
+    // When this node last handed its range to a preferred candidate (G053 SG5b).
+    let mut yielded: Option<Yielded> = None;
     let mut renewing = tessari_wire::Renewing::holding(tessari_wire::Leadership {
         length: tessari_storage::LEASE_TTL,
         epoch: tessari_types::Epoch::ZERO,
@@ -130,7 +132,7 @@ pub(crate) async fn stand_for_leadership(
                 periods,
                 leads_the_store: store.leads(tessari_types::Reach::Store).unwrap_or(false),
             },
-            &mut on_a_line,
+            (&mut on_a_line, &mut yielded),
             now,
         );
         // Q-857. The store line's leader must hold every table it writes,
@@ -304,8 +306,16 @@ pub(crate) struct Candidate<'a> {
     leads_the_store: bool,
 }
 
-/// Stand for the one placed range this node's member row names, on that range's
-/// own line (ADR-0082).
+/// The placed line this node stands on, with its own cursor.
+type OnALine = (tessari_types::Reach, tessari_wire::Renewing);
+
+/// The range this node last handed to its preferred candidate, and when.
+type Yielded = (tessari_types::Reach, std::time::Instant);
+
+/// Stand for the one placed range this node campaigns on, on that range's own
+/// line (ADR-0082): its own placement, or a range given back to the store line
+/// it leads (ADR-0098 D3) — unless it is handing the range to a preferred
+/// candidate (G053 SG5b).
 ///
 /// The store line's cadence and its rules, applied to one range: ADR-0066's
 /// *a node that hears a leader does not stand*, read per line; the margin rule
@@ -316,7 +326,7 @@ pub(crate) struct Candidate<'a> {
 pub(crate) fn stand_for_a_placed_range(
     db: &Db,
     candidate: &Candidate<'_>,
-    on_a_line: &mut Option<(tessari_types::Reach, tessari_wire::Renewing)>,
+    (on_a_line, yielded): (&mut Option<OnALine>, &mut Option<Yielded>),
     now: std::time::Instant,
 ) {
     let Some(range) =
@@ -341,6 +351,9 @@ pub(crate) fn stand_for_a_placed_range(
             candidate.periods.lease(),
         ),
     ) {
+        return;
+    }
+    if hands_to_the_preferred(db, candidate, range, yielded, now) {
         return;
     }
     let peers: Vec<_> = candidate
@@ -404,4 +417,52 @@ pub(crate) fn stand_for_a_placed_range(
             );
         }
     }
+}
+
+/// Whether this node stays off `range`'s line this tick because it handed the
+/// range to its preferred candidate (G053 SG5b) — now, or recently enough that
+/// the candidate is still being elected.
+///
+/// A leader that is not the range's preferred candidate, hearing one that is
+/// caught up, stops renewing: its lease runs out and the preferred candidate is
+/// elected, the hand-over a moved placement already takes (ADR-0098 D2). It
+/// then stays off the line for four leases, so it does not win the range back
+/// in the gap, and yields at most once per `PREFERENCE_YIELD_SECONDS`.
+fn hands_to_the_preferred(
+    db: &Db,
+    candidate: &Candidate<'_>,
+    range: tessari_types::Reach,
+    yielded: &mut Option<Yielded>,
+    now: std::time::Instant,
+) -> bool {
+    let lease = candidate.periods.lease();
+    let since = yielded
+        .filter(|(on, _)| *on == range)
+        .map(|(_, at)| now.saturating_duration_since(at));
+    if since.is_some_and(|since| since < lease.saturating_mul(4)) {
+        return true;
+    }
+    let patient = std::time::Duration::from_secs(tessari_constants::PREFERENCE_YIELD_SECONDS);
+    if since.is_some_and(|since| since < patient) || db.store().leading_of(range).is_none() {
+        return false;
+    }
+    let Ok(line) = crate::greeting_round::line_of(db.store(), range) else {
+        return false;
+    };
+    let Some(to) = tessari_wire::preferred_to_yield_to(
+        range,
+        candidate.me,
+        candidate.declared,
+        &candidate.published.current(),
+        line.reached(),
+        (now, candidate.periods.staleness_floor()),
+    ) else {
+        return false;
+    };
+    log::info!(
+        "handing {range:?} to its preferred candidate {}",
+        crate::greeting_round::hex(&to)
+    );
+    *yielded = Some((range, now));
+    true
 }

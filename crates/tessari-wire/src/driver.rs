@@ -50,8 +50,8 @@ use crate::directory::{Destination, Directory};
 use crate::joining::Seed;
 pub use leadership::{
     Renewing, campaign_line, campaigns_for, election_timeout, heard_a_leader, heard_a_leader_on,
-    heard_a_newer_policy, leader_of_range, released, stands, stands_for, stands_for_the_store,
-    voters,
+    heard_a_newer_policy, leader_of_range, preferred_to_yield_to, released, stands, stands_for,
+    stands_for_the_store, voters,
 };
 
 /// How long to wait before the next pass, given when the last one started.
@@ -551,8 +551,8 @@ mod tests {
     use super::{
         Collecting, Published, Renewing, Seed, bootstrap_from, campaign_line, campaigns_for,
         due_in, election_timeout, every, heard_a_leader, heard_a_leader_on, heard_a_newer_policy,
-        leader_of_range, names_a_peer, released, stands, stands_for, stands_for_the_store,
-        upstream, voters,
+        leader_of_range, names_a_peer, preferred_to_yield_to, released, stands, stands_for,
+        stands_for_the_store, upstream, voters,
     };
     use crate::campaign::Stood;
     use crate::directory::Directory;
@@ -642,6 +642,7 @@ mod tests {
             fingerprint: None,
             join: None,
             releasing: false,
+            preferred: false,
         }
     }
 
@@ -1936,5 +1937,84 @@ mod tests {
         let mut staying = named("b", "10.0.0.2:9000", ANOTHER);
         staying.leads = Some(shard(2));
         assert!(released(&[giving, staying]).is_empty());
+    }
+
+    /// G053 SG5b. A non-preferred leader hands the range to a preferred
+    /// candidate that is audible and caught up — and to nobody else.
+    #[test]
+    fn a_leader_yields_only_to_a_preferred_candidate_that_is_caught_up() {
+        let mut leading = named("a", "10.0.0.1:9000", NODE);
+        leading.leads = Some(shard(2));
+        let mut preferred = named("b", "10.0.0.2:9000", ANOTHER);
+        preferred.leads = Some(shard(2));
+        preferred.preferred = true;
+        let declared = [leading.clone(), preferred.clone()];
+        let now = Instant::now();
+        let within = Duration::from_secs(2);
+        let mine = crate::grant::Reached {
+            leadership: Epoch::new(1),
+            tail: Sequence::new(3),
+        };
+        let level = greeted(&[("10.0.0.2:9000", on_a_line(ANOTHER, shard(2), 0))]);
+        assert_eq!(
+            preferred_to_yield_to(shard(2), NODE, &declared, &level, mine, (now, within)),
+            Some(ANOTHER)
+        );
+        // Behind this node's own position: not yet.
+        let ahead = crate::grant::Reached {
+            leadership: Epoch::new(1),
+            tail: Sequence::new(4),
+        };
+        assert_eq!(
+            preferred_to_yield_to(shard(2), NODE, &declared, &level, ahead, (now, within)),
+            None
+        );
+        // Not heard at all, or heard too long ago.
+        assert_eq!(
+            preferred_to_yield_to(
+                shard(2),
+                NODE,
+                &declared,
+                &Directory::new(),
+                mine,
+                (now, within)
+            ),
+            None
+        );
+        let later = now
+            .checked_add(Duration::from_secs(3))
+            .expect("an instant three seconds on is representable");
+        assert_eq!(
+            preferred_to_yield_to(shard(2), NODE, &declared, &level, mine, (later, within)),
+            None
+        );
+        // A preferred leader yields to nobody; nor does anybody when no row
+        // is preferred.
+        let mut both = leading.clone();
+        both.preferred = true;
+        assert_eq!(
+            preferred_to_yield_to(
+                shard(2),
+                NODE,
+                &[both, preferred.clone()],
+                &level,
+                mine,
+                (now, within)
+            ),
+            None
+        );
+        let mut plain = preferred;
+        plain.preferred = false;
+        assert_eq!(
+            preferred_to_yield_to(
+                shard(2),
+                NODE,
+                &[leading, plain],
+                &level,
+                mine,
+                (now, within)
+            ),
+            None
+        );
     }
 }

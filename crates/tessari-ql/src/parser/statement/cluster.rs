@@ -461,6 +461,7 @@ impl Parser<'_> {
         } else {
             None
         };
+        let preferred = leads.is_some() && self.eat_word("preferred");
         // ADR-0108 D9: the certificate that may bind this row, when it is not
         // bound by `NODE` and not to wait on a join token.
         let fingerprint = if self.eat_word("fingerprint") {
@@ -477,6 +478,7 @@ impl Parser<'_> {
             node,
             replicates,
             leads,
+            preferred,
             fingerprint,
             if_not_exists,
         })
@@ -486,11 +488,17 @@ impl Parser<'_> {
     /// `DEFINE REPLICA` uses for the same clause (Q-892).
     pub(super) fn replica_change(&mut self) -> Result<ReplicaChange> {
         if self.eat_word("leads") {
-            return Ok(ReplicaChange::Leads(if self.eat_keyword(Keyword::None) {
-                None
-            } else {
-                Some(self.placed_range()?)
-            }));
+            if self.eat_keyword(Keyword::None) {
+                return Ok(ReplicaChange::Leads {
+                    range: None,
+                    preferred: false,
+                });
+            }
+            let range = Some(self.placed_range()?);
+            return Ok(ReplicaChange::Leads {
+                range,
+                preferred: self.eat_word("preferred"),
+            });
         }
         if self.eat_word("at") {
             return Ok(ReplicaChange::At(self.text("the endpoint, as text")?.0));

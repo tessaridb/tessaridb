@@ -4029,6 +4029,85 @@ fn a_range_given_back_to_the_store_line_keeps_every_write_it_took() {
     }
 }
 
+/// The candidate-preference scenario's addresses, its own band (G053 SG5b).
+const PREFERRING: Band = [
+    ("127.0.0.1:48028", "127.0.0.1:48029"),
+    ("127.0.0.1:48030", "127.0.0.1:48031"),
+    ("127.0.0.1:48032", "127.0.0.1:48033"),
+];
+
+#[test]
+#[ignore = "real cadences across three processes — the range's leader hands it \
+            to the preferred candidate once that one is caught up. G053 SG5b's \
+            own validation, run explicitly: cargo test -p tessari-cli --test \
+            serving a_preferred_candidate -- --ignored"]
+fn a_preferred_candidate_is_handed_the_range_by_its_leader_and_keeps_it() {
+    // G053 C5: shard 2 led by n_x; n_y placed on it PREFERRED. Once n_y is
+    // caught up, n_x stops renewing and n_y is elected, takes writes, and is
+    // not displaced again.
+    let cluster = a_cluster_declared(&PREFERRING, "", ["", "", ""]);
+    let logs = cluster.logs.clone();
+    let on_the_store_leader = |script: &str| {
+        until(Duration::from_secs(90), || {
+            PREFERRING
+                .iter()
+                .any(|(surface, _)| asked(surface, script, None).is_ok())
+        })
+    };
+    assert!(
+        on_the_store_leader(PLACED),
+        "the schema was never declared{}",
+        what_the_nodes_said(&PREFERRING, &logs)
+    );
+    let (first, preferred) = (1_usize, 2_usize);
+    assert!(on_the_store_leader(&format!(
+        "ALTER REPLICA n{first} LEADS SHARD prod.shop.orders 2;"
+    )));
+    if let Err(last) = until_taken(PREFERRING[first].0, "h", Duration::from_secs(120)) {
+        panic!(
+            "n{first} never took shard 2; last: {last}{}",
+            what_the_nodes_said(&PREFERRING, &logs)
+        );
+    }
+    let began = Instant::now();
+    assert!(on_the_store_leader(&format!(
+        "ALTER REPLICA n{preferred} LEADS SHARD prod.shop.orders 2 PREFERRED;"
+    )));
+    let handed = until(Duration::from_secs(60), || {
+        !shard_two_epochs(&logs[preferred]).is_empty()
+            && std::fs::read_to_string(&logs[first])
+                .is_ok_and(|text| text.contains("to its preferred candidate"))
+    });
+    assert!(
+        handed,
+        "n{first} never handed shard 2 to n{preferred}{}",
+        what_the_nodes_said(&PREFERRING, &logs)
+    );
+    eprintln!(
+        "PREFERRED took shard 2 {:?} after it was placed",
+        began.elapsed()
+    );
+    if let Err(last) = until_taken(PREFERRING[preferred].0, "hp", Duration::from_secs(60)) {
+        panic!(
+            "n{preferred} never took a write into shard 2; last: {last}{}",
+            what_the_nodes_said(&PREFERRING, &logs)
+        );
+    }
+    // Still there a while later: the old leader did not take it back.
+    std::thread::sleep(Duration::from_secs(5));
+    let (old, new) = (
+        shard_two_epochs(&logs[first]),
+        shard_two_epochs(&logs[preferred]),
+    );
+    assert!(
+        old.iter().max() < new.iter().max(),
+        "n{first} led shard 2 again after the hand-over: {old:?} vs {new:?}"
+    );
+    if let Err(last) = until_taken(PREFERRING[preferred].0, "hq", Duration::from_secs(30)) {
+        panic!("n{preferred} lost shard 2; last: {last}");
+    }
+}
+
 /// The cross-leader measurement's addresses, a band of its own.
 const ACROSS_TIMED: Band = [
     ("127.0.0.1:47998", "127.0.0.1:47999"),

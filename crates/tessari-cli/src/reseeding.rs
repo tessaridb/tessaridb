@@ -102,6 +102,7 @@ mod tests {
             fingerprint: None,
             join: None,
             releasing: false,
+            preferred: false,
         }
     }
 

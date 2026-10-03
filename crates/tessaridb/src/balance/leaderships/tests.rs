@@ -30,6 +30,7 @@ fn row(n: u8, leads: Option<Reach>) -> ReplicaDefinition {
         fingerprint: None,
         join: None,
         releasing: false,
+        preferred: false,
     }
 }
 
@@ -134,5 +135,12 @@ fn a_second_move_waits_out_the_spacing_after_the_first() {
 fn a_placement_being_given_back_is_not_moved_to_a_voter() {
     let (mut rows, lines) = crowded();
     rows[0].releasing = true;
+    assert_eq!(plan(&rows, &lines), None);
+}
+
+#[test]
+fn a_preferred_placement_is_not_moved_to_a_voter() {
+    let (mut rows, lines) = crowded();
+    rows[0].preferred = true;
     assert_eq!(plan(&rows, &lines), None);
 }

@@ -60,6 +60,7 @@ struct Peer<'a> {
     node: Option<[u8; NODE_ID_LEN]>,
     replicates: Option<&'a ReachRef>,
     leads: Option<&'a ReachRef>,
+    preferred: bool,
     fingerprint: Option<&'a str>,
 }
 
@@ -358,6 +359,7 @@ impl Session<'_> {
                 node,
                 replicates,
                 leads,
+                preferred,
                 fingerprint,
                 if_not_exists,
             } => self.define_replica(
@@ -371,6 +373,7 @@ impl Session<'_> {
                     node: *node,
                     replicates: replicates.as_ref(),
                     leads: leads.as_ref(),
+                    preferred: *preferred,
                     fingerprint: fingerprint.as_deref(),
                 },
                 *if_not_exists,

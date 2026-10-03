@@ -181,6 +181,7 @@ impl Session<'_> {
             fingerprint: peer.fingerprint.map(str::to_owned),
             join: None,
             releasing: false,
+            preferred: peer.preferred,
         })?;
         Ok(Outcome::Done)
     }
@@ -270,12 +271,12 @@ impl Session<'_> {
     ) -> Result<Outcome> {
         use tessari_ql::ReplicaChange;
         let amended = match change {
-            ReplicaChange::Leads(leads) => {
-                let leads = match leads {
+            ReplicaChange::Leads { range, preferred } => {
+                let leads = match range {
                     None => None,
                     Some(named) => Some(self.reach_of(transaction, named)?),
                 };
-                Catalog::new(transaction).alter_replica_leads(&name.text, leads)?
+                Catalog::new(transaction).alter_replica_leads(&name.text, leads, *preferred)?
             }
             // Read before the row is touched, so a misspelled role changes
             // nothing — `DEFINE REPLICA`'s order.

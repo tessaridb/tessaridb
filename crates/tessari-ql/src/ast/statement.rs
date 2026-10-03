@@ -738,6 +738,9 @@ pub enum StatementKind {
         /// already — so the parser takes `NAMESPACE`, `DATABASE` and `SHARD`
         /// only. `None` is the row as it has always been.
         leads: Option<ReachRef>,
+        /// `PREFERRED` after the placement: the candidate a non-preferred
+        /// leader of that range hands it to once caught up (G053 SG5b).
+        preferred: bool,
         /// The one certificate allowed to bind this row (`FINGERPRINT`), its
         /// SHA-256 as 64 lowercase hexadecimal digits (ADR-0108 D9).
         fingerprint: Option<String>,

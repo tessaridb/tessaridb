@@ -51,6 +51,7 @@ const FIELD_HTTP: &str = "http";
 const FIELD_FINGERPRINT: &str = "fingerprint";
 const FIELD_JOIN: &str = "join";
 const FIELD_RELEASING: &str = "releasing";
+const FIELD_PREFERRED: &str = "preferred";
 const FIELD_DIGEST: &str = "digest";
 const FIELD_EXPIRES: &str = "expires";
 
@@ -178,6 +179,10 @@ pub struct ReplicaDefinition {
     /// leads the range too it folds the placement away
     /// ([`Catalog::finish_release`]). Written only when true.
     pub releasing: bool,
+    /// `LEADS … PREFERRED`: the candidate a non-preferred leader of the range
+    /// hands it to once this one is caught up (G053 SG5b). Written only when
+    /// true.
+    pub preferred: bool,
 }
 
 /// A one-time join token as the catalog keeps it: never the token itself.
@@ -236,6 +241,9 @@ impl ReplicaDefinition {
         if self.releasing {
             fields.insert(FIELD_RELEASING.to_owned(), Value::Bool(true));
         }
+        if self.preferred {
+            fields.insert(FIELD_PREFERRED.to_owned(), Value::Bool(true));
+        }
         if let Some(join) = &self.join {
             fields.insert(
                 FIELD_JOIN.to_owned(),
@@ -280,18 +288,23 @@ impl ReplicaDefinition {
             http: text_in(fields, FIELD_HTTP)?,
             fingerprint: text_in(fields, FIELD_FINGERPRINT)?,
             join: join_in(fields)?,
-            releasing: match fields.get(FIELD_RELEASING) {
-                None => false,
-                Some(Value::Bool(releasing)) => *releasing,
-                Some(other) => {
-                    return Err(Error::CatalogMalformed {
-                        entity: ENTITY,
-                        field: FIELD_RELEASING,
-                        found: other.type_name(),
-                    });
-                }
-            },
+            releasing: flag_in(fields, FIELD_RELEASING)?,
+            preferred: flag_in(fields, FIELD_PREFERRED)?,
         })
+    }
+}
+
+/// A flag written only when true: absent is false, and anything present that
+/// is not true or false is refused rather than read as either.
+fn flag_in(fields: &BTreeMap<String, Value>, field: &'static str) -> Result<bool> {
+    match fields.get(field) {
+        None => Ok(false),
+        Some(Value::Bool(set)) => Ok(*set),
+        Some(other) => Err(Error::CatalogMalformed {
+            entity: ENTITY,
+            field,
+            found: other.type_name(),
+        }),
     }
 }
 
@@ -424,6 +437,7 @@ impl Catalog<'_, '_> {
             fingerprint: None,
             join: None,
             releasing: false,
+            preferred: false,
         })
     }
 
@@ -579,13 +593,20 @@ impl Catalog<'_, '_> {
     /// [`Error::PlacementCannotBeDropped`] when the last row placing a range
     /// is moved to another one, and an error when the stored definitions
     /// cannot be read.
-    pub fn alter_replica_leads(&mut self, name: &str, leads: Option<Reach>) -> Result<bool> {
+    pub fn alter_replica_leads(
+        &mut self,
+        name: &str,
+        leads: Option<Reach>,
+        preferred: bool,
+    ) -> Result<bool> {
         let Some(mut definition) = self.replica_row(name)? else {
             return Ok(false);
         };
+        let preferred = preferred && leads.is_some();
         if definition.leads == leads {
-            if definition.releasing {
+            if definition.releasing || definition.preferred != preferred {
                 definition.releasing = false;
+                definition.preferred = preferred;
                 self.write_replica(&definition);
             }
             return Ok(true);
@@ -598,12 +619,14 @@ impl Catalog<'_, '_> {
             && !self.has_another_candidate(&definition)?
         {
             definition.releasing = true;
+            definition.preferred = false;
             self.write_replica(&definition);
             return Ok(true);
         }
         self.keeps_a_candidate(&definition)?;
         definition.leads = leads;
         definition.releasing = false;
+        definition.preferred = preferred;
         self.write_replica(&definition);
         Ok(true)
     }
@@ -627,6 +650,7 @@ impl Catalog<'_, '_> {
         }
         definition.leads = None;
         definition.releasing = false;
+        definition.preferred = false;
         self.write_replica(&definition);
         Ok(true)
     }
@@ -931,6 +955,7 @@ mod tests {
             fingerprint: None,
             join: None,
             releasing: false,
+            preferred: false,
         }
     }
 

@@ -572,8 +572,14 @@ pub enum NamespaceChange {
 /// again tombstones that node (ADR-0108 D9).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplicaChange {
-    /// `LEADS SHARD prod.shop.orders 2`, or `LEADS NONE` (ADR-0098).
-    Leads(Option<ReachRef>),
+    /// `LEADS SHARD prod.shop.orders 2 [PREFERRED]`, or `LEADS NONE`
+    /// (ADR-0098; `PREFERRED`, G053 SG5b).
+    Leads {
+        /// The range placed, or `None` to give the placement up.
+        range: Option<ReachRef>,
+        /// Whether this candidate is the one the range's leader yields to.
+        preferred: bool,
+    },
     /// `AT 'b2:9001'` — where its peer door answers now.
     At(String),
     /// `ROLES serving, writable` — what it is for, as the words written.

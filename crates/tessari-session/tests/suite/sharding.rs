@@ -634,6 +634,11 @@ fn the_last_placement_on_a_range_is_not_taken_away() {
 
 /// Each peer's `releasing` flag as `INFO FOR NODE` reports it.
 fn releasing(session: &mut Session<'_>) -> Vec<(String, bool)> {
+    flag(session, "releasing")
+}
+
+/// Each peer's boolean `field` as `INFO FOR NODE` reports it.
+fn flag(session: &mut Session<'_>, field: &str) -> Vec<(String, bool)> {
     let Value::Object(report) = report(session, "INFO FOR NODE;") else {
         panic!("not a report");
     };
@@ -652,10 +657,7 @@ fn releasing(session: &mut Session<'_>) -> Vec<(String, bool)> {
             let Some(Value::String(name)) = fields.get("name") else {
                 panic!("a peer has a name");
             };
-            (
-                name.clone(),
-                fields.get("releasing") == Some(&Value::Bool(true)),
-            )
+            (name.clone(), fields.get(field) == Some(&Value::Bool(true)))
         })
         .collect()
 }
@@ -698,6 +700,37 @@ fn the_last_placement_given_up_is_released_to_the_store_line_and_still_carved() 
     );
     assert_eq!(
         releasing(&mut session),
+        vec![("a".to_owned(), false), ("b".to_owned(), false)]
+    );
+}
+
+#[test]
+fn a_candidate_is_preferred_where_it_is_placed_and_restating_without_it_clears_it() {
+    // G053 SG5b: `PREFERRED` belongs to the placement — written with it,
+    // restated without it to clear it, and gone with `LEADS NONE`.
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run(
+            "DEFINE TABLE orders (total int) IDENTITY uuid SPLIT AT 'g'; \
+             DEFINE REPLICA a AT 'a:9001' LEADS SHARD prod.shop.orders 1; \
+             DEFINE REPLICA b AT 'b:9001' LEADS SHARD prod.shop.orders 1 PREFERRED;",
+        )
+        .unwrap();
+    assert_eq!(
+        flag(&mut session, "preferred"),
+        vec![("a".to_owned(), false), ("b".to_owned(), true)]
+    );
+    session
+        .run("ALTER REPLICA a LEADS SHARD prod.shop.orders 1 PREFERRED; ALTER REPLICA b LEADS SHARD prod.shop.orders 1;")
+        .unwrap();
+    assert_eq!(
+        flag(&mut session, "preferred"),
+        vec![("a".to_owned(), true), ("b".to_owned(), false)]
+    );
+    session.run("ALTER REPLICA a LEADS NONE;").unwrap();
+    assert_eq!(
+        flag(&mut session, "preferred"),
         vec![("a".to_owned(), false), ("b".to_owned(), false)]
     );
 }

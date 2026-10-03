@@ -9072,6 +9072,29 @@ The last row is still not moved to **another** range, nor dropped with `DROP
 REPLICA` (**`PlacementCannotBeDropped`**): give the range back with `LEADS NONE`
 first, or place another row on it.
 
+**Preferring one candidate — `PREFERRED`.** When several rows place one range,
+the election decides which leads, and any of them may win. Written after the
+placement, `PREFERRED` names the one that should:
+
+```
+DEFINE REPLICA b AT 'b:9001' LEADS SHARD prod.shop.orders 2 PREFERRED;
+ALTER REPLICA c LEADS SHARD prod.shop.orders 2 PREFERRED;
+```
+
+A leader that is not preferred, hearing a preferred candidate of its range that
+is caught up with it on the range's line, stops renewing; its lease runs out and
+the preferred candidate is elected — the same hand-over a moved placement takes,
+so writes into the range are refused for about a lease and an election. It hands
+the range over only to a candidate that is caught up and audible, stays off the
+range's line for four leases afterwards so it does not win it back in the gap,
+and hands over at most once every 30 seconds, so a preferred node that keeps
+failing cannot have the range thrown back and forth. Measured on three local
+processes: the preferred candidate took the range about 2.6 s after it was
+placed. Several preferred rows on one range are equals. Restating the placement
+without the word clears it, and `LEADS NONE` clears it with the placement;
+`INFO FOR NODE` reports `preferred` on each peer. The leadership balancer never
+moves a preferred placement.
+
 
 ### How many copies hold a write before it is acknowledged
 
@@ -9704,7 +9727,6 @@ with a doubling wait (`SignInThrottled`), its counts kept per store.
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
 | **hash** sharding | shards are spans of identities, which is what keeps a span read one walk. Spreading writes by hash forfeits that order and is a second method the map can carry later, not a change to the first. §4 |
 | more of a gathered read **pushed to the shards' leaders** | a `WHERE`, a `LIMIT`, an `ORDER BY … LIMIT` over record-only keys and the folds that merge exactly (`count`, `sum`, `mean`, `min`, `max`) travel; `variance`, `stddev`, `median`, `collect`, the counter folds and a fold over floats gather the records and run here, and a suggestion is withheld on a node holding part of the table. Merging those exactly is each its own piece of work. A join side and a `FETCH` are not gathered at all. §7d |
-| **choosing among a range's candidates** | `LEADS` elects a leader per placed range, `ALTER REPLICA` moves a placement, `LEADS NONE` gives a range back to the store line, and `BALANCE LEADERSHIPS` evens out who leads what — but there is no preference among several candidates for one range. §7d |
 | a change feed over a split table **on a node that does not write all of it** | a feed merges one writer's logs in that writer's order, and two writers' orders are unrelated counters — so a shard led elsewhere, or a follower, is refused by name rather than merged by a guess. Following it there needs an order across writers. §4 |
 | **an index serving a branch of a fused read** (`ORDER BY FUSE`) | every branch is ranked over every record that passed the `WHERE`, which is exact and costs the filtered read. A branch served from the search walk or the vector graph would stop early, and a fused order needs each branch's places down to its depth — the bound is the depth, not the `LIMIT`, and proving the walk answers the same places is its own piece of work. §5 |
 | a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |

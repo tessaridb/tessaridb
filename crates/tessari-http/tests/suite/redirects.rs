@@ -72,6 +72,7 @@ fn one_of_two(addressed: bool) -> Arc<Db> {
             fingerprint: None,
             join: None,
             releasing: false,
+            preferred: false,
         })
         .unwrap();
     catalog
