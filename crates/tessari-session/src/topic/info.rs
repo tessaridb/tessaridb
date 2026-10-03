@@ -135,6 +135,12 @@ impl Session<'_> {
         if let Some(max) = declared.max_bytes {
             report.insert("max_bytes".to_owned(), whole(max));
         }
+        // What a size retention is judged against, beside the limit (G055 C8).
+        if let Some(kept) = declared.retain_bytes {
+            report.insert("retain_bytes".to_owned(), whole(kept));
+            let bytes = transaction.topic_bytes(context.namespace, context.database, table)?;
+            report.insert("bytes".to_owned(), whole(bytes));
+        }
         Ok(report)
     }
 }

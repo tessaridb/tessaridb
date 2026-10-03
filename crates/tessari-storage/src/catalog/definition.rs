@@ -77,6 +77,8 @@ const FIELD_VIEW: &str = "view";
 const FIELD_READ: &str = "read";
 const FIELD_TIMEOUT: &str = "timeout";
 const FIELD_ATTEMPTS: &str = "attempts";
+const FIELD_PRIORITY: &str = "priority";
+const FIELD_NOT_BEFORE: &str = "not_before";
 const FIELD_SERIES: &str = "series";
 /// A space's declaration: present (possibly empty) exactly when the table is one.
 const FIELD_SPACE: &str = "space";

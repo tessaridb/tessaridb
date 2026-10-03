@@ -87,7 +87,7 @@ pub(crate) fn queue_declaration(
 }
 
 /// When a claim taken at `now` lapses.
-pub(crate) fn deadline(now: Datetime, declared: QueueDeclaration, span: Span) -> Result<Datetime> {
+pub(crate) fn deadline(now: Datetime, declared: &QueueDeclaration, span: Span) -> Result<Datetime> {
     later(now, declared.timeout, span)
 }
 
@@ -119,10 +119,20 @@ pub(crate) fn later(now: Datetime, by: Duration, span: Span) -> Result<Datetime>
 pub(crate) fn claimable(
     fields: &BTreeMap<String, Value>,
     now: Datetime,
-    declared: QueueDeclaration,
+    declared: &QueueDeclaration,
 ) -> bool {
     if let Some(ceiling) = declared.attempts
         && attempts_of(fields) >= i64::from(ceiling)
+    {
+        return false;
+    }
+    // Delayed delivery (G055 C8): an instant after now is a record that is
+    // not due yet. Anything that is not an instant is no delay — a value the
+    // writer got wrong must not hold a record back forever with nothing in an
+    // error state.
+    if let Some(field) = &declared.not_before
+        && let Some(Value::Datetime(due)) = fields.get(field)
+        && *due > now
     {
         return false;
     }

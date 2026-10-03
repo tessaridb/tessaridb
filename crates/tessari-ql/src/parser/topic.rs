@@ -27,7 +27,22 @@ impl Parser<'_> {
         let name = self.name()?;
         let mut clauses = TopicClauses::default();
         loop {
-            if clauses.retain.is_none() && self.eat_word("retain") {
+            // `RETAIN 7d` and `RETAIN BYTES n` are two limits, each written
+            // once, and the first one a message reaches removes it.
+            if self.peek_word("retain")
+                && self.follows_word(1, "bytes")
+                && clauses.retain_bytes.is_none()
+            {
+                self.eat_word("retain");
+                self.eat_word("bytes");
+                clauses.retain_bytes = Some(self.positive_count(
+                    "a whole number above zero — the most bytes of messages the topic keeps",
+                )?);
+            } else if clauses.retain.is_none()
+                && self.peek_word("retain")
+                && !self.follows_word(1, "bytes")
+            {
+                self.eat_word("retain");
                 clauses.retain = Some(self.positive_duration(
                     "a duration above zero, like `7d` — how long a message is kept",
                 )?);

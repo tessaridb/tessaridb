@@ -32,6 +32,21 @@ compares carries no pre-release suffix.
   writes at the same cost (9.4 µs per write either way); one audit event took a
   write from 10.0 to 34.1 µs.
 
+- **A topic that keeps at most so many bytes** (G055): `DEFINE TOPIC t RETAIN
+  BYTES n`, beside `RETAIN 7d`. An append past it removes the oldest messages in
+  the same commit, as deletes in its log record, so followers apply rather than
+  decide and the total is exact under concurrent appenders; a reader passed over
+  gets the `lapsed` note. A message larger than `n` is `TopicMessageTooLarge`; a
+  commit whose own messages outgrow `n` is `TopicRetainExceeded`. `INFO FOR TOPIC`
+  reports `retain_bytes` and `bytes`.
+
+- **Queue priority and delayed delivery** (G055): `DEFINE QUEUE q TIMEOUT 30s
+  PRIORITY BY f NOT BEFORE g`. A claim takes the greatest `f` first, ties in
+  arrival order, records without `f` last — through a value index on `f` when
+  one is declared (the claim reports `ordered`), by a walk otherwise, the same
+  records either way. A record whose `g` is an instant after now is not handed
+  out, by `CLAIM FROM` or `CLAIM q:id`.
+
 - **A route into a value**: `$after.total`, `$order.lines[0].sku`. A step that
   reaches nothing answers `NONE`, so `$before.total ?? 0` reads a missing value
   as zero.
@@ -154,7 +169,7 @@ compares carries no pre-release suffix.
   (one record in a hundred: 27.9 → 22.9 ms against 16.0 ms exact; the rest is the
   walk reading the whole graph before its first step).
 
-- **1531 conformance cases** define the language and run in the build.
+- **1539 conformance cases** define the language and run in the build.
 
 ## 0.21.0-beta — 2026-10-03
 

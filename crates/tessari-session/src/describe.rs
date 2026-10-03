@@ -200,6 +200,13 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
         if let Some(ceiling) = declared.attempts {
             let _ = write!(script, " ATTEMPTS {ceiling}");
         }
+        // The two orderings a claim follows (G055 C8), written when declared.
+        if let Some(field) = &declared.priority {
+            let _ = write!(script, " PRIORITY BY {field}");
+        }
+        if let Some(field) = &declared.not_before {
+            let _ = write!(script, " NOT BEFORE {field}");
+        }
         // Always written, on this function's own rule: a declaration leaning on
         // a default is one whose meaning changes when the default moves, and
         // changes silently, in a script somebody kept.

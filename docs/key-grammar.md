@@ -110,13 +110,15 @@ because renumbering after data exists is a full rebuild.
 | `0x40` | `IndexStatistics` | `index` | implemented — one value index summarised for the planner on this node (G055); never in the log |
 | `0x41` | `IndexChanges` | `index` | implemented — entries one value index has gained or lost on this node (G055); never in the log |
 | `0x42` | `SearchSurface` (surface forms of stemmed terms) | `index` | implemented — see §6.2b-6 |
+| `0x43` | `TopicBytes` (payload bytes a size-retained topic holds) | `index` | implemented — see §6.2d |
 
 `0x40` and `0x41` open a fifth family, `0x4_`: what the planner keeps about an
 index. Both keys are an index prefix with no suffix (`<tag> <namespace:u32>
 <database:u32> <table:u32> <index:u32>`), are cleared with the index's entries,
 and decide which access path a read takes and never which records it returns.
 `0x42` sits in that family by number only: it is a search index's derived
-entry, written with its postings like `0x1f`, not a planner summary.
+entry, written with its postings like `0x1f`, not a planner summary. `0x43`
+is a topic's, beside `0x1e`, likewise by number only.
 
 ### 3c. The spatial entry
 
@@ -816,6 +818,7 @@ compute with.
 <0x1c> <namespace:u32> <database:u32> <table:u32> <position:u64> <record-id>          → empty
 <0x1d> <namespace:u32> <database:u32> <table:u32> <record-id> <position:u64>          → empty
 <0x1e> <namespace:u32> <database:u32> <table:u32>                                     → <u64>
+<0x43> <namespace:u32> <database:u32> <table:u32>                                     → <u64>
 ```
 
 `0x1a` files each record version that carries an expiry by the millisecond it
@@ -826,7 +829,10 @@ and `0x1d` file each message of a topic by its position and by its identity —
 the first serves a read after a position, the second the removal of a message,
 which does not carry its position. `0x1e` holds the last position the topic has
 given and is never removed, so a topic that retention has emptied does not start
-numbering again from 1.
+numbering again from 1. `0x43` holds how many payload bytes a topic declared
+`RETAIN BYTES` holds, written only for such a topic so its count is complete
+from the first message; a count that is absent is recounted from `0x1c` and the
+messages rather than read as zero (G055 C8).
 
 Every one of them is written in the batch of the record it describes, on the
 commit and on a follower's apply, and none is carried in the log.

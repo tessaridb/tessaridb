@@ -297,6 +297,9 @@ pub struct TopicClauses {
     pub retain: Option<Duration>,
     /// `MAX BYTES n` — the most bytes one message may encode to.
     pub max_bytes: Option<u64>,
+    /// `RETAIN BYTES n` — the most payload bytes the topic keeps; past it the
+    /// oldest messages are removed by the commit that appends (G055 C8).
+    pub retain_bytes: Option<u64>,
     /// `PUBLIC RATE n PER d` — appends a caller nobody signed in may make, per
     /// window, on each node.
     pub public: Option<(u64, Duration)>,

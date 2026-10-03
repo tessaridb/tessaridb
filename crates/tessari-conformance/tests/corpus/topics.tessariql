@@ -152,3 +152,31 @@ DROP TOPIC CONSUMER feed_in;
 --- case: and one that is not there cannot be
 DROP TOPIC CONSUMER feed_in;
 --- expect: error Unknown
+
+--- case: a size retention keeps the newest messages that fit, removed by the commit that appends
+DEFINE TOPIC recent RETAIN BYTES 120;
+CREATE recent:1 = { body: 'aaaaaaaaaaaaaaaaaaaa' };
+CREATE recent:2 = { body: 'aaaaaaaaaaaaaaaaaaaa' };
+CREATE recent:3 = { body: 'aaaaaaaaaaaaaaaaaaaa' };
+CREATE recent:4 = { body: 'aaaaaaaaaaaaaaaaaaaa' };
+CREATE recent:5 = { body: 'aaaaaaaaaaaaaaaaaaaa' };
+CREATE recent:6 = { body: 'aaaaaaaaaaaaaaaaaaaa' };
+SELECT * FROM recent:1;
+--- expect: rows 0
+
+--- case: and the newest is kept
+SELECT * FROM recent:6;
+--- expect: rows 1
+
+--- case: a message larger than the size retention is refused
+DEFINE TOPIC tiny RETAIN BYTES 8;
+CREATE tiny:1 = { body: 'far more than eight bytes' };
+--- expect: error TopicMessageTooLarge
+
+--- case: a commit whose own messages outgrow it is refused
+BEGIN;
+CREATE recent:7 = { body: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' };
+CREATE recent:8 = { body: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' };
+CREATE recent:9 = { body: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' };
+COMMIT;
+--- expect: error TopicRetainExceeded

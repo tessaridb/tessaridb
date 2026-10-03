@@ -6688,6 +6688,36 @@ has failed or is shutting down. It does not touch the attempt count — that was
 taken at the claim, and a record that was handed out was handed out whatever
 happened next.
 
+### The order work is handed out in: `PRIORITY BY` and `NOT BEFORE`
+
+```tessariql
+DEFINE QUEUE alerts TIMEOUT 1m PRIORITY BY severity;
+DEFINE INDEX by_severity ON alerts FIELDS severity;
+DEFINE QUEUE mail TIMEOUT 5m ATTEMPTS 3 NOT BEFORE send_at;
+
+CREATE alerts = { severity: 9, text: 'disk full' };
+CREATE mail = { to: 'ada@example.test', send_at: time::from_unix(time::unix(time::now()) + 600) };
+```
+
+Without either clause a claim takes records in arrival order — identity order,
+which both identity kinds this store issues follow.
+
+**`PRIORITY BY f`** hands out the greatest value of `f` first, in the order
+`ORDER BY f DESC` uses, so records sharing a value go in arrival order and a
+record without `f` goes after every record that has one. A value index on `f`
+makes finding the head a walk down the index; without one the claim reads the
+queue and keeps the best. The index changes what a claim costs, never which
+records it takes — the claim reports `ordered` with the index's name when one
+served it, and `scan` when none did.
+
+**`NOT BEFORE f`** holds a record back until the instant in `f`: a record whose
+`f` is a datetime after now is not handed out, by `CLAIM FROM` or by `CLAIM
+q:id`. It is delayed delivery written as a value in the record, the way a hold's
+deadline is — every node compares the same instant, nothing sweeps, and a worker
+that wants to retry later updates the field when it releases. A value in `f`
+that is not a datetime is no delay at all, so a mistyped value cannot keep a
+record waiting forever with nothing in an error state.
+
 ### Saying who you are
 
 ```tessariql
@@ -7199,9 +7229,25 @@ What each form promises:
 
 `RETAIN 7d` keeps a message for seven days after it was appended; the node's
 housekeeping then removes it through the log like any other delete. A topic
-without `RETAIN` keeps everything. There is no size-based retention and no
-compaction — a topic that keeps only the newest value per key is a key-value
-space, which already exists.
+without `RETAIN` keeps everything. There is no compaction — a topic that keeps
+only the newest value per key is a key-value space, which already exists.
+
+```tessariql
+DEFINE TOPIC clicks RETAIN BYTES 1073741824;
+DEFINE TOPIC audit RETAIN 30d RETAIN BYTES 10737418240;
+```
+
+`RETAIN BYTES n` keeps at most `n` bytes of messages — the encoded size `MAX
+BYTES` measures, summed. An append that would take the topic past it removes
+the **oldest** messages in the **same commit**, as ordinary deletes in its log
+record, so a follower applies the removal rather than deciding it and the total
+is exact however many writers append at once. With both limits a message goes
+at whichever it reaches first. Three refusals keep it honest: a message larger
+than `n` is refused as `TopicMessageTooLarge`; a commit whose own messages add up
+to more than `n` is refused as `TopicRetainExceeded` rather than trimmed, because
+a message that vanished on commit is a loss nobody would be told about; and the
+commit's own messages are never the ones removed. `INFO FOR TOPIC` reports
+`retain_bytes` and the `bytes` held.
 
 Removing messages never reuses a position: a topic emptied by retention carries
 on from where it was. **A reader whose next position was removed is told**: the

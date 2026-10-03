@@ -965,6 +965,8 @@ impl Session<'_> {
                 attempts,
                 schemafull,
                 graph,
+                priority,
+                not_before,
                 if_not_exists,
             } => {
                 // Resolved before the queue is created, on `DEFINE TABLE`'s own
@@ -985,6 +987,8 @@ impl Session<'_> {
                         kind: TableKind::Queue(QueueDeclaration {
                             timeout: *timeout,
                             attempts: *attempts,
+                            priority: priority.as_ref().map(|field| field.text.clone()),
+                            not_before: not_before.as_ref().map(|field| field.text.clone()),
                         }),
                         identity: IdentityKind::default(),
                         graph,

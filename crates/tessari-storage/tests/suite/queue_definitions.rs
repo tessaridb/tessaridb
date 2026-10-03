@@ -61,6 +61,10 @@ fn a_queue_definition_round_trips_with_both_clauses() {
     let declared = QueueDeclaration {
         timeout: Duration::new(30, 0).unwrap(),
         attempts: Some(5),
+        // Both declared, so the round trip proves their encoding rather than
+        // their absence (G055 C8).
+        priority: Some("p".to_owned()),
+        not_before: Some("due".to_owned()),
     };
     let definition = TableDefinition {
         id: TableId::new(7),
@@ -68,7 +72,7 @@ fn a_queue_definition_round_trips_with_both_clauses() {
         database: DatabaseId::new(2),
         name: "jobs".to_owned(),
         schemafull: false,
-        kind: TableKind::Queue(declared),
+        kind: TableKind::Queue(declared.clone()),
         identity: IdentityKind::default(),
         graph: None,
         conflict: None,
@@ -88,6 +92,8 @@ fn a_queue_declared_without_a_ceiling_reads_back_as_unlimited() {
     let declared = QueueDeclaration {
         timeout: Duration::new(5, 0).unwrap(),
         attempts: None,
+        priority: None,
+        not_before: None,
     };
     let definition = TableDefinition {
         id: TableId::new(8),
@@ -95,7 +101,7 @@ fn a_queue_declared_without_a_ceiling_reads_back_as_unlimited() {
         database: DatabaseId::new(2),
         name: "mail".to_owned(),
         schemafull: false,
-        kind: TableKind::Queue(declared),
+        kind: TableKind::Queue(declared.clone()),
         identity: IdentityKind::default(),
         graph: None,
         conflict: None,
@@ -124,6 +130,8 @@ fn a_definition_claiming_to_be_a_queue_and_an_edge_is_refused() {
         kind: TableKind::Queue(QueueDeclaration {
             timeout: Duration::new(30, 0).unwrap(),
             attempts: None,
+            priority: None,
+            not_before: None,
         }),
         identity: IdentityKind::default(),
         graph: None,

@@ -1110,6 +1110,12 @@ pub enum StatementKind {
         /// because the name is taken — so a table that had to be both was
         /// simply unrepresentable.
         graph: Option<Name>,
+        /// `PRIORITY BY f`: a claim takes the greatest `f` first, ties in
+        /// arrival order, records without a number in `f` last (G055 C8).
+        priority: Option<Name>,
+        /// `NOT BEFORE f`: a record whose `f` holds a datetime after now is not
+        /// handed out yet — delayed delivery, the delay a value in the record.
+        not_before: Option<Name>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },

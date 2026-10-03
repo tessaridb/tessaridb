@@ -98,6 +98,50 @@ impl StoreKey for TopicHeadKey {
     }
 }
 
+/// How many payload bytes one size-retained topic holds (G055 C8).
+///
+/// Kept only for a topic declared `RETAIN BYTES`, so its count begins with its
+/// first message and is complete; an absent count is recounted from the
+/// messages rather than read as zero.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopicBytesKey {
+    /// The namespace the topic belongs to.
+    pub namespace: NamespaceId,
+    /// The database within that namespace.
+    pub database: DatabaseId,
+    /// The topic.
+    pub table: TableId,
+}
+
+impl StoreKey for TopicBytesKey {
+    type Value = Sequence;
+
+    const KIND: KeyKind = KeyKind::TopicBytes;
+
+    fn encode(&self) -> Key {
+        Key::from(prefix(
+            KeyKind::TopicBytes,
+            self.namespace,
+            self.database,
+            self.table,
+        ))
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        let namespace = NamespaceId::new(reader.take_u32()?);
+        let database = DatabaseId::new(reader.take_u32()?);
+        let table = TableId::new(reader.take_u32()?);
+        reader.finish()?;
+        Ok(Self {
+            namespace,
+            database,
+            table,
+        })
+    }
+}
+
 fn prefix(kind: KeyKind, namespace: NamespaceId, database: DatabaseId, table: TableId) -> Vec<u8> {
     let mut writer = KeyWriter::with_capacity(13);
     writer

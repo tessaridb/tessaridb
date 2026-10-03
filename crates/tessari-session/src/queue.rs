@@ -56,6 +56,7 @@
 //! neither is discovered.
 
 mod claims;
+mod priority;
 use std::collections::BTreeMap;
 use std::ops::ControlFlow;
 
@@ -109,12 +110,22 @@ impl Session<'_> {
         // lapse together — and the instant that reaches the log is a value
         // rather than a computation a reader would repeat.
         let now = crate::call::instant(span)?;
-        let until = deadline(now, declared, span)?;
+        let until = deadline(now, &declared, span)?;
         // Cloned out before the walk: the closure borrows the transaction, so
         // it cannot also borrow the session.
         let claimant = self.consumer.clone();
         // A count wider than `usize` can never be reached by a vector, so it saturates.
         let limit = usize::try_from(count).unwrap_or(usize::MAX);
+        if let Some(field) = declared.priority.clone() {
+            return self.claim_by_priority(
+                transaction,
+                (context, id, table),
+                &declared,
+                &field,
+                (limit, now, until),
+                span,
+            );
+        }
 
         let mut taken: Vec<(RecordId, Value)> = Vec::new();
         let mut writes: Vec<(RecordId, Value)> = Vec::new();
@@ -132,7 +143,7 @@ impl Session<'_> {
                     // record must not stop every worker on the table.
                     return Ok(ControlFlow::Continue(()));
                 };
-                if !claimable(&fields, now, declared) {
+                if !claimable(&fields, now, &declared) {
                     return Ok(ControlFlow::Continue(()));
                 }
                 fields.insert(QUEUE_CLAIMED_UNTIL.to_owned(), Value::Datetime(until));
@@ -211,7 +222,7 @@ impl Session<'_> {
             });
         };
         let now = crate::call::instant(span)?;
-        let until = deadline(now, declared, span)?;
+        let until = deadline(now, &declared, span)?;
 
         // A record that is not an object cannot carry a hold. The selecting form
         // steps over one so that a single malformed record does not stop every
@@ -220,7 +231,7 @@ impl Session<'_> {
         let Value::Object(mut fields) = decode_payload(&stored)? else {
             return Ok(nothing_claimed(&target.table.name.text));
         };
-        if !claimable(&fields, now, declared) {
+        if !claimable(&fields, now, &declared) {
             return Ok(nothing_claimed(&target.table.name.text));
         }
         fields.insert(QUEUE_CLAIMED_UNTIL.to_owned(), Value::Datetime(until));
@@ -447,6 +458,21 @@ pub(crate) struct Claimant {
 /// Anything that is not a whole number reads as none, because a count that
 /// cannot be read is a count nothing was told — and refusing here would let one
 /// malformed record stop every worker on the table.
+/// Put a hold on a record's fields: the deadline, one more attempt, and who
+/// holds it.
+fn hold(
+    fields: &mut BTreeMap<String, Value>,
+    until: tessari_types::Datetime,
+    claimant: Option<&crate::session::Consumer>,
+) {
+    fields.insert(QUEUE_CLAIMED_UNTIL.to_owned(), Value::Datetime(until));
+    fields.insert(
+        QUEUE_ATTEMPTS.to_owned(),
+        Value::Number(Number::Integer(attempts_of(fields).saturating_add(1))),
+    );
+    mark_claimant(fields, claimant);
+}
+
 fn attempts_of(fields: &BTreeMap<String, Value>) -> i64 {
     match fields.get(QUEUE_ATTEMPTS) {
         Some(Value::Number(Number::Integer(held))) => *held,

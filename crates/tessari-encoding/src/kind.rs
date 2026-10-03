@@ -70,6 +70,8 @@ pub enum KeyKind {
     /// One surface form of one stemmed term, so a misspelling is measured
     /// against what the text said rather than against its stem (Q-867).
     SearchSurface,
+    /// How many payload bytes one size-retained topic holds (G055 C8).
+    TopicBytes,
     /// One entry in the ordered log.
     LogEntry,
     /// The store's own on-disk format version.
@@ -160,6 +162,7 @@ impl KeyKind {
         Self::TopicHead,
         Self::SearchSuffix,
         Self::SearchSurface,
+        Self::TopicBytes,
         Self::LogEntry,
         Self::FormatVersion,
         Self::AppliedPosition,
@@ -209,6 +212,7 @@ impl KeyKind {
             Self::TopicHead => 0x1e,
             Self::SearchSuffix => 0x1f,
             Self::SearchSurface => 0x42,
+            Self::TopicBytes => 0x43,
             Self::LogEntry => 0x20,
             Self::FormatVersion => 0x30,
             Self::AppliedPosition => 0x31,
@@ -252,7 +256,8 @@ impl KeyKind {
             | Self::TopicEntry
             | Self::TopicHead
             | Self::SearchSuffix
-            | Self::SearchSurface => Keyspace::INDEX,
+            | Self::SearchSurface
+            | Self::TopicBytes => Keyspace::INDEX,
             Self::LogEntry => Keyspace::LOG,
             Self::FormatVersion
             | Self::AppliedPosition
@@ -300,6 +305,7 @@ impl KeyKind {
             Self::TopicHead => "topic-head",
             Self::SearchSuffix => "search-suffix",
             Self::SearchSurface => "search-surface",
+            Self::TopicBytes => "topic-bytes",
             Self::LogEntry => "log-entry",
             Self::FormatVersion => "format-version",
             Self::AppliedPosition => "applied-position",
@@ -396,6 +402,7 @@ mod tests {
             (KeyKind::TopicHead, 0x1e),
             (KeyKind::SearchSuffix, 0x1f),
             (KeyKind::SearchSurface, 0x42),
+            (KeyKind::TopicBytes, 0x43),
             (KeyKind::LogEntry, 0x20),
             (KeyKind::FormatVersion, 0x30),
             (KeyKind::AppliedPosition, 0x31),

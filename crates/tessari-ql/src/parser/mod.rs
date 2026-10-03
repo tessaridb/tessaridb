@@ -197,6 +197,16 @@ impl Parser<'_> {
     }
 
     /// Whether the token `offset` places past the cursor is this one.
+    /// Whether the token `offset` ahead is the contextual word `word`.
+    fn follows_word(&self, offset: usize, word: &str) -> bool {
+        matches!(
+            self.tokens
+                .get(self.position.saturating_add(offset))
+                .map(|spanned| &spanned.token),
+            Some(Token::Ident(found)) if found.eq_ignore_ascii_case(word)
+        )
+    }
+
     fn follows_with(&self, offset: usize, token: &Token) -> bool {
         self.tokens
             .get(self.position.saturating_add(offset))

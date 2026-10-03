@@ -232,6 +232,7 @@ pub(crate) fn store_kind(error: &tessari_storage::Error) -> &'static str {
         tessari_storage::Error::SpaceFull { .. } => "SpaceFull",
         tessari_storage::Error::TopicIsAppendOnly { .. } => "TopicIsAppendOnly",
         tessari_storage::Error::TopicMessageTooLarge { .. } => "TopicMessageTooLarge",
+        tessari_storage::Error::TopicRetainExceeded { .. } => "TopicRetainExceeded",
         tessari_storage::Error::SchemaViolation { .. } => "SchemaViolation",
         tessari_storage::Error::UndeclaredField { .. } => "UndeclaredField",
         tessari_storage::Error::RecordsRefused { .. } => "RecordsRefused",
