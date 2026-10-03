@@ -138,6 +138,11 @@ pub enum KeyKind {
     /// participants, keyed by its id (ADR-0112). The first kind of the `0x5_`
     /// family, which is what this store keeps about such transactions.
     TransactionRecord,
+    /// One intent a transaction across leaders holds on this node, keyed by
+    /// the transaction and then the record — so a participant finds every
+    /// intent of one transaction by a prefix read, and every transaction with
+    /// intents standing by a walk of the kind (ADR-0112 D7).
+    IntentOf,
 }
 
 impl KeyKind {
@@ -185,6 +190,7 @@ impl KeyKind {
         Self::LogRetention,
         Self::ServedReach,
         Self::TransactionRecord,
+        Self::IntentOf,
     ];
 
     /// The leading byte that identifies this kind on disk.
@@ -237,6 +243,7 @@ impl KeyKind {
             Self::LogRetention => 0x3e,
             Self::ServedReach => 0x3f,
             Self::TransactionRecord => 0x50,
+            Self::IntentOf => 0x51,
         }
     }
 
@@ -282,7 +289,8 @@ impl KeyKind {
             | Self::LogStart
             | Self::LogRetention
             | Self::ServedReach
-            | Self::TransactionRecord => Keyspace::META,
+            | Self::TransactionRecord
+            | Self::IntentOf => Keyspace::META,
         }
     }
 
@@ -332,6 +340,7 @@ impl KeyKind {
             Self::LogRetention => "log-retention",
             Self::ServedReach => "served-reach",
             Self::TransactionRecord => "transaction-record",
+            Self::IntentOf => "intent-of",
         }
     }
 
@@ -430,6 +439,7 @@ mod tests {
             (KeyKind::LogRetention, 0x3e),
             (KeyKind::ServedReach, 0x3f),
             (KeyKind::TransactionRecord, 0x50),
+            (KeyKind::IntentOf, 0x51),
         ];
         assert_eq!(expected.len(), KeyKind::ALL.len(), "a kind is untested");
         for (kind, tag) in expected {

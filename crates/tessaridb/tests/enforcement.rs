@@ -980,7 +980,16 @@ const TABLES: &[Table] = &[
         // `not_held_here` refusal and `commit_acknowledged` after the wait.
         // Re-classification trigger: a caller reachable from a statement that
         // could move a counter an operator alerts on without the event.
-        expected: 64,
+        //
+        // 65 since a transaction commits across leaders (G053 SG3, ADR-0112):
+        // `Store::leader_of` names the node leading a range, judged by the
+        // write gate's own `led`. **Exempt on the ground of the four name-only
+        // methods above**: it reads leadership and membership rows — node ids
+        // and reaches — and no record, field or grant; its caller is the
+        // housekeeping pass that asks a coordinator range's leader for an
+        // outcome. Re-classification trigger: a statement surfacing it to a
+        // caller who may not read the cluster's topology.
+        expected: 65,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1180,7 +1189,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // 146 since a transaction commits across leaders (G053 SG3, ADR-0112):
     // `Db::participating_through`, enforced at the answering end, classified
     // above.
-    assert_eq!(total, 146, "the counted tables no longer sum to 146");
+    //
+    // 147 since a participant finishes its own intents (G053 SG3 d3):
+    // `Store::leader_of`, exempt, classified above.
+    assert_eq!(total, 147, "the counted tables no longer sum to 147");
 }
 
 /// Every `.rs` file under a directory.

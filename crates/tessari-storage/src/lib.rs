@@ -125,7 +125,10 @@ pub use sealing::{
 pub use state::{StateReader, TopicHead};
 pub use statistics::{estimate_equality, estimate_range};
 pub use store::{Health, Store};
-pub use tessari_encoding::{BUILD_VERSION, IndexStatistics, LogId, NODE_ID_LEN, Roles, Writer};
+pub use tessari_encoding::{
+    BUILD_VERSION, Decision, IndexStatistics, LogId, NODE_ID_LEN, Roles, TransactionId,
+    TransactionRecord, Writer,
+};
 pub use transaction::{
     AcrossPart, Committed, Expansion, FieldedPostings, Nearby, Neighbour, RecordAddress, Region,
     SearchCounts, StoredRecord, Transaction, Window,

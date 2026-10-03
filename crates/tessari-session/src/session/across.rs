@@ -54,7 +54,17 @@ pub enum AcrossAsk {
         /// The record as it is to stand.
         record: TransactionRecord,
     },
-    /// Resolve the transaction's intents on these records as decided (D4).
+    /// Answer the record's outcome, aborting it first when it is `PENDING`
+    /// past its deadline or absent (D7) — asked of the coordinator range's
+    /// leader by a participant holding intents nobody came back to resolve.
+    Settle {
+        /// The transaction.
+        transaction: TransactionId,
+        /// The range holding its record.
+        coordinator: Reach,
+    },
+    /// Resolve the transaction's intents on these records as decided (D4) —
+    /// every intent of it this node holds, when no record is named.
     Resolve {
         /// The transaction.
         transaction: TransactionId,
@@ -94,6 +104,8 @@ pub enum AcrossAnswer {
     Decided(Sequence),
     /// The resolution landed at this position, or there was nothing left.
     Resolved(Option<Sequence>),
+    /// The record's outcome, as it now stands.
+    Outcome(tessari_encoding::Decision),
 }
 
 impl Session<'_> {
@@ -166,6 +178,10 @@ impl Session<'_> {
                 Self::await_acknowledged(store, committed, waiting, span)?;
                 Ok(AcrossAnswer::Decided(committed.sequence))
             }
+            AcrossAsk::Settle {
+                transaction,
+                coordinator,
+            } => self.settle_across(*transaction, *coordinator, span),
             AcrossAsk::Resolve {
                 transaction,
                 committed,
@@ -178,6 +194,56 @@ impl Session<'_> {
                 Ok(AcrossAnswer::Resolved(
                     resolved.map(|landed| landed.sequence),
                 ))
+            }
+        }
+    }
+
+    /// Answer `transaction`'s outcome here, at its coordinator range's
+    /// leader, aborting a record that is overdue or was never written.
+    fn settle_across(
+        &mut self,
+        transaction: TransactionId,
+        coordinator: Reach,
+        span: Span,
+    ) -> Result<AcrossAnswer> {
+        let store = self.store;
+        let standing = store.transaction_record(transaction)?;
+        let participants = match &standing {
+            Some(record) if record.decision != tessari_encoding::Decision::Pending => {
+                return Ok(AcrossAnswer::Outcome(record.decision));
+            }
+            Some(record) if record.deadline > now_millis() => {
+                return Ok(AcrossAnswer::Outcome(record.decision));
+            }
+            Some(record) => record.participants.clone(),
+            None => vec![tessari_encoding::Participant {
+                range: coordinator,
+                prepared_at: None,
+            }],
+        };
+        let aborting = AcrossAsk::Decide {
+            transaction,
+            record: TransactionRecord {
+                decision: tessari_encoding::Decision::Aborted,
+                deadline: 0,
+                participants,
+            },
+        };
+        match self.answer_across(&aborting) {
+            Ok(_) => Ok(AcrossAnswer::Outcome(tessari_encoding::Decision::Aborted)),
+            // Decided between the read and the abort — the coordinator's own
+            // decision won — so the record says which.
+            Err(Error::Store(tessari_storage::Error::AcrossDecided { .. })) => {
+                let decided = store
+                    .transaction_record(transaction)?
+                    .map_or(tessari_encoding::Decision::Aborted, |record| {
+                        record.decision
+                    });
+                Ok(AcrossAnswer::Outcome(decided))
+            }
+            Err(refused) => {
+                let _ = span;
+                Err(refused)
             }
         }
     }
@@ -252,4 +318,13 @@ impl Session<'_> {
         reading.rollback();
         Ok(())
     }
+}
+
+/// Milliseconds since the Unix epoch; zero for a clock before it.
+pub(super) fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
 }

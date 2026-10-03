@@ -18,8 +18,6 @@
 //! scoped threads, one per remote leader. A part this node leads itself is
 //! written on the calling thread, which is the only one holding the session.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use argon2::password_hash::rand_core::{OsRng, RngCore};
 use tessari_constants::ACROSS_LAPSE_ROUNDS;
 use tessari_encoding::{
@@ -85,7 +83,7 @@ impl Session<'_> {
         let (coordinator, coordinator_leader) = (first.home, first.leader);
         let mut record = TransactionRecord {
             decision: Decision::Pending,
-            deadline: now_millis().saturating_add(lapse),
+            deadline: super::now_millis().saturating_add(lapse),
             participants: parts
                 .iter()
                 .map(|part| Participant {
@@ -281,14 +279,4 @@ fn fresh_id() -> TransactionId {
     let mut bytes = [0_u8; TRANSACTION_ID_LEN];
     OsRng.fill_bytes(&mut bytes);
     TransactionId::new(bytes)
-}
-
-/// Milliseconds since the Unix epoch; zero for a clock before it, which puts
-/// every deadline in the past and so lapses a record early rather than late.
-fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        })
 }

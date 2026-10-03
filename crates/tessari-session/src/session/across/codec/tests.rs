@@ -42,6 +42,15 @@ fn every_request_travels_and_arrives_as_itself() -> Result<(), String> {
             committed: false,
             records: vec![address(1), address(2)],
         },
+        AcrossAsk::Resolve {
+            transaction: TRANSACTION,
+            committed: true,
+            records: Vec::new(),
+        },
+        AcrossAsk::Settle {
+            transaction: TRANSACTION,
+            coordinator: range,
+        },
     ];
     for ask in asks {
         assert_eq!(AcrossAsk::decode(&ask.encode())?, ask);
@@ -56,6 +65,9 @@ fn every_answer_travels_and_arrives_as_itself() -> Result<(), String> {
         AcrossAnswer::Decided(Sequence::new(6)),
         AcrossAnswer::Resolved(Some(Sequence::new(7))),
         AcrossAnswer::Resolved(None),
+        AcrossAnswer::Outcome(Decision::Pending),
+        AcrossAnswer::Outcome(Decision::Committed),
+        AcrossAnswer::Outcome(Decision::Aborted),
     ] {
         assert_eq!(AcrossAnswer::decode(&answer.encode())?, answer);
     }
@@ -64,7 +76,7 @@ fn every_answer_travels_and_arrives_as_itself() -> Result<(), String> {
 
 #[test]
 fn a_plain_log_record_or_a_cut_answer_is_refused() {
-    let mut plain = vec![0_u8; 8];
+    let mut plain = vec![ASK_PREPARE, 0, 0, 0, 0, 0, 0, 0, 0];
     plain.extend_from_slice(LogRecord::new(vec![named(&address(1))]).encode().as_slice());
     assert!(AcrossAsk::decode(&plain).is_err(), "names no transaction");
     assert!(

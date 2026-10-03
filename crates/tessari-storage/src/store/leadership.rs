@@ -398,6 +398,30 @@ pub(crate) enum Led {
 }
 
 impl Store {
+    /// The node leading `range` when it is not this one, judged as the write
+    /// gate judges it; `None` when this node may write it.
+    ///
+    /// # Errors
+    ///
+    /// The substrate's failure, and a decoding failure when a stored definition
+    /// cannot be read.
+    pub fn leader_of(&self, range: Reach) -> Result<Option<[u8; NODE_ID_LEN]>> {
+        let me = self.node_identity()?.id;
+        let mut transaction = self.begin()?;
+        let catalog = crate::catalog::Catalog::new(&mut transaction);
+        let held = catalog.leaderships()?;
+        let placed: BTreeSet<Reach> = catalog
+            .replicas()?
+            .into_iter()
+            .filter_map(|peer| peer.leads)
+            .collect();
+        drop(transaction);
+        Ok(match self.led(&held, &placed, range, &me)? {
+            Led::Elsewhere(leader) => Some(leader.node),
+            Led::Here | Led::Unled | Led::Shared => None,
+        })
+    }
+
     /// Who leads `range`, judged exactly as the write gate judges it — the one
     /// answer [`Self::refuse_if_led_elsewhere`] and a transaction across
     /// leaders both read, so the two cannot come to disagree about a range.

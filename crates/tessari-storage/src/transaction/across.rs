@@ -115,6 +115,7 @@ impl Transaction<'_> {
 
     /// Resolve `transaction`'s intents on `records` as the record decided:
     /// committed, their values become versions; aborted, they are dropped.
+    /// No records means every intent of the transaction this node holds.
     ///
     /// Idempotent: a record whose intent is already gone is passed over, and
     /// `None` answers a call that found nothing left to resolve.
@@ -129,6 +130,16 @@ impl Transaction<'_> {
         records: &[RecordAddress],
     ) -> Result<Option<Committed>> {
         self.writes.clear();
+        // No records named: every intent of the transaction this node holds,
+        // read off its index — how a participant resolves after the
+        // coordinator that knew the addresses is gone (D7).
+        let held;
+        let records = if records.is_empty() {
+            held = self.store.intents_of(transaction)?;
+            held.as_slice()
+        } else {
+            records
+        };
         // The coordinator's range is read off the intents themselves, which
         // every prepare stamped with it: a resolution cannot name another.
         let mut coordinator = None;

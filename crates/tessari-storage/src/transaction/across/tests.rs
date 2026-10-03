@@ -249,3 +249,60 @@ fn an_aborted_resolution_leaves_the_old_value_and_frees_the_record() -> Result<(
     writer.commit()?;
     Ok(())
 }
+
+#[test]
+fn a_record_found_absent_is_aborted_for_good() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.decide(Decision::Aborted)?;
+    let late = fixture.decide(Decision::Pending);
+    assert!(
+        matches!(late, Err(Error::AcrossDecided { decided: "aborted" })),
+        "a PENDING delayed past the lapse reopened the record: {late:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_participant_resolves_every_intent_it_holds_without_being_told_where() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let mut transaction = fixture.store.begin()?;
+    for id in ["r", "s"] {
+        transaction.put(
+            RecordAddress::new(
+                fixture.namespace,
+                fixture.database,
+                fixture.table,
+                RecordId::from(id),
+            ),
+            b"new".to_vec(),
+        );
+    }
+    transaction.prepare_across(TRANSACTION, fixture.coordinator(), fixture.seen()?)?;
+    assert_eq!(fixture.store.intents_of(TRANSACTION)?.len(), 2);
+    assert_eq!(
+        fixture.store.standing_across()?,
+        vec![(TRANSACTION, fixture.coordinator())]
+    );
+    let resolved = fixture
+        .store
+        .begin()?
+        .resolve_across(TRANSACTION, true, &[])?;
+    assert!(resolved.is_some());
+    assert_eq!(fixture.read()?, Some(b"new".to_vec()));
+    assert!(
+        fixture.store.intents_of(TRANSACTION)?.is_empty(),
+        "the index went with them"
+    );
+    assert!(fixture.store.standing_across()?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_pending_record_is_listed_until_it_is_decided() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.decide(Decision::Pending)?;
+    assert_eq!(fixture.store.pending_across()?.len(), 1);
+    fixture.decide(Decision::Aborted)?;
+    assert!(fixture.store.pending_across()?.is_empty());
+    Ok(())
+}

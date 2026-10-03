@@ -62,3 +62,33 @@ fn the_record_it_addresses_round_trips() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn an_intent_key_round_trips_and_one_transaction_is_one_prefix() -> Result<()> {
+    use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId};
+    let of = |transaction: u8, id: RecordId| IntentOfKey {
+        transaction: TransactionId::new([transaction; TRANSACTION_ID_LEN]),
+        namespace: NamespaceId::new(1),
+        database: DatabaseId::new(2),
+        table: TableId::new(3),
+        id,
+    };
+    let mine = [of(5, RecordId::Int(-7)), of(5, RecordId::from("z"))];
+    for key in &mine {
+        let bytes = key.encode();
+        assert_eq!(&IntentOfKey::decode(bytes.as_slice())?, key);
+        assert!(
+            bytes
+                .as_slice()
+                .starts_with(&IntentOfKey::prefix_of(key.transaction))
+        );
+        assert!(bytes.as_slice().starts_with(&IntentOfKey::prefix()));
+    }
+    let other = of(6, RecordId::Int(-7)).encode();
+    assert!(
+        !other
+            .as_slice()
+            .starts_with(&IntentOfKey::prefix_of(mine[0].transaction))
+    );
+    Ok(())
+}

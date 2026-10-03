@@ -213,7 +213,7 @@ impl Store {
     ) -> Result<()> {
         // A record of a transaction across leaders is checked and settled here,
         // and an intent derives nothing until its resolution does (ADR-0112).
-        let batch = crate::intents::settle(self, record, batch)?;
+        let batch = crate::intents::settle(self, record, batch, version)?;
         if crate::intents::derives_nothing(record) {
             self.writing.apply(batch, self.backend.as_ref(), landing)?;
             return Ok(());

@@ -112,6 +112,7 @@ because renumbering after data exists is a full rebuild.
 | `0x42` | `SearchSurface` (surface forms of stemmed terms) | `index` | implemented — see §6.2b-6 |
 | `0x43` | `TopicBytes` (payload bytes a size-retained topic holds) | `index` | implemented — see §6.2d |
 | `0x50` | `TransactionRecord` (one transaction across leaders) | `meta` | implemented — see §6.5 |
+| `0x51` | `IntentOf` (an intent this node holds, by transaction) | `meta` | implemented — see §6.5 |
 
 `0x40` and `0x41` open a fifth family, `0x4_`: what the planner keeps about an
 index. Both keys are an index prefix with no suffix (`<tag> <namespace:u32>
@@ -880,6 +881,16 @@ Fixed width and read by point lookup only — a reader meeting an intent asks fo
 its transaction's record by id. It is node-local state derived by applying the
 coordinator range's log, as a catalog row is; the log record is the replicated
 truth.
+
+```
+<0x51> <transaction:16> <namespace:u32> <database:u32> <table:u32> <record-id>   → <version:u64>
+```
+
+`IntentOf` indexes the intents themselves: written in the batch that lands an
+intent and deleted in the batch that resolves it, keyed by the transaction
+first, so a participant finds every intent of one transaction by a prefix read
+— which is how it resolves its own intents after the coordinator that knew
+their addresses is gone. The value is the intent's version.
 
 **Intents have no key kind of their own.** A participant's prepared write is a
 *provisional* version under the record's own `0x01` key, marked in the

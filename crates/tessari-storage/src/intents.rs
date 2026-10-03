@@ -8,10 +8,11 @@
 //! `across_model` requires of both sides before anything can prepare.
 
 use tessari_encoding::{
-    Decision, LogRecord, Part, Provenance, RecordKey, StampedValue, StoreKey, StoreValue,
-    TransactionRecord, TransactionRecordKey,
+    Decision, IntentOfKey, LogRecord, Part, Provenance, RecordKey, StampedValue, StoreKey,
+    StoreValue, TransactionRecord, TransactionRecordKey,
 };
-use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
+use tessari_kv::WriteBatch;
+use tessari_types::Sequence;
 
 use crate::error::{Error, Result};
 use crate::store::Store;
@@ -21,6 +22,128 @@ pub(crate) fn is_intent(version: &StampedValue) -> bool {
     version
         .provenance()
         .is_some_and(|provenance: Provenance| provenance.provisional)
+}
+
+impl Store {
+    /// The record of one transaction across leaders as this node holds it.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the backend or the codec returns.
+    pub fn transaction_record(
+        &self,
+        transaction: tessari_encoding::TransactionId,
+    ) -> Result<Option<TransactionRecord>> {
+        let key = TransactionRecordKey { transaction };
+        Ok(self
+            .backend()
+            .get(TransactionRecordKey::keyspace(), &key.encode())?
+            .map(|value| TransactionRecord::decode(value.as_slice()))
+            .transpose()?)
+    }
+
+    /// Every record `transaction` holds an intent on here, from its index.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the backend or the codec returns.
+    pub(crate) fn intents_of(
+        &self,
+        transaction: tessari_encoding::TransactionId,
+    ) -> Result<Vec<crate::transaction::RecordAddress>> {
+        let found = self.backend().scan(&tessari_kv::ScanRequest {
+            keyspace: IntentOfKey::keyspace(),
+            range: tessari_kv::KeyRange::prefix(&IntentOfKey::prefix_of(transaction)),
+            direction: tessari_kv::ScanDirection::Forward,
+            limit: None,
+        })?;
+        found
+            .into_iter()
+            .map(|(key, _)| {
+                let held = IntentOfKey::decode(key.as_slice())?;
+                Ok(crate::transaction::RecordAddress::new(
+                    held.namespace,
+                    held.database,
+                    held.table,
+                    held.id,
+                ))
+            })
+            .collect()
+    }
+
+    /// Every transaction across leaders with an intent standing here, and the
+    /// range its record lives in — read off one of its intents, which every
+    /// prepare stamped with it.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the backend or the codec returns.
+    pub fn standing_across(
+        &self,
+    ) -> Result<Vec<(tessari_encoding::TransactionId, tessari_types::Reach)>> {
+        let found = self.backend().scan(&tessari_kv::ScanRequest {
+            keyspace: IntentOfKey::keyspace(),
+            range: tessari_kv::KeyRange::prefix(&IntentOfKey::prefix()),
+            direction: tessari_kv::ScanDirection::Forward,
+            limit: None,
+        })?;
+        let mut standing: Vec<(tessari_encoding::TransactionId, tessari_types::Reach)> = Vec::new();
+        for (key, version) in found {
+            let held = IntentOfKey::decode(key.as_slice())?;
+            if standing
+                .last()
+                .is_some_and(|(seen, _)| *seen == held.transaction)
+            {
+                continue;
+            }
+            let intent = RecordKey::new(
+                held.namespace,
+                held.database,
+                held.table,
+                held.id,
+                Sequence::decode(version.as_slice())?,
+            );
+            let Some(stored) = self
+                .backend()
+                .get(RecordKey::keyspace(), &intent.encode())?
+            else {
+                continue;
+            };
+            if let Some(provenance) = StampedValue::decode(stored.as_slice())?.provenance() {
+                standing.push((held.transaction, provenance.coordinator));
+            }
+        }
+        Ok(standing)
+    }
+
+    /// Every transaction record this node holds that is still `PENDING`.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the backend or the codec returns.
+    pub fn pending_across(
+        &self,
+    ) -> Result<Vec<(tessari_encoding::TransactionId, TransactionRecord)>> {
+        let found = self.backend().scan(&tessari_kv::ScanRequest {
+            keyspace: TransactionRecordKey::keyspace(),
+            range: tessari_kv::KeyRange::prefix(&[
+                tessari_encoding::KeyKind::TransactionRecord.tag()
+            ]),
+            direction: tessari_kv::ScanDirection::Forward,
+            limit: None,
+        })?;
+        let mut pending = Vec::new();
+        for (key, value) in found {
+            let record = TransactionRecord::decode(value.as_slice())?;
+            if record.decision == Decision::Pending {
+                pending.push((
+                    TransactionRecordKey::decode(key.as_slice())?.transaction,
+                    record,
+                ));
+            }
+        }
+        Ok(pending)
+    }
 }
 
 /// Whether applying `record` writes its mutations as versions.
@@ -57,7 +180,12 @@ pub(crate) fn derives_nothing(record: &LogRecord) -> bool {
 ///
 /// [`Error::AcrossMalformed`] for a record that contradicts itself, and
 /// whatever the backend or the codec returns.
-pub(crate) fn settle(store: &Store, record: &LogRecord, batch: WriteBatch) -> Result<WriteBatch> {
+pub(crate) fn settle(
+    store: &Store,
+    record: &LogRecord,
+    batch: WriteBatch,
+    version: Sequence,
+) -> Result<WriteBatch> {
     let Some(across) = record.part_of() else {
         return Ok(batch);
     };
@@ -77,7 +205,15 @@ pub(crate) fn settle(store: &Store, record: &LogRecord, batch: WriteBatch) -> Re
                     problem: "a write that is not an intent of its transaction",
                 });
             }
-            Ok(batch)
+            // Each intent indexed under its transaction, in the batch that
+            // lands it (D7): what lets this node resolve its own intents later.
+            Ok(record.mutations().iter().fold(batch, |batch, mutation| {
+                batch.put(
+                    IntentOfKey::keyspace(),
+                    intent_of(across.transaction, mutation).encode(),
+                    version.encode(),
+                )
+            }))
         }
         Part::Decide(decided) => {
             if !record.mutations().is_empty() {
@@ -98,8 +234,11 @@ pub(crate) fn settle(store: &Store, record: &LogRecord, batch: WriteBatch) -> Re
                 .get(TransactionRecordKey::keyspace(), &key.encode())?
                 .map(|value| TransactionRecord::decode(value.as_slice()))
                 .transpose()?;
+            // Absent may become ABORTED as well as PENDING: a record a lapse
+            // finds absent is aborted for good, so a PENDING delayed past the
+            // deadline is refused rather than reopening it.
             let refused = match standing.as_ref().map(|record| record.decision) {
-                None => (decided.decision != Decision::Pending).then_some("absent"),
+                None => (decided.decision == Decision::Committed).then_some("absent"),
                 Some(Decision::Pending) => None,
                 Some(Decision::Committed) => {
                     (decided.decision != Decision::Committed).then_some("committed")
@@ -126,33 +265,41 @@ pub(crate) fn settle(store: &Store, record: &LogRecord, batch: WriteBatch) -> Re
             }
             let mut batch = batch;
             for mutation in record.mutations() {
-                // The intent is its record's newest version — a standing intent
-                // refuses every other write — so one read finds it, or finds
-                // that this node never held it.
-                let prefix = RecordKey::versions_prefix(
+                // The index names the intent's version, so the intent is
+                // deleted by its own key; a node that never held it — a copy
+                // seeded past the prepare — finds no index entry and deletes
+                // nothing.
+                let indexed = intent_of(across.transaction, mutation).encode();
+                let Some(held) = store.backend().get(IntentOfKey::keyspace(), &indexed)? else {
+                    continue;
+                };
+                let intent = RecordKey::new(
                     mutation.namespace,
                     mutation.database,
                     mutation.table,
-                    &mutation.id,
+                    mutation.id.clone(),
+                    Sequence::decode(held.as_slice())?,
                 );
-                let found = store.backend().scan(&ScanRequest {
-                    keyspace: RecordKey::keyspace(),
-                    range: KeyRange::prefix(&prefix),
-                    direction: ScanDirection::Forward,
-                    limit: Some(1),
-                })?;
-                for (key, value) in found {
-                    let stored = StampedValue::decode(value.as_slice())?;
-                    let ours = stored.provenance().is_some_and(|provenance| {
-                        provenance.provisional && provenance.transaction == across.transaction
-                    });
-                    if ours {
-                        batch = batch.delete(RecordKey::keyspace(), key);
-                    }
-                }
+                batch = batch
+                    .delete(RecordKey::keyspace(), intent.encode())
+                    .delete(IntentOfKey::keyspace(), indexed);
             }
             Ok(batch)
         }
+    }
+}
+
+/// The index key of one intent.
+fn intent_of(
+    transaction: tessari_encoding::TransactionId,
+    mutation: &tessari_encoding::Mutation,
+) -> IntentOfKey {
+    IntentOfKey {
+        transaction,
+        namespace: mutation.namespace,
+        database: mutation.database,
+        table: mutation.table,
+        id: mutation.id.clone(),
     }
 }
 

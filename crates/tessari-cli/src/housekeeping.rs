@@ -60,6 +60,25 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
                 }
                 Err(why) => log::warn!("this node cannot remove expired records: {why}"),
             }
+            // Transactions across leaders nobody came back to (ADR-0112 D7): an
+            // overdue record this node leads is aborted, and intents whose record
+            // has decided are resolved where this node leads them. Refusals
+            // elsewhere are the design — another node leads — so they stay quiet.
+            match db.settle_across() {
+                Ok(settled) => {
+                    if settled.aborted > 0 || settled.resolved > 0 {
+                        log::info!(
+                            "finished cross-leader transactions: {} overdue aborted, {} resolved here",
+                            settled.aborted,
+                            settled.resolved
+                        );
+                    }
+                    if let Some(why) = settled.last_refusal {
+                        log::debug!("a cross-leader transaction is finished elsewhere: {why}");
+                    }
+                }
+                Err(why) => log::warn!("this node cannot finish cross-leader transactions: {why}"),
+            }
             // An unseal past its period. No statement is served by that key
             // whether this runs or not — every use judges the deadline — so this
             // only stops it sitting in memory until the next use (ADR-0092 D4).
