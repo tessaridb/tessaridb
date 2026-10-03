@@ -150,6 +150,7 @@ impl Peers {
         log: &dyn Origin,
     ) -> Result<Met> {
         let (mut socket, _) = self.listener.accept()?;
+        socket.set_nodelay(true)?;
         let bound = Some(Duration::from_secs(GREETING_SECONDS));
         socket.set_read_timeout(bound)?;
         socket.set_write_timeout(bound)?;
@@ -537,7 +538,10 @@ fn connect(address: impl ToSocketAddrs, bound: Duration) -> Result<TcpStream> {
     let mut failed = None;
     for at in address.to_socket_addrs()? {
         match TcpStream::connect_timeout(&at, bound) {
-            Ok(socket) => return Ok(socket),
+            Ok(socket) => {
+                socket.set_nodelay(true)?;
+                return Ok(socket);
+            }
             Err(why) => failed = Some(why),
         }
     }

@@ -148,7 +148,15 @@ impl Peers {
                 accepted = listener.accept() => accepted,
             };
             let socket = match accepted {
-                Ok((socket, _)) => socket,
+                Ok((socket, _)) => {
+                    // A frame written in pieces must not wait for the peer's
+                    // delayed acknowledgement: the replication stream rides
+                    // this socket, and on Linux that wait is 40 ms a record.
+                    if let Err(why) = socket.set_nodelay(true) {
+                        log::warn!("a peer connection could not turn off Nagle's algorithm: {why}");
+                    }
+                    socket
+                }
                 Err(why) if passes(&why) => {
                     log::warn!("accepting a peer failed ({why}); resting before the next");
                     tokio::time::sleep(ACCEPT_PAUSE).await;

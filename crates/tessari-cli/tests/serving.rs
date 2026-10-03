@@ -4709,6 +4709,16 @@ fn acknowledged_writes_measured(clause: &str, band: &Band) -> (usize, usize) {
         "ACKNOWLEDGED clause={clause:?} one_writer_us p50={one_p50} p99={one_p99} \
          sixteen_writers_us p50={many_p50} p99={many_p99} lag_us p50={lag_p50} p99={lag_p99}"
     );
+    // A follower holds a commit within milliseconds of it. On Linux a peer
+    // socket left with Nagle's algorithm on waits for the delayed
+    // acknowledgement — 40 ms a step, 80 ms measured before the peer door set
+    // TCP_NODELAY — so this bound is the guard for that, and it is loose enough
+    // for the measurement's own 5 ms poll and a new connection per poll.
+    assert!(
+        lag_p99 < 25_000,
+        "a follower took {lag_p99} µs at p99 to hold a commit{}",
+        what_the_nodes_said(band, &cluster.logs)
+    );
 
     // Keep writing, kill the leader uncatchably, and count what the next
     // leader does not hold of what was acknowledged.
