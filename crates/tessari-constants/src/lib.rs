@@ -408,6 +408,24 @@ pub const MAX_CONNECTIONS: usize = 16_384;
 /// round tries again.
 pub const PEER_CONNECTIONS: usize = 64;
 
+/// How long a peer door keeps a link open for the next record of a transaction
+/// across leaders, after answering one (ADR-0112 D13j).
+///
+/// Longer than the coordinator keeps a link idle before it stops offering it
+/// ([`ACROSS_KEPT_IDLE_SECONDS`]), so a link the coordinator still uses is never
+/// one the door has just closed under it.
+pub const ACROSS_DOOR_IDLE_SECONDS: u64 = 10;
+
+/// How long a coordinator offers an idle kept link to its next ask before it
+/// opens a fresh one instead (ADR-0112 D13j); see [`ACROSS_DOOR_IDLE_SECONDS`].
+pub const ACROSS_KEPT_IDLE_SECONDS: u64 = 4;
+
+/// The most idle links a coordinator keeps to one peer (ADR-0112 D13j): each
+/// holds one of that peer's [`PEER_CONNECTIONS`] while it waits, so a dozen
+/// peers keeping two each leave most of a door for greetings, ballots and
+/// streams.
+pub const ACROSS_KEPT_PER_PEER: usize = 2;
+
 /// The largest request body the HTTP surface reads.
 ///
 /// A body is read before its credential is checked, because the credential

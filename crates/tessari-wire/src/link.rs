@@ -512,7 +512,7 @@ pub(crate) fn open(
 }
 
 /// [`open`], with the connect and every read and write bounded by `bound`.
-fn open_within(
+pub(crate) fn open_within(
     address: impl ToSocketAddrs,
     (keys, mine): (&PeerKeys, Credential),
     at: [u8; NODE_ID_LEN],
