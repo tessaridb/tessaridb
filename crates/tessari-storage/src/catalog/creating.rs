@@ -211,6 +211,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             conflict: shape.conflict,
             shards,
             partition: shape.partition,
+            events: Vec::new(),
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());

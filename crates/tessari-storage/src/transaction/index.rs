@@ -4,6 +4,7 @@
 //! walk. The vector read is the only approximate one in the module, and says so
 //! where it is declared.
 
+mod equality;
 mod vectors;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::ControlFlow;
@@ -20,6 +21,22 @@ use super::address::{after, resuming_after};
 use super::{RecordAddress, Transaction};
 use crate::catalog::IndexDefinition;
 use crate::error::Result;
+
+/// The first batch a streamed walk reads, before it doubles.
+///
+/// The fetch batch **ramps**, and a fixed one would have made a streamed walk
+/// pointless. Records are read a batch at a time so that a wide answer costs one
+/// round trip per batch rather than one per record; but a batch of
+/// `RANGE_SCAN_BATCH_ENTRIES` is read in full before its first record is handed
+/// over, so a caller wanting ten of four hundred candidates still paid for four
+/// hundred and the walk saved nothing.
+///
+/// Doubling from a small first batch settles it in both directions. A bound that
+/// fills early pays one short batch; a read that wants everything reaches the
+/// full batch size after seven of them and from there costs what it always did —
+/// reaching a hundred thousand records takes about five more round trips than a
+/// fixed batch would.
+const FIRST_FETCH_BATCH: usize = 8;
 
 impl Transaction<'_> {
     /// The records an ordered index holds between two bounds, inside the run its
@@ -367,6 +384,17 @@ impl Transaction<'_> {
         F: FnMut(&mut Self, RecordId, Vec<u8>) -> std::result::Result<ControlFlow<()>, E>,
         E: From<crate::error::Error>,
     {
+        // A complete value of a secondary index is the one run whose entries are
+        // already in record order, so it is walked and stopped rather than
+        // collected (`index/equality.rs`).
+        if !index.unique
+            && lower.is_none()
+            && upper.is_none()
+            && !fixed.is_empty()
+            && fixed.len() == index.fields.len()
+        {
+            return self.walk_complete_equality(index, fixed, hand);
+        }
         let ids = self.ids_in_range(index, fixed, lower, upper)?;
         // Copied out before the walk rather than read in step with it: `hand`
         // takes the transaction, so nothing may hold a borrow of it across the
@@ -385,20 +413,6 @@ impl Transaction<'_> {
                 RecordValue::Tombstone => None,
             })
             .collect();
-
-        // The fetch batch **ramps**, and a fixed one would have made this walk
-        // pointless. Records are read a batch at a time so that a wide answer
-        // costs one round trip per batch rather than one per record; but a batch
-        // of `RANGE_SCAN_BATCH_ENTRIES` is read in full before its first record
-        // is handed over, so a caller wanting ten of four hundred candidates
-        // still paid for four hundred and the walk saved nothing.
-        //
-        // Doubling from a small first batch settles it in both directions. A
-        // bound that fills early pays one short batch; a read that wants
-        // everything reaches the full batch size after seven of them and from
-        // there costs what it always did — reaching a hundred thousand records
-        // takes about five more round trips than a fixed batch would.
-        const FIRST_FETCH_BATCH: usize = 8;
 
         let ids: Vec<RecordId> = ids.into_iter().collect();
         let mut taken = 0_usize;

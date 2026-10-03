@@ -6,7 +6,9 @@
 
 mod counts;
 mod expansions;
+mod fielded;
 pub use counts::SearchCounts;
+pub use fielded::FieldedPostings;
 use std::collections::BTreeSet;
 
 use tessari_constants::RANGE_SCAN_BATCH_ENTRIES;

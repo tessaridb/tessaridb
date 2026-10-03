@@ -9,6 +9,21 @@ use tessari_types::Filter;
 /// What a refusal of a filter name offers instead. Spelled out because a
 /// refusal's expectation is static text; the test below holds it to
 /// [`Filter::ALL`], so a filter added there cannot be missing here.
+/// The filters other engines spell for n-grams, refused by name (Q-862): the
+/// analysis chain is lowercase, ascii and a stemmer and nothing else, and what
+/// n-grams are reached for is answered elsewhere — prefix, infix and fuzzy from
+/// the term dictionary, Chinese and Japanese by a tokenizer that makes every
+/// ideograph a token. An n-gram token would inflate the index several-fold and
+/// count a fragment's documents as a word's.
+const NGRAM_FILTERS: &[&str] = &[
+    "ngram",
+    "edge_ngram",
+    "edgengram",
+    "nGram",
+    "shingle",
+    "cjk_bigram",
+];
+
 const FILTER_NAMES: &str = "a filter: lowercase, ascii or stemmer";
 
 /// What a refusal of a stemmer's language offers instead, held to
@@ -41,6 +56,9 @@ impl Parser<'_> {
             name,
             dimension,
             distance: self.name()?,
+            // Optional and last: a store is full precision unless it says so,
+            // and the word reads after the distance it is a form of.
+            quantized: self.eat_word("quantized"),
             if_not_exists,
         })
     }
@@ -176,6 +194,10 @@ impl Parser<'_> {
     pub(crate) fn define_view(&mut self) -> Result<StatementKind> {
         let if_not_exists = self.eat_if_not_exists()?;
         let name = self.name()?;
+        // A word rather than a reserved keyword, as `QUANTIZED` is: it means
+        // something only here, between the name and `AS`, and reserving it
+        // would take a field name from every store that already uses it.
+        let materialized = self.eat_word("MATERIALIZED");
         if !self.eat_keyword(Keyword::As) {
             return Err(self.error_here("`AS` and the read this name means"));
         }
@@ -187,6 +209,7 @@ impl Parser<'_> {
             name,
             read: self.source[read.span.start..read.span.end].to_owned(),
             if_not_exists,
+            materialized,
         })
     }
 
@@ -278,6 +301,19 @@ impl Parser<'_> {
                 costs.unscored = true;
             }
         }
+        // `QUANTIZED` is a form of the vector a graph keeps, so it reads after
+        // `VECTOR <distance>` and nowhere else — on any other kind it would
+        // describe storage that kind does not have. Judged before the word is
+        // taken, so the refusal points at it.
+        let quantized = if matches!(self.peek(), Some(Token::Ident(found)) if found.eq_ignore_ascii_case("quantized"))
+        {
+            if !matches!(kind, Some(Marker::Vector(_))) {
+                return Err(self.error_here("`QUANTIZED` only after `VECTOR` and its distance"));
+            }
+            self.eat_word("quantized")
+        } else {
+            false
+        };
         // An index over `tags[*]` is a **multikey** index: one entry per element
         // rather than one per record. Three shapes are refused, each naming its
         // own reason — a caller told "unexpected token" would go looking for a
@@ -309,6 +345,7 @@ impl Parser<'_> {
                 Some(Marker::Vector(distance)) => Some(distance),
                 _ => None,
             },
+            quantized,
             if_not_exists,
         })
     }
@@ -363,6 +400,16 @@ impl Parser<'_> {
                 return Err(self.error_here("`)`"));
             }
         }
+        if language_at.is_none()
+            && NGRAM_FILTERS
+                .iter()
+                .any(|held| held.eq_ignore_ascii_case(&word))
+        {
+            return Err(Error::NgramFilter {
+                filter: word,
+                span: self.span_behind(),
+            });
+        }
         Filter::parse(&word).ok_or_else(|| match language_at {
             Some(at) if word.to_ascii_lowercase().starts_with("stemmer(") => {
                 self.error_at(at, STEMMER_LANGUAGES)
@@ -389,5 +436,23 @@ mod tests {
         }
         // English is spelled as the bare `stemmer`, so its language is held here.
         assert!(STEMMER_LANGUAGES.contains("english"));
+    }
+
+    /// An n-gram filter is refused by its own name, saying where the thing it
+    /// is usually reached for already lives — not as an unknown word.
+    #[test]
+    #[allow(clippy::panic)]
+    fn an_ngram_filter_is_refused_by_name() {
+        for word in ["ngram", "edge_ngram", "EdgeNGram", "shingle", "cjk_bigram"] {
+            let refused =
+                crate::parse(&format!("DEFINE ANALYZER grams FILTERS lowercase, {word};"));
+            match refused {
+                Err(crate::Error::NgramFilter { filter, span }) => {
+                    assert_eq!(filter, word);
+                    assert_eq!(span.start, 41);
+                }
+                other => panic!("{word}: {other:?}"),
+            }
+        }
     }
 }

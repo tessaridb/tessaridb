@@ -13,7 +13,7 @@ use crate::plan;
 use crate::search::Searched;
 use crate::session::Session;
 
-use super::{Approximated, Asked, Candidates, Reached, Scope, Testing, Walked};
+use super::{Approximated, Asked, Candidates, Gated, Reached, Scope, Testing, Walked};
 
 impl Session<'_> {
     /// The records worth testing, and how they were reached.
@@ -71,19 +71,12 @@ impl Session<'_> {
         // shorten, so the winner is measured against the table before it is
         // served — see `plan::worth_serving`, which `EXPLAIN` asks too so that
         // the reported path is the one the read takes.
-        let chosen = match plan::choose(offered) {
-            Some(candidate)
-                if plan::worth_serving(transaction, table, &candidate, asked.lift_scan_guard)? =>
-            {
-                Some(candidate)
-            }
-            _ => None,
-        };
+        let chosen = plan::serving(transaction, table, offered, asked.lift_scan_guard)?;
         if let Some(chosen) = chosen {
             // Built by the candidate itself, which is the same function
-            // `EXPLAIN` calls on the candidate its own `choose` returned. The
+            // `EXPLAIN` calls on the candidate its own `serving` returned. The
             // two report one structure because one function writes it.
-            let plan = chosen.plan(asked.named);
+            let plan = chosen.plan(asked.named).seen_by(&chosen.index, &visible);
             let answered = self.trusts(condition, &chosen, &visible);
             // The field's, resolved once for the statement while the analyzers
             // were being read — the same value the query's terms were built
@@ -95,9 +88,12 @@ impl Session<'_> {
                 .first()
                 .and_then(|path| searched.analyzer(path));
             // A range is handed back as the range itself rather than as its
-            // records, so the caller's `Break` can reach the fetch. Every other
-            // shape is served here and built whole — see [`Candidates`] for why
-            // the entry walk is never the half that stops.
+            // records, so the caller's `Break` can reach the fetch — and an
+            // equality is a range with no bounds, whose entries under a complete
+            // value are already in record order, so the walk itself stops too
+            // (`walk_records_in_range`). A complete unique equality names at most
+            // one record and is read here. Every other shape is served here and
+            // built whole — see [`Candidates`].
             let records = if let plan::Served::Range {
                 fixed,
                 lower,
@@ -109,6 +105,15 @@ impl Session<'_> {
                     fixed: fixed.clone(),
                     lower: lower.clone(),
                     upper: upper.clone(),
+                }
+            } else if let plan::Served::Equality(values) = &chosen.served
+                && !(chosen.index.unique && values.len() == chosen.index.fields.len())
+            {
+                Candidates::Range {
+                    index: Box::new(chosen.index.clone()),
+                    fixed: values.clone(),
+                    lower: None,
+                    upper: None,
                 }
             } else {
                 let found = self.serve(transaction, context, table, &chosen, analyzer)?;
@@ -292,6 +297,38 @@ impl Session<'_> {
         table: TableId,
         wanted: &plan::Nearest<'_>,
     ) -> Result<Option<Approximated>> {
+        let Some(gated) = self.nearest_gate(transaction, context, table, wanted)? else {
+            return Ok(None);
+        };
+        let mut rows = Vec::new();
+        let window = plan::walked_for(wanted.wanted, gated.index.quantized);
+        for id in
+            transaction.records_by_vector(&gated.index, &gated.query, window, wanted.effort)?
+        {
+            // Resolved at this reader's own snapshot, like every index read, so
+            // a node left behind by a deleted record produces nothing.
+            let at = RecordAddress::new(context.namespace, context.database, table, id);
+            if let Some(payload) = transaction.get(&at)? {
+                rows.push((at.id, self.record_of(&payload, &gated.visible)?));
+            }
+        }
+        Ok(Some((rows, gated.index.name)))
+    }
+
+    /// Whether a vector index may walk this read, and what the walk needs.
+    ///
+    /// Every `None` is the scan, and they are the five refusals [`Self::walk`]
+    /// documents, made in one place so the filtered walk cannot make four of
+    /// them: no index on the path, one built for another distance, a query
+    /// that is not a vector, a field this caller's grant does not contain, and
+    /// a table this transaction has written to without committing.
+    pub(super) fn nearest_gate(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: crate::context::Context,
+        table: TableId,
+        wanted: &plan::Nearest<'_>,
+    ) -> Result<Option<Gated>> {
         let Some(index) = self.index_on_path(transaction, table, wanted.path)? else {
             return Ok(None);
         };
@@ -321,16 +358,11 @@ impl Session<'_> {
         if transaction.writes_in(context.namespace, context.database, table) {
             return Ok(None);
         }
-        let mut rows = Vec::new();
-        for id in transaction.records_by_vector(&index, &query, wanted.wanted, wanted.effort)? {
-            // Resolved at this reader's own snapshot, like every index read, so
-            // a node left behind by a deleted record produces nothing.
-            let at = RecordAddress::new(context.namespace, context.database, table, id);
-            if let Some(payload) = transaction.get(&at)? {
-                rows.push((at.id, self.record_of(&payload, &visible)?));
-            }
-        }
-        Ok(Some((rows, index.name)))
+        Ok(Some(Gated {
+            index,
+            query,
+            visible,
+        }))
     }
 
     /// Walk a spatial index nearest-first, when there is one that answers this

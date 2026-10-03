@@ -37,6 +37,19 @@ impl Parser<'_> {
         })
     }
 
+    /// `ANALYZE TABLE <table>`
+    ///
+    /// `TABLE` is spelled out for the reason `CHECK TABLE` spells it: the
+    /// statement reads every index of the table, and naming one index would
+    /// read as though only that one were taken.
+    pub(super) fn analyze_statement(&mut self) -> Result<StatementKind> {
+        self.advance();
+        self.expect_keyword(Keyword::Table, "`TABLE` and the table to analyze")?;
+        Ok(StatementKind::AnalyzeTable {
+            table: self.table_ref()?,
+        })
+    }
+
     pub(super) fn drop_statement(&mut self) -> Result<StatementKind> {
         self.advance();
         match self.peek_keyword() {
@@ -137,6 +150,14 @@ impl Parser<'_> {
             _ if self.eat_word("series") => Ok(StatementKind::DropSeries { name: self.name()? }),
             _ if self.eat_word("rollup") => Ok(StatementKind::DropRollup { name: self.name()? }),
             _ if self.eat_word("view") => Ok(StatementKind::DropView { name: self.name()? }),
+            _ if self.eat_word("event") => {
+                let name = self.name()?;
+                self.expect_keyword(Keyword::On, "`ON` and the table the event is defined on")?;
+                Ok(StatementKind::DropEvent {
+                    name,
+                    table: self.table_ref()?,
+                })
+            }
             // Declined rather than missing, and it says so. `DEFINE NODE` writes
             // this process's own configuration outside the transaction, so its
             // inverse is an edit to a config file rather than a statement — and

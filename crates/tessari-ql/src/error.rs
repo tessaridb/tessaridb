@@ -130,6 +130,33 @@ pub enum Error {
         span: Span,
     },
 
+    /// An n-gram filter in an analyzer chain (Q-862).
+    ///
+    /// Refused by name rather than as an unknown word, because the author knows
+    /// exactly what they are reaching for and the answer is where it already
+    /// lives: prefix, infix and fuzzy matching are read from the term
+    /// dictionary, and Chinese and Japanese text is one token per ideograph.
+    #[error(
+        "`{filter}` at {span} is an n-gram filter and analysis has none: a word's beginning, a piece of it and a misspelling are `MATCHES PREFIX`, `MATCHES INFIX` and `MATCHES FUZZY`, and Chinese and Japanese text is already one token per ideograph"
+    )]
+    NgramFilter {
+        /// The filter as written.
+        filter: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// A statement an event's body cannot run (ADR-0110 D7).
+    #[error(
+        "an event cannot run `{statement}` (at {span}): its body writes — `CREATE`, `INSERT`, `UPDATE`, `UPSERT`, `DELETE`, `RELATE`, the space verbs — and may `LET` and `THROW`; it already runs inside the writer's transaction, in its table's database, and nobody receives an answer"
+    )]
+    EventBody {
+        /// The statement's leading word.
+        statement: String,
+        /// Where it was written.
+        span: Span,
+    },
+
     /// Text after `datetime` that is not an instant.
     #[error("{text:?} at {span} is not an instant: expected RFC 3339, as in 1970-01-01T00:00:00Z")]
     InvalidDatetime {
@@ -441,6 +468,19 @@ pub enum Error {
     )]
     DepthNeedsOneHopToATable {
         /// Where the clause is.
+        span: Span,
+    },
+
+    /// `PATH TO` with no `DEPTH` (G055 W6).
+    ///
+    /// A path search with no bound is the one walk whose work the statement
+    /// cannot show: it costs whatever the graph happens to hold between two
+    /// records. So the bound is written, as a literal, like every repeated walk.
+    #[error(
+        "`PATH TO` needs `DEPTH n` after it — the most steps the path may take, written out (at {span})"
+    )]
+    PathNeedsDepth {
+        /// Where `PATH` is.
         span: Span,
     },
 
@@ -825,6 +865,8 @@ impl Error {
             | Self::UnexpectedToken { span, .. }
             | Self::UnexpectedEnd { span, .. }
             | Self::Unsupported { span, .. }
+            | Self::NgramFilter { span, .. }
+            | Self::EventBody { span, .. }
             | Self::InvalidDatetime { span, .. }
             | Self::InvalidUuid { span, .. }
             | Self::InvalidDecimal { span, .. }
@@ -865,6 +907,7 @@ impl Error {
             | Self::EmptyPeriod { span, .. }
             | Self::EmptyRetention { span, .. }
             | Self::DepthNeedsOneHopToATable { span }
+            | Self::PathNeedsDepth { span }
             | Self::DepthBelowOne { span }
             | Self::VectorWidthBelowOne { span }
             | Self::VectorWidthAboveTheCeiling { span, .. }

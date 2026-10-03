@@ -235,6 +235,8 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
 
         // Declarations *on* a table, which is a table that already exists.
         StatementKind::DefineIndex { table, .. }
+        | StatementKind::DefineEvent { table, .. }
+        | StatementKind::DropEvent { table, .. }
         | StatementKind::DefineField { table, .. }
         | StatementKind::DropField { table, .. }
         | StatementKind::DropTable { table }
@@ -242,7 +244,8 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::AlterTable { table, .. }
         | StatementKind::AlterField { table, .. }
         | StatementKind::RebuildIndex { table, .. }
-        | StatementKind::CheckTable { table } => vec![table],
+        | StatementKind::CheckTable { table }
+        | StatementKind::AnalyzeTable { table } => vec![table],
         // A search is declared over tables, and each is one it reaches.
         StatementKind::DefineSearch { members, .. } => {
             members.iter().map(|member| &member.table).collect()

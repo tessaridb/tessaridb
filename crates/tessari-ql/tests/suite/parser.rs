@@ -1186,6 +1186,7 @@ fn a_vector_store_declares_its_width_and_its_distance() {
         name,
         dimension,
         distance,
+        quantized,
         if_not_exists,
     } = one("DEFINE VECTOR embeddings DIMENSION 768 DISTANCE cosine;")
     else {
@@ -1194,6 +1195,7 @@ fn a_vector_store_declares_its_width_and_its_distance() {
     assert_eq!(name.text, "embeddings");
     assert_eq!(dimension, 768);
     assert_eq!(distance.text, "cosine");
+    assert!(!quantized, "a store is full precision unless it says so");
     assert!(!if_not_exists);
 
     let StatementKind::DefineVector { if_not_exists, .. } =
@@ -2026,5 +2028,45 @@ fn backup_to_names_a_file_in_every_form() {
     assert!(
         refused.contains("the file name the backup is written to"),
         "the refusal does not say a name was expected: {refused}"
+    );
+}
+
+#[test]
+fn a_vector_index_or_store_may_be_quantized() {
+    let StatementKind::DefineIndex {
+        vector, quantized, ..
+    } = one("DEFINE INDEX by_e ON notes FIELDS e VECTOR cosine QUANTIZED;")
+    else {
+        panic!("expected an index definition");
+    };
+    assert_eq!(vector.map(|word| word.text), Some("cosine".to_owned()));
+    assert!(quantized);
+
+    let StatementKind::DefineIndex { quantized, .. } =
+        one("DEFINE INDEX by_e ON notes FIELDS e VECTOR cosine;")
+    else {
+        panic!("expected an index definition");
+    };
+    assert!(!quantized, "an index is full precision unless it says so");
+
+    let StatementKind::DefineVector { quantized, .. } =
+        one("DEFINE VECTOR embeddings DIMENSION 8 DISTANCE euclidean QUANTIZED;")
+    else {
+        panic!("not a vector store declaration");
+    };
+    assert!(quantized);
+}
+
+#[test]
+fn quantized_belongs_to_a_vector_index_alone() {
+    // Codes are a form of vector; on any other index the word would describe
+    // storage that index does not have.
+    let Err(refused) = tessari_ql::parse("DEFINE INDEX by_city ON people FIELDS city QUANTIZED;")
+    else {
+        panic!("QUANTIZED on an ordered index was accepted");
+    };
+    assert!(
+        refused.to_string().contains("only after `VECTOR`"),
+        "{refused}"
     );
 }

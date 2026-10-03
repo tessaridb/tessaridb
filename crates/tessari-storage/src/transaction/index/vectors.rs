@@ -38,8 +38,68 @@ impl Transaction<'_> {
             return Ok(Vec::new());
         };
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
-        let graph = crate::graph::Graph::read(self.store, &address, distance)?;
+        let graph = crate::graph::Graph::read(self.store, &address, distance, index.quantized)?;
         Ok(graph.nearest(query, wanted, effort))
+    }
+
+    /// The graph a vector index is, read whole, for a walk the caller drives.
+    ///
+    /// A filtered nearest read admits a record by reading it at the caller's
+    /// snapshot and testing the whole condition, which needs the transaction
+    /// mutably while the walk runs — so the graph is handed over rather than
+    /// walked here. `None` when the index holds no vectors' distance.
+    ///
+    /// **Approximate** to walk, like [`Self::records_by_vector`]: see
+    /// [`crate::VectorGraph::nearest_matching`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a node cannot be decoded.
+    pub fn vector_graph(&self, index: &IndexDefinition) -> Result<Option<crate::VectorGraph>> {
+        let Some(distance) = index.vector else {
+            return Ok(None);
+        };
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        crate::graph::Graph::read(self.store, &address, distance, index.quantized).map(Some)
+    }
+
+    /// What a vector index's nodes cost on disk: how many there are, the average
+    /// bytes one takes, and the average bytes of the vector inside it — read off
+    /// the stored values themselves.
+    ///
+    /// A measurement rather than a figure computed from the width and the
+    /// neighbour count, for the reason the recall is one: a formula reports what
+    /// the encoding was meant to cost, and the stored bytes are what it costs.
+    /// `None` for an index that is not a vector index or holds no node.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails.
+    pub fn vector_node_bytes(&self, index: &IndexDefinition) -> Result<Option<(u64, u64, u64)>> {
+        if index.vector.is_none() {
+            return Ok(None);
+        }
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let prefix = tessari_encoding::VectorNodeKey::level_prefix(&address, crate::graph::GROUND);
+        let request = tessari_kv::ScanRequest {
+            keyspace: tessari_encoding::VectorNodeKey::keyspace(),
+            range: tessari_kv::KeyRange::prefix(&prefix),
+            direction: tessari_kv::ScanDirection::Forward,
+            limit: None,
+        };
+        let (mut nodes, mut bytes, mut vector) = (0_u64, 0_u64, 0_u64);
+        for (_, value) in self.store.backend().scan(&request)? {
+            let node = tessari_encoding::VectorNode::decode(value.as_slice())?;
+            nodes = nodes.saturating_add(1);
+            bytes = bytes.saturating_add(u64::try_from(value.as_slice().len()).unwrap_or(u64::MAX));
+            vector = vector
+                .saturating_add(u64::try_from(node.vector.stored_bytes()).unwrap_or(u64::MAX));
+        }
+        Ok(bytes.checked_div(nodes).and_then(|average| {
+            vector
+                .checked_div(nodes)
+                .map(|per_vector| (nodes, average, per_vector))
+        }))
     }
 
     /// The recall this vector index was last measured at, if it ever was.

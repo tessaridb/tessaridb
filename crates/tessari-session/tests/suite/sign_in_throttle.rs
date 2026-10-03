@@ -20,11 +20,12 @@
 //! `verifies` has run and returned false — so which one comes back says which
 //! half of the function was reached, and says it without consulting a clock.
 //!
-//! # Every test uses its own user name
+//! # The counters are the store's
 //!
-//! The counters are one table per process, which is what makes them survive a
-//! reconnect and therefore what makes them work at all. Two tests failing against
-//! the same name would count together. Distinct names keep them apart.
+//! One table per store, shared by every session on it, which is what makes them
+//! survive a reconnect and therefore what makes them work at all. Each test
+//! opens its own store, so two tests failing against one name never count
+//! together — the last test here holds that as a property (Q-852).
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
@@ -156,4 +157,28 @@ fn signing_in_correctly_leaves_the_allowance_whole() {
             Error::SignInRefused,
         ));
     }
+}
+
+#[test]
+fn misses_against_one_store_do_not_make_another_store_wait() {
+    // A name is an account in ONE store's catalog, so its misses are counted
+    // there. Counted per process instead, misses at one store held a user of the
+    // same name at another store in the same process to a wait they never
+    // earned — and made this suite's sign-in tests fail whenever two of them
+    // used one name at once (Q-852).
+    let missed_at = store_with("fredegund");
+    let elsewhere = store_with("fredegund");
+    let mut guessing = Session::new(&missed_at);
+    for _ in 0..FREE_SIGN_IN_FAILURES {
+        assert!(guessing.sign_in("fredegund", "wrong").is_err());
+    }
+    // The control: the misses did spend the allowance where they were made.
+    assert!(matches!(
+        guessing.sign_in("fredegund", PASSWORD).unwrap_err(),
+        Error::SignInThrottled
+    ));
+
+    let mut user = Session::new(&elsewhere);
+    user.sign_in("fredegund", PASSWORD)
+        .expect("another store's misses made this store's user wait");
 }

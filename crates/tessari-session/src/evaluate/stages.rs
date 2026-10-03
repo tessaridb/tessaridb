@@ -91,6 +91,10 @@ pub(crate) struct Reached {
 /// a different set of records. So the entry walk runs to the end by
 /// construction, and what the bound reaches is the half whose cost grows with
 /// the answer.
+///
+/// The one exception is an equality on every field of a secondary index: there
+/// the index's order *is* identity order, so the entry walk stops as well (G055
+/// W3, `walk_records_in_range`).
 pub(crate) enum Candidates {
     /// Built whole before the first one can be tested.
     Held(Vec<(RecordId, Value)>),
@@ -109,6 +113,16 @@ pub(crate) enum Candidates {
 /// index on the path, one built for another distance, a query that is not a
 /// vector — and none of them is an index that ran out.
 pub(crate) type Approximated = (Vec<(RecordId, Value)>, String);
+
+/// What a vector walk needs once every refusal has been asked.
+pub(crate) struct Gated {
+    /// The vector index on the read's path.
+    pub(crate) index: tessari_storage::IndexDefinition,
+    /// The query, read as a vector the same way the index read the stored ones.
+    pub(crate) query: Vec<f64>,
+    /// Which fields this session may read of the table.
+    pub(crate) visible: crate::redact::Visible,
+}
 
 /// What a read produced, and what it has to say about how.
 ///

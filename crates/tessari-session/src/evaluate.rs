@@ -28,7 +28,7 @@ pub(crate) use shape_rules::{
     order_bound, shown, sought, streams, table_named,
 };
 pub(crate) use stages::{
-    Answered, Approximated, Asked, Candidates, Hopped, Joined, Prepared, Reached, Walked,
+    Answered, Approximated, Asked, Candidates, Gated, Hopped, Joined, Prepared, Reached, Walked,
 };
 
 mod asof;
@@ -41,8 +41,10 @@ mod join;
 mod keys;
 mod latest;
 mod lent;
+mod nearest;
 mod ordered;
 mod partition;
+mod paths;
 mod phrase;
 mod produce;
 mod projection;
@@ -124,6 +126,12 @@ impl Session<'_> {
             ExprKind::Not(operand) => {
                 let held = self.evaluate_in(transaction, operand, scope)?;
                 Ok(Value::Bool(!boolean(&held, operand.span)?))
+            }
+            // A step that reaches nothing is `none`, for the reason a path's is
+            // above (ADR-0110).
+            ExprKind::Route { value, steps } => {
+                let held = self.evaluate_in(transaction, value, scope)?;
+                Ok(walk_route(held, steps))
             }
             // Short-circuit: the right side is not evaluated when the left
             // already decides. It is not only a saving — it is what lets
@@ -415,4 +423,26 @@ pub(crate) struct IdentitySpan<'a> {
     pub(crate) inclusive: bool,
     /// Where the span sits, for a refusal about an unbound parameter.
     pub(crate) at: Span,
+}
+
+/// The value `steps` reach inside `value`, or `none` where a step reaches
+/// nothing — an object without the field, an array without the position, or a
+/// value that is neither.
+fn walk_route(value: Value, steps: &[tessari_types::Step]) -> Value {
+    let mut current = value;
+    for step in steps {
+        current = match (step, current) {
+            (tessari_types::Step::Field(name), Value::Object(mut fields)) => {
+                fields.remove(name).unwrap_or(Value::None)
+            }
+            (tessari_types::Step::Index(at), Value::Array(mut items)) => {
+                match usize::try_from(*at) {
+                    Ok(at) if at < items.len() => items.swap_remove(at),
+                    _ => Value::None,
+                }
+            }
+            _ => Value::None,
+        };
+    }
+    current
 }

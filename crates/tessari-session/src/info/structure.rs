@@ -215,6 +215,21 @@ impl Session<'_> {
             "indexes".to_owned(),
             Value::Array(indexes.iter().map(described_index).collect()),
         );
+        // Each event as the statement that defines it (ADR-0110 D1).
+        report.insert(
+            "events".to_owned(),
+            Value::Array(
+                definition
+                    .events
+                    .iter()
+                    .map(|event| {
+                        let mut statement = String::new();
+                        describe::write_event(&mut statement, &definition.name, event);
+                        Value::from(statement.trim_end())
+                    })
+                    .collect(),
+            ),
+        );
         let (key, held) = match describe::declaration(&definition, &fields, &indexes) {
             // A narrowed view gets no script. The report above is already the
             // subset this caller may read, and that is a truthful *description*;
@@ -226,10 +241,35 @@ impl Session<'_> {
                 "undefinable",
                 "fields or indexes of this table are hidden from this caller".to_owned(),
             ),
-            Ok(script) => ("definition", script),
+            Ok(mut script) => {
+                for event in &definition.events {
+                    describe::write_event(&mut script, &definition.name, event);
+                }
+                ("definition", script)
+            }
             Err(unwritable) => ("undefinable", unwritable.part),
         };
         report.insert(key.to_owned(), Value::from(held.as_str()));
+        // A kept view says how fresh it is (ADR-0109 D5): the version its rows
+        // equal its read at, how many versions the store has moved past it, how
+        // many rows it holds, and when it last reached the head.
+        if let Some((state, head)) = crate::materialized::freshness(self.store, transaction, id)? {
+            let count =
+                |held: u64| Value::Number(Number::Integer(i64::try_from(held).unwrap_or(i64::MAX)));
+            let rows = Catalog::new(transaction).record_count(id)?.unwrap_or(0);
+            let mut kept = BTreeMap::new();
+            kept.insert("version".to_owned(), count(state.version.get()));
+            kept.insert(
+                "behind".to_owned(),
+                count(head.get().saturating_sub(state.version.get())),
+            );
+            kept.insert("rows".to_owned(), count(rows));
+            kept.insert(
+                "refreshed".to_owned(),
+                Value::Number(Number::Integer(state.refreshed)),
+            );
+            report.insert("materialized".to_owned(), Value::Object(kept));
+        }
         Ok(report)
     }
 
@@ -337,9 +377,13 @@ impl Session<'_> {
             .field_indexes_on(id)?
             .into_iter()
             .find(|index| index.vector.is_some());
-        let measured = match index {
-            Some(index) => transaction.vector_recall(&index)?,
-            None => None,
+        let (measured, footprint, quantized) = match index {
+            Some(index) => (
+                transaction.vector_recall(&index)?,
+                transaction.vector_node_bytes(&index)?,
+                index.quantized,
+            ),
+            None => (None, None, false),
         };
         Ok(BTreeMap::from([
             ("name".to_owned(), Value::from(name.text.as_str())),
@@ -352,6 +396,29 @@ impl Session<'_> {
             // the index finds nothing; absence says nobody has asked. Reporting
             // the second as the first is the failure this field exists to avoid.
             ("recall".to_owned(), measured.map_or(Value::None, reported)),
+            ("quantized".to_owned(), Value::Bool(quantized)),
+            // Measured off the stored nodes: the average bytes one takes, beside
+            // how many there are. `None` while the store holds no vector.
+            (
+                "node_bytes".to_owned(),
+                footprint.map_or(Value::None, |(_, average, _)| {
+                    Value::Number(Number::Integer(i64::try_from(average).unwrap_or(i64::MAX)))
+                }),
+            ),
+            (
+                "vector_bytes".to_owned(),
+                footprint.map_or(Value::None, |(_, _, per_vector)| {
+                    Value::Number(Number::Integer(
+                        i64::try_from(per_vector).unwrap_or(i64::MAX),
+                    ))
+                }),
+            ),
+            (
+                "nodes".to_owned(),
+                footprint.map_or(Value::None, |(nodes, _, _)| {
+                    Value::Number(Number::Integer(i64::try_from(nodes).unwrap_or(i64::MAX)))
+                }),
+            ),
         ]))
     }
 

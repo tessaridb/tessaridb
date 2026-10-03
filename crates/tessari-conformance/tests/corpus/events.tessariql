@@ -1,0 +1,85 @@
+# Events: statements a table runs after each write of one of its records, in the
+# writer's transaction, as the writer (ADR-0110).
+#
+# Every case leans on one property: the body's effects and the write are one
+# commit. A refusal in the body refuses the write, so nothing of either lands.
+
+--- case: a table to write and a log to keep
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE shop;
+USE DATABASE shop;
+DEFINE COLLECTION orders;
+DEFINE COLLECTION log;
+--- expect: ok
+
+--- case: an event sees the record as it was and as it is
+DEFINE EVENT audit ON orders THEN CREATE log = { event: $event, key: $id, was: $before.v ?? 0, now: $after.v ?? 0 };
+CREATE orders:1 = { v: 3 };
+UPDATE orders:1 SET v = 5;
+SELECT event, was, now FROM log WHERE key = 1 ORDER BY now;
+--- expect: rows 2
+
+--- case: a delete runs it too, and the record it saw is the one that was there
+DELETE orders:1;
+SELECT * FROM log WHERE event = 'DELETE' AND was = 5;
+--- expect: rows 1
+
+--- case: a record that was not there was not deleted, so nothing runs
+DELETE orders:99;
+SELECT * FROM log;
+--- expect: rows 3
+
+--- case: FOR and WHEN choose which writes run the body
+DEFINE EVENT big ON orders FOR UPDATE WHEN $after.v > 10 THEN CREATE log = { event: 'big', now: $after.v };
+CREATE orders:2 = { v: 50 };
+UPDATE orders:2 SET v = 4;
+UPDATE orders:2 SET v = 40;
+SELECT * FROM log WHERE event = 'big';
+--- expect: rows 1
+
+--- case: a refusal in the body refuses the write
+DEFINE EVENT positive ON orders WHEN $after.v < 0 THEN THROW 'an order is never negative';
+CREATE orders:3 = { v: -1 };
+--- expect: error EventFailed
+
+--- case: and nothing of it landed
+SELECT * FROM orders:3;
+--- expect: rows 0
+
+--- case: an event writing back into its own table is refused at the depth limit
+DEFINE EVENT again ON orders FOR UPDATE WHEN $after.v >= 1000 THEN UPDATE orders:$id SET v = $after.v + 1;
+UPDATE orders:2 SET v = 1000;
+--- expect: error EventFailed
+
+--- case: a name is defined once on a table
+DEFINE EVENT audit ON orders THEN CREATE log = { v: 1 };
+--- expect: error EventExists
+
+--- case: IF NOT EXISTS accepts the repeat
+DEFINE EVENT IF NOT EXISTS audit ON orders THEN CREATE log = { v: 1 };
+--- expect: ok
+
+--- case: a body runs writes, and nothing that answers or changes the catalog
+DEFINE EVENT bad ON orders THEN SELECT * FROM log;
+--- expect: error EventBody
+
+--- case: a parameter the event does not bind is refused where it is written
+DEFINE EVENT bad ON orders THEN CREATE log = { v: $aftr.v };
+--- expect: error UnboundParameter
+
+--- case: a topic carries no events — reading it is what a consumer is for
+DEFINE TOPIC feed;
+DEFINE EVENT e ON feed THEN CREATE log = { v: 1 };
+--- expect: error EventOnKind
+
+--- case: DROP EVENT stops it
+DROP EVENT again ON orders;
+DROP EVENT big ON orders;
+UPDATE orders:2 SET v = 1000;
+SELECT * FROM orders WHERE v = 1000;
+--- expect: rows 1
+
+--- case: dropping one that is not there is refused by name
+DROP EVENT big ON orders;
+--- expect: error Unknown

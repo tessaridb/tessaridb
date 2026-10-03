@@ -65,6 +65,7 @@ mod tests {
             fields: vec![Path::field("x")],
             search,
             unique,
+            quantized: false,
             vector: None,
             spatial: false,
             costs: tessari_storage::SearchCosts::default(),

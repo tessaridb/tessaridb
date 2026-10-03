@@ -67,6 +67,22 @@ EXPLAIN SELECT * FROM points ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 2 
 EXPLAIN SELECT * FROM points ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 2;
 --- expect: value { access: 'scan', exact: true, table: 'points' }
 
+# A condition is walked too (0.22): the graph navigates every record and admits
+# one only after the whole condition passes on it, so it chooses which records
+# are tried and never which pass.
+
+--- case: a filtered read that says the word is planned through the graph
+EXPLAIN SELECT * FROM points WHERE name != 'origin' ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 2 APPROXIMATE;
+--- expect: value { access: 'approximate', exact: false, index: 'by_at', inexact: 'an approximate index answered this, so a nearer record may exist', table: 'points' }
+
+--- case: and answers only with records that pass the condition, the page full
+SELECT * FROM points WHERE name != 'origin' ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 2 APPROXIMATE;
+--- expect: rows 2
+
+--- case: a walk that cannot fill the page gives the read to the exact path, never a short page by choice
+SELECT * FROM points WHERE name = 'far' ORDER BY vector::euclidean(at, [0.0, 0.0]) LIMIT 2 APPROXIMATE;
+--- expect: rows 1
+
 --- case: a distance the engine does not have is refused by name
 SELECT * FROM points ORDER BY vector::manhattan(at, [0.0, 0.0]) LIMIT 1;
 --- expect: error NoSuchFunction
@@ -239,3 +255,23 @@ SELECT * FROM readings LIMIT 2 EFFORT 200;
 --- case: and effort is still a name a caller may use
 DEFINE FIELD effort ON readings TYPE int;
 --- expect: ok
+
+# A quantized store keeps each vector as one byte per component (0.22). The
+# codes choose which records a walk tries and the records' full vectors decide
+# the order, so the word changes what an index holds and never what an exact
+# read answers.
+
+--- case: a vector store may be declared quantized
+DEFINE VECTOR coded DIMENSION 2 DISTANCE euclidean QUANTIZED;
+CREATE coded:1 = { vector: [0.0, 0.0] };
+CREATE coded:2 = { vector: [0.1, 0.0] };
+CREATE coded:3 = { vector: [0.9, 0.9] };
+--- expect: ok
+
+--- case: and an approximate read over it is rescored on the full vectors
+SELECT * FROM coded ORDER BY vector::euclidean(vector, [0.0, 0.0]) LIMIT 2 APPROXIMATE;
+--- expect: rows 2
+
+--- case: quantized describes a vector index and no other
+DEFINE INDEX by_effort ON readings FIELDS effort QUANTIZED;
+--- expect: error UnexpectedToken

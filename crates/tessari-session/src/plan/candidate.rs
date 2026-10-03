@@ -6,7 +6,7 @@ use tessari_storage::IndexDefinition;
 use tessari_types::Value;
 
 use crate::outcome::AccessPath;
-use crate::plan::Plan;
+use crate::plan::{Expected, Plan};
 
 /// What shape of test an index is being asked to answer.
 ///
@@ -240,6 +240,12 @@ impl Served {
 pub(crate) enum Rows {
     /// A ceiling that was free to learn.
     AtMost(u64),
+    /// An estimate read from the index's statistics — a number that may be
+    /// wrong, which is why it ranks below an exact ceiling of the same size.
+    About(u64),
+    /// The entries a bounded probe counted for the winner, exact up to the cap
+    /// it was asked under. Known only after ranking, so it never competes.
+    Counted(u64),
     /// No ceiling without doing the work the candidate would do anyway.
     Unknown,
 }
@@ -247,14 +253,27 @@ pub(crate) enum Rows {
 impl Rows {
     /// Which of two bounds promises fewer records.
     ///
-    /// Every known ceiling beats every unknown one, which is the whole ranking
-    /// in a sentence. Two unknowns are equal here and the shape breaks the tie.
+    /// Every known number beats every unknown one, which is the whole ranking
+    /// in a sentence; between two numbers the smaller wins, and an exact one
+    /// wins a tie with an estimate. Two unknowns are equal here and the shape
+    /// breaks the tie.
     pub(super) fn rank(self, other: Self) -> Ordering {
-        match (self, other) {
-            (Self::AtMost(held), Self::AtMost(theirs)) => held.cmp(&theirs),
-            (Self::AtMost(_), Self::Unknown) => Ordering::Less,
-            (Self::Unknown, Self::AtMost(_)) => Ordering::Greater,
-            (Self::Unknown, Self::Unknown) => Ordering::Equal,
+        match (self.number(), other.number()) {
+            (Some((held, exact)), Some((theirs, their_exact))) => {
+                held.cmp(&theirs).then(their_exact.cmp(&exact))
+            }
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        }
+    }
+
+    /// The number this knows, and whether it is exact.
+    const fn number(self) -> Option<(u64, bool)> {
+        match self {
+            Self::AtMost(held) | Self::Counted(held) => Some((held, true)),
+            Self::About(held) => Some((held, false)),
+            Self::Unknown => None,
         }
     }
 }
@@ -311,6 +330,25 @@ impl Candidate {
     /// `EXPLAIN` that only describes it. Two of them would report the same
     /// choice in different words the first time one changed, which is the whole
     /// failure this replaces.
+    /// The range the read walks for this candidate, when it walks one — a
+    /// bounded range, or an equality that is not a complete unique lookup,
+    /// exactly as `evaluate::candidates` hands it to the read.
+    pub(crate) fn ranged(&self) -> Option<super::estimate::Ranged<'_>> {
+        match &self.served {
+            Served::Range {
+                fixed,
+                lower,
+                upper,
+            } => Some((&self.index, fixed, lower.as_ref(), upper.as_ref())),
+            Served::Equality(values)
+                if !(self.index.unique && values.len() == self.index.fields.len()) =>
+            {
+                Some((&self.index, values, None, None))
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn plan(&self, table: Option<&str>) -> Plan {
         Plan {
             table: table.map(ToOwned::to_owned),
@@ -323,8 +361,10 @@ impl Candidate {
                 }
                 _ => None,
             },
-            at_most: match self.rows {
-                Rows::AtMost(held) => Some(held),
+            expected: match self.rows {
+                Rows::AtMost(held) => Some(Expected::AtMost(held)),
+                Rows::About(held) => Some(Expected::Estimated(held)),
+                Rows::Counted(held) => Some(Expected::Counted(held)),
                 Rows::Unknown => None,
             },
             ..Plan::new(AccessPath::Index)

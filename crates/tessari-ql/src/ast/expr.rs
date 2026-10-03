@@ -253,6 +253,21 @@ pub enum ExprKind {
     /// The right side is evaluated **only** when the left holds nothing, so
     /// `cached ?? (SELECT …)` does not pay for a read it does not need.
     Coalesce(Box<Expr>, Box<Expr>),
+    /// `$after.total`, `$before.lines[0]` — a route into a value, rather than
+    /// into the record a condition is testing.
+    ///
+    /// Written after a parameter, which is the one value a script holds whose
+    /// fields it may want: an event's `$before` and `$after`, a `LET`'s result
+    /// (ADR-0110). A step that reaches nothing answers `NONE`, the absence a
+    /// missing field already is everywhere else, so `$before.v ?? 0` reads a
+    /// created record as zero. `[*]` is not a step here: a route into one value
+    /// answers one value.
+    Route {
+        /// The value walked into.
+        value: Box<Expr>,
+        /// The steps, `.field` and `[n]`.
+        steps: Vec<tessari_types::Step>,
+    },
     /// A table named in a value position.
     Table(TableRef),
     /// A record named in a value position: `users:1`.
@@ -282,6 +297,9 @@ pub struct TopicClauses {
     pub retain: Option<Duration>,
     /// `MAX BYTES n` — the most bytes one message may encode to.
     pub max_bytes: Option<u64>,
+    /// `RETAIN BYTES n` — the most payload bytes the topic keeps; past it the
+    /// oldest messages are removed by the commit that appends (G055 C8).
+    pub retain_bytes: Option<u64>,
     /// `PUBLIC RATE n PER d` — appends a caller nobody signed in may make, per
     /// window, on each node.
     pub public: Option<(u64, Duration)>,

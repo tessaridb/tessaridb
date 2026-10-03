@@ -477,6 +477,18 @@ pub struct Projected {
     pub name: Name,
 }
 
+/// `PATH TO <record> DEPTH n [WEIGHT field]` on a one-hop walk (G055 W6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathTo {
+    /// The record the path ends at.
+    pub to: RecordTarget,
+    /// The edge field a step costs, when the path is weighted; each step costs
+    /// one otherwise.
+    pub weight: Option<Name>,
+    /// Where `PATH` is.
+    pub span: Span,
+}
+
 /// One step of a traversal: an edge table, and optionally the table its far
 /// endpoint is read from.
 ///
@@ -579,6 +591,10 @@ pub enum Source {
         /// and no record is answered twice — which is what makes `n` bound the
         /// *work* and not merely the number written down.
         depth: Option<u64>,
+        /// `PATH TO <record> … [WEIGHT field]` — the shortest path to one record
+        /// within `depth` steps rather than everything within them (G055 W6).
+        /// Boxed: rare, and as large as the rest of the walk.
+        path: Option<Box<PathTo>>,
     },
     /// `FROM SEARCH knowledge MATCHES 'ada lovelace'` — the records of every
     /// member of a declared search, ranked as one collection (ADR-0105).

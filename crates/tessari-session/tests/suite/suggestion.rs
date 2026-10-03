@@ -253,14 +253,15 @@ fn a_term_near_nothing_earns_no_correction() {
     );
 }
 
-/// **A typo in the first three characters is not suggestible, and that is the
+/// **A typo in the first two characters is not suggestible, and that is the
 /// bound rather than a bug.**
 ///
 /// The walk this reuses is the one `MATCHES FUZZY` already runs, and it requires
 /// the candidate to share a mandatory non-fuzzy prefix with the typed word.
-/// `vetcor` and `vector` differ at the third character, so `vector` is not in
+/// `evctor` and `vector` differ at the first character, so `vector` is not in
 /// the range the walk reads at all — no edit budget would find it, because the
-/// budget is never consulted.
+/// budget is never consulted. (Three characters until `0.22.0-beta`, when
+/// `vetcor` was the example; it is now suggested.)
 ///
 /// Reusing that bound rather than inventing a looser one for suggestions is
 /// deliberate: two walks over the same dictionary with two different notions of
@@ -271,7 +272,7 @@ fn a_term_near_nothing_earns_no_correction() {
 #[test]
 fn a_typo_inside_the_mandatory_prefix_earns_no_correction() {
     let (_, (records, suggestion)) =
-        both_paths("SELECT * FROM notes WHERE body MATCHES 'vetcor' ORDER BY id;");
+        both_paths("SELECT * FROM notes WHERE body MATCHES 'evctor' ORDER BY id;");
 
     assert!(records.is_empty());
     assert_eq!(

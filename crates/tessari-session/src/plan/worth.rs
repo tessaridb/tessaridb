@@ -20,8 +20,18 @@
 //! rather than "fewer than all", because an index read is not free: it walks
 //! entries *and* fetches records, so a path that returns most of the table has
 //! added a walk to a read it did not shorten. Half is a threshold and is stated
-//! as one — it is not derived from a cost model, and this store deliberately
-//! has no histograms (see [`crate::plan`] for why).
+//! as one — it is not derived from a cost model.
+//!
+//! # An estimate decides where it is clear, and the probe where it is not
+//!
+//! With fresh statistics (G055 W3) the winner arrives carrying an estimate, and
+//! an estimate well inside either side of the threshold decides without
+//! counting: under three quarters of half the table the index is served, over
+//! one and a half times half of it the table is read. Between the two an
+//! estimate's error could put it on either side, so the probe counts as it
+//! always did — and a candidate with no statistic is counted exactly as before
+//! statistics existed. The count, when one is taken, travels on as the
+//! candidate's rows so the plan can report it.
 //!
 //! # Why the probe is capped at the threshold itself
 //!
@@ -67,7 +77,11 @@ use crate::error::Result;
 
 use super::candidate::{Candidate, Rows, Served};
 
-/// Whether serving `chosen` beats scanning `table`.
+/// Whether serving `chosen` beats scanning `table`, and what is known about
+/// how many records it produces once that is settled.
+///
+/// `None` is the table; `Some(rows)` serves the candidate, with the probe's
+/// count in place of an estimate or an unknown when one was taken.
 ///
 /// # Errors
 ///
@@ -77,30 +91,37 @@ pub(crate) fn worth_serving(
     table: TableId,
     chosen: &Candidate,
     lifted: bool,
-) -> Result<bool> {
+) -> Result<Option<Rows>> {
     // `WITHOUT SCAN GUARD`. Answered before anything is counted, because the
     // probe is the cost this clause exists to decline paying: an author who has
     // said the threshold is wrong for their workload should not also pay for it
     // to be measured.
     if lifted {
-        return Ok(true);
+        return Ok(Some(chosen.rows));
     }
     let Some(records) = Catalog::new(transaction).record_count(table)? else {
-        return Ok(true);
+        return Ok(Some(chosen.rows));
     };
     if records < PLANNER_SCAN_FLOOR_RECORDS {
-        return Ok(true);
+        return Ok(Some(chosen.rows));
     }
     let cap = records / 2;
-    let ceiling = match (chosen.rows, &chosen.served) {
+    let probed = match (chosen.rows, &chosen.served) {
         // Already counted, and counted for free — a unique equality or a term's
         // document frequency. Nothing to probe.
-        (Rows::AtMost(held), _) => Some(held),
-        (Rows::Unknown, Served::Equality(values)) => {
+        (Rows::AtMost(held) | Rows::Counted(held), _) => {
+            return Ok((held <= cap).then_some(chosen.rows));
+        }
+        // An estimate clearly on one side of the threshold decides alone.
+        (Rows::About(held), _) if held <= (cap / 4).saturating_mul(3) => {
+            return Ok(Some(chosen.rows));
+        }
+        (Rows::About(held), _) if held >= cap.saturating_add(cap / 2) => return Ok(None),
+        (Rows::About(_) | Rows::Unknown, Served::Equality(values)) => {
             transaction.count_in_range(&chosen.index, values, None, None, cap)?
         }
         (
-            Rows::Unknown,
+            Rows::About(_) | Rows::Unknown,
             Served::Range {
                 fixed,
                 lower,
@@ -114,11 +135,8 @@ pub(crate) fn worth_serving(
         // can walk. They keep the behaviour they had: the ranking decides and
         // the guard says nothing, because a guard that vetoed on no evidence
         // would take away a path that is often the right one.
-        (Rows::Unknown, _) => return Ok(true),
+        (Rows::About(_) | Rows::Unknown, _) => return Ok(Some(chosen.rows)),
     };
-    Ok(match ceiling {
-        Some(entries) => entries <= cap,
-        // The probe gave up, which is the answer: more than half the table.
-        None => false,
-    })
+    // The probe giving up is the answer: more than half the table.
+    Ok(probed.map(Rows::Counted))
 }

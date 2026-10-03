@@ -482,6 +482,7 @@ impl Transaction<'_> {
                     self.store,
                     evicted.as_ref().unwrap_or(&record),
                     self.clock(),
+                    identity.id,
                 )? {
                     evicted = Some(admitted);
                 }

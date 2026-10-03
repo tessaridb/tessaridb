@@ -61,6 +61,10 @@ impl tessari_wire::Origin for PeerDoor {
     ) -> tessari_wire::Result<Option<tessari_wire::Reached>> {
         tessari_wire::Serving::declared(self.db.store()).reached_on(range)
     }
+
+    fn attempted(&self, asked: &tessari_wire::Attempt) -> bool {
+        asked.answered(self.db.store())
+    }
 }
 
 impl tessari_wire::Holding for PeerDoor {

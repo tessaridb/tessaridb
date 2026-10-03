@@ -17,7 +17,7 @@
 
 use tessari_constants::{BM25_B, BM25_K1};
 
-use super::query::{Answering, Probe};
+use super::query::{Answering, Probe, Text};
 
 /// What the collection looks like to one read.
 #[derive(Debug, Clone, Copy)]
@@ -30,8 +30,8 @@ pub(crate) struct Collection {
 pub(crate) struct Scored<'a> {
     /// How the field answers words.
     pub(crate) answering: &'a Answering,
-    /// Its analysed terms.
-    pub(crate) terms: &'a [String],
+    /// Its analysed terms, with their surfaces when a fuzzy word is asked.
+    pub(crate) text: Text<'a>,
     /// Its weight.
     pub(crate) weight: f64,
     /// Its average length across its member's documents; `None` when the
@@ -42,26 +42,47 @@ pub(crate) struct Scored<'a> {
 /// The record's score against `words`, each beside its blended document
 /// frequency.
 pub(crate) fn bm25f(collection: Collection, words: &[(&Probe, f64)], fields: &[Scored<'_>]) -> f64 {
+    let shapes: Vec<(f64, Option<f64>, f64)> = fields
+        .iter()
+        .map(|field| (field.weight, field.average, count(field.text.terms.len())))
+        .collect();
+    combined(collection, words, &shapes, |word, at| {
+        let (Some((probe, _)), Some(field)) = (words.get(word), fields.get(at)) else {
+            return 0.0;
+        };
+        // A fuzzy word's occurrences are weighed by how near each one is, so
+        // an exact term outranks a corrected one (Q-867).
+        field
+            .text
+            .tokens()
+            .map(|(term, surface)| field.answering.weight(probe, term, surface))
+            .sum()
+    })
+}
+
+/// BM25F over fields given as `(weight, average length, length)`, with the
+/// occurrences of word `word` in field `at` asked of `occurrences` — the one
+/// formula, whether the counts come from the record's text or from the
+/// postings (Q-870), so the two cannot rank a record differently.
+pub(crate) fn combined(
+    collection: Collection,
+    words: &[(&Probe, f64)],
+    fields: &[(f64, Option<f64>, f64)],
+    occurrences: impl Fn(usize, usize) -> f64,
+) -> f64 {
     let mut score = 0.0;
-    for (probe, holding) in words {
+    for (word, (_, holding)) in words.iter().enumerate() {
         let mut weighted = 0.0;
-        for field in fields {
-            let Some(average) = field.average else {
+        for (at, (weight, average, length)) in fields.iter().enumerate() {
+            let Some(average) = average else {
                 continue;
             };
-            let occurrences = count(
-                field
-                    .terms
-                    .iter()
-                    .filter(|term| field.answering.answers(probe, term))
-                    .count(),
-            );
-            if occurrences == 0.0 {
+            let held = occurrences(word, at);
+            if held <= 0.0 {
                 continue;
             }
-            let length = count(field.terms.len());
             let normalised = BM25_B.mul_add(length / average, 1.0 - BM25_B);
-            weighted += field.weight * occurrences / normalised;
+            weighted += weight * held / normalised;
         }
         if weighted > 0.0 {
             score += idf(collection.documents, *holding) * weighted * (BM25_K1 + 1.0)

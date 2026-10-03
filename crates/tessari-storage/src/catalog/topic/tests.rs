@@ -9,6 +9,7 @@ fn every_shape_round_trips() {
         TopicDeclaration {
             retain: Some(Duration::from_seconds(604_800)),
             max_bytes: Some(4096),
+            retain_bytes: Some(1 << 30),
             public: Some(PublicAppend {
                 rate: 100,
                 per: Duration::from_seconds(60),
@@ -17,6 +18,7 @@ fn every_shape_round_trips() {
         TopicDeclaration {
             retain: None,
             max_bytes: Some(1),
+            retain_bytes: None,
             public: None,
         },
     ];

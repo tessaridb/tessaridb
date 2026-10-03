@@ -5,8 +5,8 @@ use crate::error::Result;
 use crate::store::Store;
 use tessari_constants::SEARCH_PREFIX_MINIMUM;
 use tessari_encoding::{
-    IndexAddress, SearchStatistics, SearchStatisticsKey, SearchSuffixKey, SearchTermKey, StoreKey,
-    StoreValue, TermStatistics,
+    IndexAddress, SearchStatistics, SearchStatisticsKey, SearchSuffixKey, SearchSurfaceKey,
+    SearchTermKey, StoreKey, StoreValue, TermStatistics,
 };
 use tessari_kv::WriteBatch;
 
@@ -181,6 +181,36 @@ pub(crate) fn settle_terms(
                     key,
                     TermStatistics::bounded(documents, frequency, length).encode(),
                 )
+            };
+        }
+    }
+    settle_surfaces(store, batch, pending)
+}
+
+/// Fold the per-pair surface deltas into the surface dictionary (Q-867): one
+/// read and one write per pair that moved, deleted at zero so a fuzzy walk
+/// never reaches a spelling no record holds. A built index's figure is a total,
+/// for the reason [`settle`] gives.
+fn settle_surfaces(store: &Store, mut batch: WriteBatch, pending: &Pending) -> Result<WriteBatch> {
+    let keyspace = SearchSurfaceKey::keyspace();
+    for (address, moved) in &pending.surfaces {
+        let rebuilt = pending.built.contains(address);
+        for ((surface, term), delta) in moved {
+            if *delta == 0 {
+                continue;
+            }
+            let key = SearchSurfaceKey::new(*address, surface.clone(), term.clone()).encode();
+            let held = if rebuilt {
+                0
+            } else {
+                match store.backend().get(keyspace, &key)? {
+                    Some(bytes) => SearchSurfaceKey::counted(bytes.as_slice())?,
+                    None => 0,
+                }
+            };
+            batch = match shift(held, *delta) {
+                0 => batch.delete(keyspace, key),
+                count => batch.put(keyspace, key, SearchSurfaceKey::count(count)),
             };
         }
     }

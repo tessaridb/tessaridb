@@ -66,6 +66,7 @@ const newTopic = (): Node =>
       "default",
       field("Name", text("new-topic-name", { placeholder: "events" })),
       field("Keep for", text("new-topic-retain", { placeholder: "7d, or empty to keep all" })),
+      field("Keep at most", text("new-topic-kept", { placeholder: "bytes, optional" })),
       field("Largest message", text("new-topic-bytes", { placeholder: "bytes, optional" })),
     ),
     says("new-topic-says"),

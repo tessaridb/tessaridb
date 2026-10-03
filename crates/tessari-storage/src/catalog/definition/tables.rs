@@ -3,12 +3,12 @@
 use super::ShardMap;
 use super::{
     EdgeDeclaration, FIELD_BUCKET, FIELD_CEILING, FIELD_COLLECTION, FIELD_CONFLICT, FIELD_DATABASE,
-    FIELD_EDGE, FIELD_ENDPOINTS, FIELD_GEO, FIELD_GRAPH, FIELD_ID, FIELD_IDENTITY, FIELD_NAME,
-    FIELD_NAMESPACE, FIELD_PARTITION, FIELD_QUEUE, FIELD_SCHEMAFULL, FIELD_SERIES, FIELD_SHARDS,
-    FIELD_SPACE, FIELD_TOPIC, FIELD_VAULT, FIELD_VECTOR, FIELD_VIEW, QueueDeclaration,
-    SeriesDeclaration, StoredKind, TableKind, VaultCustody, VaultDeclaration, VectorDeclaration,
-    ViewDeclaration, byte_count, ceiling, field_id, field_name, flag, identity_kind, number,
-    object,
+    FIELD_EDGE, FIELD_ENDPOINTS, FIELD_EVENTS, FIELD_GEO, FIELD_GRAPH, FIELD_ID, FIELD_IDENTITY,
+    FIELD_NAME, FIELD_NAMESPACE, FIELD_PARTITION, FIELD_QUEUE, FIELD_SCHEMAFULL, FIELD_SERIES,
+    FIELD_SHARDS, FIELD_SPACE, FIELD_TOPIC, FIELD_VAULT, FIELD_VECTOR, FIELD_VIEW,
+    QueueDeclaration, SeriesDeclaration, StoredKind, TableKind, VaultCustody, VaultDeclaration,
+    VectorDeclaration, ViewDeclaration, byte_count, ceiling, field_id, field_name, flag,
+    identity_kind, number, object,
 };
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
@@ -89,6 +89,10 @@ pub struct TableDefinition {
     /// The field whose value leads every record's identity, when the table was
     /// declared `PARTITION BY` it (ADR-0096); written only when present.
     pub partition: Option<String>,
+    /// What runs after each write of one of its records (ADR-0110), in name
+    /// order; written only when there is one, so an entry without events is
+    /// the bytes it always was.
+    pub events: Vec<super::EventDeclaration>,
 }
 
 impl TableDefinition {
@@ -241,6 +245,17 @@ impl TableDefinition {
         }
         if let Some(partition) = &self.partition {
             fields.insert(FIELD_PARTITION.to_owned(), Value::from(partition.as_str()));
+        }
+        if !self.events.is_empty() {
+            fields.insert(
+                FIELD_EVENTS.to_owned(),
+                Value::Array(
+                    self.events
+                        .iter()
+                        .map(super::EventDeclaration::to_value)
+                        .collect(),
+                ),
+            );
         }
         // A declaration is not a flag, so it is written only by the edge table
         // that has one. Absent is how every edge table declared without a pair
@@ -415,6 +430,20 @@ impl TableDefinition {
                         entity: "table",
                         field: FIELD_PARTITION,
                         found: "a partition field that is not a name",
+                    });
+                }
+            },
+            events: match fields.get(FIELD_EVENTS) {
+                None => Vec::new(),
+                Some(Value::Array(held)) => held
+                    .iter()
+                    .map(super::EventDeclaration::from_value)
+                    .collect::<Result<_>>()?,
+                Some(other) => {
+                    return Err(Error::CatalogMalformed {
+                        entity: "table",
+                        field: FIELD_EVENTS,
+                        found: other.type_name(),
                     });
                 }
             },

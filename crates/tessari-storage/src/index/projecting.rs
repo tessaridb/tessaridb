@@ -68,6 +68,10 @@ pub(crate) struct Analysed {
     pub(crate) tokens: u64,
     /// Each field's token count, for a search member; empty for a field index.
     pub(crate) fields: Vec<u64>,
+    /// Each distinct `(surface, term)` pair whose term the stemmer changed —
+    /// the raw companion a fuzzy word is measured against (Q-867). Empty for a
+    /// chain without a stemmer, where every term is its own surface.
+    pub(crate) surfaces: BTreeSet<(String, String)>,
 }
 
 impl Analysed {
@@ -151,6 +155,8 @@ pub(crate) fn terms_of(
         return located_terms_of(definition, analyzer, text);
     }
     let mut terms: Vec<String> = analyzer.terms(text);
+    let mut surfaces = BTreeSet::new();
+    paired(&mut surfaces, analyzer, text, &terms);
     let tokens = u64::try_from(terms.len()).unwrap_or(u64::MAX);
     terms.sort_unstable();
     // Sorting puts equal terms next to each other, so a run *is* the count. This
@@ -169,6 +175,27 @@ pub(crate) fn terms_of(
         postings,
         tokens,
         fields: Vec::new(),
+        surfaces,
+    }
+}
+
+/// Add the `(surface, term)` pairs of `text` whose term the stemmer changed.
+///
+/// `terms` is the text's analysis in token order, so the two lists line up
+/// one for one — the property [`Analyzer::surfaces`] states.
+fn paired(
+    into: &mut BTreeSet<(String, String)>,
+    analyzer: &Analyzer,
+    text: &str,
+    terms: &[String],
+) {
+    if !analyzer.stems() {
+        return;
+    }
+    for (surface, term) in analyzer.surfaces(text).into_iter().zip(terms) {
+        if surface != *term {
+            into.insert((surface, term.clone()));
+        }
     }
 }
 
@@ -191,6 +218,9 @@ fn located_terms_of(definition: &IndexDefinition, analyzer: &Analyzer, text: &st
             (token.term, narrow(ordinal), bytes)
         })
         .collect();
+    let mut surfaces = BTreeSet::new();
+    let in_order: Vec<String> = held.iter().map(|(term, _, _)| term.clone()).collect();
+    paired(&mut surfaces, analyzer, text, &in_order);
     let tokens = u64::try_from(held.len()).unwrap_or(u64::MAX);
     // By term, then by ordinal, so each run lists its occurrences in order.
     held.sort_unstable_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
@@ -215,6 +245,7 @@ fn located_terms_of(definition: &IndexDefinition, analyzer: &Analyzer, text: &st
             } else {
                 Vec::new()
             },
+            fields: Vec::new(),
         });
     }
     Analysed {
@@ -222,6 +253,7 @@ fn located_terms_of(definition: &IndexDefinition, analyzer: &Analyzer, text: &st
         located,
         tokens,
         fields: Vec::new(),
+        surfaces,
     }
 }
 
@@ -324,33 +356,59 @@ pub(crate) fn analysed(
     let Some(analyzer) = analyzer else {
         return Analysed::default();
     };
-    let mut terms: Vec<String> = Vec::new();
+    // Each token beside the ordinal of the field it came from, so a posting can
+    // say how often its term occurs in each field (Q-870).
+    let mut terms: Vec<(String, usize)> = Vec::new();
     let mut fields = Vec::with_capacity(definition.fields.len());
-    for path in &definition.fields {
+    let mut surfaces = BTreeSet::new();
+    for (at, path) in definition.fields.iter().enumerate() {
         let held = match path.resolve(value) {
-            Some(Value::String(text)) => analyzer.terms(text),
+            Some(Value::String(text)) => {
+                let held = analyzer.terms(text);
+                paired(&mut surfaces, analyzer, text, &held);
+                held
+            }
             _ => Vec::new(),
         };
         fields.push(u64::try_from(held.len()).unwrap_or(u64::MAX));
-        terms.extend(held);
+        terms.extend(held.into_iter().map(|term| (term, at)));
     }
     let tokens = u64::try_from(terms.len()).unwrap_or(u64::MAX);
     if tokens == 0 {
         return Analysed::default();
     }
     terms.sort_unstable();
-    let postings: Vec<(IndexValues, u32)> = terms
-        .chunk_by(|held, next| held == next)
-        .filter_map(|run| {
-            let term = run.first()?;
-            let frequency = u32::try_from(run.len()).unwrap_or(u32::MAX);
-            Some((IndexValues::of(&[Value::from(term.as_str())]), frequency))
-        })
-        .collect();
+    let narrow = |value: u64| u32::try_from(value).unwrap_or(u32::MAX);
+    let mut postings = Vec::new();
+    let mut located = Vec::new();
+    for run in terms.chunk_by(|held, next| held.0 == next.0) {
+        let Some((term, _)) = run.first() else {
+            continue;
+        };
+        let mut per_field = vec![0_u32; fields.len()];
+        for (_, at) in run {
+            if let Some(count) = per_field.get_mut(*at) {
+                *count = count.saturating_add(1);
+            }
+        }
+        postings.push((
+            IndexValues::of(&[Value::from(term.as_str())]),
+            u32::try_from(run.len()).unwrap_or(u32::MAX),
+        ));
+        located.push(Located {
+            fields: per_field
+                .into_iter()
+                .zip(&fields)
+                .map(|(frequency, length)| (frequency, narrow(*length)))
+                .collect(),
+            ..Located::default()
+        });
+    }
     Analysed {
-        located: vec![Located::default(); postings.len()],
+        located,
         postings,
         tokens,
         fields,
+        surfaces,
     }
 }

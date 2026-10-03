@@ -550,6 +550,19 @@ pub enum Error {
         max: u64,
     },
 
+    /// One commit appended more bytes to a size-retained topic than it keeps
+    /// (G055 C8): taking them would mean removing some of the commit's own
+    /// messages, which is a loss nobody would be told about.
+    #[error(
+        "this commit appends more than topic `{topic}` keeps ({retain_bytes} bytes); append in smaller commits"
+    )]
+    TopicRetainExceeded {
+        /// The topic.
+        topic: String,
+        /// Its declared size retention.
+        retain_bytes: u64,
+    },
+
     /// A topic has given out every position a 64-bit counter holds.
     #[error("a topic has given out every position it can hold")]
     TopicPositionsExhausted,
@@ -1038,6 +1051,7 @@ impl Error {
             | Self::SpaceFull { .. }
             | Self::TopicIsAppendOnly { .. }
             | Self::TopicMessageTooLarge { .. }
+            | Self::TopicRetainExceeded { .. }
             | Self::TopicPositionsExhausted
             | Self::AssertionViolation { .. }
             | Self::SchemaViolation { .. }

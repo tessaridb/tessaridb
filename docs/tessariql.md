@@ -138,6 +138,15 @@ script is parsed and before its first statement runs:
 A value supplied under a name the script does not use is accepted; a caller who
 reuses one set of values across two scripts has not made a mistake.
 
+A parameter holding an object or an array can be walked into: `$order.total`,
+`$order.lines[0].sku`. A step that reaches nothing — a field the object does not
+have, a position past the end, a value that is neither — answers `NONE`, the
+absence a missing field already is everywhere else, so `$before.total ?? 0`
+reads a value that is not there as zero. `[*]` is not a step here: a route into
+one value answers one value. This is how an event's body reads the record it
+was run for (§6f).
+
+
 Every way in carries them. The embedded session takes a map, the wire protocol
 carries the values in the store's own codec — so all fifteen kinds cross
 unchanged and the server never has to *read* one — and the console takes
@@ -1053,6 +1062,39 @@ truth — so a bare percentage would look current forever. Carrying the size it 
 taken at lets a reader see the number has been outgrown, and running
 `REBUILD INDEX` again is how a current one is obtained.
 
+#### A quantized store, when memory is the constraint
+
+```
+DEFINE VECTOR embeddings DIMENSION 768 DISTANCE cosine QUANTIZED;
+DEFINE INDEX by_embedding ON notes FIELDS embedding VECTOR cosine QUANTIZED;
+```
+
+From `0.22.0-beta` a vector index may keep each vector as **one byte per
+component** instead of eight: each component coded over the vector's own range
+(`x ≈ low + code × step`, sixteen bytes for the range). Per vector rather than per
+index, so there is no training step and every replica writes the same codes.
+
+**The codes choose who is tried; the full vectors decide the order.** A walk over
+a quantized index asks for eight times the `LIMIT`, and the read's own ordering
+stage ranks those candidates by the exact distance from each record's own vector
+before the bound cuts. An exact read is untouched by the word: it never consults
+the index. `QUANTIZED` reads only after `VECTOR` and its distance — on any other
+index it would describe storage that index does not have.
+
+`INFO FOR VECTOR` reports `quantized`, and what the index costs, read off the
+stored nodes rather than computed: `vector_bytes` (the average bytes of the vector
+inside a node), `node_bytes` (the whole node, neighbour list included) and
+`nodes`. Measured on 20 000 clustered 32-dimensional vectors (memory, release,
+`benchmarks/2026-10-03-macos-aarch64-vector-quantized.md`):
+
+| | `vector_bytes` | `node_bytes` | walk p50 | recall@10 after rescoring |
+|---|---|---|---|---|
+| full precision | 260 | 326 | 6.5 ms | 98.4 % |
+| `QUANTIZED` | 52 | 118 | 6.1 ms | 95.6 % |
+
+The trade is recall for memory: a fifth of the bytes per vector for about three
+points of recall, at the engine's own budget.
+
 ### A geo store, when the places are the point
 
 ```
@@ -1822,7 +1864,41 @@ and a count of the answer is a count of the others.
 A chain could mean the whole chain again or only its last step, and a walk
 ending on the edges themselves has nothing for a second round to start from;
 both are refused rather than answered one way in silence. Repeating a *pattern*
-is a different feature and is not in this language yet. Neither is `PATH`.
+is a different feature and is not in this language yet.
+
+### The shortest path: `PATH TO`
+
+```
+SELECT * FROM place:1->road->place PATH TO place:9 DEPTH 6;
+SELECT * FROM place:1->road->place PATH TO place:9 DEPTH 6 WEIGHT km;
+```
+
+The answer is the path's records, **start to end, in order** — the start alone
+when it is the end, nothing when no path fits within `DEPTH`. A `path` note says
+how many steps it took and what they cost: the steps again, or with `WEIGHT` the
+sum of that edge field along the way (from `0.22.0-beta`).
+
+**One path, by a rule.** The cheapest, then the fewest steps, then the one whose
+record ids, read in order, come first — so the same graph always answers the
+same path, whatever order the store reads it in.
+
+**`DEPTH` is required and is the bound on the work**, as it is for every repeated
+walk; `PATH TO` without it is refused by name (`PathNeedsDepth`) — a path search
+with no bound costs whatever lies between two records. The search reads the
+subgraph reachable from the start within `DEPTH` steps, each node once. A
+weighted path is the cheapest path *within that many steps*, not the cheapest
+path: its rounds (cheapest way to the end in at most `k` steps, for `k` up to
+`DEPTH`) are what honour the cap, where a plain shortest-path search would answer
+a cheaper path one step too long. They stop as soon as a round improves nothing,
+so `DEPTH 1000000` over a small graph costs the graph.
+
+**A weight is a number of zero or more.** An edge without the field is no step
+for a weighted path — absence narrows — and one holding text or a negative
+number is refused (`PathWeight`): a negative step makes the cheapest path a walk
+that loops. The step walks a **declared** edge kind (`DEFINE EDGE … IN`); an edge
+table is refused (`PathOverEdgeTable`). A deleted node drops out of every path,
+and the records answered are read under the reader's grants, as a `DEPTH` walk
+reads them.
 
 ### A table and its columns in one statement
 
@@ -2587,7 +2663,14 @@ means both.
 
 The tokenizer splits on anything that is not a letter or a digit, and is not
 named because there is one to choose from; a knob with one setting is a knob
-nobody should have to read about. The filters are the part that differs:
+nobody should have to read about. **A Chinese or Japanese ideograph is a token
+of its own** (Han and Hiragana, from `0.22.0-beta`), because those languages write
+words without spaces and a whole sentence used to be one term: `東京都` is three
+tokens, so `MATCHES '"東京"'` finds it — a quoted run of ideographs is an exact
+substring — and not `京東`, while an unquoted `東京` asks for both characters
+anywhere, as any unquoted query asks for every word. Katakana and Hangul keep
+their runs. An index over such text built before `0.22.0-beta` holds the old
+tokens and needs `REBUILD INDEX`. The filters are the part that differs:
 
 | Filter | What it does |
 |---|---|
@@ -2809,7 +2892,7 @@ with entries otherwise.
 
 **The bound it inherits.** Finding a near term is the same dictionary walk
 `MATCHES FUZZY` runs, so it carries the same mandatory non-fuzzy prefix: a word
-misspelled in its first three characters has no candidate and earns no
+misspelled in its first two characters has no candidate and earns no
 suggestion. Reusing that bound is deliberate. Two walks over one dictionary with
 two notions of "near" would eventually disagree, and the disagreement would show
 up as a suggestion for a word `MATCHES FUZZY` refuses to match.
@@ -2934,9 +3017,21 @@ SELECT * FROM notes WHERE body MATCHES FUZZY 'vectr';
 SELECT * FROM notes WHERE body MATCHES FUZZY 'containr analyzr';
 ```
 
-The analyzed text holds, for **every** word typed, a term within two edits of it.
+The analyzed text holds, for **every** word typed, a word within two edits of it.
 The same two levels as the operators above — a conjunction across the words, a
 disjunction within each — one step looser again.
+
+**A misspelling is measured against the word the text held, not against its
+stem** (from `0.22.0-beta`). A stemmer turns `transaction` into `transact`, and
+`trasnactoin` is two edits from the first and five from the second, so measuring
+against stems alone found nothing for exactly the typos a reader makes most. Each
+token answers by its term or by its **surface** — the token after every filter
+but the stemmer — and a `SEARCH` index keeps a surface dictionary beside its term
+dictionary, so both are walked. A record holding only `transacting` is not
+answered by `trasnactoin`: it shares the stem, but nothing it says is near what
+was typed. An index built before `0.22.0-beta` has no surfaces, so a fuzzy read
+over it is answered by the scan — the same records, at the scan's cost — until
+`REBUILD INDEX` gives it them.
 
 **It is declared, never automatic.** A query that finds nothing is never retried
 as a fuzzy one behind your back. A reader who asked for `vector` and was shown
@@ -2954,8 +3049,18 @@ past two the neighbourhood of a word is larger than most vocabularies, so every
 query would match something and the operator would have stopped discriminating
 rather than started being generous. `cat` and `dog` are three edits apart.
 
-**The first three characters are not fuzzy, and this is the cost worth knowing
-before you rely on it:**
+**The budget scales with the word typed:** no edit below three letters, one up
+to five, two beyond. Two edits on a four-letter word is a different word.
+
+**A corrected word ranks below the word itself.** In a `FROM SEARCH`, which
+ranks a fuzzy word, each occurrence counts `1 / (1 + edits)`: an exact term one,
+a one-edit term a half, a two-edit term a third, so a rare misspelling can never
+outrank the common word it stands for. (`search::score` scores the words typed,
+so a corrected word adds nothing there.)
+
+**The first two characters are not fuzzy, and this is the cost worth knowing
+before you rely on it** (three until `0.22.0-beta`, which lost every typo in the
+third letter — `anlayzer`):
 
 ```
 SELECT * FROM notes WHERE body MATCHES FUZZY 'vectr';   -- reaches "vector"
@@ -2969,13 +3074,13 @@ character people mistype least, having usually just read it.
 
 The restriction is part of what the operator **means**, not a trick the index
 plays. The scan applies exactly the same rule, so the answer does not change when
-somebody declares an index. A word shorter than three characters cannot carry
+somebody declares an index. A word shorter than two characters cannot carry
 that prefix and is refused by name, before any access path is chosen, exactly as
 a short `MATCHES PREFIX` is.
 
 **Neither expansion limit is a refusal.** A word whose near-spellings number more
-than sixteen, or whose three-character beginning is shared by more than a
-thousand terms, is answered by the scan instead. Only the index can see either
+than sixteen, or whose two-character beginning is shared by more than a
+thousand terms or surfaces, is answered by the scan instead. Only the index can see either
 number, so a cap that refused would make a statement succeed without an index and
 fail once somebody added one.
 
@@ -3193,6 +3298,19 @@ the table, each field's weight and options and how many records it holds, and
 `INFO FOR DATABASE` names the database's searches under `searches`.
 `EXPLAIN` reports access `index` and shape `search`, or `scan` when a word could
 not be walked within its cap.
+
+**Ranked from the postings when they can decide it** (from `0.22.0-beta`). A
+member posting keeps, per field, how often its term occurs there and how long
+the field is, so a query whose every word is a term, a prefix or an infix — with
+`OR` and `NOT`, synonyms and weights — is decided and scored from the postings
+alone and reads only the records it answers; the shape is then `search from
+postings`. A phrase (positions), a fuzzy word (surfaces), a `WHERE`, a
+transaction's own writes and a member built before `0.22.0-beta` are read and
+analysed record by record as before, shape `search`. Both go through one BM25F
+and rank every record with the same score. Measured on the documentation site's
+corpus (700 fragments, 81 judged queries): a word query 2.18 → 0.070 ms and a
+prefix 3.89 → 0.093 ms at the warm median. `REBUILD INDEX` (or redefining the
+search) moves an older member onto the faster path.
 
 ```
 DROP SEARCH knowledge;
@@ -3772,6 +3890,51 @@ a read with no `LIMIT` (a walk has nothing to cut), a `DESC` ordering (that asks
 for the furthest), a second sort key (it orders records the graph never ranked),
 and a `GROUP BY` (it folds the records a walk would have chosen between).
 
+**A condition is walked too** (from `0.22.0-beta`):
+
+```
+SELECT * FROM notes WHERE lang = 'en' AND published = true
+ ORDER BY vector::cosine(embedding, $q)
+ LIMIT 10
+ APPROXIMATE;
+```
+
+The walk navigates the whole graph and admits a record into the answer only after
+reading it at the reader's snapshot and testing the **whole** condition, so the
+graph chooses which records are tried and never which records pass. Three
+outcomes, and the answer says which happened:
+
+- **served** — `approximate` on the plan and the `approximate` note, every record
+  passing the condition, the page full;
+- **answered exactly** — when an index on the condition narrows the read to no
+  more records than the walk would visit, the read takes that index path instead:
+  same cost, exact answer, no note. It is decided **before** the walk, from the
+  index's estimate or a count of its entries that stops at the walk's ceiling, and
+  `EXPLAIN` reports the index the read will take;
+- **given back** — a walk that admitted fewer records than the `LIMIT`, or reached
+  its ceiling (thirty-two expansions per candidate it keeps — 2 048 at the engine's
+  own budget), answers nothing: the read is answered exactly with a `fell-back`
+  note from `approximate`. A walk whose admissions so far say it would reach the
+  ceiling before filling its budget gives up there rather than at the ceiling. `APPROXIMATE` agreed to the graph's choice among the
+  nearest, never to a short page — and the exact read also fills the bound with
+  records holding no vector, which a graph cannot reach.
+
+Measured on twenty thousand clustered thirty-two-dimensional vectors (memory,
+release, `benchmarks/2026-10-03-macos-aarch64-vector-filtered.md`), recall of the
+exact filtered ten and p50 against the exact filtered read:
+
+| condition admits | recall@10 | walk p50 | exact p50 | served by the walk |
+|---|---|---|---|---|
+| half | 98.0 % | 6.8 ms | 17.6 ms | 100 of 100 |
+| a tenth | 99.9 % | 8.3 ms | 16.2 ms | 100 of 100 |
+| a hundredth | 100 % | 22.9 ms | 16.0 ms | 9 of 100 |
+
+A condition admitting about one record in a hundred is where the walk stops
+paying: most walks give up and the read pays for part of the walk and the exact
+read. Most of what is left is the walk reading the whole graph before its first
+step, which every approximate read pays. An index on the condition is what lets
+the read choose the exact path before walking at all.
+
 **What it buys, measured rather than claimed:** on two thousand clustered
 thirty-two-dimensional vectors, a read of the ten nearest goes from 3.7 ms to
 0.62 ms — about six times — while returning the same ten. Recall is measured by
@@ -3852,6 +4015,13 @@ known until all of them have been named, so the entry walk always runs to the
 end. What the bound saves is reading the records it does not need:
 `SELECT * FROM notes WHERE at > '2026-01-01' LIMIT 10` reads ten records, not
 every record after that date.
+
+**An equality on every field of an index is the exception** (from
+`0.22.0-beta`). Its entries share the whole value and are ordered by the record's
+identity after it, so they already are the answer's order, and the entry walk
+stops with the records: `SELECT * FROM people WHERE band = 3 LIMIT 10` over fifty
+thousand records, a tenth of them in band 3, reads a few dozen entries and ten
+records — 32 µs where it read five thousand of each in 7.7 ms.
 
 So the practical shape is: a bounded index-served read costs one pass over the
 matching index entries plus its answer. An index that matches most of a table
@@ -4155,9 +4325,55 @@ cannot be more than the records holding one value. Ties keep source order, so tw
 runs of one statement cannot plan differently and an author can predict the plan
 from the condition they wrote.
 
-This is deliberately **not** a cost model. One needs to know how many records
-hold `city = 'london'` as against `city = 'tromsø'`, which means maintained
-histograms — and a stale histogram changes plans silently.
+**With statistics, the ranking also uses an estimate** (from `0.22.0-beta`).
+How many records hold `city = 'london'` as against `city = 'tromsø'` is the
+number a shape cannot give, and `ANALYZE TABLE` takes it:
+
+```tessariql
+ANALYZE TABLE users;
+-- [{ index: 'by_city', entries: 50000, distinct: [600], common: 16, buckets: 64 }]
+```
+
+It walks each value index's entries once — keys, no records — and keeps, beside
+the index, how many entries it held, how many distinct values each leading run of
+its fields held, its sixteen most common values with their counts and sixty-four
+equi-depth buckets over its first field. The answer counts these and never
+prints a value. A unique index keeps no statistic, because it already promises
+one record per value; neither does a search, vector or spatial index.
+
+A candidate the shape could not size is then estimated: an equality on a common
+value from that value's own count, on any other value from the spread of the
+rest, a leading run of a composite index from its distinct count, and a range on
+the first field from the buckets it covers — scaled by how much the table has
+grown or shrunk since. The smaller estimate wins, and an exact ceiling wins a tie
+with an estimate of the same size. So `city = 'tromsø' AND age = 40` reads
+whichever index holds fewer of its records, not whichever was written first.
+
+`EXPLAIN` reports the estimate and where it came from:
+
+```tessariql
+EXPLAIN SELECT * FROM users WHERE city = 'tromsø';
+-- { access: 'index', index: 'by_city', estimate: 3, estimated_by: 'statistics', … }
+```
+
+`estimated_by` is `statistics` for a number read from the summary, or `probe`
+for a count of the index's entries taken to decide whether it beats the table
+(below). The estimate is left out when the index reads a field the caller may not
+see, because how many records hold a value is a fact about that value.
+
+**A statistic is set aside once its index has changed past it.** Every node counts
+the entries each value index gains and loses; a statistic is used while the
+changes since it was taken are at most a tenth of the entries it counted, or a
+thousand, whichever is more. Past that the planner counts instead, exactly as
+it did before statistics existed — slower, never wrong. A serving node takes the
+statistics of its own indexes as they go stale, a few per second, so
+`ANALYZE TABLE` is how to have them **now**: after a bulk load, or before
+measuring a plan.
+
+Statistics are a node's own. Each node walks the entries it holds and keeps the
+summary beside them; nothing travels in the log or in a backup, and two nodes
+with different statistics answer the same read with the same records — the
+estimate chooses a path and never an answer.
 
 **An index that would return most of the table loses to reading the table.**
 Narrowing most is not the same as narrowing enough: an index read walks entries
@@ -4168,10 +4384,11 @@ an index runs when it can produce **at most half** of it.
 
 Two numbers decide that and neither works alone. The store keeps a **record count
 per table**, maintained where records are written rather than by counting them
-later. For a candidate whose size is not already known — an equality on a
-non-unique index, a range — the entries are counted by a walk that reads keys and
-no records, and **gives up** as soon as there are more than half a table's worth,
-because counting the rest would cost what the read costs.
+later. A candidate with an estimate well inside either side of half — under three
+quarters of it, or over one and a half times it — is decided on the estimate.
+Otherwise, and for a candidate with no statistic, the entries are counted by a walk
+that reads keys and no records, and **gives up** as soon as there are more than half
+a table's worth, because counting the rest would cost what the read costs.
 
 Nothing about this changes on a small table. Below about a thousand records a
 scan is a single request to the storage, both paths are cheap, and the comparison
@@ -4212,10 +4429,9 @@ SELECT * FROM events WHERE n >= 401 WITHOUT SCAN GUARD;
 ```
 
 `WITHOUT SCAN GUARD` tells the planner not to measure the winning candidate
-against the table. Half is a threshold this store chose; the count behind it is
-exact, taken by the walk described above. So what can be wrong here is the
-threshold and never the number, and the clause is spelled as lifting a guard
-rather than as overriding an estimate — because there is no estimate to override.
+against the table. Half is a threshold this store chose, and the clause is
+spelled as lifting a guard rather than as overriding an estimate: it skips the
+comparison — the estimate and the count alike — and leaves the ranking to choose.
 
 **It lifts the veto and chooses nothing.** The ranking still picks the candidate,
 a table with no applicable index still gets the scan, and `EXPLAIN` still reports
@@ -5801,9 +6017,11 @@ So **a score over a field with no search index is refused**, naming the field.
 Answering zero instead, or scoring against whatever records happened to be read,
 would produce an ordering that looks exactly like a ranking and is not one — and
 nobody checks an order that looks right. A refusal is a statement that did not
-run; a plausible wrong order is a statement that did. For the same reason a
-single-record read (`FROM notes:9`) has no collection in scope and is refused
-too.
+run; a plausible wrong order is a statement that did. A single-record read
+(`FROM notes:9`, or a span `FROM notes:1..=9`) is scored against its **table's**
+collection — the same number the table read gives that record (from
+`0.22.0-beta`; it was refused before, naming a missing index that was not
+missing).
 
 **A record holding none of the query's words scores `0`**, which is the computed
 answer rather than an absence standing in for one, and sorts where it belongs
@@ -6266,10 +6484,22 @@ Two rules make the composition mean something:
   transaction may not leave (ADR-0008 §4).
 
 A space whose values are objects is indexed by their fields like a table, and a
-`MATCHES` over one of them is served by its `SEARCH` index. A value that is not
-an object projects to no fields, so an index over a space holds nothing for it.
-Searching scalar values needs a way to name the value itself in a condition and is
-a separate feature, not claimed here.
+`MATCHES` over one of them is served by its `SEARCH` index. **A value that is not
+an object answers the route `value` with itself** (from `0.22.0-beta`) — the word
+an `ASSERT` already gives the value under consideration — so a space of text is
+declared, indexed and searched like a field:
+
+```
+DEFINE SPACE phrases;
+DEFINE FIELD value ON phrases TYPE string ANALYZER english;
+DEFINE INDEX by_value ON phrases FIELDS value SEARCH;
+SET phrases:'a' = 'the quick foxes';
+SELECT * FROM phrases WHERE value MATCHES 'fox';   -- phrases:'a'
+SELECT value FROM phrases:'a';                       -- 'the quick foxes'
+```
+
+An object keeps its own `value` field: only something with no fields at all
+answers the route with itself.
 
 ## 6a. Files
 
@@ -6457,6 +6687,36 @@ says the work cannot poison; for a lock, it cannot.
 has failed or is shutting down. It does not touch the attempt count — that was
 taken at the claim, and a record that was handed out was handed out whatever
 happened next.
+
+### The order work is handed out in: `PRIORITY BY` and `NOT BEFORE`
+
+```tessariql
+DEFINE QUEUE alerts TIMEOUT 1m PRIORITY BY severity;
+DEFINE INDEX by_severity ON alerts FIELDS severity;
+DEFINE QUEUE mail TIMEOUT 5m ATTEMPTS 3 NOT BEFORE send_at;
+
+CREATE alerts = { severity: 9, text: 'disk full' };
+CREATE mail = { to: 'ada@example.test', send_at: time::from_unix(time::unix(time::now()) + 600) };
+```
+
+Without either clause a claim takes records in arrival order — identity order,
+which both identity kinds this store issues follow.
+
+**`PRIORITY BY f`** hands out the greatest value of `f` first, in the order
+`ORDER BY f DESC` uses, so records sharing a value go in arrival order and a
+record without `f` goes after every record that has one. A value index on `f`
+makes finding the head a walk down the index; without one the claim reads the
+queue and keeps the best. The index changes what a claim costs, never which
+records it takes — the claim reports `ordered` with the index's name when one
+served it, and `scan` when none did.
+
+**`NOT BEFORE f`** holds a record back until the instant in `f`: a record whose
+`f` is a datetime after now is not handed out, by `CLAIM FROM` or by `CLAIM
+q:id`. It is delayed delivery written as a value in the record, the way a hold's
+deadline is — every node compares the same instant, nothing sweeps, and a worker
+that wants to retry later updates the field when it releases. A value in `f`
+that is not a datetime is no delay at all, so a mistyped value cannot keep a
+record waiting forever with nothing in an error state.
 
 ### Saying who you are
 
@@ -6765,18 +7025,60 @@ with the authority of whoever defined them. That is a useful thing and it is a
 separate decision with its own consequences, so it is not what this word does
 today; if it arrives it will arrive as a clause you have to write.
 
-### Maintained results are a job for the change feed
+### A view that keeps its answer: `MATERIALIZED`
 
-A view is re-read every time it is named; nothing is stored under it, and there
-is no `MATERIALIZED` spelling. A store that needs a maintained result should
-write one into an ordinary table from the **change feed**, which is where the
-writes it must react to already are — and the result is then a table you can
-index, back up and grant on like any other.
+A plain view is re-read every time it is named. A **materialized** view (from
+`0.22.0-beta`) keeps its read's answer as records and is brought current from its
+source table's **change feed**:
 
-Maintaining a result inside the writing transaction is the alternative, and it
-is the reason this is not built: every write to `orders` would pay for every
-view over `orders`, silently, with a cost nobody wrote down, and the write's
-failure modes would come to include the view's.
+```tessariql
+DEFINE VIEW big_orders MATERIALIZED AS SELECT n, total FROM orders WHERE total > 30;
+SELECT * FROM big_orders;
+INFO FOR TABLE big_orders;
+-- { …, materialized: { version: 812, behind: 3, rows: 4120, refreshed: 1759480000000 } }
+```
+
+**It is filled when it is declared**, in the declaring transaction, so it is never
+read empty because it was not built yet. After that every serving node brings it
+current from the changes its source's commits carry, in the order the writer made
+them — never inside the writing transaction, so a write to `orders` pays nothing
+for the views over it.
+
+**Its rows always equal its read at the version it states.** A batch does not
+patch a stored row: it opens one transaction, collects the source changes up to
+that transaction's snapshot, and asks the read engine again for the part they can
+have touched — the changed records, for a view that answers one row per record;
+the whole read, for one that groups, folds, orders, bounds or splits. Rows and
+version are written in the same commit. So `SELECT * FROM big_orders` answers what
+`SELECT n, total FROM orders WHERE total > 30 VERSION 812` answers, record for
+record, where 812 is the `version` `INFO FOR TABLE` reports.
+
+**Freshness is reported, never assumed.** `INFO FOR TABLE` gives the `version` the
+rows equal, how many versions the store has moved `behind` it, the `rows` held and
+when it was last `refreshed` (milliseconds since the epoch). A view nothing has
+changed under is brought forward every ten seconds, so its `behind` measures
+change rather than silence.
+
+**What it can keep.** One source table that is not a view or a vault, and nothing
+its source's changes do not cover: no join, traversal, subquery, `FETCH`,
+`VERSION`, `STALENESS`, `ANSWERED BY`, `TIMEOUT`, `AFTER`, approximate or fused
+order, and no function that is not a function of the record — `time::now()`,
+`rand::uuid()`, a space key. Each is refused where the view is declared, by name
+(`MaterializedShape`), because the rows would go stale with no change in the feed
+to say so.
+
+**Who reads it.** A kept view is read with the caller's grants on its **source**:
+a user who may read the source reads the view, one who may not is refused naming
+the source, and one who may read only some of its fields is refused
+(`MaterializedFromHidden`) — the rows were computed already and cannot be redacted
+after the fact. Nothing but its maintainer writes it, and `DROP VIEW` takes its
+rows and its state.
+
+**What it costs.** A per-record view recomputes one record per change; any other
+recomputes its whole read per batch that saw a change, which is the price of an
+answer that is always exactly its read. Its rows are a node's writes like any
+other: they travel in the log, a follower holds what its leader wrote, and a
+failover moves the maintenance with the leadership.
 
 ## 6e. An order of what happened: topics
 
@@ -6927,9 +7229,25 @@ What each form promises:
 
 `RETAIN 7d` keeps a message for seven days after it was appended; the node's
 housekeeping then removes it through the log like any other delete. A topic
-without `RETAIN` keeps everything. There is no size-based retention and no
-compaction — a topic that keeps only the newest value per key is a key-value
-space, which already exists.
+without `RETAIN` keeps everything. There is no compaction — a topic that keeps
+only the newest value per key is a key-value space, which already exists.
+
+```tessariql
+DEFINE TOPIC clicks RETAIN BYTES 1073741824;
+DEFINE TOPIC audit RETAIN 30d RETAIN BYTES 10737418240;
+```
+
+`RETAIN BYTES n` keeps at most `n` bytes of messages — the encoded size `MAX
+BYTES` measures, summed. An append that would take the topic past it removes
+the **oldest** messages in the **same commit**, as ordinary deletes in its log
+record, so a follower applies the removal rather than deciding it and the total
+is exact however many writers append at once. With both limits a message goes
+at whichever it reaches first. Three refusals keep it honest: a message larger
+than `n` is refused as `TopicMessageTooLarge`; a commit whose own messages add up
+to more than `n` is refused as `TopicRetainExceeded` rather than trimmed, because
+a message that vanished on commit is a loss nobody would be told about; and the
+commit's own messages are never the ones removed. `INFO FOR TOPIC` reports
+`retain_bytes` and the `bytes` held.
 
 Removing messages never reuses a position: a topic emptied by retention carries
 on from where it was. **A reader whose next position was removed is told**: the
@@ -7038,6 +7356,102 @@ Messages are read by asking; a subscriber that wants them pushed follows the
 change feed of the topic's table. A topic is not a queue: a queue hands each
 record to one worker and forgets it when the work is done, a topic keeps every
 message for every reader.
+
+## 6f. Logic that runs with a write: events
+
+```tessariql
+DEFINE EVENT audit ON orders THEN
+    CREATE log = { event: $event, order: $id, was: $before.total ?? 0, now: $after.total ?? 0 };
+DEFINE EVENT big ON orders FOR UPDATE WHEN $after.total > 1000 THEN
+    CREATE review = { order: $id, total: $after.total };
+DEFINE EVENT positive ON orders WHEN $after.total < 0 THEN THROW 'an order is never negative';
+DEFINE EVENT outbox ON orders FOR CREATE THEN {
+    LET $line = { order: $id, total: $after.total };
+    CREATE order_events = $line;
+};
+DROP EVENT big ON orders;
+```
+
+An event is statements a table runs **after each write of one of its records,
+inside the writer's transaction, as the writer**. Its effects and the write are
+one commit: they land together, or neither does.
+
+- **When.** After every `CREATE`, `UPDATE` and `DELETE` of a record — whatever
+  wrote it: a statement, a script, a client, a Kafka consumer or a topic
+  consumer. `FOR CREATE, UPDATE` narrows it to those writes; `WHEN` narrows it to
+  the records the condition holds for. An `UPSERT` is a `CREATE` or an `UPDATE`
+  depending on whether the record was there. A `DELETE` of a record that was not
+  there deleted nothing, and runs nothing. A table's events run in name order.
+- **What it sees.** `$event` is `'CREATE'`, `'UPDATE'` or `'DELETE'`. `$before`
+  and `$after` are the record as it was and as it is, `NONE` for the side that
+  does not exist, and `$after` is what was stored — defaults applied. `$id` is the
+  record's identity, the value after the colon, so the body names its own record
+  `orders:$id`. They are read with a route (§3, parameters): `$after.total`.
+- **As whom.** Every statement in the body is authorized exactly as the writer's
+  own would be. A writer who may write `orders` and not `log` cannot write
+  `orders` while `audit` writes `log`: the audit is part of the write. `$before`
+  and `$after` are what the writer may read, so a writer who may write a table and
+  not read it gives the body `NONE` for both — an event cannot copy a field
+  somewhere the writer could then read it. Defining or dropping an event needs the
+  authority to define on the table, as an index does.
+- **Failure.** A refusal anywhere in the body refuses the write with
+  `event positive on orders refused the write: …`, carrying the body's own
+  refusal. Inside `BEGIN … COMMIT` that is the statement failing, as any other.
+  `WHEN … THEN THROW '…'` is therefore how a rule that reads more than one record
+  refuses a write — the one an `ASSERT` cannot say.
+- **Depth.** An event's writes run the events of the tables they reach, its own
+  included. A chain more than 16 deep is refused, naming the event, so a cycle
+  fails at the first write instead of quietly stopping halfway with its effects
+  applied. A body that updates its own record writes a `WHEN` that excludes its
+  own change: `WHEN $after.v < 5 THEN UPDATE orders:$id SET v = $after.v + 1`.
+
+What a body may run: `CREATE`, `INSERT`, `UPDATE`, `UPSERT`, every `DELETE`,
+`RELATE`, the key-value verbs (`SET`, `INCR`, `DEL`, `EXPIRE`, `PERSIST`), `LET`
+and `THROW`. Several go in braces. A body runs in its table's namespace and
+database whatever the writer selected, so `USE` has no place in it; it is
+already inside a transaction, so `BEGIN`, `COMMIT` and `CANCEL` have none either;
+and a read that only answers has nobody to answer to. A definition or a grant
+changes the catalog, which a write should not do as a side effect. Each is
+refused where it is written, and so is a parameter the event does not bind.
+
+Tables, collections and edge tables carry events. A vault does not — the body
+would see the secrets in the clear — and neither do the stores with a write path
+of their own: buckets, views, topics, queues, spaces, vector and geo stores and
+series.
+
+### Work after the commit is a topic
+
+An event runs **inside** the transaction, so it cannot send an email or call
+another service and still be undone with the write. What it can do is append to
+a topic — and the message commits with the write or not at all:
+
+```tessariql
+DEFINE TOPIC order_events;
+DEFINE EVENT outbox ON orders FOR CREATE THEN CREATE order_events = { order: $id, total: $after.total };
+```
+
+A group, a client's consumer or `DEFINE TOPIC CONSUMER` (§6e) then does the rest
+at its own pace: exactly once for what it writes into this store, at least once
+for anything outside it, with a dead letter for what will not go. There is no
+second, "after commit" kind of event, because it would need everything a topic
+already is — a durable queue, a position, a retry, a dead letter — built again.
+
+### What it costs
+
+A write to a table with no events pays nothing measurable: 9.4 µs per write with
+the events lookup and without it, in release on this machine. A write that runs
+an event pays its body — an audit event writing one log record took a write from
+10.0 µs to 34.1 µs, of which one record write is the log row itself (5 000
+writes in one transaction, median of seven, in memory).
+
+### What carries it
+
+`INFO FOR TABLE` lists a table's events under `events`, each as the statement that
+defines it, and adds them to the table's `definition`. `BACKUP SCRIPT` writes them
+**after the data**, as it writes indexes: an event declared before the records
+were written again would run for each of them and apply its effects a second time
+over the effects the script already carries. A snapshot, the log, a follower and a
+restore apply commits whose effects are already in them, and run nothing.
 
 ## 7. Transactions
 
@@ -7754,7 +8168,7 @@ note gets exactly the records it would have got before notes existed. The `notes
 key is absent when there is nothing to say, which is almost always — a note is
 worth reading because it is rare.
 
-There are six today:
+The kinds include:
 
 | kind | what happened |
 |---|---|
@@ -7764,6 +8178,7 @@ There are six today:
 | `compared-across-kinds` | the read compared values of two different kinds — a number against the text of one, say — so it answered about the records whose kinds happened to line up |
 | `cursor-walked` | an `AFTER` page was reached by reading the records rather than seeking to the anchor, so it cost what the read costs and not what the page costs (§5, *Resuming a page from a record*) |
 | `nearing-ceiling` | a held read is four fifths of the way to the ceiling that will refuse it, so a view reading fine today stops working as the table grows (§6d) |
+| `path` | the answer is a shortest path, and this is how many steps it took and what they cost (§4a, *The shortest path*) |
 
 **`fell-back` fires on an index that declined, never on a table that has none.**
 A bounded ordered read over an unindexed table is the most ordinary read in the
@@ -8080,9 +8495,9 @@ front of the request's path. Both are optional and replicate with the row, so a
 node can say where to go from what it has applied, with the peer link down. A row
 that names neither keeps redirects naming `AT`, as they did before the clauses
 existed. `INFO FOR NODE` reports both for each peer (`null` when unsaid).
-A write a node that may not write forwards to the writable peer goes to
-`CLIENTS AT` too (from `0.20.0-beta`): the forward is a client of that node, and
-in a cluster run with peer credentials `AT` is a door that speaks TLS.
+A write a node may not take is carried over the peer link to the writable peer
+(from `0.21.0-beta`), and a node with no peer link refuses it naming where that
+peer takes writes.
 
 **Declare every peer in one transaction.** A store is on its own until its
 catalog names somebody else, and from the moment the first `DEFINE REPLICA`
@@ -8097,10 +8512,10 @@ nobody:
 BEGIN;
 DEFINE REPLICA second AT 'db-2.internal:9000'
     NODE '9f2c4e1a70bb43d5a1c6e2f480937d55'
-    ROLES serving, coordinating;
+    ROLES serving, coordinating REPLICATES STORE;
 DEFINE REPLICA third AT 'db-3.internal:9000'
     NODE 'c81b0f37a4e94a6f8d2e5417b90c3f26'
-    ROLES serving, coordinating;
+    ROLES serving, coordinating REPLICATES STORE;
 COMMIT;
 DEFINE NODE ROLES serving, writable, coordinating;
 ```
@@ -8929,7 +9344,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.21.0", "build": "0.21.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.22.0", "build": "0.22.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],
@@ -9162,6 +9577,22 @@ question the code never asked, and here a true statement about ranges in general
 — *a range can be the whole table* — was applied to a range that provably cannot
 be, because it is confined to the run its fixed values name.
 
+Six left together in `0.22.0-beta`, found by reading the table against the tree
+rather than by the waves that built them (Q-910) — the tenth departure's lesson,
+needed again. **An estimated row count in a plan**, disproved by `ANALYZE TABLE
+users` and the `estimate` / `estimated_by` an `EXPLAIN` then carries (§5).
+**A filtered nearest-neighbour read**, disproved by `SELECT * FROM notes WHERE
+lang = 'en' ORDER BY vector::cosine(embedding, $q) LIMIT 10 APPROXIMATE` walking
+the graph and admitting only matching records (§4, *Asking for an approximate
+ordering*). **Highlighting**, disproved by `search::highlight(body)` (§4), built
+from postings that carry `OFFSETS`. **A traversal that answers with the path
+rather than its end**, disproved by `SELECT * FROM place:1->road->place PATH TO
+place:9 DEPTH 6`, whose answer is the path's records in order (§4). And two rows
+whose reasons had been false for several releases without anybody reading them:
+**tokens** — `POST /session` exchanges a password for a token that dies when its
+account changes — and **rate-limiting a sign-in**, which a node does per name
+with a doubling wait (`SignInThrottled`), its counts kept per store.
+
 | Absent | Why |
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
@@ -9181,7 +9612,6 @@ be, because it is confined to the run its fixed values name.
 | a range read whose **answer** is bounded, rather than only its fetching | the entries a range read holds at once are bounded (§4), and the records it answers with are not: every one is resolved and held before the caller sees the first. Measured, that is the larger half by far — bounding the entries took about four per cent off the peak of a fifty-thousand-record read, and what remains is roughly 1.4 KiB of resident memory for each record answered, against a stored record of a couple of hundred bytes. Where that goes has since been counted rather than inferred, and it splits in a way that matters: **887 bytes per record is the answer the caller holds, 72 bytes is everything the read builds and discards, and 865 of the 887 is the decoded record built with no store involved at all.** So the read does not copy the answer, and the cost is not in the reading — it is the decoded form, on both engines, to the byte. Of that 865, **793 appears the moment a record holds its first field** and the next seven fields add twelve bytes between them: a fixed allocation per record whose size is set by the value type rather than by the record. Two consequences, both load-bearing. Bounding the answer bounds how *many* of those are held at once and does not touch what one costs, so it is worth doing and is not the whole of this row. And an answer that streamed would pay the same constant on every record in flight, which makes the constant the one part of this that no answer shape fixes. Bounding the answer is not a storage change either — for **this** read. A plain `SELECT … FROM t LIMIT n` now hands its bound to the source, which stops early; a **conditioned** one cannot, because the condition that asked is re-tested above this layer, so the records the source produces are not yet the records the answer holds. Serving that case needs the planner and the executor consuming the answer as it arrives — the same answer-shape wall the streaming backup meets. §4 |
 | a read that answers with **more records than fit in memory** | **a stated limit, not an unfinished feature.** An answer is a materialised value, so a read asking for fifty thousand records holds fifty thousand records: measured at 45.8 MiB, and its peak *is* its answer. No bound helps, because there is nothing to bound — a collector limits what is retained and this read retains everything, and there is no intermediate to spill: what the pipeline builds and discards was counted at 72 bytes a record, one vector spine and no second copy. The only thing that changes this number is an answer that streams, which is the same wall as the two rows above and is worth crossing once for all three. Until then a caller reading more than fits asks for it in pages, and the store's job is to make a page cheap — which `LIMIT` reaching the source now does. §4 |
 | a **page of an order no index serves**, costing less than the table it pages | the sort no longer holds more than the page — `ORDER BY <unindexed> LIMIT 10` over fifty thousand records fell from 53 371 KiB to **45 822 KiB**, which is to the kibibyte what reading the whole table costs. That equality is the whole of what is left: the ordering stage now adds nothing, and the remaining cost is the **source**, which hands the executor a vector of every record it read before anything above it may look at one. So an ordered page is no longer worse than the read it is a page of, and it is not yet better. Making it better means the source yielding records as it finds them rather than collecting them — a change to what a read *is* rather than to what the order does with it, and the same answer-shape wall as the three rows above. Where an index holds the order there is nothing to page: the bounded descending read takes its bound from the index and costs 16 KiB. §5 |
-| an **estimated row count** or a cost in a plan | it needs statistics about value distribution — how many records hold `city = 'london'` against `city = 'tromsø'` — which is maintained state whose staleness silently changes plans. A much larger decision than a selection rule, and one that wants a benchmark harness to justify it rather than an intuition. §7b |
 | a digest on a file's metadata | worth having, and it is a *verification* feature: it belongs with the backup verifier rather than half here and half there |
 | a content type on a file | the store holds bytes and has no opinion about them. It becomes worth carrying when something serves them over HTTP, which is where a content type is actually read |
 | listing a bucket by prefix (`/photos/…`) | `SELECT * FROM media WHERE path LIKE '/photos/%'` is the question, and it needs the record's identity addressable as a value in a filter — which is a language feature about identities, not about files |
@@ -9196,14 +9626,11 @@ be, because it is confined to the run its fixed values name.
 | a join on anything but an equality, or on more than one pair | `ON a.x = b.y` is what an index can serve and what a map can be keyed by; a join predicate that is neither is a nested loop with a filter, which is the shape the equality was chosen to avoid |
 | a join of more than two tables | the row is `{ left: …, right: … }`, so a third side is a shape decision (nest or flatten) and an order decision, and neither is worth taking before something needs it |
 | `FETCH` through something already fetched, and cycles | one level, so the work is bounded by the references the answer already holds — one request, whatever their number — and a cycle is impossible rather than handled |
-| a variable-length traversal (`->{1..3}`), a filter inside a traversal, shortest path | a written-out chain is a fixed number of steps the reader can count. A bound turns the walk into a search with a termination rule, a frontier and an answer that may or may not include the shorter paths — a language surface to design once rather than a clause |
+| a variable-length traversal (`->{1..3}`), a filter inside a traversal (`PATH TO` answers the shortest path, §4a) | a written-out chain is a fixed number of steps the reader can count. A bound turns the walk into a search with a termination rule, a frontier and an answer that may or may not include the shorter paths — a language surface to design once rather than a clause |
 | a traversal whose arrows change direction | `a->follows->users<-follows<-users` — "who follows somebody ada follows" — is a real question, and a useful one. It needs a rule for what each step's anchor *is* when the direction turns, and a chain where every arrow reads the same way is the one a reader can follow without one |
-| a traversal that answers with the path rather than its end | the answer would be a list of records rather than a record, which is a shape for rows and not for records — the same wall the join met, and the same milestone |
 | several distinct edges between one pair in one table | an edge is identified by its endpoints, which is what makes `RELATE` idempotent; one edge table per relation is the spelling |
-| n-grams, so `MATCHES` never answers a substring question | index size proportional to text length × (max − min), paid on every write; Q-31 holds the measurement that would decide it |
+| n-gram filters (`ngram`, `edge_ngram`, `shingle`, `cjk_bigram`) — refused by name, `NgramFilter` | what they are reached for is built without them: a substring is `MATCHES INFIX` from the suffix keyspace, a beginning is the dictionary walk of `MATCHES PREFIX`, a misspelling is `MATCHES FUZZY`, and Chinese and Japanese are one token per ideograph. An n-gram token would multiply the index by its length range and count a fragment's documents as a word's |
 | layers in the vector index | a hierarchical graph assigns each node a random level, and a random level is what a store whose index entries are *derived rather than logged* cannot have — two replicas would build different graphs from one log. A level derived from a hash of the record id is the right shape when the layers earn their cost; the key already reserves the byte. |
-| a filtered nearest-neighbour read | the graph answers a distance question and knows nothing of a `WHERE`, so combining them needs either over-fetching by an unknown factor or a filtered walk |
-| highlighting | it needs the postings to carry byte offsets, which is a different index rather than a bigger one, and a rule for which of the matched terms a fragment is chosen around. Fuzzy matching, phrase and proximity queries were listed here until they were built: each turned out to need no index change at all, because the analyzer is a property of the *schema* and so the ordered token list is already in hand wherever text is read — see `MATCHES FUZZY` and the quoted-phrase form of `MATCHES` above. Ranking itself is built: see [Ranking](#ranking) |
 | per-index `k1` / `b` | tuning knobs nobody can yet turn responsibly: this project has no labelled relevance set to measure a different value against, and a knob chosen without one is a guess with a syntax. Per-field weighting was listed here until it turned out to need no knob at all — a score is an expression, so weighting a field is multiplying it, and the only thing the wave had to prove was that a field the record does not match contributes exactly `0`. See [Ranking](#ranking) |
 | a **function applied to each reached value** | `array::len(tags[*])` is refused because it has two answers — the function over the collected values, or the function applied to each of them. The second is a mapping operator and deserves its own spelling rather than being what a parenthesis happens to mean. §3 |
 | a **`UNIQUE` multikey index** | two readings — no two records sharing an element, or a record's own elements being distinct — which refuse different writes. It needs a spelling that says which, not a default. §4 |
@@ -9224,9 +9651,7 @@ be, because it is confined to the run its fixed values name.
 | `BETWEEN` | `a >= x AND a <= y` says it, and one spelling for one thing |
 | three-valued logic | §5 — comparison answers true or false, and `= NONE` / `= NULL` say what `IS NULL` would |
 | row-level security — a grant that names *which records* rather than which table and fields | a table grant refuses and a field grant edits; a row grant would have to *filter*, which means every read carries a predicate the caller did not write and every count answers about a set they cannot see. That is a different feature from either, and the one where getting it subtly wrong leaks by arithmetic |
-| tokens, or a session that outlives a request | a token is a second credential with its own lifetime, revocation and storage |
 | `SIGNIN` as a statement | deliberate, and stated above rather than missing |
-| rate-limiting a signin | Argon2 is slow on purpose, which is most of the defence; a lockout policy has its own decisions about who it locks out |
 | an assertion reading a **second record** | a comparison against another field of the *same* record is built (§4) — the record is already in hand. Reading another one is a different thing: the verdict would stop being a function of the record being written, so a replica would have to reproduce a read, and the refusal would report the existence of a record the writer never named |
 | a **computed assertion** (`string::len($value) > 3`) | the useful ones are pure, and the vocabulary could take them — but a function set that is pure *today* is a property somebody would have to re-establish every time the set grows, so the door opens with a marked-pure function set rather than by trusting the current one. §4 |
 | changing a declared type in place | `DROP FIELD` then `DEFINE FIELD` re-checks every row through the one path; a migration primitive is its own work |

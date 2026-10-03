@@ -69,6 +69,8 @@ forms! {
     DropRollup => "DROP ROLLUP",
     DefineView => "DEFINE VIEW",
     DropView => "DROP VIEW",
+    DefineEvent => "DEFINE EVENT",
+    DropEvent => "DROP EVENT",
     Claim => "CLAIM",
     // Not a spelling — there is no `CLAIM RECORD` keyword pair. The angle
     // brackets say so, because a coverage label that looked like syntax would
@@ -113,6 +115,7 @@ forms! {
     DropIndex => "DROP INDEX",
     RebuildIndex => "REBUILD INDEX",
     CheckTable => "CHECK TABLE",
+    AnalyzeTable => "ANALYZE TABLE",
     DropField => "DROP FIELD",
     DropAnalyzer => "DROP ANALYZER",
     DropSearch => "DROP SEARCH",
@@ -330,6 +333,8 @@ mod tests {
              DROP ROLLUP r;\
              DEFINE VIEW v AS SELECT * FROM t;\
              DROP VIEW v;\
+             DEFINE EVENT e ON t THEN CREATE t = { v: 1 };\
+             DROP EVENT e ON t;\
              GET s:1;\
              SET s:1 = 1;\
              DEL s:1;\
@@ -343,6 +348,7 @@ mod tests {
              RESTORE SCRIPT FROM 'part.tessariql';\
              EXPLAIN SELECT * FROM t;\
              CHECK TABLE t;\
+             ANALYZE TABLE t;\
              INFO FOR STORE;\
              INFO FOR NODE;\
              ALTER USER u SET ROLE viewer;\

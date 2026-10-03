@@ -39,18 +39,22 @@ function newTopic(): Composed {
   const place = where();
   const name = aName(trimmed("new-topic-name"));
   const retain = optional("new-topic-retain", aDuration);
+  const kept = optional("new-topic-kept", aWhole);
   const bytes = optional("new-topic-bytes", aWhole);
   if (place === null) return { missing: PLACE };
   if (name === null) return { missing: "a name: a letter or _, then letters, digits or _" };
   if (retain === null) return { missing: "keep for is " + DURATION };
+  if (kept === null || kept === 0) return { missing: "keep at most is a whole number of bytes above zero" };
   if (bytes === null || bytes === 0) return { missing: "the largest message is a whole number of bytes" };
   return {
     statement:
       `DEFINE TOPIC ${name}` + (retain === undefined ? "" : ` RETAIN ${retain}`) +
+      (kept === undefined ? "" : ` RETAIN BYTES ${kept}`) +
       (bytes === undefined ? "" : ` MAX BYTES ${bytes}`) + ";",
     says:
       `Creates ${name} in ${place.namespace}.${place.database}, keeping ` +
       (retain === undefined ? "every message" : `each message for ${retain}`) +
+      (kept === undefined ? "" : `, removing the oldest once it holds over ${kept} bytes`) +
       (bytes === undefined ? "." : ` and refusing a message over ${bytes} bytes.`),
   };
 }
@@ -147,7 +151,7 @@ interface Form {
 const FORMS: readonly Form[] = [
   {
     button: "new-topic", says: "new-topic-says", status: "new-topic-status", compose: newTopic,
-    fields: ["new-topic-name", "new-topic-retain", "new-topic-bytes"],
+    fields: ["new-topic-name", "new-topic-retain", "new-topic-kept", "new-topic-bytes"],
   },
   {
     button: "drop-topic", says: "drop-topic-says", status: "drop-topic-status", compose: dropTopic,

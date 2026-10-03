@@ -217,6 +217,74 @@ impl Session<'_> {
                 // what the read falls back *to* is not known until `candidates`
                 // has chosen — an index on the condition serves this read even
                 // when no index could serve its order.
+                // A nearest read the statement let be approximate: the graph,
+                // filtered by the whole condition (`evaluate/nearest.rs`) —
+                // unless an index on the condition already narrowed the read to
+                // no more records than the walk would visit, which the exact
+                // path below answers for the same cost and exactly.
+                let mut gave_up = false;
+                let mut reached_early = None;
+                if let Some(walk) = plan::nearest(select) {
+                    let reached = self.candidates(
+                        transaction,
+                        id,
+                        context,
+                        condition,
+                        searched,
+                        Asked {
+                            named,
+                            lift_scan_guard: select.lift_scan_guard,
+                        },
+                    )?;
+                    let ceiling = tessari_storage::filtered_ceiling(walk.wanted, walk.effort);
+                    // Decided from the plan the condition's index carries — the
+                    // same question `EXPLAIN` asks — and a range is counted up
+                    // to the ceiling rather than built.
+                    let few = match &reached {
+                        Some(Reached {
+                            records,
+                            plan: chosen,
+                            ..
+                        }) => {
+                            let range = match records {
+                                Candidates::Range {
+                                    index,
+                                    fixed,
+                                    lower,
+                                    upper,
+                                } => Some((
+                                    index.as_ref(),
+                                    fixed.as_slice(),
+                                    lower.as_ref(),
+                                    upper.as_ref(),
+                                )),
+                                Candidates::Held(_) => None,
+                            };
+                            plan::narrows_to(transaction, chosen, range, ceiling)?
+                        }
+                        None => false,
+                    };
+                    if !few {
+                        let testing = Testing {
+                            condition,
+                            searched,
+                            noticed: reporting.noticed,
+                        };
+                        match self.walk_admitted(transaction, context, id, &walk, testing)? {
+                            Walked::Served { found, index } => {
+                                reporting.collected.push(Note::Approximate);
+                                hand_over(found, transaction, consumer)?;
+                                return Ok(Plan {
+                                    index: Some(index),
+                                    ..over(AccessPath::Approximate)
+                                });
+                            }
+                            Walked::Declined => gave_up = true,
+                            Walked::NotServed => {}
+                        }
+                    }
+                    reached_early = Some(reached);
+                }
                 let mut declined = false;
                 if let Some(bound) = plan::ordered(select) {
                     match self.walk_matching(
@@ -238,21 +306,25 @@ impl Session<'_> {
                         Walked::NotServed => {}
                     }
                 }
+                let reached = match reached_early {
+                    Some(reached) => reached,
+                    None => self.candidates(
+                        transaction,
+                        id,
+                        context,
+                        condition,
+                        searched,
+                        Asked {
+                            named,
+                            lift_scan_guard: select.lift_scan_guard,
+                        },
+                    )?,
+                };
                 let Some(Reached {
                     records: candidates,
                     plan,
                     answered,
-                }) = self.candidates(
-                    transaction,
-                    id,
-                    context,
-                    condition,
-                    searched,
-                    Asked {
-                        named,
-                        lift_scan_guard: select.lift_scan_guard,
-                    },
-                )?
+                }) = reached
                 else {
                     // No index serves this condition, so the scan does — and it
                     // is *walked* rather than read whole, because this is the
@@ -273,6 +345,12 @@ impl Session<'_> {
                             to: plan.access,
                         });
                     }
+                    if gave_up {
+                        reporting.collected.push(Note::FellBack {
+                            from: AccessPath::Approximate,
+                            to: plan.access,
+                        });
+                    }
                     self.scan_matching(
                         transaction,
                         context,
@@ -289,6 +367,12 @@ impl Session<'_> {
                 if declined {
                     reporting.collected.push(Note::FellBack {
                         from: AccessPath::Ordered,
+                        to: plan.access,
+                    });
+                }
+                if gave_up {
+                    reporting.collected.push(Note::FellBack {
+                        from: AccessPath::Approximate,
                         to: plan.access,
                     });
                 }

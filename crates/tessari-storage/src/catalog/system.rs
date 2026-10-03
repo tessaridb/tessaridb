@@ -184,6 +184,11 @@ pub const REVOKED_CERTIFICATES: TableId = TableId::new(24);
 /// Nodes removed from the cluster, never admitted again (ADR-0108 D9).
 pub const TOMBSTONED_NODES: TableId = TableId::new(25);
 
+/// How far each materialized view has been brought, keyed by the view's table
+/// id: the version its rows equal its read at, and each log's position
+/// (ADR-0109 D2).
+pub const VIEW_STATES: TableId = TableId::new(26);
+
 /// The one record [`VAULT_ROOT`] holds.
 pub const VAULT_ROOT_ID: u32 = 1;
 
@@ -342,6 +347,7 @@ mod tests {
             WORD_SETS,
             REVOKED_CERTIFICATES,
             TOMBSTONED_NODES,
+            VIEW_STATES,
         ];
         for (index, table) in ids.iter().enumerate() {
             assert!(

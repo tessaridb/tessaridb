@@ -93,3 +93,20 @@ SELECT * FROM staff;
 --- case: and the word refuses a name of another kind
 DROP VIEW staff;
 --- expect: error Unknown
+
+# A materialized view keeps its read's answer as records and is brought current
+# from its source's changes (0.22, ADR-0109). It is filled when it is declared,
+# so it is never read empty because it was not yet built.
+
+--- case: a materialized view holds its read as soon as it is declared
+DEFINE VIEW kept MATERIALIZED AS SELECT * FROM staff WHERE team = 'eng';
+SELECT * FROM kept;
+--- expect: rows 2
+
+--- case: and nothing but its maintainer writes it
+CREATE kept:9 = { name: 'x' };
+--- expect: error ViewIsNotATable
+
+--- case: a materialized view that depends on the clock is refused where it is declared
+DEFINE VIEW recent MATERIALIZED AS SELECT * FROM staff WHERE time::now() > time::now();
+--- expect: error MaterializedShape

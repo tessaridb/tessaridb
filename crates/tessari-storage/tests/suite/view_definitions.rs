@@ -57,6 +57,7 @@ fn view(id: u32, read: &str) -> TableDefinition {
         name: "engineers".to_owned(),
         schemafull: false,
         kind: TableKind::View(ViewDeclaration {
+            materialized: false,
             read: read.to_owned(),
         }),
         identity: IdentityKind::default(),
@@ -64,6 +65,7 @@ fn view(id: u32, read: &str) -> TableDefinition {
         conflict: None,
         shards: None,
         partition: None,
+        events: Vec::new(),
     }
 }
 

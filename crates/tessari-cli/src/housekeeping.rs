@@ -4,7 +4,7 @@ use tessaridb::Db;
 
 /// Keep this node's own disk in order, whether or not it has peers.
 ///
-/// One job today: trim the log to the retained record count. It answers `None`
+/// Its first job: trim the log to the retained record count. It answers `None`
 /// when no retention is set, which is every store until an operator sets one —
 /// and that is why the silence is deliberate rather than an omission. *Nobody
 /// asked for this* and *there was nothing to do* are different facts, and a
@@ -74,6 +74,36 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
                 ),
                 Ok(false) => {}
                 Err(why) => log::warn!("this node cannot drop an expired unseal: {why}"),
+            }
+            // The planner's statistics, taken where an index has none or has
+            // changed past the one it has (G055 W3). This node's own: each node
+            // plans over its own copy, leader or not, and a statistic decides a
+            // path and never an answer — so a failure here costs speed and is
+            // said at `warn`, not acted on.
+            match db.store().refresh_statistics() {
+                Ok(taken) if taken > 0 => {
+                    log::debug!("took the statistics of {taken} index(es) for the planner");
+                }
+                Ok(_) => {}
+                Err(why) => log::warn!("this node cannot take index statistics: {why}"),
+            }
+            // Materialized views brought current from their sources' changes
+            // (ADR-0109 D6). A view this node may not write is refused at its
+            // commit before anything changes, which is the design rather than a
+            // fault, so that refusal stays quiet like expiry's.
+            match tessari_session::maintain_views(db.store()) {
+                Ok(done) if done.views > 0 => log::debug!(
+                    "applied {} change(s) to {} materialized view(s)",
+                    done.changes,
+                    done.views
+                ),
+                Ok(_) => {}
+                Err(tessari_session::Error::Store(
+                    tessari_storage::Error::LeaseSpent { .. }
+                    | tessari_storage::Error::NoLeadershipYet
+                    | tessari_storage::Error::WriteIsElsewhere { .. },
+                )) => log::debug!("materialized views are kept where the range is led"),
+                Err(why) => log::warn!("this node cannot keep its materialized views: {why}"),
             }
             // A series' records past its floor, removed as one range per table
             // (G044 C11). This node's own storage work: every node runs it over

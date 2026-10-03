@@ -38,10 +38,11 @@ mod search;
 mod spatial;
 
 pub use address::{RecordAddress, StoredRecord};
+pub(crate) use address::{after, resuming_after};
 pub use adjacency::Neighbour;
 pub use commit::Committed;
 pub use scan::Window;
-pub use search::{Expansion, SearchCounts};
+pub use search::{Expansion, FieldedPostings, SearchCounts};
 pub use spatial::{Nearby, Region};
 
 use std::cell::{Cell, RefCell};

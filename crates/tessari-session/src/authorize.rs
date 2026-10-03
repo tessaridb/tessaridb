@@ -296,6 +296,19 @@ impl<'a> Session<'a> {
         span: tessari_ql::Span,
     ) -> Result<()> {
         let open = self.refresh(store)?;
+        self.authorize_as_refreshed(store, kind, open, span)
+    }
+
+    /// The same check, for a session whose identity this statement already
+    /// re-read — an event body, which runs inside the write that refreshed it
+    /// (ADR-0110 D6). `open` is what that refresh answered.
+    pub(crate) fn authorize_as_refreshed(
+        &mut self,
+        store: &'a Store,
+        kind: &StatementKind,
+        open: bool,
+        span: tessari_ql::Span,
+    ) -> Result<()> {
         // A closed store's one door for a caller nobody signed in (G037).
         if !open && self.identity.user().is_none() {
             return self.public_append(store, kind, span);

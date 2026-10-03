@@ -1,6 +1,7 @@
 //! Keys for a vector index's graph and for the recall and refinement figures measured over an index.
 
 use super::IndexAddress;
+use super::quantized::{QuantizedVector, StoredVector};
 use crate::error::Result;
 use crate::keys::StoreKey;
 use crate::kind::KeyKind;
@@ -372,16 +373,23 @@ impl StoreKey for VectorNodeKey {
 /// What a node holds: the record's vector, and who it points at.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VectorNode {
-    /// The record's vector, as the distance functions want it.
-    pub vector: Vec<f64>,
+    /// The record's vector — every component, or one byte per component in a
+    /// `QUANTIZED` index.
+    pub vector: StoredVector,
     /// The records this node links to, in the order the graph chose.
     pub neighbours: Vec<RecordId>,
 }
 
+/// The header flag of a node whose vector is held as codes.
+///
+/// A full-precision node is written with no flag, byte for byte as every node
+/// was before quantization existed, so an index written then reads unchanged.
+const QUANTIZED: u8 = 1;
+
 impl VectorNode {
     /// Build a node.
     #[must_use]
-    pub const fn new(vector: Vec<f64>, neighbours: Vec<RecordId>) -> Self {
+    pub const fn new(vector: StoredVector, neighbours: Vec<RecordId>) -> Self {
         Self { vector, neighbours }
     }
 }
@@ -389,30 +397,57 @@ impl VectorNode {
 impl StoreValue for VectorNode {
     fn encode(&self) -> Value {
         let mut writer = KeyWriter::new();
-        writer.put_u32(u32::try_from(self.vector.len()).unwrap_or(u32::MAX));
-        for component in &self.vector {
-            // The bit pattern, not a decimal projection: this is storage for
-            // arithmetic rather than an index key, so nothing here has to sort.
-            writer.put_u64(component.to_bits());
-        }
+        let flags = match &self.vector {
+            StoredVector::Full(vector) => {
+                writer.put_u32(u32::try_from(vector.len()).unwrap_or(u32::MAX));
+                for component in vector {
+                    // The bit pattern, not a decimal projection: this is storage
+                    // for arithmetic rather than an index key, so nothing here
+                    // has to sort.
+                    writer.put_u64(component.to_bits());
+                }
+                0
+            }
+            StoredVector::Quantized(coded) => {
+                writer.put_u32(u32::try_from(coded.codes.len()).unwrap_or(u32::MAX));
+                writer.put_u64(coded.low.to_bits());
+                writer.put_u64(coded.step.to_bits());
+                for code in &coded.codes {
+                    writer.put_u8(*code);
+                }
+                QUANTIZED
+            }
+        };
         writer.put_u32(u32::try_from(self.neighbours.len()).unwrap_or(u32::MAX));
         for neighbour in &self.neighbours {
             record_id::put(&mut writer, neighbour);
         }
         let body = writer.finish();
-        let mut buffer = with_header(0, body.len());
+        let mut buffer = with_header(flags, body.len());
         buffer.extend_from_slice(&body);
         Value::from(buffer)
     }
 
     fn decode(bytes: &[u8]) -> Result<Self> {
-        let (_, payload) = split_header(bytes, 0)?;
+        let (flags, payload) = split_header(bytes, QUANTIZED)?;
         let mut reader = KeyReader::new(KeyKind::VectorNode, payload);
         let dimensions = reader.take_u32()?;
-        let mut vector = Vec::with_capacity(usize::try_from(dimensions).unwrap_or(0));
-        for _ in 0..dimensions {
-            vector.push(f64::from_bits(reader.take_u64()?));
-        }
+        let width = usize::try_from(dimensions).unwrap_or(0);
+        let vector = if flags & QUANTIZED == 0 {
+            let mut vector = Vec::with_capacity(width);
+            for _ in 0..dimensions {
+                vector.push(f64::from_bits(reader.take_u64()?));
+            }
+            StoredVector::Full(vector)
+        } else {
+            let low = f64::from_bits(reader.take_u64()?);
+            let step = f64::from_bits(reader.take_u64()?);
+            let mut codes = Vec::with_capacity(width);
+            for _ in 0..dimensions {
+                codes.push(reader.take_u8()?);
+            }
+            StoredVector::Quantized(QuantizedVector { low, step, codes })
+        };
         let count = reader.take_u32()?;
         let mut neighbours = Vec::with_capacity(usize::try_from(count).unwrap_or(0));
         for _ in 0..count {

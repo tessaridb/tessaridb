@@ -231,6 +231,7 @@ impl Session<'_> {
         match &mut expr.kind {
             ExprKind::Select(read) => self.expand_read(store, read, chain),
             ExprKind::Not(inner) | ExprKind::Negate(inner) => self.expand_expr(store, inner, chain),
+            ExprKind::Route { value, .. } => self.expand_expr(store, value, chain),
             ExprKind::If {
                 condition,
                 then,
@@ -348,7 +349,9 @@ impl Session<'_> {
         };
         Ok(match Catalog::new(transaction).table(id)? {
             Some(definition) => match definition.kind {
-                TableKind::View(declared) => Some(declared.read),
+                // A materialized view is read for its stored rows, not expanded
+                // into its read (ADR-0109).
+                TableKind::View(declared) if !declared.materialized => Some(declared.read),
                 _ => None,
             },
             None => None,

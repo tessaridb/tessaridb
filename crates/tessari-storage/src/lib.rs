@@ -24,6 +24,7 @@
 #![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 mod adjacency;
+mod attempts;
 mod audit;
 mod bounded;
 mod cardinality;
@@ -61,20 +62,22 @@ mod served;
 mod shards;
 mod snapshots;
 mod state;
+mod statistics;
 mod store;
 mod tailmarks;
 mod topic;
 mod transaction;
 mod vault;
+mod views;
 
 pub use catalog::{
     AnalyzerDefinition, Authority, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, Catalog,
     ConsumerDefinition, DatabaseDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeKindDefinition,
-    EdgeOrder, EngineField, EngineMember, Eviction, FailoverDefinition, FailoverStamp, Feed,
-    FieldDefinition, FieldShape, GEO_FIELD, GrantDefinition, GraphDefinition, Greeter,
-    GroupDeclaration, GroupState, Held, InFlight, IndexDefinition, IndexShape, JoinTicket, Kind,
-    LeadershipDefinition, Mapped, NamespaceDefinition, OnFailure, PublicAppend, QUEUE_ATTEMPTS,
-    QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, Reach,
+    EdgeOrder, EngineField, EngineMember, EventDeclaration, Eviction, FailoverDefinition,
+    FailoverStamp, Feed, FieldDefinition, FieldShape, GEO_FIELD, GrantDefinition, GraphDefinition,
+    Greeter, GroupDeclaration, GroupState, Held, InFlight, IndexDefinition, IndexShape, JoinTicket,
+    Kind, LeadershipDefinition, Mapped, NamespaceDefinition, OnFailure, PublicAppend,
+    QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL, Reach,
     ReplicaDefinition, Role, RollupCompute, RollupDeclaration, RollupFold, SYSTEM_DATABASE,
     SYSTEM_NAMESPACE, SearchCosts, SeriesDeclaration, ShardMap, ShardSpan, SpaceDeclaration,
     SpaceLimit, StoredKind, TableDefinition, TableKind, TableShape, TopicDeclaration, UNIT_WEIGHT,
@@ -94,6 +97,7 @@ pub use retention::{Retention, RetentionSource};
 pub use topic::{Message, Messages};
 // Re-exported because `ReplicaDefinition` carries one: a caller that can read
 // the field but cannot name its type has a public API it cannot use.
+pub use attempts::Attempts;
 pub use audit::{
     Administered, AuditDevice, AuditTrail, DeviceRefused, VaultRead, administered,
     entries as audit_entries, reads_by,
@@ -102,7 +106,7 @@ pub use error::{Error, Result};
 pub use failover::Failover;
 pub use feed::{Change, ChangeKind, Changes, History, Merged, Subject, Subscription, Watch};
 pub use followers::FollowerLag;
-pub use graph::vector_of;
+pub use graph::{Graph as VectorGraph, Matched, filtered_ceiling, vector_of};
 pub use lease::{GUARD as LEASE_GUARD, Lease, TTL as LEASE_TTL};
 pub use ordering::{Horizon, MergedHistory, Page, in_writer_order};
 pub use pruning::{Pruned, Trimmed};
@@ -115,10 +119,12 @@ pub use sealing::{
     rewrap_own_vault, seal_secrets, unseal_own_vault, vault_key_scope,
 };
 pub use state::{StateReader, TopicHead};
+pub use statistics::{estimate_equality, estimate_range};
 pub use store::{Health, Store};
-pub use tessari_encoding::{BUILD_VERSION, LogId, NODE_ID_LEN, Roles, Writer};
+pub use tessari_encoding::{BUILD_VERSION, IndexStatistics, LogId, NODE_ID_LEN, Roles, Writer};
 pub use transaction::{
-    Committed, Expansion, Nearby, Neighbour, RecordAddress, Region, SearchCounts, StoredRecord,
-    Transaction, Window,
+    Committed, Expansion, FieldedPostings, Nearby, Neighbour, RecordAddress, Region, SearchCounts,
+    StoredRecord, Transaction, Window,
 };
 pub use vault::{OpenVault, SealState};
+pub use views::ViewState;

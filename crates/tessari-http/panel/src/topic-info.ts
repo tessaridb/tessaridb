@@ -36,6 +36,10 @@ export interface Topic {
   readonly first: number | null;
   readonly last: number;
   readonly retain: string | null;
+  /** `RETAIN BYTES n`: the most bytes of messages the topic keeps. */
+  readonly retainBytes: number | null;
+  /** The bytes it holds now — reported only beside `retainBytes`. */
+  readonly bytes: number | null;
   readonly maxBytes: number | null;
   readonly readers: ReadonlyMap<string, Reader>;
   readonly groups: ReadonlyMap<string, Group>;
@@ -117,11 +121,22 @@ export function topic(value: unknown): Topic | null {
     first: whole(fields["first"]),
     last,
     retain: typeof retain === "string" ? retain : null,
+    retainBytes: whole(fields["retain_bytes"]),
+    bytes: whole(fields["bytes"]),
     maxBytes: whole(fields["max_bytes"]),
     readers: entries(fields["consumers"], reader),
     groups: entries(fields["groups"], group),
     ingestedBy: entries(fields["ingested_by"], ingest),
   };
+}
+
+/** What the topic keeps: a time, a size, both, or everything. */
+export function keeps(topic: Topic): string {
+  const limits = [
+    ...(topic.retain === null ? [] : [topic.retain]),
+    ...(topic.retainBytes === null ? [] : [`${topic.retainBytes} bytes`]),
+  ];
+  return limits.length === 0 ? "everything" : limits.join(", ");
 }
 
 /** How many messages the topic holds right now — positions are dense. */

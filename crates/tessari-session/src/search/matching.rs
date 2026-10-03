@@ -84,10 +84,41 @@ pub(crate) fn begins(alternatives: &[String], term: &str) -> bool {
 /// *means*, not an optimisation, so a caller that skipped it would mark a token
 /// the operator did not reach.
 pub(crate) fn near(alternatives: &[String], term: &str) -> bool {
-    alternatives.iter().any(|spelling| {
-        let leading: String = spelling.chars().take(SEARCH_FUZZY_PREFIX).collect();
-        term.starts_with(&leading) && within_edits(spelling, term, SEARCH_FUZZY_MAX_EDITS)
-    })
+    edits_to(alternatives, term).is_some()
+}
+
+/// Whether a token answers a fuzzy word by its term **or by its surface** — the
+/// spelling the text held before the stemmer (Q-867). A stem is not a word
+/// anybody typed, so a misspelling is measured against both.
+pub(crate) fn near_token(alternatives: &[String], term: &str, surface: &str) -> bool {
+    near(alternatives, term) || (surface != term && near(alternatives, surface))
+}
+
+/// The fewest edits that bring one of the spellings to `held` inside the budget
+/// and the mandatory prefix — `None` when none does. Zero is an exact term,
+/// which the score weighs above a corrected one.
+pub(crate) fn edits_to(alternatives: &[String], held: &str) -> Option<usize> {
+    alternatives
+        .iter()
+        .filter(|spelling| {
+            let leading: String = spelling.chars().take(SEARCH_FUZZY_PREFIX).collect();
+            held.starts_with(&leading)
+        })
+        .filter_map(|spelling| {
+            (0..=budget(spelling)).find(|edits| within_edits(spelling, held, *edits))
+        })
+        .min()
+}
+
+/// How many edits a typed word may be from what it reaches, by its length: none
+/// below three letters, one up to five, [`SEARCH_FUZZY_MAX_EDITS`] beyond. Two
+/// edits on a four-letter word is a different word.
+pub(crate) fn budget(spelling: &str) -> usize {
+    match spelling.chars().count() {
+        0..=2 => 0,
+        3..=5 => 1,
+        _ => SEARCH_FUZZY_MAX_EDITS,
+    }
 }
 
 /// Whether the analyzed text answers the query — as a phrase when it is quoted,
@@ -204,10 +235,24 @@ pub(crate) fn matches_fuzzy_terms(
     };
     let terms = analyzer.terms(text);
     let asked = analyzer.prefixes(query);
-    !asked.is_empty()
-        && asked
+    if asked.is_empty() {
+        return false;
+    }
+    // The terms first: when they answer every word, the surfaces could only
+    // agree, so they are taken only for a record the terms alone do not decide.
+    if asked
+        .iter()
+        .all(|alternatives| terms.iter().any(|term| near(alternatives, term)))
+    {
+        return true;
+    }
+    let surfaces = analyzer.surfaces(text);
+    asked.iter().all(|alternatives| {
+        terms
             .iter()
-            .all(|alternatives| terms.iter().any(|term| near(alternatives, term)))
+            .zip(&surfaces)
+            .any(|(term, surface)| near_token(alternatives, term, surface))
+    })
 }
 
 /// Whether analyzed text holds, for **every** word typed, a term containing

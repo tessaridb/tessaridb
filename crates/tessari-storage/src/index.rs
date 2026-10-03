@@ -130,6 +130,10 @@ pub(crate) struct Pending {
     /// walk with terms whose posting lists are empty, which is the one thing the
     /// dictionary exists to stop.
     terms: BTreeMap<IndexAddress, BTreeMap<IndexValues, Moved>>,
+    /// How many records hold each `(surface, term)` pair, moved per search
+    /// index (Q-867) — signed and settled once, for the reasons [`Self::terms`]
+    /// is, and deleted at zero for the same one.
+    surfaces: BTreeMap<IndexAddress, BTreeMap<(String, String), i64>>,
     /// Indexes [`build`] wrote whole in this record.
     ///
     /// Their statistics are a **total**, not a movement: the build counted every
@@ -145,6 +149,23 @@ pub(crate) struct Pending {
     /// vectors of one transaction came out with no edge between them, and a
     /// later mutation's write of a shared neighbour overwrote an earlier one's.
     graphs: BTreeMap<IndexAddress, graph::Graph>,
+}
+
+/// Move each `(surface, term)` pair of one record by `by`.
+pub(crate) fn surface(
+    pending: &mut BTreeMap<IndexAddress, BTreeMap<(String, String), i64>>,
+    address: IndexAddress,
+    pairs: BTreeSet<(String, String)>,
+    by: i64,
+) {
+    if pairs.is_empty() {
+        return;
+    }
+    let held = pending.entry(address).or_default();
+    for pair in pairs {
+        let moved = held.entry(pair).or_default();
+        *moved = moved.saturating_add(by);
+    }
 }
 
 /// How one term's dictionary entry moves in this batch.
@@ -238,6 +259,9 @@ pub(crate) fn maintain_from(
     let mut named: Option<BTreeMap<String, Analyzer>> = None;
     let unnamed = BTreeMap::new();
     let mut pending = Pending::default();
+    // How many records each value index was rewritten for, for its change
+    // counter — what tells a planner statistic it has gone stale.
+    let mut changed: BTreeMap<IndexAddress, u64> = BTreeMap::new();
 
     for mutation in record.mutations() {
         let at = (mutation.namespace, mutation.database, mutation.table);
@@ -285,6 +309,17 @@ pub(crate) fn maintain_from(
             if unchanged.reads_the_same(definition) {
                 continue;
             }
+            if crate::statistics::kept(definition) {
+                let counted = changed
+                    .entry(IndexAddress::new(
+                        definition.namespace,
+                        definition.database,
+                        definition.table,
+                        definition.id,
+                    ))
+                    .or_insert(0);
+                *counted = counted.saturating_add(1);
+            }
             batch = apply_one(
                 store,
                 batch,
@@ -305,6 +340,7 @@ pub(crate) fn maintain_from(
             batch = build(store, batch, &mut view, record, &definition, &mut pending)?;
         }
     }
+    let batch = crate::statistics::count_changes(store, batch, &changed)?;
     settle(store, batch, &pending)
 }
 
@@ -331,12 +367,13 @@ fn apply_one(
         // Reading the whole graph is the cost this shape pays, and it is stated
         // in `graph.rs` rather than discovered: an index over more vectors than
         // fit in memory wants a paging walk, which is not this.
-        let graph = match pending.graphs.entry(address) {
-            std::collections::btree_map::Entry::Occupied(held) => held.into_mut(),
-            std::collections::btree_map::Entry::Vacant(empty) => {
-                empty.insert(graph::Graph::read(store, &address, distance)?)
-            }
-        };
+        let graph =
+            match pending.graphs.entry(address) {
+                std::collections::btree_map::Entry::Occupied(held) => held.into_mut(),
+                std::collections::btree_map::Entry::Vacant(empty) => empty.insert(
+                    graph::Graph::read(store, &address, distance, definition.quantized)?,
+                ),
+            };
         let previous_vector = previous
             .map(decode_payload)
             .transpose()?
@@ -404,6 +441,7 @@ fn apply_one(
                 counted.removed(analysed.tokens);
             }
             lengthen(&mut pending.lengths, address, &analysed.fields, false);
+            surface(&mut pending.surfaces, address, analysed.surfaces, -1);
             for (term, _) in analysed.postings {
                 dictionary.entry(term.clone()).or_default().left();
                 batch = batch.delete(
@@ -413,11 +451,17 @@ fn apply_one(
             }
         }
         if let RecordValue::Present(payload) = mutation.value.value() {
-            let analysed = analysed(definition, analyzer, &decode_payload(payload)?);
+            let mut analysed = analysed(definition, analyzer, &decode_payload(payload)?);
             if let Some(counted) = counted.as_mut() {
                 counted.added(analysed.tokens);
             }
             lengthen(&mut pending.lengths, address, &analysed.fields, true);
+            surface(
+                &mut pending.surfaces,
+                address,
+                std::mem::take(&mut analysed.surfaces),
+                1,
+            );
             let length = analysed.length();
             for ((term, frequency), located) in analysed.postings.into_iter().zip(&analysed.located)
             {
@@ -549,7 +593,7 @@ pub(crate) fn posted(
     length: u32,
     located: &Located,
 ) -> tessari_kv::Value {
-    if definition.costs.positions || definition.costs.offsets {
+    if definition.costs.positions || definition.costs.offsets || !located.fields.is_empty() {
         Posting::encode_located(frequency, length, located)
     } else if definition.costs.unscored {
         Posting::Membership.encode()
@@ -577,6 +621,7 @@ mod tests {
             fields: vec![Path::field("body")],
             search: true,
             unique: false,
+            quantized: false,
             vector: None,
             spatial: false,
             costs: crate::catalog::SearchCosts::default(),

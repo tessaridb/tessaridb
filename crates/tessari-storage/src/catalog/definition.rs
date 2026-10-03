@@ -12,6 +12,7 @@
 
 mod declarations;
 mod engine;
+mod events;
 mod indexes;
 mod kinds;
 mod reading;
@@ -30,6 +31,7 @@ pub use declarations::{
     VaultDeclaration, VectorDeclaration, ViewDeclaration,
 };
 pub use engine::{EngineField, EngineMember, UNIT_WEIGHT};
+pub use events::EventDeclaration;
 pub use indexes::{IndexDefinition, IndexShape, SearchCosts, VectorDistance};
 pub use kinds::{StoredKind, TableKind};
 pub(crate) use reading::{
@@ -47,6 +49,8 @@ const FIELD_FIELDS: &str = "fields";
 const FIELD_UNIQUE: &str = "unique";
 const FIELD_SEARCH: &str = "search";
 const FIELD_VECTOR: &str = "vector";
+const FIELD_QUANTIZED: &str = "quantized";
+const FIELD_MATERIALIZED: &str = "materialized";
 const FIELD_SPATIAL: &str = "spatial";
 const FIELD_POSITIONS: &str = "positions";
 const FIELD_OFFSETS: &str = "offsets";
@@ -73,6 +77,8 @@ const FIELD_VIEW: &str = "view";
 const FIELD_READ: &str = "read";
 const FIELD_TIMEOUT: &str = "timeout";
 const FIELD_ATTEMPTS: &str = "attempts";
+const FIELD_PRIORITY: &str = "priority";
+const FIELD_NOT_BEFORE: &str = "not_before";
 const FIELD_SERIES: &str = "series";
 /// A space's declaration: present (possibly empty) exactly when the table is one.
 const FIELD_SPACE: &str = "space";
@@ -89,6 +95,7 @@ const FIELD_ACKNOWLEDGE: &str = "acknowledge";
 const FIELD_CONFLICT: &str = "conflict";
 const FIELD_SHARDS: &str = "shards";
 const FIELD_PARTITION: &str = "partition";
+const FIELD_EVENTS: &str = "events";
 
 /// A namespace: the outermost tenancy level.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -519,6 +526,14 @@ mod tests {
             conflict: None,
             shards: None,
             partition: None,
+            // Not the default either, for the identity's reason: an empty list
+            // round trips through a field that was never written.
+            events: vec![super::EventDeclaration {
+                name: "audit".to_owned(),
+                on: vec![tessari_types::WriteKind::Update],
+                when: Some("$after.v > 1".to_owned()),
+                body: "CREATE log = { v: $after.v }".to_owned(),
+            }],
         };
         assert_eq!(
             TableDefinition::from_value(&table.to_value()).unwrap(),
@@ -629,6 +644,7 @@ mod tests {
             graph: None,
             shards: None,
             partition: None,
+            events: Vec::new(),
             kind: TableKind::Edge(Some(EdgeDeclaration {
                 from: TableId::new(4),
                 to: TableId::new(5),
@@ -688,6 +704,7 @@ mod tests {
             graph: None,
             shards: None,
             partition: None,
+            events: Vec::new(),
             // Deliberately the second distance rather than the first: a store
             // that round tripped as `cosine` whatever it was declared with
             // survives an assertion made with the default.
@@ -831,6 +848,7 @@ mod tests {
             unique: false,
             search: false,
             spatial: false,
+            quantized: false,
             vector: None,
             costs: crate::catalog::SearchCosts::default(),
             engine: None,

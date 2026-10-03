@@ -180,8 +180,21 @@ impl Parser<'_> {
         // adjectives would only be remembered wrong.
         let mut strictness: Option<bool> = None;
         let mut graph: Option<Name> = None;
+        let mut priority: Option<Name> = None;
+        let mut not_before: Option<Name> = None;
         loop {
-            if strictness.is_none() && self.eat_keyword(Keyword::Schemafull) {
+            // `PRIORITY BY` and `NOT BEFORE` name a field of the records, and
+            // `priority`, `by` and `before` stay ordinary names (G055 C8).
+            if priority.is_none() && self.eat_word("priority") {
+                self.expect_word("by", "`BY` and the field a claim orders by")?;
+                priority = Some(self.name()?);
+            } else if not_before.is_none() && self.eat_keyword(Keyword::Not) {
+                self.expect_word(
+                    "before",
+                    "`BEFORE` and the field holding when a record may be handed out",
+                )?;
+                not_before = Some(self.name()?);
+            } else if strictness.is_none() && self.eat_keyword(Keyword::Schemafull) {
                 strictness = Some(true);
             } else if strictness.is_none() && self.eat_keyword(Keyword::Schemaless) {
                 strictness = Some(false);
@@ -200,6 +213,8 @@ impl Parser<'_> {
             // carries any, so there is no reading under which it starts strict.
             schemafull: strictness.unwrap_or(false),
             graph,
+            priority,
+            not_before,
             if_not_exists,
         })
     }

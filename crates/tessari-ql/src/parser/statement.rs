@@ -80,6 +80,7 @@ impl Parser<'_> {
             Some(Keyword::Alter) => self.alter_statement()?,
             Some(Keyword::Rebuild) => self.rebuild_statement()?,
             Some(Keyword::Check) => self.check_statement()?,
+            Some(Keyword::Analyze) => self.analyze_statement()?,
             Some(Keyword::Grant) => self.grant_statement(true)?,
             Some(Keyword::Revoke) if self.revokes_a_certificate() => self.revoke_certificate()?,
             Some(Keyword::Revoke) => self.grant_statement(false)?,

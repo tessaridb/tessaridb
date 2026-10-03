@@ -336,3 +336,25 @@ SELECT * FROM employee:1->knows->employee->knows->employee DEPTH 2;
 --- case: and a walk ending on the edges has nothing for a second round to start from
 SELECT * FROM employee:1->knows DEPTH 2;
 --- expect: error DepthNeedsOneHopToATable
+
+--- case: PATH TO answers the shortest path, start to end
+SELECT * FROM employee:1->knows->employee PATH TO employee:3 DEPTH 5;
+--- expect: rows 3
+
+--- case: a path longer than the bound is no path
+SELECT * FROM employee:1->knows->employee PATH TO employee:4 DEPTH 2;
+--- expect: rows 0
+
+--- case: a path search is bounded by a DEPTH written out
+SELECT * FROM employee:1->knows->employee PATH TO employee:3;
+--- expect: error PathNeedsDepth
+
+--- case: a weighted path refuses an edge whose weight is not a number
+RELATE employee:1->knows->employee:2 = { km: 1 };
+RELATE employee:2->knows->employee:3 = { km: 'far' };
+SELECT * FROM employee:1->knows->employee PATH TO employee:3 DEPTH 5 WEIGHT km;
+--- expect: error PathWeight
+
+--- case: a path walks a declared edge kind, not an edge table
+SELECT * FROM users:1->follows->users PATH TO users:2 DEPTH 3;
+--- expect: error PathOverEdgeTable

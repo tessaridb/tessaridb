@@ -53,6 +53,13 @@ impl Store {
         &self.running
     }
 
+    /// This store's sign-in failure counts, which every way of trying a
+    /// password or a vault passphrase asks before it spends a derivation.
+    #[must_use]
+    pub fn attempts(&self) -> &Arc<crate::attempts::Attempts> {
+        &self.attempts
+    }
+
     /// Where a read of a vault is recorded before its answer leaves.
     ///
     /// Handing this out is safe in a way handing out a key is not: what a caller

@@ -276,12 +276,12 @@ pub(crate) fn answering(
                 Err(why) => Err(why),
             }
         }
-        // A sign-in try, against this process's own table — the cluster's
+        // A sign-in try, against this store's own table — the cluster's
         // while this node leads the store line (ADR-0108 D5). Only a proven
         // member reaches here; it learns whether a name may try, nothing more.
         Some(PeerFrame::Attempt) => {
             let asked = crate::budget::Attempt::decode(body)?;
-            let answer = u8::from(asked.answered());
+            let answer = u8::from(log.attempted(&asked));
             Ok((PeerFrame::Attempted.tag(), vec![answer], None))
         }
         // A join token, from the node the handshake proved — never a node the

@@ -2,8 +2,9 @@
 
 use super::{
     FIELD_ATTEMPTS, FIELD_DESCENDING, FIELD_DIMENSION, FIELD_DISTANCE, FIELD_EVENT_TIME,
-    FIELD_FROM, FIELD_KEY_ID, FIELD_ORDER, FIELD_READ, FIELD_RETAIN, FIELD_TIMEOUT, FIELD_TO,
-    FIELD_WRAPPED, VectorDistance, field_id, flag, number, object,
+    FIELD_FROM, FIELD_KEY_ID, FIELD_MATERIALIZED, FIELD_NOT_BEFORE, FIELD_ORDER, FIELD_PRIORITY,
+    FIELD_READ, FIELD_RETAIN, FIELD_TIMEOUT, FIELD_TO, FIELD_WRAPPED, VectorDistance, field_id,
+    flag, number, object,
 };
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
@@ -148,16 +149,22 @@ impl SeriesDeclaration {
 pub struct ViewDeclaration {
     /// The read, exactly as it was written.
     pub read: String,
+    /// Whether the read's answer is kept as records and brought current from
+    /// the change feed (ADR-0109) rather than re-run by every read.
+    pub materialized: bool,
 }
 
 impl ViewDeclaration {
     /// The value written inside the table's catalog entry.
     #[must_use]
     pub fn to_value(&self) -> Value {
-        Value::Object(BTreeMap::from([(
-            FIELD_READ.to_owned(),
-            Value::from(self.read.as_str()),
-        )]))
+        let mut fields = BTreeMap::from([(FIELD_READ.to_owned(), Value::from(self.read.as_str()))]);
+        // Written only when set, so a plain view's entry is the bytes it always
+        // was and a build that predates the word reads it unchanged.
+        if self.materialized {
+            fields.insert(FIELD_MATERIALIZED.to_owned(), Value::Bool(true));
+        }
+        Value::Object(fields)
     }
 
     /// Read a declaration back.
@@ -178,7 +185,10 @@ impl ViewDeclaration {
                     .map_or("none", tessari_types::Value::type_name),
             });
         };
-        Ok(Self { read: read.clone() })
+        Ok(Self {
+            read: read.clone(),
+            materialized: flag(fields, FIELD_MATERIALIZED, ENTITY)?,
+        })
     }
 }
 
@@ -301,7 +311,7 @@ impl VectorDeclaration {
 /// whose holds never lapse is a table with two extra fields, and a queue whose
 /// timeout the store guessed would hand work to a second worker at a moment
 /// nobody chose.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueueDeclaration {
     /// How long a claim holds a record before it lapses.
     ///
@@ -316,6 +326,12 @@ pub struct QueueDeclaration {
     /// out says. A record that reaches the ceiling stops being claimable and
     /// stays where it is: the dead letter is a predicate, not a second table.
     pub attempts: Option<u32>,
+    /// The field a claim orders by, greatest first, when one was named
+    /// (G055 C8); written only when present.
+    pub priority: Option<String>,
+    /// The field holding the instant before which a record is not handed out,
+    /// when one was named (G055 C8); written only when present.
+    pub not_before: Option<String>,
 }
 
 impl QueueDeclaration {
@@ -330,6 +346,15 @@ impl QueueDeclaration {
         // "unlimited" while reading as "never hand this out".
         if let Some(ceiling) = self.attempts {
             fields.insert(FIELD_ATTEMPTS.to_owned(), number(ceiling));
+        }
+        if let Some(priority) = &self.priority {
+            fields.insert(FIELD_PRIORITY.to_owned(), Value::from(priority.as_str()));
+        }
+        if let Some(not_before) = &self.not_before {
+            fields.insert(
+                FIELD_NOT_BEFORE.to_owned(),
+                Value::from(not_before.as_str()),
+            );
         }
         Value::Object(fields)
     }
@@ -358,6 +383,8 @@ impl QueueDeclaration {
                 Some(_) => Some(field_id(fields, FIELD_ATTEMPTS, ENTITY)?),
                 None => None,
             },
+            priority: named(fields, FIELD_PRIORITY, ENTITY)?,
+            not_before: named(fields, FIELD_NOT_BEFORE, ENTITY)?,
         })
     }
 }
@@ -514,5 +541,22 @@ impl EdgeDeclaration {
             to: TableId::new(field_id(fields, FIELD_TO, "edge endpoints")?),
             order,
         })
+    }
+}
+
+/// A field name a declaration holds, when it holds one.
+fn named(
+    fields: &BTreeMap<String, Value>,
+    field: &'static str,
+    entity: &'static str,
+) -> Result<Option<String>> {
+    match fields.get(field) {
+        None => Ok(None),
+        Some(Value::String(name)) => Ok(Some(name.clone())),
+        Some(other) => Err(Error::CatalogMalformed {
+            entity,
+            field,
+            found: other.type_name(),
+        }),
     }
 }

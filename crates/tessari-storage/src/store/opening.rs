@@ -58,6 +58,7 @@ impl Store {
             // Sealed. A store that opened unsealed would be one that opens
             // secrets for whoever restarted it.
             vault: Arc::new(crate::vault::OpenVault::sealed()),
+            attempts: Arc::new(crate::attempts::Attempts::new()),
             audit: Arc::new(crate::audit::AuditTrail::default()),
             series: Arc::new(crate::series::SeriesRegistry::default()),
             shards: Arc::new(crate::shards::ShardRegistry::default()),

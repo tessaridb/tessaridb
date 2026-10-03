@@ -55,7 +55,9 @@ fn peopled(indexed: bool) -> Store {
              CREATE notes:2 = { body: 'A container for the analyzer' };\n\
              CREATE notes:3 = { body: 'Locking and contention' };\n\
              CREATE notes:4 = { body: 'Running a compaction' };\n\
-             CREATE notes:5 = { body: 'The doctor and the victor' };",
+             CREATE notes:5 = { body: 'The doctor and the victor' };\n\
+             CREATE notes:6 = { body: 'A transaction settles at night' };\n\
+             CREATE notes:7 = { body: 'Transacting traders' };",
         )
         .unwrap();
     if indexed {
@@ -190,15 +192,15 @@ fn a_word_shorter_than_the_mandatory_prefix_is_refused_on_both_paths() {
         let mut session = Session::new(&held);
         session.run(use_it).unwrap();
         let error = session
-            .run("SELECT id FROM notes WHERE body MATCHES FUZZY 've';")
-            .expect_err("two characters cannot carry a three-character prefix");
+            .run("SELECT id FROM notes WHERE body MATCHES FUZZY 'v';")
+            .expect_err("one character cannot carry a two-character prefix");
         assert!(
             matches!(error, Error::PrefixTooShort { .. }),
             "indexed={indexed} gave {error:?}"
         );
         // The refusal states the limit rather than merely declining.
         assert!(
-            error.to_string().contains('3'),
+            error.to_string().contains('2'),
             "the refusal did not state the limit: {error}"
         );
     }
@@ -328,4 +330,88 @@ fn an_expanded_term_never_outranks_the_word_that_was_typed() {
             "notes:{holder} did not outrank the misspelling: {scored:?}",
         );
     }
+}
+
+/// **Q-867 — a misspelling is measured against what the text said.** The
+/// stemmer turns `transaction` into `transact`, and `trasnactoin` (two
+/// swaps) is two edits from the word and five from its stem. The surface
+/// dictionary reaches it; a record holding only `transacting` — the same stem,
+/// another spelling, not near what was typed — is not answered.
+#[test]
+fn a_misspelling_is_measured_against_the_surface_and_not_the_stem() {
+    assert_eq!(
+        both("SELECT id FROM notes WHERE body MATCHES FUZZY 'trasnactoin';"),
+        vec!["6".to_owned()]
+    );
+}
+
+/// A swap of the second and third letters is found: the non-fuzzy prefix is
+/// two letters, not three.
+#[test]
+fn a_typo_in_the_third_letter_is_found() {
+    assert_eq!(
+        both("SELECT id FROM notes WHERE body MATCHES FUZZY 'anlayzer';"),
+        vec!["2".to_owned()]
+    );
+}
+
+/// The budget scales with the word: two edits only past five letters. `stoxx`
+/// is two edits from `store` and five letters long, so it reaches nothing,
+/// while `stoxe` — one edit — reaches it.
+#[test]
+fn a_short_word_is_allowed_fewer_edits() {
+    let none = both("SELECT id FROM notes WHERE body MATCHES FUZZY 'stoxx';");
+    assert!(none.is_empty(), "stoxx reached {none:?}");
+    assert_eq!(
+        both("SELECT id FROM notes WHERE body MATCHES FUZZY 'stoxe';"),
+        vec!["1".to_owned()]
+    );
+}
+
+/// An index built before surfaces were kept holds none, and must not answer a
+/// fuzzy word with less than the scan does: without its completeness marker
+/// the read is not served by the index, and the answer is unchanged.
+#[test]
+fn an_index_without_surfaces_leaves_the_word_to_the_scan() {
+    use tessari_encoding::KeyKind;
+    use tessari_kv::{Key, KeyRange, ScanDirection, ScanRequest, WriteBatch};
+
+    let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let held = Store::open(Arc::clone(&backend)).unwrap();
+    let mut session = Session::new(&held);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
+             DEFINE COLLECTION notes;\n\
+             DEFINE FIELD body ON notes TYPE string ANALYZER english;\n\
+             CREATE notes:6 = { body: 'A transaction settles at night' };\n\
+             DEFINE INDEX by_body ON notes FIELDS body SEARCH;",
+        )
+        .unwrap();
+    let read = "SELECT id FROM notes WHERE body MATCHES FUZZY 'trasnactoin';";
+    assert_eq!(
+        answered(&mut session, read),
+        (vec!["6".to_owned()], AccessPath::Index)
+    );
+
+    let surfaces = ScanRequest {
+        keyspace: KeyKind::SearchSurface.keyspace(),
+        range: KeyRange::prefix(&[KeyKind::SearchSurface.tag()]),
+        direction: ScanDirection::Forward,
+        limit: None,
+    };
+    let mut batch = WriteBatch::new();
+    for (key, _) in backend.scan(&surfaces).unwrap() {
+        batch = batch.delete(
+            KeyKind::SearchSurface.keyspace(),
+            Key::from(key.as_slice().to_vec()),
+        );
+    }
+    backend.apply(batch).unwrap();
+    assert_eq!(
+        answered(&mut session, read),
+        (vec!["6".to_owned()], AccessPath::Scan)
+    );
 }

@@ -26,6 +26,7 @@ pub(crate) fn declared_topic(clauses: TopicClauses) -> TopicDeclaration {
     TopicDeclaration {
         retain: clauses.retain,
         max_bytes: clauses.max_bytes,
+        retain_bytes: clauses.retain_bytes,
         public: clauses.public.map(|(rate, per)| PublicAppend { rate, per }),
     }
 }
@@ -35,6 +36,9 @@ pub(crate) fn topic_clauses(declared: &TopicDeclaration) -> String {
     let mut clauses = String::new();
     if let Some(retain) = declared.retain {
         let _ = write!(clauses, " RETAIN {}", retain.to_literal());
+    }
+    if let Some(kept) = declared.retain_bytes {
+        let _ = write!(clauses, " RETAIN BYTES {kept}");
     }
     if let Some(max) = declared.max_bytes {
         let _ = write!(clauses, " MAX BYTES {max}");

@@ -36,7 +36,7 @@
 mod parts;
 use std::fmt::Write as _;
 
-pub(crate) use parts::{write_field, write_index, write_split};
+pub(crate) use parts::{write_event, write_field, write_index, write_split};
 use tessari_storage::{
     EDGE_IN, EDGE_OUT, FieldDefinition, GEO_FIELD, IndexDefinition, TableDefinition, TableKind,
     VECTOR_FIELD,
@@ -200,6 +200,13 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
         if let Some(ceiling) = declared.attempts {
             let _ = write!(script, " ATTEMPTS {ceiling}");
         }
+        // The two orderings a claim follows (G055 C8), written when declared.
+        if let Some(field) = &declared.priority {
+            let _ = write!(script, " PRIORITY BY {field}");
+        }
+        if let Some(field) = &declared.not_before {
+            let _ = write!(script, " NOT BEFORE {field}");
+        }
         // Always written, on this function's own rule: a declaration leaning on
         // a default is one whose meaning changes when the default moves, and
         // changes silently, in a script somebody kept.
@@ -289,7 +296,14 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
                 "view `{name}` carries flags its declaring word cannot say"
             )));
         }
-        let _ = writeln!(script, "DEFINE VIEW {name} AS {};", declared.read);
+        // A kept view is declared again as one and rebuilt from its source when
+        // the script runs; its rows are not written (`script.rs`).
+        let kept = if declared.materialized {
+            " MATERIALIZED"
+        } else {
+            ""
+        };
+        let _ = writeln!(script, "DEFINE VIEW {name}{kept} AS {};", declared.read);
         return Ok(());
     }
     // Written back as the word that created it, which is the whole reason the

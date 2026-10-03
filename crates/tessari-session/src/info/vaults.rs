@@ -238,7 +238,7 @@ const VAULT_PAGE: u64 = 1_000;
 
 /// A record's identity as the value a caller writes after `team:` to name it
 /// again — so the `next` of one page is the `AFTER team:$next` of the one after.
-fn id_value(id: tessari_types::RecordId) -> Value {
+pub(crate) fn id_value(id: tessari_types::RecordId) -> Value {
     match id {
         tessari_types::RecordId::Int(number) => Value::from(number),
         tessari_types::RecordId::Text(text) => Value::String(text),

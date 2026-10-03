@@ -72,12 +72,17 @@ fn a_follower_that_fell_behind_answers_what_its_leader_answers_after_a_copy() {
     // this keyspace even where no read above happened to ask. Two kinds are
     // compared by key only or not at all, and both for a stated reason: a
     // vector node's neighbour list depends on the order its graph was built in
-    // (ADR-0091 amendment 4), and recall and refinement are measurements, which
-    // no copy carries.
+    // (ADR-0091 amendment 4), and recall, refinement and the planner's
+    // statistics and change counters are measurements, which no copy carries.
     let comparable = |entries: Vec<(Vec<u8>, Vec<u8>)>| -> Vec<(Vec<u8>, Vec<u8>)> {
         entries
             .into_iter()
-            .filter(|(key, _)| !matches!(key.first(), Some(&(VECTOR_RECALL | SPATIAL_REFINEMENT))))
+            .filter(|(key, _)| {
+                !matches!(
+                    key.first(),
+                    Some(&(VECTOR_RECALL | SPATIAL_REFINEMENT | INDEX_STATISTICS | INDEX_CHANGES))
+                )
+            })
             .map(|(key, value)| match key.first() {
                 Some(&VECTOR_NODE) => (key, Vec::new()),
                 _ => (key, value),
@@ -95,6 +100,8 @@ fn a_follower_that_fell_behind_answers_what_its_leader_answers_after_a_copy() {
 const VECTOR_NODE: u8 = 0x13;
 const VECTOR_RECALL: u8 = 0x17;
 const SPATIAL_REFINEMENT: u8 = 0x18;
+const INDEX_STATISTICS: u8 = 0x40;
+const INDEX_CHANGES: u8 = 0x41;
 
 /// The leader's index keyspace as a fresh copy derives it — what a follower that
 /// received the state must hold, byte for byte.

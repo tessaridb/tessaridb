@@ -87,6 +87,8 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::DropRollup { .. } => Err(unrenderable("DROP ROLLUP", span)),
         StatementKind::DefineView { .. } => Err(unrenderable("DEFINE VIEW", span)),
         StatementKind::DropView { .. } => Err(unrenderable("DROP VIEW", span)),
+        StatementKind::DefineEvent { .. } => Err(unrenderable("DEFINE EVENT", span)),
+        StatementKind::DropEvent { .. } => Err(unrenderable("DROP EVENT", span)),
         StatementKind::Claim { .. } | StatementKind::ClaimRecord { .. } => {
             Err(unrenderable("CLAIM", span))
         }
@@ -152,6 +154,7 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::AlterField { .. } => Err(unrenderable("ALTER TABLE ALTER FIELD", span)),
         StatementKind::RebuildIndex { .. } => Err(unrenderable("REBUILD INDEX", span)),
         StatementKind::CheckTable { .. } => Err(unrenderable("CHECK TABLE", span)),
+        StatementKind::AnalyzeTable { .. } => Err(unrenderable("ANALYZE TABLE", span)),
         StatementKind::Grant { .. } => Err(unrenderable("GRANT", span)),
         StatementKind::Revoke { .. } => Err(unrenderable("REVOKE", span)),
         StatementKind::GrantAuthority { .. } => Err(unrenderable("GRANT", span)),

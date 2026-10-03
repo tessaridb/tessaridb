@@ -216,13 +216,7 @@ impl Analyzer {
     /// holds exactly one spelling.
     #[must_use]
     pub fn prefixes(&self, text: &str) -> Vec<Vec<String>> {
-        let unstemmed: Vec<Filter> = self
-            .filters
-            .iter()
-            .copied()
-            .filter(|filter| !matches!(filter, Filter::Stemmer(_)))
-            .collect();
-        let raw = self.tokens(text, &unstemmed);
+        let raw = self.surfaces(text);
         let stemmed = self.tokens(text, &self.filters);
         raw.into_iter()
             .zip(stemmed)
@@ -234,6 +228,79 @@ impl Analyzer {
                 }
             })
             .collect()
+    }
+
+    /// The **surface forms** this text holds: the chain without its stemmers,
+    /// one for each of [`terms`](Self::terms) and in the same order.
+    ///
+    /// The raw companion of a stemmed field. A stem is not a spelling anybody
+    /// typed, so a misspelling is measured against what the text actually
+    /// said — `trasnactoin` is two letters from `transaction` and five from the
+    /// `transact` it stems to. One for one because a stemmer maps a token to
+    /// exactly one token, so the two lists line up by position.
+    #[must_use]
+    pub fn surfaces(&self, text: &str) -> Vec<String> {
+        if !self.stems() {
+            return self.terms(text);
+        }
+        let unstemmed: Vec<Filter> = self
+            .filters
+            .iter()
+            .copied()
+            .filter(|filter| !matches!(filter, Filter::Stemmer(_)))
+            .collect();
+        self.tokens(text, &unstemmed)
+    }
+
+    /// [`terms`](Self::terms) and [`surfaces`](Self::surfaces) of one text
+    /// together, each token's analysis looked up in `memo` before it is run.
+    ///
+    /// For a read that analyses many records of one collection: their words
+    /// repeat, and the stemmer is most of what analysis costs, so a token is
+    /// stemmed once per read rather than once per occurrence. The answer is the
+    /// same two lists the two functions give; `memo` only remembers it, keyed
+    /// by the token as written, and is only valid for this analyzer.
+    pub fn analysed(&self, text: &str, memo: &mut Memo) -> (Vec<String>, Vec<String>) {
+        let mut terms = Vec::new();
+        let mut surfaces = Vec::new();
+        for bytes in split(text) {
+            let Some(token) = text.get(bytes) else {
+                continue;
+            };
+            let (term, surface) = match memo.held.get(token) {
+                Some(known) => known.clone(),
+                None => {
+                    let fold = |filters: &mut dyn Iterator<Item = &Filter>| {
+                        filters.fold(token.to_owned(), |held, filter| filter.apply(&held))
+                    };
+                    let term = fold(&mut self.filters.iter());
+                    let surface = fold(
+                        &mut self
+                            .filters
+                            .iter()
+                            .filter(|filter| !matches!(filter, Filter::Stemmer(_))),
+                    );
+                    memo.held
+                        .insert(token.to_owned(), (term.clone(), surface.clone()));
+                    (term, surface)
+                }
+            };
+            if term.is_empty() {
+                continue;
+            }
+            terms.push(term);
+            surfaces.push(surface);
+        }
+        (terms, surfaces)
+    }
+
+    /// Whether the chain holds a stemmer — whether a surface can differ from
+    /// its term at all.
+    #[must_use]
+    pub fn stems(&self) -> bool {
+        self.filters
+            .iter()
+            .any(|filter| matches!(filter, Filter::Stemmer(_)))
     }
 
     /// The tokens this text holds, each with the bytes it occupies.
@@ -271,21 +338,70 @@ impl Analyzer {
     /// boundary. `Café` occupies five bytes, and a highlight over it covers five.
     fn walk(&self, text: &str, filters: &[Filter]) -> Vec<Token> {
         let mut found = Vec::new();
-        let mut start = None;
-        for (at, character) in text.char_indices() {
-            if character.is_alphanumeric() {
-                start.get_or_insert(at);
-                continue;
-            }
-            if let Some(from) = start.take() {
-                push(&mut found, text, from..at, filters);
-            }
-        }
-        if let Some(from) = start {
-            push(&mut found, text, from..text.len(), filters);
+        for bytes in split(text) {
+            push(&mut found, text, bytes, filters);
         }
         found
     }
+}
+
+/// Remembered analyses for [`Analyzer::analysed`]: each token as written, with
+/// the term and the surface it became.
+#[derive(Debug, Default)]
+pub struct Memo {
+    held: std::collections::HashMap<String, (String, String)>,
+}
+
+/// Where each token of `text` lies: runs of letters and digits, and each
+/// ideograph alone — the one tokenizer every analysis uses.
+fn split(text: &str) -> Vec<Range<usize>> {
+    let mut found = Vec::new();
+    let mut start = None;
+    for (at, character) in text.char_indices() {
+        if ideograph(character) {
+            if let Some(from) = start.take() {
+                found.push(from..at);
+            }
+            found.push(at..at.saturating_add(character.len_utf8()));
+            continue;
+        }
+        if character.is_alphanumeric() {
+            start.get_or_insert(at);
+            continue;
+        }
+        if let Some(from) = start.take() {
+            found.push(from..at);
+        }
+    }
+    if let Some(from) = start {
+        found.push(from..text.len());
+    }
+    found
+}
+
+/// Whether a character is a token by itself: a Han ideograph or a Hiragana
+/// letter.
+///
+/// Chinese and Japanese write words without spaces, so splitting on non-letters
+/// made a whole sentence one term and nothing inside it could be found. A
+/// segmenting tokenizer needs a dictionary per language; one token per
+/// character needs none, and a quoted phrase of characters is then an exact
+/// run — `"東京"` holds in `東京都` and not in `京東` — through the same
+/// positions every phrase uses. No n-gram is involved: each character is
+/// one token at one position, which is what a word is to the index.
+///
+/// Katakana and Hangul keep their runs: Katakana spells one word per run and
+/// Korean separates its words with spaces.
+fn ideograph(character: char) -> bool {
+    matches!(
+        character,
+        '\u{3005}'..='\u{3007}'
+            | '\u{3040}'..='\u{309F}'
+            | '\u{3400}'..='\u{4DBF}'
+            | '\u{4E00}'..='\u{9FFF}'
+            | '\u{F900}'..='\u{FAFF}'
+            | '\u{20000}'..='\u{2FA1F}'
+    )
 }
 
 /// Fold one token through `filters` and keep it if anything survives.
@@ -369,7 +485,9 @@ mod tests {
     fn a_letter_the_fold_does_not_know_is_still_a_letter() {
         // Dropping it would silently shorten a term and make a search miss.
         let folded = Analyzer::new(vec![Filter::Ascii]);
-        assert_eq!(folded.terms("日本語"), vec!["日本語"]);
+        // (Each ideograph is its own token — see the tokenizer — and none is
+        // lost to the fold.)
+        assert_eq!(folded.terms("日本語"), vec!["日", "本", "語"]);
         // `ó` is in the table and folds; `Ł` and `ź` are not, and survive
         // rather than being dropped.
         assert_eq!(folded.terms("Łódź"), vec!["Łodź"]);
@@ -556,5 +674,69 @@ mod tests {
         let bare = Analyzer::new(vec![Filter::Stemmer(Language::English)]);
         assert_eq!(bare.terms("Running"), vec!["Running"]);
         assert_eq!(bare.terms("running"), vec!["run"]);
+    }
+
+    #[test]
+    fn an_ideograph_is_a_token_of_its_own_and_its_bytes_still_slice() {
+        // A sentence of Han characters carries no spaces, so splitting on
+        // non-letters made one term of it and nothing inside could be found.
+        let text = "東京都に行く Tokyo";
+        assert_eq!(
+            simple().terms(text),
+            vec!["東", "京", "都", "に", "行", "く", "tokyo"]
+        );
+        for token in simple().spans(text) {
+            assert!(text.get(token.bytes.clone()).is_some(), "{token:?}");
+        }
+        // Katakana and Hangul keep their runs: Katakana words are written
+        // together and Hangul separates its words with spaces.
+        assert_eq!(
+            simple().terms("コンピュータ 서울 시"),
+            vec!["コンピュータ", "서울", "시"]
+        );
+        // The two halves of a mixed run each keep their own rule.
+        assert_eq!(simple().terms("ab東c"), vec!["ab", "東", "c"]);
+    }
+
+    #[test]
+    fn surfaces_are_the_chain_without_its_stemmers_one_for_one() {
+        let english = Analyzer::new(vec![
+            Filter::Lowercase,
+            Filter::Ascii,
+            Filter::Stemmer(Language::English),
+        ]);
+        let text = "Transactions were Running";
+        assert_eq!(english.terms(text), vec!["transact", "were", "run"]);
+        assert_eq!(
+            english.surfaces(text),
+            vec!["transactions", "were", "running"]
+        );
+        // With no stemmer the surface is the term.
+        assert_eq!(simple().surfaces(text), simple().terms(text));
+    }
+
+    #[test]
+    fn a_remembered_analysis_is_the_same_analysis() {
+        let english = Analyzer::new(vec![
+            Filter::Lowercase,
+            Filter::Ascii,
+            Filter::Stemmer(Language::English),
+        ]);
+        let mut memo = super::Memo::default();
+        for text in [
+            "Transactions were Running, running and RUNNING",
+            "東京都 Café — running again",
+            "",
+            "  ...  ",
+        ] {
+            // Twice, so the second pass is answered from the memo.
+            for _ in 0..2 {
+                assert_eq!(
+                    english.analysed(text, &mut memo),
+                    (english.terms(text), english.surfaces(text)),
+                    "{text}"
+                );
+            }
+        }
     }
 }

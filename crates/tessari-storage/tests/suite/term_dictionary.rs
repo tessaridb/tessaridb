@@ -32,15 +32,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use tessari_encoding::{
-    IndexAddress, IndexValues, KeyKind, Posting, PostingKey, SearchTermKey, StoreKey, StoreValue,
-    TermStatistics, encode_payload,
+    IndexAddress, IndexValues, KeyKind, Posting, PostingKey, SearchSurfaceKey, SearchTermKey,
+    StoreKey, StoreValue, TermStatistics, encode_payload,
 };
 use tessari_kv::{Key, KeyRange, KvBackend, MemoryBackend, ScanDirection, ScanRequest, WriteBatch};
 use tessari_storage::{
     Catalog, FieldShape, IndexDefinition, IndexShape, RecordAddress, Store, TableShape,
 };
 use tessari_types::{
-    Analyzer, DatabaseId, FieldKind, Filter, NamespaceId, Path, RecordId, TableId, Value,
+    Analyzer, DatabaseId, FieldKind, Filter, Language, NamespaceId, Path, RecordId, TableId, Value,
 };
 
 /// The seed the workload runs from. Printed by every failing assertion.
@@ -98,6 +98,10 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::analysed(Analyzer::new(vec![Filter::Lowercase]))
+    }
+
+    fn analysed(analyzer: Analyzer) -> Self {
         let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
         let store = Store::open(Arc::clone(&backend)).unwrap();
         let mut transaction = store.begin().unwrap();
@@ -111,9 +115,7 @@ impl Fixture {
         // declares none posts no terms at all, silently — so a sweep that found
         // an empty dictionary matching empty postings would pass while proving
         // nothing. The population assertion in each test is what catches that.
-        catalog
-            .create_analyzer("plain", Analyzer::new(vec![Filter::Lowercase]))
-            .unwrap();
+        catalog.create_analyzer("plain", analyzer).unwrap();
         catalog
             .create_field(
                 table.id,
@@ -137,6 +139,7 @@ impl Fixture {
                     unique: false,
                     search: true,
                     spatial: false,
+                    quantized: false,
                     vector: None,
                     costs: tessari_storage::SearchCosts::default(),
                 },
@@ -677,4 +680,91 @@ fn an_entry_from_before_the_bound_says_it_has_none() {
         TermStatistics::decode(current.as_slice()).unwrap().bound(),
         Some((3, 40))
     );
+}
+
+/// **Q-867 — the surface dictionary equals a recount, in both directions.**
+///
+/// A stemming analyzer over the overlapping vocabulary (`vectors`, `indexing`,
+/// `locks` stem; `vector`, `lock` do not), the same seeded workload of writes,
+/// rewrites and deletes, and after every step the stored `(surface, term)`
+/// counts are compared with a recount from the records the test itself knows
+/// are live. A pair missing is a misspelling of a word the text holds that a
+/// fuzzy walk cannot reach; a pair left behind is a spelling offered for
+/// records that are gone. Deleting everything must leave no pair at all.
+#[test]
+fn the_surface_dictionary_equals_a_recount_through_writes_and_deletes() {
+    let analyzer = Analyzer::new(vec![
+        Filter::Lowercase,
+        Filter::Ascii,
+        Filter::Stemmer(Language::English),
+    ]);
+    let fixture = Fixture::analysed(analyzer.clone());
+    let mut live: BTreeMap<u64, String> = BTreeMap::new();
+    let mut rolls = Rolls(SEED);
+    let stored = |fixture: &Fixture| -> BTreeMap<(String, String), u64> {
+        let request = ScanRequest {
+            keyspace: KeyKind::SearchSurface.keyspace(),
+            range: KeyRange::prefix(&fixture.address().prefix(KeyKind::SearchSurface)),
+            direction: ScanDirection::Forward,
+            limit: None,
+        };
+        fixture
+            .backend
+            .scan(&request)
+            .unwrap()
+            .into_iter()
+            .map(|(key, value)| {
+                let pair = SearchSurfaceKey::decode(key.as_slice()).unwrap();
+                let count = SearchSurfaceKey::counted(value.as_slice()).unwrap();
+                ((pair.surface, pair.term), count)
+            })
+            // The completeness marker a build writes is not a pair.
+            .filter(|((surface, _), _)| !surface.is_empty())
+            .collect()
+    };
+    let recount = |live: &BTreeMap<u64, String>| -> BTreeMap<(String, String), u64> {
+        let mut expected: BTreeMap<(String, String), u64> = BTreeMap::new();
+        for body in live.values() {
+            let pairs: BTreeSet<(String, String)> = analyzer
+                .surfaces(body)
+                .into_iter()
+                .zip(analyzer.terms(body))
+                .filter(|(surface, term)| surface != term)
+                .collect();
+            for pair in pairs {
+                *expected.entry(pair).or_default() += 1;
+            }
+        }
+        expected
+    };
+    let mut populated = false;
+    for step in 0..STEPS {
+        let n = rolls.below(RECORDS);
+        if rolls.below(5) == 0 {
+            fixture.delete(n);
+            live.remove(&n);
+        } else {
+            let words: Vec<&str> = (0..=rolls.below(4))
+                .filter_map(|_| {
+                    WORDS
+                        .get(usize::try_from(rolls.below(10)).unwrap())
+                        .copied()
+                })
+                .collect();
+            let body = words.join(" ");
+            fixture.write(n, &body);
+            live.insert(n, body);
+        }
+        let held = stored(&fixture);
+        populated |= !held.is_empty();
+        assert_eq!(held, recount(&live), "seed {SEED:#x}, step {step}");
+    }
+    assert!(
+        populated,
+        "the workload never stemmed a word, so this proved nothing"
+    );
+    for n in 0..RECORDS {
+        fixture.delete(n);
+    }
+    assert!(stored(&fixture).is_empty(), "a pair outlived every record");
 }

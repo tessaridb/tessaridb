@@ -18,6 +18,7 @@ use crate::evaluate::Scope;
 use crate::outcome::Outcome;
 use crate::session::Session;
 
+mod analyzed;
 mod cluster;
 mod containers;
 mod defaults;
@@ -462,6 +463,7 @@ impl Session<'_> {
                 costs,
                 spatial,
                 vector,
+                quantized,
                 if_not_exists,
             } => self.define_index(
                 transaction,
@@ -472,6 +474,7 @@ impl Session<'_> {
                     unique: *unique,
                     search: *search,
                     spatial: *spatial,
+                    quantized: *quantized,
                     vector: match vector {
                         Some(named) => {
                             Some(VectorDistance::parse(&named.text).ok_or_else(|| {
@@ -663,6 +666,7 @@ impl Session<'_> {
                     found.into_iter().map(violation_value).collect(),
                 )))
             }
+            StatementKind::AnalyzeTable { table } => self.analyze_table(transaction, table),
             // Writing the definition again is the whole statement: the entries
             // are derived from it, so a definition arriving in a log record is
             // what makes them get built — see `Catalog::rebuild_index`.
@@ -924,12 +928,16 @@ impl Session<'_> {
                 name,
                 dimension,
                 distance,
+                quantized,
                 if_not_exists,
             } => self.define_vector(
                 transaction,
                 name,
-                *dimension,
-                distance,
+                tables::VectorStore {
+                    dimension: *dimension,
+                    distance,
+                    quantized: *quantized,
+                },
                 *if_not_exists,
                 span,
             ),
@@ -957,6 +965,8 @@ impl Session<'_> {
                 attempts,
                 schemafull,
                 graph,
+                priority,
+                not_before,
                 if_not_exists,
             } => {
                 // Resolved before the queue is created, on `DEFINE TABLE`'s own
@@ -977,6 +987,8 @@ impl Session<'_> {
                         kind: TableKind::Queue(QueueDeclaration {
                             timeout: *timeout,
                             attempts: *attempts,
+                            priority: priority.as_ref().map(|field| field.text.clone()),
+                            not_before: not_before.as_ref().map(|field| field.text.clone()),
                         }),
                         identity: IdentityKind::default(),
                         graph,
@@ -1049,6 +1061,13 @@ impl Session<'_> {
                 name,
                 read,
                 if_not_exists,
+                materialized: true,
+            } => self.define_materialized(transaction, name, read, *if_not_exists, span),
+            StatementKind::DefineView {
+                name,
+                read,
+                if_not_exists,
+                materialized: false,
             } => self.define_table(
                 transaction,
                 name,
@@ -1058,7 +1077,10 @@ impl Session<'_> {
                     // `false` is the value that says so rather than a default
                     // nobody chose.
                     schemafull: false,
-                    kind: TableKind::View(ViewDeclaration { read: read.clone() }),
+                    kind: TableKind::View(ViewDeclaration {
+                        read: read.clone(),
+                        materialized: false,
+                    }),
                     identity: IdentityKind::default(),
                     graph: None,
                     conflict: None,
@@ -1069,6 +1091,26 @@ impl Session<'_> {
                 span,
             ),
             StatementKind::DropView { name } => self.drop_view(transaction, name, span),
+            StatementKind::DefineEvent {
+                name,
+                table,
+                on,
+                when,
+                body,
+                if_not_exists,
+            } => self.define_event(
+                transaction,
+                &crate::event::Declared {
+                    name,
+                    table,
+                    on,
+                    when: when.as_ref(),
+                    body,
+                    if_not_exists: *if_not_exists,
+                },
+                span,
+            ),
+            StatementKind::DropEvent { name, table } => self.drop_event(transaction, name, table),
             StatementKind::Claim { table, count, span } => {
                 self.claim(transaction, table, *count, *span)
             }

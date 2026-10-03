@@ -43,6 +43,10 @@ pub enum KeyKind {
     SpatialRefinement,
     /// One distinct term of one search index — the term dictionary.
     SearchTerm,
+    /// What one value index held when it was last walked for the planner.
+    IndexStatistics,
+    /// How many entries one value index has gained or lost on this node.
+    IndexChanges,
     /// When one record version stops being answered: the instant, then the
     /// record, so "everything that has expired" is one scan from the start
     /// (G035).
@@ -63,6 +67,11 @@ pub enum KeyKind {
     /// One suffix of one dictionary term, so an infix is a range read over
     /// suffixes (ADR-0105 D9).
     SearchSuffix,
+    /// One surface form of one stemmed term, so a misspelling is measured
+    /// against what the text said rather than against its stem (Q-867).
+    SearchSurface,
+    /// How many payload bytes one size-retained topic holds (G055 C8).
+    TopicBytes,
     /// One entry in the ordered log.
     LogEntry,
     /// The store's own on-disk format version.
@@ -144,12 +153,16 @@ impl KeyKind {
         Self::VectorRecall,
         Self::SpatialRefinement,
         Self::SearchTerm,
+        Self::IndexStatistics,
+        Self::IndexChanges,
         Self::ExpiryIndex,
         Self::ModifiedOrder,
         Self::TopicOffset,
         Self::TopicEntry,
         Self::TopicHead,
         Self::SearchSuffix,
+        Self::SearchSurface,
+        Self::TopicBytes,
         Self::LogEntry,
         Self::FormatVersion,
         Self::AppliedPosition,
@@ -172,7 +185,8 @@ impl KeyKind {
     /// The leading byte that identifies this kind on disk.
     ///
     /// Tags are grouped by family — `0x0_` data, `0x1_` index, `0x2_` log,
-    /// `0x3_` meta — so a hex dump is readable and each family can grow.
+    /// `0x3_` meta, `0x4_` what the planner keeps about an index — so a hex dump
+    /// is readable and each family can grow.
     /// `0x00` is never assigned: it is the escape byte of the variable-length
     /// encoding and is kept free as a sorts-before-everything sentinel.
     #[must_use]
@@ -189,12 +203,16 @@ impl KeyKind {
             Self::VectorRecall => 0x17,
             Self::SpatialRefinement => 0x18,
             Self::SearchTerm => 0x19,
+            Self::IndexStatistics => 0x40,
+            Self::IndexChanges => 0x41,
             Self::ExpiryIndex => 0x1a,
             Self::ModifiedOrder => 0x1b,
             Self::TopicOffset => 0x1c,
             Self::TopicEntry => 0x1d,
             Self::TopicHead => 0x1e,
             Self::SearchSuffix => 0x1f,
+            Self::SearchSurface => 0x42,
+            Self::TopicBytes => 0x43,
             Self::LogEntry => 0x20,
             Self::FormatVersion => 0x30,
             Self::AppliedPosition => 0x31,
@@ -230,12 +248,16 @@ impl KeyKind {
             | Self::VectorRecall
             | Self::SpatialRefinement
             | Self::SearchTerm
+            | Self::IndexStatistics
+            | Self::IndexChanges
             | Self::ExpiryIndex
             | Self::ModifiedOrder
             | Self::TopicOffset
             | Self::TopicEntry
             | Self::TopicHead
-            | Self::SearchSuffix => Keyspace::INDEX,
+            | Self::SearchSuffix
+            | Self::SearchSurface
+            | Self::TopicBytes => Keyspace::INDEX,
             Self::LogEntry => Keyspace::LOG,
             Self::FormatVersion
             | Self::AppliedPosition
@@ -274,12 +296,16 @@ impl KeyKind {
             Self::VectorRecall => "vector-recall",
             Self::SpatialRefinement => "spatial-refinement",
             Self::SearchTerm => "search-term",
+            Self::IndexStatistics => "index-statistics",
+            Self::IndexChanges => "index-changes",
             Self::ExpiryIndex => "expiry-index",
             Self::ModifiedOrder => "modified-order",
             Self::TopicOffset => "topic-offset",
             Self::TopicEntry => "topic-entry",
             Self::TopicHead => "topic-head",
             Self::SearchSuffix => "search-suffix",
+            Self::SearchSurface => "search-surface",
+            Self::TopicBytes => "topic-bytes",
             Self::LogEntry => "log-entry",
             Self::FormatVersion => "format-version",
             Self::AppliedPosition => "applied-position",
@@ -367,12 +393,16 @@ mod tests {
             (KeyKind::VectorRecall, 0x17),
             (KeyKind::SpatialRefinement, 0x18),
             (KeyKind::SearchTerm, 0x19),
+            (KeyKind::IndexStatistics, 0x40),
+            (KeyKind::IndexChanges, 0x41),
             (KeyKind::ExpiryIndex, 0x1a),
             (KeyKind::ModifiedOrder, 0x1b),
             (KeyKind::TopicOffset, 0x1c),
             (KeyKind::TopicEntry, 0x1d),
             (KeyKind::TopicHead, 0x1e),
             (KeyKind::SearchSuffix, 0x1f),
+            (KeyKind::SearchSurface, 0x42),
+            (KeyKind::TopicBytes, 0x43),
             (KeyKind::LogEntry, 0x20),
             (KeyKind::FormatVersion, 0x30),
             (KeyKind::AppliedPosition, 0x31),

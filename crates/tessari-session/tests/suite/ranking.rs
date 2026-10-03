@@ -694,3 +694,48 @@ fn a_ranked_page_after_the_first_is_read_by_the_walk_and_the_pages_are_the_ranki
     assert_eq!(paged[..20], whole[..], "the pages are not the ranking");
     assert_eq!(paged.len(), 21);
 }
+
+/// A record read by identity is scored against its table's collection — the
+/// same number the table read gives it — and a span read too (Q-869). It used
+/// to be refused as `NoSearchIndex`, naming a cause that was false.
+#[test]
+fn a_record_read_by_identity_is_scored_against_its_table() {
+    let store = store();
+    let mut session = searchable(&store);
+    write(&mut session, 1, "lock contention on the write path");
+    write(&mut session, 2, "contention again and again");
+    write(&mut session, 3, "an unrelated note about breakfast");
+
+    let score_of = |session: &mut Session<'_>, read: &str| {
+        let outcomes = session.run(read).unwrap();
+        let records = outcomes[0].records().unwrap();
+        let (_, record) = records
+            .iter()
+            .find(|(id, _)| *id == RecordId::Int(2))
+            .unwrap_or_else(|| panic!("no notes:2 in {records:?}"));
+        number(field(record, "relevance"))
+    };
+    let from_table = score_of(
+        &mut session,
+        "SELECT search::score(body, 'contention') AS relevance FROM notes;",
+    );
+    assert!(from_table > 0.0);
+    let by_identity = score_of(
+        &mut session,
+        "SELECT search::score(body, 'contention') AS relevance FROM notes:2;",
+    );
+    assert_eq!(by_identity.to_bits(), from_table.to_bits());
+    let by_span = score_of(
+        &mut session,
+        "SELECT search::score(body, 'contention') AS relevance FROM notes:1..=3;",
+    );
+    assert_eq!(by_span.to_bits(), from_table.to_bits());
+    let explained = session
+        .run("SELECT search::explain(body, 'contention') AS why FROM notes:2;")
+        .unwrap();
+    let records = explained[0].records().unwrap();
+    assert!(
+        format!("{:?}", records[0].1).contains("contribution"),
+        "{records:?}"
+    );
+}

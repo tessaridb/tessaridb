@@ -320,3 +320,28 @@ SELECT id FROM errands3 WHERE attempts = 1;
 --- case: and naming one of those fields is still refused rather than carried
 UPDATE errands3:1 = { url: 'd', attempts: 0 };
 --- expect: error QueueFieldIsTheEngines
+
+--- case: a priority queue hands out the greatest priority first
+DEFINE QUEUE urgent TIMEOUT 30s PRIORITY BY p;
+CREATE urgent:1 = { p: 1 };
+CREATE urgent:2 = { p: 9 };
+CREATE urgent:3 = { };
+CLAIM FROM urgent;
+SELECT id FROM urgent WHERE p = 9 AND attempts = 1;
+--- expect: rows 1
+
+--- case: and a record with no priority after every record that has one
+CLAIM 2 FROM urgent;
+SELECT id FROM urgent WHERE attempts = 1;
+--- expect: rows 3
+
+--- case: a record whose instant has not come is not handed out
+DEFINE QUEUE later TIMEOUT 30s NOT BEFORE due;
+CREATE later:1 = { due: time::from_unix(time::unix(time::now()) + 3600) };
+CLAIM FROM later;
+--- expect: rows 0
+
+--- case: and one whose instant has passed is
+CREATE later:2 = { due: time::from_unix(0) };
+CLAIM FROM later;
+--- expect: rows 1

@@ -111,6 +111,10 @@ pub(crate) struct Scanner {
     /// Whether anything has been fed yet, which is what `at_statement_start`
     /// means before the first character.
     started: bool,
+    /// How many braces are open. A `;` inside them ends a statement of an
+    /// event's body, not the `DEFINE EVENT` holding it (ADR-0110); an object
+    /// literal holds none, so counting it costs nothing.
+    depth: usize,
 }
 
 impl Scanner {
@@ -162,6 +166,7 @@ impl Scanner {
         let mut tail = self.tail;
         let mut at_statement_start = self.at_statement_start;
         let mut word = core::mem::take(&mut self.word);
+        let mut depth = self.depth;
         let mut characters = text.chars().peekable();
         // A dash held from the previous piece is resolved against this one's
         // first character before anything else looks at it.
@@ -212,6 +217,22 @@ impl Scanner {
                 // A `-` at the very end of this piece cannot be judged yet: whether
                 // it opens a comment depends on a character that has not arrived.
                 (None, '-') if characters.peek().is_none() => self.held_dash = true,
+                (None, '{') => {
+                    depth = depth.saturating_add(1);
+                    substantial = true;
+                    tail = true;
+                    at_statement_start = false;
+                }
+                (None, '}') => {
+                    depth = depth.saturating_sub(1);
+                    substantial = true;
+                    tail = true;
+                    at_statement_start = false;
+                }
+                (None, ';') if depth > 0 => {
+                    substantial = true;
+                    tail = true;
+                }
                 (None, ';') => {
                     substantial = true;
                     at_statement_start = true;
@@ -246,6 +267,7 @@ impl Scanner {
         self.closed = closed;
         self.tail = tail;
         self.at_statement_start = at_statement_start;
+        self.depth = depth;
         // The word is NOT terminated here — it may continue into the next piece.
         // Its effect on a transaction boundary is applied provisionally by
         // [`Scanner::state`] instead, which is what the single-pass walk did at

@@ -20,6 +20,7 @@
 
 mod rate;
 mod read;
+mod size;
 
 pub(crate) use rate::PublicRates;
 
@@ -132,7 +133,12 @@ pub(crate) fn edge(
 ///
 /// [`Error::TopicIsAppendOnly`] or [`Error::TopicMessageTooLarge`] naming the
 /// topic; a backend or catalog error otherwise.
-pub(crate) fn admit(store: &Store, record: &LogRecord, now: u64) -> Result<Option<LogRecord>> {
+pub(crate) fn admit(
+    store: &Store,
+    record: &LogRecord,
+    now: u64,
+    node: [u8; tessari_encoding::NODE_ID_LEN],
+) -> Result<Option<LogRecord>> {
     let mut view = store.begin()?;
     let topics = topics_in(&mut view, record)?;
     if topics.is_empty() {
@@ -180,6 +186,15 @@ pub(crate) fn admit(store: &Store, record: &LogRecord, now: u64) -> Result<Optio
                 .and_then(|span| now.checked_add(span))
                 .ok_or(Error::TopicPositionsExhausted)?;
             mutation.value = mutation.value.clone().expiring(at);
+            stamped = true;
+        }
+    }
+    // A size retention is enforced after every message has been admitted, so
+    // the total it judges is the one the commit would leave (G055 C8).
+    for (topic, (name, declared)) in &topics {
+        if let Some(limit) = declared.retain_bytes
+            && size::enforce(store, &view, *topic, (name, limit), &mut mutations, node)?
+        {
             stamped = true;
         }
     }
@@ -265,6 +280,11 @@ pub(crate) fn maintain(
                     );
             }
             _ => {}
+        }
+    }
+    for (topic, (_, declared)) in &topics {
+        if declared.retain_bytes.is_some() {
+            batch = size::count(store, &view, *topic, record, batch)?;
         }
     }
     for ((namespace, database, table), following) in next {

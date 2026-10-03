@@ -442,3 +442,96 @@ fn a_space_holding_objects_is_searched_through_its_index() {
     );
     assert!(plan.contains("by_body") && plan.contains("terms"), "{plan}");
 }
+
+/// A space whose values are text: the route `value` names the value itself,
+/// so it is declared, indexed and searched like a field — and the scan and the
+/// index answer alike. An object keeps its own `value` field.
+#[test]
+fn a_space_of_scalar_text_is_searched_through_its_value() {
+    let mut answers = Vec::new();
+    for indexed in [false, true] {
+        let held = store();
+        let mut session = Session::new(&held);
+        let index = if indexed {
+            "DEFINE INDEX by_value ON kv FIELDS value SEARCH;\n"
+        } else {
+            ""
+        };
+        session
+            .run(&format!(
+                "{PLACE}\
+                 DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
+                 DEFINE SPACE kv;\n\
+                 DEFINE FIELD value ON kv TYPE string ANALYZER english;\n\
+                 {index}\
+                 SET kv:'a' = 'the quick foxes';\n\
+                 SET kv:'b' = 'a lazy dog';\n\
+                 SET kv:'c' = {{ value: 'a fox in a field named value' }};",
+            ))
+            .unwrap();
+        let read = "SELECT * FROM kv WHERE value MATCHES 'fox';";
+        answers.push(ids(&mut session, read));
+        assert_eq!(answers.last().unwrap(), &["a", "c"], "indexed: {indexed}");
+        if indexed {
+            let plan = format!(
+                "{:?}",
+                session.run(&format!("EXPLAIN {read}")).unwrap().last()
+            );
+            assert!(
+                plan.contains("by_value") && plan.contains("terms"),
+                "{plan}"
+            );
+            let projected = session.run("SELECT value FROM kv:'a';").unwrap();
+            assert!(
+                format!("{:?}", projected.last()).contains("the quick foxes"),
+                "{projected:?}"
+            );
+        }
+    }
+    assert_eq!(answers[0], answers[1]);
+}
+
+/// Chinese and Japanese text is searchable: each ideograph is a token, so a
+/// quoted run of them is an exact substring and the index and the scan agree.
+/// An unquoted run asks for every character anywhere, as any unquoted query
+/// asks for every word.
+#[test]
+fn a_quoted_run_of_ideographs_is_found_as_written() {
+    for indexed in [false, true] {
+        let held = store();
+        let mut session = Session::new(&held);
+        let index = if indexed {
+            "DEFINE INDEX by_body ON notes FIELDS body SEARCH POSITIONS;\n"
+        } else {
+            ""
+        };
+        session
+            .run(&format!(
+                "{PLACE}\
+                 DEFINE ANALYZER plain FILTERS lowercase;\n\
+                 DEFINE COLLECTION notes;\n\
+                 DEFINE FIELD body ON notes TYPE string ANALYZER plain;\n\
+                 {index}\
+                 CREATE notes:'a' = {{ body: '東京都に住む' }};\n\
+                 CREATE notes:'b' = {{ body: '京東の店' }};\n\
+                 CREATE notes:'c' = {{ body: 'Tokyo only' }};",
+            ))
+            .unwrap();
+        assert_eq!(
+            ids(
+                &mut session,
+                "SELECT * FROM notes WHERE body MATCHES '\"東京\"';"
+            ),
+            ["a"],
+            "indexed: {indexed}"
+        );
+        assert_eq!(
+            ids(
+                &mut session,
+                "SELECT * FROM notes WHERE body MATCHES '東京';"
+            ),
+            ["a", "b"],
+            "indexed: {indexed}"
+        );
+    }
+}

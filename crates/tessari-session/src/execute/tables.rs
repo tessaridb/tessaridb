@@ -12,6 +12,16 @@ use crate::error::{Error, Result};
 use crate::outcome::Outcome;
 use crate::session::Session;
 
+/// What `DEFINE VECTOR` declares about the store, beside its name.
+pub(super) struct VectorStore<'a> {
+    /// How wide every vector is.
+    pub(super) dimension: usize,
+    /// The distance its index is built with, as written.
+    pub(super) distance: &'a Name,
+    /// Whether its index keeps vectors as one byte per component.
+    pub(super) quantized: bool,
+}
+
 impl Session<'_> {
     pub(crate) fn define_table(
         &self,
@@ -161,11 +171,15 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
-        dimension: usize,
-        distance: &Name,
+        store: VectorStore<'_>,
         if_not_exists: bool,
         span: Span,
     ) -> Result<Outcome> {
+        let VectorStore {
+            dimension,
+            distance,
+            quantized,
+        } = store;
         let distance =
             VectorDistance::parse(&distance.text).ok_or_else(|| Error::NoSuchDistance {
                 name: distance.text.clone(),
@@ -238,6 +252,7 @@ impl Session<'_> {
                 unique: false,
                 search: false,
                 spatial: false,
+                quantized,
                 vector: Some(distance),
                 costs: tessari_storage::SearchCosts::default(),
             },
@@ -347,11 +362,16 @@ impl Session<'_> {
         let id = Catalog::new(transaction)
             .table_id(context.namespace, context.database, &name.text)?
             .ok_or_else(unknown)?;
-        let is_view = Catalog::new(transaction)
+        let kind = Catalog::new(transaction)
             .table(id)?
-            .is_some_and(|definition| matches!(definition.kind, TableKind::View(_)));
-        if !is_view {
+            .map(|definition| definition.kind);
+        let Some(TableKind::View(declared)) = kind else {
             return Err(unknown());
+        };
+        // A kept view's rows go with its table; its state is kept beside them
+        // and goes too (ADR-0109 D1).
+        if declared.materialized {
+            transaction.forget_view(id);
         }
         Catalog::new(transaction).drop_table(id)?;
         Ok(Outcome::Done)

@@ -352,6 +352,9 @@ pub enum StatementKind {
         /// for the reason [`StatementKind::DefineIndex`] carries it that way:
         /// which distances exist is the store's question, not the grammar's.
         distance: Name,
+        /// Whether its index keeps each vector as one byte per component
+        /// (`QUANTIZED`), rescored on the records' full vectors.
+        quantized: bool,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -435,6 +438,10 @@ pub enum StatementKind {
         /// grammar's: a name the store does not know is refused where the store
         /// knows what it knows, with the span the author can see.
         vector: Option<Name>,
+        /// Whether a vector index keeps each vector as one byte per component
+        /// (`QUANTIZED`). Only after `VECTOR <distance>`: on any other kind it
+        /// would describe storage that kind does not have.
+        quantized: bool,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -1103,6 +1110,12 @@ pub enum StatementKind {
         /// because the name is taken — so a table that had to be both was
         /// simply unrepresentable.
         graph: Option<Name>,
+        /// `PRIORITY BY f`: a claim takes the greatest `f` first, ties in
+        /// arrival order, records without a number in `f` last (G055 C8).
+        priority: Option<Name>,
+        /// `NOT BEFORE f`: a record whose `f` holds a datetime after now is not
+        /// handed out yet — delayed delivery, the delay a value in the record.
+        not_before: Option<Name>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -1209,6 +1222,10 @@ pub enum StatementKind {
         /// and then `DEFINE VIEW`, and this clause only makes a provisioning
         /// script re-runnable.
         if_not_exists: bool,
+        /// `MATERIALIZED`: the read's answer is kept as records and brought
+        /// current from the change feed (ADR-0109), rather than re-run on every
+        /// read that names the view.
+        materialized: bool,
     },
     /// `DROP VIEW active`
     ///
@@ -1218,6 +1235,36 @@ pub enum StatementKind {
     DropView {
         /// The view to undefine.
         name: Name,
+    },
+    /// `DEFINE EVENT audit ON orders FOR UPDATE WHEN $after.total > 100 THEN
+    /// CREATE log = { … }` — statements run after each write of a record of the
+    /// table, in the writer's transaction, as the writer (ADR-0110).
+    ///
+    /// The condition and the body are kept as **source text**, for the reason
+    /// a view keeps its read as text: a stored syntax tree would need a version
+    /// every time the grammar grew. Both are parsed here, so an event that could
+    /// never run is refused where it is written.
+    DefineEvent {
+        /// The event's name, unique on its table.
+        name: Name,
+        /// The table whose writes run it.
+        table: TableRef,
+        /// The writes that run it — all three when `FOR` is not written.
+        on: Vec<tessari_types::WriteKind>,
+        /// `WHEN`, as written: the body runs only where it holds.
+        when: Option<String>,
+        /// The statements, as written, without the braces.
+        body: String,
+        /// Whether re-defining an existing name is accepted rather than
+        /// refused.
+        if_not_exists: bool,
+    },
+    /// `DROP EVENT audit ON orders`
+    DropEvent {
+        /// The event to undefine.
+        name: Name,
+        /// The table it is defined on.
+        table: TableRef,
     },
     /// `CLAIM FROM jobs` · `CLAIM 10 FROM jobs`
     ///
@@ -1418,6 +1465,18 @@ pub enum StatementKind {
     /// decides to do.
     CheckTable {
         /// The table to hold to its own declarations.
+        table: TableRef,
+    },
+    /// `ANALYZE TABLE users`
+    ///
+    /// Takes the statistics the planner estimates the table's value indexes by
+    /// — entries, distinct values, the most common values and equi-depth
+    /// buckets — from a walk of each index's entries, on the node that runs it.
+    /// A statistic decides which path a read takes and never which records it
+    /// returns, so a node keeps its own and nothing travels in the log; a
+    /// serving node also refreshes them itself as they go stale.
+    AnalyzeTable {
+        /// The table whose indexes are summarised.
         table: TableRef,
     },
     /// `REBUILD INDEX by_embedding ON papers`

@@ -212,6 +212,7 @@ pub(crate) fn write_expr(out: &mut String, expr: &Expr) -> Result<()> {
             Ok(())
         }
         ExprKind::Negate(_) => unwritten("a negation"),
+        ExprKind::Route { .. } => unwritten("a route into a value"),
         ExprKind::Literal(_) => unwritten("a literal value"),
         ExprKind::Fold { .. } => unwritten("a fold"),
         // A call is its spelling and its arguments, each written as any other

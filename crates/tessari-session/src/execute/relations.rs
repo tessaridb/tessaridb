@@ -359,7 +359,9 @@ impl Session<'_> {
             Some(held) => decode_payload(&held)?,
             None => Value::None,
         };
-        transaction.delete(address);
+        // Through the delete funnel, so an edge table's events see the edge go
+        // as they saw it come (ADR-0110 D8).
+        self.delete_record(transaction, address, edges.span)?;
         Ok(answered(answer, before, Value::None))
     }
 }

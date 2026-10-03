@@ -51,10 +51,11 @@ pub use causal::{CausalOrder, CausalStamp, CausalVersions};
 pub use error::{Error, Result};
 pub use expiry_key::{ExpiryKey, ExpiryMark};
 pub use index_keys::{
-    INDEX_PREFIX_LEN, IndexAddress, IndexTarget, IndexValues, Located, NoPayload, Posting,
-    PostingKey, SearchStatistics, SearchStatisticsKey, SearchSuffixKey, SearchTermKey,
-    SecondaryIndexKey, SpatialRefinement, SpatialRefinementKey, TermStatistics, UniqueIndexKey,
-    VectorNode, VectorNodeKey, VectorRecall, VectorRecallKey,
+    INDEX_PREFIX_LEN, IndexAddress, IndexChanges, IndexChangesKey, IndexStatistics,
+    IndexStatisticsKey, IndexTarget, IndexValues, Located, NoPayload, Posting, PostingKey,
+    QuantizedVector, SearchStatistics, SearchStatisticsKey, SearchSuffixKey, SearchSurfaceKey,
+    SearchTermKey, SecondaryIndexKey, SpatialRefinement, SpatialRefinementKey, StoredVector,
+    TermStatistics, UniqueIndexKey, VectorNode, VectorNodeKey, VectorRecall, VectorRecallKey,
 };
 pub use keys::{
     AppliedPositionKey, FormatVersionKey, LogKey, LogRetentionKey, LogStartKey, NodeIdentityKey,
@@ -68,7 +69,7 @@ pub use node::{BUILD_VERSION, Membership, NODE_ID_LEN, NodeIdentity, NodeVersion
 pub use order::{KeyReader, KeyWriter};
 pub use payload::{decode as decode_payload, encode as encode_payload};
 pub use spatial_keys::{SpatialExtent, SpatialIndexKey};
-pub use topic_key::{TopicEntryKey, TopicHeadKey, TopicOffsetKey};
+pub use topic_key::{TopicBytesKey, TopicEntryKey, TopicHeadKey, TopicOffsetKey};
 pub use value::{
     CODEC_VERSION, FormatVersion, LogRecord, Mutation, RecordValue, StampedValue, StoreValue,
 };

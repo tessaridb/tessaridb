@@ -260,3 +260,26 @@ CHECK TABLE loose;
 # in the name would read as a clean bill of health.
 CHECK TABLE ghost;
 --- expect: error Unknown
+
+# ---------------------------------------------------------------- ANALYZE TABLE
+
+--- case: analyze takes the statistics of each value index and answers what it took
+# A unique index already names at most one record per value, so it is left out;
+# the summary counts and never quotes a value, because a value printed from an
+# index is a way to read a field through it.
+DEFINE COLLECTION tally;
+DEFINE INDEX by_kind ON tally FIELDS kind;
+DEFINE INDEX by_tag ON tally FIELDS tag UNIQUE;
+CREATE tally:1 = { kind: 'a', tag: 1 };
+CREATE tally:2 = { kind: 'a', tag: 2 };
+CREATE tally:3 = { kind: 'b', tag: 3 };
+ANALYZE TABLE tally;
+--- expect: value [{ buckets: 2, common: 1, distinct: [2], entries: 3, index: 'by_kind' }]
+
+--- case: and a plan read afterwards carries the estimate and says where it came from
+EXPLAIN SELECT * FROM tally WHERE kind = 'a';
+--- expect: value { access: 'index', columns: 1, estimate: 2, estimated_by: 'statistics', exact: true, index: 'by_kind', shape: 'equality', table: 'tally' }
+
+--- case: analyzing a table nobody declared is refused
+ANALYZE TABLE ghost;
+--- expect: error Unknown

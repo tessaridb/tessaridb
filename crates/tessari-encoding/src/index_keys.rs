@@ -23,7 +23,9 @@
 //! entry that describes it, which matters exactly when something has gone wrong
 //! and an operator is looking at bytes.
 
+mod quantized;
 mod search;
+mod statistics;
 mod vectors;
 use tessari_kv::{Key, Value};
 use tessari_types::{DatabaseId, IndexId, NamespaceId, RecordId, TableId};
@@ -35,10 +37,12 @@ use crate::kind::KeyKind;
 use crate::order::{KeyReader, KeyWriter};
 use crate::record_id;
 use crate::value::{StoreValue, split_header, with_header};
+pub use quantized::{QuantizedVector, StoredVector};
 pub use search::{
-    PostingKey, SearchStatistics, SearchStatisticsKey, SearchSuffixKey, SearchTermKey,
-    TermStatistics, UniqueIndexKey,
+    PostingKey, SearchStatistics, SearchStatisticsKey, SearchSuffixKey, SearchSurfaceKey,
+    SearchTermKey, TermStatistics, UniqueIndexKey,
 };
+pub use statistics::{IndexChanges, IndexChangesKey, IndexStatistics, IndexStatisticsKey};
 pub use vectors::{
     SpatialRefinement, SpatialRefinementKey, VectorNode, VectorNodeKey, VectorRecall,
     VectorRecallKey,
@@ -436,6 +440,9 @@ impl StoreValue for Posting {
 const LISTS_POSITIONS: u8 = 1;
 /// The offsets flag: the posting lists the term's byte ranges.
 const LISTS_OFFSETS: u8 = 2;
+/// The fields flag: the posting lists a frequency and a length per member
+/// field, after a one-byte field count.
+const LISTS_FIELDS: u8 = 4;
 
 /// Where one term sits in one record, as a `POSITIONS` / `OFFSETS` index keeps
 /// it (ADR-0100 D4).
@@ -449,6 +456,14 @@ pub struct Located {
     /// The term's byte ranges in the record's text, start inclusive and end
     /// exclusive, in token order.
     pub offsets: Vec<(u32, u32)>,
+    /// For a search member, per field in declaration order: how often the term
+    /// occurs in that field and how long that field is (Q-870). Empty for a
+    /// field index, and for a member posting written before it was kept.
+    ///
+    /// What lets a `FROM SEARCH` score BM25F — each field normalised by its own
+    /// length — from the postings alone, where without it every candidate's
+    /// text had to be read and analysed again.
+    pub fields: Vec<(u32, u32)>,
 }
 
 impl Posting {
@@ -470,6 +485,14 @@ impl Posting {
         if !located.offsets.is_empty() {
             flags |= LISTS_OFFSETS;
         }
+        // A member declares at most a byte's worth of fields; one with more
+        // keeps the counted payload, which every reader still scores from text.
+        let fields = u8::try_from(located.fields.len())
+            .ok()
+            .filter(|count| *count > 0);
+        if fields.is_some() {
+            flags |= LISTS_FIELDS;
+        }
         if flags != 0 {
             writer.put_u8(flags);
             for position in &located.positions {
@@ -477,6 +500,12 @@ impl Posting {
             }
             for (start, end) in &located.offsets {
                 writer.put_u32(*start).put_u32(*end);
+            }
+            if let Some(count) = fields {
+                writer.put_u8(count);
+                for (frequency, length) in &located.fields {
+                    writer.put_u32(*frequency).put_u32(*length);
+                }
             }
         }
         let body = writer.finish();
@@ -511,7 +540,7 @@ fn take_lists(reader: &mut KeyReader<'_>, frequency: u32) -> Result<Located> {
         return Ok(Located::default());
     }
     let flags = reader.take_u8()?;
-    if flags & !(LISTS_POSITIONS | LISTS_OFFSETS) != 0 || flags == 0 {
+    if flags & !(LISTS_POSITIONS | LISTS_OFFSETS | LISTS_FIELDS) != 0 || flags == 0 {
         return Err(Error::ReservedFlags { flags });
     }
     let count = usize::try_from(frequency).unwrap_or(usize::MAX);
@@ -527,6 +556,13 @@ fn take_lists(reader: &mut KeyReader<'_>, frequency: u32) -> Result<Located> {
         for _ in 0..count {
             let start = reader.take_u32()?;
             located.offsets.push((start, reader.take_u32()?));
+        }
+    }
+    if flags & LISTS_FIELDS != 0 {
+        let count = reader.take_u8()?;
+        for _ in 0..count {
+            let frequency = reader.take_u32()?;
+            located.fields.push((frequency, reader.take_u32()?));
         }
     }
     Ok(located)
@@ -601,6 +637,54 @@ mod tests {
             encoded.as_slice().len(),
             super::INDEX_PREFIX_LEN + term.as_slice().len()
         );
+    }
+
+    #[test]
+    fn a_member_posting_keeps_each_fields_frequency_and_length() {
+        use super::{Located, Posting, StoreValue};
+        let located = Located {
+            fields: vec![(2, 5), (0, 9), (1, 40)],
+            ..Located::default()
+        };
+        let encoded = Posting::encode_located(3, 54, &located);
+        assert_eq!(Posting::located(encoded.as_slice()).unwrap(), located);
+        // Still the counted posting every reader knows.
+        assert_eq!(
+            Posting::decode(encoded.as_slice()).unwrap(),
+            Posting::Counted {
+                frequency: 3,
+                length: 54
+            }
+        );
+        // With no fields it is byte-identical to the counted form.
+        assert_eq!(
+            Posting::encode_located(3, 54, &Located::default()).as_slice(),
+            Posting::Counted {
+                frequency: 3,
+                length: 54
+            }
+            .encode()
+            .as_slice()
+        );
+    }
+
+    #[test]
+    fn a_surface_pair_and_its_count_survive_the_round_trip_and_a_walk_bounds_them() {
+        use super::SearchSurfaceKey;
+        let key =
+            SearchSurfaceKey::new(address(), "transactions".to_owned(), "transact".to_owned());
+        let read = SearchSurfaceKey::decode(key.encode().as_slice()).expect("a key");
+        assert_eq!(read, key);
+        let counted = SearchSurfaceKey::count(7);
+        assert_eq!(
+            SearchSurfaceKey::counted(counted.as_slice()).expect("a count"),
+            7
+        );
+        // The leading letters bound exactly the surfaces that begin with them.
+        let bounds = SearchSurfaceKey::surface_prefix(&address(), "tr");
+        assert!(key.encode().as_slice().starts_with(&bounds));
+        let other = SearchSurfaceKey::new(address(), "replicas".to_owned(), "replica".to_owned());
+        assert!(!other.encode().as_slice().starts_with(&bounds));
     }
 
     #[test]
@@ -749,19 +833,52 @@ mod tests {
 
     #[test]
     fn a_vector_node_survives_the_round_trip() {
-        use super::{RecordId, VectorNode, VectorNodeKey};
+        use super::{QuantizedVector, RecordId, StoredVector, VectorNode, VectorNodeKey};
+        let components = vec![0.123, 0.999, 0.0, 1.0, 0.5];
         let node = VectorNode::new(
-            vec![0.123, 0.999, 0.0, 1.0, 0.5],
+            StoredVector::Full(components.clone()),
             vec![RecordId::Int(1), RecordId::Int(2)],
         );
         let encoded = node.encode();
         let read = VectorNode::decode(encoded.as_slice()).expect("a node");
         assert_eq!(read, node);
 
+        let coded = QuantizedVector::of(&components).expect("codes");
+        let quantized = VectorNode::new(
+            StoredVector::Quantized(coded),
+            vec![RecordId::Int(1), RecordId::Int(2)],
+        );
+        let small = quantized.encode();
+        assert_eq!(
+            VectorNode::decode(small.as_slice()).expect("a node"),
+            quantized
+        );
+        // The layout `stored_bytes` states: the two nodes share their neighbour
+        // lists, so their sizes differ by exactly the two vectors' forms.
+        assert_eq!(
+            encoded.as_slice().len() - small.as_slice().len(),
+            node.vector.stored_bytes() - quantized.vector.stored_bytes()
+        );
+
         let key = VectorNodeKey::new(address(), 0, RecordId::Int(7));
         let bytes = key.encode();
         assert_eq!(VectorNodeKey::decode(bytes.as_slice()).expect("a key"), key);
     }
+
+    #[test]
+    fn a_full_precision_node_keeps_the_bytes_it_always_had() {
+        // Every vector index written before `QUANTIZED` holds these bytes, and
+        // a node is never rewritten by an upgrade — so the full form's encoding
+        // is pinned, not merely round-tripped.
+        use super::{RecordId, StoredVector, VectorNode};
+        let node = VectorNode::new(StoredVector::Full(vec![0.5, -1.0]), vec![RecordId::Int(3)]);
+        assert_eq!(node.encode().as_slice(), GOLDEN_FULL_NODE);
+    }
+
+    const GOLDEN_FULL_NODE: &[u8] = &[
+        1, 0, 0, 0, 0, 2, 63, 224, 0, 0, 0, 0, 0, 0, 191, 240, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1,
+        128, 0, 0, 0, 0, 0, 0, 3,
+    ];
 
     #[test]
     fn an_empty_index_has_no_average_length() {
@@ -853,15 +970,16 @@ mod tests {
         for located in [
             Located {
                 positions: vec![1, 7],
-                offsets: Vec::new(),
+                ..Located::default()
             },
             Located {
-                positions: Vec::new(),
                 offsets: vec![(0, 3), (40, 44)],
+                ..Located::default()
             },
             Located {
                 positions: vec![1, 7],
                 offsets: vec![(0, 3), (40, 44)],
+                ..Located::default()
             },
         ] {
             let stored = Posting::encode_located(2, 9, &located);
@@ -888,7 +1006,7 @@ mod tests {
             9,
             &Located {
                 positions: vec![1, 7],
-                offsets: Vec::new(),
+                ..Located::default()
             },
         );
         let bytes = stored.as_slice();
@@ -900,10 +1018,10 @@ mod tests {
         let mut long = bytes.to_vec();
         long.push(0);
         assert!(Posting::located(&long).is_err());
-        // A flag this build does not know.
+        // A flag this build does not know (4 names the fields list).
         let mut unknown = bytes.to_vec();
         let flags_at = unknown.len() - 9;
-        unknown[flags_at] |= 4;
+        unknown[flags_at] |= 8;
         assert!(matches!(
             Posting::located(&unknown),
             Err(crate::Error::ReservedFlags { .. })

@@ -9,7 +9,7 @@ import { facts } from "./draw.js";
 import { told } from "./session.js";
 import { settled, state } from "./states.js";
 import { onArrival } from "./tabs.js";
-import { behind, fieldsOf, held, topic as asTopic, type Topic } from "./topic-info.js";
+import { behind, fieldsOf, held, keeps, topic as asTopic, type Topic } from "./topic-info.js";
 import { aName, aWhole, tenancy } from "./topic-names.js";
 
 const SCREEN = "Topics";
@@ -172,7 +172,7 @@ function draw(read: Topic[]): void {
       row.insertCell().appendChild(pick);
       numberCell(row, held(each));
       numberCell(row, each.last);
-      row.insertCell().textContent = each.retain ?? "everything";
+      row.insertCell().textContent = keeps(each);
       numberCell(row, each.readers.size);
       numberCell(row, each.groups.size);
       numberCell(row, behind(each));
@@ -204,7 +204,8 @@ function drawChosen(): void {
       held: held(found),
       first: found.first ?? "none held",
       last: found.last,
-      keeps: found.retain ?? "everything",
+      keeps: keeps(found),
+      "bytes held": found.bytes === null ? "not counted" : `${found.bytes} bytes`,
       "largest message": found.maxBytes === null ? "any size" : `${found.maxBytes} bytes`,
     });
     const readers = headed(["reader", "position", "lag"]);

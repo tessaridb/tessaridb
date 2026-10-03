@@ -177,6 +177,8 @@ fn value_of(expr: &Expr) -> Option<Value> {
         // parameter: a corpus case supplies no bindings, so an expectation
         // written with one would be saying it expects whatever it was handed.
         ExprKind::Path(_) | ExprKind::Not(_) | ExprKind::Parameter(_) => None,
+        // A route walks a parameter, which an expectation has none of.
+        ExprKind::Route { .. } => None,
         // A fold needs a group, and a corpus expectation has none.
         ExprKind::Fold { .. } => None,
         ExprKind::And(_, _) | ExprKind::Or(_, _) | ExprKind::Binary { .. } => None,

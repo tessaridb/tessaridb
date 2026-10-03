@@ -172,6 +172,13 @@ pub struct Store {
     /// nowhere, so a follower holding every byte of the leader's log holds
     /// nothing that opens a secret.
     vault: Arc<crate::vault::OpenVault>,
+    /// How many times each name has lately missed signing in here.
+    ///
+    /// Shared with every handle for the vault keyring's reason — a reconnect
+    /// must not get a fresh allowance — and held per store rather than per
+    /// process because a name is an account in this store's catalog, and
+    /// another store's misses are not guesses at it ([`crate::attempts`]).
+    attempts: Arc<crate::attempts::Attempts>,
     /// Where a read of a vault is recorded before its answer leaves.
     ///
     /// Beside the vault rather than inside it: the trail outlives any one

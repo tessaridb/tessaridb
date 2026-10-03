@@ -36,6 +36,9 @@ pub struct TopicDeclaration {
     pub retain: Option<Duration>,
     /// The most bytes one message may encode to, or no bound.
     pub max_bytes: Option<u64>,
+    /// The most payload bytes the topic keeps, or no bound (G055 C8): past it,
+    /// the commit that appends removes the oldest messages.
+    pub retain_bytes: Option<u64>,
     /// Whether, and how often, an anonymous caller may append.
     pub public: Option<PublicAppend>,
 }
@@ -43,6 +46,7 @@ pub struct TopicDeclaration {
 const ENTITY: &str = "topic";
 const FIELD_RETAIN: &str = "retain";
 const FIELD_MAX_BYTES: &str = "max_bytes";
+const FIELD_RETAIN_BYTES: &str = "retain_bytes";
 const FIELD_PUBLIC_RATE: &str = "public_rate";
 const FIELD_PUBLIC_PER: &str = "public_per";
 
@@ -85,6 +89,9 @@ impl TopicDeclaration {
         if let Some(max) = self.max_bytes {
             fields.insert(FIELD_MAX_BYTES.to_owned(), integer(max));
         }
+        if let Some(kept) = self.retain_bytes {
+            fields.insert(FIELD_RETAIN_BYTES.to_owned(), integer(kept));
+        }
         if let Some(public) = self.public {
             fields.insert(FIELD_PUBLIC_RATE.to_owned(), integer(public.rate));
             fields.insert(FIELD_PUBLIC_PER.to_owned(), Value::Duration(public.per));
@@ -117,6 +124,7 @@ impl TopicDeclaration {
         Ok(Self {
             retain: duration(fields, FIELD_RETAIN)?,
             max_bytes: positive(fields, FIELD_MAX_BYTES)?,
+            retain_bytes: positive(fields, FIELD_RETAIN_BYTES)?,
             public,
         })
     }

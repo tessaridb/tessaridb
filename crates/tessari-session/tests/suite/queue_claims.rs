@@ -1097,3 +1097,161 @@ fn a_strict_queue_in_a_graph_can_be_both_ends_of_one_edge() {
     let held = run(&mut session, "USE CONSUMER 'planner'; CLAIM tasks:'a';");
     assert_eq!(claimed(&held), vec!["a".to_owned()]);
 }
+
+/// A store with `prod.shop` selected and nothing in it.
+fn empty(store: &Store) -> Session<'_> {
+    let mut session = Session::new(store);
+    session
+        .run("DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;")
+        .unwrap();
+    session
+}
+
+/// The access path a claim reported.
+fn path_of(outcome: &Outcome) -> String {
+    match outcome {
+        Outcome::Records { plan, .. } => format!("{:?}", plan.access),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// `PRIORITY BY p` hands out the greatest `p` first, ties in arrival order, and
+/// the records without a `p` after every record that has one (G055 C8) — with a
+/// value index on `p` and without one, the same records in the same order.
+#[test]
+fn a_priority_queue_hands_out_the_greatest_first_and_ties_in_arrival_order() {
+    for indexed in [false, true] {
+        let store = store();
+        let mut session = empty(&store);
+        run(&mut session, "DEFINE QUEUE jobs TIMEOUT 30s PRIORITY BY p;");
+        if indexed {
+            run(&mut session, "DEFINE INDEX by_p ON jobs FIELDS p;");
+        }
+        for (id, p) in [
+            (1, "1"),
+            (2, "5"),
+            (3, "NONE"),
+            (4, "5"),
+            (5, "3"),
+            (6, "NONE"),
+        ] {
+            run(&mut session, &format!("CREATE jobs:{id} = {{ p: {p} }};"));
+        }
+        let first = run(&mut session, "CLAIM 2 FROM jobs;");
+        assert_eq!(claimed(&first), vec!["2", "4"], "indexed {indexed}");
+        assert_eq!(
+            path_of(&first),
+            if indexed { "Ordered" } else { "Scan" },
+            "indexed {indexed}"
+        );
+        let rest = run(&mut session, "CLAIM 10 FROM jobs;");
+        assert_eq!(
+            claimed(&rest),
+            vec!["5", "1", "3", "6"],
+            "indexed {indexed}"
+        );
+    }
+}
+
+/// A multiplicative generator, so a run is a function of its seed.
+struct Rolls(u64);
+
+impl Rolls {
+    fn below(&mut self, bound: u64) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (self.0 >> 33).checked_rem(bound).unwrap_or(0)
+    }
+}
+
+/// Random priorities, some absent, claimed a few at a time with releases in
+/// between: the indexed queue, the unindexed one and a model agree on every
+/// claim — and the indexed one is served by its index (the control arm).
+#[test]
+fn a_priority_claim_equals_a_model_with_and_without_an_index() {
+    for seed in 0..6_u64 {
+        let plain = store();
+        let indexed = store();
+        let mut sessions = [empty(&plain), empty(&indexed)];
+        for session in &mut sessions {
+            run(session, "DEFINE QUEUE jobs TIMEOUT 1h PRIORITY BY p;");
+        }
+        run(&mut sessions[1], "DEFINE INDEX by_p ON jobs FIELDS p;");
+        let mut rolls = Rolls(seed);
+        let mut model: Vec<(Option<u64>, u64)> = Vec::new();
+        for id in 1..=40_u64 {
+            let p = (rolls.below(5) != 0).then(|| rolls.below(6));
+            let written = p.map_or("NONE".to_owned(), |p| p.to_string());
+            for session in &mut sessions {
+                run(session, &format!("CREATE jobs:{id} = {{ p: {written} }};"));
+            }
+            model.push((p, id));
+        }
+        // Greatest first, absent last, ties by identity.
+        model.sort_by(|(left_p, left_id), (right_p, right_id)| {
+            right_p.cmp(left_p).then(left_id.cmp(right_id))
+        });
+        let mut expected = model.into_iter().map(|(_, id)| id.to_string());
+        let mut served = false;
+        loop {
+            let take = usize::try_from(rolls.below(4) + 1).unwrap();
+            let outcomes: Vec<Outcome> = sessions
+                .iter_mut()
+                .map(|session| run(session, &format!("CLAIM {take} FROM jobs;")))
+                .collect();
+            let wanted: Vec<String> = expected.by_ref().take(take).collect();
+            assert_eq!(claimed(&outcomes[0]), wanted, "seed {seed}: scan");
+            assert_eq!(claimed(&outcomes[1]), wanted, "seed {seed}: index");
+            served |= path_of(&outcomes[1]) == "Ordered";
+            if wanted.is_empty() {
+                break;
+            }
+        }
+        assert!(served, "seed {seed}: the index never served a claim");
+    }
+}
+
+/// `NOT BEFORE due` holds a record back until its instant (G055 C8), the
+/// targeted claim included; a value that is not an instant is no delay.
+#[test]
+fn a_record_not_due_yet_is_not_handed_out() {
+    let store = store();
+    let mut session = empty(&store);
+    run(
+        &mut session,
+        "DEFINE QUEUE jobs TIMEOUT 30s NOT BEFORE due; \
+         CREATE jobs:1 = { due: time::from_unix(time::unix(time::now()) + 3600) }; \
+         CREATE jobs:2 = { due: time::from_unix(time::unix(time::now()) - 60) }; \
+         CREATE jobs:3 = { due: 'tomorrow' }; \
+         CREATE jobs:4 = { };",
+    );
+    assert_eq!(
+        claimed(&run(&mut session, "CLAIM 10 FROM jobs;")),
+        vec!["2", "3", "4"]
+    );
+    assert!(claimed(&run(&mut session, "CLAIM jobs:1;")).is_empty());
+    // Moving the instant into the past makes it due.
+    run(
+        &mut session,
+        "UPDATE jobs:1 SET due = time::from_unix(time::unix(time::now()) - 1);",
+    );
+    assert_eq!(claimed(&run(&mut session, "CLAIM jobs:1;")), vec!["1"]);
+}
+
+/// A queue declared with both is described with both, so a script restores it.
+#[test]
+fn a_queue_is_described_with_its_priority_and_its_delay() {
+    let store = store();
+    let mut session = empty(&store);
+    run(
+        &mut session,
+        "DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 3 PRIORITY BY p NOT BEFORE due;",
+    );
+    let described = format!("{:?}", run(&mut session, "INFO FOR TABLE jobs;"));
+    assert!(
+        described.contains("DEFINE QUEUE jobs TIMEOUT 30s ATTEMPTS 3 PRIORITY BY p NOT BEFORE due"),
+        "{described}"
+    );
+}

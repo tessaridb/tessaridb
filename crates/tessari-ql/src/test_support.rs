@@ -138,6 +138,11 @@ fn erase_statement(statement: &mut Statement) {
                 erase_written(default);
             }
         }
+        // An event's condition and body are text, as a view's read is.
+        StatementKind::DefineEvent { name, table, .. } | StatementKind::DropEvent { name, table } => {
+            erase_name(name);
+            erase_table(table);
+        }
         StatementKind::DefineIndex {
             name,
             table,
@@ -378,7 +383,9 @@ fn erase_statement(statement: &mut Statement) {
             erase_name(name);
             erase_table(table);
         }
-        StatementKind::DropTable { table } | StatementKind::CheckTable { table } => {
+        StatementKind::DropTable { table }
+        | StatementKind::CheckTable { table }
+        | StatementKind::AnalyzeTable { table } => {
             erase_table(table);
         }
         StatementKind::Relate {
@@ -716,6 +723,7 @@ fn erase_expr(expr: &mut Expr) {
         ExprKind::Literal(_) | ExprKind::Parameter(_) => {}
         ExprKind::Path(path) => erase_path(path),
         ExprKind::Not(inner) | ExprKind::Negate(inner) => erase_expr(inner),
+        ExprKind::Route { value, .. } => erase_expr(value),
         ExprKind::If {
             condition,
             then,

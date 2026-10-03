@@ -107,6 +107,18 @@ because renumbering after data exists is a full rebuild.
 | `0x3d` | `LogStart` | `meta` | implemented |
 | `0x3e` | `LogRetention` | `meta` | implemented |
 | `0x3f` | `ServedReach` | `meta` | implemented — the reach this node's upstream last served it under; see §6.2 |
+| `0x40` | `IndexStatistics` | `index` | implemented — one value index summarised for the planner on this node (G055); never in the log |
+| `0x41` | `IndexChanges` | `index` | implemented — entries one value index has gained or lost on this node (G055); never in the log |
+| `0x42` | `SearchSurface` (surface forms of stemmed terms) | `index` | implemented — see §6.2b-6 |
+| `0x43` | `TopicBytes` (payload bytes a size-retained topic holds) | `index` | implemented — see §6.2d |
+
+`0x40` and `0x41` open a fifth family, `0x4_`: what the planner keeps about an
+index. Both keys are an index prefix with no suffix (`<tag> <namespace:u32>
+<database:u32> <table:u32> <index:u32>`), are cleared with the index's entries,
+and decide which access path a read takes and never which records it returns.
+`0x42` sits in that family by number only: it is a search index's derived
+entry, written with its postings like `0x1f`, not a planner summary. `0x43`
+is a topic's, beside `0x1e`, likewise by number only.
 
 ### 3c. The spatial entry
 
@@ -584,13 +596,20 @@ counted      <frequency:u32> <length:u32>             -- the default
 located      <frequency:u32> <length:u32> <flags:u8>
              [<ordinal:u32> × frequency]              -- flags & 1: POSITIONS
              [<start:u32> <end:u32> × frequency]      -- flags & 2: OFFSETS
+             [<count:u8> (<frequency:u32> <length:u32>) × count]  -- flags & 4: FIELDS
 ```
 
 `frequency` is the term's occurrences in the record and `length` the record's
 token count, both with repeats. An ordinal is the token's index in the field's
 analysed token list, ascending; a range is the token's half-open byte span in the
-text. A flags byte of zero, a bit other than these two, or a list that is not
+text. A flags byte of zero, a bit other than these three, or a list that is not
 exactly `frequency` entries long is refused as malformed rather than read past.
+
+`FIELDS` is a search member's (from `0.22.0-beta`): per member field in
+declaration order, the term's occurrences in that field and that field's token
+count, so a `FROM SEARCH` decides and scores BM25F from its postings alone. A
+member written before it holds the counted form, and is read from its records'
+text as it always was.
 
 ### 6.2b `SearchStatistics` — keyspace `index`
 
@@ -619,10 +638,10 @@ value  <documents:u64> <terms:u64> [<field terms:u64> × fields]
 
 The two forms are told apart by length — 16 bytes for a field index, 16 + 8 per
 field for a member — and a payload that is not a whole number of totals is
-refused. `terms` is still the sum. A member's postings (§6.2a) are the counted
-form, its frequency and length totals over all its fields, so every posting
-reader reads them unchanged; the per-field numbers a BM25F score needs are taken
-from the record's text when the record is scored.
+refused. `terms` is still the sum. A member's postings (§6.2a) carry the
+frequency and length totals over all its fields, so every posting reader reads
+them unchanged, and from `0.22.0-beta` the per-field numbers a BM25F score needs
+beside them (`FIELDS`).
 
 ### 6.2b-4 `SearchTerm` — keyspace `index`
 
@@ -687,6 +706,26 @@ The entry with an **empty** suffix and an empty term is a marker the index build
 writes: it says the suffixes are complete for this index. An index built before
 this kind existed has none, and an infix over it is answered by the scan rather
 than by a walk that would miss its older terms. `REBUILD INDEX` writes it.
+
+### 6.2b-6 `SearchSurface` — keyspace `index`
+
+```
+key    <0x42> <namespace:u32> <database:u32> <table:u32> <index:u32> <surface:variable> <term:variable>
+value  <records:u64>
+```
+
+One entry per distinct pair of a **surface form** — a token after every filter
+of the analyzer but its stemmers — and the term the stemmer made of it, for the
+pairs where the two differ, counting the records holding that pair. Settled in
+the batch that moves the postings, and deleted when the count reaches zero. A
+fuzzy word (`MATCHES FUZZY`) walks the surfaces sharing its first two characters
+and asks the postings for the terms of the ones within its edit budget, so a
+misspelling is measured against what the text held rather than its stem. A chain
+without a stemmer writes none: there every term is its own surface.
+
+The entry with an empty surface and an empty term is the marker the build writes
+(count `0`): an index built before this kind existed has none, and a fuzzy read
+over it is answered by the scan. `REBUILD INDEX` writes it.
 
 ### 6.2b-2 `VectorRecall` — keyspace `index`
 
@@ -779,6 +818,7 @@ compute with.
 <0x1c> <namespace:u32> <database:u32> <table:u32> <position:u64> <record-id>          → empty
 <0x1d> <namespace:u32> <database:u32> <table:u32> <record-id> <position:u64>          → empty
 <0x1e> <namespace:u32> <database:u32> <table:u32>                                     → <u64>
+<0x43> <namespace:u32> <database:u32> <table:u32>                                     → <u64>
 ```
 
 `0x1a` files each record version that carries an expiry by the millisecond it
@@ -789,7 +829,10 @@ and `0x1d` file each message of a topic by its position and by its identity —
 the first serves a read after a position, the second the removal of a message,
 which does not carry its position. `0x1e` holds the last position the topic has
 given and is never removed, so a topic that retention has emptied does not start
-numbering again from 1.
+numbering again from 1. `0x43` holds how many payload bytes a topic declared
+`RETAIN BYTES` holds, written only for such a topic so its count is complete
+from the first message; a count that is absent is recounted from `0x1c` and the
+messages rather than read as zero (G055 C8).
 
 Every one of them is written in the batch of the record it describes, on the
 commit and on a follower's apply, and none is carried in the log.

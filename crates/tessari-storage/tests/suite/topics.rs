@@ -116,3 +116,77 @@ fn a_replica_holds_the_same_messages_positions_and_readers() {
     );
     assert_eq!(readers(&replica), readers(&source));
 }
+
+/// A size-retained topic's evictions are deletes in the appending commit's log
+/// record, so a replica that applies the log holds the same messages, the same
+/// positions and the same byte count without deciding anything (G055 C8).
+#[test]
+fn a_replica_holds_what_a_size_retention_kept() {
+    let source_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let source = Store::open(Arc::clone(&source_backend)).unwrap();
+    let mut transaction = source.begin().unwrap();
+    let mut catalog = Catalog::new(&mut transaction);
+    let namespace = catalog.create_namespace("prod").unwrap();
+    let database = catalog.create_database(namespace.id, "app").unwrap();
+    let topic = catalog
+        .create_table(
+            namespace.id,
+            database.id,
+            "sized",
+            TableShape {
+                kind: TableKind::Topic(TopicDeclaration {
+                    retain_bytes: Some(64),
+                    ..TopicDeclaration::default()
+                }),
+                ..TableShape::default()
+            },
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+    for n in 1..=12 {
+        let mut transaction = source.begin().unwrap();
+        transaction.put(
+            RecordAddress::new(namespace.id, database.id, topic.id, RecordId::Int(n)),
+            encode_payload(&Value::from("a message of some length")).into_bytes(),
+        );
+        transaction.commit().unwrap();
+    }
+    let replica_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let replica = Store::open(Arc::clone(&replica_backend)).unwrap();
+    crate::replay(&source, &replica);
+
+    let messages = |store: &Store| {
+        store
+            .begin()
+            .unwrap()
+            .topic_after(namespace.id, database.id, topic.id, 0, 100)
+            .unwrap()
+            .messages
+            .into_iter()
+            .map(|message| message.position)
+            .collect::<Vec<_>>()
+    };
+    let kept = messages(&source);
+    assert!(!kept.is_empty() && kept.len() < 12, "kept {kept:?}");
+    assert_eq!(kept.last(), Some(&12));
+    assert_eq!(messages(&replica), kept);
+    for kind in [
+        KeyKind::TopicOffset,
+        KeyKind::TopicEntry,
+        KeyKind::TopicHead,
+        KeyKind::TopicBytes,
+    ] {
+        let held = entries(&source_backend, kind);
+        assert!(!held.is_empty(), "{kind:?} holds nothing on the writer");
+        assert_eq!(entries(&replica_backend, kind), held, "{kind:?}");
+    }
+    let bytes = |store: &Store| {
+        store
+            .begin()
+            .unwrap()
+            .topic_bytes(namespace.id, database.id, topic.id)
+            .unwrap()
+    };
+    assert!(bytes(&source) <= 64);
+    assert_eq!(bytes(&replica), bytes(&source));
+}

@@ -547,6 +547,40 @@ pub enum Error {
         /// Where it was written.
         span: Span,
     },
+    /// A materialized view's read depends on something its source table's
+    /// changes do not cover (ADR-0109 D4).
+    ///
+    /// Refused where the view is declared: kept current from one table's
+    /// changes, the stored rows would go stale with no change in the feed to say
+    /// so, and nothing would be in an error state.
+    #[error(
+        "a materialized view cannot {what} (at {span}): it is kept current from one table's changes"
+    )]
+    MaterializedShape {
+        /// What the read does that a kept view cannot.
+        what: &'static str,
+        /// Where the view was declared.
+        span: Span,
+    },
+    /// A materialized view read by somebody who may read only some of its
+    /// source table's fields (ADR-0109 D7).
+    ///
+    /// A plain view re-runs its read with the caller's grants, so a hidden field
+    /// is simply absent. A kept view's rows were computed already and cannot be
+    /// redacted after the fact, so the read is refused rather than answered from
+    /// fields the caller may not see.
+    #[error(
+        "`{view}` is kept from `{table}`, which this user may read only in part (at {span}) — \
+         read `{table}` instead, or ask for its whole read"
+    )]
+    MaterializedFromHidden {
+        /// The view named.
+        view: String,
+        /// Its source table.
+        table: String,
+        /// Where the view was named.
+        span: Span,
+    },
     /// A chain of views was expanded as far as the store will follow it.
     ///
     /// A view naming a view naming a view, past the depth this build accepts —
@@ -935,6 +969,39 @@ pub enum Error {
         /// The first edge table in the traversal, when one was named.
         table: String,
         /// Where the traversal was written.
+        span: Span,
+    },
+
+    /// A weighted path met an edge whose weight is not a cost (G055 W6).
+    ///
+    /// A weight that is absent drops the edge — absence narrows — but one that is
+    /// not a number, or is below zero, is a mistake in the data the path would
+    /// otherwise answer around: a negative step makes "the cheapest path" a walk
+    /// that loops, and every shortest-path method refuses it.
+    #[error(
+        "`WEIGHT {field}` met an edge whose `{field}` is {found}, and a step's cost is a number of zero or more (at {span})"
+    )]
+    PathWeight {
+        /// The weight field.
+        field: String,
+        /// What it held.
+        found: String,
+        /// Where the path was written.
+        span: Span,
+    },
+
+    /// `PATH TO` over an edge table rather than a declared edge kind (G055 W6).
+    ///
+    /// A path search walks backwards as well as forwards, which is the adjacency
+    /// a declared graph keeps beside each node in both directions; an edge table
+    /// is a set of records found through an index.
+    #[error(
+        "`PATH TO` walks a declared edge kind — `{table}` is an edge table; declare the graph with `DEFINE EDGE … IN <graph>` (at {span})"
+    )]
+    PathOverEdgeTable {
+        /// The edge table named.
+        table: String,
+        /// Where it was named.
         span: Span,
     },
 
@@ -1809,6 +1876,53 @@ pub enum Error {
     )]
     NotSearched {
         /// The call.
+        span: Span,
+    },
+
+    /// An event of this name is already defined on the table (ADR-0110).
+    #[error("an event named `{event}` is already defined on `{table}` (at {span})")]
+    EventExists {
+        /// The event.
+        event: String,
+        /// The table.
+        table: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// An event's body refused, so the write that ran it is refused (ADR-0110
+    /// D4). The cause is the body's own refusal, unchanged.
+    #[error("event `{event}` on `{table}` refused the write: {cause}")]
+    EventFailed {
+        /// The event whose body refused.
+        event: String,
+        /// The table it is defined on.
+        table: String,
+        /// What the body refused with.
+        cause: Box<Error>,
+    },
+
+    /// A chain of events ran deeper than the limit (ADR-0110 D5).
+    #[error(
+        "event `{event}` would run {limit} events deep — a chain of events that writes back into itself; give the body a `WHEN` that excludes its own change"
+    )]
+    EventDepth {
+        /// The event that would have run past the limit.
+        event: String,
+        /// The limit.
+        limit: u8,
+    },
+
+    /// An event on a table kind that cannot carry one (ADR-0110 D9).
+    #[error(
+        "`{table}` is a {kind}, and only tables, collections and edge tables carry events (at {span})"
+    )]
+    EventOnKind {
+        /// The table.
+        table: String,
+        /// Its kind.
+        kind: &'static str,
+        /// Where it was named.
         span: Span,
     },
 

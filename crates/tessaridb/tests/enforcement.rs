@@ -946,7 +946,19 @@ const TABLES: &[Table] = &[
         // Re-classification trigger, and it is sharper than its neighbours': a
         // writer reachable from a session or a route would let a caller forge
         // the acknowledgement a `MAJORITY` write is released on.
-        expected: 61,
+        //
+        // 62 since the sign-in failure counts are the store's rather than the
+        // process's (Q-852): `Store::attempts`. Classified **not a data path**,
+        // on `admit_public_append`'s ground: it hands out a table of
+        // per-name miss counts in this process's memory and reads or writes no
+        // record, catalog entry or grant. Its callers are the four doors that
+        // try a credential — `Session::sign_in`, the password change, the vault
+        // passphrase's `guessed`, and the peer door's `Origin::attempted` after
+        // the peer proved its credential — each asking before it spends a
+        // derivation. Re-classification trigger: any other caller reachable
+        // from a session or a route, because `succeeded` hands a guesser its
+        // allowance back.
+        expected: 62,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1136,7 +1148,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 142 since the console builds a secured cluster (G054 W8c):
     // `Db::presenting`, exempt, classified above.
-    assert_eq!(total, 142, "the counted tables no longer sum to 142");
+    //
+    // 143 since the sign-in failure counts are the store's (Q-852):
+    // `Store::attempts`, not a data path, classified above.
+    assert_eq!(total, 143, "the counted tables no longer sum to 143");
 }
 
 /// Every `.rs` file under a directory.

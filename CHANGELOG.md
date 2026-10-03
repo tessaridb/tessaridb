@@ -12,6 +12,174 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.22.0-beta — 2026-10-03
+
+### Added
+
+- **Events: logic that runs with a write** (G055, ADR-0110). `DEFINE EVENT name
+  ON t [FOR CREATE, UPDATE, DELETE] [WHEN cond] THEN stmt` — or `THEN { … }` for
+  several — runs after each write of a record of `t`, inside the writer's
+  transaction and authorized as the writer, with `$event`, `$before`, `$after`
+  (as the writer may read them) and `$id` bound. Every caller-driven write runs
+  it: statements, scripts, clients, Kafka and topic consumers; replication, a
+  restore and the engine's own writes never do. A refusal in the body — `THROW`
+  included — refuses the write as `EventFailed`; a chain deeper than 16 is
+  `EventDepth`; vaults, topics, queues, views and the other stores with a write
+  path of their own refuse an event with `EventOnKind`. Work after the commit is
+  a topic appended in the body, consumed by a group or `DEFINE TOPIC CONSUMER`.
+  `INFO FOR TABLE` lists events; `BACKUP SCRIPT` writes them after the data, so a
+  restore does not run them over records it replays. A table without events
+  writes at the same cost (9.4 µs per write either way); one audit event took a
+  write from 10.0 to 34.1 µs.
+
+- **A topic that keeps at most so many bytes** (G055): `DEFINE TOPIC t RETAIN
+  BYTES n`, beside `RETAIN 7d`. An append past it removes the oldest messages in
+  the same commit, as deletes in its log record, so followers apply rather than
+  decide and the total is exact under concurrent appenders; a reader passed over
+  gets the `lapsed` note. A message larger than `n` is `TopicMessageTooLarge`; a
+  commit whose own messages outgrow `n` is `TopicRetainExceeded`. `INFO FOR TOPIC`
+  reports `retain_bytes` and `bytes`.
+
+- **Queue priority and delayed delivery** (G055): `DEFINE QUEUE q TIMEOUT 30s
+  PRIORITY BY f NOT BEFORE g`. A claim takes the greatest `f` first, ties in
+  arrival order, records without `f` last — through a value index on `f` when
+  one is declared (the claim reports `ordered`), by a walk otherwise, the same
+  records either way. A record whose `g` is an instant after now is not handed
+  out, by `CLAIM FROM` or `CLAIM q:id`.
+
+- **A route into a value**: `$after.total`, `$order.lines[0].sku`. A step that
+  reaches nothing answers `NONE`, so `$before.total ?? 0` reads a missing value
+  as zero.
+
+- The console's statement scanner and the specification's example extractor
+  read a `;` inside braces as part of the statement — an event body typed over
+  several lines is submitted whole.
+
+- **A filtered nearest read is served by the vector graph** (G055). `WHERE …
+  ORDER BY vector::cosine|euclidean(f, $q) LIMIT k APPROXIMATE` walks the graph,
+  admitting a record only after testing the whole condition on it at the
+  reader's snapshot; it answers `approximate` with the note, every record passing
+  the condition and the page full. A condition an index narrows to no more
+  records than the walk would visit is answered exactly instead, and a walk that
+  cannot fill the page gives the read back to the exact path with a `fell-back`
+  note — never a short page. `EXPLAIN` names the graph. Recall of the exact
+  filtered ten measured at 98 %, 99.9 % and 100 % for conditions admitting a
+  half, a tenth and a hundredth of 20 000 records.
+
+- **A quantized vector index** (G055): `DEFINE INDEX … VECTOR <distance>
+  QUANTIZED` and `DEFINE VECTOR … QUANTIZED` keep each vector as one byte per
+  component over its own range — no training, the same codes on every replica.
+  A walk over one asks for eight times the `LIMIT` and the read ranks those
+  candidates by the exact distance from each record's own vector. `INFO FOR
+  VECTOR` reports `quantized`, `vector_bytes`, `node_bytes` and `nodes`, read off
+  the stored nodes: on 20 000 × 32-d vectors 260 → 52 bytes per vector and
+  98.4 % → 95.6 % recall@10 at the same walk time. A full-precision node keeps
+  the bytes it always had.
+
+- **A planner that estimates** (G055). `ANALYZE TABLE t` walks each value
+  index's entries once and keeps, on the node, its entry count, distinct values
+  per leading run of fields, its sixteen most common values and sixty-four
+  equi-depth buckets over its first field; a serving node takes them itself as
+  they go stale, and an index's change counter sets a statistic aside once a
+  tenth of its entries (at least a thousand) have changed. A candidate the shape
+  could not size is estimated from them: two indexes on one condition are ranked
+  by the records each would produce, and an index that would return most of the
+  table loses to it on the estimate without the count it used to take. `EXPLAIN`
+  reports `estimate` and `estimated_by` (`statistics` or `probe`), withheld when
+  the index reads a field the caller may not see. Statistics are a node's own and
+  never travel in the log or a backup. Measured on 50 000 records (memory,
+  release): an equality read on a tenth of the table with `LIMIT 10` 7.69 ms →
+  32 µs, the whole-table read the guard declines 17.3 → 16.0 ms, estimates within
+  1 % on equalities and inside one bucket on ranges.
+
+- **Materialized views** (G055, ADR-0109). `DEFINE VIEW v MATERIALIZED AS
+  SELECT …` keeps the read's answer as records, filled in the declaring
+  transaction and brought current by every serving node from the source table's
+  change feed in the writer's order — a batch recomputes, with the read engine,
+  the records its changes touched (or the whole read for a view that groups,
+  orders, bounds or splits) and writes rows and version in one commit, so the
+  rows always equal `… VERSION <version>`. `INFO FOR TABLE` reports `version`,
+  `behind`, `rows` and `refreshed`. A read the source's changes cannot cover is
+  refused as `MaterializedShape`; a caller who may read only part of the source
+  is refused as `MaterializedFromHidden`.
+
+- **A misspelling is measured against the word the text held** (G055, Q-867).
+  A `SEARCH` index over a stemming analyzer keeps a surface dictionary — each
+  word as written beside the stem it became — and `MATCHES FUZZY` (and a fuzzy
+  `FROM SEARCH`) answers a token by its stem or by its surface, so
+  `trasnactoin` finds `transaction` where it found nothing against `transact`.
+  The non-fuzzy prefix is two characters (was three), the edit budget scales with
+  the word (none below three letters, one to five, two beyond), and in a
+  `FROM SEARCH` a corrected occurrence weighs `1 / (1 + edits)` so the exact word
+  ranks first. On the documentation site's 81 judged queries the fuzzy subset
+  rose 0.548 → 0.875 NDCG@10 through `DEFINE SEARCH` and 0.106 → 0.259 through a
+  field index; all five queries that answered nothing now answer.
+
+- **`FROM SEARCH` is ranked from its postings when they can decide it** (G055,
+  Q-870). A member posting keeps each field's frequency and length, so a query of
+  terms, prefixes and infixes (with `OR`, `NOT`, synonyms and weights) is decided
+  and scored by BM25F from the postings and reads only the records it answers —
+  plan shape `search from postings` — with the same scores the text path gives.
+  Warm median on the documentation site's corpus: word queries 2.18 → 0.070 ms,
+  prefixes 3.89 → 0.093 ms, the whole set 3.22 → 0.09 ms (now below a field
+  index). A fuzzy read analyses each token of a read once, not once per record.
+
+- **Chinese and Japanese text is searchable** (G055, Q-862): each Han ideograph
+  and Hiragana letter is a token of its own, so a quoted run of them is an exact
+  substring. n-gram filters are refused by name (`NgramFilter`).
+
+- **A space of text is searchable** (G055, Q-866): a value that is not an object
+  answers the route `value` with itself, so `DEFINE FIELD value ON kv … ANALYZER`,
+  `DEFINE INDEX … FIELDS value SEARCH` and `WHERE value MATCHES …` serve it.
+
+- **The shortest path in a declared graph** (G055). `SELECT * FROM a:1->kind->t
+  PATH TO t:9 DEPTH n [WEIGHT field]` answers the path's records start to end,
+  with a `path` note giving its steps and cost: the cheapest within `n` steps,
+  then the fewest steps, then the smallest sequence of ids, so one graph always
+  answers one path. `DEPTH` is required (`PathNeedsDepth`) and bounds the work to
+  the subgraph reachable within it, each node read once; a weighted path is
+  rounds of the cheapest way to the end within `k` steps, which a plain shortest-
+  path search cannot honour under a step cap, and they stop when a round improves
+  nothing. A weight is a number of zero or more (`PathWeight`); an edge with none
+  is no step; the edge is a declared kind (`PathOverEdgeTable`). Asserted equal,
+  path for path, to a brute force over every simple path on 40 generated graphs.
+
+### Changed
+
+- **A record read by identity is scored** (G055, Q-869): `search::score` and
+  `search::explain` over `FROM t:id` or a span answer against the table's
+  collection, the same number the table read gives; they were refused as
+  `NoSearchIndex`, naming a missing index that was not missing.
+
+- **`REBUILD INDEX` after upgrading**, for a `SEARCH` index over text holding
+  Chinese or Japanese (its old terms are whole sentences) and for any `SEARCH`
+  index or search member to gain surfaces and per-field postings. Until then a
+  fuzzy read over it is answered by the scan and a `FROM SEARCH` reads its
+  records' text — the same answers, at the old cost.
+
+- **An equality read on an index stops where its answer fills** (G055). Entries
+  under one complete value are already in record order, so the entry walk is
+  read a ramping batch at a time with the records it names and stops at the
+  bound, where it used to name every match and read each one back separately.
+  The same read unbounded, five thousand of fifty thousand records: 7.74 → 5.59 ms.
+
+- **A filtered approximate read gives up early** when its admissions show it
+  cannot fill its budget before its ceiling, so a condition too rare for the
+  graph pays a share of the walk before the exact read rather than all of it
+  (one record in a hundred: 27.9 → 22.9 ms against 16.0 ms exact; the rest is the
+  walk reading the whole graph before its first step).
+
+- **1539 conformance cases** define the language and run in the build.
+
+### Fixed
+
+- **Sign-in and passphrase misses are counted per store**, not per process. An
+  application that opened two stores had misses as `ada` at one make a user
+  called `ada` at the other wait for guesses nobody made at it; each store now
+  keeps its own failure counts, shared by every connection to it. The ceiling on
+  concurrent password checks stays one per process, since it bounds the
+  process's memory.
+
 ## 0.21.0-beta — 2026-10-03
 
 ### Added
