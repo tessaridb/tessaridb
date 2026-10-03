@@ -783,18 +783,12 @@ fn a_read_that_cannot_be_gathered_whole_is_refused_and_never_answered_in_part() 
     assert_eq!(
         not_held(refused(
             &mut follower,
-            "SELECT * FROM ledger:'h' FETCH peer;"
-        )),
-        ("ledger".to_owned(), vec![1])
-    );
-    assert_eq!(
-        not_held(refused(
-            &mut follower,
-            "SELECT * FROM other JOIN ledger ON other.total = ledger.total;"
+            "BEGIN; SELECT * FROM ledger JOIN ledger AS twin ON ledger.note = twin.note; COMMIT;"
         ))
         .0,
         "ledger"
     );
+    follower.run("CANCEL;").ok();
     assert_eq!(pair.asked(), Vec::<Question>::new(), "none of these asked");
 
     let mut stranded = signed_in(&pair.follower, "reader").gathering(Arc::new(Unreachable));
@@ -831,6 +825,99 @@ fn a_read_that_cannot_be_gathered_whole_is_refused_and_never_answered_in_part() 
         }
         other => panic!("expected GatheredTooMuch, got {other:?}"),
     }
+}
+
+/// A leader whose `pairs` is split at 'g' and 'p' — `a`, `b` in the first
+/// shard, `h`, `k` in the second, `z` in the third — and `narrow` reads only
+/// its `k`, and a follower of the middle shard gathering from it.
+fn pairs() -> Pair {
+    let leader = leader();
+    signed_in(&leader, "root")
+        .run(
+            "USE NAMESPACE prod; USE DATABASE shop;\n\
+             DEFINE TABLE pairs (k int, secret int) IDENTITY uuid SPLIT AT 'g', 'p';\n\
+             CREATE pairs:'a' = { k: 1, secret: 1 }; CREATE pairs:'b' = { k: 2, secret: 9 };\n\
+             CREATE pairs:'h' = { k: 1, secret: 3 }; CREATE pairs:'k' = { k: 9, secret: 4 };\n\
+             CREATE pairs:'z' = { k: 3, secret: 5 };\n\
+             GRANT read ON pairs FIELDS k TO narrow;",
+        )
+        .unwrap();
+    let follower = follower_of_the_middle_of(&leader, "pairs");
+    pair_of(leader, follower)
+}
+
+/// G057 C2 — a join side and a `FETCH` into a shard this node lacks are
+/// gathered, not refused: the answer is the whole node's, and a join's far side
+/// travels narrowed to the keys the near side holds.
+#[test]
+fn a_join_side_and_a_fetch_into_a_missing_shard_are_gathered() {
+    let pair = pairs();
+    let mut follower = pair.on_the_follower("reader");
+    let mut whole = pair.on_the_leader("reader");
+    let near = "SELECT * FROM (SELECT * FROM pairs:'h'..'p' LIMIT 10) AS near \
+                JOIN pairs ON near.k = pairs.k;";
+    for read in [
+        near,
+        "SELECT * FROM pairs JOIN pairs AS twin ON pairs.k = twin.k;",
+        "SELECT * FROM pairs JOIN (SELECT * FROM pairs:'h'..'p' LIMIT 10) AS near \
+         ON pairs.k = near.k;",
+    ] {
+        let (gathered, notes) = answer(&mut follower, read);
+        let (expected, _) = answer(&mut whole, read);
+        assert!(!expected.is_empty(), "{read}: the control answered nothing");
+        assert_eq!(gathered, expected, "{read}");
+        assert!(
+            notes.iter().any(|note| note.kind() == "gathered"),
+            "{read}: {notes:?}"
+        );
+        pair.sent();
+    }
+    // The near side holds k 1 and 9; of the far shards this node lacks only
+    // `a` (k 1) matches, and it travels alone.
+    let (rows, _) = answer(&mut follower, near);
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert_eq!(pair.sent(), 1, "the far side was not narrowed");
+
+    let pair = self::pair();
+    let mut follower = pair.on_the_follower("reader");
+    let mut whole = pair.on_the_leader("reader");
+    for read in [
+        "SELECT * FROM ledger:'h' FETCH peer;",
+        "SELECT * FROM ledger FETCH peer;",
+    ] {
+        let (gathered, notes) = answer(&mut follower, read);
+        assert_eq!(gathered, answer(&mut whole, read).0, "{read}");
+        assert!(
+            format!("{gathered:?}").contains("\"peer\": Object({\"note\": String(\"a\")"),
+            "{read}: the reference was not followed: {gathered:?}"
+        );
+        assert!(
+            notes.iter().any(|note| note.kind() == "gathered"),
+            "{read}: {notes:?}"
+        );
+        pair.sent();
+    }
+    // A reference into the missing shard is fetched alone.
+    answer(&mut follower, "SELECT * FROM ledger:'h' FETCH peer;");
+    assert_eq!(pair.sent(), 1, "the referenced record alone");
+}
+
+/// G057 C2 — the far side of a join is narrowed under the asker's
+/// visibility: a key field this session may not read matches nothing, on the
+/// leader as here, and nothing of it travels.
+#[test]
+fn a_join_on_a_field_this_session_cannot_read_matches_nothing_and_sends_nothing() {
+    let pair = pairs();
+    let mut follower = pair.on_the_follower("narrow");
+    let mut whole = pair.on_the_leader("narrow");
+    // `secret` of `a` is 1, a key the near side holds — if the leader tested
+    // it unredacted, `a` would travel.
+    let read = "SELECT * FROM (SELECT * FROM pairs:'h'..'p' LIMIT 10) AS near \
+                JOIN pairs ON near.k = pairs.secret;";
+    let (gathered, _) = answer(&mut follower, read);
+    assert_eq!(gathered, answer(&mut whole, read).0, "{read}");
+    assert!(gathered.is_empty(), "{gathered:?}");
+    assert_eq!(pair.sent(), 0, "{read}: a hidden key let records travel");
 }
 
 /// S1.5 — a field this session may not read is as absent from a gathered

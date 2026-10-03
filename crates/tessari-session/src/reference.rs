@@ -81,12 +81,13 @@ impl Session<'_> {
         records: &mut [(RecordId, Value)],
         routes: &[FieldPath],
         context: Context,
+        notes: &mut Vec<crate::outcome::Note>,
     ) -> Result<()> {
         let wanted = referenced_in(records, routes);
         if wanted.is_empty() {
             return Ok(());
         }
-        let seen = self.resolve_each(transaction, context, &wanted)?;
+        let seen = self.resolve_each(transaction, context, &wanted, notes)?;
         for (_, record) in records {
             for route in routes {
                 let Some(held) = route.path.resolve_mut(record) else {
@@ -127,32 +128,48 @@ impl Session<'_> {
     /// ask. A reference carries a table and an id and no tenancy, so every one of
     /// them resolves in the read's own database — which is also why a fetch
     /// cannot reach across one (ADR-0008).
+    ///
+    /// A reference into a table this node holds only part of, landing in a part
+    /// it lacks, is fetched from that shard's leader (G057 C2) — read as nothing
+    /// here it would be a record that is not there (G031 S3.3, Q-792) — and
+    /// refused `NotHeldHere` where gathering is withheld.
     fn resolve_each(
         &self,
         transaction: &mut Transaction<'_>,
         context: Context,
         wanted: &[(TableId, RecordId)],
+        notes: &mut Vec<crate::outcome::Note>,
     ) -> Result<BTreeMap<(TableId, RecordId), Value>> {
         let mut visible: BTreeMap<TableId, crate::redact::Visible> = BTreeMap::new();
-        // A reference into a table this node holds only part of, landing in a
-        // part it lacks, would resolve to nothing and read as a record that is
-        // not there (G031 S3.3, Q-792).
-        for (table, id) in wanted {
-            self.refuse_reading_a_part(transaction, *table, crate::evaluate::Part::Record(id))?;
-        }
         for (table, _) in wanted {
             if !visible.contains_key(table) {
                 let held = self.visible_in(transaction, *table)?;
                 visible.insert(*table, held);
             }
         }
-        let addresses: Vec<RecordAddress> = wanted
+        let mut here = Vec::with_capacity(wanted.len());
+        let mut payloads = Vec::with_capacity(wanted.len());
+        for (table, id) in wanted {
+            match self.gathered_record(transaction, *table, id, notes)? {
+                Some(found) => payloads.push(found.into_iter().next().map(|(_, held)| held)),
+                None => {
+                    here.push(payloads.len());
+                    payloads.push(None);
+                }
+            }
+        }
+        let addresses: Vec<RecordAddress> = here
             .iter()
+            .filter_map(|at| wanted.get(*at))
             .map(|(table, id)| {
                 RecordAddress::new(context.namespace, context.database, *table, id.clone())
             })
             .collect();
-        let payloads = transaction.get_each(&addresses)?;
+        for (at, held) in here.iter().zip(transaction.get_each(&addresses)?) {
+            if let Some(slot) = payloads.get_mut(*at) {
+                *slot = held;
+            }
+        }
 
         let mut found = BTreeMap::new();
         for ((table, id), payload) in wanted.iter().zip(payloads) {

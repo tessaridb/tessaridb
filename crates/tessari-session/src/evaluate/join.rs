@@ -96,17 +96,27 @@ impl Session<'_> {
         // its own on the way through.
         let mut probed = None;
         let mut built: BTreeMap<Value, Vec<(RecordId, Value)>> = BTreeMap::new();
+        // A far side on a split table this node holds only part of is gathered
+        // once the near side has said which keys it needs (G057 C2).
+        let mut far_gathered = None;
         match right {
             JoinSide::Table { table, .. } => {
                 let (context, id) = self.resolve_table(transaction, table)?;
-                self.refuse_reading_a_part(transaction, id, Part::Whole)?;
                 let visible = self.visible_in(transaction, id)?;
-                match ordered_index_on(transaction, id, right_key)? {
-                    Some(index) => probed = Some((index, visible, context, id)),
-                    None => {
-                        let found =
-                            transaction.scan_table(context.namespace, context.database, id)?;
-                        collect_by_key(&mut built, self.records_of(found, &visible)?, right_key);
+                if self.missing(transaction, id, Part::Whole)?.is_some() {
+                    far_gathered = Some((context, id, visible));
+                } else {
+                    match ordered_index_on(transaction, id, right_key)? {
+                        Some(index) => probed = Some((index, visible, context, id)),
+                        None => {
+                            let found =
+                                transaction.scan_table(context.namespace, context.database, id)?;
+                            collect_by_key(
+                                &mut built,
+                                self.records_of(found, &visible)?,
+                                right_key,
+                            );
+                        }
                     }
                 }
             }
@@ -126,10 +136,14 @@ impl Session<'_> {
         let (driving, searched) = match left {
             JoinSide::Table { table, .. } => {
                 let (context, id) = self.resolve_table(transaction, table)?;
-                self.refuse_reading_a_part(transaction, id, Part::Whole)?;
                 let visible = self.visible_in(transaction, id)?;
                 let searched = self.searched_for(transaction, id, &shown(select))?;
-                let found = transaction.scan_table(context.namespace, context.database, id)?;
+                let found = self.whole_table(
+                    transaction,
+                    (context.namespace, context.database),
+                    id,
+                    reporting.collected,
+                )?;
                 (self.records_of(found, &visible)?, searched)
             }
             JoinSide::Read { read, .. } => {
@@ -141,6 +155,25 @@ impl Session<'_> {
                 (answered.records, Searched::default())
             }
         };
+
+        if let Some((context, id, visible)) = far_gathered {
+            let keys: BTreeSet<Value> = driving
+                .iter()
+                .filter_map(|(_, record)| left_key.path.resolve(record).cloned())
+                .collect();
+            // No near key, no match: nothing of the far side is needed.
+            if !keys.is_empty() {
+                let found = self.gathered_by_keys(
+                    transaction,
+                    (context.namespace, context.database),
+                    id,
+                    (right_key, keys.into_iter().collect()),
+                    &visible,
+                    reporting.collected,
+                )?;
+                collect_by_key(&mut built, self.records_of(found, &visible)?, right_key);
+            }
+        }
 
         let mut rows = Vec::new();
         let mut left_kinds = BTreeSet::new();

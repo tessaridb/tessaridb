@@ -8970,13 +8970,22 @@ word sits in a shard it lacks.
 leader's state when it was asked, beside this node's own. The answer says so
 with the note **`gathered`**, naming the shards fetched. For the same reason a
 read **inside a transaction** or under **`VERSION`** is not gathered — a snapshot
-is what those promise — and stays refused with `NotHeldHere`, as do a join side,
-a `FETCH` into a shard the node lacks, and the read an `UPDATE` or `DELETE`
-makes: a conditional or span `DELETE` over the table, and an `UPDATE` or
+is what those promise — and stays refused with `NotHeldHere`, as does the read
+an `UPDATE` or `DELETE` makes: a conditional or span `DELETE` over the table, and an `UPDATE` or
 `DELETE` of one record in a shard the node lacks. Until `0.20.0-beta` those
 writes were not refused — they found only this node's records, so a `DELETE`
 removed that part and reported it as the whole, and a record held elsewhere
 answered `NoSuchRecord` or was deleted as though it had been there.
+
+**A join side and a `FETCH` are gathered too** (from `0.25.0-beta`; refused with
+`NotHeldHere` before). A join's near side is read whole — gathered where this
+node lacks shards — and its far side is then asked of each missing shard's
+leader for only the records whose key is one the near side holds, tested there
+after the fields this session may not read are taken away, so a hidden key
+matches nothing on the leader as it matches nothing here. A `FETCH` asks the
+leader of each referenced record's shard for that record. Both answer what the
+whole node answers, with the note `gathered`, and inside a transaction or under
+`VERSION` both are still refused, for the reason above.
 
 **`NotHeldHere` names a node holding the whole table when this node knows one**
 (from `0.20.0-beta`): a member whose `REPLICATES` covers the table's database —
@@ -9868,7 +9877,7 @@ with a doubling wait (`SignInThrottled`), its counts kept per store.
 |---|---|
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
 | **hash** sharding | shards are spans of identities, which is what keeps a span read one walk. Spreading writes by hash forfeits that order and is a second method the map can carry later, not a change to the first. §4 |
-| more of a gathered read **pushed to the shards' leaders** | a `WHERE`, a `LIMIT`, an `ORDER BY … LIMIT` over record-only keys and the folds that merge exactly (`count`, `sum`, `mean`, `min`, `max`) travel, as do `variance` and `stddev` and folds over floats (from `0.25.0-beta`, exact totals); `median`, `collect` and the counter folds gather the records and run here — they hold their group, so a state would be the values themselves — and a suggestion is withheld on a node holding part of the table. A join side and a `FETCH` are not gathered at all. §7d |
+| more of a gathered read **pushed to the shards' leaders** | a `WHERE`, a `LIMIT`, an `ORDER BY … LIMIT` over record-only keys and the folds that merge exactly (`count`, `sum`, `mean`, `min`, `max`) travel, as do `variance` and `stddev` and folds over floats (from `0.25.0-beta`, exact totals); `median`, `collect` and the counter folds gather the records and run here — they hold their group, so a state would be the values themselves — and a suggestion is withheld on a node holding part of the table. A join side (its far side narrowed to the near side's keys) and a `FETCH` are gathered from `0.25.0-beta`. §7d |
 | a change feed over a split table **on a node that does not write all of it** | a feed merges one writer's logs in that writer's order, and two writers' orders are unrelated counters — so a shard led elsewhere, or a follower, is refused by name rather than merged by a guess. Following it there needs an order across writers, and a transaction across leaders does not supply one: it commits whole, and each leader's log keeps its own count. §4 |
 | **an index serving a branch of a fused read** (`ORDER BY FUSE`) | every branch is ranked over every record that passed the `WHERE`, which is exact and costs the filtered read. A branch served from the search walk or the vector graph would stop early, and a fused order needs each branch's places down to its depth — the bound is the depth, not the `LIMIT`, and proving the walk answers the same places is its own piece of work. §5 |
 | a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |

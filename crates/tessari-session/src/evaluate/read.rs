@@ -270,7 +270,13 @@ impl Session<'_> {
             // resolves in the read's own database — which is also why a fetch
             // cannot reach across one (ADR-0008).
             let context = self.context(transaction, None, select.span)?;
-            self.follow(transaction, &mut records, &select.fetch, context)?;
+            self.follow(
+                transaction,
+                &mut records,
+                &select.fetch,
+                context,
+                &mut notes,
+            )?;
         }
         // After the fetch — a reference resolved once and then opened is the
         // same answer as one opened and then resolved n times, and cheaper — and

@@ -4794,6 +4794,32 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
     };
     let folded = format!("{:?}", records.first().map(|(_, value)| value));
     assert!(folded.contains("Integer(3)"), "{folded}");
+    // G057 C2: a join over the whole table on the node holding one shard — both
+    // sides gathered, the far one narrowed to the near side's keys — answers
+    // every pair: each of the three records has n = 1.
+    let joined = read_at(
+        GATHERING[2].0,
+        "SELECT * FROM orders JOIN orders AS twin ON orders.n = twin.n;",
+    )
+    .unwrap();
+    assert_eq!(joined.len(), 9, "{joined:?}");
+    // G057 C1 (ADR-0114): float folds over the whole table — exact totals, so
+    // the same answer however the shards fold and merge.
+    let answers = client
+        .run(
+            "USE NAMESPACE prod; USE DATABASE shop; \
+             SELECT sum(n * 0.1) AS tenths, variance(n) AS spread FROM orders;",
+            None,
+        )
+        .unwrap();
+    let Some(Answer::Records { records, .. }) = answers.last() else {
+        panic!("not records: {answers:?}");
+    };
+    let folded = format!("{:?}", records.first().map(|(_, value)| value));
+    assert!(
+        folded.contains("Float(0.30000000000000004)") && folded.contains("Float(0.0)"),
+        "{folded}"
+    );
     let in_the_middle = whole.get(1).unwrap().clone();
     assert_eq!(
         read_at(

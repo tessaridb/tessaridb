@@ -38,6 +38,7 @@ use crate::outcome::Note;
 use crate::session::Session;
 
 mod counting;
+mod sides;
 pub use counting::Counting;
 
 /// Stored records, each with its identity, in identity order.
