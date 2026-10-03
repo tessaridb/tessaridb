@@ -9,6 +9,8 @@
 pub(crate) struct Shown {
     pub(crate) clients: Option<tessari_serve::tls::Credential>,
     pub(crate) peers: Option<tessari_wire::PeerKeys>,
+    /// `--require-client-tls` was in force at start-up.
+    pub(crate) required: bool,
 }
 
 impl tessari_session::Certificates for Shown {
@@ -35,5 +37,12 @@ impl tessari_session::Certificates for Shown {
         .into_iter()
         .flatten()
         .collect()
+    }
+
+    fn clients(&self) -> tessari_session::ClientTransport {
+        tessari_session::ClientTransport {
+            tls: self.clients.is_some(),
+            required: self.required,
+        }
     }
 }

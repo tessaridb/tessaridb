@@ -89,8 +89,8 @@ function drawMine(): void {
   if (mine.length === 0) {
     const none = made("p", "faint");
     none.textContent =
-      "This node speaks plaintext on every door; a cluster accepts that only when " +
-      "--client-plaintext chose it.";
+      "This node serves its clients in the clear: --tls-cert and --tls-key would encrypt " +
+      "them, and --require-client-tls refuses to start without them.";
     at("trust-mine").appendChild(none);
     return;
   }

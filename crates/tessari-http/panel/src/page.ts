@@ -300,6 +300,18 @@ export const index = (): string =>
         "body",
         {},
         bar(),
+        // Shown on load when this page arrived in the clear from another machine:
+        // every password and token typed below then crosses the network as it is.
+        el(
+          "p",
+          { id: "clear-banner", class: "note warn", hidden: true },
+          "This console arrived without TLS from another machine: what you type here, ",
+          "passwords included, crosses the network unencrypted. Give the node ",
+          el("code", {}, "--tls-cert"),
+          " and ",
+          el("code", {}, "--tls-key"),
+          ", or reach it over an SSH tunnel to localhost.",
+        ),
         tabs(DESTINATIONS),
         // In the tab strip's own order, so the reading order of the page and the
         // order of the controls above it are one thing rather than two.

@@ -263,6 +263,14 @@ code {
 
 /* ───────────────────────────────────────────────────────────────── tabs ── */
 
+/* The console reached in the clear from another machine (ADR-0111 D3). */
+#clear-banner {
+  margin: 0;
+  max-width: none;
+  padding: var(--s-2) var(--s-5);
+  border-bottom: 1px solid var(--warn);
+}
+
 .tabs {
   padding: 0 var(--s-5);
   background: var(--surface-raised);

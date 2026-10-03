@@ -1418,6 +1418,48 @@ impl tessari_session::Certificates for Shown {
             },
         ]
     }
+
+    fn clients(&self) -> tessari_session::ClientTransport {
+        tessari_session::ClientTransport {
+            tls: true,
+            required: false,
+        }
+    }
+}
+
+/// A node serving its clients in the clear: it presents nothing, and nobody
+/// required TLS of it.
+#[derive(Debug)]
+struct Clear;
+
+/// A node told it may serve its clients over TLS only.
+#[derive(Debug)]
+struct Required;
+
+impl tessari_session::Certificates for Required {
+    fn presented(&self) -> Vec<tessari_session::Presented> {
+        Vec::new()
+    }
+
+    fn clients(&self) -> tessari_session::ClientTransport {
+        tessari_session::ClientTransport {
+            tls: true,
+            required: true,
+        }
+    }
+}
+
+impl tessari_session::Certificates for Clear {
+    fn presented(&self) -> Vec<tessari_session::Presented> {
+        Vec::new()
+    }
+
+    fn clients(&self) -> tessari_session::ClientTransport {
+        tessari_session::ClientTransport {
+            tls: false,
+            required: false,
+        }
+    }
 }
 
 /// The certificates entry of a report, as `(surface, fingerprint, expires)`.
@@ -1486,4 +1528,34 @@ fn a_node_reports_the_certificates_it_presents_beside_its_own_settings() {
 fn a_node_presenting_no_certificate_reports_an_empty_list() {
     let store = closed(&backend());
     assert_eq!(certificates(&reported(&store)), Vec::new());
+}
+
+/// How a node serves its clients is reported beside what it presents (ADR-0111
+/// D3): a plaintext node says so in its report, not only in a start line that
+/// scrolled away, and a process that serves nothing reports `null`.
+#[test]
+fn a_node_reports_how_it_serves_its_clients() {
+    let store = closed(&backend());
+    let clients = |certificates: Option<Arc<dyn tessari_session::Certificates>>| {
+        let session = owner(&store);
+        let mut session = match certificates {
+            Some(certificates) => session.presenting(certificates),
+            None => session,
+        };
+        let outcomes = session.run("INFO FOR NODE;").unwrap();
+        let Some(Outcome::Value(Value::Object(report))) = outcomes.first() else {
+            panic!("not a report: {outcomes:?}");
+        };
+        report.get("clients").cloned().expect("a clients entry")
+    };
+    let transport = |tls: bool, required: bool| {
+        Value::Object(std::collections::BTreeMap::from([
+            ("tls".to_owned(), Value::Bool(tls)),
+            ("required".to_owned(), Value::Bool(required)),
+        ]))
+    };
+    assert_eq!(clients(Some(Arc::new(Shown))), transport(true, false));
+    assert_eq!(clients(Some(Arc::new(Required))), transport(true, true));
+    assert_eq!(clients(Some(Arc::new(Clear))), transport(false, false));
+    assert_eq!(clients(None), Value::Null);
 }

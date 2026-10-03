@@ -197,6 +197,9 @@ impl Session<'_> {
             // fingerprint is the value `FINGERPRINT` pins and `REVOKE
             // CERTIFICATE` names, read off the node the way `id` is (D9).
             ("certificates".to_owned(), self.described_certificates()),
+            // Beside it, how the clients are served, so a node in the clear says
+            // so here and not only in a start line that scrolled away (ADR-0111).
+            ("clients".to_owned(), self.described_clients()),
             (
                 "cluster".to_owned(),
                 Value::Object(BTreeMap::from([
@@ -353,6 +356,19 @@ impl Session<'_> {
 }
 
 impl Session<'_> {
+    /// How this node serves its clients; `null` from a process serving none.
+    fn described_clients(&self) -> Value {
+        self.certificates
+            .as_ref()
+            .map_or(Value::Null, |certificates| {
+                let transport = certificates.clients();
+                Value::Object(BTreeMap::from([
+                    ("tls".to_owned(), Value::Bool(transport.tls)),
+                    ("required".to_owned(), Value::Bool(transport.required)),
+                ]))
+            })
+    }
+
     /// What this node presents, one object per surface; empty when nothing.
     fn described_certificates(&self) -> Value {
         let presented = self

@@ -898,10 +898,23 @@ fn a_cluster_node_told_nothing_about_its_clients_serves_them_in_the_clear_and_it
         listening(CLEAR_CLUSTER_PEERS, Duration::from_secs(20)),
         "the peer door never opened"
     );
-    let said = std::fs::read_to_string(&log).unwrap();
+    // The surface accepts before the posture line is written, so it is waited for.
+    let said = said_within(&log, "clients in the clear", Duration::from_secs(20));
     assert!(
-        said.contains("clients in the clear") && said.contains("--tls-cert"),
+        said.contains("clients in the clear, on loopback only") && said.contains("--tls-cert"),
         "the plaintext posture is said at start, with the way to encrypt: {said}"
+    );
+
+    // And the node's own report says it, for whoever was not watching the start.
+    let report = Command::new(TESSARIDB)
+        .args(["--at", CLEAR_CLUSTER_WIRE, "-e", "INFO FOR NODE;"])
+        .env_remove("TESSARIDB_TLS_AUTHORITY")
+        .output()
+        .unwrap();
+    let report = String::from_utf8_lossy(&report.stdout);
+    assert!(
+        report.contains("clients: { required: false, tls: false }"),
+        "INFO FOR NODE reports the clients in the clear: {report}"
     );
 
     // A caller holding a certificate another authority issued is refused at the
@@ -964,6 +977,18 @@ fn started_without_client_settings(args: &[std::ffi::OsString], log: &std::path:
         .spawn()
         .unwrap();
     Running(child)
+}
+
+/// What `log` holds once it says `needle`, or when `patience` runs out.
+fn said_within(log: &std::path::Path, needle: &str, patience: Duration) -> String {
+    let began = Instant::now();
+    loop {
+        let said = std::fs::read_to_string(log).unwrap_or_default();
+        if said.contains(needle) || began.elapsed() > patience {
+            return said;
+        }
+        std::thread::yield_now();
+    }
 }
 
 /// Run the shipped binary to its end under a deadline, for a start that must be
@@ -1050,14 +1075,7 @@ fn client_plaintext_still_starts_a_node_and_says_it_is_retired() {
     .map(|part| part.to_os_string())
     .collect();
     let _running = started_without_client_settings(&args, &log);
-    let began = Instant::now();
-    let said = loop {
-        let said = std::fs::read_to_string(&log).unwrap_or_default();
-        if said.contains("retired") || began.elapsed() > Duration::from_secs(20) {
-            break said;
-        }
-        std::thread::yield_now();
-    };
+    let said = said_within(&log, "retired", Duration::from_secs(20));
     assert!(
         said.contains("wire protocol on"),
         "the node did not start: {said}"

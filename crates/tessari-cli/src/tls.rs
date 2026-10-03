@@ -119,6 +119,23 @@ pub(crate) fn decide(given: Given) -> Result<Clients, String> {
     }
 }
 
+/// Whether a password typed into a client of these addresses can cross a
+/// network, for the plaintext start line (ADR-0111 D3): an address that does not
+/// read as loopback — `0.0.0.0` and a name included — is reachable beyond this
+/// machine.
+pub(crate) fn reach(addresses: &[String]) -> &'static str {
+    let loopback = |address: &String| {
+        address
+            .parse::<std::net::SocketAddr>()
+            .is_ok_and(|bound| bound.ip().is_loopback())
+    };
+    if addresses.iter().all(loopback) {
+        "on loopback only"
+    } else {
+        "reachable beyond this machine"
+    }
+}
+
 /// The certificate both client surfaces present, read from its two files.
 ///
 /// One credential for both, so one reload reaches both. Each surface builds its
@@ -172,7 +189,9 @@ fn read(file: &Path, part: &str) -> Result<Vec<u8>, String> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{CLIENT_PLAINTEXT, Clients, Given, REQUIRE_CLIENT_TLS, TLS_CERT, TLS_KEY, decide};
+    use super::{
+        CLIENT_PLAINTEXT, Clients, Given, REQUIRE_CLIENT_TLS, TLS_CERT, TLS_KEY, decide, reach,
+    };
 
     fn given(cert: Option<&str>, key: Option<&str>, plaintext: bool) -> Given {
         Given {
@@ -297,5 +316,30 @@ mod tests {
                 .expect("empty")
                 .require
         );
+    }
+
+    #[test]
+    fn an_address_that_is_not_loopback_is_reachable_beyond_this_machine() {
+        let owned = |addresses: &[&str]| {
+            addresses
+                .iter()
+                .map(|a| (*a).to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            reach(&owned(&["127.0.0.1:9080", "[::1]:8000"])),
+            "on loopback only"
+        );
+        for beyond in [
+            owned(&["0.0.0.0:9080"]),
+            owned(&["127.0.0.1:9080", "10.0.0.5:8000"]),
+            owned(&["db:7654"]),
+        ] {
+            assert_eq!(
+                reach(&beyond),
+                "reachable beyond this machine",
+                "{beyond:?}"
+            );
+        }
     }
 }

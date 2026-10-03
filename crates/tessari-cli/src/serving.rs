@@ -120,13 +120,13 @@ pub(crate) fn serve(
     // warning behind a listening socket.
     bootstrap::first_user(&db)?;
     // What each surface presents, for `INFO FOR NODE` — the fingerprint an
-    // operator pins a newcomer's row with is read off the newcomer (D9).
-    if secured.is_some() || peers.is_some() {
-        db.presenting(std::sync::Arc::new(crate::presented::Shown {
-            clients: secured.clone(),
-            peers: peers.as_ref().map(|surface| surface.keys.clone()),
-        }));
-    }
+    // operator pins a newcomer's row with is read off the newcomer (D9) — and
+    // how the clients are served, which a serving node always has an answer to.
+    db.presenting(std::sync::Arc::new(crate::presented::Shown {
+        clients: secured.clone(),
+        peers: peers.as_ref().map(|surface| surface.keys.clone()),
+        required: matches!(clients, crate::tls::Clients::Tls { required: true, .. }),
+    }));
     let db = std::sync::Arc::new(db);
     // Every session this node opens gathers the shards of a split table it
     // lacks from their leaders (G033, ADR-0083) — on the wire and over HTTP
@@ -254,12 +254,16 @@ pub(crate) fn serve(
     // On the error stream, so a node whose output is being piped somewhere still
     // tells a person at the terminal that it came up and where. What was *bound*
     // rather than what was asked for, which is what makes `:0` usable.
+    let mut client_addresses = Vec::with_capacity(2);
     if let Some(node) = &wire {
         let bound = node.address().map_err(|failure| failure.to_string())?;
         eprintln!("tessaridb — wire protocol on {bound}");
+        client_addresses.push(bound);
     }
     if let Some(node) = &http {
-        eprintln!("tessaridb — http on {}", node.address());
+        let bound = node.address();
+        eprintln!("tessaridb — http on {bound}");
+        client_addresses.push(bound);
     }
     match &clients {
         crate::tls::Clients::Tls { cert, required, .. } => {
@@ -270,9 +274,10 @@ pub(crate) fn serve(
             );
         }
         crate::tls::Clients::Plaintext { chosen } => {
+            let reach = crate::tls::reach(&client_addresses);
             eprintln!(
-                "tessaridb — clients in the clear: --tls-cert and --tls-key would encrypt them, \
-                 and --require-client-tls refuses to start without them"
+                "tessaridb — clients in the clear, {reach}: --tls-cert and --tls-key would \
+                 encrypt them, and --require-client-tls refuses to start without them"
             );
             if *chosen {
                 eprintln!(
