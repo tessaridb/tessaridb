@@ -882,7 +882,10 @@ anyone, and every range it writes with where its prepare landed there.
 Fixed width and read by point lookup only — a reader meeting an intent asks for
 its transaction's record by id. It is node-local state derived by applying the
 coordinator range's log, as a catalog row is; the log record is the replicated
-truth.
+truth. A decided record is deleted by a `Forget` record in the same log once
+every participant has answered that its intents are gone and its log through
+the tail is held by a majority (ADR-0112 D12) — so the kind holds transactions
+in flight and recently decided, not every transaction ever committed.
 
 ```
 <0x51> <transaction:16> <namespace:u32> <database:u32> <table:u32> <record-id>   → <version:u64>
