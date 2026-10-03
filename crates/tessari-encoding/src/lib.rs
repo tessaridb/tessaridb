@@ -53,9 +53,9 @@ pub use expiry_key::{ExpiryKey, ExpiryMark};
 pub use index_keys::{
     INDEX_PREFIX_LEN, IndexAddress, IndexChanges, IndexChangesKey, IndexStatistics,
     IndexStatisticsKey, IndexTarget, IndexValues, Located, NoPayload, Posting, PostingKey,
-    QuantizedVector, SearchStatistics, SearchStatisticsKey, SearchSuffixKey, SearchTermKey,
-    SecondaryIndexKey, SpatialRefinement, SpatialRefinementKey, StoredVector, TermStatistics,
-    UniqueIndexKey, VectorNode, VectorNodeKey, VectorRecall, VectorRecallKey,
+    QuantizedVector, SearchStatistics, SearchStatisticsKey, SearchSuffixKey, SearchSurfaceKey,
+    SearchTermKey, SecondaryIndexKey, SpatialRefinement, SpatialRefinementKey, StoredVector,
+    TermStatistics, UniqueIndexKey, VectorNode, VectorNodeKey, VectorRecall, VectorRecallKey,
 };
 pub use keys::{
     AppliedPositionKey, FormatVersionKey, LogKey, LogRetentionKey, LogStartKey, NodeIdentityKey,

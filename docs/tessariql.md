@@ -2620,7 +2620,14 @@ means both.
 
 The tokenizer splits on anything that is not a letter or a digit, and is not
 named because there is one to choose from; a knob with one setting is a knob
-nobody should have to read about. The filters are the part that differs:
+nobody should have to read about. **A Chinese or Japanese ideograph is a token
+of its own** (Han and Hiragana, from `0.22.0-beta`), because those languages write
+words without spaces and a whole sentence used to be one term: `東京都` is three
+tokens, so `MATCHES '"東京"'` finds it — a quoted run of ideographs is an exact
+substring — and not `京東`, while an unquoted `東京` asks for both characters
+anywhere, as any unquoted query asks for every word. Katakana and Hangul keep
+their runs. An index over such text built before `0.22.0-beta` holds the old
+tokens and needs `REBUILD INDEX`. The filters are the part that differs:
 
 | Filter | What it does |
 |---|---|
@@ -2842,7 +2849,7 @@ with entries otherwise.
 
 **The bound it inherits.** Finding a near term is the same dictionary walk
 `MATCHES FUZZY` runs, so it carries the same mandatory non-fuzzy prefix: a word
-misspelled in its first three characters has no candidate and earns no
+misspelled in its first two characters has no candidate and earns no
 suggestion. Reusing that bound is deliberate. Two walks over one dictionary with
 two notions of "near" would eventually disagree, and the disagreement would show
 up as a suggestion for a word `MATCHES FUZZY` refuses to match.
@@ -2967,9 +2974,21 @@ SELECT * FROM notes WHERE body MATCHES FUZZY 'vectr';
 SELECT * FROM notes WHERE body MATCHES FUZZY 'containr analyzr';
 ```
 
-The analyzed text holds, for **every** word typed, a term within two edits of it.
+The analyzed text holds, for **every** word typed, a word within two edits of it.
 The same two levels as the operators above — a conjunction across the words, a
 disjunction within each — one step looser again.
+
+**A misspelling is measured against the word the text held, not against its
+stem** (from `0.22.0-beta`). A stemmer turns `transaction` into `transact`, and
+`trasnactoin` is two edits from the first and five from the second, so measuring
+against stems alone found nothing for exactly the typos a reader makes most. Each
+token answers by its term or by its **surface** — the token after every filter
+but the stemmer — and a `SEARCH` index keeps a surface dictionary beside its term
+dictionary, so both are walked. A record holding only `transacting` is not
+answered by `trasnactoin`: it shares the stem, but nothing it says is near what
+was typed. An index built before `0.22.0-beta` has no surfaces, so a fuzzy read
+over it is answered by the scan — the same records, at the scan's cost — until
+`REBUILD INDEX` gives it them.
 
 **It is declared, never automatic.** A query that finds nothing is never retried
 as a fuzzy one behind your back. A reader who asked for `vector` and was shown
@@ -2987,8 +3006,18 @@ past two the neighbourhood of a word is larger than most vocabularies, so every
 query would match something and the operator would have stopped discriminating
 rather than started being generous. `cat` and `dog` are three edits apart.
 
-**The first three characters are not fuzzy, and this is the cost worth knowing
-before you rely on it:**
+**The budget scales with the word typed:** no edit below three letters, one up
+to five, two beyond. Two edits on a four-letter word is a different word.
+
+**A corrected word ranks below the word itself.** In a `FROM SEARCH`, which
+ranks a fuzzy word, each occurrence counts `1 / (1 + edits)`: an exact term one,
+a one-edit term a half, a two-edit term a third, so a rare misspelling can never
+outrank the common word it stands for. (`search::score` scores the words typed,
+so a corrected word adds nothing there.)
+
+**The first two characters are not fuzzy, and this is the cost worth knowing
+before you rely on it** (three until `0.22.0-beta`, which lost every typo in the
+third letter — `anlayzer`):
 
 ```
 SELECT * FROM notes WHERE body MATCHES FUZZY 'vectr';   -- reaches "vector"
@@ -3002,13 +3031,13 @@ character people mistype least, having usually just read it.
 
 The restriction is part of what the operator **means**, not a trick the index
 plays. The scan applies exactly the same rule, so the answer does not change when
-somebody declares an index. A word shorter than three characters cannot carry
+somebody declares an index. A word shorter than two characters cannot carry
 that prefix and is refused by name, before any access path is chosen, exactly as
 a short `MATCHES PREFIX` is.
 
 **Neither expansion limit is a refusal.** A word whose near-spellings number more
-than sixteen, or whose three-character beginning is shared by more than a
-thousand terms, is answered by the scan instead. Only the index can see either
+than sixteen, or whose two-character beginning is shared by more than a
+thousand terms or surfaces, is answered by the scan instead. Only the index can see either
 number, so a cap that refused would make a statement succeed without an index and
 fail once somebody added one.
 
@@ -3226,6 +3255,19 @@ the table, each field's weight and options and how many records it holds, and
 `INFO FOR DATABASE` names the database's searches under `searches`.
 `EXPLAIN` reports access `index` and shape `search`, or `scan` when a word could
 not be walked within its cap.
+
+**Ranked from the postings when they can decide it** (from `0.22.0-beta`). A
+member posting keeps, per field, how often its term occurs there and how long
+the field is, so a query whose every word is a term, a prefix or an infix — with
+`OR` and `NOT`, synonyms and weights — is decided and scored from the postings
+alone and reads only the records it answers; the shape is then `search from
+postings`. A phrase (positions), a fuzzy word (surfaces), a `WHERE`, a
+transaction's own writes and a member built before `0.22.0-beta` are read and
+analysed record by record as before, shape `search`. Both go through one BM25F
+and rank every record with the same score. Measured on the documentation site's
+corpus (700 fragments, 81 judged queries): a word query 2.18 → 0.070 ms and a
+prefix 3.89 → 0.093 ms at the warm median. `REBUILD INDEX` (or redefining the
+search) moves an older member onto the faster path.
 
 ```
 DROP SEARCH knowledge;
@@ -5932,9 +5974,11 @@ So **a score over a field with no search index is refused**, naming the field.
 Answering zero instead, or scoring against whatever records happened to be read,
 would produce an ordering that looks exactly like a ranking and is not one — and
 nobody checks an order that looks right. A refusal is a statement that did not
-run; a plausible wrong order is a statement that did. For the same reason a
-single-record read (`FROM notes:9`) has no collection in scope and is refused
-too.
+run; a plausible wrong order is a statement that did. A single-record read
+(`FROM notes:9`, or a span `FROM notes:1..=9`) is scored against its **table's**
+collection — the same number the table read gives that record (from
+`0.22.0-beta`; it was refused before, naming a missing index that was not
+missing).
 
 **A record holding none of the query's words scores `0`**, which is the computed
 answer rather than an absence standing in for one, and sorts where it belongs
@@ -6397,10 +6441,22 @@ Two rules make the composition mean something:
   transaction may not leave (ADR-0008 §4).
 
 A space whose values are objects is indexed by their fields like a table, and a
-`MATCHES` over one of them is served by its `SEARCH` index. A value that is not
-an object projects to no fields, so an index over a space holds nothing for it.
-Searching scalar values needs a way to name the value itself in a condition and is
-a separate feature, not claimed here.
+`MATCHES` over one of them is served by its `SEARCH` index. **A value that is not
+an object answers the route `value` with itself** (from `0.22.0-beta`) — the word
+an `ASSERT` already gives the value under consideration — so a space of text is
+declared, indexed and searched like a field:
+
+```
+DEFINE SPACE phrases;
+DEFINE FIELD value ON phrases TYPE string ANALYZER english;
+DEFINE INDEX by_value ON phrases FIELDS value SEARCH;
+SET phrases:'a' = 'the quick foxes';
+SELECT * FROM phrases WHERE value MATCHES 'fox';   -- phrases:'a'
+SELECT value FROM phrases:'a';                       -- 'the quick foxes'
+```
+
+An object keeps its own `value` field: only something with no fields at all
+answers the route with itself.
 
 ## 6a. Files
 
@@ -9373,7 +9429,7 @@ be, because it is confined to the run its fixed values name.
 | a traversal whose arrows change direction | `a->follows->users<-follows<-users` — "who follows somebody ada follows" — is a real question, and a useful one. It needs a rule for what each step's anchor *is* when the direction turns, and a chain where every arrow reads the same way is the one a reader can follow without one |
 | a traversal that answers with the path rather than its end | the answer would be a list of records rather than a record, which is a shape for rows and not for records — the same wall the join met, and the same milestone |
 | several distinct edges between one pair in one table | an edge is identified by its endpoints, which is what makes `RELATE` idempotent; one edge table per relation is the spelling |
-| n-grams, so `MATCHES` never answers a substring question | index size proportional to text length × (max − min), paid on every write; Q-31 holds the measurement that would decide it |
+| n-gram filters (`ngram`, `edge_ngram`, `shingle`, `cjk_bigram`) — refused by name, `NgramFilter` | what they are reached for is built without them: a substring is `MATCHES INFIX` from the suffix keyspace, a beginning is the dictionary walk of `MATCHES PREFIX`, a misspelling is `MATCHES FUZZY`, and Chinese and Japanese are one token per ideograph. An n-gram token would multiply the index by its length range and count a fragment's documents as a word's |
 | layers in the vector index | a hierarchical graph assigns each node a random level, and a random level is what a store whose index entries are *derived rather than logged* cannot have — two replicas would build different graphs from one log. A level derived from a hash of the record id is the right shape when the layers earn their cost; the key already reserves the byte. |
 | a filtered nearest-neighbour read | the graph answers a distance question and knows nothing of a `WHERE`, so combining them needs either over-fetching by an unknown factor or a filtered walk |
 | highlighting | it needs the postings to carry byte offsets, which is a different index rather than a bigger one, and a rule for which of the matched terms a fragment is chosen around. Fuzzy matching, phrase and proximity queries were listed here until they were built: each turned out to need no index change at all, because the analyzer is a property of the *schema* and so the ordered token list is already in hand wherever text is read — see `MATCHES FUZZY` and the quoted-phrase form of `MATCHES` above. Ranking itself is built: see [Ranking](#ranking) |

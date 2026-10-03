@@ -1053,3 +1053,105 @@ fn a_search_answers_an_infix_from_its_members() {
     };
     assert_eq!(plan.get("access"), Some(&Value::from("index")), "{plan:?}");
 }
+
+/// A stemmed search for a misspelling: measured against the words the text
+/// held (Q-867), and an exact word outranks a corrected one (the edit-weighted
+/// occurrence). `notes:'a'` holds the misspelled `vectro`, `notes:'b'` the word
+/// itself; without the weight the two tie and `a` comes first by identity.
+#[test]
+fn a_fuzzy_search_reaches_surfaces_and_ranks_the_exact_word_first() {
+    let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
+             DEFINE COLLECTION notes;\n\
+             CREATE notes:'a' = { body: 'vectro' };\n\
+             CREATE notes:'b' = { body: 'vector' };\n\
+             CREATE notes:'c' = { body: 'a transaction settles' };\n\
+             CREATE notes:'d' = { body: 'transacting traders' };\n\
+             DEFINE SEARCH s ON notes FIELDS body ANALYZER english;",
+        )
+        .unwrap();
+    assert_eq!(ids(&mut session, "s", "MATCHES FUZZY 'vector'"), ["b", "a"]);
+    assert_eq!(ids(&mut session, "s", "MATCHES FUZZY 'trasnactoin'"), ["c"]);
+}
+
+/// **Q-870 — a search the postings can decide is ranked from them, and ranks
+/// exactly as the re-analysed text does.**
+///
+/// Each read runs twice: plain, which the postings answer (plan shape
+/// `search from postings`), and with `WHERE true`, which keeps the re-analysis
+/// path (plan shape `search`) — the control arm showing the two paths really
+/// ran. Records, order and every score bit must agree, across weights, a
+/// synonym set on one field only, a prefix, an infix, an `OR` and a `NOT`.
+#[test]
+fn a_search_ranked_from_postings_equals_the_one_ranked_from_text() {
+    let store = store(
+        "DEFINE SYNONYMS machines { engine: ['loom', 'machine'] };\n\
+         CREATE notes:5 = { title: 'The loom', body: 'weaving' };\n\
+         DEFINE SEARCH s ON notes FIELDS title WEIGHT 3, body SYNONYMS machines \
+         ON articles FIELDS headline WEIGHT 2, text ANALYZER plain;",
+    );
+    let mut session = session(&store);
+    for ask in [
+        "MATCHES 'ada'",
+        "MATCHES 'ada lovelace'",
+        "MATCHES 'engine'",
+        "MATCHES 'ada OR cards'",
+        "MATCHES 'ada NOT babbage'",
+        "MATCHES PREFIX 'lov'",
+        "MATCHES INFIX 'ngin'",
+    ] {
+        let read = |condition: &str| {
+            format!(
+                "SELECT search::table_name() AS source, search::score() AS score \
+                 FROM SEARCH s {ask}{condition};"
+            )
+        };
+        let shape = |session: &mut Session<'_>, read: &str| {
+            let outcomes = session.run(read).unwrap();
+            let Some(Outcome::Records { plan, .. }) = outcomes.last() else {
+                panic!("{read}: {:?}", outcomes.last());
+            };
+            plan.shape
+        };
+        let from_postings = ranked(&mut session, &read(""));
+        let from_text = ranked(&mut session, &read(" WHERE true"));
+        assert!(!from_postings.is_empty(), "{ask} answered nothing");
+        let bits = |answer: &[(String, String, f64)]| {
+            answer
+                .iter()
+                .map(|(table, id, score)| (table.clone(), id.clone(), score.to_bits()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bits(&from_postings), bits(&from_text), "{ask}");
+        assert_eq!(
+            shape(&mut session, &read("")),
+            Some("search from postings"),
+            "{ask}"
+        );
+        assert_eq!(
+            shape(&mut session, &read(" WHERE true")),
+            Some("search"),
+            "{ask}"
+        );
+    }
+    // A transaction that wrote a member's table is answered from its text: its
+    // own write has no postings yet.
+    let outcomes = session
+        .run(
+            "BEGIN; CREATE notes:9 = { title: 'Ada again', body: 'more ada' }; \
+             SELECT search::score() AS score FROM SEARCH s MATCHES 'ada'; COMMIT;",
+        )
+        .unwrap();
+    let answered = outcomes
+        .iter()
+        .find_map(|outcome| match outcome {
+            Outcome::Records { records, plan, .. } => Some((records.len(), plan.shape)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(answered, (5, Some("search")));
+}

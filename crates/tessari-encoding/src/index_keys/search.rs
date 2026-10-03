@@ -584,3 +584,132 @@ impl SearchSuffixKey {
         Value::from(with_header(0, 0))
     }
 }
+
+/// One surface form of one stemmed term, and how many records hold that pair
+/// (Q-867, key kind `0x42`).
+///
+/// ```text
+/// <0x42> <address> <surface, variable> <term, variable>  →  <count u64>
+/// ```
+///
+/// The raw companion of a stemmed dictionary. A stem is not a spelling anybody
+/// wrote, so a misspelling is measured against the words the text actually
+/// held: a fuzzy walk reads the surfaces sharing the typed word's first
+/// letters and learns, from each one within the edit budget, which term to ask
+/// the postings for. Written only where the stemmer changed the word — where it
+/// did not, the term is its own surface and the term dictionary answers.
+///
+/// Counted for the reason the term dictionary is: a pair no record holds is
+/// deleted, so a walk never offers a word nothing contains.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchSurfaceKey {
+    /// Which index the pair belongs to.
+    pub address: IndexAddress,
+    /// The word as the text held it, folded and unstemmed.
+    pub surface: String,
+    /// The term it stems to.
+    pub term: String,
+}
+
+impl SearchSurfaceKey {
+    /// Name one pair.
+    #[must_use]
+    pub const fn new(address: IndexAddress, surface: String, term: String) -> Self {
+        Self {
+            address,
+            surface,
+            term,
+        }
+    }
+
+    /// Where an index's surfaces live.
+    #[must_use]
+    pub const fn keyspace() -> tessari_kv::Keyspace {
+        KeyKind::SearchSurface.keyspace()
+    }
+
+    /// The bytes every surface beginning with `leading` starts with.
+    #[must_use]
+    pub fn surface_prefix(address: &IndexAddress, leading: &str) -> Vec<u8> {
+        let mut writer = KeyWriter::new();
+        writer.put_variable_unterminated(leading.as_bytes());
+        let mut bytes = address.prefix(KeyKind::SearchSurface);
+        bytes.extend_from_slice(&writer.finish());
+        bytes
+    }
+
+    /// The entry saying an index's surfaces are complete: written when the
+    /// index is built, so an index built before surfaces were kept — which
+    /// holds none — is told apart from one whose text simply never stemmed.
+    #[must_use]
+    pub fn marker(address: IndexAddress) -> Key {
+        Self::new(address, String::new(), String::new()).encode()
+    }
+
+    /// The bytes every surface of one index starts with.
+    #[must_use]
+    pub fn index_prefix(address: &IndexAddress) -> Vec<u8> {
+        address.prefix(KeyKind::SearchSurface)
+    }
+
+    /// The key.
+    #[must_use]
+    pub fn encode(&self) -> Key {
+        let mut writer = KeyWriter::new();
+        writer
+            .put_variable(self.surface.as_bytes())
+            .put_variable(self.term.as_bytes());
+        let mut bytes = self.address.prefix(KeyKind::SearchSurface);
+        bytes.extend_from_slice(&writer.finish());
+        Key::from(bytes)
+    }
+
+    /// Read a key back.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for bytes that are not a surface key, or whose strings
+    /// are not text.
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let text = |held: Vec<u8>| {
+            String::from_utf8(held).map_err(|_| crate::error::Error::InvalidUtf8 {
+                kind: KeyKind::SearchSurface,
+            })
+        };
+        let mut reader = KeyReader::new(KeyKind::SearchSurface, bytes);
+        reader.expect_kind()?;
+        let address = IndexAddress::read(&mut reader)?;
+        let surface = text(reader.take_variable()?)?;
+        let term = text(reader.take_variable()?)?;
+        reader.finish()?;
+        Ok(Self {
+            address,
+            surface,
+            term,
+        })
+    }
+
+    /// The value recording how many records hold the pair.
+    #[must_use]
+    pub fn count(held: u64) -> Value {
+        let mut writer = KeyWriter::new();
+        writer.put_u64(held);
+        let body = writer.finish();
+        let mut buffer = with_header(0, body.len());
+        buffer.extend_from_slice(&body);
+        Value::from(buffer)
+    }
+
+    /// The count a stored value records.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a value that is not a count.
+    pub fn counted(bytes: &[u8]) -> Result<u64> {
+        let (_, payload) = split_header(bytes, 0)?;
+        let mut reader = KeyReader::new(KeyKind::SearchSurface, payload);
+        let held = reader.take_u64()?;
+        reader.finish()?;
+        Ok(held)
+    }
+}

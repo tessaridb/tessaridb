@@ -9,6 +9,21 @@ use tessari_types::Filter;
 /// What a refusal of a filter name offers instead. Spelled out because a
 /// refusal's expectation is static text; the test below holds it to
 /// [`Filter::ALL`], so a filter added there cannot be missing here.
+/// The filters other engines spell for n-grams, refused by name (Q-862): the
+/// analysis chain is lowercase, ascii and a stemmer and nothing else, and what
+/// n-grams are reached for is answered elsewhere — prefix, infix and fuzzy from
+/// the term dictionary, Chinese and Japanese by a tokenizer that makes every
+/// ideograph a token. An n-gram token would inflate the index several-fold and
+/// count a fragment's documents as a word's.
+const NGRAM_FILTERS: &[&str] = &[
+    "ngram",
+    "edge_ngram",
+    "edgengram",
+    "nGram",
+    "shingle",
+    "cjk_bigram",
+];
+
 const FILTER_NAMES: &str = "a filter: lowercase, ascii or stemmer";
 
 /// What a refusal of a stemmer's language offers instead, held to
@@ -385,6 +400,16 @@ impl Parser<'_> {
                 return Err(self.error_here("`)`"));
             }
         }
+        if language_at.is_none()
+            && NGRAM_FILTERS
+                .iter()
+                .any(|held| held.eq_ignore_ascii_case(&word))
+        {
+            return Err(Error::NgramFilter {
+                filter: word,
+                span: self.span_behind(),
+            });
+        }
         Filter::parse(&word).ok_or_else(|| match language_at {
             Some(at) if word.to_ascii_lowercase().starts_with("stemmer(") => {
                 self.error_at(at, STEMMER_LANGUAGES)
@@ -411,5 +436,23 @@ mod tests {
         }
         // English is spelled as the bare `stemmer`, so its language is held here.
         assert!(STEMMER_LANGUAGES.contains("english"));
+    }
+
+    /// An n-gram filter is refused by its own name, saying where the thing it
+    /// is usually reached for already lives — not as an unknown word.
+    #[test]
+    #[allow(clippy::panic)]
+    fn an_ngram_filter_is_refused_by_name() {
+        for word in ["ngram", "edge_ngram", "EdgeNGram", "shingle", "cjk_bigram"] {
+            let refused =
+                crate::parse(&format!("DEFINE ANALYZER grams FILTERS lowercase, {word};"));
+            match refused {
+                Err(crate::Error::NgramFilter { filter, span }) => {
+                    assert_eq!(filter, word);
+                    assert_eq!(span.start, 41);
+                }
+                other => panic!("{word}: {other:?}"),
+            }
+        }
     }
 }

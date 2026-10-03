@@ -45,6 +45,9 @@ use core::str::Chars;
 
 use crate::value::Value;
 
+/// The route a value that is not an object answers with itself.
+const VALUE: &str = "value";
+
 /// One step of a route into a nested value.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Step {
@@ -148,10 +151,7 @@ impl Path {
     /// caller's ability to tell "no such route" from "a route to an absence".
     #[must_use]
     pub fn resolve<'value>(&self, value: &'value Value) -> Option<&'value Value> {
-        let Value::Object(fields) = value else {
-            return None;
-        };
-        let mut current = fields.get(&self.root)?;
+        let mut current = self.start(value)?;
         for step in &self.steps {
             current = match (step, current) {
                 (Step::Field(name), Value::Object(fields)) => fields.get(name)?,
@@ -163,6 +163,22 @@ impl Path {
             };
         }
         Some(current)
+    }
+
+    /// Where the walk begins: the root field of an object, or — for a value
+    /// that is not an object — the value itself under the name `value`.
+    ///
+    /// A space holds a single value per key, so a string there has no field to
+    /// name. `value` is the word `ASSERT` already gives the value under
+    /// consideration (`$value`), so the same word names it here, and a value
+    /// that IS an object keeps its own `value` field: only something with no
+    /// fields at all answers the route with itself.
+    fn start<'value>(&self, value: &'value Value) -> Option<&'value Value> {
+        match value {
+            Value::Object(fields) => fields.get(&self.root),
+            itself if self.root == VALUE => Some(itself),
+            _ => None,
+        }
     }
 
     /// Whether this route reaches several values rather than one.
@@ -183,10 +199,7 @@ impl Path {
     /// query should show as no match rather than as a right-looking answer.
     #[must_use]
     pub fn reach<'value>(&self, value: &'value Value) -> Vec<&'value Value> {
-        let Value::Object(fields) = value else {
-            return Vec::new();
-        };
-        let Some(root) = fields.get(&self.root) else {
+        let Some(root) = self.start(value) else {
             return Vec::new();
         };
         let mut current = vec![root];
@@ -219,10 +232,11 @@ impl Path {
     /// cannot disagree about which routes exist.
     #[must_use]
     pub fn resolve_mut<'value>(&self, value: &'value mut Value) -> Option<&'value mut Value> {
-        let Value::Object(fields) = value else {
-            return None;
+        let mut current = match value {
+            Value::Object(fields) => fields.get_mut(&self.root)?,
+            itself if self.root == VALUE => itself,
+            _ => return None,
         };
-        let mut current = fields.get_mut(&self.root)?;
         for step in &self.steps {
             current = match (step, current) {
                 (Step::Field(name), Value::Object(fields)) => fields.get_mut(name)?,

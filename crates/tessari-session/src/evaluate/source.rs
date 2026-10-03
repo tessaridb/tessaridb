@@ -180,6 +180,10 @@ impl Session<'_> {
                         Searched::default(),
                     ));
                 }
+                // One record is still a member of its table's collection, so
+                // a score or an explanation over it is measured against that
+                // collection exactly as the table read measures it (Q-869).
+                let searched = self.searched_for(transaction, address.table, &shown(select))?;
                 let visible = self.visible_in(transaction, address.table)?;
                 let found = match transaction.get(&address)? {
                     Some(payload) => {
@@ -192,7 +196,7 @@ impl Session<'_> {
                         found,
                         Plan::new(AccessPath::Record).on(target.table.name.text.as_str()),
                     ),
-                    Searched::default(),
+                    searched,
                 ))
             }
             Source::Table(table) => {
@@ -253,6 +257,7 @@ impl Session<'_> {
                         Searched::default(),
                     ));
                 }
+                let searched = self.searched_for(transaction, id, &shown(select))?;
                 let found = transaction.records_in_span(
                     context.namespace,
                     context.database,
@@ -263,7 +268,7 @@ impl Session<'_> {
                 )?;
                 Ok((
                     Prepared::Held(self.records_of(found, &visible)?, plan),
-                    Searched::default(),
+                    searched,
                 ))
             }
             Source::Traverse {

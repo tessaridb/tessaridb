@@ -13,7 +13,7 @@ use crate::transaction::Transaction;
 use std::collections::{BTreeMap, BTreeSet};
 use tessari_encoding::{
     IndexAddress, IndexValues, KeyKind, LogRecord, PostingKey, RecordValue, SearchSuffixKey,
-    StoreKey, decode_payload,
+    SearchSurfaceKey, StoreKey, decode_payload,
 };
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::RecordId;
@@ -130,10 +130,15 @@ pub(crate) fn build(
         let analyzer = analyzer_for(definition, &declared, &named);
         let mut counted = Delta::default();
         let mut dictionary: BTreeMap<IndexValues, Moved> = BTreeMap::new();
+        let mut surfaces = BTreeMap::new();
         for (id, payload) in &rows {
-            let analysed = analysed(definition, analyzer, &decode_payload(payload)?);
+            let mut analysed = analysed(definition, analyzer, &decode_payload(payload)?);
             counted.added(analysed.tokens);
             lengthen(&mut pending.lengths, address, &analysed.fields, true);
+            for pair in std::mem::take(&mut analysed.surfaces) {
+                let held: &mut i64 = surfaces.entry(pair).or_default();
+                *held = held.saturating_add(1);
+            }
             let length = analysed.length();
             for ((term, frequency), located) in analysed.postings.into_iter().zip(&analysed.located)
             {
@@ -152,14 +157,22 @@ pub(crate) fn build(
             *pending.moved.entry(address).or_default() = counted;
         }
         pending.terms.insert(address, dictionary);
+        pending.surfaces.insert(address, surfaces);
         // The suffixes of every term are written as the dictionary settles; this
         // marker says they are complete for this index, which an index built
-        // before suffixes existed cannot say (ADR-0105 D9).
-        return Ok(batch.put(
-            SearchSuffixKey::keyspace(),
-            SearchSuffixKey::new(address, String::new(), String::new()).encode(),
-            SearchSuffixKey::empty(),
-        ));
+        // before suffixes existed cannot say (ADR-0105 D9). The surfaces carry
+        // the same kind of marker for the same reason (Q-867).
+        return Ok(batch
+            .put(
+                SearchSuffixKey::keyspace(),
+                SearchSuffixKey::new(address, String::new(), String::new()).encode(),
+                SearchSuffixKey::empty(),
+            )
+            .put(
+                SearchSurfaceKey::keyspace(),
+                SearchSurfaceKey::marker(address),
+                SearchSurfaceKey::count(0),
+            ));
     }
 
     // A claim set of this build's own. The per-mutation pass may have claimed
@@ -216,6 +229,7 @@ pub(crate) fn clear(
         KeyKind::SpatialRefinement,
         KeyKind::SearchTerm,
         KeyKind::SearchSuffix,
+        KeyKind::SearchSurface,
         KeyKind::IndexStatistics,
         KeyKind::IndexChanges,
     ] {

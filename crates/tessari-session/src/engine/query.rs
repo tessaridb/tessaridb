@@ -14,7 +14,9 @@ use tessari_ql::{SearchOperator, Span};
 use tessari_types::Analyzer;
 
 use crate::error::{Error, Result};
-use crate::search::{Asked, Word, asked, begins, malformed_slop, near, negation_without_term};
+use crate::search::{
+    Asked, Word, asked, begins, edits_to, malformed_slop, near_token, negation_without_term,
+};
 
 /// One word of a search query, as the dictionary is asked about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +66,13 @@ impl Query {
             Shape::Phrase { words, .. } => words.is_empty(),
             Shape::Boolean { required, .. } => required.is_empty(),
         }
+    }
+
+    /// Whether a word is fuzzy, so the text's surfaces are needed.
+    pub(crate) fn fuzzy(&self) -> bool {
+        self.probes()
+            .iter()
+            .any(|probe| matches!(probe, Probe::Fuzzy(_)))
     }
 
     /// Every probe the query holds, required, excluded and phrased alike.
@@ -185,9 +194,58 @@ pub(crate) struct Answering {
     pub(crate) synonyms: BTreeMap<String, Vec<String>>,
 }
 
+/// One field's analysed text: its terms, and — when a fuzzy word is asked —
+/// the surface each term was spelled as, position for position (Q-867).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Text<'a> {
+    /// The terms.
+    pub(crate) terms: &'a [String],
+    /// The surfaces, or empty when nothing asks for them.
+    pub(crate) surfaces: &'a [String],
+}
+
+impl<'a> Text<'a> {
+    /// The term at `at` and the surface it was spelled as — the term itself
+    /// when no surfaces were taken.
+    pub(crate) fn token(&self, at: usize) -> Option<(&'a str, &'a str)> {
+        let term = self.terms.get(at)?;
+        let surface = self.surfaces.get(at).unwrap_or(term);
+        Some((term.as_str(), surface.as_str()))
+    }
+
+    /// Every token as a term and its surface.
+    pub(crate) fn tokens(&self) -> impl Iterator<Item = (&'a str, &'a str)> + '_ {
+        (0..self.terms.len()).filter_map(|at| self.token(at))
+    }
+}
+
 impl Answering {
-    /// Whether the stored term `held` answers `probe` in this field.
-    pub(crate) fn answers(&self, probe: &Probe, held: &str) -> bool {
+    /// How much one token counts towards `probe` in this field: one for a word
+    /// it answers whole, less for a fuzzy word it answers only after edits —
+    /// `1 / (1 + edits)`, so an exact term always outweighs a corrected one —
+    /// and nothing for a word it does not answer.
+    pub(crate) fn weight(&self, probe: &Probe, held: &str, surface: &str) -> f64 {
+        match probe {
+            Probe::Fuzzy(alternatives) if self.fuzzy => {
+                let edits = [
+                    edits_to(alternatives, held),
+                    edits_to(alternatives, surface),
+                ]
+                .into_iter()
+                .flatten()
+                .min();
+                edits.map_or(0.0, |edits| {
+                    1.0 / f64::from(u32::try_from(edits).unwrap_or(u32::MAX).saturating_add(1))
+                })
+            }
+            _ if self.answers(probe, held, surface) => 1.0,
+            _ => 0.0,
+        }
+    }
+
+    /// Whether the stored term `held`, spelled `surface` in the text, answers
+    /// `probe` in this field.
+    pub(crate) fn answers(&self, probe: &Probe, held: &str, surface: &str) -> bool {
         match probe {
             Probe::Term(term) => {
                 term == held
@@ -197,7 +255,7 @@ impl Answering {
                         .is_some_and(|alternatives| alternatives.iter().any(|one| one == held))
             }
             Probe::Prefix(alternatives) => self.prefix && begins(alternatives, held),
-            Probe::Fuzzy(alternatives) => self.fuzzy && near(alternatives, held),
+            Probe::Fuzzy(alternatives) => self.fuzzy && near_token(alternatives, held, surface),
             Probe::Infix(piece) => self.prefix && held.contains(piece.as_str()),
         }
     }
@@ -209,7 +267,7 @@ impl Answering {
     /// the field's synonyms and options too.
     pub(crate) fn run_of(
         &self,
-        held: &[String],
+        held: Text<'_>,
         words: &[Probe],
         slop: usize,
     ) -> Option<Vec<usize>> {
@@ -218,22 +276,24 @@ impl Answering {
         }
         let first = words.first()?;
         let limit = words.len().saturating_sub(1).saturating_add(slop);
-        held.iter().enumerate().find_map(|(start, token)| {
-            if !self.answers(first, token) {
-                return None;
-            }
-            let mut at = start;
-            let mut walked = vec![start];
-            for word in words.get(1..).unwrap_or_default() {
-                let found = held
-                    .iter()
-                    .skip(at.saturating_add(1))
-                    .position(|candidate| self.answers(word, candidate))?;
-                at = at.saturating_add(1).saturating_add(found);
-                walked.push(at);
-            }
-            (at.saturating_sub(start) <= limit).then_some(walked)
-        })
+        held.tokens()
+            .enumerate()
+            .find_map(|(start, (term, surface))| {
+                if !self.answers(first, term, surface) {
+                    return None;
+                }
+                let mut at = start;
+                let mut walked = vec![start];
+                for word in words.get(1..).unwrap_or_default() {
+                    let found = held
+                        .tokens()
+                        .skip(at.saturating_add(1))
+                        .position(|(term, surface)| self.answers(word, term, surface))?;
+                    at = at.saturating_add(1).saturating_add(found);
+                    walked.push(at);
+                }
+                (at.saturating_sub(start) <= limit).then_some(walked)
+            })
     }
 }
 
@@ -243,16 +303,17 @@ impl Answering {
 /// The conjunction is over the record as **one document**: a group is answered
 /// when any field holds any of its words. A phrase must sit inside one field,
 /// because a run of tokens across a field boundary is not a run in any text.
-pub(crate) fn holds(query: &Query, fields: &[(&Answering, &[String])]) -> bool {
+pub(crate) fn holds(query: &Query, fields: &[(&Answering, Text<'_>)]) -> bool {
     let held = |probe: &Probe| {
-        fields
-            .iter()
-            .any(|(answering, terms)| terms.iter().any(|term| answering.answers(probe, term)))
+        fields.iter().any(|(answering, text)| {
+            text.tokens()
+                .any(|(term, surface)| answering.answers(probe, term, surface))
+        })
     };
     match &query.shape {
         Shape::Phrase { words, slop } => fields
             .iter()
-            .any(|(answering, terms)| answering.run_of(terms, words, *slop).is_some()),
+            .any(|(answering, text)| answering.run_of(*text, words, *slop).is_some()),
         Shape::Boolean { required, excluded } => {
             !required.is_empty()
                 && required.iter().all(|group| group.iter().any(held))

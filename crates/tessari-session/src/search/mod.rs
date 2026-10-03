@@ -42,8 +42,8 @@ mod suggest;
 
 pub(crate) use highlight::{marked, whole_terms};
 pub(crate) use matching::{
-    begins, holds_run, matches_fuzzy_terms, matches_infix_terms, matches_prefix_terms,
-    matches_terms, near,
+    begins, budget, edits_to, holds_run, matches_fuzzy_terms, matches_infix_terms,
+    matches_prefix_terms, matches_terms, near_token,
 };
 pub(crate) use query::{Asked, Word, asked, malformed_slop, negation_without_term};
 pub(crate) use resolve::{Ranked, Searched};

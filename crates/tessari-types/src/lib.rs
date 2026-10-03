@@ -38,7 +38,7 @@ mod time;
 mod value;
 
 pub use acknowledge::{Acknowledge, Acknowledgement};
-pub use analyzer::{Analyzer, Filter, Language, Token};
+pub use analyzer::{Analyzer, Filter, Language, Memo, Token};
 pub use assertion::{Assertion, Operand};
 pub use calendar::Civil;
 pub use condition::{BinaryOp, apply};

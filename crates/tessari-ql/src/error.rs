@@ -130,6 +130,22 @@ pub enum Error {
         span: Span,
     },
 
+    /// An n-gram filter in an analyzer chain (Q-862).
+    ///
+    /// Refused by name rather than as an unknown word, because the author knows
+    /// exactly what they are reaching for and the answer is where it already
+    /// lives: prefix, infix and fuzzy matching are read from the term
+    /// dictionary, and Chinese and Japanese text is one token per ideograph.
+    #[error(
+        "`{filter}` at {span} is an n-gram filter and analysis has none: a word's beginning, a piece of it and a misspelling are `MATCHES PREFIX`, `MATCHES INFIX` and `MATCHES FUZZY`, and Chinese and Japanese text is already one token per ideograph"
+    )]
+    NgramFilter {
+        /// The filter as written.
+        filter: String,
+        /// Where it was written.
+        span: Span,
+    },
+
     /// Text after `datetime` that is not an instant.
     #[error("{text:?} at {span} is not an instant: expected RFC 3339, as in 1970-01-01T00:00:00Z")]
     InvalidDatetime {
@@ -825,6 +841,7 @@ impl Error {
             | Self::UnexpectedToken { span, .. }
             | Self::UnexpectedEnd { span, .. }
             | Self::Unsupported { span, .. }
+            | Self::NgramFilter { span, .. }
             | Self::InvalidDatetime { span, .. }
             | Self::InvalidUuid { span, .. }
             | Self::InvalidDecimal { span, .. }

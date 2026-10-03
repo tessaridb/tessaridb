@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use tessari_constants::SEARCH_SNIPPET_TOKENS;
 use tessari_types::{Path, Value};
 
-use super::query::{Answering, Probe, Shape};
+use super::query::{Answering, Probe, Shape, Text};
 use super::{Hit, range};
 
 /// The best window among the hit's `SNIPPET` fields, as
@@ -31,13 +31,16 @@ pub(crate) fn best(hit: &Hit<'_>, record: Option<&Value>) -> Value {
             continue;
         };
         let tokens = hit.analyzer.spans(text);
+        let surfaces = surfaces_for(hit, text);
         let matched: Vec<Option<usize>> = tokens
             .iter()
-            .map(|token| {
+            .enumerate()
+            .map(|(at, token)| {
+                let surface = surfaces.get(at).unwrap_or(&token.term);
                 hit.query
                     .scored
                     .iter()
-                    .position(|probe| field.answering.answers(probe, &token.term))
+                    .position(|probe| field.answering.answers(probe, &token.term, surface))
             })
             .collect();
         let width = SEARCH_SNIPPET_TOKENS.min(tokens.len());
@@ -91,16 +94,21 @@ pub(crate) fn marks(hit: &Hit<'_>, path: &Path, text: &str) -> Value {
     };
     let tokens = hit.analyzer.spans(text);
     let terms: Vec<String> = tokens.iter().map(|token| token.term.clone()).collect();
+    let surfaces = surfaces_for(hit, text);
+    let held = Text {
+        terms: &terms,
+        surfaces: &surfaces,
+    };
     let marked: Vec<usize> = match &hit.query.shape {
-        Shape::Phrase { words, slop } => runs(&field.answering, &terms, words, *slop),
-        Shape::Boolean { required, .. } => terms
-            .iter()
+        Shape::Phrase { words, slop } => runs(&field.answering, held, words, *slop),
+        Shape::Boolean { required, .. } => held
+            .tokens()
             .enumerate()
-            .filter(|(_, term)| {
+            .filter(|(_, (term, surface))| {
                 required
                     .iter()
                     .flatten()
-                    .any(|probe| field.answering.answers(probe, term))
+                    .any(|probe| field.answering.answers(probe, term, surface))
             })
             .map(|(at, _)| at)
             .collect(),
@@ -120,10 +128,14 @@ pub(crate) fn marks(hit: &Hit<'_>, path: &Path, text: &str) -> Value {
 }
 
 /// The ordinals of every non-overlapping run of a phrase, left to right.
-fn runs(answering: &Answering, terms: &[String], words: &[Probe], slop: usize) -> Vec<usize> {
+fn runs(answering: &Answering, held: Text<'_>, words: &[Probe], slop: usize) -> Vec<usize> {
     let mut marked = Vec::new();
     let mut from = 0_usize;
-    while let Some(rest) = terms.get(from..) {
+    while let Some(terms) = held.terms.get(from..) {
+        let rest = Text {
+            terms,
+            surfaces: held.surfaces.get(from..).unwrap_or_default(),
+        };
         let Some(run) = answering.run_of(rest, words, slop) else {
             break;
         };
@@ -134,4 +146,14 @@ fn runs(answering: &Answering, terms: &[String], words: &[Probe], slop: usize) -
         from = from.saturating_add(last).saturating_add(1);
     }
     marked
+}
+
+/// The text's surfaces when the query asks a fuzzy word, and nothing otherwise
+/// — the only probe that reads them (Q-867).
+fn surfaces_for(hit: &Hit<'_>, text: &str) -> Vec<String> {
+    if hit.query.fuzzy() {
+        hit.analyzer.surfaces(text)
+    } else {
+        Vec::new()
+    }
 }

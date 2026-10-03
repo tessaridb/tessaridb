@@ -1044,7 +1044,12 @@ pub const SEARCH_FUZZY_MAX_EDITS: usize = 2;
 /// a walk of the whole term dictionary per word, which is the denial of service
 /// this operator would otherwise be — and because a first letter is the part of
 /// a word people mistype least, having usually just read it.
-pub const SEARCH_FUZZY_PREFIX: usize = 3;
+///
+/// Two, not the three it was until G055 (Q-867): with three, a swap of the
+/// second and third letters — `anlayzer` — was never found, and two letters
+/// still start the walk deep enough inside the dictionary that the examination
+/// ceiling bounds it.
+pub const SEARCH_FUZZY_PREFIX: usize = 2;
 
 /// How many distinct terms one fuzzy word may match before the index declines to
 /// serve it.

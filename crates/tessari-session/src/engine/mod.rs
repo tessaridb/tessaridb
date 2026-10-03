@@ -9,6 +9,7 @@
 
 mod complete;
 mod define;
+mod postings;
 mod query;
 mod read;
 mod score;
@@ -63,11 +64,17 @@ fn asked_text(
 impl Session<'_> {
     /// The plan a `FROM SEARCH` reports: served by its members' postings, or
     /// scanned where a word could not be walked.
-    fn search_plan(name: &str, served: bool) -> Plan {
+    fn search_plan(name: &str, served: bool, from_postings: bool) -> Plan {
         Plan {
             source: Some("search"),
             index: Some(name.to_owned()),
-            shape: Some("search"),
+            // Q-870: ranked from the postings alone, or from each candidate's
+            // re-analysed text.
+            shape: Some(if from_postings {
+                "search from postings"
+            } else {
+                "search"
+            }),
             ..Plan::new(if served {
                 AccessPath::Index
             } else {
@@ -83,18 +90,28 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         select: &Select,
     ) -> Result<Plan> {
-        let Source::Search { name, ask, .. } = &select.from else {
+        let Source::Search {
+            name,
+            ask,
+            condition,
+        } = &select.from
+        else {
             return Ok(Plan::new(AccessPath::Scan));
         };
         let resolved = self.resolve_search(transaction, name)?;
-        let served = match ask {
+        let (served, from_postings) = match ask {
             SearchAsk::Matches { operator, query } => {
                 let text = asked_text(self, transaction, query)?;
-                self.search_served(transaction, &resolved, (*operator, &text, query.span))?
+                self.search_served(
+                    transaction,
+                    &resolved,
+                    (*operator, &text, query.span),
+                    condition.is_none(),
+                )?
             }
-            SearchAsk::Complete { .. } => true,
+            SearchAsk::Complete { .. } => (true, false),
         };
-        Ok(Self::search_plan(&name.text, served))
+        Ok(Self::search_plan(&name.text, served, from_postings))
     }
 
     /// The records a `FROM SEARCH` answers, ranked, without their hits — the
@@ -120,7 +137,7 @@ impl Session<'_> {
             let text = asked_text(self, transaction, beginning)?;
             return Ok((
                 self.complete(transaction, &resolved, &text, beginning.span)?,
-                Self::search_plan(&name.text, true),
+                Self::search_plan(&name.text, true, false),
             ));
         };
         let text = asked_text(self, transaction, query)?;
@@ -131,7 +148,7 @@ impl Session<'_> {
             condition.as_deref(),
             noticed,
         )?;
-        let plan = Self::search_plan(&name.text, ranking.served);
+        let plan = Self::search_plan(&name.text, ranking.served, ranking.from_postings);
         Ok((
             ranking
                 .found
@@ -181,7 +198,7 @@ impl Session<'_> {
             let beginning = ask_beginning(ask);
             let text = asked_text(self, transaction, beginning)?;
             let completed = self.complete(transaction, &resolved, &text, beginning.span)?;
-            let plan = Self::search_plan(&name.text, true);
+            let plan = Self::search_plan(&name.text, true, false);
             let mut answered = Vec::new();
             for (id, record) in completed.into_iter().skip(skip).take(keep) {
                 let shaped = match &wanted {
@@ -210,7 +227,7 @@ impl Session<'_> {
             condition.as_deref(),
             noticed,
         )?;
-        let plan = Self::search_plan(&name.text, ranking.served);
+        let plan = Self::search_plan(&name.text, ranking.served, ranking.from_postings);
         let mut answered = Vec::new();
         for found in ranking.found.into_iter().skip(skip).take(keep) {
             let Some(member) = resolved.members.get(found.member) else {

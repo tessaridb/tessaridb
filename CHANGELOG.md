@@ -64,7 +64,47 @@ compares carries no pre-release suffix.
   refused as `MaterializedShape`; a caller who may read only part of the source
   is refused as `MaterializedFromHidden`.
 
+- **A misspelling is measured against the word the text held** (G055, Q-867).
+  A `SEARCH` index over a stemming analyzer keeps a surface dictionary — each
+  word as written beside the stem it became — and `MATCHES FUZZY` (and a fuzzy
+  `FROM SEARCH`) answers a token by its stem or by its surface, so
+  `trasnactoin` finds `transaction` where it found nothing against `transact`.
+  The non-fuzzy prefix is two characters (was three), the edit budget scales with
+  the word (none below three letters, one to five, two beyond), and in a
+  `FROM SEARCH` a corrected occurrence weighs `1 / (1 + edits)` so the exact word
+  ranks first. On the documentation site's 81 judged queries the fuzzy subset
+  rose 0.548 → 0.875 NDCG@10 through `DEFINE SEARCH` and 0.106 → 0.259 through a
+  field index; all five queries that answered nothing now answer.
+
+- **`FROM SEARCH` is ranked from its postings when they can decide it** (G055,
+  Q-870). A member posting keeps each field's frequency and length, so a query of
+  terms, prefixes and infixes (with `OR`, `NOT`, synonyms and weights) is decided
+  and scored by BM25F from the postings and reads only the records it answers —
+  plan shape `search from postings` — with the same scores the text path gives.
+  Warm median on the documentation site's corpus: word queries 2.18 → 0.070 ms,
+  prefixes 3.89 → 0.093 ms, the whole set 3.22 → 0.09 ms (now below a field
+  index). A fuzzy read analyses each token of a read once, not once per record.
+
+- **Chinese and Japanese text is searchable** (G055, Q-862): each Han ideograph
+  and Hiragana letter is a token of its own, so a quoted run of them is an exact
+  substring. n-gram filters are refused by name (`NgramFilter`).
+
+- **A space of text is searchable** (G055, Q-866): a value that is not an object
+  answers the route `value` with itself, so `DEFINE FIELD value ON kv … ANALYZER`,
+  `DEFINE INDEX … FIELDS value SEARCH` and `WHERE value MATCHES …` serve it.
+
 ### Changed
+
+- **A record read by identity is scored** (G055, Q-869): `search::score` and
+  `search::explain` over `FROM t:id` or a span answer against the table's
+  collection, the same number the table read gives; they were refused as
+  `NoSearchIndex`, naming a missing index that was not missing.
+
+- **`REBUILD INDEX` after upgrading**, for a `SEARCH` index over text holding
+  Chinese or Japanese (its old terms are whole sentences) and for any `SEARCH`
+  index or search member to gain surfaces and per-field postings. Until then a
+  fuzzy read over it is answered by the scan and a `FROM SEARCH` reads its
+  records' text — the same answers, at the old cost.
 
 - **An equality read on an index stops where its answer fills** (G055). Entries
   under one complete value are already in record order, so the entry walk is
@@ -78,7 +118,7 @@ compares carries no pre-release suffix.
   (one record in a hundred: 27.9 → 22.9 ms against 16.0 ms exact; the rest is the
   walk reading the whole graph before its first step).
 
-- **1504 conformance cases** define the language and run in the build.
+- **1511 conformance cases** define the language and run in the build.
 
 ## 0.21.0-beta — 2026-10-03
 

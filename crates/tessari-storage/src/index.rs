@@ -130,6 +130,10 @@ pub(crate) struct Pending {
     /// walk with terms whose posting lists are empty, which is the one thing the
     /// dictionary exists to stop.
     terms: BTreeMap<IndexAddress, BTreeMap<IndexValues, Moved>>,
+    /// How many records hold each `(surface, term)` pair, moved per search
+    /// index (Q-867) — signed and settled once, for the reasons [`Self::terms`]
+    /// is, and deleted at zero for the same one.
+    surfaces: BTreeMap<IndexAddress, BTreeMap<(String, String), i64>>,
     /// Indexes [`build`] wrote whole in this record.
     ///
     /// Their statistics are a **total**, not a movement: the build counted every
@@ -145,6 +149,23 @@ pub(crate) struct Pending {
     /// vectors of one transaction came out with no edge between them, and a
     /// later mutation's write of a shared neighbour overwrote an earlier one's.
     graphs: BTreeMap<IndexAddress, graph::Graph>,
+}
+
+/// Move each `(surface, term)` pair of one record by `by`.
+pub(crate) fn surface(
+    pending: &mut BTreeMap<IndexAddress, BTreeMap<(String, String), i64>>,
+    address: IndexAddress,
+    pairs: BTreeSet<(String, String)>,
+    by: i64,
+) {
+    if pairs.is_empty() {
+        return;
+    }
+    let held = pending.entry(address).or_default();
+    for pair in pairs {
+        let moved = held.entry(pair).or_default();
+        *moved = moved.saturating_add(by);
+    }
 }
 
 /// How one term's dictionary entry moves in this batch.
@@ -420,6 +441,7 @@ fn apply_one(
                 counted.removed(analysed.tokens);
             }
             lengthen(&mut pending.lengths, address, &analysed.fields, false);
+            surface(&mut pending.surfaces, address, analysed.surfaces, -1);
             for (term, _) in analysed.postings {
                 dictionary.entry(term.clone()).or_default().left();
                 batch = batch.delete(
@@ -429,11 +451,17 @@ fn apply_one(
             }
         }
         if let RecordValue::Present(payload) = mutation.value.value() {
-            let analysed = analysed(definition, analyzer, &decode_payload(payload)?);
+            let mut analysed = analysed(definition, analyzer, &decode_payload(payload)?);
             if let Some(counted) = counted.as_mut() {
                 counted.added(analysed.tokens);
             }
             lengthen(&mut pending.lengths, address, &analysed.fields, true);
+            surface(
+                &mut pending.surfaces,
+                address,
+                std::mem::take(&mut analysed.surfaces),
+                1,
+            );
             let length = analysed.length();
             for ((term, frequency), located) in analysed.postings.into_iter().zip(&analysed.located)
             {
@@ -565,7 +593,7 @@ pub(crate) fn posted(
     length: u32,
     located: &Located,
 ) -> tessari_kv::Value {
-    if definition.costs.positions || definition.costs.offsets {
+    if definition.costs.positions || definition.costs.offsets || !located.fields.is_empty() {
         Posting::encode_located(frequency, length, located)
     } else if definition.costs.unscored {
         Posting::Membership.encode()

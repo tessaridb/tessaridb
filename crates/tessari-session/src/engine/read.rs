@@ -19,20 +19,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use tessari_constants::{
-    SEARCH_FUZZY_EXPANSION_CAP, SEARCH_FUZZY_MAX_EDITS, SEARCH_FUZZY_PREFIX,
-    SEARCH_PREFIX_EXPANSION_CAP,
+    SEARCH_FUZZY_EXPANSION_CAP, SEARCH_FUZZY_PREFIX, SEARCH_PREFIX_EXPANSION_CAP,
 };
 use tessari_ql::{Expr, Name, SearchOperator, Span};
 use tessari_storage::{Catalog, IndexDefinition, RecordAddress, Transaction, WordSetKind};
-use tessari_types::{Analyzer, Path, RecordId, Value};
+use tessari_types::{Analyzer, Memo, Path, RecordId, Value};
 
-use super::query::{Answering, Probe, Query, Shape, holds, read_query};
+use super::query::{Answering, Probe, Query, Shape, Text, holds, read_query};
 use super::score::{Collection, Scored, bm25f, total};
 use crate::condition::boolean;
 use crate::error::{Error, Result};
 use crate::evaluate::{Part, Scope};
 use crate::noticed::Noticed;
-use crate::search::Searched;
+use crate::search::{Searched, budget};
 use crate::session::Session;
 
 /// One field of a member, ready to answer and to score.
@@ -93,6 +92,9 @@ pub(crate) struct Ranking {
     pub(crate) found: Vec<Found>,
     /// Whether every member was served by its postings.
     pub(crate) served: bool,
+    /// Whether every member was also decided and scored from its postings,
+    /// reading only the records it answered (Q-870).
+    pub(crate) from_postings: bool,
 }
 
 impl Session<'_> {
@@ -229,14 +231,17 @@ impl Session<'_> {
             })
     }
 
-    /// Whether every member's postings can nominate this query's records —
-    /// the plan's question, answered from the dictionary without a record.
+    /// Whether every member's postings can nominate this query's records, and
+    /// whether they can also decide and score it (Q-870) — the plan's
+    /// questions, answered from the dictionary and one posting per member
+    /// without a record.
     pub(crate) fn search_served(
         &self,
         transaction: &mut Transaction<'_>,
         resolved: &Resolved,
         (operator, text, span): (SearchOperator, &str, Span),
-    ) -> Result<bool> {
+        unconditioned: bool,
+    ) -> Result<(bool, bool)> {
         let query = read_query(
             &resolved.analyzer,
             operator,
@@ -245,16 +250,28 @@ impl Session<'_> {
             span,
         )?;
         let probes = query.probes();
+        let mut decided = unconditioned
+            && !query.is_empty()
+            && super::postings::decidable(&query)
+            && transaction.indexes_are_current()?;
         for member in &resolved.members {
             let mut expansions = Vec::with_capacity(probes.len());
             for probe in &probes {
                 expansions.push(expand(transaction, member, probe)?);
             }
             if groups_of(&query, &probes, &expansions).is_none() {
-                return Ok(false);
+                return Ok((false, false));
             }
+            decided = decided
+                && expansions.iter().all(Option::is_some)
+                && !transaction.writes_in(
+                    member.index.namespace,
+                    member.index.database,
+                    member.index.table,
+                )
+                && transaction.member_fielded(&member.index)?;
         }
-        Ok(true)
+        Ok((true, decided))
     }
 
     /// Every record of the search that answers the query, ranked.
@@ -279,6 +296,7 @@ impl Session<'_> {
                 Ranking {
                     found: Vec::new(),
                     served: true,
+                    from_postings: false,
                 },
             ));
         }
@@ -323,8 +341,60 @@ impl Session<'_> {
             ),
         };
 
+        // The candidates of one read share their words, so each is analysed
+        // once per read (Q-870).
+        let mut memo = Memo::default();
+        // Q-870: whether the postings can decide this read, member by member.
+        let decidable = condition.is_none()
+            && super::postings::decidable(&query)
+            && transaction.indexes_are_current()?;
+        let mut from_postings = decidable;
         let mut found = Vec::new();
         for (at, member) in resolved.members.iter().enumerate() {
+            if decidable
+                && !transaction.writes_in(
+                    member.index.namespace,
+                    member.index.database,
+                    member.index.table,
+                )
+                && let Some(reached) = expansions[at].iter().cloned().collect::<Option<Vec<_>>>()
+            {
+                let terms: Vec<String> = reached
+                    .iter()
+                    .flatten()
+                    .cloned()
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                if let Some(held) = transaction.member_postings(&member.index, &terms)? {
+                    let visible = self.visible_in(transaction, member.index.table)?;
+                    for (id, score) in super::postings::ranked(
+                        member,
+                        &query,
+                        &reached,
+                        &held,
+                        (collection, &holding),
+                    ) {
+                        let address = RecordAddress::new(
+                            member.index.namespace,
+                            member.index.database,
+                            member.index.table,
+                            id.clone(),
+                        );
+                        let Some(payload) = transaction.get(&address)? else {
+                            continue;
+                        };
+                        found.push(Found {
+                            member: at,
+                            id,
+                            record: self.record_of(&payload, &visible)?,
+                            score,
+                        });
+                    }
+                    continue;
+                }
+            }
+            from_postings = false;
             let nominated = match groups_of(&query, &probes, &expansions[at]) {
                 Some(groups) => transaction
                     .member_candidates(&member.index, &groups)?
@@ -355,19 +425,23 @@ impl Session<'_> {
                     continue;
                 };
                 let record = self.record_of(&payload, &visible)?;
-                let terms: Vec<Vec<String>> = member
+                let analysed: Vec<(Vec<String>, Vec<String>)> = member
                     .fields
                     .iter()
                     .map(|field| match field.path.resolve(&record) {
-                        Some(Value::String(text)) => resolved.analyzer.terms(text),
-                        _ => Vec::new(),
+                        Some(Value::String(text)) => resolved.analyzer.analysed(text, &mut memo),
+                        _ => (Vec::new(), Vec::new()),
                     })
                     .collect();
-                let fields: Vec<(&Answering, &[String])> = member
+                let texts: Vec<Text<'_>> = analysed
+                    .iter()
+                    .map(|(terms, surfaces)| Text { terms, surfaces })
+                    .collect();
+                let fields: Vec<(&Answering, Text<'_>)> = member
                     .fields
                     .iter()
-                    .zip(&terms)
-                    .map(|(field, terms)| (&field.answering, terms.as_slice()))
+                    .zip(&texts)
+                    .map(|(field, text)| (&field.answering, *text))
                     .collect();
                 if !holds(&query, &fields) {
                     continue;
@@ -387,10 +461,10 @@ impl Session<'_> {
                 let scored: Vec<Scored<'_>> = member
                     .fields
                     .iter()
-                    .zip(&terms)
-                    .map(|(field, terms)| Scored {
+                    .zip(&texts)
+                    .map(|(field, text)| Scored {
                         answering: &field.answering,
-                        terms,
+                        text: *text,
                         weight: field.weight,
                         average: field.average,
                     })
@@ -415,7 +489,14 @@ impl Session<'_> {
                 })
                 .then_with(|| left.id.cmp(&right.id))
         });
-        Ok((query, Ranking { found, served }))
+        Ok((
+            query,
+            Ranking {
+                found,
+                served,
+                from_postings,
+            },
+        ))
     }
 }
 
@@ -452,17 +533,34 @@ fn expand(
         }
         Probe::Fuzzy(alternatives) => {
             for spelling in alternatives {
-                let found = transaction.terms_within_distance(
-                    &member.index,
-                    spelling,
-                    SEARCH_FUZZY_MAX_EDITS,
-                    SEARCH_FUZZY_PREFIX,
-                    SEARCH_FUZZY_EXPANSION_CAP,
-                )?;
-                if found.capped {
-                    return Ok(None);
+                // The terms near the spelling, and the terms of the surfaces
+                // near it (Q-867).
+                for found in [
+                    transaction.terms_within_distance(
+                        &member.index,
+                        spelling,
+                        budget(spelling),
+                        SEARCH_FUZZY_PREFIX,
+                        SEARCH_FUZZY_EXPANSION_CAP,
+                    )?,
+                    // A member built before surfaces existed holds none, and
+                    // is scanned instead.
+                    match transaction.terms_by_surface(
+                        &member.index,
+                        spelling,
+                        budget(spelling),
+                        SEARCH_FUZZY_PREFIX,
+                        SEARCH_FUZZY_EXPANSION_CAP,
+                    )? {
+                        Some(found) => found,
+                        None => return Ok(None),
+                    },
+                ] {
+                    if found.capped {
+                        return Ok(None);
+                    }
+                    reached.extend(found.terms);
                 }
-                reached.extend(found.terms);
             }
         }
         Probe::Infix(piece) => {

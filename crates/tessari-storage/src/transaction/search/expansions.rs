@@ -6,8 +6,8 @@ use crate::error::Result;
 use std::collections::{BTreeMap, BTreeSet};
 use tessari_constants::SEARCH_FUZZY_EXAMINATION_CAP;
 use tessari_encoding::{
-    IndexAddress, IndexTarget, IndexValues, KeyKind, PostingKey, SearchSuffixKey, SearchTermKey,
-    SecondaryIndexKey, StoreKey, StoreValue, decode_payload,
+    IndexAddress, IndexTarget, IndexValues, KeyKind, PostingKey, SearchSuffixKey, SearchSurfaceKey,
+    SearchTermKey, SecondaryIndexKey, StoreKey, StoreValue, decode_payload,
 };
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{RecordId, Value, within_edits};
@@ -137,6 +137,72 @@ impl Transaction<'_> {
             capped,
             examined,
         })
+    }
+
+    /// The terms whose **surface** forms are within `edits` of `word` and share
+    /// its first `prefix` characters (Q-867) — the raw-companion half of a
+    /// fuzzy expansion.
+    ///
+    /// The surface dictionary holds only the pairs a stemmer changed, so this
+    /// walk adds to [`Self::terms_within_distance`] and never replaces it: a word
+    /// the stemmer left alone is its own surface and is found there. The terms
+    /// answered are postings to read, and a record posted under one may hold it
+    /// through a different surface — a candidate the caller re-tests, as every
+    /// fuzzy candidate is. The two ceilings mean what they mean in the term walk.
+    ///
+    /// `None` when the index was built before surfaces were kept: it holds none,
+    /// so the caller scans rather than answering less than the scan would.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or a key cannot be decoded.
+    pub fn terms_by_surface(
+        &self,
+        index: &IndexDefinition,
+        word: &str,
+        edits: usize,
+        prefix: usize,
+        cap: usize,
+    ) -> Result<Option<Expansion>> {
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        if self
+            .store
+            .backend()
+            .get(
+                SearchSurfaceKey::keyspace(),
+                &SearchSurfaceKey::marker(address),
+            )?
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let leading: String = word.chars().take(prefix).collect();
+        let request = ScanRequest {
+            keyspace: SearchSurfaceKey::keyspace(),
+            range: KeyRange::prefix(&SearchSurfaceKey::surface_prefix(&address, &leading)),
+            direction: ScanDirection::Forward,
+            limit: Some(SEARCH_FUZZY_EXAMINATION_CAP.saturating_add(1)),
+        };
+        let found = self.store.backend().scan(&request)?;
+        let mut capped = found.len() > SEARCH_FUZZY_EXAMINATION_CAP;
+        let mut terms = BTreeSet::new();
+        for (key, _) in found.iter().take(SEARCH_FUZZY_EXAMINATION_CAP) {
+            let pair = SearchSurfaceKey::decode(key.as_slice())?;
+            if !within_edits(word, &pair.surface, edits) {
+                continue;
+            }
+            if terms.len() >= cap && !terms.contains(&pair.term) {
+                capped = true;
+                break;
+            }
+            terms.insert(pair.term);
+        }
+        let examined = found.len().min(SEARCH_FUZZY_EXAMINATION_CAP);
+        Ok(Some(Expansion {
+            terms: terms.into_iter().collect(),
+            capped,
+            examined,
+        }))
     }
 
     /// The records one term is posted against.

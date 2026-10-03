@@ -1,8 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use tessari_constants::{
-    SEARCH_FUZZY_EXPANSION_CAP, SEARCH_FUZZY_MAX_EDITS, SEARCH_FUZZY_PREFIX,
-    SEARCH_PREFIX_EXPANSION_CAP,
+    SEARCH_FUZZY_EXPANSION_CAP, SEARCH_FUZZY_PREFIX, SEARCH_PREFIX_EXPANSION_CAP,
 };
 use tessari_geo::{Cell, Shape as Geometry};
 use tessari_ql::{BinaryOp, Expr};
@@ -12,6 +11,7 @@ use tessari_types::{Path, Value};
 use crate::condition::literal_prefix;
 use crate::error::Result;
 use crate::search::Searched;
+use crate::search::budget;
 use crate::session::Session;
 
 use super::candidate::{Candidate, Rows, Served};
@@ -316,13 +316,32 @@ impl Session<'_> {
                                         }
                                     }
                                 } else if fuzzy {
-                                    transaction.terms_within_distance(
+                                    // The terms near the spelling, and the
+                                    // terms of the surfaces near it (Q-867).
+                                    let mut found = transaction.terms_within_distance(
                                         index,
                                         spelling,
-                                        SEARCH_FUZZY_MAX_EDITS,
+                                        budget(spelling),
+                                        SEARCH_FUZZY_PREFIX,
+                                        SEARCH_FUZZY_EXPANSION_CAP,
+                                    )?;
+                                    // An index built before surfaces
+                                    // existed holds none, and the scan
+                                    // answers instead.
+                                    let Some(surfaced) = transaction.terms_by_surface(
+                                        index,
+                                        spelling,
+                                        budget(spelling),
                                         SEARCH_FUZZY_PREFIX,
                                         SEARCH_FUZZY_EXPANSION_CAP,
                                     )?
+                                    else {
+                                        serviceable = false;
+                                        break;
+                                    };
+                                    found.capped |= surfaced.capped;
+                                    found.terms.extend(surfaced.terms);
+                                    found
                                 } else {
                                     transaction.terms_with_prefix(
                                         index,

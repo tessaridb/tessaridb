@@ -169,6 +169,7 @@ pub(crate) fn script_kind(error: &tessari_ql::Error) -> &'static str {
         tessari_ql::Error::UnexpectedToken { .. } => "UnexpectedToken",
         tessari_ql::Error::UnexpectedEnd { .. } => "UnexpectedEnd",
         tessari_ql::Error::Unsupported { .. } => "Unsupported",
+        tessari_ql::Error::NgramFilter { .. } => "NgramFilter",
         tessari_ql::Error::InvalidDatetime { .. } => "InvalidDatetime",
         tessari_ql::Error::InvalidUuid { .. } => "InvalidUuid",
         tessari_ql::Error::InvalidDecimal { .. } => "InvalidDecimal",

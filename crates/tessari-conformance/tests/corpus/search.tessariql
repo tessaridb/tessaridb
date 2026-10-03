@@ -164,9 +164,9 @@ SELECT search::explain(body) AS why FROM notes;
 SELECT search::score(title, 'ada') AS relevance FROM notes;
 --- expect: error NoSearchIndex
 
---- case: and a single record is not a collection either
+--- case: a single record read by identity is scored against its table's collection
 SELECT search::score(body, 'hopper') AS relevance FROM notes:9;
---- expect: error NoSearchIndex
+--- expect: rows 1
 
 # The vector index. Every other index in this store changes what a read costs and
 # not what it answers; this one cannot, so the statement has to ask.
@@ -237,20 +237,24 @@ SELECT * FROM mistyped WHERE body MATCHES FUZZY 'containr analyzr';
 SELECT * FROM mistyped WHERE body MATCHES FUZZY 'containr zzzqqq';
 --- expect: rows 0
 
---- case: a mistake inside the first three characters is not found
+--- case: a mistake inside the first two characters is not found
 SELECT * FROM mistyped WHERE body MATCHES FUZZY 'xector';
 --- expect: rows 0
 
---- case: too short to carry a non-fuzzy prefix, so it is refused
-SELECT * FROM mistyped WHERE body MATCHES FUZZY 've';
+--- case: too short to carry the two-character non-fuzzy prefix, so it is refused
+SELECT * FROM mistyped WHERE body MATCHES FUZZY 'v';
 --- expect: error PrefixTooShort
 
 --- case: a transposition costs two edits and is still inside the budget
 SELECT * FROM mistyped WHERE body MATCHES FUZZY 'vectro';
 --- expect: rows 1
 
---- case: but a transposition inside the first three characters is not found
+--- case: a transposition after the first two characters is found
 SELECT * FROM mistyped WHERE body MATCHES FUZZY 'vetcor';
+--- expect: rows 1
+
+--- case: but a transposition inside the first two characters is not
+SELECT * FROM mistyped WHERE body MATCHES FUZZY 'evctor';
 --- expect: rows 0
 
 --- case: a collection holding the same two words in both orders
@@ -545,3 +549,39 @@ DROP SYNONYMS writers;
 --- case: and a search that is gone is not read
 SELECT * FROM SEARCH works MATCHES 'ada';
 --- expect: error Unknown
+
+--- case: an n-gram filter is refused by its own name
+DEFINE ANALYZER grams FILTERS lowercase, ngram;
+--- expect: error NgramFilter
+
+--- case: a stemmed collection for misspellings
+DEFINE ANALYZER stemming FILTERS lowercase, ascii, stemmer;
+DEFINE COLLECTION ledgers;
+DEFINE FIELD body ON ledgers TYPE string ANALYZER stemming;
+DEFINE INDEX by_body ON ledgers FIELDS body SEARCH;
+CREATE ledgers:1 = { body: 'a transaction settles at night' };
+CREATE ledgers:2 = { body: 'transacting traders' };
+--- expect: ok
+
+--- case: a misspelling is measured against the word the text held, not its stem
+SELECT * FROM ledgers WHERE body MATCHES FUZZY 'trasnactoin';
+--- expect: rows 1
+
+--- case: ideographs are one token each, so a quoted run is found as written
+CREATE ledgers:3 = { body: '東京都に住む' };
+CREATE ledgers:4 = { body: '京東の店' };
+SELECT * FROM ledgers WHERE body MATCHES '"東京"';
+--- expect: rows 1
+
+--- case: a record read by its identity is scored against its table
+SELECT search::score(body, 'transaction') AS s FROM ledgers:1;
+--- expect: rows 1
+
+--- case: a space of text answers the route value with the value itself
+DEFINE SPACE phrases;
+DEFINE FIELD value ON phrases TYPE string ANALYZER stemming;
+DEFINE INDEX by_value ON phrases FIELDS value SEARCH;
+SET phrases:'a' = 'the quick foxes';
+SET phrases:'b' = 'a lazy dog';
+SELECT * FROM phrases WHERE value MATCHES 'fox';
+--- expect: rows 1

@@ -30,7 +30,7 @@ use core::ops::Range;
 use tessari_ql::BinaryOp;
 use tessari_types::Analyzer;
 
-use super::matching::{begins, near, run_of};
+use super::matching::{begins, near_token, run_of};
 use super::query::{Asked, Word, asked};
 
 /// The byte ranges of the tokens that answered what this read asked of the
@@ -46,8 +46,14 @@ pub(crate) fn marked(
     let tokens = analyzer.spans(text);
     let terms: Vec<String> = tokens.iter().map(|token| token.term.clone()).collect();
     let mut reached = vec![false; tokens.len()];
+    // The surfaces only a fuzzy word reads, so only a fuzzy word pays for them.
+    let surfaces = if wanted.iter().any(|(op, _)| *op == BinaryOp::MatchesFuzzy) {
+        analyzer.surfaces(text)
+    } else {
+        Vec::new()
+    };
     for (op, query) in wanted {
-        mark(analyzer, *op, query, &terms, &mut reached);
+        mark(analyzer, *op, query, (&terms, &surfaces), &mut reached);
     }
     tokens
         .into_iter()
@@ -93,7 +99,13 @@ pub(crate) fn whole_terms(
 /// Several predicates may name the same field — `body MATCHES 'ada' OR body
 /// MATCHES FUZZY 'lovelac'` — and a token either was reached or was not, so the
 /// marks accumulate rather than replacing one another.
-fn mark(analyzer: &Analyzer, op: BinaryOp, query: &str, terms: &[String], reached: &mut [bool]) {
+fn mark(
+    analyzer: &Analyzer,
+    op: BinaryOp,
+    query: &str,
+    (terms, surfaces): (&[String], &[String]),
+    reached: &mut [bool],
+) {
     match op {
         BinaryOp::Matches => match asked(analyzer, query) {
             // A phrase marks its **run**. A record holding `lovelace ada … ada
@@ -126,8 +138,8 @@ fn mark(analyzer: &Analyzer, op: BinaryOp, query: &str, terms: &[String], reache
         }
         BinaryOp::MatchesFuzzy => {
             let asked = analyzer.prefixes(query);
-            for (hit, term) in reached.iter_mut().zip(terms) {
-                *hit |= asked.iter().any(|word| near(word, term));
+            for ((hit, term), surface) in reached.iter_mut().zip(terms).zip(surfaces) {
+                *hit |= asked.iter().any(|word| near_token(word, term, surface));
             }
         }
         // The typed spelling of each word, found inside the term (ADR-0105 D9).
