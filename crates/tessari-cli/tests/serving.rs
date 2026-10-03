@@ -3962,6 +3962,127 @@ fn a_shard_placed_on_two_nodes_survives_losing_its_leader() {
     }
 }
 
+/// The participant-failover cluster's addresses, a band of its own.
+const ACROSS_PARTICIPANT: Band = [
+    ("127.0.0.1:48004", "127.0.0.1:48005"),
+    ("127.0.0.1:48006", "127.0.0.1:48007"),
+    ("127.0.0.1:48008", "127.0.0.1:48009"),
+];
+
+#[test]
+#[ignore = "real cadences across three processes — two shard lines elected, a \
+            participant leader killed and its other candidate elected. G053 \
+            SG3f's own validation, run explicitly: cargo test -p tessari-cli \
+            --test serving a_transaction_whose_participant_leader -- --ignored"]
+fn a_transaction_whose_participant_leader_dies_is_kept_whole_by_its_successor() {
+    // Shard 1 is led by node 0, which coordinates; shard 2 may be led by node 1
+    // or node 2. The participant's leader is killed as soon as the client is
+    // told the commit — its resolution may or may not have reached a majority
+    // by then, and either way the survivor has to end up holding the whole
+    // transaction while node 0 never shows half of it.
+    let mut cluster = a_cluster_declared(
+        &ACROSS_PARTICIPANT,
+        PLACED,
+        [
+            " LEADS SHARD prod.shop.orders 1",
+            " LEADS SHARD prod.shop.orders 2",
+            " LEADS SHARD prod.shop.orders 2",
+        ],
+    );
+    let logs = cluster.logs.clone();
+    if let Err(last) = until_taken(ACROSS_PARTICIPANT[0].0, "a", Duration::from_secs(120)) {
+        panic!(
+            "node 0 never took shard 1; last: {last}{}",
+            what_the_nodes_said(&ACROSS_PARTICIPANT, &logs)
+        );
+    }
+    let began = Instant::now();
+    let mut leader = None;
+    while began.elapsed() < Duration::from_secs(120) && leader.is_none() {
+        leader = [1, 2].into_iter().find(|index| {
+            until_taken(ACROSS_PARTICIPANT[*index].0, "h", Duration::from_millis(1)).is_ok()
+        });
+        std::thread::sleep(POLL);
+    }
+    let Some(leader) = leader else {
+        panic!(
+            "neither candidate took shard 2{}",
+            what_the_nodes_said(&ACROSS_PARTICIPANT, &logs)
+        );
+    };
+    let survivor = if leader == 1 { 2 } else { 1 };
+    if let Err(last) = until_sent_to(
+        ACROSS_PARTICIPANT[0].0,
+        "hknown",
+        cluster.ids[leader],
+        ACROSS_PARTICIPANT[leader].1,
+        Duration::from_secs(90),
+    ) {
+        panic!(
+            "node 0 never learned who leads shard 2; last: {last}{}",
+            what_the_nodes_said(&ACROSS_PARTICIPANT, &logs)
+        );
+    }
+    let script = "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
+                  CREATE orders:'ap' = { n: 11 }; CREATE orders:'hp' = { n: 11 }; \
+                  COMMIT ACROSS LEADERS;";
+    let mut committed = Err(String::from("never asked"));
+    let asking = Instant::now();
+    while committed.is_err() && asking.elapsed() < Duration::from_secs(60) {
+        committed = asked(ACROSS_PARTICIPANT[0].0, script, None);
+        if committed.is_err() {
+            std::thread::sleep(POLL);
+        }
+    }
+    assert!(
+        committed.is_ok(),
+        "a transaction across leaders: {committed:?}{}",
+        what_the_nodes_said(&ACROSS_PARTICIPANT, &logs)
+    );
+    cluster.running[leader] = None;
+    // Whole or absent on node 0 at every look, and whole on both survivors
+    // once the successor has taken shard 2 and finished what it holds.
+    let read = "SELECT id FROM orders WHERE n = 11 ORDER BY id;";
+    let settled = until(Duration::from_secs(180), || {
+        let at_zero = read_at(ACROSS_PARTICIPANT[0].0, read);
+        if let Ok(ids) = &at_zero {
+            assert!(
+                ids.is_empty() || ids == &["ap", "hp"],
+                "node 0 showed half a transaction: {ids:?}"
+            );
+        }
+        at_zero.is_ok_and(|ids| ids == ["ap", "hp"])
+            && read_at(ACROSS_PARTICIPANT[survivor].0, read).is_ok_and(|ids| ids == ["ap", "hp"])
+    });
+    assert!(
+        settled,
+        "the survivors never both held the whole transaction: node 0 {:?}, node \
+         {survivor} {:?}{}",
+        read_at(ACROSS_PARTICIPANT[0].0, read),
+        read_at(ACROSS_PARTICIPANT[survivor].0, read),
+        what_the_nodes_said_beyond_greetings(&logs)
+    );
+    // Which way it went, for whoever runs this: the window that leaves an
+    // intent on the successor is not forced, so a run says whether it opened.
+    eprintln!(
+        "ACROSS_PARTICIPANT the successor finished intents itself: {}",
+        std::fs::read_to_string(&logs[survivor])
+            .unwrap_or_default()
+            .contains("finished cross-leader transactions")
+    );
+    // And shard 2 takes writes again under its successor.
+    if let Err(last) = until_taken(
+        ACROSS_PARTICIPANT[survivor].0,
+        "i",
+        Duration::from_secs(120),
+    ) {
+        panic!(
+            "shard 2's other candidate never took it; last: {last}{}",
+            what_the_nodes_said(&ACROSS_PARTICIPANT, &logs)
+        );
+    }
+}
+
 // ---- G033 S3.1: a read gathered across shards, across three processes ------
 
 /// The gathering cluster's addresses — a band of its own, below the hand-run
