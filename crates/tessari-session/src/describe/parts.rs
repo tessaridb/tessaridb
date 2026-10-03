@@ -216,3 +216,26 @@ pub(crate) fn quoted(text: &str) -> Option<String> {
     out.push('\'');
     Some(out)
 }
+
+/// `DEFINE EVENT …;` for one of a table's events, as it was written
+/// (ADR-0110). A body of more than one statement is written in braces; `FOR`
+/// is written only when the event runs for fewer than all three writes.
+pub(crate) fn write_event(
+    script: &mut String,
+    table: &str,
+    event: &tessari_storage::EventDeclaration,
+) {
+    let _ = write!(script, "DEFINE EVENT {} ON {table}", event.name);
+    if event.on.len() < tessari_types::WriteKind::ALL.len() {
+        let words: Vec<&str> = event.on.iter().map(|kind| kind.word()).collect();
+        let _ = write!(script, " FOR {}", words.join(", "));
+    }
+    if let Some(when) = &event.when {
+        let _ = write!(script, " WHEN {when}");
+    }
+    if event.body.contains(';') {
+        let _ = writeln!(script, " THEN {{ {}; }};", event.body);
+    } else {
+        let _ = writeln!(script, " THEN {};", event.body);
+    }
+}

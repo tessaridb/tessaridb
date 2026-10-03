@@ -13,7 +13,7 @@ written in Rust, for AI applications and the products built around them.
 [![version](https://img.shields.io/badge/version-0.22.0--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.98%2B-6B5FD1?style=flat-square)](Cargo.toml)
-[![conformance](https://img.shields.io/badge/conformance-1516%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![conformance](https://img.shields.io/badge/conformance-1531%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/tessaridb/tessaridb-protocol) ·
@@ -169,6 +169,7 @@ possible rather than aspirational.
 | | |
 |---|---|
 | **Transactions** | snapshot isolation on the commit log, `BEGIN` · `COMMIT` · `CANCEL` |
+| **Events** | `DEFINE EVENT … ON t [FOR CREATE, UPDATE, DELETE] [WHEN …] THEN …` — statements run after each write of a record, in the writer's transaction and as the writer, seeing `$before` and `$after`; a refusal in the body refuses the write, a chain is bounded at 16, and work after the commit is a topic appended in the same commit |
 | **Materialized views** | `DEFINE VIEW … MATERIALIZED` — a read's answer kept as records, brought current from its source's change feed in the writer's order and always equal to the read at the version it states; `INFO FOR TABLE` says how far behind it is |
 | **A planner that estimates** | `ANALYZE TABLE` — per-index statistics (common values, distinct counts, equi-depth buckets) a serving node also keeps fresh itself; two indexes ranked by the records each produces, an index that returns most of a table losing to it, and `EXPLAIN` saying what it estimated and from what |
 | **Real-time** | change subscriptions as a first-class feature — over the wire and over a WebSocket |

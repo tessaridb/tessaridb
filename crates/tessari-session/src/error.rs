@@ -1879,6 +1879,53 @@ pub enum Error {
         span: Span,
     },
 
+    /// An event of this name is already defined on the table (ADR-0110).
+    #[error("an event named `{event}` is already defined on `{table}` (at {span})")]
+    EventExists {
+        /// The event.
+        event: String,
+        /// The table.
+        table: String,
+        /// Where it was written.
+        span: Span,
+    },
+
+    /// An event's body refused, so the write that ran it is refused (ADR-0110
+    /// D4). The cause is the body's own refusal, unchanged.
+    #[error("event `{event}` on `{table}` refused the write: {cause}")]
+    EventFailed {
+        /// The event whose body refused.
+        event: String,
+        /// The table it is defined on.
+        table: String,
+        /// What the body refused with.
+        cause: Box<Error>,
+    },
+
+    /// A chain of events ran deeper than the limit (ADR-0110 D5).
+    #[error(
+        "event `{event}` would run {limit} events deep — a chain of events that writes back into itself; give the body a `WHEN` that excludes its own change"
+    )]
+    EventDepth {
+        /// The event that would have run past the limit.
+        event: String,
+        /// The limit.
+        limit: u8,
+    },
+
+    /// An event on a table kind that cannot carry one (ADR-0110 D9).
+    #[error(
+        "`{table}` is a {kind}, and only tables, collections and edge tables carry events (at {span})"
+    )]
+    EventOnKind {
+        /// The table.
+        table: String,
+        /// Its kind.
+        kind: &'static str,
+        /// Where it was named.
+        span: Span,
+    },
+
     /// A search of this name already exists in the database.
     #[error("a search named `{name}` already exists (at {span})")]
     SearchExists {

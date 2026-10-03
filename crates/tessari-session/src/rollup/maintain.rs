@@ -386,12 +386,21 @@ impl Session<'_> {
         address: RecordAddress,
         span: Span,
     ) -> Result<()> {
-        let Some(held) = self.rollups_before(transaction, &address, span)? else {
-            transaction.delete(address);
-            return Ok(());
-        };
-        transaction.delete(address.clone());
-        self.rollups_after(transaction, &address, held, None, span)
+        // Events see the record that was there, and run after it is gone
+        // (ADR-0110).
+        let events = self.events_before(transaction, &address)?;
+        let evented = events.as_ref().map(|_| address.clone());
+        match self.rollups_before(transaction, &address, span)? {
+            None => transaction.delete(address),
+            Some(held) => {
+                transaction.delete(address.clone());
+                self.rollups_after(transaction, &address, held, None, span)?;
+            }
+        }
+        if let (Some(pending), Some(at)) = (events, evented) {
+            self.events_after(transaction, &at, pending, None)?;
+        }
+        Ok(())
     }
 
     /// Write a row whole, as the engine rather than as a caller.

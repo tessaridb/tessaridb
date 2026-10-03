@@ -376,6 +376,10 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // would look like this one until somebody changed the binding.
         | StatementKind::DefineView { .. }
         | StatementKind::DropView { .. }
+        // An event's body is bound per write, to the values the write
+        // supplies, never to the caller's (ADR-0110).
+        | StatementKind::DefineEvent { .. }
+        | StatementKind::DropEvent { .. }
         | StatementKind::Claim { .. }
         // `UNSEAL` takes a string literal and never a parameter, so there is
         // nothing here to substitute into. That is the grammar's decision and

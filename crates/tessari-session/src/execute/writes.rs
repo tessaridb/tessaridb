@@ -92,13 +92,33 @@ impl Session<'_> {
         let mut payload = payload;
         crate::queue::hold_engine_fields(transaction, &address, &mut payload, span)?;
         crate::series::hold_event_time(transaction, &address, &payload, span)?;
+        // A table with events runs them after the write, in this same
+        // transaction (ADR-0110); one without pays the definition read.
+        let events = self.events_before(transaction, &address)?;
+        let evented = events.as_ref().map(|_| address.clone());
         // A series with rollups keeps them in this same transaction (ADR-0088
         // §6); every other table pays one registry lookup for asking.
-        let Some(held) = self.rollups_before(transaction, &address, span)? else {
-            return self.write_record(transaction, address, payload, partial, span);
-        };
-        self.write_record(transaction, address.clone(), payload.clone(), partial, span)?;
-        self.rollups_after(transaction, &address, held, Some(&payload), span)
+        match self.rollups_before(transaction, &address, span)? {
+            None => self.write_record(transaction, address, payload, partial, span)?,
+            Some(held) => {
+                self.write_record(transaction, address.clone(), payload.clone(), partial, span)?;
+                self.rollups_after(transaction, &address, held, Some(&payload), span)?;
+            }
+        }
+        if let (Some(pending), Some(at)) = (events, evented) {
+            // What the write stored, read back rather than the payload handed
+            // in: defaults, snapping and the engine's carried fields are all
+            // applied by now, and `$after` is the record as a reader finds it.
+            let stored = match transaction.get(&at)? {
+                Some(bytes) => Some(
+                    tessari_encoding::decode_payload(&bytes)
+                        .map_err(tessari_storage::Error::from)?,
+                ),
+                None => None,
+            };
+            self.events_after(transaction, &at, pending, stored.as_ref())?;
+        }
+        Ok(())
     }
 
     /// The write itself, with no question asked about who is making it.

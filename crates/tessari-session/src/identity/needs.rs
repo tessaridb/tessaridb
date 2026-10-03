@@ -488,6 +488,10 @@ impl Needs {
             | StatementKind::DropEdge { .. }
             | StatementKind::DefineIndex { .. }
             | StatementKind::DropIndex { .. }
+            // An event is a declaration on a table, decided like an index
+            // (ADR-0110 D6).
+            | StatementKind::DefineEvent { .. }
+            | StatementKind::DropEvent { .. }
             | StatementKind::RebuildIndex { .. }
             | StatementKind::CheckTable { .. }
             | StatementKind::AnalyzeTable { .. }
@@ -630,6 +634,7 @@ pub(crate) fn holds_node_read(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Select(select) => matches!(select.from, tessari_ql::Source::Node),
         ExprKind::Not(inner) | ExprKind::Negate(inner) => holds_node_read(inner),
+        ExprKind::Route { value, .. } => holds_node_read(value),
         ExprKind::If {
             condition,
             then,

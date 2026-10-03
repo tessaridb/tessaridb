@@ -12,6 +12,7 @@
 
 mod declarations;
 mod engine;
+mod events;
 mod indexes;
 mod kinds;
 mod reading;
@@ -30,6 +31,7 @@ pub use declarations::{
     VaultDeclaration, VectorDeclaration, ViewDeclaration,
 };
 pub use engine::{EngineField, EngineMember, UNIT_WEIGHT};
+pub use events::EventDeclaration;
 pub use indexes::{IndexDefinition, IndexShape, SearchCosts, VectorDistance};
 pub use kinds::{StoredKind, TableKind};
 pub(crate) use reading::{
@@ -91,6 +93,7 @@ const FIELD_ACKNOWLEDGE: &str = "acknowledge";
 const FIELD_CONFLICT: &str = "conflict";
 const FIELD_SHARDS: &str = "shards";
 const FIELD_PARTITION: &str = "partition";
+const FIELD_EVENTS: &str = "events";
 
 /// A namespace: the outermost tenancy level.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -521,6 +524,14 @@ mod tests {
             conflict: None,
             shards: None,
             partition: None,
+            // Not the default either, for the identity's reason: an empty list
+            // round trips through a field that was never written.
+            events: vec![super::EventDeclaration {
+                name: "audit".to_owned(),
+                on: vec![tessari_types::WriteKind::Update],
+                when: Some("$after.v > 1".to_owned()),
+                body: "CREATE log = { v: $after.v }".to_owned(),
+            }],
         };
         assert_eq!(
             TableDefinition::from_value(&table.to_value()).unwrap(),
@@ -631,6 +642,7 @@ mod tests {
             graph: None,
             shards: None,
             partition: None,
+            events: Vec::new(),
             kind: TableKind::Edge(Some(EdgeDeclaration {
                 from: TableId::new(4),
                 to: TableId::new(5),
@@ -690,6 +702,7 @@ mod tests {
             graph: None,
             shards: None,
             partition: None,
+            events: Vec::new(),
             // Deliberately the second distance rather than the first: a store
             // that round tripped as `cosine` whatever it was declared with
             // survives an assertion made with the default.

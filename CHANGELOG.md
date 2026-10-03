@@ -16,6 +16,30 @@ compares carries no pre-release suffix.
 
 ### Added
 
+- **Events: logic that runs with a write** (G055, ADR-0110). `DEFINE EVENT name
+  ON t [FOR CREATE, UPDATE, DELETE] [WHEN cond] THEN stmt` — or `THEN { … }` for
+  several — runs after each write of a record of `t`, inside the writer's
+  transaction and authorized as the writer, with `$event`, `$before`, `$after`
+  (as the writer may read them) and `$id` bound. Every caller-driven write runs
+  it: statements, scripts, clients, Kafka and topic consumers; replication, a
+  restore and the engine's own writes never do. A refusal in the body — `THROW`
+  included — refuses the write as `EventFailed`; a chain deeper than 16 is
+  `EventDepth`; vaults, topics, queues, views and the other stores with a write
+  path of their own refuse an event with `EventOnKind`. Work after the commit is
+  a topic appended in the body, consumed by a group or `DEFINE TOPIC CONSUMER`.
+  `INFO FOR TABLE` lists events; `BACKUP SCRIPT` writes them after the data, so a
+  restore does not run them over records it replays. A table without events
+  writes at the same cost (9.4 µs per write either way); one audit event took a
+  write from 10.0 to 34.1 µs.
+
+- **A route into a value**: `$after.total`, `$order.lines[0].sku`. A step that
+  reaches nothing answers `NONE`, so `$before.total ?? 0` reads a missing value
+  as zero.
+
+- The console's statement scanner and the specification's example extractor
+  read a `;` inside braces as part of the statement — an event body typed over
+  several lines is submitted whole.
+
 - **A filtered nearest read is served by the vector graph** (G055). `WHERE …
   ORDER BY vector::cosine|euclidean(f, $q) LIMIT k APPROXIMATE` walks the graph,
   admitting a record only after testing the whole condition on it at the
@@ -130,7 +154,7 @@ compares carries no pre-release suffix.
   (one record in a hundred: 27.9 → 22.9 ms against 16.0 ms exact; the rest is the
   walk reading the whole graph before its first step).
 
-- **1516 conformance cases** define the language and run in the build.
+- **1531 conformance cases** define the language and run in the build.
 
 ## 0.21.0-beta — 2026-10-03
 

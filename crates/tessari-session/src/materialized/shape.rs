@@ -117,6 +117,7 @@ fn beyond_the_record(expr: &Expr) -> bool {
             ..
         } => function.purity() != Purity::Pure || arguments.iter().any(beyond_the_record),
         ExprKind::Not(inner) | ExprKind::Negate(inner) => beyond_the_record(inner),
+        ExprKind::Route { value, .. } => beyond_the_record(value),
         ExprKind::If {
             condition,
             then,

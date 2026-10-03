@@ -21,6 +21,7 @@ pub(crate) fn in_expr(expr: &Expr) -> Vec<&TableRef> {
         }
         ExprKind::Table(table) => vec![table],
         ExprKind::Not(inner) | ExprKind::Negate(inner) => in_expr(inner),
+        ExprKind::Route { value, .. } => in_expr(value),
         // Both arms of a conditional, because either may run and a permission
         // question is asked before anything does.
         ExprKind::If {

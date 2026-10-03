@@ -607,6 +607,18 @@ DEFINE COLLECTION sessions IDENTITY uuid;
     }
 
     #[test]
+    fn a_semicolon_inside_an_events_braces_does_not_end_it() {
+        // `DEFINE EVENT … THEN { a; b; }` is one statement whose body holds
+        // several, so the `;` inside the braces ends a body statement and not
+        // the definition — typed across lines, the first one would otherwise
+        // send half a definition (ADR-0110).
+        let typed = "DEFINE EVENT e ON t THEN {\n    CREATE log = { v: 1 };\n";
+        assert!(!closed(typed));
+        assert!(!closed(&format!("{typed}    CREATE log = {{ v: 2 }};\n")));
+        assert!(closed(&format!("{typed}}};")));
+    }
+
+    #[test]
     fn an_escaped_quote_does_not_close_the_string_it_is_in() {
         assert!(!closed("SET k:1 = 'it\\'s;'"));
         assert!(closed("SET k:1 = 'it\\'s;';"));

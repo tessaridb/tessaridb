@@ -52,7 +52,7 @@ impl Parser<'_> {
     /// Counting from the end would need a sign the storage layer has no way to
     /// resolve without knowing the array's length, which is a decision about
     /// what a path *means* rather than how one is written.
-    fn array_position(&mut self) -> Result<u64> {
+    pub(super) fn array_position(&mut self) -> Result<u64> {
         let expected = "a position, as a whole number";
         let Some(Token::Number(Number::Integer(at))) = self.peek() else {
             return Err(self.error_here(expected));

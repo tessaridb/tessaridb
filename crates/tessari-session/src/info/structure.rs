@@ -215,6 +215,21 @@ impl Session<'_> {
             "indexes".to_owned(),
             Value::Array(indexes.iter().map(described_index).collect()),
         );
+        // Each event as the statement that defines it (ADR-0110 D1).
+        report.insert(
+            "events".to_owned(),
+            Value::Array(
+                definition
+                    .events
+                    .iter()
+                    .map(|event| {
+                        let mut statement = String::new();
+                        describe::write_event(&mut statement, &definition.name, event);
+                        Value::from(statement.trim_end())
+                    })
+                    .collect(),
+            ),
+        );
         let (key, held) = match describe::declaration(&definition, &fields, &indexes) {
             // A narrowed view gets no script. The report above is already the
             // subset this caller may read, and that is a truthful *description*;
@@ -226,7 +241,12 @@ impl Session<'_> {
                 "undefinable",
                 "fields or indexes of this table are hidden from this caller".to_owned(),
             ),
-            Ok(script) => ("definition", script),
+            Ok(mut script) => {
+                for event in &definition.events {
+                    describe::write_event(&mut script, &definition.name, event);
+                }
+                ("definition", script)
+            }
             Err(unwritable) => ("undefinable", unwritable.part),
         };
         report.insert(key.to_owned(), Value::from(held.as_str()));

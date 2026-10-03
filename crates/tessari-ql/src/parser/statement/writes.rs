@@ -150,6 +150,14 @@ impl Parser<'_> {
             _ if self.eat_word("series") => Ok(StatementKind::DropSeries { name: self.name()? }),
             _ if self.eat_word("rollup") => Ok(StatementKind::DropRollup { name: self.name()? }),
             _ if self.eat_word("view") => Ok(StatementKind::DropView { name: self.name()? }),
+            _ if self.eat_word("event") => {
+                let name = self.name()?;
+                self.expect_keyword(Keyword::On, "`ON` and the table the event is defined on")?;
+                Ok(StatementKind::DropEvent {
+                    name,
+                    table: self.table_ref()?,
+                })
+            }
             // Declined rather than missing, and it says so. `DEFINE NODE` writes
             // this process's own configuration outside the transaction, so its
             // inverse is an edit to a config file rather than a statement — and

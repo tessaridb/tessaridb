@@ -86,6 +86,7 @@ fn reads_only_the_record(expr: &Expr) -> bool {
         // A path routes inside the record; a literal is a value.
         ExprKind::Literal(_) | ExprKind::Path(_) => true,
         ExprKind::Not(inner) | ExprKind::Negate(inner) => reads_only_the_record(inner),
+        ExprKind::Route { value, .. } => reads_only_the_record(value),
         ExprKind::And(left, right)
         | ExprKind::Or(left, right)
         | ExprKind::Coalesce(left, right)
@@ -154,6 +155,7 @@ fn lift(expr: &mut Expr, parameters: &mut Parameters) {
             expr.kind = ExprKind::Parameter(name);
         }
         ExprKind::Not(inner) | ExprKind::Negate(inner) => lift(inner, parameters),
+        ExprKind::Route { value, .. } => lift(value, parameters),
         ExprKind::And(left, right)
         | ExprKind::Or(left, right)
         | ExprKind::Coalesce(left, right)

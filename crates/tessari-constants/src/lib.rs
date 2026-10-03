@@ -1187,3 +1187,14 @@ pub const GATHER_FOLD_RECORDS: usize = 65_536;
 /// single word. Long enough to read a sentence around a match, short enough to
 /// sit in a result list.
 pub const SEARCH_SNIPPET_TOKENS: usize = 24;
+
+/// How deep a chain of events may run before the write that started it is
+/// refused (ADR-0110 D5).
+///
+/// Unit: nested event runs. An event's own writes fire the events of the
+/// tables they reach, its own included, so a cycle would otherwise recurse
+/// until the stack ran out. Sixteen is far past any honest chain — an audit
+/// row, a counter, a denormalised copy and a topic append are each one level —
+/// and close enough that a cycle fails at once with its name rather than after
+/// minutes of writes that are then thrown away.
+pub const EVENT_DEPTH_LIMIT: u8 = 16;

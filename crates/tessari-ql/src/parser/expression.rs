@@ -141,7 +141,8 @@ impl Parser<'_> {
             Some(Token::Parameter(name)) => {
                 let kind = ExprKind::Parameter(name.clone());
                 self.advance();
-                Ok(Expr { kind, span })
+                let parameter = Expr { kind, span };
+                self.route_into(parameter)
             }
             Some(Token::Ident(_)) => self.table_or_record(),
             Some(Token::Punct(Punct::BracketOpen)) => {
@@ -201,5 +202,42 @@ fn constant(expr: &Expr) -> Option<Value> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+impl Parser<'_> {
+    /// The steps written after a value, `.field` and `[n]`, as a route into it
+    /// — or the value itself when none follow.
+    fn route_into(&mut self, value: Expr) -> Result<Expr> {
+        let mut steps = Vec::new();
+        loop {
+            if self.eat_punct(Punct::Dot) {
+                steps.push(tessari_types::Step::Field(self.name()?.text));
+            } else if self.peek() == Some(&Token::Punct(Punct::BracketOpen))
+                && matches!(
+                    self.tokens
+                        .get(self.position.saturating_add(1))
+                        .map(|spanned| &spanned.token),
+                    Some(Token::Number(_))
+                )
+            {
+                self.advance();
+                steps.push(tessari_types::Step::Index(self.array_position()?));
+                self.expect_punct(Punct::BracketClose, "`]` after a position")?;
+            } else {
+                break;
+            }
+        }
+        if steps.is_empty() {
+            return Ok(value);
+        }
+        let span = value.span.to(self.span_behind());
+        Ok(Expr {
+            kind: ExprKind::Route {
+                value: Box::new(value),
+                steps,
+            },
+            span,
+        })
     }
 }

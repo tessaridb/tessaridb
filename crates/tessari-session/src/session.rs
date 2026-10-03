@@ -112,6 +112,9 @@ pub struct Session<'a> {
     /// for, carried to its `COMMIT` (ADR-0106 D2) — a level asked of one write
     /// is asked of the transaction that lands it.
     pub(crate) acknowledge_open: Option<tessari_types::Acknowledge>,
+    /// How many events deep this session runs: zero for a caller's session,
+    /// one more for each event body a write ran (ADR-0110 D5).
+    pub(crate) event_depth: u8,
 }
 
 /// Who a session is, to a queue.
@@ -151,6 +154,7 @@ impl<'a> Session<'a> {
             sink: crate::backup_to::Sink::none(),
             landed: false,
             acknowledge_open: None,
+            event_depth: 0,
         }
     }
 
@@ -632,6 +636,7 @@ impl<'a> Session<'a> {
             sink: crate::backup_to::Sink::none(),
             landed: false,
             acknowledge_open: None,
+            event_depth: 0,
         };
         probe.acting_as(id)?;
         Ok(probe)

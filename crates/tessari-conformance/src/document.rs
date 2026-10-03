@@ -109,6 +109,9 @@ pub fn split_statements(block: &str) -> Vec<String> {
     let mut current = String::new();
     let mut quote: Option<char> = None;
     let mut escaped = false;
+    // How many braces are open: a `;` inside them ends a statement of an
+    // event's body, not the definition holding it (ADR-0110).
+    let mut depth = 0usize;
 
     for character in block.chars() {
         current.push(character);
@@ -124,7 +127,9 @@ pub fn split_statements(block: &str) -> Vec<String> {
             }
             None => match character {
                 '\'' | '"' => quote = Some(character),
-                ';' => {
+                '{' => depth = depth.saturating_add(1),
+                '}' => depth = depth.saturating_sub(1),
+                ';' if depth == 0 => {
                     statements.push(core::mem::take(&mut current));
                 }
                 _ => {}
@@ -162,6 +167,15 @@ mod tests {
         let split = split_statements("SET k:1 = 'a;b'; SELECT * FROM users;");
         assert_eq!(split.len(), 2, "{split:?}");
         assert!(split[0].contains("'a;b'"), "{split:?}");
+    }
+
+    #[test]
+    fn an_events_braced_body_is_one_statement() {
+        let split = split_statements(
+            "DEFINE EVENT e ON t THEN {\n  CREATE log = { v: 1 };\n  CREATE log = { v: 2 };\n};\nSELECT * FROM t;",
+        );
+        assert_eq!(split.len(), 2, "{split:?}");
+        assert!(split[0].contains("{ v: 2 }"), "{split:?}");
     }
 
     #[test]

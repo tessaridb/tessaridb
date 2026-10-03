@@ -45,6 +45,7 @@ mod encoding;
 mod engine;
 mod error;
 mod evaluate;
+mod event;
 mod execute;
 mod file;
 mod fill;

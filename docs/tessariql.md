@@ -138,6 +138,15 @@ script is parsed and before its first statement runs:
 A value supplied under a name the script does not use is accepted; a caller who
 reuses one set of values across two scripts has not made a mistake.
 
+A parameter holding an object or an array can be walked into: `$order.total`,
+`$order.lines[0].sku`. A step that reaches nothing — a field the object does not
+have, a position past the end, a value that is neither — answers `NONE`, the
+absence a missing field already is everywhere else, so `$before.total ?? 0`
+reads a value that is not there as zero. `[*]` is not a step here: a route into
+one value answers one value. This is how an event's body reads the record it
+was run for (§6f).
+
+
 Every way in carries them. The embedded session takes a map, the wire protocol
 carries the values in the store's own codec — so all fifteen kinds cross
 unchanged and the server never has to *read* one — and the console takes
@@ -7301,6 +7310,102 @@ Messages are read by asking; a subscriber that wants them pushed follows the
 change feed of the topic's table. A topic is not a queue: a queue hands each
 record to one worker and forgets it when the work is done, a topic keeps every
 message for every reader.
+
+## 6f. Logic that runs with a write: events
+
+```tessariql
+DEFINE EVENT audit ON orders THEN
+    CREATE log = { event: $event, order: $id, was: $before.total ?? 0, now: $after.total ?? 0 };
+DEFINE EVENT big ON orders FOR UPDATE WHEN $after.total > 1000 THEN
+    CREATE review = { order: $id, total: $after.total };
+DEFINE EVENT positive ON orders WHEN $after.total < 0 THEN THROW 'an order is never negative';
+DEFINE EVENT outbox ON orders FOR CREATE THEN {
+    LET $line = { order: $id, total: $after.total };
+    CREATE order_events = $line;
+};
+DROP EVENT big ON orders;
+```
+
+An event is statements a table runs **after each write of one of its records,
+inside the writer's transaction, as the writer**. Its effects and the write are
+one commit: they land together, or neither does.
+
+- **When.** After every `CREATE`, `UPDATE` and `DELETE` of a record — whatever
+  wrote it: a statement, a script, a client, a Kafka consumer or a topic
+  consumer. `FOR CREATE, UPDATE` narrows it to those writes; `WHEN` narrows it to
+  the records the condition holds for. An `UPSERT` is a `CREATE` or an `UPDATE`
+  depending on whether the record was there. A `DELETE` of a record that was not
+  there deleted nothing, and runs nothing. A table's events run in name order.
+- **What it sees.** `$event` is `'CREATE'`, `'UPDATE'` or `'DELETE'`. `$before`
+  and `$after` are the record as it was and as it is, `NONE` for the side that
+  does not exist, and `$after` is what was stored — defaults applied. `$id` is the
+  record's identity, the value after the colon, so the body names its own record
+  `orders:$id`. They are read with a route (§3, parameters): `$after.total`.
+- **As whom.** Every statement in the body is authorized exactly as the writer's
+  own would be. A writer who may write `orders` and not `log` cannot write
+  `orders` while `audit` writes `log`: the audit is part of the write. `$before`
+  and `$after` are what the writer may read, so a writer who may write a table and
+  not read it gives the body `NONE` for both — an event cannot copy a field
+  somewhere the writer could then read it. Defining or dropping an event needs the
+  authority to define on the table, as an index does.
+- **Failure.** A refusal anywhere in the body refuses the write with
+  `event positive on orders refused the write: …`, carrying the body's own
+  refusal. Inside `BEGIN … COMMIT` that is the statement failing, as any other.
+  `WHEN … THEN THROW '…'` is therefore how a rule that reads more than one record
+  refuses a write — the one an `ASSERT` cannot say.
+- **Depth.** An event's writes run the events of the tables they reach, its own
+  included. A chain more than 16 deep is refused, naming the event, so a cycle
+  fails at the first write instead of quietly stopping halfway with its effects
+  applied. A body that updates its own record writes a `WHEN` that excludes its
+  own change: `WHEN $after.v < 5 THEN UPDATE orders:$id SET v = $after.v + 1`.
+
+What a body may run: `CREATE`, `INSERT`, `UPDATE`, `UPSERT`, every `DELETE`,
+`RELATE`, the key-value verbs (`SET`, `INCR`, `DEL`, `EXPIRE`, `PERSIST`), `LET`
+and `THROW`. Several go in braces. A body runs in its table's namespace and
+database whatever the writer selected, so `USE` has no place in it; it is
+already inside a transaction, so `BEGIN`, `COMMIT` and `CANCEL` have none either;
+and a read that only answers has nobody to answer to. A definition or a grant
+changes the catalog, which a write should not do as a side effect. Each is
+refused where it is written, and so is a parameter the event does not bind.
+
+Tables, collections and edge tables carry events. A vault does not — the body
+would see the secrets in the clear — and neither do the stores with a write path
+of their own: buckets, views, topics, queues, spaces, vector and geo stores and
+series.
+
+### Work after the commit is a topic
+
+An event runs **inside** the transaction, so it cannot send an email or call
+another service and still be undone with the write. What it can do is append to
+a topic — and the message commits with the write or not at all:
+
+```tessariql
+DEFINE TOPIC order_events;
+DEFINE EVENT outbox ON orders FOR CREATE THEN CREATE order_events = { order: $id, total: $after.total };
+```
+
+A group, a client's consumer or `DEFINE TOPIC CONSUMER` (§6e) then does the rest
+at its own pace: exactly once for what it writes into this store, at least once
+for anything outside it, with a dead letter for what will not go. There is no
+second, "after commit" kind of event, because it would need everything a topic
+already is — a durable queue, a position, a retry, a dead letter — built again.
+
+### What it costs
+
+A write to a table with no events pays nothing measurable: 9.4 µs per write with
+the events lookup and without it, in release on this machine. A write that runs
+an event pays its body — an audit event writing one log record took a write from
+10.0 µs to 34.1 µs, of which one record write is the log row itself (5 000
+writes in one transaction, median of seven, in memory).
+
+### What carries it
+
+`INFO FOR TABLE` lists a table's events under `events`, each as the statement that
+defines it, and adds them to the table's `definition`. `BACKUP SCRIPT` writes them
+**after the data**, as it writes indexes: an event declared before the records
+were written again would run for each of them and apply its effects a second time
+over the effects the script already carries. A snapshot, the log, a follower and a
+restore apply commits whose effects are already in them, and run nothing.
 
 ## 7. Transactions
 

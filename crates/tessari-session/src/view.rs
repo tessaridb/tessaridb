@@ -231,6 +231,7 @@ impl Session<'_> {
         match &mut expr.kind {
             ExprKind::Select(read) => self.expand_read(store, read, chain),
             ExprKind::Not(inner) | ExprKind::Negate(inner) => self.expand_expr(store, inner, chain),
+            ExprKind::Route { value, .. } => self.expand_expr(store, value, chain),
             ExprKind::If {
                 condition,
                 then,

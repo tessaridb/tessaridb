@@ -44,6 +44,7 @@ mod descending;
 mod describing_kinds;
 mod differential;
 mod effect;
+mod events;
 mod exactness;
 mod explain;
 mod fetch;

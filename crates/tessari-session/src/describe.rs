@@ -36,7 +36,7 @@
 mod parts;
 use std::fmt::Write as _;
 
-pub(crate) use parts::{write_field, write_index, write_split};
+pub(crate) use parts::{write_event, write_field, write_index, write_split};
 use tessari_storage::{
     EDGE_IN, EDGE_OUT, FieldDefinition, GEO_FIELD, IndexDefinition, TableDefinition, TableKind,
     VECTOR_FIELD,

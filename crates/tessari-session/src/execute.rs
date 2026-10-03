@@ -1087,6 +1087,26 @@ impl Session<'_> {
                 span,
             ),
             StatementKind::DropView { name } => self.drop_view(transaction, name, span),
+            StatementKind::DefineEvent {
+                name,
+                table,
+                on,
+                when,
+                body,
+                if_not_exists,
+            } => self.define_event(
+                transaction,
+                &crate::event::Declared {
+                    name,
+                    table,
+                    on,
+                    when: when.as_ref(),
+                    body,
+                    if_not_exists: *if_not_exists,
+                },
+                span,
+            ),
+            StatementKind::DropEvent { name, table } => self.drop_event(transaction, name, table),
             StatementKind::Claim { table, count, span } => {
                 self.claim(transaction, table, *count, *span)
             }

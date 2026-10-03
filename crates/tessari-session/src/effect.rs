@@ -147,6 +147,8 @@ impl Effect {
             | StatementKind::DefineEdge { .. }
             | StatementKind::DropEdge { .. }
             | StatementKind::DefineIndex { .. }
+            | StatementKind::DefineEvent { .. }
+            | StatementKind::DropEvent { .. }
             | StatementKind::DefineField { .. }
             | StatementKind::DefineAnalyzer { .. }
             | StatementKind::DropTable { .. }

@@ -135,7 +135,7 @@ fn the_changelog_counts_the_same_cases_the_badge_does() {
 
 /// The corpora the engines table does not name, because they are cross-cutting
 /// rather than the work of one engine.
-const CROSS_CUTTING: [&str; 27] = [
+const CROSS_CUTTING: [&str; 28] = [
     // A fused order combines the orders of several engines — full-text, vector,
     // geographic — by rank, and is the work of none of them: filing it under one
     // would make that engine look like the owner of the other two's answers.
@@ -196,6 +196,10 @@ const CROSS_CUTTING: [&str; 27] = [
     // is written beside came from a scan, an index or a walk. What it does
     // belong to is the planner, which is not an engine either.
     "identity",
+    // An event runs after a write to any table that carries one, whatever
+    // engine wrote it — a statement, a client or a consumer — so it is about
+    // the write and not about an engine (ADR-0110).
+    "events",
     // Undeclaring a catalog object is about the catalog and about no engine:
     // `DROP DATABASE` refuses on the same ground whether the tables inside it
     // are scanned, indexed or walked, and `ALTER TABLE` changes a rule that

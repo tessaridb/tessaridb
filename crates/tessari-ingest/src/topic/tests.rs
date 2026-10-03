@@ -212,3 +212,43 @@ async fn twenty_runs_of_a_thousand_messages_between_four_members() {
         drained(4, 1_000).await;
     }
 }
+
+/// A topic consumer's writes are caller writes, so the destination's events
+/// run in the batch's transaction — once per message applied (ADR-0110 D8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_consumers_writes_run_the_destinations_events_once_each() {
+    let store = store_with(
+        "DEFINE GROUP 'rows' ON TOPIC orders ACK DEADLINE 30s IN FLIGHT 64 \
+         DELIVERIES 3 DEAD LETTER TO orders_dead; DEFINE COLLECTION landed; \
+         DEFINE EVENT tally ON order_rows FOR CREATE THEN CREATE landed = { total: $after.total };",
+    );
+    let (stop, stopped) = watch::channel(false);
+    let runner = tokio::spawn(run_topic_consumers(store.clone(), stopped));
+    run(
+        &store,
+        "DEFINE TOPIC CONSUMER orders_in FROM orders GROUP 'rows' INTO order_rows \
+         IDENTITY order_id MAP amount AS total ON FAILURE quarantine;",
+    );
+    publish(&store, 40);
+    until("every message landing", || rows(&store).len() == 40).await;
+    stop.send_replace(true);
+    tokio::time::timeout(PATIENCE, runner)
+        .await
+        .unwrap()
+        .unwrap();
+    let Some(Outcome::Records { records, .. }) = run(&store, "SELECT * FROM landed;").pop() else {
+        panic!("no answer");
+    };
+    let mut totals: Vec<i64> = records
+        .iter()
+        .map(|(_, value)| match value {
+            Value::Object(fields) => match fields.get("total") {
+                Some(Value::Number(tessari_types::Number::Integer(total))) => *total,
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    totals.sort_unstable();
+    assert_eq!(totals, (1..=40).collect::<Vec<_>>());
+}

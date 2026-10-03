@@ -23,6 +23,7 @@ pub(super) fn reads_a_record(expr: &Expr) -> bool {
     match &expr.kind {
         ExprKind::Path(_) => true,
         ExprKind::Not(inner) | ExprKind::Negate(inner) => reads_a_record(inner),
+        ExprKind::Route { value, .. } => reads_a_record(value),
         // Every arm, not only the one that will run. Which arm runs is a
         // property of the record, so an expression whose *untaken* arm reads
         // one is still not constant.
@@ -87,6 +88,7 @@ pub(super) fn answers_afresh(expr: &Expr) -> bool {
             ..
         } => function.purity() == Purity::PerCall || arguments.iter().any(answers_afresh),
         ExprKind::Not(inner) | ExprKind::Negate(inner) => answers_afresh(inner),
+        ExprKind::Route { value, .. } => answers_afresh(value),
         ExprKind::If {
             condition,
             then,
@@ -139,6 +141,7 @@ pub(crate) fn roots_read(expr: &Expr, into: &mut BTreeSet<String>) {
             into.insert(field.path.root().to_owned());
         }
         ExprKind::Not(inner) | ExprKind::Negate(inner) => roots_read(inner, into),
+        ExprKind::Route { value, .. } => roots_read(value, into),
         ExprKind::If {
             condition,
             then,

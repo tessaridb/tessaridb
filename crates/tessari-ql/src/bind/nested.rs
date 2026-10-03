@@ -142,6 +142,7 @@ pub(crate) fn bind_expr(expr: &mut Expr, binding: &Binding<'_>) -> Result<()> {
             Ok(())
         }
         ExprKind::Not(inner) | ExprKind::Negate(inner) => bind_expr(inner, binding),
+        ExprKind::Route { value, .. } => bind_expr(value, binding),
         ExprKind::If {
             condition,
             then,

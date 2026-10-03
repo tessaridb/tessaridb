@@ -146,6 +146,17 @@ pub enum Error {
         span: Span,
     },
 
+    /// A statement an event's body cannot run (ADR-0110 D7).
+    #[error(
+        "an event cannot run `{statement}` (at {span}): its body writes — `CREATE`, `INSERT`, `UPDATE`, `UPSERT`, `DELETE`, `RELATE`, the space verbs — and may `LET` and `THROW`; it already runs inside the writer's transaction, in its table's database, and nobody receives an answer"
+    )]
+    EventBody {
+        /// The statement's leading word.
+        statement: String,
+        /// Where it was written.
+        span: Span,
+    },
+
     /// Text after `datetime` that is not an instant.
     #[error("{text:?} at {span} is not an instant: expected RFC 3339, as in 1970-01-01T00:00:00Z")]
     InvalidDatetime {
@@ -855,6 +866,7 @@ impl Error {
             | Self::UnexpectedEnd { span, .. }
             | Self::Unsupported { span, .. }
             | Self::NgramFilter { span, .. }
+            | Self::EventBody { span, .. }
             | Self::InvalidDatetime { span, .. }
             | Self::InvalidUuid { span, .. }
             | Self::InvalidDecimal { span, .. }

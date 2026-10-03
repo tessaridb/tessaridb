@@ -54,6 +54,13 @@ pub(super) fn declared(
             return Ok(Err(unwritable.part));
         }
     }
+    // Events go after the data too, and here it is a matter of correctness
+    // rather than cost: an event declared before the records are written
+    // again would run for each of them and apply its effects a second time
+    // over the effects the script already carries (ADR-0110 D8).
+    for event in &table.events {
+        crate::describe::write_event(&mut after, &table.name, event);
+    }
     Ok(Ok((declaration, after)))
 }
 

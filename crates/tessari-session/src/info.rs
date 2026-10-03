@@ -73,6 +73,7 @@ mod structure;
 mod topic_consumers;
 mod users;
 mod vaults;
+pub(crate) use vaults::id_value;
 
 impl Session<'_> {
     /// Report what the catalog holds about one subject.

@@ -1230,6 +1230,36 @@ pub enum StatementKind {
         /// The view to undefine.
         name: Name,
     },
+    /// `DEFINE EVENT audit ON orders FOR UPDATE WHEN $after.total > 100 THEN
+    /// CREATE log = { … }` — statements run after each write of a record of the
+    /// table, in the writer's transaction, as the writer (ADR-0110).
+    ///
+    /// The condition and the body are kept as **source text**, for the reason
+    /// a view keeps its read as text: a stored syntax tree would need a version
+    /// every time the grammar grew. Both are parsed here, so an event that could
+    /// never run is refused where it is written.
+    DefineEvent {
+        /// The event's name, unique on its table.
+        name: Name,
+        /// The table whose writes run it.
+        table: TableRef,
+        /// The writes that run it — all three when `FOR` is not written.
+        on: Vec<tessari_types::WriteKind>,
+        /// `WHEN`, as written: the body runs only where it holds.
+        when: Option<String>,
+        /// The statements, as written, without the braces.
+        body: String,
+        /// Whether re-defining an existing name is accepted rather than
+        /// refused.
+        if_not_exists: bool,
+    },
+    /// `DROP EVENT audit ON orders`
+    DropEvent {
+        /// The event to undefine.
+        name: Name,
+        /// The table it is defined on.
+        table: TableRef,
+    },
     /// `CLAIM FROM jobs` · `CLAIM 10 FROM jobs`
     ///
     /// Takes the first claimable records in identity order and holds each of

@@ -65,10 +65,10 @@ pub use consumer::{ConsumerDefinition, Feed, Mapped, OnFailure};
 pub(crate) use decoded::DecodedTables;
 pub use definition::{
     CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, DatabaseDefinition, EdgeDeclaration, EdgeOrder,
-    EngineField, EngineMember, GEO_FIELD, IndexDefinition, IndexShape, NamespaceDefinition,
-    QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration, RECORD_LEVEL,
-    RollupCompute, RollupDeclaration, RollupFold, SearchCosts, SeriesDeclaration, StoredKind,
-    TableDefinition, TableKind, TableShape, UNIT_WEIGHT, VECTOR_FIELD, VaultCustody,
+    EngineField, EngineMember, EventDeclaration, GEO_FIELD, IndexDefinition, IndexShape,
+    NamespaceDefinition, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration,
+    RECORD_LEVEL, RollupCompute, RollupDeclaration, RollupFold, SearchCosts, SeriesDeclaration,
+    StoredKind, TableDefinition, TableKind, TableShape, UNIT_WEIGHT, VECTOR_FIELD, VaultCustody,
     VaultDeclaration, VectorDeclaration, VectorDistance, ViewDeclaration,
 };
 pub use edge_kind::EdgeKindDefinition;
@@ -304,6 +304,22 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             return Ok(false);
         };
         definition.kind = TableKind::Series(declared);
+        self.write(system::TABLES, id.get(), &definition.to_value());
+        Ok(true)
+    }
+
+    /// Replace a table's events (ADR-0110), keeping everything else about it.
+    ///
+    /// Answers `false` when there is no table under that id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored definition cannot be read.
+    pub fn set_events(&mut self, id: TableId, events: Vec<EventDeclaration>) -> Result<bool> {
+        let Some(mut definition) = self.table(id)? else {
+            return Ok(false);
+        };
+        definition.events = events;
         self.write(system::TABLES, id.get(), &definition.to_value());
         Ok(true)
     }
