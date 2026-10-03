@@ -15,6 +15,7 @@ use rocksdb::WriteBatch as EngineBatch;
 use tessari_kv::{Error, Keyspace, Result, Value, WriteBatch, WriteOp};
 
 use super::LsmBackend;
+use crate::Durability;
 use crate::error::from_engine;
 
 /// What the accepted batches have done to one key: written a value, or deleted it.
@@ -24,6 +25,7 @@ impl LsmBackend {
     /// See [`tessari_kv::KvBackend::apply_group`].
     pub(super) fn apply_grouped(&self, batches: Vec<WriteBatch>) -> (usize, Result<()>) {
         let _writer = self.writer();
+        let before = self.syncs.landed_so_far();
         let mut written = Written::new();
         let mut engine_batch = EngineBatch::default();
         let mut landed = 0_usize;
@@ -35,13 +37,16 @@ impl LsmBackend {
             }
             landed = landed.saturating_add(1);
         }
-        if landed > 0
-            && let Err(failure) = self
+        if landed > 0 {
+            if let Err(failure) = self
                 .database
                 .write_opt(engine_batch, &self.durability.write_options())
                 .map_err(|error| from_engine(&error))
-        {
-            return (0, Err(failure));
+            {
+                return (0, Err(failure));
+            }
+            self.syncs
+                .landed(before, self.durability == Durability::PowerLossSafe);
         }
         (landed, stopped)
     }
