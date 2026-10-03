@@ -2649,11 +2649,20 @@ Shown once. The node keeps only its digest.`);
       first: whole(fields["first"]),
       last,
       retain: typeof retain === "string" ? retain : null,
+      retainBytes: whole(fields["retain_bytes"]),
+      bytes: whole(fields["bytes"]),
       maxBytes: whole(fields["max_bytes"]),
       readers: entries(fields["consumers"], reader),
       groups: entries(fields["groups"], group),
       ingestedBy: entries(fields["ingested_by"], ingest)
     };
+  }
+  function keeps(topic2) {
+    const limits = [
+      ...topic2.retain === null ? [] : [topic2.retain],
+      ...topic2.retainBytes === null ? [] : [`${topic2.retainBytes} bytes`]
+    ];
+    return limits.length === 0 ? "everything" : limits.join(", ");
   }
   var held4 = (topic2) => topic2.first === null || topic2.last < topic2.first ? 0 : topic2.last - topic2.first + 1;
   function behind(topic2) {
@@ -2798,7 +2807,7 @@ Shown once. The node keeps only its digest.`);
         row.insertCell().appendChild(pick2);
         numberCell(row, held4(each));
         numberCell(row, each.last);
-        row.insertCell().textContent = each.retain ?? "everything";
+        row.insertCell().textContent = keeps(each);
         numberCell(row, each.readers.size);
         numberCell(row, each.groups.size);
         numberCell(row, behind(each));
@@ -2828,7 +2837,8 @@ Shown once. The node keeps only its digest.`);
         held: held4(found),
         first: found.first ?? "none held",
         last: found.last,
-        keeps: found.retain ?? "everything",
+        keeps: keeps(found),
+        "bytes held": found.bytes === null ? "not counted" : `${found.bytes} bytes`,
         "largest message": found.maxBytes === null ? "any size" : `${found.maxBytes} bytes`
       });
       const readers = headed(["reader", "position", "lag"]);
@@ -2967,14 +2977,16 @@ Shown once. The node keeps only its digest.`);
     const place2 = where2();
     const name = aName(trimmed("new-topic-name"));
     const retain = optional("new-topic-retain", aDuration);
+    const kept2 = optional("new-topic-kept", aWhole);
     const bytes = optional("new-topic-bytes", aWhole);
     if (place2 === null) return { missing: PLACE };
     if (name === null) return { missing: "a name: a letter or _, then letters, digits or _" };
     if (retain === null) return { missing: "keep for is " + DURATION2 };
+    if (kept2 === null || kept2 === 0) return { missing: "keep at most is a whole number of bytes above zero" };
     if (bytes === null || bytes === 0) return { missing: "the largest message is a whole number of bytes" };
     return {
-      statement: `DEFINE TOPIC ${name}` + (retain === void 0 ? "" : ` RETAIN ${retain}`) + (bytes === void 0 ? "" : ` MAX BYTES ${bytes}`) + ";",
-      says: `Creates ${name} in ${place2.namespace}.${place2.database}, keeping ` + (retain === void 0 ? "every message" : `each message for ${retain}`) + (bytes === void 0 ? "." : ` and refusing a message over ${bytes} bytes.`)
+      statement: `DEFINE TOPIC ${name}` + (retain === void 0 ? "" : ` RETAIN ${retain}`) + (kept2 === void 0 ? "" : ` RETAIN BYTES ${kept2}`) + (bytes === void 0 ? "" : ` MAX BYTES ${bytes}`) + ";",
+      says: `Creates ${name} in ${place2.namespace}.${place2.database}, keeping ` + (retain === void 0 ? "every message" : `each message for ${retain}`) + (kept2 === void 0 ? "" : `, removing the oldest once it holds over ${kept2} bytes`) + (bytes === void 0 ? "." : ` and refusing a message over ${bytes} bytes.`)
     };
   }
   function dropTopic() {
@@ -3039,7 +3051,7 @@ Shown once. The node keeps only its digest.`);
       says: "new-topic-says",
       status: "new-topic-status",
       compose: newTopic,
-      fields: ["new-topic-name", "new-topic-retain", "new-topic-bytes"]
+      fields: ["new-topic-name", "new-topic-retain", "new-topic-kept", "new-topic-bytes"]
     },
     {
       button: "drop-topic",
