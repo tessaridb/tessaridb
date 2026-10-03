@@ -139,8 +139,12 @@ function drawFailover(held: Readonly<Record<string, unknown>> | null | undefined
     held === null || held === undefined
       ? "Nobody has set a policy: every node runs the built-in periods shown as placeholders."
       : "Set: " + PERIODS.map((clause) => `${clause.toUpperCase()} ${told(held[clause])}`).join(", ") +
+          (held["balance_leaderships"] === true ? ", BALANCE LEADERSHIPS" : "") +
           ` (epoch ${told(held["epoch"])}, version ${told(held["version"])}).`,
   );
+  // Ticked as it is set, so a policy re-sent for its periods keeps it.
+  (at("failover-balance") as HTMLInputElement).checked = held?.["balance_leaderships"] === true;
+  shapeFailover();
 }
 
 /** Draw the trust panes from the answer the map was drawn from. */
@@ -206,6 +210,9 @@ function policy(): { readonly statement: string } | { readonly missing: string }
     }
     said.push(`${clause.toUpperCase()} ${period}`);
   }
+  if ((at("failover-balance") as HTMLInputElement).checked) {
+    said.push("BALANCE LEADERSHIPS");
+  }
   return { statement: `DEFINE FAILOVER ${said.join(" ")};` };
 }
 
@@ -242,6 +249,7 @@ export function wire(): void {
   for (const clause of PERIODS) {
     at(`failover-${clause}`).addEventListener("input", shapeFailover);
   }
+  at("failover-balance").addEventListener("change", shapeFailover);
 
   at("revoke-apply").addEventListener("click", async () => {
     const composed = revocation();

@@ -271,6 +271,29 @@ impl Session<'_> {
                     // measured against: a lease counting down says how long,
                     // and this says how long it was ever meant to be.
                     ("failover".to_owned(), failover),
+                    // Each balanced table's shards as this node's balancing
+                    // pass last counted them (ADR-0113 D4) — empty on every
+                    // node but the store line's leader, which is the one that
+                    // counts.
+                    (
+                        "balanced".to_owned(),
+                        Value::Array(
+                            self.store
+                                .sampled_shards()
+                                .iter()
+                                .map(|(_, sampled)| {
+                                    let mut described = super::described_sample(sampled);
+                                    if let Value::Object(fields) = &mut described {
+                                        fields.insert(
+                                            "table".to_owned(),
+                                            Value::from(sampled.name.as_str()),
+                                        );
+                                    }
+                                    described
+                                })
+                                .collect(),
+                        ),
+                    ),
                 ])),
             ),
         ]))

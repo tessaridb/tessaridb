@@ -1242,8 +1242,10 @@
   function drawFailover(held5) {
     write(
       "failover-held",
-      held5 === null || held5 === void 0 ? "Nobody has set a policy: every node runs the built-in periods shown as placeholders." : "Set: " + PERIODS.map((clause) => `${clause.toUpperCase()} ${told(held5[clause])}`).join(", ") + ` (epoch ${told(held5["epoch"])}, version ${told(held5["version"])}).`
+      held5 === null || held5 === void 0 ? "Nobody has set a policy: every node runs the built-in periods shown as placeholders." : "Set: " + PERIODS.map((clause) => `${clause.toUpperCase()} ${told(held5[clause])}`).join(", ") + (held5["balance_leaderships"] === true ? ", BALANCE LEADERSHIPS" : "") + ` (epoch ${told(held5["epoch"])}, version ${told(held5["version"])}).`
     );
+    at("failover-balance").checked = held5?.["balance_leaderships"] === true;
+    shapeFailover();
   }
   function draw2(seen) {
     mine = seen.certificates ?? [];
@@ -1293,6 +1295,9 @@
       }
       said3.push(`${clause.toUpperCase()} ${period}`);
     }
+    if (at("failover-balance").checked) {
+      said3.push("BALANCE LEADERSHIPS");
+    }
     return { statement: `DEFINE FAILOVER ${said3.join(" ")};` };
   }
   function shapeFailover() {
@@ -1324,6 +1329,7 @@
     for (const clause of PERIODS) {
       at(`failover-${clause}`).addEventListener("input", shapeFailover);
     }
+    at("failover-balance").addEventListener("change", shapeFailover);
     at("revoke-apply").addEventListener("click", async () => {
       const composed = revocation();
       if (!("statement" in composed)) {
@@ -2049,6 +2055,28 @@ Shown once. The node keeps only its digest.`);
     const each = followers.filter((one2) => typeof one2.behind === "number").map((one2) => `${(bare(one2.node) ?? "?").slice(0, 8)}… ${told2(one2.behind)} behind`);
     return each.length === 0 ? null : each.join(", ");
   }
+  function placement(peer) {
+    const range = told2(peer.leads);
+    if (range === null) {
+      return null;
+    }
+    const said3 = [range];
+    if (peer.preferred === true) {
+      said3.push("preferred");
+    }
+    if (peer.releasing === true) {
+      said3.push("being given back to the store line");
+    }
+    return said3.join(", ");
+  }
+  function balancedTables(balanced) {
+    const each = (balanced ?? []).map((one2) => {
+      const shards = (one2.shards ?? []).map((shard) => `${shard.complete === false ? "≥" : ""}${told2(shard.records) ?? "?"}`).join(" / ");
+      const act2 = told2(one2.last_act);
+      return `${told2(one2.table) ?? "?"}: ${shards}${act2 === null ? "" : ` (last: ${act2})`}`;
+    });
+    return each.length === 0 ? null : each.join("; ");
+  }
   function ended2(across) {
     if (across === void 0) {
       return null;
@@ -2091,6 +2119,11 @@ Shown once. The node keeps only its digest.`);
         // nothing rather than a zero nobody measured.
         fact("records still pending here", told2(cluster.across?.pending)),
         fact("transactions holding intents here", told2(cluster.across?.with_intents)),
+        fact(
+          "balances leaderships",
+          cluster.failover?.balance_leaderships === true ? "yes, when one node leads two lines more" : null
+        ),
+        fact("balanced tables, records per shard", balancedTables(cluster.balanced)),
         wanted2 === null ? null : fact("declared for it", wanted2.join(", "))
       ],
       "self",
@@ -2120,7 +2153,7 @@ Shown once. The node keeps only its digest.`);
             ),
             fact("id", told2(peer.node)),
             fact("replicates", told2(peer.replicates)),
-            fact("leads", told2(peer.leads)),
+            fact("leads", placement(peer)),
             fact("leads, as the log records", leading(cluster.leaders ?? [], peer.node))
           ],
           "peer",

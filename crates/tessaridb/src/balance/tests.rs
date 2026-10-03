@@ -273,4 +273,20 @@ fn what_a_pass_measured_is_reported_for_each_shard_with_its_last_act() {
         unreachable!("no shards in the sample: {reported:?}");
     };
     assert_eq!(shards.len(), counted.len());
+    // And the node's own report lists it, for the console's cluster map.
+    let outcomes = db.session().run("INFO FOR NODE;").unwrap();
+    let Some(Outcome::Value(Value::Object(node))) = outcomes.last() else {
+        unreachable!("INFO FOR NODE answers a value");
+    };
+    let Some(Value::Object(cluster)) = node.get("cluster") else {
+        unreachable!("no cluster group: {node:?}");
+    };
+    let Some(Value::Array(balanced)) = cluster.get("balanced") else {
+        unreachable!("no balanced tables: {cluster:?}");
+    };
+    assert_eq!(balanced.len(), 1);
+    assert!(
+        format!("{balanced:?}").contains("prod.shop.orders"),
+        "{balanced:?}"
+    );
 }

@@ -192,9 +192,19 @@ export const cluster = (): Node =>
                     {},
                     "A split table's shards and placements change while it serves.",
                 ),
-                " ALTER TABLE … SPLIT AT and MERGE SHARD change the map in place, " +
-                    "PARTITION BY gives each region its shard, and ALTER REPLICA … LEADS " +
-                    "moves a placement.",
+                " Each change is a statement, and the store's leader can make some itself.",
+            ),
+            behindDisclosure(
+                "Which statements change them",
+                note(
+                    "ALTER TABLE … SPLIT AT and MERGE SHARD change the map in place, and " +
+                        "SPLIT AUTOMATICALLY lets the store's leader do it by size and load. " +
+                        "IDENTITY uuid SPREAD spreads new records over the shards, PARTITION BY " +
+                        "gives each region its shard. ALTER REPLICA … LEADS moves a placement, " +
+                        "LEADS NONE gives a range back to the store line, PREFERRED names the " +
+                        "candidate that should lead it, and DEFINE FAILOVER … BALANCE LEADERSHIPS " +
+                        "evens out who leads what.",
+                ),
             ),
             note(
                 el(

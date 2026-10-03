@@ -66,6 +66,10 @@ export interface Peer {
     readonly node?: string;
     readonly replicates?: string;
     readonly leads?: string | null;
+    /** The placement is being given back to the store line (ADR-0098 D3). */
+    readonly releasing?: boolean;
+    /** `LEADS … PREFERRED`: the candidate its range's leader hands it to. */
+    readonly preferred?: boolean;
     readonly roles?: readonly string[];
 }
 
@@ -98,6 +102,13 @@ interface Across {
     readonly with_intents?: unknown;
 }
 
+/** One balanced table as the balancing pass last counted it (ADR-0113 D4). */
+interface Balanced {
+    readonly table?: unknown;
+    readonly shards?: readonly { readonly id?: unknown; readonly records?: unknown; readonly complete?: unknown }[];
+    readonly last_act?: unknown;
+}
+
 /** What `INFO FOR NODE` answered, in the shape the map reads. */
 export interface Seen {
     readonly id?: string;
@@ -113,6 +124,8 @@ export interface Seen {
         readonly upstream?: Upstream | null;
         readonly peers?: readonly Peer[];
         readonly across?: Across;
+        readonly failover?: { readonly balance_leaderships?: unknown } | null;
+        readonly balanced?: readonly Balanced[];
     };
 }
 
@@ -290,6 +303,38 @@ function behindEach(followers: readonly Follower[]): string | null {
     return each.length === 0 ? null : each.join(", ");
 }
 
+/** A peer's placement, with what the operator said about it. */
+function placement(peer: Peer): string | null {
+    const range = told(peer.leads);
+    if (range === null) {
+        return null;
+    }
+    const said = [range];
+    if (peer.preferred === true) {
+        said.push("preferred");
+    }
+    if (peer.releasing === true) {
+        said.push("being given back to the store line");
+    }
+    return said.join(", ");
+}
+
+/**
+ * Each balanced table with its shards' records as the last pass counted them,
+ * `≥` where the count stopped at the bound, and the last act — or `null` on a
+ * node that does not count.
+ */
+function balancedTables(balanced: readonly Balanced[] | undefined): string | null {
+    const each = (balanced ?? []).map((one) => {
+        const shards = (one.shards ?? [])
+            .map((shard) => `${shard.complete === false ? "≥" : ""}${told(shard.records) ?? "?"}`)
+            .join(" / ");
+        const act = told(one.last_act);
+        return `${told(one.table) ?? "?"}: ${shards}${act === null ? "" : ` (last: ${act})`}`;
+    });
+    return each.length === 0 ? null : each.join("; ");
+}
+
 /** How the transactions across leaders this node coordinated ended. */
 function ended(across: Across | undefined): string | null {
     if (across === undefined) {
@@ -338,6 +383,11 @@ export function draw(into: HTMLElement, seen: Seen): void {
             // nothing rather than a zero nobody measured.
             fact("records still pending here", told(cluster.across?.pending)),
             fact("transactions holding intents here", told(cluster.across?.with_intents)),
+            fact(
+                "balances leaderships",
+                cluster.failover?.balance_leaderships === true ? "yes, when one node leads two lines more" : null,
+            ),
+            fact("balanced tables, records per shard", balancedTables(cluster.balanced)),
             wanted === null ? null : fact("declared for it", wanted.join(", ")),
         ],
         "self",
@@ -368,7 +418,7 @@ export function draw(into: HTMLElement, seen: Seen): void {
                     ),
                     fact("id", told(peer.node)),
                     fact("replicates", told(peer.replicates)),
-                    fact("leads", told(peer.leads)),
+                    fact("leads", placement(peer)),
                     fact("leads, as the log records", leading(cluster.leaders ?? [], peer.node)),
                 ],
                 "peer",
