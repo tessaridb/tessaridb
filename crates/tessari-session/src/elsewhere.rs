@@ -33,7 +33,7 @@
 
 use core::time::Duration;
 
-use tessari_encoding::NODE_ID_LEN;
+use tessari_encoding::{NODE_ID_LEN, NodeVersion};
 use tessari_types::Epoch;
 
 /// A copy this node does not hold, and where to find it.
@@ -99,4 +99,15 @@ pub trait Elsewhere: core::fmt::Debug + Send + Sync {
     /// would compile and quietly turn every redirect it should have issued back
     /// into a refusal.
     fn serving(&self, endpoint: &str, node: &[u8; NODE_ID_LEN]) -> Option<Peer>;
+
+    /// The build the node at `endpoint` last greeted as, if this node has
+    /// heard it.
+    ///
+    /// The fourth question, asked before writing a record an older build
+    /// could not read (ADR-0112 D13a): every peer that collects the log must
+    /// be known to read it. `None` is *not known*, which is never *new enough*.
+    ///
+    /// Required for [`Self::writable`]'s reason: a default answering `None`
+    /// would compile and quietly keep every node on the slower records.
+    fn build_at(&self, endpoint: &str) -> Option<NodeVersion>;
 }

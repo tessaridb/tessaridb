@@ -30,6 +30,7 @@ mod codec;
 mod driver;
 mod refusal;
 
+pub use driver::across_lapse_millis;
 pub use refusal::{AcrossRefusal, PartRefused, RefusalKind};
 
 use super::{Session, advised};
@@ -92,6 +93,31 @@ pub enum AcrossAsk {
         transaction: TransactionId,
         /// The range holding its record.
         coordinator: Reach,
+    },
+    /// Begin the transaction in the coordinator's range: its record written
+    /// `PENDING` where none stands and these writes — that range's own part —
+    /// held as intents, in one record (D13a). Answered as a prepare is.
+    Begin {
+        /// The transaction.
+        transaction: TransactionId,
+        /// The record, `PENDING`.
+        record: TransactionRecord,
+        /// The coordinator range's log position the transaction's node had
+        /// applied.
+        seen: Sequence,
+        /// The writes that fall in the coordinator's range.
+        writes: Vec<Mutation>,
+    },
+    /// Decide the record and resolve the coordinator range's own intents on
+    /// these records as it says, in one record (D13b). Answered as a decision
+    /// is.
+    Conclude {
+        /// The transaction.
+        transaction: TransactionId,
+        /// The record as it is to stand, decided.
+        record: TransactionRecord,
+        /// The records whose intents to resolve there.
+        records: Vec<RecordAddress>,
     },
     /// Resolve the transaction's intents on these records as decided (D4) —
     /// every intent of it this node holds, when no record is named.
@@ -167,18 +193,7 @@ impl Session<'_> {
             } => {
                 self.may_write_records(store, writes, span)?;
                 let mut buffered = store.begin()?;
-                for mutation in writes {
-                    let address = RecordAddress::new(
-                        mutation.namespace,
-                        mutation.database,
-                        mutation.table,
-                        mutation.id.clone(),
-                    );
-                    match mutation.value.value() {
-                        RecordValue::Present(payload) => buffered.put(address, payload.clone()),
-                        RecordValue::Tombstone => buffered.delete(address),
-                    }
-                }
+                buffer(&mut buffered, writes);
                 let waiting = self.acknowledgement_in(
                     &mut buffered,
                     None,
@@ -212,6 +227,53 @@ impl Session<'_> {
                 )?;
                 let committed = deciding
                     .decide_across(*transaction, record.clone())
+                    .map_err(advised)?;
+                Self::await_acknowledged(store, committed, waiting, span)?;
+                Ok(AcrossAnswer::Decided(committed.sequence))
+            }
+            AcrossAsk::Begin {
+                transaction,
+                record,
+                seen,
+                writes,
+            } => {
+                self.may_write_records(store, writes, span)?;
+                let mut buffered = store.begin()?;
+                buffer(&mut buffered, writes);
+                let waiting = self.acknowledgement_in(
+                    &mut buffered,
+                    None,
+                    Some(Acknowledge::Majority),
+                    span,
+                )?;
+                let committed = buffered
+                    .begin_across(*transaction, record.clone(), *seen)
+                    .map_err(advised)?;
+                Self::await_acknowledged(store, committed, waiting, span)?;
+                Ok(AcrossAnswer::Prepared(committed.sequence))
+            }
+            AcrossAsk::Conclude {
+                transaction,
+                record,
+                records,
+            } => {
+                let home = record
+                    .participants
+                    .first()
+                    .map(|participant| participant.range)
+                    .ok_or(Error::Store(tessari_storage::Error::AcrossMalformed {
+                        part: "conclude",
+                        problem: "a record that names no participant",
+                    }))?;
+                let mut concluding = store.begin()?;
+                let waiting = self.acknowledgement_in(
+                    &mut concluding,
+                    Some(home),
+                    Some(Acknowledge::Majority),
+                    span,
+                )?;
+                let committed = concluding
+                    .conclude_across(*transaction, record.clone(), records)
                     .map_err(advised)?;
                 Self::await_acknowledged(store, committed, waiting, span)?;
                 Ok(AcrossAnswer::Decided(committed.sequence))
@@ -430,6 +492,22 @@ impl Session<'_> {
         }
         reading.rollback();
         Ok(())
+    }
+}
+
+/// Buffer `writes` into `transaction` as the statements that made them did.
+fn buffer(transaction: &mut tessari_storage::Transaction<'_>, writes: &[Mutation]) {
+    for mutation in writes {
+        let address = RecordAddress::new(
+            mutation.namespace,
+            mutation.database,
+            mutation.table,
+            mutation.id.clone(),
+        );
+        match mutation.value.value() {
+            RecordValue::Present(payload) => transaction.put(address, payload.clone()),
+            RecordValue::Tombstone => transaction.delete(address),
+        }
     }
 }
 

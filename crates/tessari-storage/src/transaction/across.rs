@@ -118,6 +118,84 @@ impl Transaction<'_> {
         self.commit_placed()
     }
 
+    /// Begin `transaction` in the coordinator's range: its record written
+    /// `PENDING` and this transaction's buffered writes — the coordinator
+    /// range's own part — held as intents, in one commit (ADR-0112 D13a).
+    ///
+    /// The record is written only where none stands, so a participant that
+    /// found it absent and aborted it while this was on its way wins (D7). The
+    /// writes meet every check a prepare's do, `seen` included (D3a).
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`Self::prepare_across`] returns, and [`Error::AcrossDecided`]
+    /// when the record already stands.
+    pub fn begin_across(
+        mut self,
+        transaction: TransactionId,
+        begun: TransactionRecord,
+        seen: Sequence,
+    ) -> Result<Committed> {
+        let coordinator = coordinator_of(&begun, "begin")?;
+        self.across = Some(Work {
+            across: Across {
+                transaction,
+                part: Part::Begin(begun),
+            },
+            coordinator,
+            seen: Some(seen),
+            participants: Vec::new(),
+        });
+        self.commit_placed()
+    }
+
+    /// Conclude `transaction` in the coordinator's range: its record decided
+    /// and the intents it holds there on `records` resolved as the record
+    /// says, in one commit (ADR-0112 D13b). No records means every intent of
+    /// the transaction this node holds.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`Self::decide_across`] returns, and [`Error::AcrossMalformed`]
+    /// for a committed record missing a participant's prepare position.
+    pub fn conclude_across(
+        mut self,
+        transaction: TransactionId,
+        decided: TransactionRecord,
+        records: &[RecordAddress],
+    ) -> Result<Committed> {
+        let coordinator = coordinator_of(&decided, "conclude")?;
+        let committed = decided.decision == tessari_encoding::Decision::Committed;
+        if committed
+            && decided
+                .participants
+                .iter()
+                .any(|participant| participant.prepared_at.is_none())
+        {
+            return Err(Error::AcrossMalformed {
+                part: "conclude",
+                problem: "a committed record that does not say where every prepare landed",
+            });
+        }
+        self.writes.clear();
+        self.buffer_resolutions(transaction, committed, records)?;
+        let participants = if committed {
+            decided.participants.clone()
+        } else {
+            Vec::new()
+        };
+        self.across = Some(Work {
+            across: Across {
+                transaction,
+                part: Part::Conclude(decided),
+            },
+            coordinator,
+            seen: None,
+            participants,
+        });
+        self.commit_placed()
+    }
+
     /// Forget `transaction`'s decided record, in the coordinator's range, once
     /// every participant's resolution is held by a majority (ADR-0112 D12).
     ///
@@ -178,6 +256,34 @@ impl Transaction<'_> {
             });
         }
         self.writes.clear();
+        let Some(coordinator) = self.buffer_resolutions(transaction, committed, records)? else {
+            return Ok(None);
+        };
+        self.across = Some(Work {
+            across: Across {
+                transaction,
+                part: Part::Resolve { committed },
+            },
+            coordinator,
+            seen: None,
+            participants: if committed {
+                participants.to_vec()
+            } else {
+                Vec::new()
+            },
+        });
+        self.commit_placed().map(Some)
+    }
+
+    /// Buffer the resolution of `transaction`'s intents on `records` — every
+    /// intent of it this node holds when none is named — and answer the
+    /// coordinator's range the intents name, or `None` when none is left.
+    fn buffer_resolutions(
+        &mut self,
+        transaction: TransactionId,
+        committed: bool,
+        records: &[RecordAddress],
+    ) -> Result<Option<Reach>> {
         // No records named: every intent of the transaction this node holds,
         // read off its index — how a participant resolves after the
         // coordinator that knew the addresses is gone (D7).
@@ -204,23 +310,7 @@ impl Transaction<'_> {
             };
             self.writes.insert(address.clone(), value);
         }
-        let Some(coordinator) = coordinator else {
-            return Ok(None);
-        };
-        self.across = Some(Work {
-            across: Across {
-                transaction,
-                part: Part::Resolve { committed },
-            },
-            coordinator,
-            seen: None,
-            participants: if committed {
-                participants.to_vec()
-            } else {
-                Vec::new()
-            },
-        });
-        self.commit_placed().map(Some)
+        Ok(coordinator)
     }
 
     /// The value `transaction` holds as an intent on `address`, and the
@@ -308,17 +398,14 @@ impl Transaction<'_> {
         let Some(work) = &self.across else {
             return record;
         };
-        let provisional = match work.across.part {
-            Part::Prepare { .. } => true,
-            Part::Resolve { committed: true } => false,
+        let provisional = if work.across.part.prepares() {
+            true
+        } else if work.across.part.resolution() == Some(true) {
+            false
+        } else {
             // A decision, a forgetting and a landed part have no versions, and
             // an aborted resolution's are never written.
-            Part::Decide(_)
-            | Part::Resolve { committed: false }
-            | Part::Forget { .. }
-            | Part::Landed { .. } => {
-                return record.across(work.across.clone());
-            }
+            return record.across(work.across.clone());
         };
         let provenance = Provenance {
             transaction: work.across.transaction,
@@ -337,12 +424,13 @@ impl Transaction<'_> {
         self.across.is_some()
     }
 
-    /// The coordinator's range when this commit is a decision, which writes no
-    /// record and must still be admitted into that range.
+    /// The coordinator's range when this commit writes the transaction's
+    /// record, which a decision does with no record of its own and which must
+    /// still be admitted into that range.
     pub(super) fn decision_range(&self) -> Option<Reach> {
         self.across
             .as_ref()
-            .filter(|work| matches!(work.across.part, Part::Decide(_)))
+            .filter(|work| work.across.part.record().is_some())
             .map(|work| work.coordinator)
     }
 
@@ -351,7 +439,7 @@ impl Transaction<'_> {
     pub(super) fn resolves(&self, provenance: Option<&Provenance>) -> bool {
         match (&self.across, provenance) {
             (Some(work), Some(provenance)) => {
-                matches!(work.across.part, Part::Resolve { .. })
+                work.across.part.resolution().is_some()
                     && provenance.provisional
                     && provenance.transaction == work.across.transaction
             }
@@ -403,6 +491,18 @@ impl Transaction<'_> {
         }
         Ok(())
     }
+}
+
+/// The range a record names first, which holds it.
+fn coordinator_of(record: &TransactionRecord, part: &'static str) -> Result<Reach> {
+    record
+        .participants
+        .first()
+        .map(|participant| participant.range)
+        .ok_or(Error::AcrossMalformed {
+            part,
+            problem: "a record that names no participant",
+        })
 }
 
 #[cfg(test)]

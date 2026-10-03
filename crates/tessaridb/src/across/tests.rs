@@ -110,7 +110,21 @@ fn an_overdue_pending_record_is_aborted_and_its_intent_dropped() {
 #[test]
 fn a_record_nobody_wrote_is_aborted_by_the_participant_holding_its_intent() {
     let (db, address) = left_behind(&[]);
-    let settled = db.settle_across().unwrap();
+    // Absent, and its intent only just found: its begin may still be on its
+    // way (ADR-0112 D13a), so this pass asks without aborting.
+    let now = super::now_millis();
+    let first = db.settle_across_at(now).unwrap();
+    assert_eq!(first.resolved, 0, "{first:?}");
+    assert_eq!(db.store().transaction_record(TRANSACTION).unwrap(), None);
+    assert!(
+        db.store().holds_intents_of(TRANSACTION).unwrap(),
+        "the intent stands"
+    );
+    // A lapse later the absence is an abort (D7).
+    let lapse = tessari_session::across_lapse_millis(db.store()).unwrap();
+    let settled = db
+        .settle_across_at(now.saturating_add(lapse).saturating_add(1))
+        .unwrap();
     assert_eq!(settled.resolved, 1, "{settled:?}");
     assert_eq!(note(&db, &address), Value::from("old"));
     assert_eq!(

@@ -104,6 +104,10 @@ impl Elsewhere for OnePeer {
     fn writable(&self) -> Option<Peer> {
         None
     }
+
+    fn build_at(&self, _endpoint: &str) -> Option<tessari_encoding::NodeVersion> {
+        None
+    }
 }
 
 /// One peer, `age` behind, at an address a redirect can name.

@@ -175,6 +175,12 @@ impl Store {
         Ok(Transaction::new(self, self.committed_version()?))
     }
 
+    /// [`Self::begin`], deciding every intent from this node's own copy —
+    /// the view a commit or an apply derives from (see `Transaction::local`).
+    pub(crate) fn begin_local(&self) -> Result<Transaction<'_>> {
+        Ok(self.begin()?.local())
+    }
+
     /// Begin a transaction reading the store as it stood at `at`.
     ///
     /// Records are versioned by a suffix on their own key, so reading the past

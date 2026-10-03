@@ -54,7 +54,7 @@ pub(crate) fn maintain(
     record: &LogRecord,
     mut batch: WriteBatch,
 ) -> Result<WriteBatch> {
-    let mut view = store.begin()?;
+    let mut view = store.begin_local()?;
     // One catalog read per tenancy rather than per mutation. An edge kind is
     // found by its companion table, so the lookup is keyed by that table id.
     let mut by_tenancy: BTreeMap<(NamespaceId, DatabaseId), BTreeMap<TableId, EdgeKindDefinition>> =

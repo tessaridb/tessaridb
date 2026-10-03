@@ -52,8 +52,9 @@ impl Transaction<'_> {
                 }
                 Some(record) if record.decision == Decision::Aborted => false,
                 // Undecided here, or not here yet: the caller may already
-                // have been told (D13c), so the record's leader is asked
+                // have been told (D13c), so a reader asks the record's leader
                 // (D13d) — answered once, kept below for this transaction.
+                _ if !self.asks_leaders => false,
                 _ => match self
                     .store
                     .asked_decision(provenance.transaction, provenance.coordinator)

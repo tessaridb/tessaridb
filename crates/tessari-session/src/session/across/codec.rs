@@ -17,6 +17,10 @@
 //! participants with their prepare positions, which its versions carry (D6a)
 //! — and names its records with tombstones, which it never writes.
 //!
+//! A begin travels as a prepare does, its section carrying the `PENDING`
+//! record; a conclusion as a resolution does, its section carrying the
+//! decided record (ADR-0112 D13a, D13b).
+//!
 //! An answer is a tag and a position, except an outcome, which is the tag and
 //! the record as it stands.
 
@@ -36,6 +40,8 @@ const ASK_SETTLE: u8 = 4;
 const ASK_HOLDS: u8 = 5;
 const ASK_FORGET: u8 = 6;
 const ASK_LOOKUP: u8 = 7;
+const ASK_BEGIN: u8 = 8;
+const ASK_CONCLUDE: u8 = 9;
 
 const PREPARED: u8 = 1;
 const DECIDED: u8 = 2;
@@ -127,6 +133,31 @@ impl AcrossAsk {
                     },
                 }),
             ),
+            Self::Begin {
+                transaction,
+                record,
+                seen,
+                writes,
+            } => (
+                ASK_BEGIN,
+                *seen,
+                LogRecord::new(writes.clone()).across(Across {
+                    transaction: *transaction,
+                    part: Part::Begin(record.clone()),
+                }),
+            ),
+            Self::Conclude {
+                transaction,
+                record,
+                records,
+            } => (
+                ASK_CONCLUDE,
+                Sequence::ZERO,
+                LogRecord::new(records.iter().map(named).collect()).across(Across {
+                    transaction: *transaction,
+                    part: Part::Conclude(record.clone()),
+                }),
+            ),
             Self::Resolve {
                 transaction,
                 committed,
@@ -212,22 +243,22 @@ impl AcrossAsk {
                 transaction: across.transaction,
                 record: decided,
             },
+            (ASK_BEGIN, Part::Begin(begun)) => Self::Begin {
+                transaction: across.transaction,
+                record: begun,
+                seen,
+                writes: record.mutations().to_vec(),
+            },
+            (ASK_CONCLUDE, Part::Conclude(decided)) => Self::Conclude {
+                transaction: across.transaction,
+                record: decided,
+                records: addresses(&record),
+            },
             (ASK_RESOLVE, Part::Decide(outcome)) => Self::Resolve {
                 transaction: across.transaction,
                 committed: outcome.decision == Decision::Committed,
                 participants: outcome.participants,
-                records: record
-                    .mutations()
-                    .iter()
-                    .map(|mutation| {
-                        RecordAddress::new(
-                            mutation.namespace,
-                            mutation.database,
-                            mutation.table,
-                            mutation.id.clone(),
-                        )
-                    })
-                    .collect(),
+                records: addresses(&record),
             },
             (kind, _) => {
                 return Err(format!(
@@ -236,6 +267,22 @@ impl AcrossAsk {
             }
         })
     }
+}
+
+/// The records a resolution names, as their addresses.
+fn addresses(record: &LogRecord) -> Vec<RecordAddress> {
+    record
+        .mutations()
+        .iter()
+        .map(|mutation| {
+            RecordAddress::new(
+                mutation.namespace,
+                mutation.database,
+                mutation.table,
+                mutation.id.clone(),
+            )
+        })
+        .collect()
 }
 
 /// A record named by a resolution: its address, and a tombstone nobody writes.

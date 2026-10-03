@@ -97,6 +97,10 @@ pub struct Transaction<'a> {
     /// Whether this transaction sees each transaction across leaders it has
     /// met, decided the first time and kept (ADR-0112 D6a, `visible`).
     decided: RefCell<BTreeMap<tessari_encoding::TransactionId, bool>>,
+    /// Whether an intent this node's copy cannot decide is asked of its
+    /// record's leader (ADR-0112 D13d) — a reader's question. A view that
+    /// derives what a commit or an apply writes decides from this copy alone.
+    asks_leaders: bool,
 }
 
 impl Transaction<'_> {

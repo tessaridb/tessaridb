@@ -55,6 +55,10 @@ impl Elsewhere for Heard {
             epoch: ITS_EPOCH,
         })
     }
+
+    fn build_at(&self, _endpoint: &str) -> Option<tessari_encoding::NodeVersion> {
+        None
+    }
 }
 
 /// Declare a peer at `WHOLE_AT` that is `node` and collects `reach`.

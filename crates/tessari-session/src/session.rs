@@ -10,7 +10,10 @@
 
 mod acknowledging;
 mod across;
-pub use across::{AcrossAnswer, AcrossAsk, AcrossRefusal, PartRefused, Participants, RefusalKind};
+pub use across::{
+    AcrossAnswer, AcrossAsk, AcrossRefusal, PartRefused, Participants, RefusalKind,
+    across_lapse_millis,
+};
 mod atomic;
 mod step;
 

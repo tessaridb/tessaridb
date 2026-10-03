@@ -63,14 +63,17 @@ pub(super) fn reconcile(
     batch: WriteBatch,
 ) -> Result<WriteBatch> {
     let transaction = across.transaction;
-    let resolved_committed = matches!(across.part, Part::Resolve { committed: true });
+    let resolved_committed = across.part.resolution() == Some(true);
     // Only a record that can make the transaction known committed, add an
     // intent, land a part or remove an intent moves a mark.
-    let decided = match &across.part {
-        Part::Decide(decided) if decided.decision != Decision::Committed => return Ok(batch),
-        Part::Resolve { committed: false } | Part::Forget { .. } => return Ok(batch),
-        Part::Decide(decided) => Some(decided.clone()),
-        Part::Prepare { .. } | Part::Resolve { .. } | Part::Landed { .. } => store
+    let decided = match across.part.record() {
+        Some(decided) if decided.decision == Decision::Committed => Some(decided.clone()),
+        // Undecided or aborted — a begun record's intents are its first, so
+        // nothing is known committed yet.
+        Some(_) => return Ok(batch),
+        None if across.part.resolution() == Some(false) => return Ok(batch),
+        None if matches!(across.part, Part::Forget { .. }) => return Ok(batch),
+        None => store
             .transaction_record(transaction)?
             .filter(|standing| standing.decision == Decision::Committed),
     };
@@ -205,14 +208,10 @@ fn intent_tables(store: &Store, across: &Across, record: &LogRecord) -> Result<B
             .encode()
             .as_slice()
             .to_vec();
-        match across.part {
-            Part::Prepare { .. } => {
-                standing.insert(intent);
-            }
-            Part::Resolve { .. } => {
-                standing.remove(&intent);
-            }
-            Part::Decide(_) | Part::Forget { .. } | Part::Landed { .. } => {}
+        if across.part.prepares() {
+            standing.insert(intent);
+        } else if across.part.resolution().is_some() {
+            standing.remove(&intent);
         }
     }
     standing

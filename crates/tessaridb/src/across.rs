@@ -40,13 +40,17 @@ impl Db {
     /// The store's failure to list its records or intents; a refusal for one
     /// transaction is logged and passes on to the next.
     pub fn settle_across(&self) -> Result<SettledAcross> {
+        self.settle_across_at(now_millis())
+    }
+
+    /// [`Self::settle_across`] as of `now`, milliseconds since the Unix epoch.
+    pub(crate) fn settle_across_at(&self, now: u64) -> Result<SettledAcross> {
         let store = self.store();
         let mut settled = SettledAcross::default();
         // A leader that did not answer is not asked again this pass: a node
         // that hangs costs one peer link's patience per pass, not one per
         // transaction it coordinates.
         let mut silent: BTreeSet<[u8; tessari_storage::NODE_ID_LEN]> = BTreeSet::new();
-        let now = now_millis();
         // First, so a record resolved in this pass is forgotten in the next:
         // forgetting asks every participant, and a pass that has just
         // resolved here would only be told so a moment later.
@@ -73,14 +77,28 @@ impl Db {
         }
         let standing = store.standing_across()?;
         let standing_seen = standing.len();
+        let young = self.young_standing(&standing, now)?;
         for (transaction, coordinator) in standing {
             // Asked of the record's range's leader even when this node holds
             // a copy of the record: a copy, or the leader's own read, may be a
             // decision no majority holds yet, and only the leader's answer
             // writes it again at one first (ADR-0112 D4).
-            let asked = AcrossAsk::Settle {
-                transaction,
-                coordinator,
+            //
+            // An intent found less than a lapse ago may stand before the record
+            // that decides it is written — a prepare outran its begin (D13a) —
+            // so its leader is asked without aborting: a decided record is
+            // answered all the same, and an absent one only once a lapse has
+            // passed, as D7 aborts it.
+            let asked = if young.contains(&transaction) {
+                AcrossAsk::Lookup {
+                    transaction,
+                    coordinator,
+                }
+            } else {
+                AcrossAsk::Settle {
+                    transaction,
+                    coordinator,
+                }
             };
             let record = match self.ask_leader_of(coordinator, &asked, &mut silent)? {
                 Some(Ok(AcrossAnswer::Outcome(record))) if record.decision != Decision::Pending => {
@@ -181,6 +199,30 @@ impl Db {
             }
         }
         Ok(())
+    }
+
+    /// The standing transactions this node first found standing less than a
+    /// lapse before `now`, recording when it first found each new one and
+    /// forgetting those no longer standing.
+    fn young_standing(
+        &self,
+        standing: &[(tessari_storage::TransactionId, tessari_types::Reach)],
+        now: u64,
+    ) -> Result<BTreeSet<tessari_storage::TransactionId>> {
+        let lapse = tessari_session::across_lapse_millis(self.store())?;
+        let mut since = self
+            .standing_since
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        since.retain(|transaction, _| standing.iter().any(|(held, _)| held == transaction));
+        Ok(standing
+            .iter()
+            .filter(|(transaction, _)| {
+                let first = *since.entry(*transaction).or_insert(now);
+                now.saturating_sub(first) <= lapse
+            })
+            .map(|(transaction, _)| *transaction)
+            .collect())
     }
 
     /// Ask `range`'s leader — this node itself when it leads it. `None` when

@@ -355,3 +355,5 @@ fn a_readers_lookup_never_aborts_and_answers_a_decision() {
         .unwrap();
     assert_eq!(look_up(&mut owner, &store), Decision::Committed);
 }
+
+mod merged;

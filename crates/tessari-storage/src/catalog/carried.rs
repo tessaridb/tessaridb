@@ -319,12 +319,11 @@ fn named(mutation: &Mutation, value: Option<&Value>) -> Carried {
 pub(crate) fn home_of(record: &LogRecord) -> Result<Reach> {
     // A decision carries no writes to derive a home from. It belongs to the
     // coordinator's range — its record's first participant (ADR-0112 D2) — so
-    // it is fenced and logged exactly as a write into that range would be.
-    if let Some(tessari_encoding::Across {
-        part: tessari_encoding::Part::Decide(decided),
-        ..
-    }) = record.part_of()
-    {
+    // it is fenced and logged exactly as a write into that range would be. So
+    // does every record that writes the transaction record: a begin and a
+    // conclusion carry that range's own writes, and a conclusion whose intents
+    // were all gone already carries none (D13a, D13b).
+    if let Some(decided) = record.part_of().and_then(|across| across.part.record()) {
         return decided
             .participants
             .first()

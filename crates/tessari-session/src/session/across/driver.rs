@@ -14,6 +14,15 @@
 //! intent before its resolution asks the record's leader (D13d). A lost
 //! resolution is the record's to finish.
 //!
+//! # Two records in the coordinator's range, where every node can read them
+//!
+//! Once every peer is known to read them (ADR-0112 D13a, D13b), the
+//! coordinator's range takes two records rather than four: its record begun
+//! with that range's own writes as intents — sent in the same round as the
+//! other prepares, since a prepare that lands first is covered by D7 — and its
+//! record decided with those intents resolved. With a peer on an older build,
+//! or one not heard from, the four are written as they always were.
+//!
 //! # Parallel where it is only waiting
 //!
 //! Prepares to different leaders and the resolutions afterwards are network
@@ -24,11 +33,13 @@
 use argon2::password_hash::rand_core::{OsRng, RngCore};
 use tessari_constants::ACROSS_LAPSE_ROUNDS;
 use tessari_encoding::{
-    Decision, NODE_ID_LEN, Participant, TRANSACTION_ID_LEN, TransactionId, TransactionRecord,
+    Decision, NODE_ID_LEN, NodeVersion, Participant, TRANSACTION_ID_LEN, TransactionId,
+    TransactionRecord,
 };
 use tessari_ql::Span;
 use tessari_storage::{
-    AcrossOutcome, AcrossPart, Catalog, Failover, RecordAddress, Store, Transaction,
+    AcrossOutcome, AcrossPart, Catalog, Failover, RecordAddress, ReplicaDefinition, Store,
+    Transaction,
 };
 
 use super::{AcrossAnswer, AcrossAsk, AcrossRefusal, PartRefused, Participants};
@@ -76,13 +87,14 @@ impl Session<'_> {
             .participants
             .clone()
             .ok_or(Error::AcrossUnavailable { span })?;
-        let lapse = lapse_millis(store)?;
+        let lapse = across_lapse_millis(store)?;
+        let merged = self.merges_records(store)?;
         // The writes travel in `parts`; the snapshot is released now rather
         // than held across every round trip.
         transaction.rollback();
         let user = self.identity.user().cloned();
         let id = fresh_id();
-        let answered = self.drive(&carrier, &parts, (id, lapse), user.as_ref(), span);
+        let answered = self.drive(&carrier, &parts, (id, lapse, merged), user.as_ref(), span);
         // Counted where the client hears it (ADR-0112 D11), whichever way.
         store.across_finished(match &answered {
             Ok(()) => AcrossOutcome::Committed,
@@ -97,7 +109,7 @@ impl Session<'_> {
         &mut self,
         carrying: &std::sync::Arc<dyn Participants>,
         parts: &[AcrossPart],
-        (id, lapse): (TransactionId, u64),
+        (id, lapse, merged): (TransactionId, u64, bool),
         user: Option<&tessari_storage::UserDefinition>,
         span: Span,
     ) -> Result<()> {
@@ -117,27 +129,46 @@ impl Session<'_> {
                 })
                 .collect(),
         };
+        // Merged, the coordinator's own records are a begin and a conclusion,
+        // and its own part is resolved by the conclusion.
+        let own = records_of(first);
         let deciding = |this: &mut Self, record: &TransactionRecord| {
-            this.ask_one(
-                carrier,
-                coordinator_leader,
-                user,
-                &AcrossAsk::Decide {
+            let asked = if merged {
+                AcrossAsk::Conclude {
                     transaction: id,
                     record: record.clone(),
-                },
-            )
+                    records: own.clone(),
+                }
+            } else {
+                AcrossAsk::Decide {
+                    transaction: id,
+                    record: record.clone(),
+                }
+            };
+            this.ask_one(carrier, coordinator_leader, user, &asked)
         };
-        if let Err(refusal) = deciding(self, &record) {
+        if !merged && let Err(refusal) = deciding(self, &record) {
             return Err(Error::AcrossAborted { refusal, span });
         }
         let prepares: Vec<AcrossAsk> = parts
             .iter()
-            .map(|part| AcrossAsk::Prepare {
-                transaction: id,
-                coordinator,
-                seen: part.seen,
-                writes: part.writes.clone(),
+            .enumerate()
+            .map(|(at, part)| {
+                if merged && at == 0 {
+                    AcrossAsk::Begin {
+                        transaction: id,
+                        record: record.clone(),
+                        seen: part.seen,
+                        writes: part.writes.clone(),
+                    }
+                } else {
+                    AcrossAsk::Prepare {
+                        transaction: id,
+                        coordinator,
+                        seen: part.seen,
+                        writes: part.writes.clone(),
+                    }
+                }
             })
             .collect();
         let prepared = self.ask_parts(carrier, parts, user, &prepares);
@@ -182,34 +213,28 @@ impl Session<'_> {
         } else {
             Vec::new()
         };
-        let resolves: Vec<AcrossAsk> = parts
+        // The coordinator's own part was resolved by its conclusion.
+        let unresolved = parts.get(usize::from(merged)..).unwrap_or_default();
+        let resolves: Vec<AcrossAsk> = unresolved
             .iter()
             .map(|part| AcrossAsk::Resolve {
                 transaction: id,
                 committed,
                 participants: participants.clone(),
-                records: part
-                    .writes
-                    .iter()
-                    .map(|mutation| {
-                        RecordAddress::new(
-                            mutation.namespace,
-                            mutation.database,
-                            mutation.table,
-                            mutation.id.clone(),
-                        )
-                    })
-                    .collect(),
+                records: records_of(part),
             })
             .collect();
         match (decided, refused) {
-            // Aborted, and said so: the intents can go.
-            (Ok(_), Some(refusal)) => {
-                self.resolve_parts(carrying, parts, user, resolves);
+            // Aborted, said so or not: only this coordinator ever writes the
+            // record COMMITTED, and a lapse only aborts it, so an abort it
+            // decided is the outcome even when no majority confirmed it yet.
+            // The intents can go.
+            (_, Some(refusal)) => {
+                self.resolve_parts(carrying, unresolved, user, resolves);
                 Err(Error::AcrossAborted { refusal, span })
             }
             (Ok(_), None) => {
-                self.resolve_parts(carrying, parts, user, resolves);
+                self.resolve_parts(carrying, unresolved, user, resolves);
                 Ok(())
             }
             // The record had already been decided — a lapse aborted it while
@@ -224,6 +249,20 @@ impl Session<'_> {
                 span,
             }),
         }
+    }
+
+    /// Whether every peer that may collect the log is known to read a begun
+    /// and a concluded record — heard greeting at [`MERGED_FROM`] or later.
+    fn merges_records(&self, store: &Store) -> Result<bool> {
+        let me = store.node_identity()?.id;
+        let mut reading = store.begin()?;
+        let rows = Catalog::new(&mut reading).replicas()?;
+        reading.rollback();
+        Ok(every_peer_reads_merged(&rows, me, |endpoint| {
+            self.elsewhere
+                .as_ref()
+                .and_then(|elsewhere| elsewhere.build_at(endpoint))
+        }))
     }
 
     /// Ask the leader of one part — this node itself when it leads it.
@@ -356,9 +395,50 @@ impl Session<'_> {
     }
 }
 
+/// The first build whose nodes read a begun and a concluded record (ADR-0112
+/// D13a, D13b) and answer the asks that write them.
+const MERGED_FROM: NodeVersion = NodeVersion {
+    major: 0,
+    minor: 25,
+    patch: 0,
+};
+
+/// Whether every member row but this node's own names a node `heard` says
+/// runs [`MERGED_FROM`] or later. A row nobody has heard from, or one not yet
+/// bound to a node, may be a follower on an older build — which would stop at
+/// the first record it cannot read — so it keeps the four records.
+fn every_peer_reads_merged(
+    rows: &[ReplicaDefinition],
+    me: [u8; NODE_ID_LEN],
+    heard: impl Fn(&str) -> Option<NodeVersion>,
+) -> bool {
+    rows.iter()
+        .filter(|row| row.node != Some(me))
+        .all(|row| heard(&row.endpoint).is_some_and(|build| build >= MERGED_FROM))
+}
+
+/// The records a part writes, as a resolution names them.
+fn records_of(part: &AcrossPart) -> Vec<RecordAddress> {
+    part.writes
+        .iter()
+        .map(|mutation| {
+            RecordAddress::new(
+                mutation.namespace,
+                mutation.database,
+                mutation.table,
+                mutation.id.clone(),
+            )
+        })
+        .collect()
+}
+
 /// How long a `PENDING` record stays live, in milliseconds: the failover
 /// policy's round, [`ACROSS_LAPSE_ROUNDS`] times.
-fn lapse_millis(store: &Store) -> Result<u64> {
+///
+/// # Errors
+///
+/// Whatever the store returns reading the failover policy.
+pub fn across_lapse_millis(store: &Store) -> Result<u64> {
     let mut reading = store.begin()?;
     let round = Catalog::new(&mut reading)
         .failover()?
@@ -375,3 +455,6 @@ fn fresh_id() -> TransactionId {
     OsRng.fill_bytes(&mut bytes);
     TransactionId::new(bytes)
 }
+
+#[cfg(test)]
+mod tests;

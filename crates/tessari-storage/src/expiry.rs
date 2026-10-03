@@ -204,7 +204,7 @@ impl Store {
                 continue;
             }
             unindexed = unindexed.saturating_add(mutations.len());
-            let view = self.begin()?;
+            let view = self.begin_local()?;
             view.lift_floor(table);
             let batch = crate::index::maintain_from(
                 self,

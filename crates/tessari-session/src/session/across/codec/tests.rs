@@ -68,6 +68,31 @@ fn every_request_travels_and_arrives_as_itself() -> Result<(), String> {
             transaction: TRANSACTION,
             coordinator: range,
         },
+        AcrossAsk::Begin {
+            transaction: TRANSACTION,
+            record: TransactionRecord {
+                decision: Decision::Pending,
+                deadline: 9,
+                participants: vec![Participant {
+                    range,
+                    prepared_at: None,
+                }],
+            },
+            seen: Sequence::new(41),
+            writes: vec![named(&address(1))],
+        },
+        AcrossAsk::Conclude {
+            transaction: TRANSACTION,
+            record: TransactionRecord {
+                decision: Decision::Committed,
+                deadline: 9,
+                participants: vec![Participant {
+                    range,
+                    prepared_at: Some(Sequence::new(3)),
+                }],
+            },
+            records: vec![address(1), address(2)],
+        },
     ];
     for ask in asks {
         assert_eq!(AcrossAsk::decode(&ask.encode())?, ask);

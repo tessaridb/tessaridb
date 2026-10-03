@@ -75,6 +75,10 @@ impl Elsewhere for OnePeer {
             epoch: THEIR_EPOCH,
         })
     }
+
+    fn build_at(&self, _endpoint: &str) -> Option<tessari_encoding::NodeVersion> {
+        None
+    }
 }
 
 fn peer(leads: bool) -> Arc<dyn Elsewhere> {
