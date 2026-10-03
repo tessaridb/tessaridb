@@ -3309,8 +3309,10 @@ transaction's own writes and a member built before `0.22.0-beta` are read and
 analysed record by record as before, shape `search`. Both go through one BM25F
 and rank every record with the same score. Measured on the documentation site's
 corpus (700 fragments, 81 judged queries): a word query 2.18 → 0.070 ms and a
-prefix 3.89 → 0.093 ms at the warm median. `REBUILD INDEX` (or redefining the
-search) moves an older member onto the faster path.
+prefix 3.89 → 0.093 ms at the warm median. Redefining the search moves an
+older member onto the faster path — `DROP SEARCH` and `DEFINE SEARCH` with the
+same clauses, in one transaction so no reader finds it missing. `REBUILD INDEX`
+names a field's index and does not reach a search's members.
 
 ```
 DROP SEARCH knowledge;
