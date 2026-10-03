@@ -15,6 +15,9 @@
 
 use tessari_types::{Reach, Sequence};
 
+use tessari_kv::Value;
+
+use super::{StoreValue, split_header, with_header};
 use crate::error::{Error, Result};
 use crate::keys::{put_reach, take_reach};
 use crate::order::{KeyReader, KeyWriter};
@@ -110,10 +113,19 @@ pub struct Across {
 }
 
 /// Where a version came from when a transaction across leaders wrote it.
+///
+/// A participant's prepare stores each write as a **provisional** version under
+/// the record's own key — an intent — and its resolution replaces it with the
+/// final version, which keeps the provenance with `provisional` clear. An
+/// intent therefore lives where readers already walk versions, and is never a
+/// second keyspace every read would have to consult.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Provenance {
     /// The transaction.
     pub transaction: TransactionId,
+    /// Whether this version is an intent, which only the transaction's record
+    /// can turn into a value (ADR-0112 D5).
+    pub provisional: bool,
     /// The range whose log holds its record.
     pub coordinator: Reach,
 }
@@ -121,6 +133,9 @@ pub struct Provenance {
 const PART_PREPARE: u8 = 1;
 const PART_DECIDE: u8 = 2;
 const PART_RESOLVE: u8 = 3;
+
+const RESOLVED: u8 = 0;
+const PROVISIONAL: u8 = 1;
 
 const DECISION_PENDING: u8 = 0;
 const DECISION_COMMITTED: u8 = 1;
@@ -136,22 +151,7 @@ pub(super) fn put(writer: &mut KeyWriter, across: &Across) {
         }
         Part::Decide(record) => {
             writer.put_u8(PART_DECIDE);
-            writer.put_u8(match record.decision {
-                Decision::Pending => DECISION_PENDING,
-                Decision::Committed => DECISION_COMMITTED,
-                Decision::Aborted => DECISION_ABORTED,
-            });
-            writer.put_u64(record.deadline);
-            // A count here, unlike in front of the mutations: the participants
-            // are followed by the mutations, so they need a stated end.
-            writer.put_u32(u32::try_from(record.participants.len()).unwrap_or(u32::MAX));
-            for participant in &record.participants {
-                put_reach(writer, participant.range);
-                match participant.prepared_at {
-                    Some(at) => writer.put_u8(1).put_u64(at.get()),
-                    None => writer.put_u8(0),
-                };
-            }
+            put_record(writer, record);
         }
         Part::Resolve { committed } => {
             writer.put_u8(PART_RESOLVE).put_u8(u8::from(*committed));
@@ -172,31 +172,7 @@ pub(super) fn take(reader: &mut KeyReader<'_>) -> Result<Across> {
         PART_PREPARE => Part::Prepare {
             coordinator: take_reach(reader)?,
         },
-        PART_DECIDE => {
-            let decision = match reader.take_u8()? {
-                DECISION_PENDING => Decision::Pending,
-                DECISION_COMMITTED => Decision::Committed,
-                DECISION_ABORTED => Decision::Aborted,
-                found => return Err(unknown("decision", found)),
-            };
-            let deadline = reader.take_u64()?;
-            let count = reader.take_u32()?;
-            let mut participants = Vec::new();
-            for _ in 0..count {
-                let range = take_reach(reader)?;
-                let prepared_at = match reader.take_u8()? {
-                    0 => None,
-                    1 => Some(Sequence::new(reader.take_u64()?)),
-                    found => return Err(unknown("prepare position", found)),
-                };
-                participants.push(Participant { range, prepared_at });
-            }
-            Part::Decide(TransactionRecord {
-                decision,
-                deadline,
-                participants,
-            })
-        }
+        PART_DECIDE => Part::Decide(take_record(reader)?),
         PART_RESOLVE => Part::Resolve {
             committed: match reader.take_u8()? {
                 0 => false,
@@ -209,9 +185,82 @@ pub(super) fn take(reader: &mut KeyReader<'_>) -> Result<Across> {
     Ok(Across { transaction, part })
 }
 
-/// Append a version's [`Provenance`].
+/// Append a [`TransactionRecord`]: as a `Decide` part, and as the value the
+/// record's own key holds.
+fn put_record(writer: &mut KeyWriter, record: &TransactionRecord) {
+    writer.put_u8(match record.decision {
+        Decision::Pending => DECISION_PENDING,
+        Decision::Committed => DECISION_COMMITTED,
+        Decision::Aborted => DECISION_ABORTED,
+    });
+    writer.put_u64(record.deadline);
+    // A count here, unlike in front of a log record's mutations: in a `Decide`
+    // part the participants are followed by the mutations, so they need an end.
+    writer.put_u32(u32::try_from(record.participants.len()).unwrap_or(u32::MAX));
+    for participant in &record.participants {
+        put_reach(writer, participant.range);
+        match participant.prepared_at {
+            Some(at) => writer.put_u8(1).put_u64(at.get()),
+            None => writer.put_u8(0),
+        };
+    }
+}
+
+/// Read a [`TransactionRecord`] written by [`put_record`].
+fn take_record(reader: &mut KeyReader<'_>) -> Result<TransactionRecord> {
+    let decision = match reader.take_u8()? {
+        DECISION_PENDING => Decision::Pending,
+        DECISION_COMMITTED => Decision::Committed,
+        DECISION_ABORTED => Decision::Aborted,
+        found => return Err(unknown("decision", found)),
+    };
+    let deadline = reader.take_u64()?;
+    let count = reader.take_u32()?;
+    let mut participants = Vec::new();
+    for _ in 0..count {
+        let range = take_reach(reader)?;
+        let prepared_at = match reader.take_u8()? {
+            0 => None,
+            1 => Some(Sequence::new(reader.take_u64()?)),
+            found => return Err(unknown("prepare position", found)),
+        };
+        participants.push(Participant { range, prepared_at });
+    }
+    Ok(TransactionRecord {
+        decision,
+        deadline,
+        participants,
+    })
+}
+
+impl StoreValue for TransactionRecord {
+    fn encode(&self) -> Value {
+        let mut writer = KeyWriter::with_capacity(32);
+        put_record(&mut writer, self);
+        let payload = writer.finish();
+        let mut buffer = with_header(0, payload.len());
+        buffer.extend_from_slice(&payload);
+        Value::from(buffer)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let (_, payload) = split_header(bytes, 0)?;
+        let mut reader = KeyReader::new(crate::kind::KeyKind::TransactionRecord, payload);
+        let record = take_record(&mut reader)?;
+        reader.finish()?;
+        Ok(record)
+    }
+}
+
+/// Append a version's [`Provenance`]: the transaction first, as on a log
+/// record, then whether it is an intent, then the coordinator's range.
 pub(super) fn put_provenance(writer: &mut KeyWriter, provenance: Provenance) {
     writer.put_fixed(&provenance.transaction.bytes());
+    writer.put_u8(if provenance.provisional {
+        PROVISIONAL
+    } else {
+        RESOLVED
+    });
     put_reach(writer, provenance.coordinator);
 }
 
@@ -221,8 +270,15 @@ pub(super) fn put_provenance(writer: &mut KeyWriter, provenance: Provenance) {
 ///
 /// Whatever the reader returns when the bytes are short or the reach unknown.
 pub(super) fn take_provenance(reader: &mut KeyReader<'_>) -> Result<Provenance> {
+    let transaction = TransactionId::new(reader.take_fixed::<TRANSACTION_ID_LEN>()?);
+    let provisional = match reader.take_u8()? {
+        RESOLVED => false,
+        PROVISIONAL => true,
+        found => return Err(unknown("provenance", found)),
+    };
     Ok(Provenance {
-        transaction: TransactionId::new(reader.take_fixed::<TRANSACTION_ID_LEN>()?),
+        transaction,
+        provisional,
         coordinator: take_reach(reader)?,
     })
 }

@@ -97,10 +97,17 @@ fn a_record_outside_any_such_transaction_says_so() -> Result<()> {
 
 #[test]
 fn a_version_keeps_the_transaction_it_was_resolved_from() -> Result<()> {
-    let provenance = Provenance {
-        transaction: TRANSACTION,
-        coordinator: coordinator(),
-    };
+    for provisional in [true, false] {
+        versions_keep(Provenance {
+            transaction: TRANSACTION,
+            provisional,
+            coordinator: coordinator(),
+        })?;
+    }
+    Ok(())
+}
+
+fn versions_keep(provenance: Provenance) -> Result<()> {
     let shapes = [
         StampedValue::new(RecordValue::Present(b"payload".to_vec())),
         StampedValue::new(RecordValue::Present(b"payload".to_vec())).expiring(99),

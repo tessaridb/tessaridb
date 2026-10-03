@@ -783,10 +783,17 @@ impl Transaction<'_> {
         // this transaction's writes must not have changed under it.
         let guarded = self.guarded.borrow();
         for address in self.writes.keys().chain(guarded.iter()) {
-            let Some((version, _)) = self.read_newest(address)? else {
+            // The newest version as stored, intents included — one read, as
+            // before intents existed.
+            let Some((version, intent)) = self.newest_stored(address)? else {
                 continue;
             };
-            if version > self.snapshot {
+            // ADR-0112 D5: a standing intent refuses the write whatever this
+            // writer's snapshot. An intent prepared before the snapshot is not
+            // newer than it, and replacing the value under it would lose the
+            // write the transaction across leaders is about to commit.
+            // Retriable: the intent resolves.
+            if version > self.snapshot || intent {
                 return Err(Error::Conflict {
                     id: address.id.clone(),
                     snapshot: self.snapshot,

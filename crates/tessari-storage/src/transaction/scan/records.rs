@@ -219,11 +219,14 @@ impl Transaction<'_> {
             if decoded.version > self.snapshot || resolved.as_ref() == Some(&decoded.id) {
                 continue;
             }
+            let stored = StampedValue::decode(value.as_slice())?;
+            // An intent does not settle its record: the version under it, next
+            // in this same walk, does (ADR-0112 D5).
+            if crate::intents::is_intent(&stored) {
+                continue;
+            }
             *resolved = Some(decoded.id.clone());
-            taken.push((
-                decoded.id,
-                StampedValue::decode(value.as_slice())?.into_visible_at(self.reading_at()),
-            ));
+            taken.push((decoded.id, stored.into_visible_at(self.reading_at())));
         }
         Ok(taken)
     }

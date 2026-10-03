@@ -44,6 +44,7 @@ mod payload;
 mod record_id;
 mod spatial_keys;
 mod topic_key;
+mod transaction_key;
 mod value;
 
 pub use adjacency::{AdjacencyKey, Direction, EdgeProperties};
@@ -70,6 +71,7 @@ pub use order::{KeyReader, KeyWriter};
 pub use payload::{decode as decode_payload, encode as encode_payload};
 pub use spatial_keys::{SpatialExtent, SpatialIndexKey};
 pub use topic_key::{TopicBytesKey, TopicEntryKey, TopicHeadKey, TopicOffsetKey};
+pub use transaction_key::TransactionRecordKey;
 pub use value::{
     Across, CODEC_VERSION, Decision, FormatVersion, LogRecord, Mutation, Part, Participant,
     Provenance, RecordValue, StampedValue, StoreValue, TRANSACTION_ID_LEN, TransactionId,

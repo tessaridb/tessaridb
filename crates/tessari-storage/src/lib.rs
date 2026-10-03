@@ -46,6 +46,7 @@ mod holds;
 mod index;
 #[cfg(test)]
 mod index_unchanged_tests;
+mod intents;
 mod lapse;
 mod lease;
 mod lines;

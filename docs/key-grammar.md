@@ -111,6 +111,7 @@ because renumbering after data exists is a full rebuild.
 | `0x41` | `IndexChanges` | `index` | implemented — entries one value index has gained or lost on this node (G055); never in the log |
 | `0x42` | `SearchSurface` (surface forms of stemmed terms) | `index` | implemented — see §6.2b-6 |
 | `0x43` | `TopicBytes` (payload bytes a size-retained topic holds) | `index` | implemented — see §6.2d |
+| `0x50` | `TransactionRecord` (one transaction across leaders) | `meta` | implemented — see §6.5 |
 
 `0x40` and `0x41` open a fifth family, `0x4_`: what the planner keeps about an
 index. Both keys are an index prefix with no suffix (`<tag> <namespace:u32>
@@ -119,6 +120,11 @@ and decide which access path a read takes and never which records it returns.
 `0x42` sits in that family by number only: it is a search index's derived
 entry, written with its postings like `0x1f`, not a planner summary. `0x43`
 is a topic's, beside `0x1e`, likewise by number only.
+
+`0x50` opens a sixth family, `0x5_`: what this store keeps about transactions
+whose writes fall in ranges led by different nodes (ADR-0112). The family was
+opened rather than `0x44` taken because the `0x3_` meta family is full and
+`0x4_` is the planner's.
 
 ### 3c. The spatial entry
 
@@ -860,6 +866,27 @@ A singleton holding the log position whose effects are durably present in the
 state. It is written **in the same batch as the state it describes** — that is
 what makes recovery a resumable replay instead of a guess (ADR-0001).
 
+### 6.5 `TransactionRecord` — keyspace `meta`
+
+```
+<0x50> <transaction:16>
+   1        16
+```
+
+The record of one transaction across leaders: its outcome (`PENDING`,
+`COMMITTED`, `ABORTED`), the instant after which a pending one may be aborted by
+anyone, and every range it writes with where its prepare landed there.
+Fixed width and read by point lookup only — a reader meeting an intent asks for
+its transaction's record by id. It is node-local state derived by applying the
+coordinator range's log, as a catalog row is; the log record is the replicated
+truth.
+
+**Intents have no key kind of their own.** A participant's prepared write is a
+*provisional* version under the record's own `0x01` key, marked in the
+version's provenance (§7), so it sits where every read already walks versions
+and no read consults a second keyspace. Its resolution replaces it with the
+final version.
+
 ## 7. Value layout
 
 Every stored value begins with a codec version. The first byte is format
@@ -873,7 +900,7 @@ error naming the version found and the versions supported.
 | Field | Meaning |
 |---|---|
 | `codec-version` | `0x01` for this format. Not a payload byte. |
-| `flags` | bit 0 = tombstone, for value types that have versions. Every other bit is reserved, and so is bit 0 for value types that cannot be deleted. |
+| `flags` | bit 0 = tombstone, for value types that have versions. Bit 6 = the value belongs to a transaction across leaders (ADR-0112): on a log record, the section saying which of its records this is; on a record version, its provenance — `<transaction:16> <kind:1> <coordinator reach>`, kind `0` resolved, `1` provisional (an intent). The other bits are defined per value type in the codec; an undefined bit is reserved, and so is bit 0 for value types that cannot be deleted. |
 | `payload` | opaque to this layer; the document codec (SG2.T4) owns it |
 
 Policies, stated rather than left to be discovered:

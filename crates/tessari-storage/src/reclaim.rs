@@ -95,6 +95,12 @@ impl Store {
                 // A reader between this version and the floor still needs it.
                 continue;
             }
+            // An intent is never the version a reader resolves to and is never
+            // reclaimed: its record decides it, and until then the version under
+            // it is what every reader reads (ADR-0112 D5).
+            if crate::intents::is_intent(&StampedValue::decode(value.as_slice())?) {
+                continue;
+            }
             if !kept_for_current {
                 kept_for_current = true;
                 // The version every reader at the floor resolves to. It survives

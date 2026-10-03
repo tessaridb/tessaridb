@@ -107,8 +107,9 @@ const FLAG_ACROSS: u8 = 0b0100_0000;
 /// Bytes an expiry instant occupies when a version carries one.
 const EXPIRES_LEN: usize = 8;
 
-/// Room a version's provenance takes: the transaction id and the widest reach.
-const PROVENANCE_CAPACITY: usize = TRANSACTION_ID_LEN.saturating_add(17);
+/// Room a version's provenance takes: the transaction id, its kind byte and
+/// the widest reach.
+const PROVENANCE_CAPACITY: usize = TRANSACTION_ID_LEN.saturating_add(18);
 
 /// Bytes of header that precede every payload.
 const HEADER_LEN: usize = 2;

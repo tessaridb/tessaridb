@@ -183,9 +183,16 @@ impl<'a> Transaction<'a> {
             .first_of_each(RecordKey::keyspace(), &ranges)?;
         for (index, pair) in asked.into_iter().zip(found) {
             let Some((_, value)) = pair else { continue };
-            if let RecordValue::Present(payload) =
-                StampedValue::decode(value.as_slice())?.into_visible_at(self.reading_at())
-            {
+            let mut stored = StampedValue::decode(value.as_slice())?;
+            if crate::intents::is_intent(&stored) {
+                // The rare record a transaction across leaders is writing: read
+                // the version under the intent, one record at a time.
+                let Some(under) = self.read_stamped_at(&addresses[index])? else {
+                    continue;
+                };
+                stored = under;
+            }
+            if let RecordValue::Present(payload) = stored.into_visible_at(self.reading_at()) {
                 answers[index] = Some(payload);
             }
         }
@@ -239,16 +246,6 @@ impl<'a> Transaction<'a> {
         self.writes.keys().any(|address| {
             address.namespace == namespace && address.database == database && address.table == table
         })
-    }
-
-    /// The newest version of a record, whatever its sequence.
-    pub(super) fn read_newest(
-        &self,
-        address: &RecordAddress,
-    ) -> Result<Option<(Sequence, RecordValue)>> {
-        Ok(self
-            .read_newest_stamped(address)?
-            .map(|(version, stamped)| (version, stamped.into_value())))
     }
 
     /// The same version, with the causal context its writer had seen.
@@ -379,8 +376,12 @@ impl<'a> Transaction<'a> {
         let mut held: Vec<(Sequence, CausalStamp)> = Vec::new();
         for (key, value) in self.store.backend().scan(&request)? {
             let version = RecordKey::decode(key.as_slice())?.version;
-            let stamp = StampedValue::decode(value.as_slice())?.stamp().clone();
-            held.push((version, stamp));
+            let stored = StampedValue::decode(value.as_slice())?;
+            // An intent is not a version anybody wrote yet (ADR-0112 D5).
+            if crate::intents::is_intent(&stored) {
+                continue;
+            }
+            held.push((version, stored.stamp().clone()));
         }
         Ok(held)
     }
@@ -427,10 +428,48 @@ impl<'a> Transaction<'a> {
     /// narrower type would start failing the day commits began carrying a
     /// stamp. One decode site for the reason the codec gives for its splitters
     /// — two readings of one byte string is a thing that can come to disagree.
-    fn first_in_range(&self, range: KeyRange) -> Result<Option<(Sequence, StampedValue)>> {
+    ///
+    /// An intent is passed over and the version under it answers (ADR-0112
+    /// D5): only a transaction's record can make an intent a value. One read
+    /// per intent standing on the record, which is none for every record no
+    /// transaction across leaders is writing.
+    pub(super) fn first_in_range(
+        &self,
+        mut range: KeyRange,
+    ) -> Result<Option<(Sequence, StampedValue)>> {
+        loop {
+            let request = ScanRequest {
+                keyspace: RecordKey::keyspace(),
+                range: range.clone(),
+                direction: ScanDirection::Forward,
+                limit: Some(1),
+            };
+            let found = self.store.backend().scan(&request)?;
+            let Some((key, value)) = found.first() else {
+                return Ok(None);
+            };
+            let decoded_value = StampedValue::decode(value.as_slice())?;
+            if crate::intents::is_intent(&decoded_value) {
+                range = KeyRange::from_bounds(Bound::Excluded(key.clone()), range.end().clone());
+                continue;
+            }
+            let decoded_key = RecordKey::decode(key.as_slice())?;
+            return Ok(Some((decoded_key.version, decoded_value)));
+        }
+    }
+
+    /// A record's newest version as stored, and whether it is an intent.
+    ///
+    /// Asked by the conflict check, which must see what readers pass over: a
+    /// write landing on a standing intent would replace a value a transaction
+    /// across leaders has prepared, whatever this writer's snapshot.
+    pub(super) fn newest_stored(
+        &self,
+        address: &RecordAddress,
+    ) -> Result<Option<(Sequence, bool)>> {
         let request = ScanRequest {
             keyspace: RecordKey::keyspace(),
-            range,
+            range: KeyRange::prefix(&address.versions_prefix()),
             direction: ScanDirection::Forward,
             limit: Some(1),
         };
@@ -438,9 +477,10 @@ impl<'a> Transaction<'a> {
         let Some((key, value)) = found.first() else {
             return Ok(None);
         };
-        let decoded_key = RecordKey::decode(key.as_slice())?;
-        let decoded_value = StampedValue::decode(value.as_slice())?;
-        Ok(Some((decoded_key.version, decoded_value)))
+        Ok(Some((
+            RecordKey::decode(key.as_slice())?.version,
+            crate::intents::is_intent(&StampedValue::decode(value.as_slice())?),
+        )))
     }
 }
 
