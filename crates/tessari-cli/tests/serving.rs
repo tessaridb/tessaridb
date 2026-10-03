@@ -4579,6 +4579,12 @@ const ACKED_AT_THE_LEADER: Band = [
     ("127.0.0.1:47794", "127.0.0.1:47795"),
     ("127.0.0.1:47796", "127.0.0.1:47797"),
 ];
+/// The stalled-followers cluster's addresses, past every other band.
+const STALLED: Band = [
+    ("127.0.0.1:47980", "127.0.0.1:47981"),
+    ("127.0.0.1:47982", "127.0.0.1:47983"),
+    ("127.0.0.1:47984", "127.0.0.1:47985"),
+];
 const KILLED: Band = [
     ("127.0.0.1:47798", "127.0.0.1:47799"),
     ("127.0.0.1:47800", "127.0.0.1:47801"),
@@ -4803,6 +4809,110 @@ fn acknowledged_writes_at_a_majority_survive_the_leader() {
 }
 
 // ---- G053 SG2b: a failover in about a second -------------------------------
+
+/// G053 C2, the discriminating half: with BOTH followers paused no write can
+/// reach a majority, so a `MAJORITY` write must not be acknowledged; the leader
+/// is then killed and nothing acknowledged may be missing from its successor.
+///
+/// The kill test above cannot fail any more on its own: followers receive a
+/// commit within milliseconds, so a kill between two writes almost never
+/// catches one unreplicated, and removing the wait left it green. Here the
+/// followers hold nothing new until the leader is gone, so every write the
+/// leader acknowledged without a majority is lost — red with the wait removed.
+#[test]
+#[ignore = "three processes, SIGSTOP and a kill -9 — G053 C2, run explicitly: \
+            TESSARIDB_TEST_BIN=$PWD/target/release/tessaridb cargo test -p tessari-cli \
+            --test serving acknowledged_writes_at_a_majority -- --ignored --nocapture"]
+fn acknowledged_writes_at_a_majority_survive_followers_that_had_not_received_them() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    let _load = Load::from_env();
+    let mut cluster = a_cluster_declared(&STALLED, "", ["", "", ""]);
+    let leader = the_node_a_majority_granted(&STALLED);
+    for index in 0..STALLED.len() {
+        caught_up(&STALLED, index, "1", &cluster);
+    }
+    let followers: Vec<usize> = (0..STALLED.len())
+        .filter(|index| *index != leader)
+        .collect();
+    let paused: Vec<u32> = followers
+        .iter()
+        .map(|index| {
+            cluster.running[*index]
+                .as_ref()
+                .expect("the follower runs")
+                .0
+                .id()
+        })
+        .collect();
+    let signal = |what: &str, pid: u32| {
+        let sent = Command::new("kill")
+            .args([what, &pid.to_string()])
+            .status()
+            .expect("kill runs");
+        assert!(sent.success(), "{what} {pid}");
+    };
+    for pid in &paused {
+        signal("-STOP", *pid);
+    }
+
+    // Write at MAJORITY while no follower can hold anything new.
+    let stop = Arc::new(AtomicBool::new(false));
+    let outcomes = Arc::new(Mutex::new((Vec::<String>::new(), 0_usize, 0_usize)));
+    let writer = {
+        let (stop, outcomes) = (Arc::clone(&stop), Arc::clone(&outcomes));
+        let on = STALLED[leader].0;
+        std::thread::spawn(move || {
+            let mut client = Client::connect(on).unwrap();
+            let mut index = 0_u32;
+            while !stop.load(Ordering::Relaxed) {
+                index = index.saturating_add(1);
+                let key = format!("p{index:05}");
+                let answered = client.run(&into_item(&key, " ACKNOWLEDGE MAJORITY"), None);
+                let mut outcomes = outcomes.lock().unwrap();
+                match answered {
+                    Ok(_) => outcomes.0.push(key),
+                    Err(why) if why.to_string().contains("is committed on this node") => {
+                        outcomes.1 = outcomes.1.saturating_add(1);
+                    }
+                    Err(_) => {
+                        outcomes.2 = outcomes.2.saturating_add(1);
+                        break;
+                    }
+                }
+            }
+        })
+    };
+    std::thread::sleep(Duration::from_millis(1500));
+    drop(cluster.running[leader].take());
+    stop.store(true, Ordering::Relaxed);
+    writer.join().unwrap();
+    for pid in &paused {
+        signal("-CONT", *pid);
+    }
+    let (acknowledged, unconfirmed, other) = outcomes.lock().unwrap().clone();
+
+    let successor = the_node_that_takes(&STALLED, &followers, "after", &cluster);
+    let held = item_ids_at(STALLED[successor].0).unwrap();
+    let missing: Vec<&String> = acknowledged
+        .iter()
+        .filter(|key| !held.contains(key))
+        .collect();
+    eprintln!(
+        "STALLED acknowledged={} unconfirmed={unconfirmed} other={other} missing={}",
+        acknowledged.len(),
+        missing.len()
+    );
+    assert!(
+        unconfirmed > 0,
+        "no write waited for a majority and was told it is committed but unconfirmed"
+    );
+    assert!(
+        missing.is_empty(),
+        "{} writes acknowledged at MAJORITY are missing from the successor: {missing:?}",
+        missing.len()
+    );
+}
 
 /// Busy threads in this process, `TESSARIDB_TEST_CPU_LOAD` of them, for a
 /// measurement taken under CPU pressure; dropping the guard stops them.
