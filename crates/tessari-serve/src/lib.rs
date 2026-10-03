@@ -42,10 +42,12 @@
 
 mod accepting;
 mod bridge;
+mod listening;
 pub mod tls;
 
 pub use crate::accepting::{ACCEPT_PAUSE, passes};
 pub use crate::bridge::{Bridge, Bridged};
+pub use crate::listening::listen;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};

@@ -127,7 +127,7 @@ impl Node {
         db: Arc<Db>,
         address: &str,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let listener = TcpListener::bind(address)?;
+        let listener = tessari_serve::listen(address)?;
         // The runtime's listener requires it, and nothing here reads it blocking.
         listener.set_nonblocking(true)?;
         let committed = Arc::clone(db.commits());

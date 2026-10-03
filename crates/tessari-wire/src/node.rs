@@ -110,7 +110,7 @@ impl Node {
     ///
     /// Returns the operating system's failure when the address cannot be bound.
     pub fn bind(db: Arc<Db>, address: impl ToSocketAddrs) -> Result<Self> {
-        let listener = TcpListener::bind(address)?;
+        let listener = tessari_serve::listen(address)?;
         // The runtime's listener requires it, and nothing here reads it blocking.
         listener.set_nonblocking(true)?;
         let committed = Arc::clone(db.commits());

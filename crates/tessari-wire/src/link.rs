@@ -87,7 +87,7 @@ impl Peers {
     /// Returns the socket's own failure.
     pub fn bind(address: impl ToSocketAddrs, keys: &PeerKeys) -> Result<Self> {
         Ok(Self {
-            listener: TcpListener::bind(address)?,
+            listener: tessari_serve::listen(address)?,
             settings: keys.door(),
             keys: keys.clone(),
         })

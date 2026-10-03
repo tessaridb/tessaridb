@@ -35,6 +35,10 @@ thiserror = "2"
 # only what it uses: a library takes `rt` and `sync`, and only the binary asks for
 # the multi-threaded scheduler, the signal driver and the macros.
 tokio = { version = "1", default-features = false }
+# A listening socket a restarted node can take straight back (Linux refuses a
+# port while the killed process's connections wait out TIME_WAIT). Already in
+# the tree under tokio's `net`, so naming it adds no crate.
+socket2 = { version = "0.6", default-features = false }
 # `CancellationToken`, the one signal every stage of a shutdown waits on.
 tokio-util = { version = "0.7", default-features = false }
 # The shared concurrent maps: `DashMap` where nothing needs order,
