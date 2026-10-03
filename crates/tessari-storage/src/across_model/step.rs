@@ -3,23 +3,32 @@
 use super::state::{
     Coordinator, Second, Shown, State, holds_intent, intent_stands, latest_committed, versions,
 };
-use super::{Decision, Entry, Range, Rules, Writer};
+use super::{Decision, Entry, Range, Rules, World, Writer};
 
 /// How many times one range may be handed T1's prepare: once, and once more
 /// as a duplicate.
 const DELIVERIES: u8 = 2;
 
 /// Every state one action away from `state`.
-pub(super) fn successors(state: &State, rules: Rules) -> Vec<State> {
+pub(super) fn successors(state: &State, rules: Rules, world: World) -> Vec<State> {
     let mut next = Vec::new();
     coordinate(state, rules, &mut next);
     for range in Range::BOTH {
         deliver(state, rules, range, &mut next);
-        resolve(state, range, &mut next);
-        read(state, rules, range, &mut next);
+        resolve(state, range, world, &mut next);
+        if world == World::Reading {
+            read(state, rules, range, &mut next);
+        }
     }
     lapse(state, &mut next);
-    second(state, rules, &mut next);
+    match world {
+        World::Reading => second(state, rules, &mut next),
+        World::Forgetting => {
+            settle_absent(state, &mut next);
+            replicate(state, &mut next);
+            forget(state, rules, &mut next);
+        }
+    }
     next
 }
 
@@ -120,17 +129,69 @@ fn deliver(state: &State, rules: Rules, range: Range, next: &mut Vec<State>) {
 }
 
 /// Anyone turns a standing intent into a version or drops it, once the record
-/// has decided. Idempotent: a resolved intent no longer stands.
-fn resolve(state: &State, range: Range, next: &mut Vec<State>) {
+/// has decided. Idempotent: a resolved intent no longer stands. `B`'s leader
+/// applies it alone first — a resolution waits for no majority.
+fn resolve(state: &State, range: Range, world: World, next: &mut Vec<State>) {
     let decided = match state.record() {
         Some(Decision::Committed) => true,
         Some(Decision::Aborted) => false,
         Some(Decision::Pending) | None => return,
     };
-    if intent_stands(state.log(range)) {
+    if state.intent_stands_at_leader(range) {
         let mut resolved = state.clone();
-        resolved.logs[range.slot()].push(Entry::Resolved { committed: decided });
+        match (range, world) {
+            (Range::B, World::Forgetting) => resolved.tail = Some(decided),
+            _ => resolved.logs[range.slot()].push(Entry::Resolved { committed: decided }),
+        }
         next.push(resolved);
+    }
+}
+
+/// `B`'s leader-only resolution reaches a majority — or its leader dies first
+/// and the resolution is gone with it.
+fn replicate(state: &State, next: &mut Vec<State>) {
+    if let Some(committed) = state.tail {
+        let mut held = state.clone();
+        held.logs[Range::B.slot()].push(Entry::Resolved { committed });
+        held.tail = None;
+        next.push(held);
+        let mut lost = state.clone();
+        lost.tail = None;
+        next.push(lost);
+    }
+}
+
+/// D7: a participant holding an intent whose record is absent aborts it, by
+/// compare-and-set on *absent* at the record's leader.
+fn settle_absent(state: &State, next: &mut Vec<State>) {
+    let standing = Range::BOTH
+        .iter()
+        .any(|range| state.intent_stands_at_leader(*range));
+    if standing && state.record().is_none() && state.coordinator != Coordinator::Idle {
+        let mut aborted = state.clone();
+        aborted.logs[Range::A.slot()].push(Entry::Record(Decision::Aborted));
+        next.push(aborted);
+    }
+}
+
+/// D12: `A`'s leader forgets a decided record once every participant says
+/// none of its intents stands — said, under the rule, only once a majority
+/// holds the resolution that removed them.
+fn forget(state: &State, rules: Rules, next: &mut Vec<State>) {
+    if !matches!(
+        state.record(),
+        Some(Decision::Committed | Decision::Aborted)
+    ) {
+        return;
+    }
+    let gone = Range::BOTH.iter().all(|range| {
+        !state.intent_stands_at_leader(*range)
+            && (!rules.forget_waits_for_a_majority || *range == Range::A || state.tail.is_none())
+    });
+    if gone {
+        let mut forgot = state.clone();
+        forgot.logs[Range::A.slot()].push(Entry::Forget);
+        next.push(forgot);
     }
 }
 

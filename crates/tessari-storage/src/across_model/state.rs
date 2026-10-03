@@ -50,6 +50,9 @@ pub(super) struct State {
     pub(super) replies: [Option<bool>; 2],
     pub(super) second: Second,
     pub(super) reader: Reader,
+    /// A resolution `B`'s leader has applied and no majority holds yet — its
+    /// outcome — lost if that leader dies before it replicates.
+    pub(super) tail: Option<bool>,
 }
 
 impl State {
@@ -65,6 +68,7 @@ impl State {
             replies: [None, None],
             second: Second::Idle,
             reader: Reader::default(),
+            tail: None,
         }
     }
 
@@ -77,26 +81,45 @@ impl State {
         record_in(self.log(Range::A))
     }
 
-    /// How many decisions the record has taken.
-    pub(super) fn decisions(&self) -> usize {
+    /// Whether the record took both outcomes at some point in its life.
+    pub(super) fn two_outcomes(&self) -> bool {
+        let log = self.log(Range::A);
+        log.contains(&Entry::Record(Decision::Committed))
+            && log.contains(&Entry::Record(Decision::Aborted))
+    }
+
+    /// The outcome the record took, whether or not it was forgotten since.
+    pub(super) fn outcome(&self) -> Option<Decision> {
         self.log(Range::A)
             .iter()
-            .filter(|entry| {
-                matches!(
-                    entry,
-                    Entry::Record(Decision::Committed | Decision::Aborted)
-                )
+            .rev()
+            .find_map(|entry| match entry {
+                Entry::Record(decision @ (Decision::Committed | Decision::Aborted)) => {
+                    Some(*decision)
+                }
+                _ => None,
             })
-            .count()
+    }
+
+    /// Whether the record has been forgotten.
+    pub(super) fn forgotten(&self) -> bool {
+        self.log(Range::A).contains(&Entry::Forget)
+    }
+
+    /// Whether an intent stands as `range`'s leader sees it: its log, and for
+    /// `B` the resolution only the leader holds.
+    pub(super) fn intent_stands_at_leader(&self, range: Range) -> bool {
+        intent_stands(self.log(range)) && (range == Range::A || self.tail.is_none())
     }
 }
 
 /// The record's state in a prefix of `A`'s log.
 pub(super) fn record_in(log: &[Entry]) -> Option<Decision> {
     log.iter().rev().find_map(|entry| match entry {
-        Entry::Record(decision) => Some(*decision),
+        Entry::Record(decision) => Some(Some(*decision)),
+        Entry::Forget => Some(None),
         _ => None,
-    })
+    })?
 }
 
 /// One version of a key as a prefix of its log shows it.
@@ -127,7 +150,7 @@ pub(super) fn versions(log: &[Entry]) -> Vec<Shown> {
                     }
                 }
             }
-            Entry::Record(_) => {}
+            Entry::Record(_) | Entry::Forget => {}
         }
     }
     shown

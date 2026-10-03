@@ -16,6 +16,10 @@
 //! - **A reading transaction** on a node whose copies of both logs lag their
 //!   leaders independently, reading the two keys in either order.
 //! - **A backup** taken by that node at every reachable moment (D9).
+//! - **Forgetting** the decided record once every participant says its
+//!   intents are gone (D12), while `B`'s leader may hold a resolution no
+//!   majority holds yet and die with it — a resolution waits for its leader
+//!   alone.
 //!
 //! Each rule the ADR relies on is a switch in [`Rules`]. The protocol is
 //! checked with all of them on; then each is turned off alone and the explorer
@@ -28,6 +32,18 @@ mod state;
 mod step;
 
 pub(crate) use explore::explore;
+
+/// Which world is explored. Each is the whole protocol; they differ in which
+/// actors interleave with it, because both at once is eleven times the states
+/// for no interleaving either needs from the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum World {
+    /// The reader on a lagging node and T2 racing T1 (D3-D6, D9).
+    Reading,
+    /// The record forgotten while `B`'s leader may die holding the only copy
+    /// of its resolution, and backups cut across it (D7, D9, D12).
+    Forgetting,
+}
 
 /// The rules ADR-0112 relies on, each removable to prove it is load-bearing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +68,9 @@ pub(crate) struct Rules {
     /// D9: a backup's cut includes every participant's prepare and the
     /// decision of any transaction it holds part of.
     pub(crate) backup_closes_over_the_transaction: bool,
+    /// D12: a participant says its intents are gone only once a majority
+    /// holds its resolution, so a successor cannot find one standing.
+    pub(crate) forget_waits_for_a_majority: bool,
 }
 
 impl Rules {
@@ -64,6 +83,7 @@ impl Rules {
         one_decision_per_reader: true,
         visible_reads_its_own_version: true,
         backup_closes_over_the_transaction: true,
+        forget_waits_for_a_majority: true,
     };
 }
 
@@ -129,6 +149,8 @@ pub(crate) enum Entry {
     Resolved { committed: bool },
     /// A change of T1's record (range `A` only).
     Record(Decision),
+    /// T1's record deleted, its outcome settled everywhere (range `A`, D12).
+    Forget,
 }
 
 /// What an invariant check found.
@@ -152,19 +174,26 @@ pub(crate) enum Violation {
 
 #[cfg(test)]
 mod tests {
-    use super::{Rules, Violation, explore};
+    use super::{Rules, Violation, World, explore};
 
     /// A rule's name, how to remove it, and what its removal may break.
     type Case = (&'static str, fn(&mut Rules), &'static [Violation]);
 
     #[test]
     fn the_protocol_holds_every_invariant_in_every_reachable_state() -> Result<(), String> {
-        let explored = explore(Rules::ALL).map_err(|found| {
+        let violated = |found: super::explore::Found| {
             format!(
                 "ADR-0112 as stated is violated: {:?} in {}",
                 found.violation, found.state
             )
-        })?;
+        };
+        let forgetting = explore(Rules::ALL, World::Forgetting).map_err(violated)?;
+        assert!(forgetting.forgotten, "no run ever forgot T1's record");
+        assert!(
+            forgetting.committed && forgetting.aborted,
+            "both outcomes must be forgotten from"
+        );
+        let explored = explore(Rules::ALL, World::Reading).map_err(violated)?;
         // The situations the invariants are about were all reached, so no
         // invariant held vacuously; and the floor proves the interleavings
         // were generated at all.
@@ -184,7 +213,7 @@ mod tests {
 
     #[test]
     fn every_rule_is_load_bearing() -> Result<(), String> {
-        let cases: [Case; 7] = [
+        let cases: [Case; 8] = [
             (
                 "decide by compare-and-set",
                 |rules| rules.decide_by_compare_and_set = false,
@@ -193,7 +222,10 @@ mod tests {
             (
                 "prepare checks the stamp",
                 |rules| rules.prepare_checks_the_stamp = false,
-                &[Violation::LostUpdate],
+                // And D12's: a duplicate prepare arriving after a committed
+                // record was forgotten would stand an intent that settles
+                // against nothing and aborts.
+                &[Violation::LostUpdate, Violation::TwoOutcomes],
             ),
             (
                 "an intent refuses writes",
@@ -220,11 +252,26 @@ mod tests {
                 |rules| rules.backup_closes_over_the_transaction = false,
                 &[Violation::FracturedRestore],
             ),
+            (
+                "forget waits for a majority",
+                |rules| rules.forget_waits_for_a_majority = false,
+                // The same hazard seen twice: a successor settling an intent
+                // against an absent record, or a backup cut past the Forget
+                // that has no resolution of `B` to reach and drops its intent.
+                &[
+                    Violation::TwoOutcomes,
+                    Violation::ResolvedAgainstTheRecord,
+                    Violation::FracturedRestore,
+                ],
+            ),
         ];
         for (name, remove, expected) in cases {
             let mut rules = Rules::ALL;
             remove(&mut rules);
-            let Err(found) = explore(rules) else {
+            let Some(found) = [World::Reading, World::Forgetting]
+                .into_iter()
+                .find_map(|world| explore(rules, world).err())
+            else {
                 return Err(format!("without `{name}` nothing broke"));
             };
             assert!(

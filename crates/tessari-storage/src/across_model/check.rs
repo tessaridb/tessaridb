@@ -5,7 +5,7 @@ use super::{Decision, Entry, Range, Rules, Violation, Writer};
 
 /// What must hold in every reachable state.
 pub(super) fn always(state: &State, rules: Rules) -> Result<(), Violation> {
-    if state.decisions() > 1 {
+    if state.two_outcomes() {
         return Err(Violation::TwoOutcomes);
     }
     let seen_t1 = state.reader.seen.contains(&Some(Writer::T1));
@@ -31,7 +31,7 @@ pub(super) fn always(state: &State, rules: Rules) -> Result<(), Violation> {
 
 /// What must hold once nothing more can happen.
 pub(super) fn finally(state: &State) -> Result<(), Violation> {
-    let committed = match state.record() {
+    let committed = match state.outcome() {
         Some(Decision::Committed) => true,
         Some(Decision::Aborted) => false,
         Some(Decision::Pending) | None => return Err(Violation::LeftInDoubt),
@@ -97,14 +97,23 @@ fn restored(state: &State, rules: Rules, applied: [usize; 2]) -> [Writer; 2] {
     let mut cut = applied;
     if rules.backup_closes_over_the_transaction {
         let a = &state.log(Range::A)[..cut[Range::A.slot()]];
+        // D12: a cut holding the record's Forget holds no record to tell a
+        // restore that T1's intents are values, so it reaches every
+        // participant's resolution instead.
+        let forgot = a.contains(&Entry::Forget);
         let holds_commit = record_in(a) == Some(Decision::Committed)
+            || forgot
             || Range::BOTH.iter().any(|range| {
                 state.log(*range)[..cut[range.slot()]]
                     .contains(&Entry::Resolved { committed: true })
             });
         if holds_commit {
             for range in Range::BOTH {
-                let needed = closure(state.log(range), range);
+                let needed = if forgot {
+                    resolution(state.log(range))
+                } else {
+                    closure(state.log(range), range)
+                };
                 let slot = range.slot();
                 cut[slot] = cut[slot].max(needed);
             }
@@ -126,6 +135,13 @@ fn restored(state: &State, rules: Rules, applied: [usize; 2]) -> [Writer; 2] {
             .unwrap_or(Writer::Initial);
     }
     seen
+}
+
+/// How far into a range's log a cut must reach to hold T1's resolution there.
+fn resolution(log: &[Entry]) -> usize {
+    log.iter()
+        .position(|entry| matches!(entry, Entry::Resolved { .. }))
+        .map_or(0, |at| at.saturating_add(1))
 }
 
 /// How far into a range's log a cut must reach to hold T1's part there: the

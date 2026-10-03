@@ -4,7 +4,7 @@ use std::collections::{HashSet, VecDeque};
 
 use super::state::{State, history};
 use super::step::successors;
-use super::{Decision, Range, Rules, Violation, Writer, check};
+use super::{Decision, Range, Rules, Violation, World, Writer, check};
 
 /// The first violation found, with the state that showed it.
 #[derive(Debug)]
@@ -25,11 +25,13 @@ pub(crate) struct Explored {
     pub(crate) aborted: bool,
     /// T2 committed on top of a committed T1.
     pub(crate) second_after: bool,
+    /// A run forgot T1's record.
+    pub(crate) forgotten: bool,
 }
 
 /// Every state reachable under `rules`, or the first one that breaks an
 /// invariant.
-pub(crate) fn explore(rules: Rules) -> Result<Explored, Found> {
+pub(crate) fn explore(rules: Rules, world: World) -> Result<Explored, Found> {
     let start = State::initial();
     let mut known: HashSet<State> = HashSet::from([start.clone()]);
     let mut queue: VecDeque<State> = VecDeque::from([start]);
@@ -41,10 +43,11 @@ pub(crate) fn explore(rules: Rules) -> Result<Explored, Found> {
         };
         check::always(&state, rules).map_err(found)?;
         explored.read_whole |= state.reader.seen == [Some(Writer::T1); 2];
-        let next = successors(&state, rules);
+        let next = successors(&state, rules, world);
         if next.is_empty() {
             check::finally(&state).map_err(found)?;
-            let committed = state.record() == Some(Decision::Committed);
+            let committed = state.outcome() == Some(Decision::Committed);
+            explored.forgotten |= state.forgotten();
             explored.committed |= committed;
             explored.aborted |= !committed;
             explored.second_after |=
