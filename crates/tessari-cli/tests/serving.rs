@@ -3517,6 +3517,46 @@ fn each_node_leads_its_own_shard_and_sends_the_others_to_their_leaders() {
     }
 }
 
+/// Three nodes leading one shard of `orders` each, once node 0 and node 1 have
+/// each taken a write into their own shard and node 0 knows node 1 leads
+/// shard 2 — the shape a transaction across two leaders needs.
+fn two_shard_leaders(band: &Band) -> Three {
+    let cluster = a_cluster_declared(
+        band,
+        PLACED,
+        [
+            " LEADS SHARD prod.shop.orders 1",
+            " LEADS SHARD prod.shop.orders 2",
+            " LEADS SHARD prod.shop.orders 3",
+        ],
+    );
+    // Shard 1 begins below 'g' and n0 leads it; shard 2 begins at 'g' and n1
+    // leads it.
+    for (index, prefix) in ["a", "h"].iter().enumerate() {
+        if let Err(last) = until_taken(band[index].0, prefix, Duration::from_secs(120)) {
+            panic!(
+                "node {index} never took a write into its own shard; last: {last}{}",
+                what_the_nodes_said(band, &cluster.logs)
+            );
+        }
+    }
+    // And n0 knows n1 leads shard 2 — its row has to replicate first, and
+    // until it has, n0 would take shard 2 for a range nobody leads.
+    if let Err(last) = until_sent_to(
+        band[0].0,
+        "hknown",
+        cluster.ids[1],
+        band[1].1,
+        Duration::from_secs(90),
+    ) {
+        panic!(
+            "node 0 never learned that node 1 leads shard 2; last: {last}{}",
+            what_the_nodes_said(band, &cluster.logs)
+        );
+    }
+    cluster
+}
+
 /// The cross-leader scenario's addresses, its own band (G053 SG3).
 const ACROSS: Band = [
     ("127.0.0.1:47986", "127.0.0.1:47987"),
@@ -3530,39 +3570,7 @@ const ACROSS: Band = [
             own validation, run explicitly: cargo test -p tessari-cli --test \
             serving a_transaction_across_two_shard_leaders -- --ignored"]
 fn a_transaction_across_two_shard_leaders_commits_whole_or_is_refused() {
-    let cluster = a_cluster_declared(
-        &ACROSS,
-        PLACED,
-        [
-            " LEADS SHARD prod.shop.orders 1",
-            " LEADS SHARD prod.shop.orders 2",
-            " LEADS SHARD prod.shop.orders 3",
-        ],
-    );
-    // Shard 1 begins below 'g' and n0 leads it; shard 2 begins at 'g' and n1
-    // leads it.
-    for (index, prefix) in ["a", "h"].iter().enumerate() {
-        if let Err(last) = until_taken(ACROSS[index].0, prefix, Duration::from_secs(120)) {
-            panic!(
-                "node {index} never took a write into its own shard; last: {last}{}",
-                what_the_nodes_said(&ACROSS, &cluster.logs)
-            );
-        }
-    }
-    // And n0 knows n1 leads shard 2 — its row has to replicate first, and
-    // until it has, n0 would take shard 2 for a range nobody leads.
-    if let Err(last) = until_sent_to(
-        ACROSS[0].0,
-        "hknown",
-        cluster.ids[1],
-        ACROSS[1].1,
-        Duration::from_secs(90),
-    ) {
-        panic!(
-            "node 0 never learned that node 1 leads shard 2; last: {last}{}",
-            what_the_nodes_said(&ACROSS, &cluster.logs)
-        );
-    }
+    let cluster = two_shard_leaders(&ACROSS);
     let spanning = |commit: &str, key: &str| {
         format!(
             "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
@@ -3625,6 +3633,99 @@ fn a_transaction_across_two_shard_leaders_commits_whole_or_is_refused() {
         )
         .is_ok_and(|ids| ids.is_empty()),
         "the refused transaction left a record behind"
+    );
+}
+
+/// The cross-leader measurement's addresses, a band of its own.
+const ACROSS_TIMED: Band = [
+    ("127.0.0.1:47998", "127.0.0.1:47999"),
+    ("127.0.0.1:48000", "127.0.0.1:48001"),
+    ("127.0.0.1:48002", "127.0.0.1:48003"),
+];
+
+#[test]
+#[ignore = "a measurement, not a check: three processes and six hundred \
+            commits, and its numbers mean something only from a release \
+            binary run alone — TESSARIDB_TEST_BIN=target/release/tessaridb \
+            cargo test -p tessari-cli --test serving cross_leader_commit_latency \
+            -- --ignored --nocapture"]
+fn cross_leader_commit_latency_against_one_leader_at_majority() {
+    // G053 SG3f: what committing across two leaders costs beside the commits
+    // it is compared with — one write and a two-record transaction on one
+    // leader, both acknowledged by a majority (the namespace's default). All
+    // three from node 0, which leads shard 1; the transaction across leaders
+    // also writes shard 2, led by node 1.
+    let cluster = two_shard_leaders(&ACROSS_TIMED);
+    let on = ACROSS_TIMED[0].0;
+    let mut client = Client::connect(on).unwrap();
+    let across = |key: &str| {
+        format!(
+            "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
+             CREATE orders:'a{key}' = {{ n: 1 }}; CREATE orders:'h{key}' = {{ n: 1 }}; \
+             COMMIT ACROSS LEADERS;"
+        )
+    };
+    // Warm: the first transaction across leaders may be refused while a
+    // follower does not yet hold a shard's log (the across test's own note).
+    let began = Instant::now();
+    while client.run(&across("warm"), None).is_err() {
+        assert!(
+            began.elapsed() < Duration::from_secs(60),
+            "no transaction across leaders ever committed{}",
+            what_the_nodes_said(&ACROSS_TIMED, &cluster.logs)
+        );
+        std::thread::sleep(POLL);
+    }
+    let timed = |client: &mut Client, script: &str| {
+        let began = Instant::now();
+        client.run(script, None).map(|_| began.elapsed())
+    };
+    // In three runs rather than interleaved: a transaction across leaders
+    // answers once its resolutions are at their leaders, not at a majority, so
+    // a write right after one waits for a majority to hold those as well — an
+    // interleaved run charged that to the write measured after it.
+    let mut refused = 0_usize;
+    let mut across_taken = Vec::new();
+    for index in 0..200 {
+        match timed(&mut client, &across(&format!("t{index:04}"))) {
+            Ok(took) => across_taken.push(took),
+            Err(_) => refused = refused.saturating_add(1),
+        }
+    }
+    let one_taken: Vec<Duration> = (0..200)
+        .map(|index| {
+            timed(
+                &mut client,
+                &format!(
+                    "USE NAMESPACE prod; USE DATABASE shop; CREATE orders:'b{index:04}' = {{ n: 1 }};"
+                ),
+            )
+            .unwrap()
+        })
+        .collect();
+    let pair_taken: Vec<Duration> = (0..200)
+        .map(|index| {
+            timed(
+                &mut client,
+                &format!(
+                    "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
+                     CREATE orders:'c{index:04}' = {{ n: 1 }}; \
+                     CREATE orders:'d{index:04}' = {{ n: 1 }}; COMMIT;"
+                ),
+            )
+            .unwrap()
+        })
+        .collect();
+    let (across_p50, across_p99) = percentiles(across_taken);
+    let (one_p50, one_p99) = percentiles(one_taken);
+    let (pair_p50, pair_p99) = percentiles(pair_taken);
+    eprintln!(
+        "ACROSS across_us p50={across_p50} p99={across_p99} refused={refused} \
+         one_write_us p50={one_p50} p99={one_p99} one_leader_pair_us p50={pair_p50} p99={pair_p99}"
+    );
+    assert_eq!(
+        refused, 0,
+        "a warm cluster refused a transaction across leaders"
     );
 }
 
