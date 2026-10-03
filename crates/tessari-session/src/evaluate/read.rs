@@ -172,7 +172,7 @@ impl Session<'_> {
         // the leaders when it can be (ADR-0097 D2): its groups stand in for the
         // records, and every stage after the fold runs below as it always has.
         let (prepared, searched, mut folded) =
-            match self.prepare_folded(transaction, select, &mut notes, &noticed)? {
+            match self.prepare_folded(transaction, select, (&mut notes, &noticed), within)? {
                 Some((groups, plan)) => (
                     Prepared::Held(Vec::new(), plan),
                     crate::search::Searched::default(),

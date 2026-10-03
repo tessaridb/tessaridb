@@ -434,10 +434,15 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         id: TableId,
         reduce: &crate::Reduce,
-        select: &tessari_ql::Select,
-        condition: Option<&tessari_ql::Expr>,
+        (select, condition): (&tessari_ql::Select, Option<&tessari_ql::Expr>),
         noticed: &Noticed,
+        within: Option<crate::budget::Deadline>,
     ) -> Result<Option<(Groups, Note)>> {
+        // The read's `TIMEOUT`, checked between the leaders' folds and this
+        // node's own pages: nothing here hands a record to a consumer, so the
+        // budget a records path spends per record never sees this work (Q-856).
+        let mut folded: u64 = 0;
+        let in_time = |folded: u64| within.map_or(Ok(()), |deadline| deadline.check(folded));
         let Some(missing) = self.missing(transaction, id, Part::Whole)? else {
             return Ok(None);
         };
@@ -450,6 +455,7 @@ impl Session<'_> {
             let Some(window) = window_of(&span, Part::Whole) else {
                 continue;
             };
+            in_time(folded)?;
             if missing.lacking.contains(&span.id) {
                 let asked = Asked {
                     namespace: missing.namespace,
@@ -489,6 +495,7 @@ impl Session<'_> {
                         GATHER_PAGE_RECORDS,
                     )?;
                     let full = page.len() == GATHER_PAGE_RECORDS;
+                    folded = folded.saturating_add(u64::try_from(page.len()).unwrap_or(u64::MAX));
                     after = page.last().map(|(id, _)| id.clone());
                     let mut kept = Vec::with_capacity(page.len());
                     for (record_id, record) in self.records_of(page, &reduce.visible)? {
@@ -517,12 +524,14 @@ impl Session<'_> {
                     if !full {
                         break;
                     }
+                    in_time(folded)?;
                 }
             }
             if groups.len() > GATHER_RECORDS {
                 return Err(missing.too_much());
             }
         }
+        in_time(folded)?;
         Ok(Some((groups, missing.note())))
     }
 }
