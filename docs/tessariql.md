@@ -9326,6 +9326,31 @@ removed nodes are listed under `cluster.tombstoned` in `INFO FOR NODE`, and,
 like revocations, reach every node whatever it follows.
 
 
+### Upgrading a cluster one node at a time
+
+A cluster moves to the next **minor** release without stopping: replace one
+node at a time — stop it, start the new release on the **same store** — the
+followers first and the store line's leader last, and wait for each to answer
+before the next. Each replaced node opens the store the previous release wrote
+and catches up; the cluster takes writes throughout, except that a write sent
+while the leader itself is being replaced is refused until a leader is elected
+again.
+
+What is promised, and what is not:
+
+- **One minor version at a time** (0.23 → 0.24). Two steps are two upgrades.
+- **Forward only.** A store a later release has written is not promised to open
+  under an earlier one; take a snapshot before you start.
+- **New features after the last node.** While both releases run, use only what
+  both understand. Turn on what the new release adds — `BALANCE LEADERSHIPS`,
+  `LEADS … PREFERRED`, giving a range back with `LEADS NONE`, a transaction
+  across two leaders — once every node runs it: an older node does not know
+  them, and a decision only half the cluster can read is not one it makes.
+
+Measured on three local processes going from 0.23.0-beta to this release: each
+node replaced in turn, writes landing after every step, and every node holding
+every record at the end.
+
 ### Which peers vote, and what a node that votes for nobody does
 
 A peer declared with the `coordinating` role is a **voting member**: a node that
@@ -9727,7 +9752,7 @@ with a doubling wait (`SignInThrottled`), its counts kept per store.
 | `OFFSET` as a second spelling for `START` | one spelling for one thing |
 | **hash** sharding | shards are spans of identities, which is what keeps a span read one walk. Spreading writes by hash forfeits that order and is a second method the map can carry later, not a change to the first. §4 |
 | more of a gathered read **pushed to the shards' leaders** | a `WHERE`, a `LIMIT`, an `ORDER BY … LIMIT` over record-only keys and the folds that merge exactly (`count`, `sum`, `mean`, `min`, `max`) travel; `variance`, `stddev`, `median`, `collect`, the counter folds and a fold over floats gather the records and run here, and a suggestion is withheld on a node holding part of the table. Merging those exactly is each its own piece of work. A join side and a `FETCH` are not gathered at all. §7d |
-| a change feed over a split table **on a node that does not write all of it** | a feed merges one writer's logs in that writer's order, and two writers' orders are unrelated counters — so a shard led elsewhere, or a follower, is refused by name rather than merged by a guess. Following it there needs an order across writers. §4 |
+| a change feed over a split table **on a node that does not write all of it** | a feed merges one writer's logs in that writer's order, and two writers' orders are unrelated counters — so a shard led elsewhere, or a follower, is refused by name rather than merged by a guess. Following it there needs an order across writers, and a transaction across leaders does not supply one: it commits whole, and each leader's log keeps its own count. §4 |
 | **an index serving a branch of a fused read** (`ORDER BY FUSE`) | every branch is ranked over every record that passed the `WHERE`, which is exact and costs the filtered read. A branch served from the search walk or the vector graph would stop early, and a fused order needs each branch's places down to its depth — the bound is the depth, not the `LIMIT`, and proving the walk answers the same places is its own piece of work. §5 |
 | a **staged upload** — many commits building one file | this is what the ranged write in §6a is *not*: that one lands in a single commit and is bounded by what a transaction can hold. Building a large file across several needs a rule for what a reader sees between them, which is a visibility feature rather than a byte-offset one |
 | a bucket narrowed by **content type** — `HOLDS image/png` | the store has no content type for a file. A file's record holds its size, its chunk count and when it was written, and nothing anywhere reads the bytes to decide what they are — so the clause could only enforce the caller's own claim about the caller's own bytes, which is the assertion §6a refuses `CREATE`, `UPDATE` and `SET` in order to avoid, wearing a constraint's clothes. The honest version detects the type by reading the leading bytes against a table of signatures, which is real work with a real failure mode of its own: plain text, CSV and SVG have no signature, and a `HOLDS text/plain` that cannot be checked is worse than no clause at all. The ceiling shipped without it because `MAX` compares against a number the store computes itself. §6a |

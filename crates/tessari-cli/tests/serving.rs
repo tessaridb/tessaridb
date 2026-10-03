@@ -1890,18 +1890,38 @@ impl Three {
         args.extend(extra.iter().map(std::ffi::OsString::from));
         self.running[index] = Some(started(&args, &self.logs[index]));
     }
+
+    /// Stop node `index` and start `binary` on its store with the arguments
+    /// it was first started with — one step of a rolling upgrade.
+    fn replace_with(&mut self, index: usize, binary: &std::ffi::OsStr) {
+        self.running[index] = None;
+        self.running[index] = Some(started_by(
+            binary,
+            &self.started_with[index],
+            &self.logs[index],
+        ));
+    }
 }
 
 /// Start the shipped binary with `args`, its standard error appended to `log`.
 fn started(args: &[std::ffi::OsString], log: &std::path::Path) -> Running {
+    // A cluster measurement is taken against the release build when one is
+    // named (G053 SG1): the debug binary's timings describe the debug build.
+    let binary = std::env::var_os("TESSARIDB_TEST_BIN").unwrap_or_else(|| TESSARIDB.into());
+    started_by(&binary, args, log)
+}
+
+/// Start `binary` with `args`, its standard error appended to `log`.
+fn started_by(
+    binary: &std::ffi::OsStr,
+    args: &[std::ffi::OsString],
+    log: &std::path::Path,
+) -> Running {
     let writing = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(log)
         .unwrap();
-    // A cluster measurement is taken against the release build when one is
-    // named (G053 SG1): the debug binary's timings describe the debug build.
-    let binary = std::env::var_os("TESSARIDB_TEST_BIN").unwrap_or_else(|| TESSARIDB.into());
     let child = Command::new(binary)
         .args(args)
         .stdout(Stdio::null())
@@ -1995,6 +2015,17 @@ fn a_cluster_declared(band: &Band, preamble: &str, leads: [&str; 3]) -> Three {
 /// shard is a row that is not `REPLICATES STORE`). Each node declares its own
 /// roles as its row states them.
 fn a_cluster_of_rows(band: &Band, preamble: &str, rows: [String; 3]) -> Three {
+    a_cluster_of_rows_by(None, band, preamble, rows)
+}
+
+/// [`a_cluster_of_rows`] run by `binary` when one is named — an older release,
+/// for a rolling upgrade (G053 SG8).
+fn a_cluster_of_rows_by(
+    binary: Option<&std::ffi::OsStr>,
+    band: &Band,
+    preamble: &str,
+    rows: [String; 3],
+) -> Three {
     let directory = tempfile::tempdir().unwrap();
     let minted = Minted::new();
 
@@ -2130,7 +2161,10 @@ fn a_cluster_of_rows(band: &Band, preamble: &str, rows: [String; 3]) -> Three {
         .iter()
         .map(|arg| (*arg).to_owned())
         .collect();
-        running.push(Some(started(&args, &log)));
+        running.push(Some(match binary {
+            Some(binary) => started_by(binary, &args, &log),
+            None => started(&args, &log),
+        }));
         logs.push(log);
         started_with.push(args);
     }
@@ -4105,6 +4139,112 @@ fn a_preferred_candidate_is_handed_the_range_by_its_leader_and_keeps_it() {
     );
     if let Err(last) = until_taken(PREFERRING[preferred].0, "hq", Duration::from_secs(30)) {
         panic!("n{preferred} lost shard 2; last: {last}");
+    }
+}
+
+/// The rolling upgrade's addresses, its own band (G053 SG8).
+const UPGRADING: Band = [
+    ("127.0.0.1:48034", "127.0.0.1:48035"),
+    ("127.0.0.1:48036", "127.0.0.1:48037"),
+    ("127.0.0.1:48038", "127.0.0.1:48039"),
+];
+
+#[test]
+#[ignore = "needs the previous minor release's binary — build the tag it names \
+            and run: TESSARIDB_UPGRADE_FROM=<that binary> cargo test -p \
+            tessari-cli --test serving a_rolling_upgrade -- --ignored. G053 C8"]
+fn a_rolling_upgrade_across_one_minor_version_keeps_every_record() {
+    // G053 C8: three nodes on the previous minor release; each is replaced in
+    // turn by this build on its own store — followers first, the store's
+    // leader last — and the cluster takes writes after every step. At the
+    // end every node runs this build and holds every record written.
+    let from = std::env::var_os("TESSARIDB_UPGRADE_FROM")
+        .expect("TESSARIDB_UPGRADE_FROM names the previous release's binary");
+    let every = "ROLES serving, writable, coordinating REPLICATES STORE";
+    let mut cluster = a_cluster_of_rows_by(
+        Some(&from),
+        &UPGRADING,
+        "",
+        [every.to_owned(), every.to_owned(), every.to_owned()],
+    );
+    let logs = cluster.logs.clone();
+    // The node a write lands on, and so the store line's leader.
+    let write = |script: &str| {
+        UPGRADING
+            .iter()
+            .position(|(surface, _)| asked(surface, script, None).is_ok())
+    };
+    let schema = "DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
+                  DEFINE DATABASE shop; USE DATABASE shop; DEFINE TABLE notes (n int);";
+    assert!(
+        until(Duration::from_secs(90), || write(schema).is_some()),
+        "the schema was never declared on the old release{}",
+        what_the_nodes_said(&UPGRADING, &logs)
+    );
+    let mut written: Vec<String> = Vec::new();
+    let mut leader = 0;
+    let write_batch = |step: &str, written: &mut Vec<String>, leader: &mut usize| {
+        for n in 0..5 {
+            let key = format!("{step}{n}");
+            let script = format!(
+                "USE NAMESPACE prod; USE DATABASE shop; CREATE notes:'{key}' = {{ n: {n} }};"
+            );
+            let mut landed = None;
+            assert!(
+                until(Duration::from_secs(90), || {
+                    landed = write(&script);
+                    landed.is_some()
+                }),
+                "{key} was never written{}",
+                what_the_nodes_said(&UPGRADING, &logs)
+            );
+            *leader = landed.unwrap_or_default();
+            written.push(key);
+        }
+    };
+    // Which build answers: only this one reports a peer's `preferred` flag
+    // (G053 SG5b) — the version string alone does not move between the two.
+    let this_build = |surface: &str| {
+        value_at(surface, "INFO FOR NODE;").is_ok_and(|report| report.contains("\"preferred\""))
+    };
+    assert!(
+        UPGRADING.iter().all(|(surface, _)| {
+            value_at(surface, "INFO FOR NODE;")
+                .is_ok_and(|report| !report.contains("\"preferred\""))
+        }),
+        "a node answered as this build, or not at all, before it was replaced"
+    );
+    write_batch("a", &mut written, &mut leader);
+    // Followers first, the store's leader last.
+    let mut order: Vec<usize> = (0..UPGRADING.len())
+        .filter(|node| *node != leader)
+        .collect();
+    order.push(leader);
+    for (step, node) in order.into_iter().enumerate() {
+        cluster.replace_with(node, std::ffi::OsStr::new(TESSARIDB));
+        assert!(listening(UPGRADING[node].0, Duration::from_secs(30)));
+        assert!(
+            until(Duration::from_secs(30), || this_build(UPGRADING[node].0)),
+            "n{node} does not answer as this build after its replacement"
+        );
+        let tag = ["b", "c", "d"][step];
+        write_batch(tag, &mut written, &mut leader);
+        eprintln!("UPGRADE step {step}: n{node} replaced, writes landing on n{leader}");
+    }
+    written.sort();
+    for (surface, _) in &UPGRADING {
+        let level = until(Duration::from_secs(60), || {
+            read_at(surface, "SELECT id FROM notes ORDER BY id;").is_ok_and(|mut ids| {
+                ids.sort();
+                ids == written
+            })
+        });
+        assert!(
+            level,
+            "{surface} does not hold every record after the upgrade: {:?}{}",
+            read_at(surface, "SELECT id FROM notes;"),
+            what_the_nodes_said(&UPGRADING, &logs)
+        );
     }
 }
 
