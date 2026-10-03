@@ -97,12 +97,9 @@ impl Fixture {
     }
 
     fn resolve(&self, committed: bool) -> Result<Option<crate::transaction::Committed>> {
-        self.store.begin()?.resolve_across(
-            TRANSACTION,
-            self.coordinator(),
-            committed,
-            &[self.address()],
-        )
+        self.store
+            .begin()?
+            .resolve_across(TRANSACTION, committed, &[self.address()])
     }
 
     fn logged(&self, at: Sequence) -> Result<LogRecord> {

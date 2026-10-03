@@ -2581,6 +2581,15 @@ mod tests {
         ) -> std::result::Result<tessaridb::Coordinated, String> {
             Err("this test door carries no requests".to_owned())
         }
+
+        fn across(
+            &self,
+            _: [u8; NODE_ID_LEN],
+            _: &crate::assertion::Assertion,
+            _: &[u8],
+        ) -> std::result::Result<Vec<u8>, String> {
+            Err("this test door writes no cross-leader records".to_owned())
+        }
     }
 
     #[test]

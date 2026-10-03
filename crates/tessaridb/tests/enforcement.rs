@@ -496,7 +496,20 @@ const TABLES: &[Table] = &[
         // `Administer`. A fingerprint and an expiry are public by construction
         // — every peer sees both in the handshake. Re-classification trigger:
         // the reader carrying a private key or anything a handshake withholds.
-        expected: 36,
+        //
+        // 37 since a transaction commits across leaders (G053 SG3, ADR-0112):
+        // `Db::participating_through` installs, once, who carries a record of
+        // such a transaction to the leader of its range. Classified
+        // **ENFORCED, at the answering end, on `coordinate_through`'s ground**:
+        // the record is written there in a session acting as the asserted user,
+        // after the door believed a signature by the proven peer over the
+        // record's own bytes (`across::tests::*`) and the account and reach
+        // were judged as for a carried request; a prepare is refused unless
+        // that user's tenancy, authority and grants permit every table it
+        // writes (`across::a_user_without_the_write_grant_cannot_prepare`,
+        // `across::nobody_signed_in_cannot_prepare_on_a_closed_store`).
+        // Re-classification trigger: coordinate_through's.
+        expected: 37,
         count: |text| public_functions(&block(text, "impl Db")),
     },
     Table {
@@ -1163,7 +1176,11 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 145 since the cluster counters (G053 C6): `Store::answered_not_held_here`
     // and `Store::acknowledgement_waited`, not data paths, classified above.
-    assert_eq!(total, 145, "the counted tables no longer sum to 145");
+    //
+    // 146 since a transaction commits across leaders (G053 SG3, ADR-0112):
+    // `Db::participating_through`, enforced at the answering end, classified
+    // above.
+    assert_eq!(total, 146, "the counted tables no longer sum to 146");
 }
 
 /// Every `.rs` file under a directory.

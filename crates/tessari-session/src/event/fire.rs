@@ -110,6 +110,9 @@ impl<'a> Session<'a> {
             consumer: self.consumer.clone(),
             elsewhere: self.elsewhere.clone(),
             gather: None,
+            // An event body runs inside the writer's transaction, which commits
+            // across leaders or not as a whole; the body never coordinates.
+            participants: None,
             backups: None,
             at_rest: None,
             budget: self.budget.clone(),

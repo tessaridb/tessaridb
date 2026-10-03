@@ -112,4 +112,21 @@ impl tessari_wire::Holding for PeerDoor {
             tessaridb::Surface::Http => tessari_http::render_coordinated(&self.db, &ran),
         })
     }
+
+    // A record of a transaction across leaders another node carried here
+    // (ADR-0112): judged as a coordinated request is — the account and the
+    // reach — then written as that user, whose grants here decide.
+    fn across(
+        &self,
+        from: [u8; tessari_storage::NODE_ID_LEN],
+        assertion: &tessari_wire::Assertion,
+        asked: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        let asked = tessari_session::AcrossAsk::decode(asked)?;
+        let mut session = tessari_wire::admit_asserted(&self.db, from, assertion)?;
+        session
+            .answer_across(&asked)
+            .map(|answer| answer.encode().to_vec())
+            .map_err(|refused| refused.to_string())
+    }
 }

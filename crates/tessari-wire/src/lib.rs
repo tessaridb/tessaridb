@@ -56,6 +56,7 @@
 #![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 #[cfg(feature = "server")]
+mod across;
 mod assertion;
 #[cfg(feature = "server")]
 mod budget;

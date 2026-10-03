@@ -55,6 +55,22 @@ impl Session<'_> {
         if !transaction.writes_anything() {
             return Ok(None);
         }
+        self.acknowledgement_in(transaction, None, asked, span)
+    }
+
+    /// [`Self::acknowledgement_for`], for a commit landing in `home` — or, when
+    /// `home` is `None`, wherever the transaction's own writes land.
+    ///
+    /// A record of a transaction across leaders names its range itself: a
+    /// decision writes no records, so nothing else could say where it lands
+    /// (ADR-0112).
+    pub(super) fn acknowledgement_in(
+        &self,
+        transaction: &mut Transaction<'_>,
+        home: Option<Reach>,
+        asked: Option<Acknowledge>,
+        span: Span,
+    ) -> Result<Option<Waiting>> {
         let me = self.store.node_identity()?.id;
         let voting: Vec<_> = Catalog::new(transaction)
             .replicas()?
@@ -69,7 +85,10 @@ impl Session<'_> {
         if voting.is_empty() && asked.is_none() {
             return Ok(None);
         }
-        let home = transaction.home()?;
+        let home = match home {
+            Some(home) => home,
+            None => transaction.home()?,
+        };
         let catalog = Catalog::new(transaction);
         let definition = match home {
             Reach::Store => None,
@@ -141,6 +160,16 @@ impl Session<'_> {
         span: Span,
     ) -> Result<()> {
         let committed = transaction.commit_placed().map_err(advised)?;
+        Self::await_acknowledged(store, committed, waiting, span)
+    }
+
+    /// Wait for the copies `waiting` names to hold a commit that has landed.
+    pub(super) fn await_acknowledged(
+        store: &Store,
+        committed: tessari_storage::Committed,
+        waiting: Option<Waiting>,
+        span: Span,
+    ) -> Result<()> {
         let Some(waiting) = waiting else {
             return Ok(());
         };

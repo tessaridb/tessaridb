@@ -2236,6 +2236,21 @@ pub enum Error {
         span: Span,
     },
 
+    /// A transaction across leaders wrote into a table whose engine keeps
+    /// something beside its records — a vault, a bucket, a space, a topic, a
+    /// queue, a series or a vector or geo store — which a prepared write would
+    /// bypass (ADR-0112). Only tables, collections and edges commit across
+    /// leaders.
+    #[error(
+        "{table:?} cannot be written across leaders: only tables, collections and edges can (at {span})"
+    )]
+    AcrossKind {
+        /// The table.
+        table: String,
+        /// Where the write was.
+        span: Span,
+    },
+
     /// A grant-governed user reached a table nobody granted them.
     ///
     /// Named separately from [`Error::RoleForbids`] because the two send the

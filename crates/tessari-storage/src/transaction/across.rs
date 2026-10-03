@@ -105,15 +105,18 @@ impl Transaction<'_> {
     pub fn resolve_across(
         mut self,
         transaction: TransactionId,
-        coordinator: Reach,
         committed: bool,
         records: &[RecordAddress],
     ) -> Result<Option<Committed>> {
         self.writes.clear();
+        // The coordinator's range is read off the intents themselves, which
+        // every prepare stamped with it: a resolution cannot name another.
+        let mut coordinator = None;
         for address in records {
-            let Some(intent) = self.intent_of(address, transaction)? else {
+            let Some((intent, named)) = self.intent_of(address, transaction)? else {
                 continue;
             };
+            coordinator.get_or_insert(named);
             let value = if committed {
                 intent
             } else {
@@ -122,9 +125,9 @@ impl Transaction<'_> {
             };
             self.writes.insert(address.clone(), value);
         }
-        if self.writes.is_empty() {
+        let Some(coordinator) = coordinator else {
             return Ok(None);
-        }
+        };
         self.across = Some(Work {
             across: Across {
                 transaction,
@@ -136,18 +139,19 @@ impl Transaction<'_> {
         self.commit_placed().map(Some)
     }
 
-    /// The value `transaction` holds as an intent on `address`, if it does.
+    /// The value `transaction` holds as an intent on `address`, and the
+    /// coordinator's range the intent names, if it holds one.
     fn intent_of(
         &self,
         address: &RecordAddress,
         transaction: TransactionId,
-    ) -> Result<Option<RecordValue>> {
+    ) -> Result<Option<(RecordValue, Reach)>> {
         let Some((_, provenance, value)) = self.newest_stored_value(address)? else {
             return Ok(None);
         };
         Ok(provenance
             .filter(|provenance| provenance.provisional && provenance.transaction == transaction)
-            .map(|_| value))
+            .map(|provenance| (value, provenance.coordinator)))
     }
 
     /// Mark a record this commit is about to write with what it is, and every

@@ -405,6 +405,9 @@ pub enum Ask<'a> {
     /// A join token, offered to the node that may bind this one's row
     /// (ADR-0108 D9).
     Join(&'a [u8; 32]),
+    /// One record of a transaction across leaders, for its range's leader to
+    /// write (ADR-0112).
+    Across(&'a crate::across::Carried),
 }
 
 /// What the other end answered with.
@@ -429,6 +432,8 @@ pub enum Answered {
     Attempted(bool),
     /// Whether a row now names the asker.
     Joined(bool),
+    /// What a range's leader wrote for a transaction across leaders.
+    Across(tessari_session::AcrossAnswer),
 }
 
 /// Reach the peer `at` on `address`, and exchange greetings.
@@ -617,6 +622,27 @@ fn exchange(
                     [permitted] => Ok((heard, Answered::Attempted(*permitted == 1))),
                     _ => Err(Error::Malformed),
                 },
+                Some(_) => Err(Error::OutOfTurn { tag }),
+                None => Err(Error::UnknownFrame { tag }),
+            }
+        }
+        Ask::Across(carried) => {
+            frame::write_tagged(&mut link, PeerFrame::Across.tag(), &carried.encode())?;
+            let (tag, body) = answer(&mut link)?;
+            match PeerFrame::from_tag(tag) {
+                Some(PeerFrame::AcrossDone) => Ok((
+                    heard,
+                    Answered::Across(
+                        tessari_session::AcrossAnswer::decode(&body)
+                            .map_err(|_| Error::Malformed)?,
+                    ),
+                )),
+                // The leader's refusal in its own words, which the coordinator
+                // treats as *not prepared* — the same frame shape as a
+                // coordinated request's refusal, and the same error.
+                Some(PeerFrame::NotAcross) => Err(Error::NotCoordinated(
+                    String::from_utf8_lossy(&body).into_owned(),
+                )),
                 Some(_) => Err(Error::OutOfTurn { tag }),
                 None => Err(Error::UnknownFrame { tag }),
             }

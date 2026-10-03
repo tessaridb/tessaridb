@@ -87,6 +87,23 @@ pub trait Holding: Origin + Send + Sync + 'static {
         assertion: &Assertion,
         asked: &Coordinate,
     ) -> std::result::Result<tessaridb::Coordinated, String>;
+
+    /// Write one record of a transaction across leaders `from` carried here
+    /// for a caller it verified, under an assertion the door has already
+    /// believed (ADR-0112). `asked` is the record as
+    /// [`tessari_session::AcrossAsk::encode`] wrote it; the answer is the
+    /// [`tessari_session::AcrossAnswer`] encoded.
+    ///
+    /// # Errors
+    ///
+    /// The reason this node will not write it, in words the asking node
+    /// passes on as *not prepared*.
+    fn across(
+        &self,
+        from: [u8; NODE_ID_LEN],
+        assertion: &Assertion,
+        asked: &[u8],
+    ) -> std::result::Result<Vec<u8>, String>;
 }
 
 /// How one served connection ended, for the loop that decides what next.
@@ -340,6 +357,44 @@ impl<H: Holding> Connection<H> {
             // A request carried here for a caller (ADR-0108 D1–D3). Believed
             // against the certificate THIS handshake proved, so the signer is
             // the peer on this connection and no other.
+            // A record of a transaction across leaders, carried here as a
+            // coordinated request is (ADR-0112) and believed by the same rule.
+            Some((tag, body)) if tag == PeerFrame::Across.tag() => {
+                let shown = shown.as_ref().ok_or(Error::Unidentified)?;
+                let carried = crate::across::Carried::decode(&body)?;
+                let believed = carried
+                    .signed
+                    .verify(
+                        shown,
+                        said.node,
+                        self.me,
+                        (carried.digest(), now_ms()),
+                        &self.replays,
+                    )
+                    .copied();
+                let (tag, reply) = match believed {
+                    Err(why) => {
+                        log::warn!(
+                            "a cross-leader record carried from {} was refused: {why}",
+                            tessari_types::uuid_to_text(&said.node)
+                        );
+                        (PeerFrame::NotAcross.tag(), why.to_string().into_bytes())
+                    }
+                    Ok(assertion) => {
+                        let holding = Arc::clone(&self.holding);
+                        let from = said.node;
+                        let answered = self
+                            .store(move || Ok(holding.across(from, &assertion, &carried.asked)))
+                            .await?;
+                        match answered {
+                            Ok(answer) => (PeerFrame::AcrossDone.tag(), answer),
+                            Err(why) => (PeerFrame::NotAcross.tag(), why.into_bytes()),
+                        }
+                    }
+                };
+                bounded(frame_async::write_tagged(&mut link, tag, &reply)).await??;
+                None
+            }
             Some((tag, body)) if tag == PeerFrame::Coordinate.tag() => {
                 let shown = shown.as_ref().ok_or(Error::Unidentified)?;
                 let asked = Coordinate::decode(&body)?;
@@ -639,6 +694,15 @@ mod tests {
             _: &crate::coordination::Coordinate,
         ) -> std::result::Result<tessaridb::Coordinated, String> {
             Err("this test door carries no requests".to_owned())
+        }
+
+        fn across(
+            &self,
+            _: [u8; NODE_ID_LEN],
+            _: &crate::assertion::Assertion,
+            _: &[u8],
+        ) -> std::result::Result<Vec<u8>, String> {
+            Err("this test door writes no cross-leader records".to_owned())
         }
     }
 
