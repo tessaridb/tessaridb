@@ -28,6 +28,9 @@ use tessari_types::{Acknowledge, DatabaseId, NamespaceId, Reach, Sequence, Table
 
 mod codec;
 mod driver;
+mod refusal;
+
+pub use refusal::{AcrossRefusal, PartRefused, RefusalKind};
 
 use super::{Session, advised};
 use crate::error::{Error, Result};
@@ -106,14 +109,14 @@ pub trait Participants: core::fmt::Debug + Send + Sync {
     ///
     /// # Errors
     ///
-    /// The refusal in words — the asking node's, the link's, or the answering
-    /// node's — which the coordinator treats as *not prepared*.
+    /// The refusal in words with its kind — the asking node's, the link's, or
+    /// the answering node's — which the coordinator treats as *not prepared*.
     fn ask(
         &self,
         to: [u8; tessari_storage::NODE_ID_LEN],
         user: Option<&tessari_storage::UserDefinition>,
         asked: &AcrossAsk,
-    ) -> std::result::Result<AcrossAnswer, String>;
+    ) -> std::result::Result<AcrossAnswer, PartRefused>;
 }
 
 /// What the leader did.

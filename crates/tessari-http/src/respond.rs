@@ -401,6 +401,19 @@ const fn name_of(path: AccessPath) -> &'static str {
 /// A failure, as the status that says what kind it was.
 pub(crate) fn failure(error: &Error) -> Answer {
     let status = match error {
+        // A transaction across leaders that did not commit answers as the
+        // refusal that stopped it: this node's own as itself, another node's by
+        // the kind that node judged it with — which `refusal_kind` reads off
+        // this same mapping there (Q-924). It used to reach the catch-all,
+        // telling a caller whose abort was a conflict not to retry.
+        Error::AcrossAborted { refusal, .. } => match refusal {
+            tessaridb::AcrossRefusal::Here(cause) => failure(cause).status,
+            tessaridb::AcrossRefusal::There(refused) => match refused.kind {
+                tessaridb::RefusalKind::Retriable => 409,
+                tessaridb::RefusalKind::Forbidden => 403,
+                tessaridb::RefusalKind::Invalid => 400,
+            },
+        },
         // This node does not know who is asking: no credential against a closed
         // store, or one it refused. Both are answered the same way, because
         // telling them apart tells an attacker which half to keep guessing at.
@@ -487,7 +500,11 @@ pub(crate) fn failure(error: &Error) -> Answer {
         | Error::NoVaultRoot
         | Error::NoBackupFolder
         | Error::ShardMapMoved { .. }
-        | Error::AcrossSettling { .. } => 409,
+        | Error::AcrossSettling { .. }
+        // The decision was sent and not confirmed: like a commit a majority
+        // did not confirm in time, the store is the one that does not know, and
+        // a read of the records says what to do next.
+        | Error::AcrossInDoubt { .. } => 409,
         // A substrate or decoding failure. Anything reaching here is a bug.
         //
         // A backup the writer could not write is a device speaking, not a
@@ -564,6 +581,20 @@ pub(crate) fn script_failure(db: &Db, error: &Error, landed: bool, path: &str) -
     answer
 }
 
+/// The kind of no `error` is, as the status this surface answers it with —
+/// how a node that refused a part of a transaction across leaders tells the
+/// asking node what its caller may do (Q-924).
+#[must_use]
+pub fn refusal_kind(error: &Error) -> tessaridb::RefusalKind {
+    match failure(error).status {
+        401 | 403 => tessaridb::RefusalKind::Forbidden,
+        // A redirect, a conflict, a back-off, or a fault of this node: none of
+        // them is about the caller's writes.
+        307 | 409 | 429 | 500..=599 => tessaridb::RefusalKind::Retriable,
+        _ => tessaridb::RefusalKind::Invalid,
+    }
+}
+
 #[cfg(test)]
 mod corpus;
 mod metrics;
@@ -614,6 +645,68 @@ mod tests {
         // automatic.
         let answer = failure(&sent_elsewhere());
         assert_eq!(answer.location.as_deref(), Some("two.example:9080"));
+    }
+
+    #[test]
+    fn an_aborted_transaction_across_leaders_answers_with_the_kind_of_its_refusal() {
+        // It reached the catch-all and answered `400` — *you wrote it wrong,
+        // do not retry* — for an abort a conflict, a lapse or an unreachable
+        // leader caused, which is exactly the work a client then loses
+        // (Q-924). The kind is the answering node's, judged by this mapping.
+        use tessaridb::{AcrossRefusal, PartRefused, RefusalKind};
+        let span = tessari_ql::Span::new(0, 6);
+        let there = |kind| Error::AcrossAborted {
+            refusal: AcrossRefusal::There(PartRefused {
+                kind,
+                reason: "b refused".to_owned(),
+            }),
+            span,
+        };
+        assert_eq!(failure(&there(RefusalKind::Retriable)).status, 409);
+        assert_eq!(failure(&there(RefusalKind::Forbidden)).status, 403);
+        assert_eq!(failure(&there(RefusalKind::Invalid)).status, 400);
+        // This node's own refusal answers as itself would have.
+        let here = Error::AcrossAborted {
+            refusal: AcrossRefusal::Here(Box::new(Error::NoBackupFolder)),
+            span,
+        };
+        assert_eq!(failure(&here).status, 409);
+        // In doubt is a store that could not confirm what it did, like a
+        // commit a majority did not confirm in time: read, then decide.
+        let doubt = Error::AcrossInDoubt {
+            reason: "the record's leader did not answer".to_owned(),
+            span,
+        };
+        assert_eq!(failure(&doubt).status, 409);
+    }
+
+    #[test]
+    fn a_refusal_carried_to_another_node_keeps_the_kind_its_status_says() {
+        use tessaridb::RefusalKind;
+        assert_eq!(
+            super::refusal_kind(&Error::NoBackupFolder),
+            RefusalKind::Retriable
+        );
+        assert_eq!(
+            super::refusal_kind(&Error::SignInThrottled),
+            RefusalKind::Retriable
+        );
+        assert_eq!(
+            super::refusal_kind(&Error::SignInRefused),
+            RefusalKind::Forbidden
+        );
+        assert_eq!(
+            super::refusal_kind(&Error::MayNotTravel {
+                statement: "DEFINE USER"
+            }),
+            RefusalKind::Forbidden
+        );
+        assert_eq!(
+            super::refusal_kind(&Error::PasswordEmpty {
+                span: tessari_ql::Span::new(0, 1)
+            }),
+            RefusalKind::Invalid
+        );
     }
 
     #[test]

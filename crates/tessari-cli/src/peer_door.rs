@@ -121,12 +121,27 @@ impl tessari_wire::Holding for PeerDoor {
         from: [u8; tessari_storage::NODE_ID_LEN],
         assertion: &tessari_wire::Assertion,
         asked: &[u8],
-    ) -> Result<Vec<u8>, String> {
-        let asked = tessari_session::AcrossAsk::decode(asked)?;
-        let mut session = tessari_wire::admit_asserted(&self.db, from, assertion)?;
+    ) -> Result<Vec<u8>, tessari_session::PartRefused> {
+        use tessari_session::{PartRefused, RefusalKind};
+        let asked = tessari_session::AcrossAsk::decode(asked).map_err(|reason| PartRefused {
+            kind: RefusalKind::Invalid,
+            reason,
+        })?;
+        let mut session =
+            tessari_wire::admit_asserted(&self.db, from, assertion).map_err(|reason| {
+                PartRefused {
+                    kind: RefusalKind::Forbidden,
+                    reason,
+                }
+            })?;
+        // The kind is judged here, where the refusal is whole, by the mapping
+        // the HTTP surface answers with (Q-924).
         session
             .answer_across(&asked)
             .map(|answer| answer.encode().to_vec())
-            .map_err(|refused| refused.to_string())
+            .map_err(|refused| PartRefused {
+                kind: tessari_http::refusal_kind(&refused),
+                reason: refused.to_string(),
+            })
     }
 }

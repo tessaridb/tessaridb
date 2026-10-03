@@ -200,7 +200,9 @@ impl Db {
                 .answer_across(asked)
                 .map_err(|why| why.to_string()),
             Some(node) => match self.participants.get() {
-                Some(carrier) => carrier.ask(node, None, asked),
+                Some(carrier) => carrier
+                    .ask(node, None, asked)
+                    .map_err(|refused| refused.reason),
                 None => Err("this node carries nothing to other nodes".to_owned()),
             },
         };

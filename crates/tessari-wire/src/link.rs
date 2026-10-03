@@ -637,12 +637,11 @@ fn exchange(
                             .map_err(|_| Error::Malformed)?,
                     ),
                 )),
-                // The leader's refusal in its own words, which the coordinator
-                // treats as *not prepared* — the same frame shape as a
-                // coordinated request's refusal, and the same error.
-                Some(PeerFrame::NotAcross) => Err(Error::NotCoordinated(
-                    String::from_utf8_lossy(&body).into_owned(),
-                )),
+                // The leader's refusal — its kind, then its words — which the
+                // coordinator treats as *not prepared* and answers its caller
+                // by the kind (Q-924).
+                Some(PeerFrame::NotAcross) => Err(tessari_session::PartRefused::decode(&body)
+                    .map_or(Error::Malformed, Error::RefusedAcross)),
                 Some(_) => Err(Error::OutOfTurn { tag }),
                 None => Err(Error::UnknownFrame { tag }),
             }

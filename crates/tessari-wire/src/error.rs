@@ -232,6 +232,13 @@ pub enum Error {
     #[error("{0}")]
     NotCoordinated(String),
 
+    /// The leader a record of a transaction across leaders was carried to
+    /// would not write it (ADR-0112), in its own words and with the kind of no
+    /// it was, which the asking node needs to answer its caller (Q-924).
+    #[cfg(feature = "server")]
+    #[error("{}", .0.reason)]
+    RefusedAcross(tessari_session::PartRefused),
+
     /// The store said no, and this is what it said.
     ///
     /// Carried through verbatim rather than reworded: the session already writes

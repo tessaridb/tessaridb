@@ -1311,14 +1311,15 @@ pub enum Error {
 
     /// A transaction across leaders was not committed, and nothing of it was
     /// applied anywhere (ADR-0112): a participant refused its prepare, or the
-    /// record was aborted before the decision landed. The reason is the
-    /// refusal as the participant gave it.
+    /// record was aborted before the decision landed. The refusal is this
+    /// node's own, kept whole, or another node's words with the kind of no it
+    /// was, so a surface answers it as the refusal it is (Q-924).
     #[error(
-        "the transaction across leaders (at {span}) was not committed, and nothing of it applies: {reason}"
+        "the transaction across leaders (at {span}) was not committed, and nothing of it applies: {refusal}"
     )]
     AcrossAborted {
-        /// Why, in the words of the node that refused.
-        reason: String,
+        /// Why, as the node that refused gave it.
+        refusal: crate::session::AcrossRefusal,
         /// Where the commit is.
         span: Span,
     },

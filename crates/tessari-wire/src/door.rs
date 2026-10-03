@@ -96,14 +96,14 @@ pub trait Holding: Origin + Send + Sync + 'static {
     ///
     /// # Errors
     ///
-    /// The reason this node will not write it, in words the asking node
-    /// passes on as *not prepared*.
+    /// The reason this node will not write it, in words and with its kind,
+    /// which the asking node passes on as *not prepared*.
     fn across(
         &self,
         from: [u8; NODE_ID_LEN],
         assertion: &Assertion,
         asked: &[u8],
-    ) -> std::result::Result<Vec<u8>, String>;
+    ) -> std::result::Result<Vec<u8>, tessari_session::PartRefused>;
 }
 
 /// How one served connection ended, for the loop that decides what next.
@@ -378,7 +378,13 @@ impl<H: Holding> Connection<H> {
                             "a cross-leader record carried from {} was refused: {why}",
                             tessari_types::uuid_to_text(&said.node)
                         );
-                        (PeerFrame::NotAcross.tag(), why.to_string().into_bytes())
+                        // This node will not act for the caller as asserted,
+                        // and asking again changes nothing.
+                        let refused = tessari_session::PartRefused {
+                            kind: tessari_session::RefusalKind::Forbidden,
+                            reason: why.to_string(),
+                        };
+                        (PeerFrame::NotAcross.tag(), refused.encode())
                     }
                     Ok(assertion) => {
                         let holding = Arc::clone(&self.holding);
@@ -388,7 +394,7 @@ impl<H: Holding> Connection<H> {
                             .await?;
                         match answered {
                             Ok(answer) => (PeerFrame::AcrossDone.tag(), answer),
-                            Err(why) => (PeerFrame::NotAcross.tag(), why.into_bytes()),
+                            Err(refused) => (PeerFrame::NotAcross.tag(), refused.encode()),
                         }
                     }
                 };
@@ -636,6 +642,7 @@ mod tests {
     use crate::link::tests::{Authority, THERE, hello, settled, voted};
     use crate::link::{Ask, Credential};
     use crate::peer::Purpose;
+    use tessari_session::RefusalKind;
     use tessari_types::{Epoch, Reach};
 
     const HERE: [u8; NODE_ID_LEN] = [7_u8; NODE_ID_LEN];
@@ -701,8 +708,11 @@ mod tests {
             _: [u8; NODE_ID_LEN],
             _: &crate::assertion::Assertion,
             _: &[u8],
-        ) -> std::result::Result<Vec<u8>, String> {
-            Err("this test door writes no cross-leader records".to_owned())
+        ) -> std::result::Result<Vec<u8>, tessari_session::PartRefused> {
+            Err(tessari_session::PartRefused {
+                kind: tessari_session::RefusalKind::Invalid,
+                reason: "this test door writes no cross-leader records".to_owned(),
+            })
         }
     }
 
@@ -802,6 +812,65 @@ mod tests {
             == Some(Vote::Granted {
                 hold: tessari_storage::LEASE_TTL
             })));
+    }
+
+    /// What the door answers a carried cross-leader record with, as the kind
+    /// of refusal the asking node is handed — the holder here refuses every
+    /// record as invalid (Q-924).
+    fn across_refused(
+        (door, authority): (&Served, &Authority),
+        signer: &Credential,
+        link: Credential,
+    ) -> Option<RefusalKind> {
+        use crate::assertion::{Assertion, Principal, now_ms, request_digest};
+        let asked = b"a record the holder refuses".to_vec();
+        let carried = crate::across::Carried {
+            signed: Assertion {
+                from: THERE,
+                to: HERE,
+                principal: Principal::Anonymous,
+                request: request_digest(None, None, crate::across::ACROSS, &asked),
+                nonce: [9; 16],
+                issued_ms: now_ms(),
+                expires_ms: now_ms().saturating_add(10_000),
+            }
+            .sign(&signer.key)
+            .expect("signed"),
+            asked,
+        };
+        match crate::link::tests::call_with(
+            door.address,
+            link,
+            &authority.der(),
+            HERE,
+            &hello(THERE),
+            Ask::Across(&carried),
+        ) {
+            Err(Error::RefusedAcross(refused)) => Some(refused.kind),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_refused_cross_leader_record_comes_back_with_the_kind_of_its_refusal() {
+        let authority = Authority::new();
+        let door = served(&authority);
+        let mine = peer(&authority);
+        let same = |credential: &Credential| Credential {
+            chain: credential.chain.clone(),
+            key: credential.key.clone_key(),
+        };
+        // Believed, and refused by the node holding the range: its own kind.
+        assert_eq!(
+            across_refused((&door, &authority), &mine, same(&mine)),
+            Some(RefusalKind::Invalid)
+        );
+        // Signed by a key the connection did not prove: the door will not act
+        // for that caller, and asking again changes nothing.
+        assert_eq!(
+            across_refused((&door, &authority), &peer(&authority), same(&mine)),
+            Some(RefusalKind::Forbidden)
+        );
     }
 
     #[test]

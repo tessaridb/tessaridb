@@ -75,8 +75,8 @@ use tessaridb::feed::Commits;
 use tokio_util::sync::CancellationToken;
 
 use crate::incoming::Incoming;
-pub use respond::Answer;
 pub use respond::scripts::render_coordinated;
+pub use respond::{Answer, refusal_kind};
 
 /// One wire session over a byte stream: given the stream, it runs until the
 /// session ends (ADR-0089).

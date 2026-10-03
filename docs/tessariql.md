@@ -9075,6 +9075,13 @@ records must change together, and keep the rest in one leader's ranges.
   it writes.
 - **`AcrossUnavailable`** — the node knows no peers to carry the parts to.
 
+Over HTTP an abort answers with the status of the refusal that caused it — a
+conflict, a lapse or a leader not reached is `409` and worth retrying, a grant
+the caller lacks is `403`, and a write the schema refuses is `400` — judged on
+the node that refused and carried back with its words. In doubt is `409`, as a
+commit a majority did not confirm in time is: the store is the one that does
+not know, and a read of the records says what to do next.
+
 **While it is in flight.** An intent is a lock: any other write to a record
 holding one is refused **`Conflict`** — retriable, and the message says an
 intent refused it — rather than made to wait. A reader never sees half of it:

@@ -28,12 +28,12 @@ use tessari_storage::{
     AcrossOutcome, AcrossPart, Catalog, Failover, RecordAddress, Store, Transaction,
 };
 
-use super::{AcrossAnswer, AcrossAsk, Participants};
+use super::{AcrossAnswer, AcrossAsk, AcrossRefusal, PartRefused, Participants};
 use crate::error::{Error, Result};
 use crate::session::Session;
 
 /// One ask's outcome, with the part it was for.
-type Answered = std::result::Result<AcrossAnswer, String>;
+type Answered = std::result::Result<AcrossAnswer, AcrossRefusal>;
 
 impl Session<'_> {
     /// Whether `transaction` must commit across leaders: it writes homes led
@@ -124,8 +124,8 @@ impl Session<'_> {
                 },
             )
         };
-        if let Err(reason) = deciding(self, &record) {
-            return Err(Error::AcrossAborted { reason, span });
+        if let Err(refusal) = deciding(self, &record) {
+            return Err(Error::AcrossAborted { refusal, span });
         }
         let prepares: Vec<AcrossAsk> = parts
             .iter()
@@ -143,21 +143,26 @@ impl Session<'_> {
             .zip(&mut record.participants)
             .zip(parts)
         {
-            let reason = match answer {
+            let refusal = match answer {
                 Ok(AcrossAnswer::Prepared(at)) => {
                     participant.prepared_at = Some(at);
                     continue;
                 }
-                Ok(other) => format!("{:?} answered {other:?}", part.home),
-                Err(reason) => reason,
+                // A leader answering out of turn is a mismatch between two
+                // builds, not a fault of the caller's writes.
+                Ok(other) => AcrossRefusal::There(PartRefused::retriable(format!(
+                    "{:?} answered {other:?}",
+                    part.home
+                ))),
+                Err(refusal) => refusal,
             };
             // Said here because the caller may only ever hear that the
             // decision is in doubt, and this is why it was an abort.
             log::info!(
-                "a cross-leader prepare for {:?} was refused: {reason}",
+                "a cross-leader prepare for {:?} was refused: {refusal}",
                 part.home
             );
-            refused.get_or_insert(reason);
+            refused.get_or_insert(refusal);
         }
         record.decision = if refused.is_some() {
             Decision::Aborted
@@ -195,9 +200,9 @@ impl Session<'_> {
             .collect();
         match (decided, refused) {
             // Aborted, and said so: the intents can go.
-            (Ok(_), Some(reason)) => {
+            (Ok(_), Some(refusal)) => {
                 self.resolve_parts(carrier, parts, user, &resolves);
-                Err(Error::AcrossAborted { reason, span })
+                Err(Error::AcrossAborted { refusal, span })
             }
             (Ok(_), None) => {
                 self.resolve_parts(carrier, parts, user, &resolves);
@@ -205,12 +210,15 @@ impl Session<'_> {
             }
             // The record had already been decided — a lapse aborted it while
             // the prepares ran — so the caller hears the abort.
-            (Err(reason), _) if reason.contains("already aborted") => {
-                Err(Error::AcrossAborted { reason, span })
+            (Err(refusal), _) if refusal.to_string().contains("already aborted") => {
+                Err(Error::AcrossAborted { refusal, span })
             }
             // Sent and not confirmed: nothing is resolved from here, because
             // which way to resolve is exactly what is not known.
-            (Err(reason), _) => Err(Error::AcrossInDoubt { reason, span }),
+            (Err(refusal), _) => Err(Error::AcrossInDoubt {
+                reason: refusal.to_string(),
+                span,
+            }),
         }
     }
 
@@ -225,8 +233,8 @@ impl Session<'_> {
         match leader {
             None => self
                 .answer_across(asked)
-                .map_err(|refused| refused.to_string()),
-            Some(node) => carrier.ask(node, user, asked),
+                .map_err(|refused| AcrossRefusal::Here(Box::new(refused))),
+            Some(node) => carrier.ask(node, user, asked).map_err(AcrossRefusal::There),
         }
     }
 
@@ -238,36 +246,48 @@ impl Session<'_> {
         user: Option<&tessari_storage::UserDefinition>,
         asks: &[AcrossAsk],
     ) -> Vec<Answered> {
-        let mut answers: Vec<Option<Answered>> = vec![None; parts.len()];
+        let mut answers: Vec<Option<Answered>> = parts.iter().map(|_| None).collect();
         std::thread::scope(|scope| {
             let remote: Vec<_> = parts
                 .iter()
                 .zip(asks)
                 .enumerate()
                 .filter_map(|(at, (part, asked))| {
-                    part.leader
-                        .map(|node| (at, scope.spawn(move || carrier.ask(node, user, asked))))
+                    part.leader.map(|node| {
+                        (
+                            at,
+                            scope.spawn(move || {
+                                carrier.ask(node, user, asked).map_err(AcrossRefusal::There)
+                            }),
+                        )
+                    })
                 })
                 .collect();
             for (at, (part, asked)) in parts.iter().zip(asks).enumerate() {
                 if part.leader.is_none() {
                     answers[at] = Some(
                         self.answer_across(asked)
-                            .map_err(|refused| refused.to_string()),
+                            .map_err(|refused| AcrossRefusal::Here(Box::new(refused))),
                     );
                 }
             }
             for (at, waiting) in remote {
-                answers[at] = Some(
-                    waiting
-                        .join()
-                        .unwrap_or_else(|_| Err("the ask's thread panicked".to_owned())),
-                );
+                answers[at] = Some(waiting.join().unwrap_or_else(|_| {
+                    Err(AcrossRefusal::There(PartRefused::retriable(
+                        "the ask's thread panicked",
+                    )))
+                }));
             }
         });
         answers
             .into_iter()
-            .map(|answer| answer.unwrap_or_else(|| Err("no answer was asked for".to_owned())))
+            .map(|answer| {
+                answer.unwrap_or_else(|| {
+                    Err(AcrossRefusal::There(PartRefused::retriable(
+                        "no answer was asked for",
+                    )))
+                })
+            })
             .collect()
     }
 

@@ -2595,8 +2595,11 @@ mod tests {
             _: [u8; NODE_ID_LEN],
             _: &crate::assertion::Assertion,
             _: &[u8],
-        ) -> std::result::Result<Vec<u8>, String> {
-            Err("this test door writes no cross-leader records".to_owned())
+        ) -> std::result::Result<Vec<u8>, tessari_session::PartRefused> {
+            Err(tessari_session::PartRefused {
+                kind: tessari_session::RefusalKind::Invalid,
+                reason: "this test door writes no cross-leader records".to_owned(),
+            })
         }
     }
 

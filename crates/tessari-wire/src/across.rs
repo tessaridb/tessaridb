@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use tessari_constants::COORDINATED_SECONDS;
 use tessari_encoding::NODE_ID_LEN;
-use tessari_session::{AcrossAnswer, AcrossAsk, Participants};
+use tessari_session::{AcrossAnswer, AcrossAsk, PartRefused, Participants};
 use tessari_storage::UserDefinition;
 
 use crate::assertion::{Assertion, Principal, Signed, nonce, now_ms, request_digest};
@@ -19,7 +19,7 @@ use crate::link::{Answered, Ask, call_within};
 
 /// What an assertion carrying a record is made for: the record's bytes, under
 /// a name no script can take.
-const ACROSS: &str = "ACROSS";
+pub(crate) const ACROSS: &str = "ACROSS";
 
 /// A record, and the assertion it travels under.
 #[derive(Debug, Clone, PartialEq)]
@@ -66,8 +66,11 @@ impl Participants for Coordinator {
         to: [u8; NODE_ID_LEN],
         user: Option<&UserDefinition>,
         asked: &AcrossAsk,
-    ) -> std::result::Result<AcrossAnswer, String> {
-        let (endpoint, mine, said) = self.dialling(to)?;
+    ) -> std::result::Result<AcrossAnswer, PartRefused> {
+        // Everything short of the leader's own answer — no route, no key, a
+        // link that failed or timed out — is a part not reached, which asking
+        // again can get past.
+        let (endpoint, mine, said) = self.dialling(to).map_err(PartRefused::retriable)?;
         let asked = asked.encode();
         let carried = Carried {
             signed: Assertion {
@@ -78,12 +81,12 @@ impl Participants for Coordinator {
                     account: account(user),
                 }),
                 request: request_digest(None, None, ACROSS, &asked),
-                nonce: nonce().map_err(|why| why.to_string())?,
+                nonce: nonce().map_err(|why| PartRefused::retriable(why.to_string()))?,
                 issued_ms: now_ms(),
                 expires_ms: now_ms().saturating_add(crate::coordination::LIFE_MILLIS),
             }
             .sign(&mine.key)
-            .map_err(|why| why.to_string())?,
+            .map_err(|why| PartRefused::retriable(why.to_string()))?,
             asked,
         };
         match call_within(
@@ -95,11 +98,14 @@ impl Participants for Coordinator {
             Duration::from_secs(COORDINATED_SECONDS),
         ) {
             Ok((_, Answered::Across(answer))) => Ok(answer),
-            Ok(_) => Err(format!(
+            Ok(_) => Err(PartRefused::retriable(format!(
                 "{endpoint} answered something other than the record"
-            )),
-            Err(Error::NotCoordinated(why)) => Err(format!("{endpoint} refused: {why}")),
-            Err(why) => Err(format!("{endpoint}: {why}")),
+            ))),
+            Err(Error::RefusedAcross(refused)) => Err(PartRefused {
+                kind: refused.kind,
+                reason: format!("{endpoint} refused: {}", refused.reason),
+            }),
+            Err(why) => Err(PartRefused::retriable(format!("{endpoint}: {why}"))),
         }
     }
 }

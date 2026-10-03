@@ -138,8 +138,8 @@ pub use tessari_lsm::{AtRestKey, Durability, StoreConfig};
 pub use tessari_session::redact::{Visible, seen};
 pub use tessari_session::travels;
 pub use tessari_session::{
-    AccessPath, Detached, Error, Exactness, Nearest, Note, Outcome, Parameters, Result, Session,
-    Suggestion, Ticket, VaultAct, VaultTarget,
+    AccessPath, AcrossRefusal, Detached, Error, Exactness, Nearest, Note, Outcome, Parameters,
+    PartRefused, RefusalKind, Result, Session, Suggestion, Ticket, VaultAct, VaultTarget,
 };
 /// The store's own refusals, which [`Error::Store`] carries — named so a surface
 /// can tell the one that means *go there* (`WriteIsElsewhere`) from the rest.
