@@ -9161,6 +9161,35 @@ from the defaults — a cluster nobody has configured runs the built-in periods,
 and reporting those as a set policy would make it impossible to see whether a
 policy ever arrived.
 
+**Balancing who leads what — `BALANCE LEADERSHIPS`.** One clause after `LEASE`,
+optional, and off unless written:
+
+```
+DEFINE FAILOVER AWARENESS 1s COLLECTION 1s ROUND 200ms CAMPAIGN 100ms LEASE 800ms
+    BALANCE LEADERSHIPS;
+```
+
+With it, the store line's leader evens out the **lines** each node leads — the
+store line and every range placed with `LEADS`. A peer row places one range, so
+the imbalance that arises is a node leading the store line *and* the range its
+own row places (after a failover, or a move) while another voter leads nothing.
+The store's leader then moves that placement, exactly as `ALTER REPLICA idle
+LEADS <range>; ALTER REPLICA busy LEADS NONE;` would, in one transaction through
+the log:
+
+- only when the busiest node leads at least two lines more than the target;
+- only onto a voter — a `coordinating` peer bound to its node, `REPLICATES` a
+  reach that holds the range, and placed on nothing else;
+- only the busiest node's own placement, and only while it leads it — a node
+  still leading a range it was moved off is a move in flight;
+- at most once per two `LEASE` periods, the hand-over bound.
+
+Each move is a line in the store leader's log (`balanced leaderships: moved the
+placement of …`) and a change to the peer rows `INFO FOR NODE` reports as
+`leads`. Because the statement replaces the set, a later `DEFINE FAILOVER`
+without the clause turns the balancer off; `cluster.failover.balance_leaderships`
+says which.
+
 
 ### A peer certificate the cluster no longer accepts
 

@@ -683,6 +683,10 @@ pub enum StatementKind {
         campaign: Duration,
         /// How long a granted leadership is held before it must be renewed.
         lease: Duration,
+        /// `BALANCE LEADERSHIPS`: the store line's leader moves a placement
+        /// off a node leading more lines than another voter (ADR-0113 D3).
+        /// Absent is off, because the statement replaces the set.
+        balance_leaderships: bool,
     },
     /// `REVOKE CERTIFICATE '<sha256>'` — a peer certificate refused by every
     /// node from the moment the catalog reaches it (ADR-0108 D6).

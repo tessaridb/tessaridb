@@ -1626,6 +1626,7 @@ fn a_failover_policy_is_five_periods_in_one_statement() {
         round,
         campaign,
         lease,
+        balance_leaderships,
     } = one(
         "DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s CAMPAIGN 1s \
          LEASE 30s;",
@@ -1638,6 +1639,29 @@ fn a_failover_policy_is_five_periods_in_one_statement() {
     assert_eq!(round.seconds(), 1);
     assert_eq!(campaign.seconds(), 1);
     assert_eq!(lease.seconds(), 30);
+    assert!(!balance_leaderships, "a policy that did not ask balances");
+}
+
+#[test]
+fn a_failover_policy_may_ask_for_its_leaderships_to_be_balanced() {
+    // ADR-0113 D3: the clause is last and optional, and absent means off —
+    // the statement replaces the set, so leaving it out turns it off.
+    let StatementKind::DefineFailover {
+        balance_leaderships,
+        ..
+    } = one(
+        "DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s CAMPAIGN 1s \
+         LEASE 30s BALANCE LEADERSHIPS;",
+    )
+    else {
+        panic!("DEFINE FAILOVER did not parse as DEFINE FAILOVER");
+    };
+    assert!(balance_leaderships);
+    let refused = parse(
+        "DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s CAMPAIGN 1s LEASE 30s BALANCE;",
+    )
+    .expect_err("BALANCE without LEADERSHIPS parsed");
+    assert!(refused.to_string().contains("LEADERSHIPS"), "{refused}");
 }
 
 #[test]

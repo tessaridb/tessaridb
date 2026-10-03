@@ -3781,6 +3781,88 @@ fn a_table_split_by_the_store_while_it_is_written_keeps_every_record_on_every_no
     }
 }
 
+/// The leadership balancer's addresses, its own band (G053 SG4c).
+const LEADING: Band = [
+    ("127.0.0.1:48016", "127.0.0.1:48017"),
+    ("127.0.0.1:48018", "127.0.0.1:48019"),
+    ("127.0.0.1:48020", "127.0.0.1:48021"),
+];
+
+#[test]
+#[ignore = "real cadences across three processes — a placement moved by the \
+            store line's leader has to be handed over and its new candidate \
+            elected. G053 SG4c's own validation, run explicitly: cargo test -p \
+            tessari-cli --test serving a_node_leading_two_lines -- --ignored"]
+fn a_node_leading_two_lines_hands_its_placed_range_to_an_idle_voter() {
+    // G053 C4 / ADR-0113 D3: with `BALANCE LEADERSHIPS` asked for, the store
+    // line's leader placed on shard 2 too leads two lines while a voter leads
+    // none — and moves that placement onto the idle voter, which takes it.
+    let cluster = a_cluster_declared(&LEADING, "", ["", "", ""]);
+    let policy = "DEFINE FAILOVER AWARENESS 1s COLLECTION 1s ROUND 200ms CAMPAIGN 100ms \
+                  LEASE 800ms BALANCE LEADERSHIPS;";
+    // The store leader is the node that takes a catalog change; the others
+    // redirect it, and this client does not follow a redirect.
+    let mut leader = None;
+    let declared = until(Duration::from_secs(90), || {
+        leader = LEADING
+            .iter()
+            .position(|(surface, _)| asked(surface, &format!("{PLACED} {policy}"), None).is_ok());
+        leader.is_some()
+    });
+    assert!(
+        declared,
+        "the schema and the policy were never declared{}",
+        what_the_nodes_said(&LEADING, &cluster.logs)
+    );
+    let crowded = leader.unwrap_or_default();
+    let placed = until(Duration::from_secs(30), || {
+        asked(
+            LEADING[crowded].0,
+            &format!("ALTER REPLICA n{crowded} LEADS SHARD prod.shop.orders 2;"),
+            None,
+        )
+        .is_ok()
+    });
+    assert!(
+        placed,
+        "the store leader n{crowded} could not be placed on shard 2{}",
+        what_the_nodes_said(&LEADING, &cluster.logs)
+    );
+    // The imbalance existed: the store leader led shard 2 as well.
+    let crowded_led = until(Duration::from_secs(60), || {
+        !shard_two_epochs(&cluster.logs[crowded]).is_empty()
+    });
+    assert!(
+        crowded_led,
+        "n{crowded} never led shard 2{}",
+        what_the_nodes_said(&LEADING, &cluster.logs)
+    );
+    // Moved, by the balancer, onto another node that now leads it.
+    let mut taker = None;
+    let moved = until(Duration::from_secs(90), || {
+        taker = (0..LEADING.len())
+            .filter(|other| *other != crowded)
+            .find(|other| !shard_two_epochs(&cluster.logs[*other]).is_empty());
+        taker.is_some()
+            && cluster.logs.iter().any(|log| {
+                std::fs::read_to_string(log)
+                    .is_ok_and(|text| text.contains("balanced leaderships: moved the placement"))
+            })
+    });
+    assert!(
+        moved,
+        "the placement was never moved off n{crowded}{}",
+        what_the_nodes_said(&LEADING, &cluster.logs)
+    );
+    let taker = taker.unwrap_or_default();
+    if let Err(last) = until_taken(LEADING[taker].0, "hb", Duration::from_secs(60)) {
+        panic!(
+            "n{taker} never took a write into shard 2; last: {last}{}",
+            what_the_nodes_said(&LEADING, &cluster.logs)
+        );
+    }
+}
+
 /// The cross-leader measurement's addresses, a band of its own.
 const ACROSS_TIMED: Band = [
     ("127.0.0.1:47998", "127.0.0.1:47999"),

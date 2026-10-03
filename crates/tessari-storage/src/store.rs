@@ -38,6 +38,7 @@ mod history;
 mod leadership;
 pub(crate) use leadership::Led;
 mod leases;
+mod lines;
 mod logs;
 mod opening;
 mod parts;

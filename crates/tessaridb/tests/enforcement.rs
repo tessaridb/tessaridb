@@ -1006,7 +1006,14 @@ const TABLES: &[Table] = &[
         // leadership and membership rows and no record, field or grant; its
         // caller is the balancing pass deciding whether to act at all.
         // Re-classification trigger: the same as `leader_of`'s.
-        expected: 68,
+        //
+        // 69 since leaderships can be balanced (ADR-0113 D3):
+        // `Store::line_leaders`, who leads the store line and each placed
+        // range by the same `led`. **Exempt on `Store::leader_of`'s ground**:
+        // leadership and membership rows only, no record, field or grant; its
+        // caller is the balancing pass counting lines. Re-classification
+        // trigger: the same as `leader_of`'s.
+        expected: 69,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1216,7 +1223,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 150 since a table can split and merge itself (ADR-0113 D2):
     // `Store::leads`, exempt, classified above.
-    assert_eq!(total, 150, "the counted tables no longer sum to 150");
+    //
+    // 151 since leaderships can be balanced (ADR-0113 D3):
+    // `Store::line_leaders`, exempt, classified above.
+    assert_eq!(total, 151, "the counted tables no longer sum to 151");
 }
 
 /// Every `.rs` file under a directory.

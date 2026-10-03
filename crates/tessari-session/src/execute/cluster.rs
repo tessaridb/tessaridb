@@ -74,6 +74,7 @@ impl Session<'_> {
         &self,
         transaction: &mut Transaction<'_>,
         periods: [tessari_types::Duration; 5],
+        balance_leaderships: bool,
         span: Span,
     ) -> Result<Outcome> {
         let mut held = [std::time::Duration::ZERO; 5];
@@ -105,7 +106,7 @@ impl Session<'_> {
         // any write reaches this point, and refusing again would make a
         // single-node deployment unable to configure itself.
         let epoch = self.store.leading().unwrap_or(tessari_types::Epoch::ZERO);
-        catalog.set_failover(policy, epoch, version)?;
+        catalog.set_failover(policy, epoch, version, balance_leaderships)?;
         Ok(Outcome::Done)
     }
 

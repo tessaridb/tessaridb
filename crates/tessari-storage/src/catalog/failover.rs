@@ -61,6 +61,9 @@ const FIELD_CAMPAIGN: &str = "campaign";
 const FIELD_LEASE: &str = "lease";
 const FIELD_EPOCH: &str = "epoch";
 const FIELD_VERSION: &str = "version";
+/// Written only when set, so a policy stored before the clause existed reads
+/// back byte-identical (ADR-0113 D3).
+const FIELD_BALANCE: &str = "balance_leaderships";
 
 const ENTITY: &str = "failover";
 
@@ -133,6 +136,12 @@ pub struct FailoverDefinition {
     pub epoch: Epoch,
     /// Which setting under that leadership this was.
     pub version: u64,
+    /// Whether the store line's leader moves placements to even out the
+    /// lines each node leads (`BALANCE LEADERSHIPS`, ADR-0113 D3).
+    ///
+    /// Beside the periods rather than inside [`Failover`]: it relates to none
+    /// of them, and a policy value travels where this does not need to.
+    pub balance_leaderships: bool,
 }
 
 impl FailoverDefinition {
@@ -177,7 +186,7 @@ impl FailoverDefinition {
         };
         let count =
             |field: &'static str, value: u64| i64::try_from(value).map_err(|_| malformed(field));
-        Ok(Value::Object(BTreeMap::from([
+        let mut fields = BTreeMap::from([
             (
                 FIELD_AWARENESS.to_owned(),
                 Value::Duration(stored(self.policy.awareness(), FIELD_AWARENESS)?),
@@ -206,7 +215,11 @@ impl FailoverDefinition {
                 FIELD_VERSION.to_owned(),
                 Value::Number(Number::Integer(count(FIELD_VERSION, self.version)?)),
             ),
-        ])))
+        ]);
+        if self.balance_leaderships {
+            fields.insert(FIELD_BALANCE.to_owned(), Value::Bool(true));
+        }
+        Ok(Value::Object(fields))
     }
 
     /// Read a definition back, re-checking the relations.
@@ -248,6 +261,11 @@ impl FailoverDefinition {
             )?,
             epoch: Epoch::new(count_of(epoch, ENTITY, FIELD_EPOCH)?),
             version: count_of(version, ENTITY, FIELD_VERSION)?,
+            balance_leaderships: match fields.get(FIELD_BALANCE) {
+                None => false,
+                Some(Value::Bool(balance)) => *balance,
+                Some(_) => return Err(malformed(FIELD_BALANCE)),
+            },
         })
     }
 }
@@ -297,11 +315,13 @@ impl Catalog<'_, '_> {
         policy: Failover,
         epoch: Epoch,
         version: u64,
+        balance_leaderships: bool,
     ) -> Result<FailoverDefinition> {
         let definition = FailoverDefinition {
             policy,
             epoch,
             version,
+            balance_leaderships,
         };
         self.transaction.put(
             system::address(system::FAILOVER, FailoverDefinition::key()),
@@ -341,8 +361,8 @@ mod tests {
     #![allow(clippy::panic, clippy::unwrap_used)]
 
     use super::{
-        ENTITY, FIELD_AWARENESS, FIELD_CAMPAIGN, FIELD_COLLECTION, FIELD_EPOCH, FIELD_LEASE,
-        FIELD_ROUND, FIELD_VERSION, FailoverDefinition,
+        ENTITY, FIELD_AWARENESS, FIELD_BALANCE, FIELD_CAMPAIGN, FIELD_COLLECTION, FIELD_EPOCH,
+        FIELD_LEASE, FIELD_ROUND, FIELD_VERSION, FailoverDefinition,
     };
     use std::collections::BTreeMap;
     use std::time::Duration as Elapsed;
@@ -356,6 +376,7 @@ mod tests {
             policy: Failover::DEFAULT,
             epoch: Epoch::new(epoch),
             version,
+            balance_leaderships: false,
         }
     }
 
@@ -376,11 +397,30 @@ mod tests {
             policy,
             epoch: Epoch::new(7),
             version: 2,
+            balance_leaderships: false,
         };
 
         let read = FailoverDefinition::from_value(&written.to_value().unwrap()).unwrap();
         assert_eq!(read, written);
         assert_eq!(read.policy.awareness(), Elapsed::new(30, 500_000_000));
+    }
+
+    #[test]
+    fn asking_for_balanced_leaderships_survives_and_not_asking_writes_nothing() {
+        // A policy stored before the clause existed must read back as it was
+        // written, so the field is absent unless it was asked for.
+        let unasked = at(1, 0).to_value().unwrap();
+        let Value::Object(fields) = &unasked else {
+            panic!("a policy is an object");
+        };
+        assert!(!fields.contains_key(FIELD_BALANCE));
+        let asked = FailoverDefinition {
+            balance_leaderships: true,
+            ..at(1, 0)
+        };
+        let read = FailoverDefinition::from_value(&asked.to_value().unwrap()).unwrap();
+        assert!(read.balance_leaderships);
+        assert_eq!(read, asked);
     }
 
     #[test]

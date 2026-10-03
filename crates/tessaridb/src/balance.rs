@@ -36,6 +36,9 @@ use tessari_types::{Reach, RecordId, Sequence, ShardId, TableId};
 
 use crate::{Db, Result};
 
+mod leaderships;
+pub use leaderships::{LeadershipMoves, Moved};
+
 /// How many records one page of a shard's walk reads.
 const PAGE: usize = 1_000;
 

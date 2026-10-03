@@ -339,9 +339,11 @@ impl Session<'_> {
                 round,
                 campaign,
                 lease,
+                balance_leaderships,
             } => self.define_failover(
                 transaction,
                 [*awareness, *collection, *round, *campaign, *lease],
+                *balance_leaderships,
                 span,
             ),
             StatementKind::RevokeCertificate { fingerprint } => {

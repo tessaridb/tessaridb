@@ -1035,6 +1035,27 @@ fn a_policy_is_set_by_a_statement_and_reads_back_with_the_pair_that_orders_it() 
 }
 
 #[test]
+fn a_policy_asks_for_balanced_leaderships_and_one_that_does_not_turns_it_off() {
+    // ADR-0113 D3. The statement replaces the set, so leaving the clause out
+    // of the next policy is how an operator turns the balancer off again.
+    let store = closed(&backend());
+    let balancing = |store: &Store| {
+        policy(&reported(store)).and_then(|held| held.get("balance_leaderships").cloned())
+    };
+    owner(&store)
+        .run(
+            "DEFINE FAILOVER AWARENESS 12s COLLECTION 11s ROUND 2s CAMPAIGN 3s \
+             LEASE 40s BALANCE LEADERSHIPS;",
+        )
+        .unwrap();
+    assert_eq!(balancing(&store), Some(Value::Bool(true)));
+    owner(&store)
+        .run("DEFINE FAILOVER AWARENESS 12s COLLECTION 11s ROUND 2s CAMPAIGN 3s LEASE 40s;")
+        .unwrap();
+    assert_eq!(balancing(&store), Some(Value::Bool(false)));
+}
+
+#[test]
 fn a_second_policy_under_one_leadership_carries_the_next_version() {
     // The case the epoch alone cannot tell apart, and the reason the version
     // field exists at all: one leader setting the policy twice writes the same

@@ -209,6 +209,10 @@ pub(crate) fn described_failover(held: &tessari_storage::FailoverDefinition) -> 
             "version".to_owned(),
             Value::from(i64::try_from(held.version).unwrap_or(i64::MAX)),
         ),
+        (
+            "balance_leaderships".to_owned(),
+            Value::Bool(held.balance_leaderships),
+        ),
     ]))
 }
 
