@@ -326,13 +326,19 @@
     }
     return found;
   }
+  function fromThisMachine() {
+    const host = location.hostname;
+    return host === "localhost" || host === "[::1]" || host === "::1" || host.startsWith("127.");
+  }
   function transport() {
     const secured = location.protocol === "https:";
+    const local = !secured && fromThisMachine();
     write(
       "transport-says",
-      secured ? "This page and everything it sends travel over TLS to this node." : "This page arrived without TLS, so the password travels as typed. Give the node --tls-cert and --tls-key, or keep it on a network you protect."
+      secured ? "This page and everything it sends travel over TLS to this node." : local ? "This page arrived without TLS from this machine itself, so the password does not cross a network." : "This page arrived without TLS, so the password travels as typed. Give the node --tls-cert and --tls-key, or keep it on a network you protect."
     );
-    at("transport-says").className = secured ? "note" : "note warn";
+    at("transport-says").className = secured || local ? "note" : "note warn";
+    at("clear-banner").hidden = secured || local;
   }
   function wire3() {
     const identity = sheet();
@@ -1199,7 +1205,7 @@
     clear("trust-mine");
     if (mine.length === 0) {
       const none = made("p", "faint");
-      none.textContent = "This node speaks plaintext on every door; a cluster accepts that only when --client-plaintext chose it.";
+      none.textContent = "This node serves its clients in the clear: --tls-cert and --tls-key would encrypt them, and --require-client-tls refuses to start without them.";
       at("trust-mine").appendChild(none);
       return;
     }

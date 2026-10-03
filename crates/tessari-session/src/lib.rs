@@ -63,7 +63,7 @@ mod noticed;
 mod outcome;
 mod plan;
 mod presented;
-pub use presented::{Certificates, Presented};
+pub use presented::{Certificates, ClientTransport, Presented};
 mod pushdown;
 mod queue;
 mod rank;

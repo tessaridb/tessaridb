@@ -112,17 +112,28 @@ function sheet(): HTMLDetailsElement {
   return found;
 }
 
+/** Whether this page came from this machine itself, so nothing it sends crosses a network. */
+function fromThisMachine(): boolean {
+  const host = location.hostname;
+  return host === "localhost" || host === "[::1]" || host === "::1" || host.startsWith("127.");
+}
+
 /** Say how the password will travel, from how this page itself arrived. */
 function transport(): void {
   const secured = location.protocol === "https:";
+  const local = !secured && fromThisMachine();
   write(
     "transport-says",
     secured
       ? "This page and everything it sends travel over TLS to this node."
-      : "This page arrived without TLS, so the password travels as typed. Give the node " +
+      : local
+        ? "This page arrived without TLS from this machine itself, so the password does " +
+          "not cross a network."
+        : "This page arrived without TLS, so the password travels as typed. Give the node " +
           "--tls-cert and --tls-key, or keep it on a network you protect.",
   );
-  at("transport-says").className = secured ? "note" : "note warn";
+  at("transport-says").className = secured || local ? "note" : "note warn";
+  at("clear-banner").hidden = secured || local;
 }
 
 export function wire(): void {

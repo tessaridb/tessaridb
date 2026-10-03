@@ -38,19 +38,17 @@ pub(crate) fn serve(
         }
         None => None,
     };
-    // Before anything is bound, for the cluster's reason above: a node that
-    // would have served its clients in the clear when it should not refuses
-    // here, and a certificate that cannot be read is found now, not at the
-    // first client's handshake (ADR-0108 D4).
+    // Before anything is bound: a node told to require client TLS and given no
+    // certificate refuses here, and a certificate that cannot be read is found
+    // now, not at the first client's handshake (ADR-0111).
     let clients = crate::tls::decide(
         serving
             .tls
             .clone()
             .with_environment(|name| std::env::var(name).ok())?,
-        cluster.is_some(),
     )?;
     let secured = match &clients {
-        crate::tls::Clients::Tls { cert, key } => Some(crate::tls::credential(cert, key)?),
+        crate::tls::Clients::Tls { cert, key, .. } => Some(crate::tls::credential(cert, key)?),
         crate::tls::Clients::Plaintext { .. } => None,
     };
     // A cluster configuration with no seed address is legal, and it is legal
@@ -122,13 +120,13 @@ pub(crate) fn serve(
     // warning behind a listening socket.
     bootstrap::first_user(&db)?;
     // What each surface presents, for `INFO FOR NODE` — the fingerprint an
-    // operator pins a newcomer's row with is read off the newcomer (D9).
-    if secured.is_some() || peers.is_some() {
-        db.presenting(std::sync::Arc::new(crate::presented::Shown {
-            clients: secured.clone(),
-            peers: peers.as_ref().map(|surface| surface.keys.clone()),
-        }));
-    }
+    // operator pins a newcomer's row with is read off the newcomer (D9) — and
+    // how the clients are served, which a serving node always has an answer to.
+    db.presenting(std::sync::Arc::new(crate::presented::Shown {
+        clients: secured.clone(),
+        peers: peers.as_ref().map(|surface| surface.keys.clone()),
+        required: matches!(clients, crate::tls::Clients::Tls { required: true, .. }),
+    }));
     let db = std::sync::Arc::new(db);
     // Every session this node opens gathers the shards of a split table it
     // lacks from their leaders (G033, ADR-0083) — on the wire and over HTTP
@@ -256,27 +254,38 @@ pub(crate) fn serve(
     // On the error stream, so a node whose output is being piped somewhere still
     // tells a person at the terminal that it came up and where. What was *bound*
     // rather than what was asked for, which is what makes `:0` usable.
+    let mut client_addresses = Vec::with_capacity(2);
     if let Some(node) = &wire {
         let bound = node.address().map_err(|failure| failure.to_string())?;
         eprintln!("tessaridb — wire protocol on {bound}");
+        client_addresses.push(bound);
     }
     if let Some(node) = &http {
-        eprintln!("tessaridb — http on {}", node.address());
+        let bound = node.address();
+        eprintln!("tessaridb — http on {bound}");
+        client_addresses.push(bound);
     }
     match &clients {
-        crate::tls::Clients::Tls { cert, .. } => {
+        crate::tls::Clients::Tls { cert, required, .. } => {
+            let required = if *required { ", as required" } else { "" };
             eprintln!(
-                "tessaridb — clients over TLS only, presenting {}",
+                "tessaridb — clients over TLS only{required}, presenting {}",
                 cert.display()
             );
         }
-        crate::tls::Clients::Plaintext { chosen: true } => {
-            eprintln!("tessaridb — clients in the clear, as asked; trust the network");
+        crate::tls::Clients::Plaintext { chosen } => {
+            let reach = crate::tls::reach(&client_addresses);
+            eprintln!(
+                "tessaridb — clients in the clear, {reach}: --tls-cert and --tls-key would \
+                 encrypt them, and --require-client-tls refuses to start without them"
+            );
+            if *chosen {
+                eprintln!(
+                    "tessaridb — --client-plaintext is retired: the clear is already the \
+                     default, and the next release refuses the flag"
+                );
+            }
         }
-        crate::tls::Clients::Plaintext { chosen: false } => eprintln!(
-            "tessaridb — clients in the clear: --tls-cert and --tls-key would encrypt them, \
-             and a cluster node refuses to start without them or --client-plaintext"
-        ),
     }
     // Said only when there is something to say. Every deployment today is a
     // single node, and a line printed on every start is a line operators stop
@@ -382,7 +391,7 @@ pub(crate) fn serve(
     // restart (ADR-0108 D6): the client surfaces' pair when they speak TLS, and
     // the peer link's when this node is in a cluster.
     let mut watched = Vec::new();
-    if let (Some(credential), crate::tls::Clients::Tls { cert, key }) = (&secured, &clients) {
+    if let (Some(credential), crate::tls::Clients::Tls { cert, key, .. }) = (&secured, &clients) {
         watched.push(crate::credentials::Watched::clients(
             credential.clone(),
             cert.clone(),

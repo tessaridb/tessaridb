@@ -3309,8 +3309,10 @@ transaction's own writes and a member built before `0.22.0-beta` are read and
 analysed record by record as before, shape `search`. Both go through one BM25F
 and rank every record with the same score. Measured on the documentation site's
 corpus (700 fragments, 81 judged queries): a word query 2.18 → 0.070 ms and a
-prefix 3.89 → 0.093 ms at the warm median. `REBUILD INDEX` (or redefining the
-search) moves an older member onto the faster path.
+prefix 3.89 → 0.093 ms at the warm median. Redefining the search moves an
+older member onto the faster path — `DROP SEARCH` and `DEFINE SEARCH` with the
+same clauses, in one transaction so no reader finds it missing. `REBUILD INDEX`
+names a field's index and does not reach a search's members.
 
 ```
 DROP SEARCH knowledge;
@@ -9175,7 +9177,10 @@ CREATE JOIN TOKEN FOR REPLICA db_4 EXPIRES 10m;
 row, in the spelling `REVOKE CERTIFICATE` takes — read it off the new node the
 way its id is: `INFO FOR NODE` lists, under `certificates`, each certificate the
 node presents (`surface` `peers` or `clients`, its `fingerprint`, and when it
-`expires`), read at the moment of asking, so a renewal shows on the next report. `CREATE JOIN TOKEN` answers a
+`expires`), read at the moment of asking, so a renewal shows on the next report.
+Beside it `clients` says how the node serves its clients — `{ tls, required }`,
+`tls: false` for a node in the clear and `required: true` for one started with
+`--require-client-tls` — and is `null` from a process that serves none. `CREATE JOIN TOKEN` answers a
 token **once** — 64 hexadecimal digits — and the row keeps only its digest and
 when it stops binding; `EXPIRES` is required, because a token nobody gave a life
 to binds for as long as nobody remembers it. The new node is started with
@@ -9344,7 +9349,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.22.0", "build": "0.22.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.23.0", "build": "0.23.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

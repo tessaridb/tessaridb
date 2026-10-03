@@ -1,10 +1,11 @@
-//! Whether the client surfaces speak TLS, decided once at start-up (ADR-0108 D4).
+//! Whether the client surfaces speak TLS, decided once at start-up (ADR-0111).
 //!
-//! A cluster serves clients in the clear only when somebody said so: a node
-//! with peer credentials has an operator who issued certificates already, and
-//! one that came up in plaintext because a variable was misspelled looks
-//! exactly like one that came up correctly. A single node keeps plaintext as
-//! its default in this release and says so on every start (Q-883).
+//! Client TLS is opt-in on every node, single or clustered: a certificate turns
+//! it on, and without one the node serves its clients in the clear and says so
+//! on every start. A deployment whose policy forbids the clear says
+//! `--require-client-tls`, and the node then refuses to start without a
+//! certificate rather than serve one connection unencrypted. The peer link is
+//! not decided here: it is always mutual TLS (ADR-0062).
 
 use std::path::{Path, PathBuf};
 
@@ -14,8 +15,11 @@ use tessari_serve::tls::{self, Pem};
 pub(crate) const TLS_CERT: &str = "TESSARIDB_TLS_CERT";
 /// Its private key, PEM.
 pub(crate) const TLS_KEY: &str = "TESSARIDB_TLS_KEY";
-/// `1` to serve clients in the clear on a cluster, which refuses otherwise.
+/// `1` to serve clients in the clear as a choice. Accepted for one release
+/// after ADR-0111 made the clear the default; it changes nothing but the notice.
 pub(crate) const CLIENT_PLAINTEXT: &str = "TESSARIDB_CLIENT_PLAINTEXT";
+/// `1` to refuse to start without a client certificate.
+pub(crate) const REQUIRE_CLIENT_TLS: &str = "TESSARIDB_REQUIRE_CLIENT_TLS";
 /// The certificates `--at` trusts a node by, PEM.
 pub(crate) const TLS_AUTHORITY: &str = "TESSARIDB_TLS_AUTHORITY";
 
@@ -25,6 +29,7 @@ pub(crate) struct Given {
     pub(crate) cert: Option<PathBuf>,
     pub(crate) key: Option<PathBuf>,
     pub(crate) plaintext: bool,
+    pub(crate) require: bool,
 }
 
 impl Given {
@@ -38,52 +43,96 @@ impl Given {
         self,
         read: impl Fn(&str) -> Option<String>,
     ) -> Result<Self, String> {
-        let plaintext = match read(CLIENT_PLAINTEXT).as_deref() {
-            None | Some("" | "0") => false,
-            Some("1") => true,
-            Some(other) => {
-                return Err(format!("{CLIENT_PLAINTEXT} is 1 or 0, not {other:?}"));
-            }
-        };
+        let plaintext = switch(&read, CLIENT_PLAINTEXT)?;
+        let require = switch(&read, REQUIRE_CLIENT_TLS)?;
         Ok(Self {
             cert: self.cert.or_else(|| read(TLS_CERT).map(PathBuf::from)),
             key: self.key.or_else(|| read(TLS_KEY).map(PathBuf::from)),
             plaintext: self.plaintext || plaintext,
+            require: self.require || require,
         })
+    }
+}
+
+/// A `1`/`0` variable, absent or empty meaning `0`; anything else is refused
+/// naming the variable and the value, because a misspelt `yes` that read as off
+/// would leave a policy unenforced with nothing in an error state.
+fn switch(read: &impl Fn(&str) -> Option<String>, name: &str) -> Result<bool, String> {
+    match read(name).as_deref() {
+        None | Some("" | "0") => Ok(false),
+        Some("1") => Ok(true),
+        Some(other) => Err(format!("{name} is 1 or 0, not {other:?}")),
     }
 }
 
 /// How the client surfaces are served.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Clients {
-    /// TLS with this chain and key.
-    Tls { cert: PathBuf, key: PathBuf },
-    /// In the clear; `chosen` when somebody said so rather than by default.
+    /// TLS with this chain and key; `required` when the node was told it may
+    /// serve no other way.
+    Tls {
+        cert: PathBuf,
+        key: PathBuf,
+        required: bool,
+    },
+    /// In the clear; `chosen` when somebody said so with the retired
+    /// `--client-plaintext` rather than by default.
     Plaintext { chosen: bool },
 }
 
-/// Judge what was given, for a node that is `clustered` or not.
+/// Judge what was given.
 ///
 /// # Errors
 ///
-/// Half a certificate, a certificate beside `--client-plaintext`, and a
-/// cluster told neither are refused rather than started.
-pub(crate) fn decide(given: Given, clustered: bool) -> Result<Clients, String> {
-    match (given.cert, given.key, given.plaintext) {
-        (Some(_), Some(_), true) => Err(
+/// Half a certificate, a certificate beside `--client-plaintext`, the switch
+/// beside `--client-plaintext`, and the switch with no certificate are refused
+/// rather than started.
+pub(crate) fn decide(given: Given) -> Result<Clients, String> {
+    let Given {
+        cert,
+        key,
+        plaintext,
+        require,
+    } = given;
+    match (cert, key) {
+        (Some(_), Some(_)) if plaintext => Err(
             "--tls-cert and --client-plaintext are two answers to one question; give one"
                 .to_owned(),
         ),
-        (Some(cert), Some(key), false) => Ok(Clients::Tls { cert, key }),
-        (Some(_), None, _) => Err("--tls-cert was given without --tls-key".to_owned()),
-        (None, Some(_), _) => Err("--tls-key was given without --tls-cert".to_owned()),
-        (None, None, true) => Ok(Clients::Plaintext { chosen: true }),
-        (None, None, false) if clustered => Err(
-            "a cluster node serves its clients over TLS: give --tls-cert and --tls-key, or \
-             --client-plaintext to serve them in the clear on a network you trust"
+        (Some(cert), Some(key)) => Ok(Clients::Tls {
+            cert,
+            key,
+            required: require,
+        }),
+        (Some(_), None) => Err("--tls-cert was given without --tls-key".to_owned()),
+        (None, Some(_)) => Err("--tls-key was given without --tls-cert".to_owned()),
+        (None, None) if require && plaintext => Err(
+            "--require-client-tls and --client-plaintext are two answers to one question; \
+             give one"
                 .to_owned(),
         ),
-        (None, None, false) => Ok(Clients::Plaintext { chosen: false }),
+        (None, None) if require => Err(format!(
+            "--require-client-tls ({REQUIRE_CLIENT_TLS}=1) serves clients over TLS only: give \
+             --tls-cert and --tls-key ({TLS_CERT} and {TLS_KEY})"
+        )),
+        (None, None) => Ok(Clients::Plaintext { chosen: plaintext }),
+    }
+}
+
+/// Whether a password typed into a client of these addresses can cross a
+/// network, for the plaintext start line (ADR-0111 D3): an address that does not
+/// read as loopback — `0.0.0.0` and a name included — is reachable beyond this
+/// machine.
+pub(crate) fn reach(addresses: &[String]) -> &'static str {
+    let loopback = |address: &String| {
+        address
+            .parse::<std::net::SocketAddr>()
+            .is_ok_and(|bound| bound.ip().is_loopback())
+    };
+    if addresses.iter().all(loopback) {
+        "on loopback only"
+    } else {
+        "reachable beyond this machine"
     }
 }
 
@@ -140,38 +189,71 @@ fn read(file: &Path, part: &str) -> Result<Vec<u8>, String> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{CLIENT_PLAINTEXT, Clients, Given, TLS_CERT, TLS_KEY, decide};
+    use super::{
+        CLIENT_PLAINTEXT, Clients, Given, REQUIRE_CLIENT_TLS, TLS_CERT, TLS_KEY, decide, reach,
+    };
 
     fn given(cert: Option<&str>, key: Option<&str>, plaintext: bool) -> Given {
         Given {
             cert: cert.map(PathBuf::from),
             key: key.map(PathBuf::from),
             plaintext,
+            require: false,
+        }
+    }
+
+    fn requiring(cert: Option<&str>, key: Option<&str>, plaintext: bool) -> Given {
+        Given {
+            require: true,
+            ..given(cert, key, plaintext)
         }
     }
 
     #[test]
-    fn a_cluster_refuses_to_serve_clients_in_the_clear_unless_told_to() {
-        let refused = decide(given(None, None, false), true).expect_err("a cluster in the clear");
-        assert!(refused.contains("--client-plaintext"), "{refused}");
+    fn a_node_told_nothing_serves_its_clients_in_the_clear_and_says_it_was_not_chosen() {
+        // ADR-0111 D2: single node and cluster alike — the cluster refusal is gone.
         assert_eq!(
-            decide(given(None, None, true), true),
-            Ok(Clients::Plaintext { chosen: true })
+            decide(given(None, None, false)),
+            Ok(Clients::Plaintext { chosen: false })
         );
+    }
+
+    #[test]
+    fn a_certificate_serves_tls_and_says_whether_it_was_required() {
         assert_eq!(
-            decide(given(Some("c.pem"), Some("k.pem"), false), true),
+            decide(given(Some("c.pem"), Some("k.pem"), false)),
             Ok(Clients::Tls {
                 cert: PathBuf::from("c.pem"),
                 key: PathBuf::from("k.pem"),
+                required: false,
+            })
+        );
+        assert_eq!(
+            decide(requiring(Some("c.pem"), Some("k.pem"), false)),
+            Ok(Clients::Tls {
+                cert: PathBuf::from("c.pem"),
+                key: PathBuf::from("k.pem"),
+                required: true,
             })
         );
     }
 
     #[test]
-    fn a_single_node_keeps_the_clear_by_default_and_says_it_was_not_chosen() {
+    fn a_node_required_to_serve_tls_refuses_to_start_without_a_certificate() {
+        let refused = decide(requiring(None, None, false)).expect_err("required and absent");
+        assert!(
+            refused.contains("--tls-cert") && refused.contains("--require-client-tls"),
+            "{refused}"
+        );
+        let refused = decide(requiring(None, None, true)).expect_err("two answers");
+        assert!(refused.contains("two answers"), "{refused}");
+    }
+
+    #[test]
+    fn client_plaintext_is_still_accepted_and_marked_chosen() {
         assert_eq!(
-            decide(given(None, None, false), false),
-            Ok(Clients::Plaintext { chosen: false })
+            decide(given(None, None, true)),
+            Ok(Clients::Plaintext { chosen: true })
         );
     }
 
@@ -181,8 +263,9 @@ mod tests {
             (given(Some("c.pem"), None, false), "without --tls-key"),
             (given(None, Some("k.pem"), false), "without --tls-cert"),
             (given(Some("c.pem"), Some("k.pem"), true), "two answers"),
+            (requiring(Some("c.pem"), None, false), "without --tls-key"),
         ] {
-            let refused = decide(asked, false).expect_err(named);
+            let refused = decide(asked).expect_err(named);
             assert!(refused.contains(named), "{refused}");
         }
     }
@@ -202,14 +285,61 @@ mod tests {
             given(Some("flag-cert.pem"), Some("env-key.pem"), false)
         );
 
-        let plaintext = |name: &str| (name == CLIENT_PLAINTEXT).then(|| "1".to_owned());
+        for (variable, read) in [
+            (
+                CLIENT_PLAINTEXT,
+                (|g: &Given| g.plaintext) as fn(&Given) -> bool,
+            ),
+            (REQUIRE_CLIENT_TLS, |g: &Given| g.require),
+        ] {
+            let on = |name: &str| (name == variable).then(|| "1".to_owned());
+            assert!(read(&Given::default().with_environment(on).expect("1")));
+            let off = |name: &str| (name == variable).then(|| "0".to_owned());
+            assert!(!read(&Given::default().with_environment(off).expect("0")));
+            let misspelled = |name: &str| (name == variable).then(|| "yes".to_owned());
+            let refused = Given::default()
+                .with_environment(misspelled)
+                .expect_err("yes is not 1 or 0");
+            assert!(
+                refused.contains(variable) && refused.contains("yes"),
+                "{refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_switch_is_off_unless_somebody_turns_it_on() {
+        let nothing = |_: &str| None;
         assert!(
-            Given::default()
-                .with_environment(plaintext)
-                .expect("1")
-                .plaintext
+            !Given::default()
+                .with_environment(nothing)
+                .expect("empty")
+                .require
         );
-        let misspelled = |name: &str| (name == CLIENT_PLAINTEXT).then(|| "yes".to_owned());
-        assert!(Given::default().with_environment(misspelled).is_err());
+    }
+
+    #[test]
+    fn an_address_that_is_not_loopback_is_reachable_beyond_this_machine() {
+        let owned = |addresses: &[&str]| {
+            addresses
+                .iter()
+                .map(|a| (*a).to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            reach(&owned(&["127.0.0.1:9080", "[::1]:8000"])),
+            "on loopback only"
+        );
+        for beyond in [
+            owned(&["0.0.0.0:9080"]),
+            owned(&["127.0.0.1:9080", "10.0.0.5:8000"]),
+            owned(&["db:7654"]),
+        ] {
+            assert_eq!(
+                reach(&beyond),
+                "reachable beyond this machine",
+                "{beyond:?}"
+            );
+        }
     }
 }

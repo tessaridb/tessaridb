@@ -31,8 +31,11 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   --tls-cert <file> serve clients over TLS with this certificate chain, PEM;
                   default TESSARIDB_TLS_CERT
   --tls-key <file> its private key, PEM; default TESSARIDB_TLS_KEY
-  --client-plaintext serve clients in the clear, which a cluster node refuses
-                  to do otherwise; or TESSARIDB_CLIENT_PLAINTEXT=1
+  --require-client-tls refuse to start unless --tls-cert and --tls-key are
+                  given, for a deployment that forbids the clear; or
+                  TESSARIDB_REQUIRE_CLIENT_TLS=1; off by default
+  --client-plaintext retired: the clear is the default without a certificate;
+                  accepted in this release only, and the next refuses it
   --tls-authority <file> with --at: speak TLS and trust the node by these
                   certificates, PEM; default TESSARIDB_TLS_AUTHORITY
   --cluster-credential <file> this node's peer credential, PEM, with --serve
@@ -65,9 +68,10 @@ usage: tessaridb [<path> | --at <host:port>] [-e <script> | -f <file>]
   -h, --help      this
 
 a node given --tls-cert and --tls-key speaks TLS on every client surface — the
-wire port, HTTP and the WebSocket on it — and nothing else. A cluster node will
-not serve clients in the clear unless --client-plaintext says so; a single node
-does, and says so when it starts.
+wire port, HTTP and the WebSocket on it — and nothing else. Without one a node,
+single or clustered, serves its clients in the clear and says so when it starts;
+--require-client-tls makes it refuse to start instead. The peer link is mutual
+TLS whatever the clients were given.
 
 the five cluster options are given together or not at all: told some of them a
 node refuses to start rather than serving with credentials nobody checked, and
@@ -343,6 +347,7 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
                 serving.tls.key = Some(PathBuf::from(path));
             }
             "--client-plaintext" => serving.tls.plaintext = true,
+            "--require-client-tls" => serving.tls.require = true,
             "--join-token" => {
                 serving.join_token = Some(
                     arguments
@@ -509,8 +514,8 @@ pub fn parse(arguments: impl Iterator<Item = String>) -> Result<Asked, String> {
     // somebody believes is encrypting their clients.
     if serving.tls != crate::tls::Given::default() && !matches!(source, Source::Serve) {
         return Err(
-            "--tls-cert, --tls-key and --client-plaintext say how a serving node speaks to \
-             its clients, and this serves nothing"
+            "--tls-cert, --tls-key, --require-client-tls and --client-plaintext say how a \
+             serving node speaks to its clients, and this serves nothing"
                 .to_owned(),
         );
     }

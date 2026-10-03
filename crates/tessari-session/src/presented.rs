@@ -20,8 +20,20 @@ pub struct Presented {
     pub expires: Option<i64>,
 }
 
+/// How the client surfaces are served (ADR-0111 D3), decided at start-up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientTransport {
+    /// Over TLS; in the clear when `false`.
+    pub tls: bool,
+    /// The node was told it may serve no other way (`--require-client-tls`).
+    pub required: bool,
+}
+
 /// Reads, when asked, the certificates this node presents now.
 pub trait Certificates: Send + Sync + std::fmt::Debug {
     /// Every certificate presented at this moment, one per surface.
     fn presented(&self) -> Vec<Presented>;
+
+    /// How this node serves its clients.
+    fn clients(&self) -> ClientTransport;
 }

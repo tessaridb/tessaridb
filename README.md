@@ -10,7 +10,7 @@ Eleven engines. One transaction. One binary. A real-time multi-model database,
 written in Rust, for AI applications and the products built around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.22.0--beta-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.23.0--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.98%2B-6B5FD1?style=flat-square)](Cargo.toml)
 [![conformance](https://img.shields.io/badge/conformance-1539%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
@@ -22,8 +22,8 @@ written in Rust, for AI applications and the products built around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is a beta — `0.22.0-beta`.** It is released and tested, published as
-> a container image (`tessaridb/tessaridb:0.22.0-beta`; the image tracks the
+> **TessariDB is a beta — `0.23.0-beta`.** It is released and tested, published as
+> a container image (`tessaridb/tessaridb:0.23.0-beta`; the image tracks the
 > larger releases), and the licence makes production use free, including inside
 > a commercial company.
 > What a beta does not promise yet is permanence of shape: before 1.0 the query
@@ -201,7 +201,7 @@ surviving version and the node that wrote it.
 
 ## Status
 
-**Stage: active development · `0.22.0-beta` · not published to crates.io.** What
+**Stage: active development · `0.23.0-beta` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 
@@ -229,8 +229,9 @@ follows is what runs today, not a roadmap.
 - ✅ **A cluster that trusts nothing in the clear:** peers speak mutual TLS with a
   certificate issued for each node's id, renewed from its files without a restart
   and revoked with `REVOKE CERTIFICATE` — a revocation or an expiry ends even a
-  stream already open; clients are served over TLS 1.3, and a clustered node
-  serves them in the clear only when told to; a request sent to a node that
+  stream already open; clients are served over TLS 1.3 when the node is given a
+  certificate, in the clear otherwise and said so at start, and
+  `--require-client-tls` makes a node refuse to start without one; a request sent to a node that
   cannot answer it is carried over the peer link as a signed assertion of who
   asked, never a password; a joining node is approved by its id, its certificate
   fingerprint or a one-time join token; and the store can be encrypted at rest,

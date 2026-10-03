@@ -849,55 +849,240 @@ fn a_clustered_node_with_no_seed_and_no_peer_refuses_to_start() {
     );
 }
 
+/// The node `a_cluster_node_told_nothing_…` serves; past every other band.
+const CLEAR_CLUSTER_WIRE: &str = "127.0.0.1:47978";
+/// That node's peer door.
+const CLEAR_CLUSTER_PEERS: &str = "127.0.0.1:47979";
+
 #[test]
-fn a_cluster_node_told_nothing_about_its_clients_refuses_to_start() {
-    // ADR-0108 D4: a cluster serves clients in the clear only when somebody
-    // said so. Everything else here is a configuration that starts — the seed
-    // is given — so the one refusal is the clients' transport.
+fn a_cluster_node_told_nothing_about_its_clients_serves_them_in_the_clear_and_its_peers_stay_mutual()
+ {
+    // ADR-0111 D1/D2: client TLS is opt-in on a cluster as on a single node, and
+    // the peer link stays mutual TLS whatever the clients were given.
     let directory = tempfile::tempdir().unwrap();
     let store = directory.path().join("store");
+    let log = directory.path().join("node.log");
     let minted = Minted::new();
-    let (leaf, key, authority) = credentials(&minted, [7u8; 16], directory.path());
+    // The build a caller greets with, read from a store this binary will open.
+    let db = tessaridb::Db::open(&store).unwrap();
+    let identity = db.store().node_identity().unwrap();
+    let (node, build) = (identity.id, identity.version);
+    drop(db);
+    let (leaf, key, authority) = credentials(&minted, node, directory.path());
+    let args: Vec<std::ffi::OsString> = [
+        store.as_os_str(),
+        "--serve".as_ref(),
+        CLEAR_CLUSTER_WIRE.as_ref(),
+        "--cluster-credential".as_ref(),
+        leaf.as_ref(),
+        "--cluster-key".as_ref(),
+        key.as_ref(),
+        "--cluster-authority".as_ref(),
+        authority.as_ref(),
+        "--cluster-address".as_ref(),
+        CLEAR_CLUSTER_PEERS.as_ref(),
+        "--seed".as_ref(),
+        A_SEED.as_ref(),
+    ]
+    .iter()
+    .map(|part| part.to_os_string())
+    .collect();
+    let _running = started_without_client_settings(&args, &log);
 
-    let mut refused = Command::new(TESSARIDB)
-        .arg(&store)
-        .args(["--serve", "127.0.0.1:0"])
-        .args(["--cluster-credential", &leaf])
-        .args(["--cluster-key", &key])
-        .args(["--cluster-authority", &authority])
-        .args(["--cluster-address", "127.0.0.1:0"])
-        .args(["--seed", A_SEED])
+    assert!(
+        listening(CLEAR_CLUSTER_WIRE, Duration::from_secs(20)),
+        "a cluster node told nothing about its clients did not serve them: {}",
+        std::fs::read_to_string(&log).unwrap_or_default()
+    );
+    assert!(
+        listening(CLEAR_CLUSTER_PEERS, Duration::from_secs(20)),
+        "the peer door never opened"
+    );
+    // The surface accepts before the posture line is written, so it is waited for.
+    let said = said_within(&log, "clients in the clear", Duration::from_secs(20));
+    assert!(
+        said.contains("clients in the clear, on loopback only") && said.contains("--tls-cert"),
+        "the plaintext posture is said at start, with the way to encrypt: {said}"
+    );
+
+    // And the node's own report says it, for whoever was not watching the start.
+    let report = Command::new(TESSARIDB)
+        .args(["--at", CLEAR_CLUSTER_WIRE, "-e", "INFO FOR NODE;"])
+        .env_remove("TESSARIDB_TLS_AUTHORITY")
+        .output()
+        .unwrap();
+    let report = String::from_utf8_lossy(&report.stdout);
+    assert!(
+        report.contains("clients: { required: false, tls: false }"),
+        "INFO FOR NODE reports the clients in the clear: {report}"
+    );
+
+    // A caller holding a certificate another authority issued is refused at the
+    // door: dropping the client refusal opened nothing on the peer link.
+    let other = Minted::new();
+    let (their_leaf, their_key) = other.issue([9u8; 16]);
+    let stranger = tessari_wire::Joining::parse(
+        tessari_wire::CredentialFile {
+            bytes: their_leaf.as_bytes(),
+            path: std::path::Path::new("leaf.pem"),
+        },
+        tessari_wire::CredentialFile {
+            bytes: their_key.as_bytes(),
+            path: std::path::Path::new("key.pem"),
+        },
+        tessari_wire::CredentialFile {
+            bytes: minted.authority.pem().as_bytes(),
+            path: std::path::Path::new("ca.pem"),
+        },
+        CLEAR_CLUSTER_PEERS.to_owned(),
+        vec![A_SEED.to_owned()],
+    )
+    .expect("a well-formed credential, whatever issued it");
+    let keys = tessari_wire::PeerKeys::new(stranger.mine, stranger.authority).expect("usable keys");
+    let refused = tessari_wire::call(
+        CLEAR_CLUSTER_PEERS,
+        &keys,
+        node,
+        &tessari_wire::Hello {
+            node: [9u8; 16],
+            build,
+            epoch: tessari_types::Epoch::ZERO,
+            roles: tessari_storage::Roles::NONE,
+            tail: tessari_types::Sequence::new(0),
+            tail_leadership: tessari_types::Epoch::ZERO,
+            current_as_of: None,
+            policy: None,
+            line: None,
+        },
+        tessari_wire::Ask::Nothing,
+    );
+    assert!(
+        refused.is_err(),
+        "a peer whose certificate this cluster never issued was answered"
+    );
+}
+
+/// Start the shipped binary with none of the client-transport variables an
+/// outer environment might carry, its standard error written to `log`.
+fn started_without_client_settings(args: &[std::ffi::OsString], log: &std::path::Path) -> Running {
+    let writing = std::fs::File::create(log).unwrap();
+    let child = Command::new(TESSARIDB)
+        .args(args)
         .env_remove("TESSARIDB_TLS_CERT")
         .env_remove("TESSARIDB_TLS_KEY")
         .env_remove("TESSARIDB_CLIENT_PLAINTEXT")
+        .env_remove("TESSARIDB_REQUIRE_CLIENT_TLS")
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(writing))
+        .spawn()
+        .unwrap();
+    Running(child)
+}
+
+/// What `log` holds once it says `needle`, or when `patience` runs out.
+fn said_within(log: &std::path::Path, needle: &str, patience: Duration) -> String {
+    let began = Instant::now();
+    loop {
+        let said = std::fs::read_to_string(log).unwrap_or_default();
+        if said.contains(needle) || began.elapsed() > patience {
+            return said;
+        }
+        std::thread::yield_now();
+    }
+}
+
+/// Run the shipped binary to its end under a deadline, for a start that must be
+/// refused: a node that wrongly starts serves for ever, and the failure this
+/// guards must not be a hang.
+fn refused_start(command: &mut Command) -> String {
+    let mut child = command
+        .env_remove("TESSARIDB_TLS_CERT")
+        .env_remove("TESSARIDB_TLS_KEY")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    // A node that wrongly starts serves for ever, so the refusal is waited for
-    // under a deadline: the failure this test exists for must not be a hang.
     let began = Instant::now();
-    while refused.try_wait().unwrap().is_none() {
+    while child.try_wait().unwrap().is_none() {
         if began.elapsed() > Duration::from_secs(20) {
-            drop(refused.kill());
-            drop(refused.wait());
-            panic!("a cluster came up serving clients in the clear");
+            drop(child.kill());
+            drop(child.wait());
+            panic!("a node that should have refused to start came up");
         }
         std::thread::yield_now();
     }
-    let refused = refused.wait_with_output().unwrap();
-    assert!(
-        !refused.status.success(),
-        "a cluster came up serving clients in the clear"
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success(), "the start was not refused");
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+#[test]
+fn a_node_told_to_require_client_tls_refuses_to_start_without_a_certificate() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = directory.path().join("store");
+
+    let by_flag = refused_start(
+        Command::new(TESSARIDB)
+            .arg(&store)
+            .args(["--serve", "127.0.0.1:0", "--require-client-tls"])
+            .env_remove("TESSARIDB_REQUIRE_CLIENT_TLS")
+            .env_remove("TESSARIDB_CLIENT_PLAINTEXT"),
     );
-    let said = String::from_utf8_lossy(&refused.stderr);
     assert!(
-        said.contains("--tls-cert") && said.contains("--client-plaintext"),
-        "the refusal names both ways out: {said}"
+        by_flag.contains("--tls-cert") && by_flag.contains("--require-client-tls"),
+        "the refusal names the switch and the way out: {by_flag}"
     );
     assert!(
-        !said.contains("wire protocol on"),
-        "a client surface was announced: {said}"
+        !by_flag.contains("wire protocol on"),
+        "a surface was announced: {by_flag}"
+    );
+
+    let by_variable = refused_start(
+        Command::new(TESSARIDB)
+            .arg(&store)
+            .args(["--serve", "127.0.0.1:0"])
+            .env("TESSARIDB_REQUIRE_CLIENT_TLS", "1")
+            .env_remove("TESSARIDB_CLIENT_PLAINTEXT"),
+    );
+    assert!(by_variable.contains("--tls-cert"), "{by_variable}");
+
+    let two_answers = refused_start(
+        Command::new(TESSARIDB)
+            .arg(&store)
+            .args([
+                "--serve",
+                "127.0.0.1:0",
+                "--require-client-tls",
+                "--client-plaintext",
+            ])
+            .env_remove("TESSARIDB_REQUIRE_CLIENT_TLS"),
+    );
+    assert!(two_answers.contains("two answers"), "{two_answers}");
+}
+
+#[test]
+fn client_plaintext_still_starts_a_node_and_says_it_is_retired() {
+    // A 0.22 deployment that set the flag keeps starting for one release.
+    let directory = tempfile::tempdir().unwrap();
+    let log = directory.path().join("node.log");
+    let args: Vec<std::ffi::OsString> = [
+        directory.path().join("store").as_os_str(),
+        "--serve".as_ref(),
+        "127.0.0.1:0".as_ref(),
+        "--client-plaintext".as_ref(),
+    ]
+    .iter()
+    .map(|part| part.to_os_string())
+    .collect();
+    let _running = started_without_client_settings(&args, &log);
+    let said = said_within(&log, "retired", Duration::from_secs(20));
+    assert!(
+        said.contains("wire protocol on"),
+        "the node did not start: {said}"
+    );
+    assert!(
+        said.contains("--client-plaintext is retired"),
+        "the retirement is said at start: {said}"
     );
 }
 
