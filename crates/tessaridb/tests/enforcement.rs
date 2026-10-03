@@ -958,7 +958,16 @@ const TABLES: &[Table] = &[
         // derivation. Re-classification trigger: any other caller reachable
         // from a session or a route, because `succeeded` hands a guesser its
         // allowance back.
-        expected: 62,
+        //
+        // 64 since the cluster counters (G053 C6): `Store::answered_not_held_here`
+        // and `Store::acknowledgement_waited`. Classified **not a data path**,
+        // on `campaigned`'s ground: each adds to a counter in this process's
+        // memory that `health()` reports, and reads or writes no record,
+        // catalog entry or grant. Their callers are the session's
+        // `not_held_here` refusal and `commit_acknowledged` after the wait.
+        // Re-classification trigger: a caller reachable from a statement that
+        // could move a counter an operator alerts on without the event.
+        expected: 64,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1151,7 +1160,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 143 since the sign-in failure counts are the store's (Q-852):
     // `Store::attempts`, not a data path, classified above.
-    assert_eq!(total, 143, "the counted tables no longer sum to 143");
+    //
+    // 145 since the cluster counters (G053 C6): `Store::answered_not_held_here`
+    // and `Store::acknowledgement_waited`, not data paths, classified above.
+    assert_eq!(total, 145, "the counted tables no longer sum to 145");
 }
 
 /// Every `.rs` file under a directory.

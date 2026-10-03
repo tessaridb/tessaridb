@@ -65,6 +65,7 @@ mod state;
 mod statistics;
 mod store;
 mod tailmarks;
+mod tally;
 mod topic;
 mod transaction;
 mod vault;

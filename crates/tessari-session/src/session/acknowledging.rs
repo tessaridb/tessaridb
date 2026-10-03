@@ -145,6 +145,7 @@ impl Session<'_> {
             return Ok(());
         };
         let nodes: Vec<[u8; NODE_ID_LEN]> = waiting.holders.iter().map(|(node, _)| *node).collect();
+        let began = std::time::Instant::now();
         let held = store.await_held(
             committed.log,
             committed.sequence,
@@ -152,7 +153,9 @@ impl Session<'_> {
             waiting.needed,
             waiting.within,
         );
-        if held.len() >= waiting.needed {
+        let confirmed = held.len() >= waiting.needed;
+        store.acknowledgement_waited(began.elapsed(), !confirmed);
+        if confirmed {
             return Ok(());
         }
         Err(Error::NotAcknowledgedInTime {

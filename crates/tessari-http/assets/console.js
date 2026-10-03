@@ -2034,6 +2034,21 @@ Shown once. The node keeps only its digest.`);
     }
     return most === null ? null : `${most} record(s)`;
   }
+  function bare(node) {
+    return typeof node === "string" ? node.split("-").join("").toLowerCase() : null;
+  }
+  function leading(leaders, node) {
+    const mine2 = bare(node);
+    if (mine2 === null) {
+      return null;
+    }
+    const ranges = leaders.filter((one2) => bare(one2.node) === mine2).map((one2) => `${told2(one2.range)} (epoch ${told2(one2.epoch)})`);
+    return ranges.length === 0 ? null : ranges.join(", ");
+  }
+  function behindEach(followers) {
+    const each = followers.filter((one2) => typeof one2.behind === "number").map((one2) => `${(bare(one2.node) ?? "?").slice(0, 8)}… ${told2(one2.behind)} behind`);
+    return each.length === 0 ? null : each.join(", ");
+  }
   function copied(upstream) {
     if (typeof upstream?.copies !== "number" || upstream.copies === 0) {
       return null;
@@ -2059,6 +2074,8 @@ Shown once. The node keeps only its digest.`);
           String((cluster.followers ?? []).length)
         ),
         fact("furthest follower behind", furthest(cluster.followers ?? [])),
+        fact("each follower", behindEach(cluster.followers ?? [])),
+        fact("leads, as the log records", leading(cluster.leaders ?? [], seen.id)),
         // Absent on a node that follows nobody: `in sync` there would be a
         // state it has never been in.
         fact("sync with its upstream", cluster.upstream?.state ?? null),
@@ -2092,7 +2109,8 @@ Shown once. The node keeps only its digest.`);
             ),
             fact("id", told2(peer.node)),
             fact("replicates", told2(peer.replicates)),
-            fact("leads", told2(peer.leads))
+            fact("leads", told2(peer.leads)),
+            fact("leads, as the log records", leading(cluster.leaders ?? [], peer.node))
           ],
           "peer",
           {

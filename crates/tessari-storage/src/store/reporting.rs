@@ -57,7 +57,23 @@ impl Store {
             discarded_writes: self.discarded.load(Ordering::Relaxed),
             campaigns: self.campaigns.load(Ordering::Relaxed),
             lease_remaining: self.lease.remaining(),
+            not_held_here: self.tally.not_held_here(),
+            acknowledgement_waits: self.tally.waits(),
+            acknowledgement_timeouts: self.tally.timeouts(),
+            acknowledgement_waited: self.tally.waited(),
         })
+    }
+
+    /// Record one read that reached this node holding none of what it asked
+    /// for. Called where the `NotHeldHere` refusal is made, and nowhere else.
+    pub fn answered_not_held_here(&self) {
+        self.tally.held_elsewhere();
+    }
+
+    /// Record one commit that waited `waited` for a majority, and whether it
+    /// ran out of time. Called where the wait happens, and nowhere else.
+    pub fn acknowledgement_waited(&self, waited: std::time::Duration, timed_out: bool) {
+        self.tally.waited_for(waited, timed_out);
     }
 
     /// Record what a follower has been given.

@@ -117,6 +117,45 @@ pub(crate) fn metrics(
             out.push_str("# HELP tessari_campaigns Leadership rounds this node has stood in.\n");
             out.push_str("# TYPE tessari_campaigns counter\n");
             out.push_str(&format!("tessari_campaigns {}\n", held.campaigns));
+            // G053 C6: reads aimed at a node holding none of what they asked
+            // for, and the commits that waited for a majority — how many, how
+            // many ran out of time, and how long they took altogether.
+            out.push_str(
+                "# HELP tessari_not_held_here_total Reads that reached this node holding none of \
+                 what they asked for.\n",
+            );
+            out.push_str("# TYPE tessari_not_held_here_total counter\n");
+            out.push_str(&format!(
+                "tessari_not_held_here_total {}\n",
+                held.not_held_here
+            ));
+            out.push_str(
+                "# HELP tessari_acknowledgement_waits_total Commits that waited for a majority \
+                 of voters to hold them.\n",
+            );
+            out.push_str("# TYPE tessari_acknowledgement_waits_total counter\n");
+            out.push_str(&format!(
+                "tessari_acknowledgement_waits_total {}\n",
+                held.acknowledgement_waits
+            ));
+            out.push_str(
+                "# HELP tessari_acknowledgement_timeouts_total Of those, the ones committed here \
+                 and not confirmed by a majority in time.\n",
+            );
+            out.push_str("# TYPE tessari_acknowledgement_timeouts_total counter\n");
+            out.push_str(&format!(
+                "tessari_acknowledgement_timeouts_total {}\n",
+                held.acknowledgement_timeouts
+            ));
+            out.push_str(
+                "# HELP tessari_acknowledgement_wait_seconds_total The time those waits took, \
+                 summed.\n",
+            );
+            out.push_str("# TYPE tessari_acknowledgement_wait_seconds_total counter\n");
+            out.push_str(&format!(
+                "tessari_acknowledgement_wait_seconds_total {}\n",
+                held.acknowledgement_waited.as_secs_f64()
+            ));
             // Absent rather than zero on a node holding no lease, because a series
             // that is always zero on every standalone store would train whoever
             // watches it to ignore the one reading that matters. When it is here it
@@ -162,6 +201,11 @@ pub(crate) fn metrics(
     out.push_str("# TYPE tessari_refusals_total counter\n");
     out.push_str("# HELP tessari_ready Whether the surface will take new work.\n");
     out.push_str("# TYPE tessari_ready gauge\n");
+    out.push_str(
+        "# HELP tessari_redirects_total Answers that sent the caller to another node, settled \
+         (a leadership to remember) or transient (this read only).\n",
+    );
+    out.push_str("# TYPE tessari_redirects_total counter\n");
 
     match census {
         Some(census) => {
@@ -263,5 +307,12 @@ pub(crate) fn surface(out: &mut String, name: &str, stopping: &Stopping) {
     out.push_str(&format!(
         "tessari_ready{{surface=\"{name}\"}} {}\n",
         u8::from(stopping.ready())
+    ));
+    let (settled, transient) = stopping.redirects();
+    out.push_str(&format!(
+        "tessari_redirects_total{{surface=\"{name}\",kind=\"settled\"}} {settled}\n"
+    ));
+    out.push_str(&format!(
+        "tessari_redirects_total{{surface=\"{name}\",kind=\"transient\"}} {transient}\n"
     ));
 }

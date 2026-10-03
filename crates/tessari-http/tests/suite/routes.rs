@@ -1111,12 +1111,16 @@ fn a_stranger_scraping_a_closed_store_learns_nothing_about_the_cluster() {
     );
     db.store().upstream_is(tessari_storage::Upstream::Copying);
 
-    const CLUSTER: [&str; 5] = [
+    const CLUSTER: [&str; 9] = [
         "tessari_follower_behind_records",
         "tessari_replica_state",
         "tessari_replica_copied_records",
         "tessari_campaigns",
         "tessari_log_divergences",
+        "tessari_not_held_here_total",
+        "tessari_acknowledgement_waits_total",
+        "tessari_acknowledgement_timeouts_total",
+        "tessari_acknowledgement_wait_seconds_total",
     ];
     for (who, credential) in [("a stranger", None), ("a viewer", Some(GRACE))] {
         let (status, _, scrape) = send(&address, "GET", "/metrics", "", credential);

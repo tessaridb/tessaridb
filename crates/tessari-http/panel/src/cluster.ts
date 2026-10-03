@@ -200,17 +200,17 @@ export const cluster = (): Node =>
                 el(
                     "strong",
                     {},
-                    "No lag figure, and no leadership for other nodes.",
+                    "Lag is per follower, and leadership is what the log recorded.",
                 ),
             ),
             behindDisclosure(
-                "Why neither is drawn",
+                "What the two figures are, and are not",
                 note(
-                    "Nothing pulls a replica forward on a timer, so a node that is not writing " +
-                        "has no last collection its copy could be measured from; and this node " +
-                        "knows which lease it holds, never which lease somebody else holds. A " +
-                        "number invented for either would be the dashboard drawn ahead of the " +
-                        "engine, which is what makes the rest of a console untrustworthy.",
+                    "A follower's lag is how many records it is short of this node's tail, as " +
+                        "this node last served it — the leader pushes each commit, so a level " +
+                        "follower reads 0. A leadership is the row the winner wrote under its own " +
+                        "epoch, so it says which node led a range as of that epoch; whether that " +
+                        "node is alive now is its lease, which only it can report.",
                 ),
             ),
         ),

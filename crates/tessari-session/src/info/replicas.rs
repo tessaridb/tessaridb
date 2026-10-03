@@ -134,6 +134,29 @@ pub(crate) fn spelled_reach(reach: Reach, catalog: &Catalog<'_, '_>) -> Result<S
     })
 }
 
+/// Each range's leader as the log recorded it (G053 C6), in range order.
+///
+/// From the `leaderships` rows the winner wrote under its own epoch — so this
+/// is *as of epoch E, node N led range R*, a claim about the log and never about
+/// who is alive now; the lease and the follower rows answer that.
+pub(crate) fn described_leaders(catalog: &Catalog<'_, '_>) -> Result<Value> {
+    let mut described = Vec::new();
+    for held in catalog.leaderships()? {
+        described.push(Value::Object(BTreeMap::from([
+            (
+                "range".to_owned(),
+                Value::from(spelled_reach(held.range, catalog)?.as_str()),
+            ),
+            ("node".to_owned(), Value::Uuid(held.node)),
+            (
+                "epoch".to_owned(),
+                Value::from(i64::try_from(held.epoch.get()).unwrap_or(i64::MAX)),
+            ),
+        ])));
+    }
+    Ok(Value::Array(described))
+}
+
 /// One namespace's name, or its id when the catalog no longer holds it.
 pub(crate) fn namespace_named(namespace: NamespaceId, catalog: &Catalog<'_, '_>) -> Result<String> {
     Ok(catalog

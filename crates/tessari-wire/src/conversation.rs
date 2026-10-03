@@ -72,6 +72,10 @@ pub(crate) struct Conversation {
 pub(crate) struct Answer {
     pub(crate) kind: frame::Kind,
     pub(crate) body: Vec<u8>,
+    /// Whether this answer sends the caller elsewhere, and if so whether the
+    /// redirect is settled — kept beside the frame so the surface counts it
+    /// without reading back what it just encoded (G053 C6).
+    pub(crate) redirect: Option<bool>,
 }
 
 /// Hold one connection until it ends.
@@ -218,6 +222,9 @@ pub(crate) async fn converse<C: Carried>(
             Bridged::Answered((back, answer)) => {
                 session = back;
                 reply(&mut writer, &talk.stopping, answer.kind, &answer.body).await?;
+                if let Some(settled) = answer.redirect {
+                    talk.stopping.redirected(settled);
+                }
                 answered_at = Some(Instant::now());
             }
             Bridged::Busy(back) => {
@@ -273,6 +280,7 @@ pub(crate) fn respond(
     let refusal = |message: String| Answer {
         kind: frame::Kind::Refusal,
         body: message.into_bytes(),
+        redirect: None,
     };
     if let Some((name, password)) = &request.credentials
         && let Err(refused) = session.sign_in(name, password)
@@ -317,6 +325,7 @@ pub(crate) fn respond(
                 Some(kind) => Answer {
                     kind,
                     body: answer.body,
+                    redirect: None,
                 },
                 None => refusal(format!(
                     "the node that answered sent a kind this node does not know ({})",
@@ -358,6 +367,7 @@ pub(crate) fn respond(
         return Answer {
             kind: frame::Kind::Elsewhere,
             body: sent.encode(),
+            redirect: Some(sent.settlement == redirect::Settlement::Settled),
         };
     }
     render(db, &ran)
@@ -383,6 +393,7 @@ fn render(db: &Db, ran: &tessaridb::Result<Vec<tessaridb::Outcome>>) -> Answer {
             Answer {
                 kind: frame::Kind::Answer,
                 body: answer,
+                redirect: None,
             }
         }
         // A refusal does not close the connection: a client that mistyped a
@@ -390,6 +401,7 @@ fn render(db: &Db, ran: &tessaridb::Result<Vec<tessaridb::Outcome>>) -> Answer {
         Err(refused) => Answer {
             kind: frame::Kind::Refusal,
             body: refused.to_string().into_bytes(),
+            redirect: None,
         },
     }
 }
@@ -422,6 +434,7 @@ pub(crate) fn respond_vault(
     let refusal = |message: String| Answer {
         kind: frame::Kind::Refusal,
         body: message.into_bytes(),
+        redirect: None,
     };
     if let Some((name, password)) = &asked.credentials
         && let Err(refused) = session.sign_in(name, password)
@@ -456,6 +469,7 @@ pub(crate) fn respond_vault(
             Answer {
                 kind: frame::Kind::Answer,
                 body,
+                redirect: None,
             }
         }
         Err(refused) => refusal(refused.to_string()),

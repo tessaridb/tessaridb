@@ -121,6 +121,19 @@ pub struct Health {
     /// granted, which is the ordinary state of a store standing alone and is
     /// not a value of zero.
     pub lease_remaining: Option<std::time::Duration>,
+    /// Reads that reached this node holding none of what they asked for
+    /// (`NotHeldHere`), since this process opened the store (G053 C6).
+    ///
+    /// A client routing well keeps this near zero; a number climbing says the
+    /// reads are aimed at the wrong node, which nothing else here shows.
+    pub not_held_here: u64,
+    /// Commits that waited for a majority of voters to hold them (G053 C6).
+    pub acknowledgement_waits: u64,
+    /// Of those, the ones answered `NotAcknowledgedInTime` — committed here,
+    /// not confirmed by a majority within one round.
+    pub acknowledgement_timeouts: u64,
+    /// The time those waits took, summed, so a scrape divides it by the count.
+    pub acknowledgement_waited: std::time::Duration,
 }
 
 impl Health {
@@ -216,6 +229,9 @@ pub struct Store {
     discarded: Arc<AtomicU64>,
     /// Leadership rounds stood since this process opened the store.
     campaigns: Arc<AtomicU64>,
+    /// `NotHeldHere` answers and majority waits since this process opened the
+    /// store, shared with every handle for the reason the counters above are.
+    tally: Arc<crate::tally::ClusterTally>,
     /// How many log records this process keeps where no statement said
     /// (ADR-0094 D2). Shared with every handle for the reason the counters
     /// beside it are.

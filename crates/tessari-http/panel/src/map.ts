@@ -78,7 +78,15 @@ interface Upstream {
 
 /** One follower this node has served, as `cluster.followers` reports it. */
 interface Follower {
+    readonly node?: unknown;
     readonly behind?: unknown;
+}
+
+/** One range's leader as the log recorded it, as `cluster.leaders` reports it. */
+interface Leader {
+    readonly range?: unknown;
+    readonly node?: unknown;
+    readonly epoch?: unknown;
 }
 
 /** What `INFO FOR NODE` answered, in the shape the map reads. */
@@ -92,6 +100,7 @@ export interface Seen {
         readonly campaigns?: unknown;
         readonly desired?: readonly string[] | null;
         readonly followers?: readonly Follower[];
+        readonly leaders?: readonly Leader[];
         readonly upstream?: Upstream | null;
         readonly peers?: readonly Peer[];
     };
@@ -243,6 +252,34 @@ function furthest(followers: readonly Follower[]): string | null {
     return most === null ? null : `${most} record(s)`;
 }
 
+/** One node id in the spelling every field compares by: no hyphens, lower case. */
+function bare(node: unknown): string | null {
+    return typeof node === "string" ? node.split("-").join("").toLowerCase() : null;
+}
+
+/**
+ * The ranges the log says `node` leads, each with the epoch it was decided
+ * under, or `null` when none — a claim about the log, never about who is alive.
+ */
+function leading(leaders: readonly Leader[], node: unknown): string | null {
+    const mine = bare(node);
+    if (mine === null) {
+        return null;
+    }
+    const ranges = leaders
+        .filter((one) => bare(one.node) === mine)
+        .map((one) => `${told(one.range)} (epoch ${told(one.epoch)})`);
+    return ranges.length === 0 ? null : ranges.join(", ");
+}
+
+/** Each follower and how many records it is short, or `null` when none has collected. */
+function behindEach(followers: readonly Follower[]): string | null {
+    const each = followers
+        .filter((one) => typeof one.behind === "number")
+        .map((one) => `${(bare(one.node) ?? "?").slice(0, 8)}… ${told(one.behind)} behind`);
+    return each.length === 0 ? null : each.join(", ");
+}
+
 /** What copies of the leader's state installed, or `null` before the first. */
 function copied(upstream: Upstream | null | undefined): string | null {
     if (typeof upstream?.copies !== "number" || upstream.copies === 0) {
@@ -272,6 +309,8 @@ export function draw(into: HTMLElement, seen: Seen): void {
                 String((cluster.followers ?? []).length),
             ),
             fact("furthest follower behind", furthest(cluster.followers ?? [])),
+            fact("each follower", behindEach(cluster.followers ?? [])),
+            fact("leads, as the log records", leading(cluster.leaders ?? [], seen.id)),
             // Absent on a node that follows nobody: `in sync` there would be a
             // state it has never been in.
             fact("sync with its upstream", cluster.upstream?.state ?? null),
@@ -307,6 +346,7 @@ export function draw(into: HTMLElement, seen: Seen): void {
                     fact("id", told(peer.node)),
                     fact("replicates", told(peer.replicates)),
                     fact("leads", told(peer.leads)),
+                    fact("leads, as the log records", leading(cluster.leaders ?? [], peer.node)),
                 ],
                 "peer",
                 {

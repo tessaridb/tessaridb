@@ -71,6 +71,8 @@ pub struct Stopping {
     feeds: AtomicUsize,
     answers: AtomicU64,
     refusals: AtomicU64,
+    redirects_settled: AtomicU64,
+    redirects_transient: AtomicU64,
 }
 
 impl Stopping {
@@ -178,6 +180,28 @@ impl Stopping {
     #[must_use]
     pub fn refusals(&self) -> u64 {
         self.refusals.load(Ordering::Relaxed)
+    }
+
+    /// Record one answer that sent the caller to another node (G053 C6):
+    /// `settled` when it names a leadership the caller may remember for the
+    /// range, transient when it names a node for this read alone. Counted by
+    /// each surface where it decides the redirect, beside [`Self::answered`].
+    pub fn redirected(&self, settled: bool) {
+        let counter = if settled {
+            &self.redirects_settled
+        } else {
+            &self.redirects_transient
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Redirects sent since this surface started, as `(settled, transient)`.
+    #[must_use]
+    pub fn redirects(&self) -> (u64, u64) {
+        (
+            self.redirects_settled.load(Ordering::Relaxed),
+            self.redirects_transient.load(Ordering::Relaxed),
+        )
     }
 
     /// Stage 2 — wait for in-flight requests, and say whether they finished.
@@ -623,6 +647,15 @@ mod tests {
             (3, 1),
             "a refusal was not counted as an answer"
         );
+    }
+
+    #[test]
+    fn a_redirect_is_counted_by_whether_the_caller_may_remember_it() {
+        let stopping = Stopping::new();
+        stopping.redirected(true);
+        stopping.redirected(false);
+        stopping.redirected(false);
+        assert_eq!(stopping.redirects(), (1, 2));
     }
 
     #[test]

@@ -62,6 +62,10 @@ pub struct Answer {
     /// redirect a client can act on, exactly as a `401` without a challenge is
     /// not a `401` a client can act on.
     pub location: Option<String>,
+    /// Whether the redirect in [`Self::location`] is settled — a leadership
+    /// the caller may remember — when there is one, for the surface's count
+    /// (G053 C6).
+    pub settled: Option<bool>,
     /// The strong tag of an answer that may be kept but must be asked about
     /// again before it is reused — the console's assets, whose names carry no
     /// hash of their bytes. Present means `ETag` plus `Cache-Control: no-cache`.
@@ -85,6 +89,7 @@ impl Answer {
             body: body.into_bytes(),
             kind: JSON,
             location: None,
+            settled: None,
             tag: None,
         }
     }
@@ -97,6 +102,7 @@ impl Answer {
             body: body.into_bytes(),
             kind,
             location: None,
+            settled: None,
             tag: None,
         }
     }
@@ -109,6 +115,7 @@ impl Answer {
             body,
             kind: OCTETS,
             location: None,
+            settled: None,
             tag: None,
         }
     }
@@ -503,6 +510,12 @@ pub(crate) fn failure(error: &Error) -> Answer {
     // a client has to parse out of an error message is not a redirect.
     if let Some((endpoint, _)) = elsewhere(error) {
         answer.location = Some(endpoint.to_owned());
+        // A write into a range another node leads names a leadership the caller
+        // may remember; a read beyond its bound names a node for this read.
+        answer.settled = Some(matches!(
+            error,
+            Error::Store(tessaridb::StoreError::WriteIsElsewhere { .. })
+        ));
     }
     answer
 }

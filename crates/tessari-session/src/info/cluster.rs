@@ -10,8 +10,8 @@ use crate::error::{Error, Result};
 use crate::session::Session;
 
 use super::{
-    described_consumer, described_failover, described_follower, described_replica, guarantees,
-    running_state,
+    described_consumer, described_failover, described_follower, described_leaders,
+    described_replica, guarantees, running_state,
 };
 
 impl Session<'_> {
@@ -128,6 +128,7 @@ impl Session<'_> {
                 ),
             ]))
         });
+        let leaders = described_leaders(&Catalog::new(transaction))?;
         let followers = self
             .store
             .follower_lag()?
@@ -216,6 +217,9 @@ impl Session<'_> {
                     // what was declared. Joining them would put a lag figure on
                     // a peer that has never asked for anything.
                     ("followers".to_owned(), Value::Array(followers)),
+                    // Each range's leader as the log recorded it, so an
+                    // operator reads who leads what without asking every node.
+                    ("leaders".to_owned(), leaders),
                     // The follower's own side (ADR-0094 D4): where this node
                     // stands against the peer it collects from. `null` on a
                     // node that has never collected nor copied, which is a

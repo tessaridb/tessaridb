@@ -193,6 +193,7 @@ impl Session<'_> {
     /// own, and never through the read's: under `VERSION` that one is the
     /// catalog as it stood, and a peer declared since would be invisible.
     pub(crate) fn not_held_here(&self, missing: &Missing) -> Result<Error> {
+        self.store.answered_not_held_here();
         Ok(missing.refusal(self.whole_holder(missing)?))
     }
 

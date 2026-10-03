@@ -95,6 +95,11 @@ fn a_single_node_is_its_own_majority_and_waits_for_nobody() {
         began.elapsed() < Duration::from_millis(150),
         "it waited for nobody"
     );
+    assert_eq!(
+        store.health().unwrap().acknowledgement_waits,
+        0,
+        "and counted none"
+    );
 }
 
 #[test]
@@ -105,6 +110,15 @@ fn a_write_held_by_a_majority_is_acknowledged() {
     session
         .run("CREATE t:1 = { a: 1 };")
         .unwrap_or_else(|why| panic!("one voter of two besides this node is a majority: {why}"));
+    // G053 C6: the wait is counted once, and it did not time out.
+    let health = store.health().unwrap();
+    assert_eq!(
+        (
+            health.acknowledgement_waits,
+            health.acknowledgement_timeouts
+        ),
+        (1, 0)
+    );
 }
 
 #[test]
@@ -124,6 +138,17 @@ fn a_write_no_voter_acknowledges_is_committed_and_said_so() {
         1,
         "the refusal says committed, and it is"
     );
+    // G053 C6: a timeout is a wait that ran out — counted as both, with the
+    // round it spent in the total.
+    let health = store.health().unwrap();
+    assert_eq!(
+        (
+            health.acknowledgement_waits,
+            health.acknowledgement_timeouts
+        ),
+        (1, 1)
+    );
+    assert!(health.acknowledgement_waited > Duration::ZERO);
 }
 
 #[test]
