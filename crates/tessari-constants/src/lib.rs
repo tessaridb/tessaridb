@@ -770,12 +770,13 @@ pub const SPATIAL_INDEX_CELLS_PER_RECORD: usize = 16;
 /// per level above it**, so the read's fixed cost is linear in this number while
 /// the candidates it saves are not.
 ///
-/// Sixteen, which is the record budget, and deliberately so until something is
-/// measured. Symmetry is the honest starting point when the only argument for
-/// asymmetry is that a query covering is cheaper — that says the number could be
-/// larger, not what it should be. The candidate-to-result ratio is instrumented
-/// precisely so this can be moved on evidence rather than on the intuition in
-/// this paragraph.
+/// Sixteen, measured (G058 C1, `benchmarks/2026-10-04-macos-aarch64-covering-budget.md`):
+/// over a skewed disk corpus and street, district and country boxes, budgets 4
+/// to 256 return the same records, and sixteen has the lowest street-level p99
+/// (0.59 ms; 2.9 ms at 8, 1.05 ms at 32) while staying within 3 % of the best
+/// p50 for the larger boxes, whose cost is the candidates they refine. Coarser
+/// reads many more entries per street query; finer pays a scan and a lookup per
+/// level for every extra cell.
 ///
 /// It is a bound and not a target, with the same guarantee: the covering keeps a
 /// coarser cell rather than dropping a finer one, so exhausting the budget costs
@@ -804,6 +805,16 @@ pub const SPATIAL_QUERY_CELLS: usize = 16;
 /// clever about. Larger wastes reads inside a dense cell that pruning would have
 /// skipped; smaller reinstates the deep chain this exists to cut.
 pub const SPATIAL_WALK_SUBTREE_ENTRIES: usize = 64;
+
+/// The most records a nearest-first walk of a spatial index measures before it
+/// gives the read to the scan (G058 C1).
+///
+/// Unit: records taken from the walk, each fetched, tested against the whole
+/// condition and measured exactly. Without a condition a walk takes about as
+/// many as it answers with; under a condition that the near records rarely meet
+/// it could take the whole table one seek at a time, which costs more than the
+/// scan it replaces. Past this many it declines, and the read says so.
+pub const SPATIAL_NEAREST_EXAMINATION_CAP: usize = 4_096;
 
 /// How many password verifications this process will run at once.
 ///

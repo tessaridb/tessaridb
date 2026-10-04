@@ -42,6 +42,7 @@ mod keys;
 mod latest;
 mod lent;
 mod nearest;
+mod nearest_place;
 mod ordered;
 mod partition;
 mod paths;

@@ -67,8 +67,7 @@ fn shape_at(function: Function, arguments: &[Value], at: usize, span: Span) -> R
     }
 }
 
-/// How far apart two shapes are, in metres along the ellipsoid, when at least
-/// one of them is a position.
+/// How far apart two shapes are, in metres along the ellipsoid.
 ///
 /// Between two positions it is the geodesic between them. Between a position and
 /// a larger shape it is the distance to the shape's **nearest point** — zero
@@ -76,9 +75,10 @@ fn shape_at(function: Function, arguments: &[Value], at: usize, span: Span) -> R
 /// answers with — which [`tessari_geo::distance_to`] finds without ever
 /// answering from a representative vertex.
 ///
-/// Two shapes that are **both** larger than a position are refused by name: the
-/// distance between them is the least over two sets of points, a different
-/// search, and not written yet.
+/// Between two shapes that are both larger than a position it is the least
+/// distance between a point of one and a point of the other — zero when they
+/// share a point — found by [`tessari_geo::distance_between`] to within
+/// [`tessari_geo::TOLERANCE_METRES`] (G058 C1).
 ///
 /// Two positions on opposite sides of the world answer `none`: the solution
 /// does not converge there, and the number it would otherwise return is wrong by
@@ -86,9 +86,8 @@ fn shape_at(function: Function, arguments: &[Value], at: usize, span: Span) -> R
 ///
 /// # Errors
 ///
-/// Returns [`Error::WrongArgument`] when an argument is not a geometry or when
-/// neither is a position, and [`Error::GeometryRefused`] when one is off the
-/// sphere.
+/// Returns [`Error::WrongArgument`] when an argument is not a geometry, and
+/// [`Error::GeometryRefused`] when one is off the sphere.
 pub(crate) fn separation(function: Function, arguments: &[Value], span: Span) -> Result<Value> {
     // An absence is unreachably far, not unknown — the same answer the vector
     // distances give and for the same reason: `NONE` sorts below every value, so
@@ -112,15 +111,7 @@ pub(crate) fn separation(function: Function, arguments: &[Value], span: Span) ->
         (Shape::Point(here), shape) | (shape, Shape::Point(here)) => {
             tessari_geo::distance_to(*here, shape)
         }
-        _ => {
-            return Err(Error::WrongArgument {
-                function,
-                at: 2,
-                expected: "a position (one of the two must be)",
-                found: arguments.get(1).map_or("nothing", larger_name),
-                span,
-            });
-        }
+        (one, other) => tessari_geo::distance_between(one, other),
     };
     Ok(metres.map_or(Value::None, |metres| Value::Number(Number::float(metres))))
 }

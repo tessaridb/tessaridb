@@ -223,6 +223,19 @@ impl Session<'_> {
                         ..Plan::new(AccessPath::Approximate).on(named)
                     });
                 }
+                // A nearest-first read under a condition: the spatial walk,
+                // asked here first because the read asks it first (G058 C1).
+                // Whether it settles within its cap is the read's own question.
+                if let Some(place) = closest(select)
+                    && let Some((index, _)) =
+                        self.index_serving_place(transaction, context, id, place.path)?
+                {
+                    return Ok(Plan {
+                        shape: Some("nearest"),
+                        index: Some(index.name.clone()),
+                        ..Plan::new(AccessPath::Ordered).on(named)
+                    });
+                }
                 // Asked before the candidates, because the read asks it before
                 // the candidates — and from the same function, so the two cannot
                 // come to disagree. As in the unconditioned case, whether the

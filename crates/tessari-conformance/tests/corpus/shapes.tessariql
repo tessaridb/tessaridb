@@ -161,9 +161,11 @@ SELECT * FROM places WHERE geo::intersects(at, geometry { type: 'Point', coordin
 SELECT * FROM zones WHERE geo::distance(z, geometry { type: 'Point', coordinates: [9.5, 5] }) > 0;
 --- expect: rows 1
 
---- case: a distance between two shapes larger than positions is refused by name
-SELECT geo::distance(z, geometry { type: 'Polygon', coordinates: [[[20, 20], [21, 20], [21, 21], [20, 20]]] }) AS far FROM zones;
---- expect: error WrongArgument
+--- case: two shapes larger than positions are as far apart as their nearest points
+# From 0.26.0-beta (G058 C1): each zone's nearest corner to the far triangle is
+# between one and two thousand kilometres from it, never a representative point.
+SELECT * FROM zones WHERE geo::distance(z, geometry { type: 'Polygon', coordinates: [[[20, 20], [21, 20], [21, 21], [20, 20]]] }) > 1000000 AND geo::distance(z, geometry { type: 'Polygon', coordinates: [[[20, 20], [21, 20], [21, 21], [20, 20]]] }) < 2000000;
+--- expect: rows 3
 
 --- case: only a shape with an interior covers any ground
 DEFINE COLLECTION ground;

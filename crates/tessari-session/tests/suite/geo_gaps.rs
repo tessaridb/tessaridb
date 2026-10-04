@@ -384,3 +384,50 @@ fn a_cell_is_asked_of_a_position_at_a_level_that_exists() {
         );
     });
 }
+
+/// G058 C1: a nearest-first read over areas and under a condition is walked by
+/// the spatial index — each record measured exactly and tested against the whole
+/// condition — and answers the scan's records in the scan's order.
+#[test]
+fn the_nearest_few_under_a_condition_and_over_areas_are_walked_and_answer_the_scan() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        world(&mut session);
+        for (longitude, latitude) in [(2.32, 48.865), (2.35, 48.81), (2.25, 48.9)] {
+            let here = point(longitude, latitude);
+            for condition in [
+                String::new(),
+                "WHERE kind = 'point' ".to_owned(),
+                format!("WHERE kind = 'point' AND geo::distance(at, {here}) > 800 "),
+            ] {
+                let read = |table: &str| {
+                    format!(
+                        "SELECT * FROM {table} {condition}ORDER BY geo::distance(at, {here}) LIMIT 5;"
+                    )
+                };
+                let outcomes = session.run(&read("served")).unwrap();
+                let outcome = outcomes.last().unwrap();
+                let plan = outcome.plan().unwrap();
+                assert_eq!(
+                    (plan.access, plan.shape),
+                    (tessari_session::AccessPath::Ordered, Some("nearest")),
+                    "{}: {condition}from ({longitude}, {latitude}) was not walked: {:?}",
+                    backend.name,
+                    outcome.notes()
+                );
+                let walked: Vec<RecordId> = outcome
+                    .records()
+                    .unwrap()
+                    .iter()
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                assert_eq!(
+                    walked,
+                    ids(&mut session, &read("bare")),
+                    "{}: {condition}from ({longitude}, {latitude})",
+                    backend.name
+                );
+            }
+        }
+    });
+}

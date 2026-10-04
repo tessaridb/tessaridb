@@ -408,22 +408,53 @@ fn a_distance_to_an_area_is_to_its_nearest_point_from_either_side() {
     assert_eq!(fields.get("far"), Some(&Value::Number(Number::float(0.0))));
 }
 
+/// G058 C1: two areas are measured to each other's nearest points — no further
+/// apart than their nearest corners, more than nothing, and nearer first.
 #[test]
-fn a_distance_between_shapes_larger_than_positions_is_refused_by_name() {
+fn a_distance_between_two_areas_is_between_their_nearest_points() {
     let store = store();
     let mut session = schemaless(&store);
-    place(&mut session, 1, "an area", square(0.0, 1.0));
-
-    let refusal = session
-        .run_with(
-            "SELECT geo::distance(shape, $there) AS far FROM places;",
-            &bound("there", Value::Geometry(square(3.0, 4.0))),
-        )
-        .expect_err("neither side is a position")
-        .to_string();
-    assert!(refusal.contains("geo::distance"), "{refusal}");
-    assert!(refusal.contains("position"), "{refusal}");
-    assert!(refusal.contains("polygon"), "{refusal}");
+    place(&mut session, 1, "far", square(0.0, 1.0));
+    place(&mut session, 2, "near", square(2.0, 2.5));
+    let read = |session: &mut Session<'_>, statement: &str| -> Vec<(String, f64)> {
+        session
+            .run_with(
+                statement,
+                &bound("there", Value::Geometry(square(3.0, 4.0))),
+            )
+            .unwrap()
+            .last()
+            .unwrap()
+            .records()
+            .unwrap()
+            .iter()
+            .map(|(id, value)| {
+                let Value::Object(fields) = value else {
+                    panic!("a record is an object")
+                };
+                let Some(Value::Number(far)) = fields.get("far") else {
+                    panic!("no distance in {fields:?}")
+                };
+                (id.to_string(), far.as_float().unwrap())
+            })
+            .collect()
+    };
+    let ranked = read(
+        &mut session,
+        "SELECT geo::distance(shape, $there) AS far FROM places ORDER BY far;",
+    );
+    assert_eq!(
+        ranked.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+        ["2", "1"]
+    );
+    // Corner to corner is a pair of points on each, so the least is no larger.
+    let corners = read(
+        &mut session,
+        "SELECT geo::distance(geometry { type: 'Point', coordinates: [1.0, 1.0] }, \
+         geometry { type: 'Point', coordinates: [3.0, 3.0] }) AS far FROM places LIMIT 1;",
+    );
+    let (_, far) = ranked[1];
+    assert!(far > 0.0 && far <= corners[0].1 + 1e-3, "{far} {corners:?}");
 }
 
 #[test]

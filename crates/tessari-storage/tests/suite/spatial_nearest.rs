@@ -126,12 +126,9 @@ impl Fixture {
         let mut placed = Vec::new();
         for (id, payload) in found {
             let record = tessari_encoding::decode_payload(&payload).unwrap();
-            let Some(Value::Geometry(Geometry::Point(position))) =
-                Path::field("at").resolve(&record)
-            else {
+            let Some(metres) = measured(target, &record) else {
                 continue;
             };
-            let metres = tessari_geo::distance(target, Snapped::of(*position).unwrap()).unwrap();
             placed.push((metres, id));
         }
         placed.sort_by(|(one, left), (other, right)| {
@@ -173,17 +170,63 @@ impl Fixture {
             .fold(f64::INFINITY, f64::min)
     }
 
-    /// What the walk answers, with what it cost.
+    /// What the walk answers, with what it cost: records taken from it in floor
+    /// order, each measured exactly, until as many are held as wanted and the
+    /// next floor is beyond the worst of them — the loop a reader runs over it.
+    /// `None` when the walk runs out first.
     fn by_index(&self, target: Snapped, wanted: usize) -> Option<(Vec<RecordId>, usize, usize)> {
         let transaction = self.begin();
-        let nearby = transaction
-            .records_by_place(&self.index, target, wanted)
-            .unwrap()?;
+        let mut walk = transaction.places_nearest(&self.index, target);
+        let mut held: Vec<(f64, RecordId)> = Vec::new();
+        loop {
+            let beyond = if held.len() >= wanted {
+                held.last().map_or(f64::INFINITY, |(metres, _)| *metres)
+            } else {
+                f64::INFINITY
+            };
+            let Some((floor, id)) = walk.next(&transaction, beyond).unwrap() else {
+                break;
+            };
+            let payload = transaction.get(&self.at_id(&id)).unwrap().unwrap();
+            let record = tessari_encoding::decode_payload(&payload).unwrap();
+            let metres = measured(target, &record).unwrap();
+            assert!(
+                floor <= metres,
+                "a floor above its record: {floor} > {metres} for {id:?}"
+            );
+            let at = held.partition_point(|(one, other)| {
+                one.total_cmp(&metres).then_with(|| other.cmp(&id)).is_lt()
+            });
+            held.insert(at, (metres, id));
+            if held.len() > wanted {
+                let edge = held[wanted.saturating_sub(1)].0;
+                held.retain(|(one, _)| *one <= edge);
+            }
+        }
+        if held.len() < wanted {
+            return None;
+        }
         Some((
-            nearby.rows.into_iter().map(|(id, _)| id).collect(),
-            nearby.entries,
-            nearby.expanded,
+            held.into_iter().map(|(_, id)| id).collect(),
+            walk.entries,
+            walk.expanded,
         ))
+    }
+
+    fn at_id(&self, id: &RecordId) -> RecordAddress {
+        RecordAddress::new(self.namespace, self.database, self.table, id.clone())
+    }
+}
+
+/// The distance from `target` to a record's shape — to its nearest point for a
+/// shape larger than a position — which is what "nearest" means here.
+fn measured(target: Snapped, record: &Value) -> Option<f64> {
+    let Some(Value::Geometry(geometry)) = Path::field("at").resolve(record) else {
+        return None;
+    };
+    match geometry {
+        Geometry::Point(position) => tessari_geo::distance(target, Snapped::of(*position).unwrap()),
+        other => tessari_geo::distance_to(target, &tessari_geo::Shape::of(other).unwrap()),
     }
 }
 
@@ -319,36 +362,29 @@ fn the_tie_group_at_the_bound_travels_with_the_answer() {
 }
 
 #[test]
-fn a_record_that_is_not_a_position_gives_the_read_up() {
-    // `geo::distance` takes positions, so a record holding a shape is an error in
-    // the statement — which the scan reports and a walk cannot. Answering the
-    // other records in distance order would be an index hiding a mistake, so the
-    // walk refuses and the caller scans.
+fn a_record_larger_than_a_position_is_ranked_by_its_nearest_point() {
+    // A path between the two points, nearer the target than the second: it is
+    // measured to its nearest point, which its stored box does not know, and
+    // ranked where measuring every record puts it (G058 C1).
     let fixture = Fixture::new();
     fixture.write_point("a", 0, 0);
     fixture.write_point("b", DEGREE, 0);
     fixture.write(
-        "an area",
+        "a path",
         Geometry::Line(vec![Position::new(0.5, 0.5), Position::new(0.6, 0.6)]),
     );
-    assert!(
-        fixture.by_index(at(0, 0), 3).is_none(),
-        "a stored box with extent is not a position and must not be ranked"
-    );
+    let (found, _, _) = fixture.by_index(at(0, 0), 3).unwrap();
+    assert_eq!(found, fixture.by_hand(at(0, 0), 3));
+    assert_eq!(found[1], RecordId::from("a path"));
 }
 
 #[test]
 fn a_shape_at_a_coarse_cell_is_seen_even_when_the_walk_is_descending() {
-    // The case above is too small to prove what it looks like it proves: three
-    // records fit in one subtree read, so the walk meets the area without ever
-    // splitting a cell. Descending is where it could miss one.
-    //
     // A record's covering sits at cells the size of the record, so a continent
     // occupies **coarse** cells — the very cells a descent passes *through*
     // rather than into. Reading only what lies below the cell it is standing on
-    // would step straight over it, and the read would then answer a tidy ten
-    // nearest while the scan reported the caller's mistake. That is an index
-    // changing what a read answers, which is the one thing an index may not do.
+    // would step straight over it, and the read would answer ten points while
+    // the continent, which runs through them, is nearer than all of them.
     let fixture = Fixture::new();
     let mut rolls = Rolls(0xc0a5_e11a_7c0a_11d5);
     let middle = at(10 * DEGREE, 45 * DEGREE);
@@ -357,14 +393,14 @@ fn a_shape_at_a_coarse_cell_is_seen_even_when_the_walk_is_descending() {
         let (longitude, latitude) = rolls.near(middle, 5 * DEGREE);
         fixture.write_point(&format!("p{number}"), longitude, latitude);
     }
+    // Through the middle of the cluster, so it is the nearest record of all.
     fixture.write(
         "a continent",
-        Geometry::Line(vec![Position::new(-20.0, 30.0), Position::new(40.0, 70.0)]),
+        Geometry::Line(vec![Position::new(-20.0, 40.0), Position::new(40.0, 50.0)]),
     );
-    assert!(
-        fixture.by_index(middle, 10).is_none(),
-        "the shape sits above the descent and must still stop the read"
-    );
+    let (found, _, _) = fixture.by_index(middle, 10).unwrap();
+    assert_eq!(found, fixture.by_hand(middle, 10));
+    assert!(found.contains(&RecordId::from("a continent")), "{found:?}");
 }
 
 #[test]

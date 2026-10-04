@@ -58,20 +58,20 @@ use crate::shape::Shape;
 /// Smaller means more halving and fewer pieces settled by the local search;
 /// 1/64 keeps the settled piece's bend negligible against its distance while the
 /// number of pieces surviving at each halving stays near a dozen.
-const SETTLE_FRACTION: f64 = 1.0 / 64.0;
+pub(crate) const SETTLE_FRACTION: f64 = 1.0 / 64.0;
 
 /// How short a settling interval gets before the search stops, in metres.
 ///
 /// A grid unit is about a tenth of a millimetre; locating the nearest point more
 /// finely than the positions themselves are held would be precision nobody has.
-const SETTLED_METRES: f64 = 1e-4;
+pub(crate) const SETTLED_METRES: f64 = 1e-4;
 
 /// A bound on golden-section steps, reached only if [`SETTLED_METRES`] is not.
 ///
 /// Each step keeps 0.618 of the interval, so a hundred steps shrink any edge on
 /// the planet far below a grid unit; the bound exists so that a non-finite
 /// length cannot make the loop endless.
-const SETTLE_STEPS: u32 = 100;
+pub(crate) const SETTLE_STEPS: u32 = 100;
 
 /// The distance in metres from `from` to the nearest point of `shape`.
 ///
@@ -153,7 +153,7 @@ pub fn distance_to(from: Snapped, shape: &Shape) -> Option<f64> {
 
 /// A stretch of one edge: the parameters `from`..`to` along it.
 #[derive(Clone, Copy)]
-struct Piece {
+pub(crate) struct Piece {
     start: Position,
     end: Position,
     from: f64,
@@ -161,7 +161,7 @@ struct Piece {
 }
 
 impl Piece {
-    const fn whole(start: Position, end: Position) -> Self {
+    pub(crate) const fn whole(start: Position, end: Position) -> Self {
         Self {
             start,
             end,
@@ -170,19 +170,24 @@ impl Piece {
         }
     }
 
-    fn middle(&self) -> f64 {
+    pub(crate) fn middle(&self) -> f64 {
         self.from + (self.to - self.from) / 2.0
     }
 
     /// The point `t` of the way along the whole edge.
-    fn at(&self, t: f64) -> Position {
+    pub(crate) fn at(&self, t: f64) -> Position {
         Position::new(
             self.start.longitude + t * (self.end.longitude - self.start.longitude),
             self.start.latitude + t * (self.end.latitude - self.start.latitude),
         )
     }
 
-    fn halves(&self) -> [Self; 2] {
+    /// The parameters this piece spans along its edge.
+    pub(crate) const fn span(&self) -> (f64, f64) {
+        (self.from, self.to)
+    }
+
+    pub(crate) fn halves(&self) -> [Self; 2] {
         let middle = self.middle();
         [
             Self {
@@ -197,7 +202,7 @@ impl Piece {
     }
 
     /// Halving has reached the resolution of the parameter itself.
-    fn is_indivisible(&self) -> bool {
+    pub(crate) fn is_indivisible(&self) -> bool {
         let middle = self.middle();
         middle <= self.from || middle >= self.to
     }
@@ -217,7 +222,7 @@ impl Piece {
     }
 
     /// An upper bound on this piece's length along the ellipsoid, in metres.
-    fn length_bound(&self) -> f64 {
+    pub(crate) fn length_bound(&self) -> f64 {
         let share = self.to - self.from;
         let across = ((self.end.latitude - self.start.latitude) * share).to_radians();
         let along = ((self.end.longitude - self.start.longitude) * share).to_radians();

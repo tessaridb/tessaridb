@@ -5879,9 +5879,15 @@ search. The answer is always a distance to a point that is on the shape — neve
 corner chosen in advance, which is right for some positions and wrong by
 kilometres for others.
 
-Between **two** shapes that are both larger than a position the nearest pair of
-points is a different search, and it is refused by name rather than answered
-from a representative point of each.
+Between **two** shapes that are both larger than a position (from `0.26.0-beta`)
+the answer is the least distance between a point of one and a point of the
+other — zero when they share a point, decided by the same exact rule
+`geo::intersects` answers with. It is found the same way: the edges of one are
+cut into pieces, a piece is dropped once a floor proves nothing on it can be
+nearer, and the survivors are settled by a local search, so the figure is a
+distance between two actual points and never a corner chosen in advance. It is
+at most a millimetre above the true least distance; very long edges passing far
+apart close to a pole are where the local search is weakest.
 
 **There is no distance in degrees, anywhere.** Not exposed, not labelled, not
 behind a flag. A function returning degrees is a function somebody reads as
@@ -6032,11 +6038,19 @@ field is not that. `SELECT name FROM places ORDER BY geo::distance(shape, $here)
 LIMIT 3` keeps its bound, because the ordering stage reads the source record
 beneath the projection for a key naming a field the projection did not offer.
 
-The walk ranks **positions**. A record holding a path or an area is measured to
-its nearest point, which its stored box does not know, so the walk hands the read
-to the scan when it reaches one — the answer is the scan's either way, and a
-table holding areas is ordered by the scan. For the same reason a query shape
-larger than a position is measured by the scan.
+The walk takes records in the order of a **floor** — the distance to the record's
+stored box, which nothing in it can be nearer than — and measures each one it
+takes by the statement's own `geo::distance`, so a path or an area is ranked by
+its nearest point exactly as the scan ranks it (from `0.26.0-beta`; before, a
+table holding areas was ordered by the scan). Under a `WHERE` the walk tests the
+whole condition on each record it takes and keeps walking until it holds as many
+as the read wants (also from `0.26.0-beta`). It stops once the next floor is
+beyond the worst record it holds, and gives the read to the scan — with the note
+`fell-back` — when it would have to take more than 4 096 records, when the index
+holds anything near the query position's antipode (where a distance does not
+converge and answers `none`, which sorts first), or when it runs out before the
+bound is filled. A query shape larger than a position is still measured by the
+scan.
 
 #### Within a distance
 
@@ -6101,11 +6115,10 @@ number from 0 to 32.
 
 #### What is not there yet
 
-There is no measured tuning of how finely a query is covered — the budget is a
-declared constant, and the candidate-to-result ratio the store measures is what
-will move it. A nearest-first read under a `WHERE` is still a scan, and so is one
-over a table holding paths or areas. There is no distance between two shapes
-that are both larger than positions.
+A nearest-first read **from** a shape larger than a position is still a scan.
+How finely a query box is covered — sixteen cells — was measured on a skewed
+corpus at three query sizes and is recorded beside the engine
+(`benchmarks/2026-10-04-macos-aarch64-covering-budget.md`).
 
 ### Ranking
 
