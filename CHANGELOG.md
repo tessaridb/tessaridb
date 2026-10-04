@@ -1,16 +1,62 @@
 # Changelog
 
-Versions before 1.0 do not promise compatibility with each other. The query
-language, the wire format and the on-disk format may each change in any release,
-and **there is no migration between versions** — a store written by one version
-is not guaranteed to open under the next. Treat every upgrade as a fresh store
-until this file says otherwise.
+Versions before 1.0 do not promise compatibility with each other in the query
+language or the wire format; either may change in any release. The **on-disk
+format is held** from `0.27.0-beta`: a store written by `0.22.0-beta` or any
+release since opens under a newer one and reads back the same, a store from a
+newer format is refused, and going back to an older build is not promised.
+Before `0.22.0-beta`, treat every upgrade as a fresh store.
 
 The three numbers a pre-release carries are never reused by the release that
 follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 `0.0.1`. That is what lets a backup written by a pre-release be told apart from
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
+
+## 0.27.0-beta — 2026-10-04
+
+A storage format that holds across versions (G059).
+
+### Upgrade
+
+- **Nothing to do.** The on-disk format is unchanged (format 5); a store written by
+  `0.26.0-beta` opens as it is, and so does one written by `0.22.0-beta` or any
+  release between — each of those releases' stores is now opened by the tests and
+  must read back what the build that wrote it answered.
+
+### Added
+
+- **The on-disk format is promised to hold** from `0.22.0-beta` forward: a store a
+  released build wrote opens under a newer one and reads back the same, indexes
+  included, with any older layout rewritten at open where it must be. Proven
+  against a store each of `0.22.0-beta` … `0.26.0-beta` wrote, kept in the
+  repository with that build's own answers. Going back to an older build is not
+  promised.
+  <!-- landed: migration-between-versions -->
+- **A store holding data and no format version is refused** at open
+  (`UnstampedStore`, naming the first keyspace that holds data) and left
+  untouched, rather than being stamped as new and written over.
+- **The written format is held to the code.** `docs/key-grammar.md` and
+  `docs/value-system.md` are read by a test and compared, value by value, with
+  every byte the code gives a meaning to — key kinds, record-id, index-value and
+  payload tags, number kinds, shapes, range bounds, value flags, system tables,
+  codec and format versions. It found the documents four places behind; they now
+  carry the value flags (§7.1), the system tables (§9.1), the format versions
+  (§10) and the payload sub-tags (§5.1–5.3). A digest of those values is pinned
+  beside the format version, so changing one without moving the version fails.
+
+### Changed
+
+- **A write the engine could not make durable stops the store.** When a write
+  that files a log record fails with an I/O error, corruption or an internal
+  failure, the store takes no more writes until it is reopened and recovers from
+  its log, even if the device answers the next one: after a failed sync the bytes
+  it covered may be gone while the cache marks them clean. Later writes are
+  refused as `lifecycle`, naming the failure (`Stopped`); reads still answer. A
+  busy, conflict or validation refusal does not stop it. Proven alongside a
+  hundred seeded kills of four transactional writers (and ten kills during
+  recovery) with nothing acknowledged lost and no transaction torn, and a flipped
+  byte in a sorted file refused as `corruption`.
 
 ## 0.26.0-beta — 2026-10-04
 
