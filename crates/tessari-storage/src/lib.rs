@@ -58,6 +58,7 @@ mod ordering;
 mod pruning;
 mod reclaim;
 mod retention;
+mod rollup_states;
 mod running;
 mod sampled_shards;
 mod schema;

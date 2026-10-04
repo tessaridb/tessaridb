@@ -5,7 +5,8 @@
 //!
 //! A batch never adds a delta to a stored row. It finds which part of the view
 //! a batch of source changes can have touched — the changed records for a view
-//! that answers one row per record, the whole view otherwise — and asks the
+//! that answers one row per record, the groups they left and joined for a
+//! grouped one (`groups`), the whole view otherwise — and asks the
 //! ordinary read engine for that part again, in the same transaction that
 //! writes it. The rows are therefore what `SELECT … VERSION s` answers at the
 //! version the batch states, by construction: there is no second evaluator to
@@ -20,6 +21,7 @@
 //! row recomputed at the snapshot does not reflect it, so consuming it here
 //! would lose it.
 
+mod groups;
 mod shape;
 
 use std::collections::BTreeSet;
@@ -43,9 +45,9 @@ pub(crate) use shape::{Shape, Understood};
 /// snapshot is reached.
 const FEED_PAGE: usize = 1_000;
 
-/// How many changed records a per-record view recomputes one by one before a
-/// batch recomputes it whole instead — past this a single read of the view is
-/// cheaper than as many record reads.
+/// How many changed records a per-record or grouped view recomputes by record
+/// or by group before a batch recomputes it whole instead — past this a single
+/// read of the view is cheaper than as many record reads.
 const RECOMPUTE_WHOLE_PAST: usize = 10_000;
 
 /// How long an idle view's state may go unwritten before a batch advances its
@@ -137,7 +139,7 @@ impl Session<'_> {
     /// Fill a just-declared materialized view in the declaring transaction:
     /// its whole read, and a state stating the transaction's snapshot.
     pub(crate) fn build_view(&self, transaction: &mut Transaction<'_>, kept: &Kept) -> Result<()> {
-        self.recompute_whole(transaction, kept)?;
+        self.recompute_all(transaction, kept)?;
         let snapshot = transaction.snapshot();
         let positions = self.positions_after(kept, snapshot, &[])?;
         transaction.put_view_state(
@@ -146,6 +148,7 @@ impl Session<'_> {
                 version: snapshot,
                 positions,
                 refreshed: now_millis(),
+                by_group: matches!(kept.understood.shape, Shape::Grouped),
             },
         )?;
         Ok(())
@@ -170,7 +173,11 @@ impl Session<'_> {
         let mut feed = Merged::new(positions, Watch::table(kept.source));
         let mut changed: BTreeSet<RecordId> = BTreeSet::new();
         let mut applied = 0_usize;
-        let mut whole = !matches!(kept.understood.shape, Shape::PerRecord);
+        let by_group = matches!(kept.understood.shape, Shape::Grouped);
+        // A grouped view whose rows were written before they were kept by group
+        // has neither group keys nor a membership map: rebuilt whole, once.
+        let rebuild = by_group && !state.by_group;
+        let mut whole = matches!(kept.understood.shape, Shape::Whole) || rebuild;
         loop {
             // A page can hold nothing of the source and still be followed by
             // more, so the end is where the feed stops moving, not an empty page.
@@ -193,12 +200,14 @@ impl Session<'_> {
             }
         }
         let now = now_millis();
-        if applied == 0 && now.saturating_sub(state.refreshed) < IDLE_REFRESH_MILLIS {
+        if applied == 0 && !rebuild && now.saturating_sub(state.refreshed) < IDLE_REFRESH_MILLIS {
             return Ok(None);
         }
-        if applied > 0 {
+        if applied > 0 || rebuild {
             if whole {
-                self.recompute_whole(transaction, kept)?;
+                self.recompute_all(transaction, kept)?;
+            } else if by_group {
+                self.recompute_groups(transaction, kept, &changed)?;
             } else {
                 for id in &changed {
                     self.recompute_record(transaction, kept, id)?;
@@ -211,6 +220,7 @@ impl Session<'_> {
                 version: snapshot,
                 positions: feed.positions().to_vec(),
                 refreshed: now,
+                by_group,
             },
         )?;
         Ok(Some(applied))
@@ -236,6 +246,15 @@ impl Session<'_> {
             positions.push((log, at));
         }
         Ok(positions)
+    }
+
+    /// Recompute the whole view, in the form its shape keeps.
+    fn recompute_all(&self, transaction: &mut Transaction<'_>, kept: &Kept) -> Result<()> {
+        if matches!(kept.understood.shape, Shape::Grouped) {
+            self.recompute_groups_whole(transaction, kept)
+        } else {
+            self.recompute_whole(transaction, kept)
+        }
     }
 
     /// Replace every stored row with the read's whole answer.

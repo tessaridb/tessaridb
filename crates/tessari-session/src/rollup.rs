@@ -186,6 +186,8 @@ impl Session<'_> {
             series.rollups.retain(|held| held.table != table);
             Catalog::new(transaction).set_series(source, series)?;
         }
+        // The exact sums kept beside its rows go with them (Q-927).
+        transaction.forget_rollup_states(table)?;
         Catalog::new(transaction).drop_table(table)?;
         Ok(Outcome::Done)
     }

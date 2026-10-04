@@ -16,12 +16,12 @@ use tessari_session::{Error, Outcome, Session, maintain_views};
 use tessari_storage::Store;
 use tessari_types::{Number, RecordId, Value};
 
-fn store() -> Store {
+pub(super) fn store() -> Store {
     let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
     Store::open(backend).unwrap()
 }
 
-fn ready(store: &Store) -> Session<'_> {
+pub(super) fn ready(store: &Store) -> Session<'_> {
     let mut session = Session::new(store);
     session
         .run(
@@ -42,7 +42,7 @@ fn ready(store: &Store) -> Session<'_> {
     session
 }
 
-fn records(session: &mut Session<'_>, script: &str) -> Vec<(RecordId, Value)> {
+pub(super) fn records(session: &mut Session<'_>, script: &str) -> Vec<(RecordId, Value)> {
     let outcomes = session.run(script).unwrap();
     outcomes.last().unwrap().records().unwrap().to_vec()
 }
@@ -76,7 +76,7 @@ fn number(fields: &std::collections::BTreeMap<String, Value>, name: &str) -> i64
 /// The view's rows against its read at the version it states. A per-record
 /// view keeps the source identities, so they are compared too; any other view
 /// keeps positions, so its values are compared in order.
-fn equals_its_read(session: &mut Session<'_>, view: &str, read: &str, keyed: bool) {
+pub(super) fn equals_its_read(session: &mut Session<'_>, view: &str, read: &str, keyed: bool) {
     let version = number(&kept(session, view), "version");
     let stored = records(session, &format!("SELECT * FROM {view};"));
     let expanded = records(session, &format!("{read} VERSION {version};"));

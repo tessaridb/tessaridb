@@ -4779,7 +4779,12 @@ delete recomputes its window from the raw records.
 
 It keeps `count`, `sum`, `min` and `max` — the folds that merge exactly from the
 row alone. A `mean` is refused: keep `sum` and `count` and divide, which is
-exact. Declaring a rollup fills it from the series already written, in a second
+exact. A `sum` over floats is the exact total rounded once, the same bits a
+`GROUP BY` over the raw window answers however the records arrived: from
+`0.26.0-beta` the row's exact sum is kept beside it for the window its key last
+wrote, and an insert into another window that already has a row recomputes that
+row from the raw records instead (before, a run of inserts kept a running
+rounded total). Declaring a rollup fills it from the series already written, in a second
 commit after the declaration's, which is why `DEFINE ROLLUP` runs outside
 `BEGIN … COMMIT`. A write to the series that was already under way when the
 rollup was declared is refused with `Conflict` and succeeds on retry, folded in.
@@ -7185,7 +7190,9 @@ for the views over it.
 patch a stored row: it opens one transaction, collects the source changes up to
 that transaction's snapshot, and asks the read engine again for the part they can
 have touched — the changed records, for a view that answers one row per record;
-the whole read, for one that groups, folds, orders, bounds or splits. Rows and
+the groups those records left and joined, for one that groups by `GROUP BY` and
+neither orders, bounds nor splits its groups; the whole read, for anything else
+that folds, orders, bounds or splits. Rows and
 version are written in the same commit. So `SELECT * FROM big_orders` answers what
 `SELECT n, total FROM orders WHERE total > 30 VERSION 812` answers, record for
 record, where 812 is the `version` `INFO FOR TABLE` reports.
@@ -7211,9 +7218,22 @@ the source, and one who may read only some of its fields is refused
 after the fact. Nothing but its maintainer writes it, and `DROP VIEW` takes its
 rows and its state.
 
-**What it costs.** A per-record view recomputes one record per change; any other
-recomputes its whole read per batch that saw a change, which is the price of an
-answer that is always exactly its read. Its rows are a node's writes like any
+**A grouped view's row is its group.** From `0.26.0-beta` a view that groups by
+`GROUP BY` keeps each group's row under the group key's order-preserving bytes
+(`kept:0x…`) rather than under its position, so `SELECT * FROM` it answers in the
+read's group order and a row keeps its identity while other groups come and go.
+To know which group a changed record **left** — the change feed carries no old
+value — it keeps a membership map beside its rows, written in the same commit. A
+grouped view declared before `0.26.0-beta` is rebuilt this way on its first
+maintenance pass after the upgrade, which is when its row identities change.
+
+**What it costs.** A per-record view recomputes one record per change, and a
+grouped view the groups its changes touched — 50 000 records in 500 groups, one
+change per batch, on disk: 51.5 → 5.1 ms per batch at the median, about one
+synced commit. The membership map is two small rows per source record, paid
+when the view is declared (51 → 630 ms for those 50 000) and on every change
+after. Any other view recomputes its whole read per batch that saw a change,
+which is the price of an answer that is always exactly its read. Its rows are a node's writes like any
 other: they travel in the log, a follower holds what its leader wrote, and a
 failover moves the maintenance with the leadership.
 

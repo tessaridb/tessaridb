@@ -199,3 +199,87 @@ fn what_a_rollup_cannot_keep_or_be_asked_is_refused() {
         .run("DROP ROLLUP hourly; DROP SERIES readings;")
         .unwrap();
 }
+
+/// A float `sum` kept one insert at a time answers the exact total, as the
+/// recomputation does (ADR-0114, Q-927): the row carries the exact state, not
+/// the rounded total re-entered as one value.
+#[test]
+fn a_float_sum_kept_insert_by_insert_is_the_exact_total() {
+    let store = store();
+    let mut session = opened(&store);
+    session.run(ROLLUP).unwrap();
+    // 1e16 + 1.0 rounds back to 1e16, so a running rounded total loses every
+    // 1.0 and ends at 0 where the exact total is 4.
+    for v in ["1e16", "1.0", "1.0", "1.0", "1.0", "-1e16"] {
+        session
+            .run(&format!(
+                "CREATE readings = {{ sensor: 'f', v: {v}, at: datetime '2026-09-29T10:00:00Z' }};"
+            ))
+            .unwrap();
+    }
+    let kept = rows(&mut session, "SELECT * FROM hourly;");
+    let (_, row) = kept.iter().next().unwrap();
+    assert_eq!(row["total"], Value::from(4.0_f64), "{row:?}");
+    assert_eq!(kept, rows(&mut session, RECOMPUTED));
+    // And one more insert into the same window keeps it exact.
+    session
+        .run("CREATE readings = { sensor: 'f', v: 0.5, at: datetime '2026-09-29T10:30:00Z' };")
+        .unwrap();
+    let kept = rows(&mut session, "SELECT * FROM hourly;");
+    assert_eq!(kept.values().next().unwrap()["total"], Value::from(4.5_f64));
+    assert_eq!(kept, rows(&mut session, RECOMPUTED));
+    // The key's writes move on to the next hour, and then one arrives late for
+    // the first: its row is no longer the one whose state is kept.
+    for v in ["1e16", "1.0", "-1e16"] {
+        session
+            .run(&format!(
+                "CREATE readings = {{ sensor: 'f', v: {v}, at: datetime '2026-09-29T11:00:00Z' }};"
+            ))
+            .unwrap();
+    }
+    for v in ["1e16", "1.0", "1.0", "-1e16"] {
+        session
+            .run(&format!(
+                "CREATE readings = {{ sensor: 'f', v: {v}, at: datetime '2026-09-29T10:45:00Z' }};"
+            ))
+            .unwrap();
+    }
+    let kept = rows(&mut session, "SELECT * FROM hourly;");
+    let totals: Vec<&Value> = kept.values().map(|row| &row["total"]).collect();
+    assert_eq!(totals, [&Value::from(6.5_f64), &Value::from(1.0_f64)]);
+    assert_eq!(kept, rows(&mut session, RECOMPUTED));
+}
+
+#[test]
+fn dropping_a_rollup_takes_its_exact_sums() {
+    use sha2::{Digest, Sha256};
+
+    let store = store();
+    let mut session = opened(&store);
+    session.run(ROLLUP).unwrap();
+    session
+        .run("CREATE readings = { sensor: 's0', v: 1.5, at: datetime '2026-09-29T10:00:00Z' };")
+        .unwrap();
+    let rollup = {
+        let mut transaction = store.begin().unwrap();
+        let catalog = tessari_storage::Catalog::new(&mut transaction);
+        let namespace = catalog.namespace_id("t").unwrap().unwrap();
+        let database = catalog.database_id(namespace, "d").unwrap().unwrap();
+        let rollup = catalog
+            .table_id(namespace, database, "hourly")
+            .unwrap()
+            .unwrap();
+        transaction.rollback();
+        rollup
+    };
+    // The key's state is kept under a digest of the key.
+    let key = Sha256::digest(tessari_encoding::encode_payload(&Value::from("s0")).into_bytes());
+    let kept = |store: &Store| {
+        let transaction = store.begin().unwrap();
+        transaction.rollup_state(rollup, &key[..16]).unwrap()
+    };
+    // Pinned before the drop, so the absence after it is not vacuous.
+    assert!(kept(&store).is_some());
+    session.run("DROP ROLLUP hourly;").unwrap();
+    assert_eq!(kept(&store), None);
+}

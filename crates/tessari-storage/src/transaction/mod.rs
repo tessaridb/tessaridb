@@ -34,6 +34,7 @@ mod latest;
 mod lifecycle;
 mod nearest_place;
 mod ordered;
+mod prefixed;
 mod retention;
 mod scan;
 mod search;

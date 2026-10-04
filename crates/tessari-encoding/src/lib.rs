@@ -69,6 +69,7 @@ pub use modified_key::ModifiedKey;
 pub use node::{BUILD_VERSION, Membership, NODE_ID_LEN, NodeIdentity, NodeVersion, Roles};
 pub use order::{KeyReader, KeyWriter};
 pub use payload::{decode as decode_payload, encode as encode_payload};
+pub use record_id::{decode_record_id, encode_record_id};
 pub use spatial_keys::{SpatialExtent, SpatialIndexKey};
 pub use topic_key::{TopicBytesKey, TopicEntryKey, TopicHeadKey, TopicOffsetKey};
 pub use transaction_key::{

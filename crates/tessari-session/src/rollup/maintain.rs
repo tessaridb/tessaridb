@@ -6,6 +6,8 @@
 //! the row is written in the transaction that wrote the raw record, so there is
 //! no moment at which the two disagree.
 
+mod exact;
+
 use std::collections::BTreeMap;
 
 use sha2::{Digest, Sha256};
@@ -245,13 +247,34 @@ impl Session<'_> {
                     let Some((window, key)) = place(rollup, &held.time, record) else {
                         continue;
                     };
-                    let row = self.stored_row(transaction, &rows, rollup, window, &key, span)?;
-                    let mut row = match row {
-                        Some(existing) => existing,
-                        None => Row::new(rollup, window, key),
-                    };
-                    row.offer(rollup, record)?;
-                    self.keep_row(transaction, &rows, rollup, row, span)?;
+                    let row =
+                        match self.stored_row(transaction, &rows, rollup, window, &key, span)? {
+                            None => Some(Row::new(rollup, window, key.clone())),
+                            Some(existing) if !exact::has_sums(rollup) => Some(existing),
+                            // A sum is folded into from its exact state, never from
+                            // the rounded total the row shows (Q-927).
+                            Some(mut existing) => {
+                                let kept = transaction
+                                    .rollup_state(rollup.table, &exact::state_key(&key))?;
+                                existing
+                                    .take_sums(rollup, kept.as_ref())?
+                                    .then_some(existing)
+                            }
+                        };
+                    match row {
+                        Some(mut row) => {
+                            row.offer(rollup, record)?;
+                            self.keep_row(transaction, &rows, rollup, row, span)?;
+                        }
+                        None => self.recompute_row(
+                            transaction,
+                            (address, &rows),
+                            rollup,
+                            &held.time,
+                            (window, key),
+                            span,
+                        )?,
+                    }
                 }
                 (old, new) => {
                     let mut touched = BTreeMap::new();
@@ -418,6 +441,13 @@ impl Session<'_> {
             rows.table,
             row_identity(row.window, &row.key),
         );
+        if exact::has_sums(rollup) {
+            transaction.put_rollup_state(
+                rollup.table,
+                &exact::state_key(&row.key),
+                &row.sums_state(rollup),
+            );
+        }
         self.put_engine_record(transaction, at, row_value(row, rollup), span)
     }
 }
