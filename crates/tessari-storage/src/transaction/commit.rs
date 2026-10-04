@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use tessari_constants::{COMMIT_BACKOFF_CEILING, COMMIT_BACKOFF_STEP, MAX_COMMIT_ATTEMPTS};
 use tessari_encoding::{CausalStamp, LogId, LogRecord, Mutation, RecordValue, StampedValue};
-use tessari_types::{Epoch, Reach, Sequence, ShardId, TableId};
+use tessari_types::{Epoch, NamespaceId, Reach, Sequence, ShardId, TableId};
 
 use super::{RecordAddress, Transaction};
 use crate::catalog::ShardMap;
@@ -720,11 +720,20 @@ impl Transaction<'_> {
     ///
     /// # What it costs a settled record
     ///
-    /// One scan of that record's versions per written address, bounded by the
-    /// versions above the reclaim floor. Asked of the addresses this transaction
-    /// writes and of nothing else. The table's declaration is read only after
-    /// two survivors have been found, so a settled record never reaches the
-    /// catalog for it.
+    /// Nothing, outside a namespace that admits two writers. A second surviving
+    /// version has one producer — a record applied from another writer's stream
+    /// where the namespace's class admits two writers (`Store::apply`) — and a
+    /// namespace's class is set when it is defined and never altered, so a
+    /// record anywhere else has exactly one survivor and its versions are not
+    /// read. That matters because a record can hold many: the one a table's
+    /// generated identities are counted in is rewritten by every insert, and
+    /// reading all its versions made a run of inserts quadratic (G058, Q-912's
+    /// measurement). Asked once per namespace this transaction writes.
+    ///
+    /// Inside one, one scan of the record's versions per written address — all
+    /// it still holds, which on a store that reclaims is those above the
+    /// reclaim floor. The table's declaration is read only after two survivors
+    /// have been found, so a settled record never reaches the catalog for it.
     ///
     /// # Errors
     ///
@@ -733,7 +742,21 @@ impl Transaction<'_> {
     /// declaration cannot be read.
     fn refuse_a_contested_record(&self) -> Result<u64> {
         let mut discarded = 0_u64;
+        let mut two_writers: BTreeMap<NamespaceId, bool> = BTreeMap::new();
         for address in self.writes.keys() {
+            let admits = match two_writers.get(&address.namespace) {
+                Some(admits) => *admits,
+                None => {
+                    let admits = self
+                        .store
+                        .admits_two_writers(Reach::Namespace(address.namespace))?;
+                    two_writers.insert(address.namespace, admits);
+                    admits
+                }
+            };
+            if !admits {
+                continue;
+            }
             let surviving = self.surviving_versions(address)?;
             let (Some((ours, our_stamp)), Some((theirs, their_stamp))) =
                 (surviving.first(), surviving.get(1))
