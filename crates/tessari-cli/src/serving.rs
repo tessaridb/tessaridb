@@ -1,12 +1,17 @@
 //! Serving: binding the surfaces, hosting them and the node's own work on the one
 //! runtime, and stopping them in order.
 
+mod announcing;
+mod cluster;
+
 use crate::arguments::Serving;
 use crate::greeting_round::greeting;
 use crate::housekeeping::keep_house;
 use crate::peers::Peering;
 use crate::session::Ended;
 use crate::{bootstrap, consumers, runtime, shutdown, supervise};
+use announcing::announce;
+use cluster::join_the_cluster;
 use tessaridb::Db;
 
 /// How long an unseal lasts, when `--unseal-for` does not say (ADR-0092 D4).
@@ -133,70 +138,7 @@ pub(crate) fn serve(
     // alike, which is why it is set on the store's handle and not on a surface.
     // A node with no peers has nobody to ask and refuses as it always has.
     if let Some(surface) = &peers {
-        let me = db
-            .store()
-            .node_identity()
-            .map_err(|why| format!("this node cannot say who it is: {why}"))?
-            .id;
-        let speaking = std::sync::Arc::downgrade(&db);
-        let gathering = tessari_wire::Gathering::new(
-            std::sync::Arc::clone(&db),
-            me,
-            surface.keys.clone(),
-            std::sync::Arc::clone(&surface.routing),
-            Box::new(move || {
-                speaking
-                    .upgrade()
-                    .ok_or(tessari_wire::GreetingUnavailable::Stopping)
-                    .and_then(|db| greeting(&db).map_err(tessari_wire::GreetingUnavailable::Store))
-            }),
-        );
-        db.gather_through(std::sync::Arc::new(gathering));
-        // Every session on every surface knows who leads and where its peers
-        // are, so a read HTTP cannot answer here names — or is carried to — the
-        // node that can (Q-863). Spelled with the concrete type for the unsizing.
-        db.among(std::sync::Arc::<tessari_wire::Published>::clone(
-            &surface.routing,
-        ));
-        // And one sign-in budget for the whole cluster, held by the store
-        // line's leader (ADR-0108 D5), so N nodes are not N allowances.
-        let speaking = std::sync::Arc::downgrade(&db);
-        db.budget_through(std::sync::Arc::new(tessari_wire::SharedBudget::new(
-            me,
-            surface.keys.clone(),
-            std::sync::Arc::clone(&surface.routing),
-            Box::new(move || {
-                speaking
-                    .upgrade()
-                    .ok_or(tessari_wire::GreetingUnavailable::Stopping)
-                    .and_then(|db| greeting(&db).map_err(tessari_wire::GreetingUnavailable::Store))
-            }),
-        )));
-        // And every request it cannot answer — a write another node leads, a
-        // read another node holds — is carried there over the peer link, under
-        // an assertion signed with this node's key, for a caller who cannot
-        // follow a redirect (ADR-0108 D1–D3). No password crosses.
-        let speaking = std::sync::Arc::downgrade(&db);
-        let coordinator = std::sync::Arc::new(tessari_wire::Coordinator::new(
-            &db,
-            me,
-            surface.keys.clone(),
-            Box::new(move || {
-                speaking
-                    .upgrade()
-                    .ok_or(tessari_wire::GreetingUnavailable::Stopping)
-                    .and_then(|db| greeting(&db).map_err(tessari_wire::GreetingUnavailable::Store))
-            }),
-        ));
-        let carrying: std::sync::Arc<dyn tessaridb::Coordinate> =
-            std::sync::Arc::<tessari_wire::Coordinator>::clone(&coordinator);
-        db.coordinate_through(carrying);
-        // The same carriage takes a transaction's records to the leaders of the
-        // ranges it writes (ADR-0112).
-        db.participating_through(coordinator);
-        // And readers that meet an intent their copy cannot decide ask the
-        // record's leader through it (ADR-0112 D13d).
-        db.decide_reads_through_leaders();
+        join_the_cluster(std::sync::Arc::clone(&db), surface)?;
     }
     if let Some(folder) = &serving.backups {
         db.back_up_into(std::sync::Arc::from(folder.as_path()));
@@ -263,46 +205,7 @@ pub(crate) fn serve(
     // On the error stream, so a node whose output is being piped somewhere still
     // tells a person at the terminal that it came up and where. What was *bound*
     // rather than what was asked for, which is what makes `:0` usable.
-    let mut client_addresses = Vec::with_capacity(2);
-    if let Some(node) = &wire {
-        let bound = node.address().map_err(|failure| failure.to_string())?;
-        tracing::info!(address = %bound, "serving the wire protocol");
-        client_addresses.push(bound);
-    }
-    if let Some(node) = &http {
-        let bound = node.address();
-        tracing::info!(address = %bound, "serving http");
-        client_addresses.push(bound);
-    }
-    match &clients {
-        crate::tls::Clients::Tls { cert, required, .. } => {
-            tracing::info!(
-                presenting = %cert.display(),
-                required = *required,
-                "clients over TLS only"
-            );
-        }
-        crate::tls::Clients::Plaintext => {
-            let reach = crate::tls::reach(&client_addresses);
-            tracing::warn!(
-                reach = %reach,
-                "clients in the clear: --tls-cert and --tls-key would encrypt them, and \
-                 --require-client-tls refuses to start without them"
-            );
-        }
-    }
-    // Said only when there is something to say. Every deployment today is a
-    // single node, and a line printed on every start is a line operators stop
-    // reading. What was *bound* rather than what was asked for, the same as the
-    // two lines above, which is what makes `:0` usable here too.
-    if let Some(surface) = &peers {
-        let bound = surface
-            .door
-            .address()
-            .map_err(|failure| failure.to_string())?;
-        let seeds = surface.seeds.len();
-        tracing::info!(address = %bound, seeds, "serving peers");
-    }
+    announce(wire.as_ref(), http.as_ref(), &clients, peers.as_ref())?;
 
     // After both surfaces are bound and before either serves, so a node that
     // could not take its address does not connect to a broker on the way to

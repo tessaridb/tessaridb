@@ -62,10 +62,12 @@ use crate::catalog::VectorDistance;
 use crate::error::Result;
 use crate::store::Store;
 
+mod building;
 mod filtered;
 #[cfg(test)]
 mod lazily;
 mod nodes;
+mod searching;
 
 use nodes::Nodes;
 
@@ -260,147 +262,6 @@ impl Graph {
         Ok(self.entry()?.is_none())
     }
 
-    /// The records nearest this vector, nearest first, at most `wanted` of them.
-    ///
-    /// A greedy walk from the entry point, keeping the best `effort` candidates
-    /// seen. Approximate by construction — see the module documentation for why
-    /// that is a language-level decision and not a detail.
-    ///
-    /// `effort` is `None` for the budget this engine was built with
-    /// ([`EXPLORATION`]) and `Some` for a budget the **read** named. It is raised
-    /// to at least `wanted`, because a walk that keeps fewer candidates than the
-    /// answer asks for cannot fill the answer, and a budget silently overriding a
-    /// `LIMIT` is a bound answering for a bound.
-    ///
-    /// **A read's budget never reaches the build.** [`Self::insert`] walks this
-    /// same graph to choose a new node's neighbours and passes `None` — see the
-    /// note there for what a leak would cost.
-    pub(crate) fn nearest(
-        &self,
-        query: &[f64],
-        wanted: usize,
-        effort: Option<usize>,
-    ) -> Result<Vec<RecordId>> {
-        let effort = effort.unwrap_or(EXPLORATION).max(wanted);
-        let Some(entry) = self.entry()? else {
-            return Ok(Vec::new());
-        };
-        let mut seen: BTreeSet<RecordId> = BTreeSet::new();
-        // Candidates to expand, and the best found so far. Both are kept sorted
-        // by distance with the record id breaking ties, so the walk is a
-        // function of the graph and the query and of nothing else.
-        let mut frontier: Vec<(f64, RecordId)> = Vec::new();
-        let mut best: Vec<(f64, RecordId)> = Vec::new();
-
-        let start = self.at(entry.clone(), query)?;
-        seen.insert(entry.clone());
-        frontier.push((start, entry.clone()));
-        best.push((start, entry));
-
-        while let Some((_, current)) = take_nearest(&mut frontier) {
-            let Some(node) = self.nodes.get(&current)? else {
-                continue;
-            };
-            // Stop when nothing in hand can improve on what is already held:
-            // the classic greedy cut-off, and what keeps the walk sub-linear.
-            if let Some((furthest, _)) = best.last()
-                && best.len() >= effort
-                && self.at(current.clone(), query)? > *furthest
-            {
-                break;
-            }
-            for neighbour in &node.neighbours {
-                if !seen.insert(neighbour.clone()) {
-                    continue;
-                }
-                // An edge into a removed record is dangling — this graph does
-                // not chase inbound edges when a node goes, so they exist. It is
-                // not a candidate: offering it would answer with a record that
-                // is not in the index, which the resolution step would drop and
-                // which would meanwhile have taken a place in the answer.
-                if !self.nodes.contains(neighbour)? {
-                    continue;
-                }
-                let distance = self.at(neighbour.clone(), query)?;
-                frontier.push((distance, neighbour.clone()));
-                insert_sorted(&mut best, distance, neighbour.clone(), effort);
-            }
-        }
-
-        Ok(best.into_iter().take(wanted).map(|(_, id)| id).collect())
-    }
-
-    /// What fraction of the true nearest this graph actually returns.
-    ///
-    /// The walk is compared against the exact answer over the same records, and
-    /// the result is a **measurement** — the one thing [`VectorRecall`] is
-    /// allowed to hold, and the reason it is not computed from [`NEIGHBOURS`]
-    /// and [`EXPLORATION`] instead.
-    ///
-    /// # The queries are the store's own vectors, and that has a trap in it
-    ///
-    /// There are no others: nothing here records what anyone has searched for.
-    /// So the sample is taken from the stored vectors themselves, **by position
-    /// in key order** — every `⌈records / sample⌉`-th — which makes it a
-    /// function of the stored set rather than of a draw, an insertion order or a
-    /// clock. That matters for the same reason the graph has one layer: two
-    /// replicas replaying one log must reach the same number.
-    ///
-    /// A stored vector queried against itself finds itself at **distance zero**.
-    /// That is a free hit, and a measurement that kept it would report a floor of
-    /// `1/at` on an index that finds nothing else — a figure that looks like a
-    /// measurement and is not. So the query record is removed from both the
-    /// truth and the answer, and the comparison is over what is left.
-    ///
-    /// Perturbing the sampled vectors instead was considered and rejected: a
-    /// perturbation needs a random direction, and randomness is precisely what
-    /// this index gave up its hierarchical layer to avoid.
-    ///
-    /// `None` when there is nothing to measure — an index over fewer than two
-    /// records has no answer a walk could get wrong, and absence reads as *never
-    /// measured*, which is a different statement from a measured zero.
-    pub(crate) fn recall(&self) -> Result<Option<VectorRecall>> {
-        self.nodes.load_all()?;
-        let present = self.nodes.present();
-        let records = present.len();
-        if records < 2 {
-            return Ok(None);
-        }
-        let stride = records.div_ceil(MEASURED_SAMPLE).max(1);
-        let mut hit = 0_usize;
-        let mut asked = 0_usize;
-        let mut sample = 0_usize;
-        for (id, node) in present.iter().step_by(stride) {
-            let probe = node.vector.to_vec();
-            let truth = exact(self.distance, &present, &probe, id, MEASURED_AT);
-            if truth.is_empty() {
-                continue;
-            }
-            // One more than the answer, because the query record is expected
-            // back and is then dropped; `take` trims the case where it was not.
-            let found: Vec<RecordId> = self
-                .nearest(&probe, MEASURED_AT.saturating_add(1), None)?
-                .into_iter()
-                .filter(|other| other != id)
-                .take(MEASURED_AT)
-                .collect();
-            hit = hit.saturating_add(found.iter().filter(|got| truth.contains(got)).count());
-            asked = asked.saturating_add(truth.len());
-            sample = sample.saturating_add(1);
-        }
-        let Some(recall) = hit.saturating_mul(100).checked_div(asked) else {
-            return Ok(None);
-        };
-        Ok(Some(VectorRecall {
-            recall: u32::try_from(recall).unwrap_or(100),
-            at: u32::try_from(MEASURED_AT).unwrap_or(u32::MAX),
-            sample: u32::try_from(sample).unwrap_or(u32::MAX),
-            records: u64::try_from(records).unwrap_or(u64::MAX),
-            neighbours: u32::try_from(NEIGHBOURS).unwrap_or(u32::MAX),
-            exploration: u32::try_from(EXPLORATION).unwrap_or(u32::MAX),
-        }))
-    }
-
     /// How far this record is from the query, or infinitely far if it is gone.
     fn at(&self, id: RecordId, query: &[f64]) -> Result<f64> {
         Ok(self.nodes.get(&id)?.map_or(f64::INFINITY, |node| {
@@ -415,104 +276,6 @@ impl Graph {
     /// and cannot drift out of step with the nodes.
     fn entry(&self) -> Result<Option<RecordId>> {
         self.nodes.first()
-    }
-
-    /// Place a record in the graph, and return every node the placement changed.
-    ///
-    /// The new node links to its nearest neighbours, and each of those gains the
-    /// reverse edge — pruned back to [`NEIGHBOURS`] by distance, ties on record
-    /// id. Without the reverse edge a new record is reachable from nowhere and
-    /// the graph is a collection of one-way streets.
-    pub(crate) fn insert(
-        &mut self,
-        id: &RecordId,
-        vector: Vec<f64>,
-    ) -> Result<BTreeMap<RecordId, VectorNode>> {
-        let mut touched = BTreeMap::new();
-        let chosen = if self.is_empty()? {
-            Vec::new()
-        } else {
-            // `None`, and never a caller's budget. The build walks the graph to
-            // choose this node's neighbours, so a read's `EFFORT` reaching here
-            // would make the index a function of the reads that happened to run
-            // beside the writes — and two replicas replaying one log would build
-            // different graphs. That is the determinism this index gave up its
-            // hierarchical layer to keep.
-            self.nearest(&vector, NEIGHBOURS, None)?
-        };
-        let node = VectorNode::new(self.stored(vector), chosen.clone());
-        self.nodes.put(id.clone(), node.clone());
-        touched.insert(id.clone(), node);
-
-        for neighbour in chosen {
-            let Some(held) = self.nodes.get(&neighbour)? else {
-                continue;
-            };
-            if held.neighbours.contains(id) {
-                continue;
-            }
-            let mut linked = held.neighbours.clone();
-            linked.push(id.clone());
-            let pruned = self.prune(&held.vector.to_vec(), linked)?;
-            let updated = VectorNode::new(held.vector.clone(), pruned);
-            self.nodes.put(neighbour.clone(), updated.clone());
-            touched.insert(neighbour, updated);
-        }
-        Ok(touched)
-    }
-
-    /// Keep [`NEIGHBOURS`] of these, chosen for **reach** rather than nearness.
-    ///
-    /// # Why not simply the nearest
-    ///
-    /// Because that is what stops the graph working, and it does so invisibly.
-    /// Keeping the sixteen nearest makes every node's links point at its own
-    /// immediate crowd, so a walk that starts in one region can never leave it —
-    /// the long edges that make a small world small are exactly the ones a
-    /// nearest-first rule throws away first. Measured on this store, nearest-M
-    /// pruning gave **one per cent** of the true ten; the rule below gives most
-    /// of them, on the same data, with the same walk.
-    ///
-    /// # The rule
-    ///
-    /// Walking the candidates nearest-first, a candidate is kept only if it is
-    /// closer to the base than to anything already kept. A candidate that sits
-    /// behind an existing neighbour is reachable **through** it and adds no new
-    /// direction; one that opens a direction nothing else covers is kept however
-    /// far away it is. So the neighbour list spans the space around a node
-    /// instead of huddling on one side of it.
-    ///
-    /// Ties break on record id, so the choice is a function of the vectors and
-    /// nothing else — which is what lets two replicas build one graph.
-    fn prune(&self, from: &[f64], candidates: Vec<RecordId>) -> Result<Vec<RecordId>> {
-        let mut ranked: Vec<(f64, RecordId)> = Vec::with_capacity(candidates.len());
-        for id in candidates {
-            ranked.push((self.at(id.clone(), from)?, id));
-        }
-        ranked.sort_by(|left, right| {
-            left.0
-                .total_cmp(&right.0)
-                .then_with(|| left.1.cmp(&right.1))
-        });
-        ranked.dedup_by(|left, right| left.1 == right.1);
-
-        let mut kept: Vec<(RecordId, Vec<f64>)> = Vec::new();
-        for (to_base, id) in ranked {
-            if kept.len() >= NEIGHBOURS {
-                break;
-            }
-            let Some(held) = self.nodes.get(&id)? else {
-                continue;
-            };
-            let covered = kept
-                .iter()
-                .any(|(_, other)| separation_from(self.distance, &held.vector, other) < to_base);
-            if covered {
-                continue;
-            }
-            kept.push((id, held.vector.to_vec()));
-        }
-        Ok(kept.into_iter().map(|(id, _)| id).collect())
     }
 
     /// The form a vector placed in this graph is kept in.
@@ -552,30 +315,6 @@ impl Graph {
             .filter(|id| !ids.contains(id))
             .count()
     }
-}
-
-/// The records genuinely nearest this vector among `present`, by looking at
-/// every one.
-///
-/// The truth half of [`Graph::recall`], and `O(records)` per call by definition —
-/// there is no cheaper way to know what a walk missed. `excluding` is the query's
-/// own record, because a vector is always nearest to itself.
-fn exact(
-    distance: VectorDistance,
-    present: &[(RecordId, std::sync::Arc<VectorNode>)],
-    query: &[f64],
-    excluding: &RecordId,
-    wanted: usize,
-) -> Vec<RecordId> {
-    let mut held: Vec<(f64, RecordId)> = Vec::new();
-    for (id, node) in present {
-        if id == excluding {
-            continue;
-        }
-        let separation = separation_from(distance, &node.vector, query);
-        insert_sorted(&mut held, separation, id.clone(), wanted);
-    }
-    held.into_iter().map(|(_, id)| id).collect()
 }
 
 /// The nearest candidate, removed from the list.
