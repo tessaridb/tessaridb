@@ -10,7 +10,7 @@ Eleven engines. One transaction. One binary. A real-time multi-model database,
 written in Rust, for AI applications and the products built around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.24.0--beta-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.25.0--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.98%2B-6B5FD1?style=flat-square)](Cargo.toml)
 [![conformance](https://img.shields.io/badge/conformance-1539%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
@@ -22,8 +22,8 @@ written in Rust, for AI applications and the products built around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is a beta — `0.24.0-beta`.** It is released and tested, published as
-> a container image (`tessaridb/tessaridb:0.24.0-beta`; the image tracks the
+> **TessariDB is a beta — `0.25.0-beta`.** It is released and tested, published as
+> a container image (`tessaridb/tessaridb:0.25.0-beta`; the image tracks the
 > larger releases), and the licence makes production use free, including inside
 > a commercial company.
 > What a beta does not promise yet is permanence of shape: before 1.0 the query
@@ -201,7 +201,7 @@ surviving version and the node that wrote it.
 
 ## Status
 
-**Stage: active development · `0.24.0-beta` · not published to crates.io.** What
+**Stage: active development · `0.25.0-beta` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 
@@ -277,7 +277,7 @@ follows is what runs today, not a roadmap.
   <!-- absent: distance-between-two-larger-shapes -->
   <!-- absent: nearest-first-under-a-where -->
   <!-- absent: measured-covering-budget -->
-- ⛔ **Not there:** a read that runs whole on every shard's node. A table can
+- 🚧 **Partial:** a read that runs whole on every shard's node. A table can
   be split by the identities of its records (`SPLIT AT`), and each shard is
   logged, replicated and — where a member row places it (`LEADS`) — elected and
   led on its own node, so writes to two shards are taken by two nodes. Shards
@@ -288,11 +288,14 @@ follows is what runs today, not a roadmap.
   (`COMMIT ACROSS LEADERS`). A table partitioned by a field (`PARTITION BY
   region`) keeps each region's records in its shard, and a read naming the
   region touches only that shard. A node holding only some shards answers a
-  read of the rest from those shards' leaders — a `WHERE`, an unordered `LIMIT`
-  and `count`/`sum`/`mean`/`min`/`max` are worked out there, under the caller's
-  visibility — but an ordered top-n or a `variance` still fetches the records,
-  and a join side or a `FETCH` into a shard it lacks is still refused.
-  <!-- absent: sharding-execution -->
+  read of the rest from those shards' leaders — a `WHERE`, a `LIMIT` with or
+  without an `ORDER BY`, `count`/`sum`/`mean`/`min`/`max` and
+  `variance`/`stddev` (floats included, summed exactly) are worked out there,
+  under the caller's visibility, and a join side or a `FETCH` into a shard it
+  lacks is gathered the same way, narrowed to the keys the near side holds.
+  What still fetches the records is a fold that does not merge — `median`,
+  `collect` and the counter folds.
+  <!-- absent: holistic-folds-on-the-leaders -->
 - 🔄 **Not promised yet:** before 1.0 the query language, the wire format and the
   on-disk format may still change, and there is no migration between versions.
   <!-- absent: migration-between-versions -->

@@ -285,6 +285,14 @@ impl StampedValue {
         self
     }
 
+    /// This version with no transaction named — what a settled transaction's
+    /// version becomes once no read can tell it apart (ADR-0112, Q-922).
+    #[must_use]
+    pub fn settled(mut self) -> Self {
+        self.provenance = None;
+        self
+    }
+
     /// The transaction across leaders this version came from, if any.
     #[must_use]
     pub const fn provenance(&self) -> Option<&Provenance> {

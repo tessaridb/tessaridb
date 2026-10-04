@@ -70,6 +70,8 @@ export interface Peer {
     readonly releasing?: boolean;
     /** `LEADS … PREFERRED`: the candidate its range's leader hands it to. */
     readonly preferred?: boolean;
+    /** The region a `LOCAL MAJORITY` counts it in, `null` when its row names none. */
+    readonly region?: string | null;
     readonly roles?: readonly string[];
 }
 
@@ -418,6 +420,7 @@ export function draw(into: HTMLElement, seen: Seen): void {
                     ),
                     fact("id", told(peer.node)),
                     fact("replicates", told(peer.replicates)),
+                    fact("region", typeof peer.region === "string" ? peer.region : null),
                     fact("leads", placement(peer)),
                     fact("leads, as the log records", leading(cluster.leaders ?? [], peer.node)),
                 ],

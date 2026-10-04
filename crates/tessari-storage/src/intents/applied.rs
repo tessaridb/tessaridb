@@ -294,3 +294,6 @@ fn an_intent_derives_no_index_entry_and_its_resolution_does() -> Result<()> {
     );
     Ok(())
 }
+
+mod barred;
+mod merged;

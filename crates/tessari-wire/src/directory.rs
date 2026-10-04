@@ -56,6 +56,7 @@ use std::time::Instant;
 
 use tessari_encoding::{NODE_ID_LEN, Roles};
 use tessari_storage::ReplicaDefinition;
+use tessari_types::{Epoch, Reach};
 
 use crate::joining::Seed;
 use crate::peer::Hello;
@@ -240,6 +241,22 @@ impl Directory {
             .map(|(endpoint, heard)| (endpoint.clone(), heard.said.node))
     }
 
+    /// The peer heard leading the placed range `range`'s line, at the newest
+    /// epoch heard for it — a lapsed line is not a leader anybody can hear.
+    #[must_use]
+    pub fn leading(&self, range: Reach) -> Option<(String, [u8; NODE_ID_LEN], Epoch)> {
+        self.seen
+            .iter()
+            .filter_map(|(endpoint, heard)| {
+                heard
+                    .said
+                    .line
+                    .filter(|line| line.range == range && line.leading > Epoch::ZERO)
+                    .map(|line| (endpoint.clone(), heard.said.node, line.leading))
+            })
+            .max_by_key(|(_, _, leading)| *leading)
+    }
+
     /// Greet every declared peer this node can dial, and record what each said.
     ///
     /// Answers how many peers were reached. Not a `Result`: a round in which
@@ -381,6 +398,7 @@ mod tests {
             join: None,
             releasing: false,
             preferred: false,
+            region: None,
         }
     }
 
@@ -416,6 +434,55 @@ mod tests {
             policy: None,
             line: None,
         }
+    }
+
+    #[test]
+    fn the_leader_of_a_line_is_the_peer_heard_leading_it_at_the_newest_epoch() {
+        let shard = tessari_types::Reach::Shard(
+            tessari_types::NamespaceId::new(1),
+            tessari_types::DatabaseId::new(1),
+            tessari_types::TableId::new(1),
+            tessari_types::ShardId::new(1),
+        );
+        let line = |leading: u64| crate::peer::Line {
+            range: shard,
+            leading: Epoch::new(leading),
+            tail: Sequence::new(1),
+            tail_leadership: Epoch::new(1),
+        };
+        let mut directory = Directory::new();
+        let now = Instant::now();
+        // An old leader still greeting at the epoch it lost, the new one, and
+        // a candidate whose lease lapsed: only the newest live lease leads.
+        directory.heard(
+            "one:9000",
+            Hello {
+                line: Some(line(3)),
+                ..said(ONE, None, true)
+            },
+            now,
+        );
+        directory.heard(
+            "another:9000",
+            Hello {
+                line: Some(line(4)),
+                ..said(ANOTHER, None, true)
+            },
+            now,
+        );
+        directory.heard(
+            "third:9000",
+            Hello {
+                line: Some(line(0)),
+                ..said(THIRD, None, true)
+            },
+            now,
+        );
+        assert_eq!(
+            directory.leading(shard),
+            Some(("another:9000".to_owned(), ANOTHER, Epoch::new(4)))
+        );
+        assert_eq!(directory.leading(tessari_types::Reach::Store), None);
     }
 
     /// A directory holding one serving peer at `two.example:9080`, five seconds

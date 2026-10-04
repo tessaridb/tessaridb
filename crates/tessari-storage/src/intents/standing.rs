@@ -2,7 +2,7 @@
 //! intents, and the transactions those intents belong to (ADR-0112 D7, D12).
 
 use tessari_encoding::{
-    Decision, IntentOfKey, RecordKey, StampedValue, StoreKey, StoreValue, TransactionRecord,
+    IntentOfKey, RecordKey, StampedValue, StoreKey, StoreValue, TransactionRecord,
     TransactionRecordKey,
 };
 use tessari_types::Sequence;
@@ -25,6 +25,25 @@ impl Store {
             .backend()
             .get(TransactionRecordKey::keyspace(), &key.encode())?
             .map(|value| TransactionRecord::decode(value.as_slice()))
+            .transpose()?)
+    }
+
+    /// Where `transaction`'s part in `range` landed on this node, if it did —
+    /// what status recovery asks a participant's leader (ADR-0112 D14c).
+    ///
+    /// # Errors
+    ///
+    /// Whatever the backend or the codec returns.
+    pub fn part_landed(
+        &self,
+        transaction: tessari_encoding::TransactionId,
+        range: tessari_types::Reach,
+    ) -> Result<Option<Sequence>> {
+        let key = tessari_encoding::AcrossPartKey { transaction, range };
+        Ok(self
+            .backend()
+            .get(tessari_encoding::AcrossPartKey::keyspace(), &key.encode())?
+            .map(|value| Sequence::decode(value.as_slice()))
             .transpose()?)
     }
 
@@ -129,11 +148,12 @@ impl Store {
         Ok(self
             .records_across()?
             .into_iter()
-            .filter(|(_, record)| record.decision != Decision::Pending)
+            .filter(|(_, record)| record.decision.is_decided())
             .collect())
     }
 
-    /// Every transaction record this node holds that is still `PENDING`.
+    /// Every transaction record this node holds that has not decided yet —
+    /// `PENDING`, or `STAGING` awaiting status recovery (ADR-0112 D14c).
     ///
     /// # Errors
     ///
@@ -144,7 +164,7 @@ impl Store {
         Ok(self
             .records_across()?
             .into_iter()
-            .filter(|(_, record)| record.decision == Decision::Pending)
+            .filter(|(_, record)| !record.decision.is_decided())
             .collect())
     }
 

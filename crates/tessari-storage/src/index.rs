@@ -219,7 +219,7 @@ impl Moved {
 /// Reads the catalog and the records' current values as of the committed state,
 /// which is the state this record is about to be applied on top of.
 pub(crate) fn maintain(store: &Store, record: &LogRecord, batch: WriteBatch) -> Result<WriteBatch> {
-    maintain_from(store, store.begin()?, record, batch)
+    maintain_from(store, store.begin_local()?, record, batch)
 }
 
 /// [`maintain`], reading the records' current values through `view`.

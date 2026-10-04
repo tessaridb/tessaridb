@@ -56,6 +56,10 @@ fn every_request_travels_and_arrives_as_itself() -> Result<(), String> {
             transaction: TRANSACTION,
             coordinator: range,
         },
+        AcrossAsk::Lookup {
+            transaction: TRANSACTION,
+            coordinator: range,
+        },
         AcrossAsk::Holds {
             transaction: TRANSACTION,
             range,
@@ -63,6 +67,41 @@ fn every_request_travels_and_arrives_as_itself() -> Result<(), String> {
         AcrossAsk::Forget {
             transaction: TRANSACTION,
             coordinator: range,
+        },
+        AcrossAsk::Begin {
+            transaction: TRANSACTION,
+            record: TransactionRecord {
+                decision: Decision::Staging,
+                deadline: 9,
+                participants: vec![Participant {
+                    range,
+                    prepared_at: None,
+                }],
+            },
+            seen: Sequence::new(41),
+            writes: vec![named(&address(1))],
+        },
+        AcrossAsk::Conclude {
+            transaction: TRANSACTION,
+            record: TransactionRecord {
+                decision: Decision::Committed,
+                deadline: 9,
+                participants: vec![Participant {
+                    range,
+                    prepared_at: Some(Sequence::new(3)),
+                }],
+            },
+            records: vec![address(1), address(2)],
+        },
+        AcrossAsk::Bar {
+            transaction: TRANSACTION,
+            range,
+            prevent: true,
+        },
+        AcrossAsk::Bar {
+            transaction: TRANSACTION,
+            range,
+            prevent: false,
         },
     ];
     for ask in asks {
@@ -91,6 +130,9 @@ fn every_answer_travels_and_arrives_as_itself() -> Result<(), String> {
         outcome(Decision::Pending),
         outcome(Decision::Committed),
         outcome(Decision::Aborted),
+        outcome(Decision::Staging),
+        AcrossAnswer::Landed(Some(Sequence::new(9))),
+        AcrossAnswer::Landed(None),
         AcrossAnswer::Holding(true),
         AcrossAnswer::Holding(false),
         AcrossAnswer::Forgotten(Sequence::new(8)),

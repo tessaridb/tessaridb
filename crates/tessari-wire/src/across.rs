@@ -15,7 +15,7 @@ use crate::assertion::{Assertion, Principal, Signed, nonce, now_ms, request_dige
 use crate::coordination::{Coordinator, account};
 use crate::error::{Error, Result};
 use crate::frame;
-use crate::link::{Answered, Ask, call_within};
+pub(crate) mod kept;
 
 /// What an assertion carrying a record is made for: the record's bytes, under
 /// a name no script can take.
@@ -70,7 +70,6 @@ impl Participants for Coordinator {
         // Everything short of the leader's own answer — no route, no key, a
         // link that failed or timed out — is a part not reached, which asking
         // again can get past.
-        let (endpoint, mine, said) = self.dialling(to).map_err(PartRefused::retriable)?;
         let asked = asked.encode();
         let carried = Carried {
             signed: Assertion {
@@ -85,29 +84,53 @@ impl Participants for Coordinator {
                 issued_ms: now_ms(),
                 expires_ms: now_ms().saturating_add(crate::coordination::LIFE_MILLIS),
             }
-            .sign(&mine.key)
+            .sign(&self.keys().duplicate().key)
             .map_err(|why| PartRefused::retriable(why.to_string()))?,
             asked,
         };
-        match call_within(
+        // A link kept from an earlier record carries this one without a new
+        // handshake (D13j); one the record could not be written onto is
+        // replaced, and one whose answer was lost is a part not reached.
+        if let Some(mut link) = self.kept().take(to) {
+            match kept::across_on(&mut link, &carried) {
+                Ok(reply) => {
+                    self.kept().keep(to, link);
+                    return replied(reply, "a kept link");
+                }
+                Err(kept::KeptFailed::Sent(why)) => {
+                    return Err(PartRefused::retriable(format!("a kept link: {why}")));
+                }
+                Err(kept::KeptFailed::Unsent(why)) => {
+                    log::debug!("a kept cross-leader link could not take a record: {why}");
+                }
+            }
+        }
+        let (endpoint, mine, said) = self.dialling(to).map_err(PartRefused::retriable)?;
+        match kept::across_keeping(
             endpoint.as_str(),
             (self.keys(), mine),
             to,
             &said,
-            Ask::Across(&carried),
-            Duration::from_secs(COORDINATED_SECONDS),
+            (&carried, Duration::from_secs(COORDINATED_SECONDS)),
         ) {
-            Ok((_, Answered::Across(answer))) => Ok(answer),
-            Ok(_) => Err(PartRefused::retriable(format!(
-                "{endpoint} answered something other than the record"
-            ))),
-            Err(Error::RefusedAcross(refused)) => Err(PartRefused {
-                kind: refused.kind,
-                reason: format!("{endpoint} refused: {}", refused.reason),
-            }),
+            Ok((reply, link)) => {
+                if let Some(link) = link {
+                    self.kept().keep(to, link);
+                }
+                replied(reply, &endpoint)
+            }
             Err(why) => Err(PartRefused::retriable(format!("{endpoint}: {why}"))),
         }
     }
+}
+
+/// The leader's answer as the coordinator takes it: its refusal keeps the kind
+/// it was given and names where it came from.
+fn replied(reply: kept::Reply, endpoint: &str) -> std::result::Result<AcrossAnswer, PartRefused> {
+    reply.map_err(|refused| PartRefused {
+        kind: refused.kind,
+        reason: format!("{endpoint} refused: {}", refused.reason),
+    })
 }
 
 #[cfg(test)]

@@ -74,7 +74,7 @@ pub(crate) fn enforce(
     record: &LogRecord,
     node: [u8; NODE_ID_LEN],
 ) -> Result<Option<LogRecord>> {
-    let mut view = store.begin()?;
+    let mut view = store.begin_local()?;
     let limits = limits_in(&mut view, record)?;
     if limits.is_empty() {
         return Ok(None);
@@ -187,7 +187,7 @@ pub(crate) fn maintain(
     mut batch: WriteBatch,
     version: Sequence,
 ) -> Result<WriteBatch> {
-    let mut view = store.begin()?;
+    let mut view = store.begin_local()?;
     let limits = limits_in(&mut view, record)?;
     if limits.is_empty() {
         return Ok(batch);

@@ -20,6 +20,14 @@
 //! A voter whose subscription does not cover the write can never hold it, so it
 //! never counts; when the holders cannot make up a majority the write is
 //! refused before it commits rather than accepted and timed out.
+//!
+//! # A local majority
+//!
+//! `LOCAL MAJORITY` counts the same way over the voters in this node's region
+//! — its own row's `REGION` — and so waits only for copies that need not cross
+//! a region (G057 C3). It is weaker than `MAJORITY` in one stated way: the
+//! majority that elects the next leader need not include a node of this region
+//! holding the write, so a failover is not promised to keep it.
 
 use tessari_ql::Span;
 use tessari_storage::{Catalog, Failover, NODE_ID_LEN, Reach, Roles, Store, Transaction};
@@ -124,6 +132,21 @@ impl Session<'_> {
             } else {
                 Acknowledge::Leader
             });
+        let voting = if level == Acknowledge::LocalMajority {
+            let mine = Catalog::new(transaction)
+                .replicas()?
+                .into_iter()
+                .find(|row| row.node == Some(me))
+                .and_then(|row| row.region)
+                .ok_or(Error::LocalMajorityWithoutRegion { span })?;
+            voting
+                .into_iter()
+                .filter(|(_, peer)| peer.region.as_deref() == Some(mine.as_str()))
+                .collect()
+        } else {
+            voting
+        };
+        let catalog = Catalog::new(transaction);
         let needed = voting.len().saturating_add(1).div_euclid(2);
         if level == Acknowledge::Leader || needed == 0 {
             return Ok(None);

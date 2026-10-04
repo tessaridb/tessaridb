@@ -2,9 +2,9 @@
 
 use std::collections::{HashSet, VecDeque};
 
-use super::state::{State, history};
+use super::state::{Coordinator, State, history};
 use super::step::successors;
-use super::{Decision, Range, Rules, Violation, World, Writer, check};
+use super::{Decision, Entry, Range, Rules, Violation, World, Writer, check};
 
 /// The first violation found, with the state that showed it.
 #[derive(Debug)]
@@ -27,6 +27,13 @@ pub(crate) struct Explored {
     pub(crate) second_after: bool,
     /// A run forgot T1's record.
     pub(crate) forgotten: bool,
+    /// A reader that began after the answer saw T1 whole at the leaders.
+    pub(crate) acknowledged_seen: bool,
+    /// The caller was told committed while the record still staged (D14).
+    pub(crate) told_while_staging: bool,
+    /// Status recovery committed a staging record, and barred a prepare.
+    pub(crate) recovered_committed: bool,
+    pub(crate) prevented: bool,
 }
 
 /// Every state reachable under `rules`, or the first one that breaks an
@@ -43,7 +50,20 @@ pub(crate) fn explore(rules: Rules, world: World) -> Result<Explored, Found> {
         };
         check::always(&state, rules).map_err(found)?;
         explored.read_whole |= state.reader.seen == [Some(Writer::T1); 2];
+        explored.acknowledged_seen |= state.reader.began_after_answer == Some(true)
+            && state.reader.at_leader == [true, true]
+            && state.reader.seen == [Some(Writer::T1); 2];
+        explored.told_while_staging |=
+            state.told == Some(true) && state.record() == Some(Decision::Staging);
+        explored.prevented |= state.log(Range::B).contains(&Entry::Prevent);
         let next = successors(&state, rules, world);
+        // Recovery committed: a successor decided committed while the
+        // coordinator had not concluded.
+        explored.recovered_committed |= state.record() == Some(Decision::Staging)
+            && !matches!(state.coordinator, Coordinator::Concluding)
+            && next
+                .iter()
+                .any(|following| following.record() == Some(Decision::Committed));
         if next.is_empty() {
             check::finally(&state).map_err(found)?;
             let committed = state.outcome() == Some(Decision::Committed);

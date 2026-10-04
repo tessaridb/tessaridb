@@ -472,7 +472,17 @@ impl Voter {
         mine: Reached,
         candidate: Reached,
     ) -> Vote {
-        if candidate.behind(mine) {
+        // The incumbent renewing the epoch this voter's tail was written under
+        // holds that tail by construction: one epoch has one leader, and it
+        // wrote every entry under it. Judged on a greeting read before the
+        // handshake, it would look behind the entries it streamed here since
+        // (G057 SG6) — Raft never puts a leader's heartbeat to the election
+        // restriction either.
+        let renewing = self
+            .granted
+            .is_some_and(|held| held.candidate == ballot.candidate && held.epoch == ballot.epoch)
+            && mine.leadership == ballot.epoch;
+        if !renewing && candidate.behind(mine) {
             return Vote::Refused(Refused::LogBehind {
                 leadership: mine.leadership,
                 tail: mine.tail,
@@ -1426,6 +1436,62 @@ mod tests {
         // And the other direction, which is what makes the pair an ordering
         // rather than a preference: a shorter log under a newer leadership wins.
         assert!(!LEVEL.behind(diverged));
+    }
+
+    #[test]
+    fn the_leader_renewing_its_own_epoch_is_never_behind_what_it_wrote() {
+        // G057 SG6. The candidate's position comes from the greeting it proved,
+        // read before a handshake of several round trips; this voter's is read
+        // when the ballot lands. A leader committing all the while has streamed
+        // this voter entries past the greeting, so across distance the voter
+        // looked ahead of the very leader whose epoch wrote its tail — and
+        // refused the renewal until the lease ran out under writes. Everything
+        // written under one epoch was written by its one leader, so its renewal
+        // holds it by construction; an election is still judged as before.
+        let now = base();
+        let mut voter = settled(now);
+        let epoch = Epoch::new(7);
+        let renewal = Ballot {
+            epoch,
+            candidate: A,
+            range: tessari_types::Reach::Store,
+        };
+        let greeted = Reached {
+            leadership: epoch,
+            tail: Sequence::new(2),
+        };
+        assert_eq!(
+            voter.asked(&renewal, now, greeted, greeted),
+            Vote::Granted { hold: LEASE_TTL }
+        );
+        let streamed = Reached {
+            leadership: epoch,
+            tail: Sequence::new(41),
+        };
+        let later = after(now, tenths(3));
+        assert_eq!(
+            voter.asked(&renewal, later, streamed, greeted),
+            Vote::Granted { hold: LEASE_TTL },
+            "the incumbent's renewal of its own epoch"
+        );
+        // Control: a challenger with the same stale position is still behind.
+        let mut other = settled(now);
+        assert_eq!(
+            other.asked(
+                &Ballot {
+                    epoch: Epoch::new(8),
+                    candidate: B,
+                    range: tessari_types::Reach::Store,
+                },
+                now,
+                streamed,
+                greeted
+            ),
+            Vote::Refused(Refused::LogBehind {
+                leadership: epoch,
+                tail: Sequence::new(41),
+            })
+        );
     }
 
     #[test]

@@ -17,6 +17,13 @@
 //! participants with their prepare positions, which its versions carry (D6a)
 //! — and names its records with tombstones, which it never writes.
 //!
+//! A begin travels as a prepare does, its section carrying the `PENDING`
+//! record; a conclusion as a resolution does, its section carrying the
+//! decided record (ADR-0112 D13a, D13b).
+//!
+//! Status recovery's question travels as the bar it may write, its kind saying
+//! whether to write it (ADR-0112 D14c).
+//!
 //! An answer is a tag and a position, except an outcome, which is the tag and
 //! the record as it stands.
 
@@ -35,6 +42,11 @@ const ASK_RESOLVE: u8 = 3;
 const ASK_SETTLE: u8 = 4;
 const ASK_HOLDS: u8 = 5;
 const ASK_FORGET: u8 = 6;
+const ASK_LOOKUP: u8 = 7;
+const ASK_BEGIN: u8 = 8;
+const ASK_CONCLUDE: u8 = 9;
+const ASK_BAR: u8 = 10;
+const ASK_LANDED: u8 = 11;
 
 const PREPARED: u8 = 1;
 const DECIDED: u8 = 2;
@@ -43,6 +55,8 @@ const NOTHING_LEFT: u8 = 4;
 const OUTCOME: u8 = 5;
 const HOLDING: u8 = 6;
 const FORGOTTEN: u8 = 7;
+const LANDED: u8 = 8;
+const NOT_LANDED: u8 = 9;
 
 impl AcrossAsk {
     /// The bytes a peer frame carries.
@@ -88,6 +102,19 @@ impl AcrossAsk {
                     },
                 }),
             ),
+            Self::Lookup {
+                transaction,
+                coordinator,
+            } => (
+                ASK_LOOKUP,
+                Sequence::ZERO,
+                LogRecord::new(Vec::new()).across(Across {
+                    transaction: *transaction,
+                    part: Part::Prepare {
+                        coordinator: *coordinator,
+                    },
+                }),
+            ),
             Self::Holds { transaction, range } => (
                 ASK_HOLDS,
                 Sequence::ZERO,
@@ -111,6 +138,43 @@ impl AcrossAsk {
                     part: Part::Forget {
                         coordinator: *coordinator,
                     },
+                }),
+            ),
+            Self::Bar {
+                transaction,
+                range,
+                prevent,
+            } => (
+                if *prevent { ASK_BAR } else { ASK_LANDED },
+                Sequence::ZERO,
+                LogRecord::new(Vec::new()).across(Across {
+                    transaction: *transaction,
+                    part: Part::Prevent { range: *range },
+                }),
+            ),
+            Self::Begin {
+                transaction,
+                record,
+                seen,
+                writes,
+            } => (
+                ASK_BEGIN,
+                *seen,
+                LogRecord::new(writes.clone()).across(Across {
+                    transaction: *transaction,
+                    part: Part::Begin(record.clone()),
+                }),
+            ),
+            Self::Conclude {
+                transaction,
+                record,
+                records,
+            } => (
+                ASK_CONCLUDE,
+                Sequence::ZERO,
+                LogRecord::new(records.iter().map(named).collect()).across(Across {
+                    transaction: *transaction,
+                    part: Part::Conclude(record.clone()),
                 }),
             ),
             Self::Resolve {
@@ -170,10 +234,25 @@ impl AcrossAsk {
                     coordinator,
                 }
             }
+            (ASK_LOOKUP, Part::Prepare { coordinator }) if record.mutations().is_empty() => {
+                Self::Lookup {
+                    transaction: across.transaction,
+                    coordinator,
+                }
+            }
             (ASK_HOLDS, Part::Prepare { coordinator }) if record.mutations().is_empty() => {
                 Self::Holds {
                     transaction: across.transaction,
                     range: coordinator,
+                }
+            }
+            (kind @ (ASK_BAR | ASK_LANDED), Part::Prevent { range })
+                if record.mutations().is_empty() =>
+            {
+                Self::Bar {
+                    transaction: across.transaction,
+                    range,
+                    prevent: kind == ASK_BAR,
                 }
             }
             (ASK_FORGET, Part::Forget { coordinator }) if record.mutations().is_empty() => {
@@ -192,22 +271,22 @@ impl AcrossAsk {
                 transaction: across.transaction,
                 record: decided,
             },
+            (ASK_BEGIN, Part::Begin(begun)) => Self::Begin {
+                transaction: across.transaction,
+                record: begun,
+                seen,
+                writes: record.mutations().to_vec(),
+            },
+            (ASK_CONCLUDE, Part::Conclude(decided)) => Self::Conclude {
+                transaction: across.transaction,
+                record: decided,
+                records: addresses(&record),
+            },
             (ASK_RESOLVE, Part::Decide(outcome)) => Self::Resolve {
                 transaction: across.transaction,
                 committed: outcome.decision == Decision::Committed,
                 participants: outcome.participants,
-                records: record
-                    .mutations()
-                    .iter()
-                    .map(|mutation| {
-                        RecordAddress::new(
-                            mutation.namespace,
-                            mutation.database,
-                            mutation.table,
-                            mutation.id.clone(),
-                        )
-                    })
-                    .collect(),
+                records: addresses(&record),
             },
             (kind, _) => {
                 return Err(format!(
@@ -216,6 +295,22 @@ impl AcrossAsk {
             }
         })
     }
+}
+
+/// The records a resolution names, as their addresses.
+fn addresses(record: &LogRecord) -> Vec<RecordAddress> {
+    record
+        .mutations()
+        .iter()
+        .map(|mutation| {
+            RecordAddress::new(
+                mutation.namespace,
+                mutation.database,
+                mutation.table,
+                mutation.id.clone(),
+            )
+        })
+        .collect()
 }
 
 /// A record named by a resolution: its address, and a tombstone nobody writes.
@@ -242,6 +337,8 @@ impl AcrossAnswer {
             Self::Resolved(None) => (NOTHING_LEFT, 0),
             Self::Holding(holds) => (HOLDING, u64::from(*holds)),
             Self::Forgotten(at) => (FORGOTTEN, at.get()),
+            Self::Landed(Some(at)) => (LANDED, at.get()),
+            Self::Landed(None) => (NOT_LANDED, 0),
             Self::Outcome(record) => {
                 let encoded = record.encode();
                 let mut bytes = Vec::with_capacity(encoded.as_slice().len().saturating_add(1));
@@ -285,6 +382,8 @@ impl AcrossAnswer {
                 found => Err(format!("a cross-leader holding answer of {found}")),
             },
             FORGOTTEN => Ok(Self::Forgotten(at)),
+            LANDED => Ok(Self::Landed(Some(at))),
+            NOT_LANDED => Ok(Self::Landed(None)),
             found => Err(format!("a cross-leader answer of unknown kind {found}")),
         }
     }

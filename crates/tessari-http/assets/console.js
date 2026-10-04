@@ -2153,6 +2153,7 @@ Shown once. The node keeps only its digest.`);
             ),
             fact("id", told2(peer.node)),
             fact("replicates", told2(peer.replicates)),
+            fact("region", typeof peer.region === "string" ? peer.region : null),
             fact("leads", placement(peer)),
             fact("leads, as the log records", leading(cluster.leaders ?? [], peer.node))
           ],

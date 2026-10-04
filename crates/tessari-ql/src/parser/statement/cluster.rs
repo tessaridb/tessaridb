@@ -153,7 +153,8 @@ impl Parser<'_> {
         Ok(None)
     }
 
-    /// `ACKNOWLEDGE LEADER` or `ACKNOWLEDGE MAJORITY`, when one stands here
+    /// `ACKNOWLEDGE LEADER`, `ACKNOWLEDGE LOCAL MAJORITY` or
+    /// `ACKNOWLEDGE MAJORITY`, when one stands here
     /// (ADR-0106 D2) — the level a write, or the `COMMIT` of several, asks for
     /// itself.
     ///
@@ -166,7 +167,11 @@ impl Parser<'_> {
         if self.eat_word("leader") {
             return Ok(Some(Acknowledge::Leader));
         }
-        self.expect_word("majority", "`LEADER` or `MAJORITY`")?;
+        if self.eat_word("local") {
+            self.expect_word("majority", "`MAJORITY` after `LOCAL`")?;
+            return Ok(Some(Acknowledge::LocalMajority));
+        }
+        self.expect_word("majority", "`LEADER`, `LOCAL MAJORITY` or `MAJORITY`")?;
         Ok(Some(Acknowledge::Majority))
     }
 
@@ -469,6 +474,13 @@ impl Parser<'_> {
         } else {
             None
         };
+        // G057 C3: the region a `LOCAL MAJORITY` counts this peer in. Last, so
+        // every declaration written before it reads as it did.
+        let region = if self.eat_word("region") {
+            Some(self.text("the region, as text")?.0)
+        } else {
+            None
+        };
         Ok(StatementKind::DefineReplica {
             name,
             endpoint,
@@ -480,6 +492,7 @@ impl Parser<'_> {
             leads,
             preferred,
             fingerprint,
+            region,
             if_not_exists,
         })
     }
@@ -522,8 +535,17 @@ impl Parser<'_> {
                 "the HTTP base, as text",
             )?));
         }
+        if self.eat_word("region") {
+            if self.eat_keyword(Keyword::None) {
+                return Ok(ReplicaChange::Region(None));
+            }
+            return Ok(ReplicaChange::Region(Some(
+                self.text("the region, as text, or `NONE`")?.0,
+            )));
+        }
         Err(self.error_here(
-            "`LEADS`, `AT`, `ROLES`, `CLIENTS AT` or `HTTP AT` — the one clause that changes",
+            "`LEADS`, `AT`, `ROLES`, `CLIENTS AT`, `HTTP AT` or `REGION` — the one clause \
+             that changes",
         ))
     }
 

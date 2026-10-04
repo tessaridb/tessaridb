@@ -69,7 +69,7 @@ pub(crate) fn maintain(
     record: &LogRecord,
     mut batch: WriteBatch,
 ) -> Result<WriteBatch> {
-    let view = store.begin()?;
+    let view = store.begin_local()?;
     for mutation in record.mutations() {
         let next = mutation.value.expires();
         if next.is_some() {

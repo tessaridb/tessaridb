@@ -35,7 +35,17 @@ impl<'a> Transaction<'a> {
             guarded: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             across: None,
             decided: std::cell::RefCell::new(BTreeMap::new()),
+            asks_leaders: true,
         }
+    }
+
+    /// A view that decides every intent from this node's own copy and never
+    /// asks a peer — what a commit or an apply derives from, under the write
+    /// turn, where a question to a peer would wait on the network while that
+    /// peer may be waiting for this very write (ADR-0112 D13d is for readers).
+    pub(crate) fn local(mut self) -> Self {
+        self.asks_leaders = false;
+        self
     }
 
     /// The sequence every read in this transaction observes.

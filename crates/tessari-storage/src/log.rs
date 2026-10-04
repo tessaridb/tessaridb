@@ -180,6 +180,25 @@ fn put_records(mut batch: WriteBatch, version: Sequence, record: &LogRecord) -> 
             version,
         );
         batch = batch.put(RecordKey::keyspace(), key.encode(), mutation.value.encode());
+        // A settled transaction's version, indexed under it in the same batch,
+        // whichever way it lands — a commit, a follower's apply, a restored
+        // state — so reclamation can fold its provenance away (Q-922).
+        if let Some(provenance) = mutation.value.provenance()
+            && !provenance.provisional
+        {
+            let resolved = tessari_encoding::ResolvedOfKey {
+                transaction: provenance.transaction,
+                namespace: mutation.namespace,
+                database: mutation.database,
+                table: mutation.table,
+                id: mutation.id.clone(),
+            };
+            batch = batch.put(
+                tessari_encoding::ResolvedOfKey::keyspace(),
+                resolved.encode(),
+                version.encode(),
+            );
+        }
     }
     batch
 }

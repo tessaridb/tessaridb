@@ -303,7 +303,8 @@ fn erase_statement(statement: &mut Statement) {
                 crate::ReplicaChange::Leads { range: None, .. }
                 | crate::ReplicaChange::At(_)
                 | crate::ReplicaChange::ClientsAt(_)
-                | crate::ReplicaChange::HttpAt(_) => {}
+                | crate::ReplicaChange::HttpAt(_)
+                | crate::ReplicaChange::Region(_) => {}
             }
         }
         StatementKind::DefineConsumer {

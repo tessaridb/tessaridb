@@ -277,6 +277,20 @@ pub enum Error {
     )]
     NoLeadershipYet,
 
+    /// This node leads `range` under a leadership that has written nothing of
+    /// its own there that a majority holds yet, so its tail is an earlier
+    /// leader's — held by a majority today and still overruled by a later
+    /// election (the Raft rule; ADR-0112 D12, Q-921). Asked again once its
+    /// first entry is held, which the leadership's own record provides.
+    #[error(
+        "this node leads {range:?} but holds no entry of its own leadership there \
+         yet; asked again once one is held by a majority"
+    )]
+    LeadershipUnconfirmed {
+        /// The range whose leadership is that new.
+        range: tessari_types::Reach,
+    },
+
     /// A write belongs to a range another node leads, and this is which one.
     ///
     /// The other half of the admission question, and the half ADR-0069 could
@@ -1169,6 +1183,7 @@ impl Error {
             // somewhere else a moment from now.
             Self::LeaseSpent { .. }
             | Self::NoLeadershipYet
+            | Self::LeadershipUnconfirmed { .. }
             | Self::WriteIsElsewhere { .. } => ErrorCategory::Unavailable,
             Self::LogGap { .. }
             | Self::NameTaken { .. }

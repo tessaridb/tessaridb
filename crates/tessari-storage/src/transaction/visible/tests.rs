@@ -147,3 +147,58 @@ fn reclaiming_keeps_the_version_under_one_a_reader_may_pass_over() -> Result<()>
     assert_eq!(read(&fixture.store.begin()?, &fixture.address(0))?, "old");
     Ok(())
 }
+
+/// What the coordinator range's leader answers a reader, in a test.
+#[derive(Debug)]
+struct Answering(Option<tessari_encoding::TransactionRecord>);
+
+impl crate::Decisions for Answering {
+    fn decided(
+        &self,
+        _: tessari_encoding::TransactionId,
+        _: tessari_types::Reach,
+    ) -> Option<tessari_encoding::TransactionRecord> {
+        self.0.clone()
+    }
+}
+
+/// ADR-0112 D13d: a reader whose copy of the record is not decided asks the
+/// record's leader. The caller may already have been told T committed, and a
+/// reader here must then see it; one the leader calls undecided, or that has
+/// nobody to ask, does not.
+#[test]
+fn a_reader_asks_the_records_leader_when_its_copy_is_undecided() -> Result<()> {
+    let committed = |fixture: &Fixture| tessari_encoding::TransactionRecord {
+        decision: Decision::Committed,
+        deadline: 0,
+        participants: fixture.participants(),
+    };
+    for (answer, expected) in [
+        (Some(Decision::Committed), "new"),
+        (Some(Decision::Pending), "old"),
+        (None, "old"),
+    ] {
+        let fixture = Fixture::new()?;
+        fixture.prepare(0)?;
+        fixture.prepare(1)?;
+        fixture.decide(Decision::Pending)?;
+        if let Some(decision) = answer {
+            let record = tessari_encoding::TransactionRecord {
+                decision,
+                ..committed(&fixture)
+            };
+            fixture
+                .store
+                .answer_decisions_with(std::sync::Arc::new(Answering(Some(record))));
+        }
+        let reading = fixture.store.begin()?;
+        for home in 0..2 {
+            assert_eq!(
+                read(&reading, &fixture.address(home))?,
+                expected,
+                "database {home}, the leader answering {answer:?}"
+            );
+        }
+    }
+    Ok(())
+}

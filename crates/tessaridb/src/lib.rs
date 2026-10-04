@@ -221,6 +221,12 @@ pub struct Db {
     /// The key the store is encrypted under, which also seals every backup
     /// this database produces (ADR-0108 D7). Fixed at open, like the store.
     at_rest: Option<Arc<AtRestKey>>,
+    /// When this node's settling pass first found each transaction's intents
+    /// standing, in milliseconds since the Unix epoch (ADR-0112 D13a). Behind a
+    /// lock rather than a concurrent map: only the settling pass touches it,
+    /// one pass at a time, and never across a wait.
+    standing_since:
+        std::sync::Mutex<std::collections::BTreeMap<tessari_storage::TransactionId, u64>>,
 }
 
 impl Db {
@@ -240,6 +246,7 @@ impl Db {
             store: Store::open(backend)?,
             gather: std::sync::OnceLock::new(),
             participants: std::sync::OnceLock::new(),
+            standing_since: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             coordinate: std::sync::OnceLock::new(),
             elsewhere: std::sync::OnceLock::new(),
             budget: std::sync::OnceLock::new(),
@@ -294,6 +301,7 @@ impl Db {
             store: Store::open(backend)?,
             gather: std::sync::OnceLock::new(),
             participants: std::sync::OnceLock::new(),
+            standing_since: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             coordinate: std::sync::OnceLock::new(),
             elsewhere: std::sync::OnceLock::new(),
             budget: std::sync::OnceLock::new(),
@@ -600,6 +608,7 @@ impl Db {
             store,
             gather: std::sync::OnceLock::new(),
             participants: std::sync::OnceLock::new(),
+            standing_since: std::sync::Mutex::new(std::collections::BTreeMap::new()),
             coordinate: std::sync::OnceLock::new(),
             elsewhere: std::sync::OnceLock::new(),
             budget: std::sync::OnceLock::new(),

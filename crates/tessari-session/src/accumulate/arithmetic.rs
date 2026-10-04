@@ -1,5 +1,6 @@
-//! The arithmetic folds share: running sums and Welford's variance.
+//! The arithmetic folds share: running sums and the two moments a spread needs.
 
+use super::exact::ExactSum;
 use super::{Running, exact, exactly};
 use crate::aggregate::{approximate, present};
 use crate::error::{Error, Result};
@@ -7,55 +8,43 @@ use rust_decimal::Decimal;
 use tessari_ql::Span;
 use tessari_types::{Number, Value};
 
-/// Welford's running state: a count, a mean, and the sum of squared deviations.
+/// What a spread needs: a count, the exact sum of the numbers and the exact sum
+/// of their squares (ADR-0114 D4).
 ///
-/// Three numbers however long the group is, one pass, and numerically stable.
-/// The textbook `E[x²] − E[x]²` form is one subtraction of two large nearly
-/// equal numbers and loses every significant digit of the answer on data whose
-/// spread is small relative to its magnitude — timestamps and prices, which is
-/// most of what anybody takes a variance of.
+/// The textbook `E[x²] − E[x]²` form loses every significant digit of the
+/// answer when it is computed in floats on data whose spread is small next to
+/// its magnitude — timestamps and prices, which is most of what anybody takes a
+/// variance of. Here the subtraction is made on exact totals and rounded once,
+/// so there is nothing to lose; and exact totals add in any order, which is what
+/// lets a spread merge across shards into the bits one walk gives.
 ///
-/// Carried in `f64` and not in the exact decimal the other numeric folds use,
-/// because `stddev` takes a square root and no square root is exact. A
-/// `variance` that promised exactness while the `stddev` beside it could not
-/// would be two answers with two different promises out of one pair of folds.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Welford {
+/// The numbers enter as the floats they convert to, because `stddev` takes a
+/// square root and no square root is exact. A `variance` that promised more
+/// than the float it answers while the `stddev` beside it could not would be
+/// two answers with two different promises out of one pair of folds.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct Moments {
     /// How many numbers went in.
     pub(crate) counted: u64,
-    /// Their running mean.
-    pub(crate) mean: f64,
-    /// The running sum of squared deviations from that mean.
-    pub(crate) m2: f64,
+    /// Their exact sum.
+    pub(crate) total: ExactSum,
+    /// The exact sum of their squares.
+    pub(crate) squares: ExactSum,
 }
 
-impl Welford {
-    /// The state before any number has arrived.
-    pub(crate) const fn new() -> Self {
-        Self {
-            counted: 0,
-            mean: 0.0,
-            m2: 0.0,
-        }
-    }
-
+impl Moments {
     /// Fold one more number in.
     pub(crate) fn offer(&mut self, held: f64) {
         self.counted = self.counted.saturating_add(1);
-        // The one lossy conversion here, and it is the divisor of the running
-        // mean. Beyond 2^53 a count no longer increments exactly in `f64` — but
-        // by then the sum of squared deviations it divides has lost far more,
-        // so refusing the cast would buy nothing and there is no wider float.
-        #[expect(
-            clippy::cast_precision_loss,
-            clippy::as_conversions,
-            reason = "a count past 2^53 has already made every other number here meaningless"
-        )]
-        let counted = self.counted as f64;
-        let first = held - self.mean;
-        self.mean += first / counted;
-        let second = held - self.mean;
-        self.m2 += first * second;
+        self.total.add(held);
+        self.squares.add_product(held, held);
+    }
+
+    /// Fold in the moments another walk reached.
+    pub(crate) fn absorb(&mut self, other: &Self) {
+        self.counted = self.counted.saturating_add(other.counted);
+        self.total.absorb(&other.total);
+        self.squares.absorb(&other.squares);
     }
 
     /// The sample variance, or `None` when fewer than two numbers arrived.
@@ -63,18 +52,47 @@ impl Welford {
     /// `NONE` rather than zero over one value, by the same rule `mean` follows
     /// over none: the spread of a single observation is not zero, it is a
     /// question nobody has enough data to answer, and zero would be a claim.
-    pub(crate) fn variance(self) -> Option<f64> {
+    ///
+    /// # Errors
+    ///
+    /// When a square or a total went past what a float holds.
+    pub(crate) fn variance(&self) -> core::result::Result<Option<f64>, &'static str> {
         if self.counted < 2 {
-            return None;
+            return Ok(None);
         }
-        #[expect(
-            clippy::cast_precision_loss,
-            clippy::as_conversions,
-            reason = "as above — the divisor is a count, and it is at least one here"
-        )]
-        let degrees = self.counted.saturating_sub(1) as f64;
-        Some(self.m2 / degrees)
+        if self.total.has_special() || self.squares.has_special() {
+            // An infinity or a not-a-number has no spread around it.
+            return Ok(Some(f64::NAN));
+        }
+        // n·Σx² − (Σx)², formed exactly: the count enters as two halves that
+        // are each a float exactly, so no part of the product is rounded.
+        let (high, low) = halves(self.counted);
+        let mut numerator = self.squares.scaled(high);
+        numerator.absorb(&self.squares.scaled(low));
+        numerator.absorb(&self.total.squared().negated());
+        let numerator = numerator
+            .total()
+            .map_err(|_| "a spread outside the float range")?;
+        let counted = count(self.counted);
+        let degrees = counted * count(self.counted.saturating_sub(1));
+        // Never below zero when exact; a square that fell under the smallest
+        // float lost bits, and a spread that rounding left negative is none.
+        Ok(Some(numerator.max(0.0) / degrees))
     }
+}
+
+/// A count as two floats, each exact, that add to it: the high 32 bits scaled
+/// and the low 32 bits.
+fn halves(counted: u64) -> (f64, f64) {
+    let high = u32::try_from(counted >> 32).unwrap_or(u32::MAX);
+    let low = u32::try_from(counted & u64::from(u32::MAX)).unwrap_or(u32::MAX);
+    (f64::from(high) * 4_294_967_296.0, f64::from(low))
+}
+
+/// A count as the nearest float — exact up to 2^53, rounded past it.
+pub(crate) fn count(counted: u64) -> f64 {
+    let (high, low) = halves(counted);
+    high + low
 }
 
 /// The middle of these numbers, or `NONE` when there are none.
@@ -169,8 +187,9 @@ pub(crate) fn add_exact(running: &mut Running<Decimal>, number: &Number) {
     *running = next;
 }
 
-/// Add one number to a float running total, in the order the values arrived.
-pub(crate) fn add_float(running: &mut Running<f64>, number: &Number) {
+/// Add one number to an exact float total, remembering a failure rather than
+/// raising it.
+pub(crate) fn add_float(running: &mut Running<ExactSum>, number: &Number) {
     let Ok(total) = running else {
         return;
     };
@@ -178,7 +197,7 @@ pub(crate) fn add_float(running: &mut Running<f64>, number: &Number) {
         *running = Err("a number no float can hold");
         return;
     };
-    *total += held;
+    total.add(held);
 }
 
 /// A failure a total carried until it turned out to be the answer.

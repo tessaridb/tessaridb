@@ -139,7 +139,7 @@ pub(crate) fn admit(
     now: u64,
     node: [u8; tessari_encoding::NODE_ID_LEN],
 ) -> Result<Option<LogRecord>> {
-    let mut view = store.begin()?;
+    let mut view = store.begin_local()?;
     let topics = topics_in(&mut view, record)?;
     if topics.is_empty() {
         return Ok(None);
@@ -227,7 +227,7 @@ pub(crate) fn maintain(
     record: &LogRecord,
     mut batch: WriteBatch,
 ) -> Result<WriteBatch> {
-    let mut view = store.begin()?;
+    let mut view = store.begin_local()?;
     let topics = topics_in(&mut view, record)?;
     if topics.is_empty() {
         return Ok(batch);

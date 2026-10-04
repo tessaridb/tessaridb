@@ -182,6 +182,7 @@ impl Session<'_> {
             join: None,
             releasing: false,
             preferred: peer.preferred,
+            region: peer.region.map(str::to_owned),
         })?;
         Ok(Outcome::Done)
     }
@@ -290,6 +291,8 @@ impl Session<'_> {
                 .amend_replica(&name.text, |row| row.clients.clone_from(clients))?,
             ReplicaChange::HttpAt(http) => Catalog::new(transaction)
                 .amend_replica(&name.text, |row| row.http.clone_from(http))?,
+            ReplicaChange::Region(region) => Catalog::new(transaction)
+                .amend_replica(&name.text, |row| row.region.clone_from(region))?,
         };
         if !amended {
             return Err(Error::Unknown {

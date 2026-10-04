@@ -52,6 +52,7 @@ const FIELD_FINGERPRINT: &str = "fingerprint";
 const FIELD_JOIN: &str = "join";
 const FIELD_RELEASING: &str = "releasing";
 const FIELD_PREFERRED: &str = "preferred";
+const FIELD_REGION: &str = "region";
 const FIELD_DIGEST: &str = "digest";
 const FIELD_EXPIRES: &str = "expires";
 
@@ -183,6 +184,10 @@ pub struct ReplicaDefinition {
     /// hands it to once this one is caught up (G053 SG5b). Written only when
     /// true.
     pub preferred: bool,
+    /// The region the peer stands in (`REGION 'eu'`), when said: what a
+    /// `LOCAL MAJORITY` counts its voters by (G057 C3). Written only when
+    /// stated, so a row declared before it keeps its bytes.
+    pub region: Option<String>,
 }
 
 /// A one-time join token as the catalog keeps it: never the token itself.
@@ -244,6 +249,9 @@ impl ReplicaDefinition {
         if self.preferred {
             fields.insert(FIELD_PREFERRED.to_owned(), Value::Bool(true));
         }
+        if let Some(region) = &self.region {
+            fields.insert(FIELD_REGION.to_owned(), Value::from(region.as_str()));
+        }
         if let Some(join) = &self.join {
             fields.insert(
                 FIELD_JOIN.to_owned(),
@@ -290,6 +298,7 @@ impl ReplicaDefinition {
             join: join_in(fields)?,
             releasing: flag_in(fields, FIELD_RELEASING)?,
             preferred: flag_in(fields, FIELD_PREFERRED)?,
+            region: text_in(fields, FIELD_REGION)?,
         })
     }
 }
@@ -438,6 +447,7 @@ impl Catalog<'_, '_> {
             join: None,
             releasing: false,
             preferred: false,
+            region: None,
         })
     }
 
@@ -956,6 +966,7 @@ mod tests {
             join: None,
             releasing: false,
             preferred: false,
+            region: None,
         }
     }
 
@@ -990,6 +1001,26 @@ mod tests {
 
     /// R-15: the row an operator left open is no longer handed to whichever
     /// peer greets first.
+    /// G057 C3: a region is kept when stated, and a row that states none
+    /// stores no field for it — the bytes a row had before regions existed.
+    #[test]
+    fn a_region_is_stored_only_when_stated_and_read_back() {
+        let plain = unbound("plain");
+        assert!(!format!("{:?}", plain.to_value()).contains("region"));
+        assert_eq!(
+            ReplicaDefinition::from_value(&plain.to_value()).ok(),
+            Some(plain)
+        );
+        let placed = ReplicaDefinition {
+            region: Some("eu".to_owned()),
+            ..unbound("placed")
+        };
+        assert_eq!(
+            ReplicaDefinition::from_value(&placed.to_value()).ok(),
+            Some(placed)
+        );
+    }
+
     #[test]
     fn a_row_that_says_nothing_about_its_node_binds_nobody() {
         let declared = [bound("leader", SOMEBODY_ELSE), unbound("joiner")];

@@ -253,14 +253,7 @@ impl Session<'_> {
     ) -> Result<(Vec<(RecordId, Value)>, u64)> {
         let occurrences = occurrences(wanted);
         let mut groups = Groups::new();
-        self.fold_into(
-            transaction,
-            &mut groups,
-            records,
-            &occurrences,
-            group,
-            false,
-        )?;
+        self.fold_into(transaction, &mut groups, records, &occurrences, group)?;
         self.answer_groups(transaction, groups, wanted, &occurrences, group, fill)
     }
 
@@ -284,9 +277,9 @@ impl Session<'_> {
     /// answer still has one. The accumulators are indexed by projection, then by
     /// fold occurrence within it — and there it stops.
     ///
-    /// `exact` is set when these groups will be merged with another node's: a
-    /// float offered to `sum` or `mean` then answers `false` and offers nothing,
-    /// because float addition depends on its order and a merge changes it.
+    /// Groups folded here may be merged with another node's: every fold that
+    /// has a state holds it exactly, floats included (ADR-0114), so a merge
+    /// answers what one walk would.
     pub(crate) fn fold_into(
         &self,
         transaction: &mut Transaction<'_>,
@@ -294,8 +287,7 @@ impl Session<'_> {
         records: Vec<(RecordId, Value)>,
         occurrences: &[Vec<&Expr>],
         group: &[Expr],
-        exact: bool,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         for (id, record) in records {
             // Evaluated rather than resolved, so a window — `time::bucket(at,
             // 1h)` — is a key like any other. A bare name still reads as a route
@@ -320,9 +312,6 @@ impl Session<'_> {
                         None => Value::Bool(true),
                         Some(expr) => self.evaluate_in(transaction, expr, Scope::of(&record))?,
                     };
-                    if exact && !crate::reduce::merges_exactly(&fold.kind, &value) {
-                        return Ok(false);
-                    }
                     // A counter fold is offered the value with the instant it
                     // was observed at, so it can order its samples itself.
                     let value = match at {
@@ -342,7 +331,7 @@ impl Session<'_> {
                 }
             }
         }
-        Ok(true)
+        Ok(())
     }
 
     /// The second pass: each group's folds answer, and the projection is
@@ -621,11 +610,15 @@ fn sum(values: &[Value], span: Span) -> Result<Value> {
         .iter()
         .any(|number| matches!(number, Number::Float(_)))
     {
-        let mut total = 0.0_f64;
+        // The exact sum rounded once (ADR-0114), by the fixed-point oracle
+        // rather than by the expansion the accumulator holds.
+        let mut held = Vec::with_capacity(numbers.len());
         for number in &numbers {
-            total += approximate(number).ok_or_else(|| failed("a number no float can hold"))?;
+            held.push(approximate(number).ok_or_else(|| failed("a number no float can hold"))?);
         }
-        return Ok(Value::Number(Number::float(total)));
+        return Ok(Value::Number(Number::float(
+            crate::accumulate::exact::oracle::oracle(&held),
+        )));
     }
 
     let mut total = Decimal::ZERO;
@@ -672,6 +665,23 @@ fn mean(values: &[Value], span: Span) -> Result<Value> {
         found: reason,
         span,
     };
+    if numbers
+        .iter()
+        .any(|number| matches!(number, Number::Float(_)))
+    {
+        let mut held = Vec::with_capacity(numbers.len());
+        for number in &numbers {
+            held.push(approximate(number).ok_or_else(|| failed("a number no float can hold"))?);
+        }
+        let total = crate::accumulate::exact::oracle::oracle(&held);
+        #[expect(
+            clippy::cast_precision_loss,
+            clippy::as_conversions,
+            reason = "a test-only reference over a corpus of a handful of values"
+        )]
+        let counted = held.len() as f64;
+        return Ok(Value::Number(Number::float(total / counted)));
+    }
     let mut total = Decimal::ZERO;
     for number in &numbers {
         let exact = number

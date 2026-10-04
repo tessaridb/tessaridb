@@ -57,6 +57,18 @@ pub enum Decision {
     Committed,
     /// A participant refused, or the record's liveness lapsed.
     Aborted,
+    /// Written with the coordinator's own prepare, naming every participant
+    /// (ADR-0112 D14a): committed implicitly once every participant's prepare
+    /// is held, and decided explicitly behind the caller's answer.
+    Staging,
+}
+
+impl Decision {
+    /// Whether the record holds an outcome: `COMMITTED` or `ABORTED`.
+    #[must_use]
+    pub const fn is_decided(self) -> bool {
+        matches!(self, Self::Committed | Self::Aborted)
+    }
 }
 
 /// One range the transaction writes, as its record names it.
@@ -113,6 +125,58 @@ pub enum Part {
         /// The participant range whose part had landed.
         range: Reach,
     },
+    /// The transaction record written `PENDING` and the coordinator's own
+    /// range's writes held as intents, in one record (ADR-0112 D13a): the
+    /// record by compare-and-set on *absent*, so a participant that aborted it
+    /// first wins.
+    Begin(TransactionRecord),
+    /// The record decided and the coordinator's own range's intents resolved
+    /// as it says, in one record (ADR-0112 D13b).
+    Conclude(TransactionRecord),
+    /// The transaction's part in `range` barred for good, its prepare not
+    /// having landed there — what status recovery writes before it aborts a
+    /// `STAGING` record (ADR-0112 D14c).
+    Prevent {
+        /// The participant range whose part is barred.
+        range: Reach,
+    },
+}
+
+impl Part {
+    /// The transaction record this part writes, if it writes one.
+    #[must_use]
+    pub const fn record(&self) -> Option<&TransactionRecord> {
+        match self {
+            Self::Decide(record) | Self::Begin(record) | Self::Conclude(record) => Some(record),
+            Self::Prepare { .. }
+            | Self::Resolve { .. }
+            | Self::Forget { .. }
+            | Self::Landed { .. }
+            | Self::Prevent { .. } => None,
+        }
+    }
+
+    /// Whether this part's writes are intents of its transaction.
+    #[must_use]
+    pub const fn prepares(&self) -> bool {
+        matches!(self, Self::Prepare { .. } | Self::Begin(_))
+    }
+
+    /// The outcome this part resolves intents to, if it resolves any: `true`
+    /// when they become versions, `false` when they are dropped.
+    #[must_use]
+    pub fn resolution(&self) -> Option<bool> {
+        match self {
+            Self::Resolve { committed } => Some(*committed),
+            Self::Conclude(record) => Some(record.decision == Decision::Committed),
+            Self::Prepare { .. }
+            | Self::Decide(_)
+            | Self::Forget { .. }
+            | Self::Landed { .. }
+            | Self::Begin(_)
+            | Self::Prevent { .. } => None,
+        }
+    }
 }
 
 /// The section a log record carries when it belongs to a transaction across
@@ -154,6 +218,9 @@ const PART_DECIDE: u8 = 2;
 const PART_RESOLVE: u8 = 3;
 const PART_FORGET: u8 = 4;
 const PART_LANDED: u8 = 5;
+const PART_BEGIN: u8 = 6;
+const PART_CONCLUDE: u8 = 7;
+const PART_PREVENT: u8 = 8;
 
 const RESOLVED: u8 = 0;
 const PROVISIONAL: u8 = 1;
@@ -161,6 +228,7 @@ const PROVISIONAL: u8 = 1;
 const DECISION_PENDING: u8 = 0;
 const DECISION_COMMITTED: u8 = 1;
 const DECISION_ABORTED: u8 = 2;
+const DECISION_STAGING: u8 = 3;
 
 /// Append an [`Across`] section.
 pub(super) fn put(writer: &mut KeyWriter, across: &Across) {
@@ -183,6 +251,18 @@ pub(super) fn put(writer: &mut KeyWriter, across: &Across) {
         }
         Part::Landed { range } => {
             writer.put_u8(PART_LANDED);
+            put_reach(writer, *range);
+        }
+        Part::Begin(record) => {
+            writer.put_u8(PART_BEGIN);
+            put_record(writer, record);
+        }
+        Part::Conclude(record) => {
+            writer.put_u8(PART_CONCLUDE);
+            put_record(writer, record);
+        }
+        Part::Prevent { range } => {
+            writer.put_u8(PART_PREVENT);
             put_reach(writer, *range);
         }
     }
@@ -215,22 +295,28 @@ pub(super) fn take(reader: &mut KeyReader<'_>) -> Result<Across> {
         PART_LANDED => Part::Landed {
             range: take_reach(reader)?,
         },
+        PART_BEGIN => Part::Begin(take_record(reader)?),
+        PART_CONCLUDE => Part::Conclude(take_record(reader)?),
+        PART_PREVENT => Part::Prevent {
+            range: take_reach(reader)?,
+        },
         found => return Err(unknown("part", found)),
     };
     Ok(Across { transaction, part })
 }
 
-/// Append a [`TransactionRecord`]: as a `Decide` part, and as the value the
-/// record's own key holds.
+/// Append a [`TransactionRecord`]: as a `Decide`, `Begin` or `Conclude` part,
+/// and as the value the record's own key holds.
 fn put_record(writer: &mut KeyWriter, record: &TransactionRecord) {
     writer.put_u8(match record.decision {
         Decision::Pending => DECISION_PENDING,
         Decision::Committed => DECISION_COMMITTED,
         Decision::Aborted => DECISION_ABORTED,
+        Decision::Staging => DECISION_STAGING,
     });
     writer.put_u64(record.deadline);
-    // A count here, unlike in front of a log record's mutations: in a `Decide`
-    // part the participants are followed by the mutations, so they need an end.
+    // A count here, unlike in front of a log record's mutations: in a part
+    // carrying a record the participants are followed by the mutations, so they need an end.
     put_participants(writer, &record.participants);
 }
 
@@ -269,6 +355,7 @@ fn take_record(reader: &mut KeyReader<'_>) -> Result<TransactionRecord> {
         DECISION_PENDING => Decision::Pending,
         DECISION_COMMITTED => Decision::Committed,
         DECISION_ABORTED => Decision::Aborted,
+        DECISION_STAGING => Decision::Staging,
         found => return Err(unknown("decision", found)),
     };
     let deadline = reader.take_u64()?;

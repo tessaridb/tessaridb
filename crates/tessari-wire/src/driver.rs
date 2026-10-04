@@ -41,7 +41,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use tessari_encoding::{NODE_ID_LEN, Roles};
+use tessari_encoding::{NODE_ID_LEN, NodeVersion, Roles};
 use tessari_storage::ReplicaDefinition;
 use tessari_types::{Reach, Sequence};
 use tokio_util::sync::CancellationToken;
@@ -301,6 +301,21 @@ impl tessari_session::Elsewhere for Published {
                 epoch: heard.said.epoch,
             }
         })
+    }
+
+    /// Who the last round heard leading `range`'s line.
+    fn leading(&self, range: tessari_types::Reach) -> Option<tessari_session::Peer> {
+        let (endpoint, node, epoch) = self.current().leading(range)?;
+        Some(tessari_session::Peer {
+            endpoint,
+            node,
+            epoch,
+        })
+    }
+
+    /// What the last round heard the node at `endpoint` greet as.
+    fn build_at(&self, endpoint: &str) -> Option<NodeVersion> {
+        self.current().at(endpoint).map(|heard| heard.said.build)
     }
 }
 
@@ -643,6 +658,7 @@ mod tests {
             join: None,
             releasing: false,
             preferred: false,
+            region: None,
         }
     }
 

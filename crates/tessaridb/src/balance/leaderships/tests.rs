@@ -31,6 +31,7 @@ fn row(n: u8, leads: Option<Reach>) -> ReplicaDefinition {
         join: None,
         releasing: false,
         preferred: false,
+        region: None,
     }
 }
 

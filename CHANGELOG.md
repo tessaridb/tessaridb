@@ -12,6 +12,80 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.25.0-beta — 2026-10-04
+
+The cluster without its remaining limits (G057).
+
+### Changed
+
+- **A transaction across leaders commits in one round** (ADR-0112 D14). The
+  driver writes the transaction's record `STAGING` together with its first
+  range's writes and sends every other leader its part in the same round; once
+  every part is held by a majority the transaction is committed and the caller
+  is told so. The record's conclusion and the resolutions follow behind the
+  answer. A refusal or a lost answer no longer aborts outright: the driver asks
+  each leader whether its part landed, bars one that has not, and reports what
+  that finds. Measured on three processes on one Linux host: 2.4–2.7 times one
+  write at the median, from 6.2 times.
+- **A new range leader answers for its range only once its own first entry is
+  held by a majority.** Until then it tells a peer asking about its range
+  `LeadershipUnconfirmed` and the peer asks again, so a successor cannot report
+  a transaction's intents gone before its leadership is settled.
+- **A float total is the exact sum, rounded once** (ADR-0114). `sum` and `mean`
+  over floats, and `variance`/`stddev`, hold their totals exactly and round
+  once, so the same numbers answer the same bits in any order, after a split, and
+  merged across shards — `0.1 + 0.2 + 0.3` totals `0.6`, not
+  `0.6000000000000001`. Answers move in the last bits toward the exact value.
+  `mean` over a group containing a float now answers a float (it answered a
+  decimal of the converted floats). A spread no longer loses digits to
+  cancellation, and a total of finite floats past the largest float refuses,
+  naming that. A `sum` over floats is about 11 times cheaper per value.
+- **Reads on a node holding part of a split table do more on the shards'
+  leaders.** `variance` and `stddev`, and `sum` and `mean` over floats, fold
+  there — one state per group travels instead of the records. A join side or a
+  `FETCH` into a shard the node lacks is gathered instead of refused, narrowed to
+  the keys the near side holds, under the caller's visibility (ADR-0083).
+  `median`, `collect` and the counter folds still fetch the records.
+  <!-- landed: sharding-execution -->
+  <!-- absent: holistic-folds-on-the-leaders -->
+
+### Added
+
+- **`ACKNOWLEDGE LOCAL MAJORITY`** — a majority of the voters in the leader's
+  region, the region named on member rows (`DEFINE REPLICA … REGION 'eu'`,
+  `ALTER REPLICA … REGION`). Ordered between `LEADER` and `MAJORITY`; it
+  survives losing nodes outside the region while the leader lives and is not
+  promised across a failover. New refusal: `LocalMajorityWithoutRegion`
+  (ADR-0106). The console shows each peer's region.
+- **Measurements across network distance** — `benchmarks/cluster-distance.sh`
+  measures commit levels, replication lag, failover and a commit across leaders
+  at injected round trips, and writes the benchmark file.
+
+### Upgrade
+
+- During a rolling upgrade from `0.24`, a spread is not asked of a `0.24` leader,
+  and a `0.24` leader's exact total is gathered as records when a float elsewhere
+  in the group makes the float form the answer. Transactions across leaders take
+  the one-round commit only once every peer has greeted at `0.25.0`.
+
+### Fixed
+
+- **A leader no longer loses its lease under writes across network distance.**
+  A voter judged the leader's renewal on the log position the leader greeted
+  with, read before a handshake of several round trips, against its own
+  position read when the ballot landed — so a leader still committing looked
+  behind the entries it had streamed meanwhile, its renewal was refused, and
+  its writes were refused when the lease ran out. The leader renewing its own
+  epoch is no longer put to that comparison; an election still is.
+- **Bookkeeping of transactions across leaders is bounded.** The markers that
+  record where each part landed are forgotten once reclamation passes them, with
+  the provenance they decided (ADR-0112, Q-922).
+- **A restored snapshot finishes what its moment decided.** Restored on its own,
+  a store settles every transaction across leaders the snapshot had decided —
+  committed, staging with every part landed, or aborted — and leaves one it had
+  not decided standing and unseen, so the log taken after the snapshot still
+  applies on top.
+
 ## 0.24.0-beta — 2026-10-04
 
 The cluster keeps every acknowledged write and runs itself (G053).

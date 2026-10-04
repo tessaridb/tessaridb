@@ -66,6 +66,10 @@ impl Store {
         table: TableId,
     ) -> Result<Reclaimed> {
         let floor = self.retention_floor()?;
+        // First, so the versions they settle can be reclaimed below: settled
+        // transactions whose markers the floor has passed lose their provenance
+        // (Q-922), the reclaim floor rising with each.
+        self.fold_settled_across(floor)?;
         let prefix = RecordKey::table_prefix(namespace, database, table);
         let request = ScanRequest {
             keyspace: RecordKey::keyspace(),

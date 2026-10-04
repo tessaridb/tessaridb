@@ -3590,7 +3590,7 @@ fn a_transaction_across_two_shard_leaders_commits_whole_or_is_refused() {
     let spanning = |commit: &str, key: &str| {
         format!(
             "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
-             CREATE orders:'a{key}' = {{ n: 7 }}; CREATE orders:'h{key}' = {{ n: 7 }}; \
+             UPSERT orders:'a{key}' = {{ n: 7 }}; UPSERT orders:'h{key}' = {{ n: 7 }}; \
              {commit};"
         )
     };
@@ -3603,8 +3603,10 @@ fn a_transaction_across_two_shard_leaders_commits_whole_or_is_refused() {
     // Asked, it commits whole: both records, on both leaders and on the node
     // that leads neither. Asked again while it is refused: on a cluster this
     // young a follower may not yet hold a shard's log, so a prepare's majority
-    // wait runs out and the transaction aborts with nothing applied — the
-    // retriable refusal a client answers by asking again.
+    // wait runs out — an abort, or in doubt when a part had landed, and one in
+    // doubt may yet commit once the follower catches up (ADR-0112 D14d). The
+    // writes are UPSERTs so that asking again is the same transaction either
+    // way, as a client retrying an in-doubt answer must make it.
     let mut committed = Err(String::from("never asked"));
     let began = Instant::now();
     while committed.is_err() && began.elapsed() < Duration::from_secs(60) {
@@ -4184,15 +4186,15 @@ fn a_rolling_upgrade_across_one_minor_version_keeps_every_record() {
             written.push(key);
         }
     };
-    // Which build answers: only this one reports a peer's `preferred` flag
-    // (G053 SG5b) — the version string alone does not move between the two.
+    // Which build answers: only this one reports a peer's `region` (G057 C3),
+    // a field the previous minor version does not have — a version string
+    // alone can match when both are built under one label.
     let this_build = |surface: &str| {
-        value_at(surface, "INFO FOR NODE;").is_ok_and(|report| report.contains("\"preferred\""))
+        value_at(surface, "INFO FOR NODE;").is_ok_and(|report| report.contains("\"region\""))
     };
     assert!(
         UPGRADING.iter().all(|(surface, _)| {
-            value_at(surface, "INFO FOR NODE;")
-                .is_ok_and(|report| !report.contains("\"preferred\""))
+            value_at(surface, "INFO FOR NODE;").is_ok_and(|report| !report.contains("\"region\""))
         }),
         "a node answered as this build, or not at all, before it was replaced"
     );
@@ -4260,9 +4262,14 @@ fn cross_leader_commit_latency_against_one_leader_at_majority() {
         )
     };
     // Warm: the first transaction across leaders may be refused while a
-    // follower does not yet hold a shard's log (the across test's own note).
+    // follower does not yet hold a shard's log (the across test's own note) —
+    // or answered in doubt and commit afterwards, so the warming writes are
+    // UPSERTs and asking again is the same transaction (ADR-0112 D14d).
+    let warming = "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
+                   UPSERT orders:'awarm' = { n: 1 }; UPSERT orders:'hwarm' = { n: 1 }; \
+                   COMMIT ACROSS LEADERS;";
     let began = Instant::now();
-    while client.run(&across("warm"), None).is_err() {
+    while client.run(warming, None).is_err() {
         assert!(
             began.elapsed() < Duration::from_secs(60),
             "no transaction across leaders ever committed{}",
@@ -4410,11 +4417,26 @@ fn a_transaction_whose_coordinator_died_mid_prepare_leaves_nothing_standing() {
             None,
         )
     });
-    // The local prepare takes milliseconds and the remote one is held for as
-    // long as the pause lasts. The kill comes before the record's lapse —
-    // four failover rounds, about two seconds here — or the coordinator
-    // would abort its own record and nothing would be left to a successor.
-    std::thread::sleep(Duration::from_millis(500));
+    // The local begin takes milliseconds and the remote prepare is held for
+    // as long as the pause lasts. The kill comes once the successor holds the
+    // record its begin wrote — the record and the coordinator's own intent are
+    // one commit, so a successor holding one holds both — and not on a timer:
+    // killed before its begin reached a second node, the coordinator leaves
+    // nothing for anyone to finish, which is not the case this tests.
+    let held = until(Duration::from_secs(10), || {
+        cluster_report(ABANDONED[successor].0).is_ok_and(|report| {
+            matches!(
+                report.get("across"),
+                Some(tessari_types::Value::Object(across))
+                    if across.get("pending") == Some(&tessari_types::Value::from(1_i64))
+            )
+        })
+    });
+    assert!(
+        held,
+        "node {successor} never held the coordinator's record{}",
+        what_the_nodes_said(&ABANDONED, &cluster.logs)
+    );
     cluster.running[leader] = None;
     let answered = driving.join().expect("the client thread ends");
     assert!(
@@ -4423,9 +4445,10 @@ fn a_transaction_whose_coordinator_died_mid_prepare_leaves_nothing_standing() {
     );
     signal("-CONT", &participant);
     // Nobody restarts the coordinator. Its successor takes shard 1, finds the
-    // record overdue, aborts it and drops the intent — and until then a
-    // standing intent refuses every writer, so writing the record again is
-    // only possible once it has.
+    // record overdue and recovers it (ADR-0112 D14c) — aborted once n1's part
+    // is barred, or committed if n1, released, landed the prepare first — and
+    // until then a standing intent refuses every writer, so writing the record
+    // again is only possible once it has.
     let mut last = String::new();
     let rewritten = until(Duration::from_secs(180), || {
         [(successor, "ak"), (1, "hk")].iter().all(|(at, key)| {
@@ -4617,8 +4640,10 @@ fn a_transaction_whose_participant_leader_dies_is_kept_whole_by_its_successor() 
             what_the_nodes_said(&ACROSS_PARTICIPANT, &logs)
         );
     }
+    // UPSERT: an answer in doubt may have committed, and asking again must be
+    // the same transaction rather than a refusal that the record exists.
     let script = "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
-                  CREATE orders:'ap' = { n: 11 }; CREATE orders:'hp' = { n: 11 }; \
+                  UPSERT orders:'ap' = { n: 11 }; UPSERT orders:'hp' = { n: 11 }; \
                   COMMIT ACROSS LEADERS;";
     let mut committed = Err(String::from("never asked"));
     let asking = Instant::now();
@@ -4675,6 +4700,95 @@ fn a_transaction_whose_participant_leader_dies_is_kept_whole_by_its_successor() 
             what_the_nodes_said(&ACROSS_PARTICIPANT, &logs)
         );
     }
+}
+
+/// The D13d scenario's addresses, its own band (G057 SG4).
+const ACROSS_UNHELD: Band = [
+    ("127.0.0.1:47952", "127.0.0.1:47953"),
+    ("127.0.0.1:47954", "127.0.0.1:47955"),
+    ("127.0.0.1:47956", "127.0.0.1:47957"),
+];
+
+#[test]
+#[ignore = "real cadences across three processes — two shard lines elected,             one led by a node that holds only its own shard. G057 SG4's own             validation of ADR-0112 D13d, run explicitly: cargo test -p \
+            tessari-cli --test serving a_participant_leader_without_the_record \
+            -- --ignored"]
+fn a_participant_leader_without_the_record_reads_the_commit_it_was_part_of() {
+    // Node 1 leads shard 2 and holds nothing else, so it never holds the
+    // record of a transaction node 0 coordinates from shard 1. Its copy has
+    // the intent from its own prepare; the resolution follows the caller's
+    // answer (D13c). A read at node 1 right after the answer must see the
+    // write all the same — node 1 asks the record's leader (D13d) — because a
+    // reader that began after the caller was told, reading at the leaders,
+    // sees the transaction.
+    let leads = |shard: u32, over: &str| {
+        format!(
+            "ROLES serving, writable, coordinating REPLICATES {over} \
+             LEADS SHARD prod.shop.orders {shard}"
+        )
+    };
+    let cluster = a_cluster_of_rows(
+        &ACROSS_UNHELD,
+        PLACED,
+        [
+            leads(1, "STORE"),
+            leads(2, "SHARD prod.shop.orders 2"),
+            "ROLES serving, writable, coordinating REPLICATES STORE".to_owned(),
+        ],
+    );
+    let logs = cluster.logs.clone();
+    for (index, prefix) in [(0, "a"), (1, "h")] {
+        if let Err(last) = until_taken(ACROSS_UNHELD[index].0, prefix, Duration::from_secs(120)) {
+            panic!(
+                "node {index} never took its shard; last: {last}{}",
+                what_the_nodes_said(&ACROSS_UNHELD, &logs)
+            );
+        }
+    }
+    if let Err(last) = until_sent_to(
+        ACROSS_UNHELD[0].0,
+        "hknown",
+        cluster.ids[1],
+        ACROSS_UNHELD[1].1,
+        Duration::from_secs(90),
+    ) {
+        panic!(
+            "node 0 never learned that node 1 leads shard 2; last: {last}{}",
+            what_the_nodes_said(&ACROSS_UNHELD, &logs)
+        );
+    }
+    let mut missed = Vec::new();
+    let mut committed = 0_u32;
+    let began = Instant::now();
+    let mut attempt = 0_u32;
+    while committed < 30 && began.elapsed() < Duration::from_secs(120) {
+        attempt = attempt.saturating_add(1);
+        let script = format!(
+            "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
+             CREATE orders:'au{attempt}' = {{ n: 1 }}; CREATE orders:'hu{attempt}' = {{ n: 1 }}; \
+             COMMIT ACROSS LEADERS;"
+        );
+        if asked(ACROSS_UNHELD[0].0, &script, None).is_err() {
+            std::thread::sleep(POLL);
+            continue;
+        }
+        committed = committed.saturating_add(1);
+        let read = format!("SELECT * FROM orders:'hu{attempt}';");
+        match read_at(ACROSS_UNHELD[1].0, &read) {
+            Ok(ids) if ids == [format!("hu{attempt}")] => {}
+            other => missed.push((attempt, other)),
+        }
+    }
+    assert_eq!(
+        committed, 30,
+        "too few transactions across leaders committed"
+    );
+    assert!(
+        missed.is_empty(),
+        "node 1 did not see a commit it was part of, read right after the \
+         answer: {missed:?}{}",
+        what_the_nodes_said_beyond_greetings(&logs)
+    );
 }
 
 // ---- G033 S3.1: a read gathered across shards, across three processes ------
@@ -4794,6 +4908,32 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
     };
     let folded = format!("{:?}", records.first().map(|(_, value)| value));
     assert!(folded.contains("Integer(3)"), "{folded}");
+    // G057 C2: a join over the whole table on the node holding one shard — both
+    // sides gathered, the far one narrowed to the near side's keys — answers
+    // every pair: each of the three records has n = 1.
+    let joined = read_at(
+        GATHERING[2].0,
+        "SELECT * FROM orders JOIN orders AS twin ON orders.n = twin.n;",
+    )
+    .unwrap();
+    assert_eq!(joined.len(), 9, "{joined:?}");
+    // G057 C1 (ADR-0114): float folds over the whole table — exact totals, so
+    // the same answer however the shards fold and merge.
+    let answers = client
+        .run(
+            "USE NAMESPACE prod; USE DATABASE shop; \
+             SELECT sum(n * 0.1) AS tenths, variance(n) AS spread FROM orders;",
+            None,
+        )
+        .unwrap();
+    let Some(Answer::Records { records, .. }) = answers.last() else {
+        panic!("not records: {answers:?}");
+    };
+    let folded = format!("{:?}", records.first().map(|(_, value)| value));
+    assert!(
+        folded.contains("Float(0.30000000000000004)") && folded.contains("Float(0.0)"),
+        "{folded}"
+    );
     let in_the_middle = whole.get(1).unwrap().clone();
     assert_eq!(
         read_at(
@@ -6041,6 +6181,85 @@ fn acknowledged_writes_at_a_majority_survive_followers_that_had_not_received_the
     );
 }
 
+/// G057 C3's cluster: a band of its own, clear of every other in this file.
+const LOCAL_REGIONS: Band = [
+    ("127.0.0.1:47940", "127.0.0.1:47941"),
+    ("127.0.0.1:47942", "127.0.0.1:47943"),
+    ("127.0.0.1:47944", "127.0.0.1:47945"),
+];
+
+/// G057 C3: `LOCAL MAJORITY` counts the voters in the leader's region, across
+/// three processes. With the leader and one follower in `eu` and the other in
+/// `us`, stopping the `eu` follower leaves a local-majority write unconfirmed
+/// while a majority write is acknowledged through `us`; stopping the `us`
+/// follower instead leaves the local majority whole.
+#[test]
+#[ignore = "three processes and SIGSTOP — G057 C3, run explicitly: cargo test -p \
+            tessari-cli --test serving a_local_majority_counts -- --ignored --nocapture"]
+fn a_local_majority_counts_the_voters_of_the_leaders_region() {
+    let cluster = a_cluster_declared(&LOCAL_REGIONS, "", ["", "", ""]);
+    let leader = the_node_a_majority_granted(&LOCAL_REGIONS);
+    for index in 0..LOCAL_REGIONS.len() {
+        caught_up(&LOCAL_REGIONS, index, "1", &cluster);
+    }
+    let followers: Vec<usize> = (0..LOCAL_REGIONS.len())
+        .filter(|index| *index != leader)
+        .collect();
+    let (local, remote) = (followers[0], followers[1]);
+    let mut client = Client::connect(LOCAL_REGIONS[leader].0).unwrap();
+    client
+        .run(
+            &format!(
+                "ALTER REPLICA n{leader} REGION 'eu'; ALTER REPLICA n{local} REGION 'eu'; \
+                 ALTER REPLICA n{remote} REGION 'us';"
+            ),
+            None,
+        )
+        .unwrap();
+    let pid = |index: usize| {
+        cluster.running[index]
+            .as_ref()
+            .expect("the follower runs")
+            .0
+            .id()
+    };
+    let signal = |what: &str, pid: u32| {
+        let sent = Command::new("kill")
+            .args([what, &pid.to_string()])
+            .status()
+            .expect("kill runs");
+        assert!(sent.success(), "{what} {pid}");
+    };
+    let write = |client: &mut Client, key: &str, level: &str| {
+        client.run(&into_item(key, &format!(" ACKNOWLEDGE {level}")), None)
+    };
+
+    signal("-STOP", pid(local));
+    let unconfirmed = write(&mut client, "l1", "LOCAL MAJORITY");
+    let majority = write(&mut client, "m1", "MAJORITY");
+    signal("-CONT", pid(local));
+    assert!(
+        matches!(&unconfirmed, Err(why) if why.to_string().contains("is committed on this node")),
+        "eu's other voter was stopped, and a local majority was acknowledged: {unconfirmed:?}{}",
+        what_the_nodes_said(&LOCAL_REGIONS, &cluster.logs)
+    );
+    assert!(
+        majority.is_ok(),
+        "us holds it, and a majority was refused: {majority:?}{}",
+        what_the_nodes_said(&LOCAL_REGIONS, &cluster.logs)
+    );
+
+    caught_up(&LOCAL_REGIONS, local, "m1", &cluster);
+    signal("-STOP", pid(remote));
+    let local_held = write(&mut client, "l2", "LOCAL MAJORITY");
+    signal("-CONT", pid(remote));
+    assert!(
+        local_held.is_ok(),
+        "only us was stopped, and the local majority was refused: {local_held:?}{}",
+        what_the_nodes_said(&LOCAL_REGIONS, &cluster.logs)
+    );
+}
+
 /// Busy threads in this process, `TESSARIDB_TEST_CPU_LOAD` of them, for a
 /// measurement taken under CPU pressure; dropping the guard stops them.
 struct Load(
@@ -6694,3 +6913,7 @@ fn a_peer_certificate_rotates_under_writes_and_a_revoked_one_is_cut_off() {
     stop.store(true, Ordering::Relaxed);
     writer.join().unwrap();
 }
+
+// ---- G057 C6: the same measurements across injected network distance ---
+#[path = "serving/distance.rs"]
+mod distance;

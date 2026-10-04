@@ -127,6 +127,72 @@ impl StoreKey for IntentOfKey {
     }
 }
 
+/// One version a committed transaction across leaders resolved on this node
+/// (ADR-0112, Q-922): the same layout as [`IntentOfKey`] under its own kind,
+/// written in the batch that lands the version and deleted in the batch that
+/// folds the transaction's provenance away. The value is the version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedOfKey {
+    /// The transaction.
+    pub transaction: TransactionId,
+    /// The record's namespace.
+    pub namespace: NamespaceId,
+    /// Its database.
+    pub database: DatabaseId,
+    /// Its table.
+    pub table: TableId,
+    /// Its identity.
+    pub id: RecordId,
+}
+
+impl ResolvedOfKey {
+    /// The prefix every resolved version of `transaction` shares.
+    #[must_use]
+    pub fn prefix_of(transaction: TransactionId) -> Vec<u8> {
+        let mut writer = KeyWriter::with_capacity(TRANSACTION_ID_LEN.saturating_add(1));
+        writer
+            .put_u8(KeyKind::ResolvedOf.tag())
+            .put_fixed(&transaction.bytes());
+        writer.finish()
+    }
+}
+
+impl StoreKey for ResolvedOfKey {
+    type Value = Sequence;
+
+    const KIND: KeyKind = KeyKind::ResolvedOf;
+
+    fn encode(&self) -> Key {
+        let mut writer = KeyWriter::with_capacity(48);
+        writer
+            .put_u8(Self::KIND.tag())
+            .put_fixed(&self.transaction.bytes())
+            .put_u32(self.namespace.get())
+            .put_u32(self.database.get())
+            .put_u32(self.table.get());
+        crate::record_id::put(&mut writer, &self.id);
+        Key::from(writer.finish())
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        let transaction = TransactionId::new(reader.take_fixed::<TRANSACTION_ID_LEN>()?);
+        let namespace = NamespaceId::new(reader.take_u32()?);
+        let database = DatabaseId::new(reader.take_u32()?);
+        let table = TableId::new(reader.take_u32()?);
+        let id = crate::record_id::take(&mut reader)?;
+        reader.finish()?;
+        Ok(Self {
+            transaction,
+            namespace,
+            database,
+            table,
+            id,
+        })
+    }
+}
+
 /// Where one transaction across leaders' part in one range landed on this node
 /// (ADR-0112 D6a).
 ///
@@ -238,6 +304,40 @@ impl StoreKey for AcrossUnsettledKey {
         let transaction = TransactionId::new(reader.take_fixed::<TRANSACTION_ID_LEN>()?);
         reader.finish()?;
         Ok(Self { table, transaction })
+    }
+}
+
+/// One transaction across leaders' part in one range, barred by status
+/// recovery before its prepare landed (ADR-0112 D14c).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcrossBarredKey {
+    /// The transaction.
+    pub transaction: TransactionId,
+    /// The range whose part is barred.
+    pub range: Reach,
+}
+
+impl StoreKey for AcrossBarredKey {
+    type Value = Sequence;
+
+    const KIND: KeyKind = KeyKind::AcrossBarred;
+
+    fn encode(&self) -> Key {
+        let mut writer = KeyWriter::with_capacity(TRANSACTION_ID_LEN.saturating_add(24));
+        writer
+            .put_u8(Self::KIND.tag())
+            .put_fixed(&self.transaction.bytes());
+        put_reach(&mut writer, self.range);
+        Key::from(writer.finish())
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        let transaction = TransactionId::new(reader.take_fixed::<TRANSACTION_ID_LEN>()?);
+        let range = take_reach(&mut reader)?;
+        reader.finish()?;
+        Ok(Self { transaction, range })
     }
 }
 

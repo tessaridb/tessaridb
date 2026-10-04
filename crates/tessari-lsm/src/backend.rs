@@ -41,6 +41,7 @@ use tessari_kv::{
 };
 
 mod group;
+mod syncs;
 
 use crate::AtRestKey;
 use crate::encryption;
@@ -67,6 +68,9 @@ pub struct LsmBackend {
     /// Held for the whole of `apply`, which is what makes a precondition mean
     /// anything. See the module documentation.
     write_lock: Mutex<()>,
+    /// What has landed in the WAL and how much of it a sync covers, so a
+    /// round's sync is paid only when one is owed (`syncs`).
+    syncs: syncs::WalSyncs,
 }
 
 /// Written by hand because the engine's cache handle carries no `Debug`, and
@@ -157,6 +161,7 @@ impl LsmBackend {
             durability: config.durability,
             path,
             write_lock: Mutex::new(()),
+            syncs: syncs::WalSyncs::default(),
         })
     }
 
@@ -301,8 +306,9 @@ impl LsmBackend {
 
     /// Apply `batch` under `options`, subject to its preconditions — the one
     /// write both [`KvBackend::apply`] and [`KvBackend::apply_unsynced`] make.
-    fn write(&self, batch: WriteBatch, options: &rocksdb::WriteOptions) -> Result<()> {
+    fn write(&self, batch: WriteBatch, synced: bool) -> Result<()> {
         let _writer = self.writer();
+        let before = self.syncs.landed_so_far();
 
         // Every precondition is read here, under the lock, so nothing can move
         // between the check and the write below.
@@ -336,9 +342,13 @@ impl LsmBackend {
             }
         }
 
+        let mut options = rocksdb::WriteOptions::default();
+        options.set_sync(synced);
         self.database
-            .write_opt(engine_batch, options)
-            .map_err(|error| from_engine(&error))
+            .write_opt(engine_batch, &options)
+            .map_err(|error| from_engine(&error))?;
+        self.syncs.landed(before, synced);
+        Ok(())
     }
 
     /// The write lock, taken as found even after a panic elsewhere held it.
@@ -471,13 +481,13 @@ impl KvBackend for LsmBackend {
     }
 
     fn apply(&self, batch: WriteBatch) -> Result<()> {
-        self.write(batch, &self.durability.write_options())
+        self.write(batch, self.durability == Durability::PowerLossSafe)
     }
 
     fn apply_unsynced(&self, batch: WriteBatch) -> Result<()> {
         // Written ahead and not synced: it survives the process, and
         // `sync_applied` makes it survive the machine.
-        self.write(batch, &rocksdb::WriteOptions::default())
+        self.write(batch, false)
     }
 
     fn sync_applied(&self) -> Result<()> {
@@ -487,9 +497,13 @@ impl KvBackend for LsmBackend {
         if self.durability != Durability::PowerLossSafe {
             return Ok(());
         }
-        self.database
-            .flush_wal(true)
-            .map_err(|error| from_engine(&error))
+        // Covered already when a synced commit, or another round's flush,
+        // began after these writes landed (`syncs`).
+        self.syncs.sync_through(self.syncs.landed_so_far(), || {
+            self.database
+                .flush_wal(true)
+                .map_err(|error| from_engine(&error))
+        })
     }
 
     fn apply_group(&self, batches: Vec<WriteBatch>) -> (usize, Result<()>) {
@@ -553,11 +567,15 @@ impl KvBackend for LsmBackend {
         }
         let region = self.region(keyspace)?;
         let _writer = self.writer();
+        let before = self.syncs.landed_so_far();
         let mut engine_batch = EngineBatch::default();
         engine_batch.delete_range_cf(region, &from, &to);
         self.database
             .write_opt(engine_batch, &self.durability.write_options())
-            .map_err(|error| from_engine(&error))
+            .map_err(|error| from_engine(&error))?;
+        self.syncs
+            .landed(before, self.durability == Durability::PowerLossSafe);
+        Ok(())
     }
 }
 
@@ -687,6 +705,31 @@ mod tests {
             )
             .unwrap();
         assert_eq!(backend.get(Keyspace::INDEX, &key).unwrap(), None);
+    }
+
+    #[test]
+    fn a_synced_write_covers_the_applies_that_landed_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend =
+            LsmBackend::open(dir.path(), StoreConfig::new(Durability::PowerLossSafe)).unwrap();
+        let put = |n: u8| {
+            WriteBatch::default().put(Keyspace::INDEX, Key::from_slice(&[n]), Value::new(vec![n]))
+        };
+        backend.apply_unsynced(put(1)).unwrap();
+        let applied = backend.syncs.landed_so_far();
+        assert!(
+            !backend.syncs.covered(applied),
+            "an unsynced apply is not synced"
+        );
+        backend.apply(put(2)).unwrap();
+        assert!(
+            backend.syncs.covered(applied),
+            "a commit synced after the apply landed covers it"
+        );
+        backend.apply_unsynced(put(3)).unwrap();
+        assert!(!backend.syncs.covered(backend.syncs.landed_so_far()));
+        backend.sync_applied().unwrap();
+        assert!(backend.syncs.covered(backend.syncs.landed_so_far()));
     }
 
     #[test]

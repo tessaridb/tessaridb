@@ -30,7 +30,9 @@
 
 use std::sync::Arc;
 
-use tessari_constants::{GREETING_SECONDS, PEER_CONNECTIONS, STREAM_HEARTBEAT_MILLIS};
+use tessari_constants::{
+    ACROSS_DOOR_IDLE_SECONDS, GREETING_SECONDS, PEER_CONNECTIONS, STREAM_HEARTBEAT_MILLIS,
+};
 use tessari_encoding::NODE_ID_LEN;
 use tessari_serve::{ACCEPT_PAUSE, Bridge, Bridged, passes};
 use tokio::sync::Semaphore;
@@ -361,44 +363,12 @@ impl<H: Holding> Connection<H> {
             // coordinated request is (ADR-0112) and believed by the same rule.
             Some((tag, body)) if tag == PeerFrame::Across.tag() => {
                 let shown = shown.as_ref().ok_or(Error::Unidentified)?;
-                let carried = crate::across::Carried::decode(&body)?;
-                let believed = carried
-                    .signed
-                    .verify(
-                        shown,
-                        said.node,
-                        self.me,
-                        (carried.digest(), now_ms()),
-                        &self.replays,
-                    )
-                    .copied();
-                let (tag, reply) = match believed {
-                    Err(why) => {
-                        log::warn!(
-                            "a cross-leader record carried from {} was refused: {why}",
-                            tessari_types::uuid_to_text(&said.node)
-                        );
-                        // This node will not act for the caller as asserted,
-                        // and asking again changes nothing.
-                        let refused = tessari_session::PartRefused {
-                            kind: tessari_session::RefusalKind::Forbidden,
-                            reason: why.to_string(),
-                        };
-                        (PeerFrame::NotAcross.tag(), refused.encode())
-                    }
-                    Ok(assertion) => {
-                        let holding = Arc::clone(&self.holding);
-                        let from = said.node;
-                        let answered = self
-                            .store(move || Ok(holding.across(from, &assertion, &carried.asked)))
-                            .await?;
-                        match answered {
-                            Ok(answer) => (PeerFrame::AcrossDone.tag(), answer),
-                            Err(refused) => (PeerFrame::NotAcross.tag(), refused.encode()),
-                        }
-                    }
-                };
-                bounded(frame_async::write_tagged(&mut link, tag, &reply)).await??;
+                self.across(&mut link, shown, &said, &body).await?;
+                // A coordinator on a build that keeps links writes its next
+                // record straight onto this one (ADR-0112 D13j).
+                if said.build >= crate::across::kept::KEPT_FROM {
+                    self.keep_across(&mut link, shown, &said).await?;
+                }
                 None
             }
             Some((tag, body)) if tag == PeerFrame::Coordinate.tag() => {
@@ -465,6 +435,102 @@ impl<H: Holding> Connection<H> {
             voted,
             presented: shown.as_ref().map_or([0; 32], credential::digest),
         }))
+    }
+
+    /// Answer one carried record of a transaction across leaders, believed
+    /// against the certificate this handshake proved — so the signer is the
+    /// peer on this connection and no other (ADR-0112, ADR-0108 D1–D3).
+    async fn across(
+        &self,
+        link: &mut tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+        shown: &rustls::pki_types::CertificateDer<'_>,
+        said: &Hello,
+        body: &[u8],
+    ) -> Result<()> {
+        let carried = crate::across::Carried::decode(body)?;
+        let believed = carried
+            .signed
+            .verify(
+                shown,
+                said.node,
+                self.me,
+                (carried.digest(), now_ms()),
+                &self.replays,
+            )
+            .copied();
+        let (tag, reply) = match believed {
+            Err(why) => {
+                log::warn!(
+                    "a cross-leader record carried from {} was refused: {why}",
+                    tessari_types::uuid_to_text(&said.node)
+                );
+                // This node will not act for the caller as asserted,
+                // and asking again changes nothing.
+                let refused = tessari_session::PartRefused {
+                    kind: tessari_session::RefusalKind::Forbidden,
+                    reason: why.to_string(),
+                };
+                (PeerFrame::NotAcross.tag(), refused.encode())
+            }
+            Ok(assertion) => {
+                let holding = Arc::clone(&self.holding);
+                let from = said.node;
+                let answered = self
+                    .store(move || Ok(holding.across(from, &assertion, &carried.asked)))
+                    .await?;
+                match answered {
+                    Ok(answer) => (PeerFrame::AcrossDone.tag(), answer),
+                    Err(refused) => (PeerFrame::NotAcross.tag(), refused.encode()),
+                }
+            }
+        };
+        bounded(frame_async::write_tagged(link, tag, &reply)).await??;
+        Ok(())
+    }
+
+    /// Answer every further record the coordinator writes onto this link,
+    /// until it goes quiet for [`ACROSS_DOOR_IDLE_SECONDS`], closes it, or the
+    /// door stops (ADR-0112 D13j).
+    ///
+    /// Each record is believed by its own signed assertion, as the first was,
+    /// and the certificate the link proved is asked about again before each —
+    /// a node revoked or removed while its link is kept is cut at its next
+    /// record, as a held stream is (ADR-0108 D6). Anything but a record ends
+    /// the link: it is kept for this and nothing else.
+    async fn keep_across(
+        &self,
+        link: &mut tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+        shown: &rustls::pki_types::CertificateDer<'_>,
+        said: &Hello,
+    ) -> Result<()> {
+        let idle = std::time::Duration::from_secs(ACROSS_DOOR_IDLE_SECONDS);
+        loop {
+            let next = tokio::select! {
+                biased;
+                () = self.stop.cancelled() => return Ok(()),
+                next = tokio::time::timeout(idle, frame_async::read_tagged(link)) => next,
+            };
+            let body = match next {
+                // Quiet past the coordinator's own limit: it will not use it.
+                Err(_) => return Ok(()),
+                Ok(Ok(Some((tag, body)))) if tag == PeerFrame::Across.tag() => body,
+                Ok(Ok(Some((tag, _)))) => return Err(Error::OutOfTurn { tag }),
+                Ok(Ok(None)) => return Ok(()),
+                Ok(Err(Error::Io(why))) if why.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    return Ok(());
+                }
+                Ok(Err(why)) => return Err(why),
+            };
+            if !self.keys.still_admits(shown) {
+                log::warn!(
+                    "a kept cross-leader link from {} ended: its certificate is no longer \
+                     admitted here",
+                    tessari_types::uuid_to_text(&said.node)
+                );
+                return Ok(());
+            }
+            self.across(link, shown, said, &body).await?;
+        }
     }
 
     /// Serve a held stream (ADR-0106 D5) until the follower closes or the door
@@ -650,6 +716,10 @@ mod tests {
     /// A node with no log, holding what [`hello`] says, remembering whom it met.
     struct Holder {
         met: std::sync::Mutex<Vec<Met>>,
+        /// The build this node greets as, when not this one's.
+        build: Option<tessari_encoding::NodeVersion>,
+        /// How many greetings it gave — one per connection a peer opened.
+        greeted: std::sync::atomic::AtomicUsize,
         /// Never moved: no test here commits, so a stream would only beat.
         commits: (
             tokio::sync::watch::Sender<u64>,
@@ -681,7 +751,13 @@ mod tests {
 
     impl Holding for Holder {
         fn hello(&self) -> Result<Hello> {
-            Ok(hello(HERE))
+            self.greeted
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let said = hello(HERE);
+            Ok(Hello {
+                build: self.build.unwrap_or(said.build),
+                ..said
+            })
         }
 
         fn met(&self, met: &Met) {
@@ -732,6 +808,10 @@ mod tests {
     }
 
     fn served(authority: &Authority) -> Served {
+        served_as(authority, None)
+    }
+
+    fn served_as(authority: &Authority, build: Option<tessari_encoding::NodeVersion>) -> Served {
         let peers = crate::link::tests::bind_with(
             "127.0.0.1:0",
             authority.issue(HERE, Purpose::Peer),
@@ -746,6 +826,8 @@ mod tests {
             .expect("a runtime for the door");
         let holder = Arc::new(Holder {
             met: std::sync::Mutex::new(Vec::new()),
+            build,
+            greeted: std::sync::atomic::AtomicUsize::new(0),
             commits: tokio::sync::watch::channel(0),
         });
         let stop = CancellationToken::new();
@@ -849,6 +931,114 @@ mod tests {
             Err(Error::RefusedAcross(refused)) => Some(refused.kind),
             _ => None,
         }
+    }
+
+    /// A record the holder refuses, signed by `signer`, under its own `nonce`.
+    fn record(signer: &Credential, nonce: u8) -> crate::across::Carried {
+        use crate::assertion::{Assertion, Principal, now_ms, request_digest};
+        let asked = b"a record the holder refuses".to_vec();
+        crate::across::Carried {
+            signed: Assertion {
+                from: THERE,
+                to: HERE,
+                principal: Principal::Anonymous,
+                request: request_digest(None, None, crate::across::ACROSS, &asked),
+                nonce: [nonce; 16],
+                issued_ms: now_ms(),
+                expires_ms: now_ms().saturating_add(10_000),
+            }
+            .sign(&signer.key)
+            .expect("signed"),
+            asked,
+        }
+    }
+
+    /// Ask the door once on a fresh link, greeting as `build`, and keep the
+    /// link if it was kept.
+    fn ask_keeping(
+        (door, authority): (&Served, &Authority),
+        mine: &Credential,
+        build: tessari_encoding::NodeVersion,
+        nonce: u8,
+    ) -> (
+        crate::across::kept::Reply,
+        Option<crate::across::kept::Kept>,
+    ) {
+        let keys = crate::link::tests::keys(
+            Credential {
+                chain: mine.chain.clone(),
+                key: mine.key.clone_key(),
+            },
+            &authority.der(),
+        )
+        .expect("keys");
+        crate::across::kept::across_keeping(
+            &door.address.to_string(),
+            (&keys, keys.duplicate()),
+            HERE,
+            &Hello {
+                build,
+                ..hello(THERE)
+            },
+            (&record(mine, nonce), Duration::from_secs(GREETING_SECONDS)),
+        )
+        .expect("a link")
+    }
+
+    const KEPT: tessari_encoding::NodeVersion = crate::across::kept::KEPT_FROM;
+
+    #[test]
+    fn a_kept_link_carries_the_next_cross_leader_record_without_greeting_again() {
+        let authority = Authority::new();
+        let door = served_as(&authority, Some(KEPT));
+        let mine = peer(&authority);
+        let (first, kept) = ask_keeping((&door, &authority), &mine, KEPT, 1);
+        assert!(
+            matches!(&first, Err(refused) if refused.kind == RefusalKind::Invalid),
+            "{first:?}"
+        );
+        let mut kept = kept.expect("both ends greeted at the build that keeps links");
+        for nonce in [2, 3] {
+            let next = crate::across::kept::across_on(&mut kept, &record(&mine, nonce));
+            assert!(
+                matches!(&next, Ok(Err(refused)) if refused.kind == RefusalKind::Invalid),
+                "{next:?}"
+            );
+        }
+        assert_eq!(
+            door.holder
+                .greeted
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "three records, one greeting"
+        );
+        // A record replayed on the kept link is disbelieved as on any other.
+        let replayed = crate::across::kept::across_on(&mut kept, &record(&mine, 3));
+        assert!(
+            matches!(&replayed, Ok(Err(refused)) if refused.kind == RefusalKind::Forbidden),
+            "{replayed:?}"
+        );
+    }
+
+    #[test]
+    fn a_link_is_kept_only_when_both_ends_greet_at_the_build_that_keeps_it() {
+        let authority = Authority::new();
+        let older = tessari_encoding::NodeVersion {
+            major: 0,
+            minor: 24,
+            patch: 0,
+        };
+        let mine = peer(&authority);
+        // A door on the older build answers one record a connection.
+        let door = served_as(&authority, Some(older));
+        assert!(ask_keeping((&door, &authority), &mine, KEPT, 1).1.is_none());
+        // A coordinator on the older build is not kept for, either.
+        let door = served_as(&authority, Some(KEPT));
+        assert!(
+            ask_keeping((&door, &authority), &mine, older, 2)
+                .1
+                .is_none()
+        );
     }
 
     #[test]

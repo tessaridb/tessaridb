@@ -245,6 +245,9 @@ pub struct Coordinator {
     me: [u8; NODE_ID_LEN],
     keys: PeerKeys,
     greeting: Greeting,
+    /// Links kept open for the next record of a transaction across leaders
+    /// (ADR-0112 D13j).
+    kept: crate::across::kept::KeptLinks,
 }
 
 impl core::fmt::Debug for Coordinator {
@@ -265,6 +268,7 @@ impl Coordinator {
             me,
             keys,
             greeting,
+            kept: crate::across::kept::KeptLinks::default(),
         }
     }
 }
@@ -278,6 +282,11 @@ impl Coordinator {
     /// The credentials this node dials with.
     pub(crate) const fn keys(&self) -> &PeerKeys {
         &self.keys
+    }
+
+    /// The links kept for the next record of a transaction across leaders.
+    pub(crate) const fn kept(&self) -> &crate::across::kept::KeptLinks {
+        &self.kept
     }
 
     /// Where `to` answers, the one credential snapshot that both signs and

@@ -55,6 +55,14 @@ impl Elsewhere for Heard {
             epoch: ITS_EPOCH,
         })
     }
+
+    fn build_at(&self, _endpoint: &str) -> Option<tessari_encoding::NodeVersion> {
+        None
+    }
+
+    fn leading(&self, _range: tessari_types::Reach) -> Option<Peer> {
+        None
+    }
 }
 
 /// Declare a peer at `WHOLE_AT` that is `node` and collects `reach`.
@@ -74,6 +82,7 @@ fn declare(store: &Store, node: [u8; NODE_ID_LEN], reach: Reach) {
             join: None,
             releasing: false,
             preferred: false,
+            region: None,
         })
         .unwrap();
     transaction.commit().unwrap();
@@ -105,16 +114,17 @@ fn named(follower: &Store, heard: [u8; NODE_ID_LEN], read: &str) -> Option<Peer>
     }
 }
 
-/// Every source that refuses rather than gathers: no gatherer at all, inside a
-/// transaction, under `VERSION`, a `FETCH` into a missing shard, a join side,
-/// and the read every `DELETE` and `UPDATE` makes before it writes — which,
+/// Every source that refuses on a node told of no gatherer — the plain read, a
+/// `FETCH` into a missing shard and a join side (each gathered where a gatherer
+/// is, G057 C2) — or where gathering is withheld: inside a transaction, under
+/// `VERSION`; and the read every `DELETE` and `UPDATE` makes before it writes — which,
 /// unrefused, removed only the records this node holds and reported success.
 const REFUSED: [&str; 9] = [
     "SELECT * FROM ledger;",
     "BEGIN; SELECT * FROM ledger; COMMIT;",
     "SELECT * FROM ledger VERSION 5;",
     "SELECT * FROM ledger:'h' FETCH peer;",
-    "SELECT * FROM other JOIN ledger ON other.total = ledger.total;",
+    "SELECT * FROM ledger JOIN ledger AS twin ON ledger.note = twin.note;",
     "DELETE FROM ledger WHERE total > 0 LIMIT ALL;",
     "DELETE FROM ledger:'a'..'z' LIMIT ALL;",
     "DELETE ledger:'a';",

@@ -1546,6 +1546,15 @@ fn a_write_or_a_commit_may_name_its_own_acknowledgement() {
         level("COMMIT ACKNOWLEDGE MAJORITY;"),
         Some(Acknowledge::Majority)
     );
+    // G057 C3: a majority of the leader's region.
+    assert_eq!(
+        level("CREATE t:1 = { a: 1 } ACKNOWLEDGE LOCAL MAJORITY;"),
+        Some(Acknowledge::LocalMajority)
+    );
+    assert!(
+        parse("CREATE t:1 = { a: 1 } ACKNOWLEDGE LOCAL;").is_err(),
+        "LOCAL alone names no level"
+    );
     assert!(
         parse("SELECT * FROM t ACKNOWLEDGE MAJORITY;").is_err(),
         "a read waits for no copies"

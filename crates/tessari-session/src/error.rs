@@ -1286,6 +1286,23 @@ pub enum Error {
         span: Span,
     },
 
+    /// A `LOCAL MAJORITY` write on a node whose own row names no region
+    /// (G057 C3), refused before it commits.
+    ///
+    /// A local majority is a majority of the voters in this node's region;
+    /// with no region there is no such set, and reading it as the whole cluster
+    /// or as this node alone would wait for something the caller did not ask.
+    #[error(
+        "this write asks for `ACKNOWLEDGE LOCAL MAJORITY` (at {span}), and this \
+         node's row names no region, so it has no local voters to count: \
+         nothing was written. Give its row one — `ALTER REPLICA <name> REGION \
+         '<region>'` — or ask for `MAJORITY`"
+    )]
+    LocalMajorityWithoutRegion {
+        /// Where the write is.
+        span: Span,
+    },
+
     /// A `MAJORITY` write committed here that not enough voters acknowledged in
     /// time (ADR-0106 D4).
     ///

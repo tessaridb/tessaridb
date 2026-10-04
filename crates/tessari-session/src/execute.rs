@@ -62,6 +62,7 @@ struct Peer<'a> {
     leads: Option<&'a ReachRef>,
     preferred: bool,
     fingerprint: Option<&'a str>,
+    region: Option<&'a str>,
 }
 
 struct Declared<'a> {
@@ -361,6 +362,7 @@ impl Session<'_> {
                 leads,
                 preferred,
                 fingerprint,
+                region,
                 if_not_exists,
             } => self.define_replica(
                 transaction,
@@ -375,6 +377,7 @@ impl Session<'_> {
                     leads: leads.as_ref(),
                     preferred: *preferred,
                     fingerprint: fingerprint.as_deref(),
+                    region: region.as_deref(),
                 },
                 *if_not_exists,
             ),

@@ -346,3 +346,7 @@ fn a_pending_record_is_listed_until_it_is_decided() -> Result<()> {
     assert!(fixture.store.pending_across()?.is_empty());
     Ok(())
 }
+
+mod merged;
+
+mod folding;
