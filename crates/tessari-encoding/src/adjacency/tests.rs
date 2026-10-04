@@ -3,17 +3,17 @@
 use super::*;
 
 fn key(node: i64, kind: u32, direction: Direction, neighbour: i64) -> AdjacencyKey {
-    AdjacencyKey::new(
-        NamespaceId::new(1),
-        DatabaseId::new(2),
-        GraphId::new(3),
-        TableId::new(4),
-        RecordId::Int(node),
-        EdgeKindId::new(kind),
+    AdjacencyKey {
+        namespace: NamespaceId::new(1),
+        database: DatabaseId::new(2),
+        graph: GraphId::new(3),
+        node_table: TableId::new(4),
+        node: RecordId::Int(node),
+        edge_kind: EdgeKindId::new(kind),
         direction,
-        TableId::new(5),
-        RecordId::Int(neighbour),
-    )
+        neighbour_table: TableId::new(5),
+        neighbour: RecordId::Int(neighbour),
+    }
 }
 
 #[test]

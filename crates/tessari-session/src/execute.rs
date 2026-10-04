@@ -588,7 +588,7 @@ impl Session<'_> {
                 from,
                 to,
                 if_not_exists,
-            } => self.define_edge(transaction, name, graph, from, to, *if_not_exists, span),
+            } => self.define_edge(transaction, name, graph, (from, to), *if_not_exists, span),
             StatementKind::DropEdge { name } => self.drop_edge(transaction, name, span),
             // Drop and declare in ONE transaction, which is what makes this
             // more than sugar: the catalog change and the rows ride the same log

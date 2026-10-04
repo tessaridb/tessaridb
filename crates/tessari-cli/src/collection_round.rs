@@ -140,11 +140,11 @@ pub(crate) async fn collect_from_upstream(
         // may write follows nobody on the STORE line, and must still collect
         // every placed range it does not lead from that range's leader.
         if collect_placed_ranges(
-            (db, &handle),
+            (db, std::sync::Arc::clone(&handle)),
             keys,
-            (&declared, me, &heard, &published_handle),
+            (&declared, me, &heard, std::sync::Arc::clone(&published_handle)),
             &mut by_leader,
-            (&mut streams, &stopped, &wakes),
+            (&mut streams, &stopped, std::sync::Arc::clone(&wakes)),
         ) {
             // A copy from a range's leader moved every log this node holds.
             collecting = tessari_wire::Collecting::new();

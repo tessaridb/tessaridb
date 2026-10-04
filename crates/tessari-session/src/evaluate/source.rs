@@ -12,6 +12,7 @@ use crate::plan::Plan;
 use crate::search::Searched;
 use crate::session::Session;
 
+use super::join::JoinClause;
 use super::{Part, Prepared, Reporting, Scope, ceiling_reached, node_row, shown};
 
 impl Session<'_> {
@@ -412,11 +413,13 @@ impl Session<'_> {
                 let (found, plan, searched) = self.join(
                     transaction,
                     select,
-                    left,
-                    right,
-                    left_key,
-                    right_key,
-                    condition.as_deref(),
+                    JoinClause {
+                        left,
+                        right,
+                        left_key,
+                        right_key,
+                        condition: condition.as_deref(),
+                    },
                     reporting,
                     within,
                 )?;

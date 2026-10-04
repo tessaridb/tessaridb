@@ -144,18 +144,12 @@ impl Session<'_> {
     /// Everything is resolved before anything is written, so a declaration that
     /// names a graph or a table that is not there leaves the store exactly as it
     /// found it — the same ordering the membership clause keeps.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the statement's own shape; a struct here would name a grouping \
-                  the grammar does not have"
-    )]
     pub(crate) fn define_edge(
         &self,
         transaction: &mut Transaction<'_>,
         name: &Name,
         graph: &Name,
-        from: &Name,
-        to: &Name,
+        (from, to): (&Name, &Name),
         if_not_exists: bool,
         span: Span,
     ) -> Result<Outcome> {

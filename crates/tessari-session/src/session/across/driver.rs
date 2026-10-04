@@ -95,7 +95,7 @@ impl Session<'_> {
         let id = fresh_id();
         let answered = self.drive(
             store,
-            &carrier,
+            carrier,
             &parts,
             (id, lapse, merged),
             user.as_ref(),
@@ -114,7 +114,7 @@ impl Session<'_> {
     fn drive(
         &mut self,
         store: &Store,
-        carrying: &std::sync::Arc<dyn Participants>,
+        carrying: std::sync::Arc<dyn Participants>,
         parts: &[AcrossPart],
         (id, lapse, merged): (TransactionId, u64, bool),
         user: Option<&tessari_storage::UserDefinition>,
@@ -346,7 +346,7 @@ impl Session<'_> {
     /// leader until the resolution lands (D13d).
     fn resolve_parts(
         &mut self,
-        carrying: &std::sync::Arc<dyn Participants>,
+        carrying: std::sync::Arc<dyn Participants>,
         parts: &[AcrossPart],
         user: Option<&tessari_storage::UserDefinition>,
         resolves: Vec<AcrossAsk>,
@@ -369,7 +369,7 @@ impl Session<'_> {
         if remote.is_empty() {
             return;
         }
-        let carrier = std::sync::Arc::clone(carrying);
+        let carrier = carrying;
         let user = user.cloned();
         let behind = std::thread::Builder::new()
             .name("across-resolve".to_owned())

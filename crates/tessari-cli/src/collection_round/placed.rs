@@ -11,13 +11,13 @@ use super::*;
 /// no longer continue is repaired by a copy from its leader, as on the store
 /// line; answers whether one landed, so the caller restarts its cursors too.
 pub(crate) fn collect_placed_ranges(
-    (db, handle): (&Db, &std::sync::Arc<Db>),
+    (db, handle): (&Db, std::sync::Arc<Db>),
     keys: &tessari_wire::PeerKeys,
     (declared, me, heard, published): (
         &[tessari_storage::ReplicaDefinition],
         [u8; tessari_storage::NODE_ID_LEN],
         &tessari_wire::Directory,
-        &std::sync::Arc<tessari_wire::Published>,
+        std::sync::Arc<tessari_wire::Published>,
     ),
     by_leader: &mut std::collections::BTreeMap<
         [u8; tessari_storage::NODE_ID_LEN],
@@ -26,7 +26,7 @@ pub(crate) fn collect_placed_ranges(
     (streams, stop, wakes): (
         &mut crate::streaming::Streams,
         &tokio_util::sync::CancellationToken,
-        &std::sync::Arc<crate::peers::Wakes>,
+        std::sync::Arc<crate::peers::Wakes>,
     ),
 ) -> bool {
     let placed: std::collections::BTreeSet<tessari_types::Reach> =
@@ -142,7 +142,7 @@ pub(crate) fn collect_placed_ranges(
                         .collect()
                 })
             });
-            let heard_from = std::sync::Arc::clone(published);
+            let heard_from = std::sync::Arc::clone(&published);
             let still: crate::streaming::Still = Box::new(move |db: &Db| {
                 db.store()
                     .begin()
@@ -157,11 +157,11 @@ pub(crate) fn collect_placed_ranges(
                     == Some(node)
             });
             streams.start(
-                std::sync::Arc::clone(handle),
+                std::sync::Arc::clone(&handle),
                 keys.clone(),
                 ((node, Some(range)), address),
                 (homes, still),
-                (stop.clone(), std::sync::Arc::clone(wakes)),
+                (stop.clone(), std::sync::Arc::clone(&wakes)),
             );
         }
     }

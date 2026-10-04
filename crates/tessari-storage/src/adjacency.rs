@@ -146,17 +146,17 @@ fn write_pair(
     to: &Endpoint,
     properties: Option<&Value>,
 ) -> WriteBatch {
-    let out = AdjacencyKey::new(
-        kind.namespace,
-        kind.database,
-        kind.graph,
-        from.table,
-        from.id.clone(),
-        kind.id,
-        Direction::Out,
-        to.table,
-        to.id.clone(),
-    );
+    let out = AdjacencyKey {
+        namespace: kind.namespace,
+        database: kind.database,
+        graph: kind.graph,
+        node_table: from.table,
+        node: from.id.clone(),
+        edge_kind: kind.id,
+        direction: Direction::Out,
+        neighbour_table: to.table,
+        neighbour: to.id.clone(),
+    };
     let entries = [out.mirror(), out];
     let keyspace = AdjacencyKey::keyspace();
     entries.into_iter().fold(batch, |batch, entry| {

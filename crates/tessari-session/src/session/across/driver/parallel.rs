@@ -36,7 +36,7 @@ impl Session<'_> {
     pub(super) fn finish_parallel(
         &mut self,
         store: &Store,
-        carrying: &std::sync::Arc<dyn Participants>,
+        carrying: std::sync::Arc<dyn Participants>,
         parts: &[AcrossPart],
         (id, record, refused): (TransactionId, TransactionRecord, Option<AcrossRefusal>),
         user: Option<&tessari_storage::UserDefinition>,
@@ -203,15 +203,11 @@ fn aborting(parts: &[AcrossPart], id: TransactionId) -> Vec<Behind> {
 /// recovery re-derives the outcome from the parts (D14c).
 fn behind(
     store: &Store,
-    carrying: &std::sync::Arc<dyn Participants>,
+    carrying: std::sync::Arc<dyn Participants>,
     user: Option<&tessari_storage::UserDefinition>,
     records: Vec<Behind>,
 ) {
-    let (store, carrier, user) = (
-        store.clone(),
-        std::sync::Arc::clone(carrying),
-        user.cloned(),
-    );
+    let (store, carrier, user) = (store.clone(), carrying, user.cloned());
     let spawned = std::thread::Builder::new()
         .name("across-behind".to_owned())
         .spawn(move || {

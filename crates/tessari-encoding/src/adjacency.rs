@@ -127,37 +127,6 @@ pub struct AdjacencyKey {
 }
 
 impl AdjacencyKey {
-    /// Name one entry.
-    #[must_use]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "every component is part of the key grammar; grouping them into \
-                  structs would name pairs the layout does not have"
-    )]
-    pub const fn new(
-        namespace: NamespaceId,
-        database: DatabaseId,
-        graph: GraphId,
-        node_table: TableId,
-        node: RecordId,
-        edge_kind: EdgeKindId,
-        direction: Direction,
-        neighbour_table: TableId,
-        neighbour: RecordId,
-    ) -> Self {
-        Self {
-            namespace,
-            database,
-            graph,
-            node_table,
-            node,
-            edge_kind,
-            direction,
-            neighbour_table,
-            neighbour,
-        }
-    }
-
     /// The entry written on the other endpoint for the same edge.
     ///
     /// The two are written together in one batch, so having the mirror as a

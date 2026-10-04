@@ -49,7 +49,7 @@ pub(super) fn join_the_cluster(db: std::sync::Arc<Db>, surface: &Peering) -> Res
     // follow a redirect (ADR-0108 D1–D3). No password crosses.
     let speaking = std::sync::Arc::downgrade(&db);
     let coordinator = std::sync::Arc::new(tessari_wire::Coordinator::new(
-        &db,
+        std::sync::Arc::downgrade(&db),
         me,
         surface.keys.clone(),
         Box::new(move || {
