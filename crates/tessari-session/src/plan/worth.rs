@@ -56,10 +56,10 @@
 //! is counted. It lifts this veto and chooses nothing: the ranking above still
 //! picks the candidate, an inapplicable index still produces no path, and the
 //! worst a misuse can do is the behaviour that shipped before this module
-//! existed. It is retired when the planner acquires a cost model or statistics
-//! that make the threshold unnecessary — recorded here rather than only in the
-//! question, because a hint whose removal condition lives somewhere else is a
-//! hint nobody dares remove.
+//! existed. It stays (ADR-0115): it was to be retired once the planner had
+//! statistics, and with them the veto compares an estimate rather than a count —
+//! better, still capable of being wrong, and a wrong estimate is when lifting the
+//! veto is the fix.
 //!
 //! # What a missing number means
 //!
