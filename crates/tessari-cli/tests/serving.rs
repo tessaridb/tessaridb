@@ -6911,3 +6911,7 @@ fn a_peer_certificate_rotates_under_writes_and_a_revoked_one_is_cut_off() {
     stop.store(true, Ordering::Relaxed);
     writer.join().unwrap();
 }
+
+// ---- G057 C6: the same measurements across injected network distance ---
+#[path = "serving/distance.rs"]
+mod distance;
