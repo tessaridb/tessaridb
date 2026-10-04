@@ -4640,8 +4640,10 @@ fn a_transaction_whose_participant_leader_dies_is_kept_whole_by_its_successor() 
             what_the_nodes_said(&ACROSS_PARTICIPANT, &logs)
         );
     }
+    // UPSERT: an answer in doubt may have committed, and asking again must be
+    // the same transaction rather than a refusal that the record exists.
     let script = "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
-                  CREATE orders:'ap' = { n: 11 }; CREATE orders:'hp' = { n: 11 }; \
+                  UPSERT orders:'ap' = { n: 11 }; UPSERT orders:'hp' = { n: 11 }; \
                   COMMIT ACROSS LEADERS;";
     let mut committed = Err(String::from("never asked"));
     let asking = Instant::now();
