@@ -579,3 +579,160 @@ fn a_restarted_node_starts_what_the_catalog_declares() {
         "a restarted node did not start the consumer its catalog declares: {records:?}"
     );
 }
+
+#[test]
+fn a_quarantined_message_is_found_through_the_language_after_a_restart() {
+    // G011 S6: rejected into a recorded failure rather than dropped, and
+    // findable afterwards through the language (Q-708). A restart in between,
+    // because a record that lives only in the process is the receipt that
+    // expires.
+    let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let store = declared_on(&backend, "quarantine", "");
+    let broker: Arc<dyn Broker> = Arc::new(Handing {
+        messages: vec![
+            message(0, 1, r#"{"order_id": 1, "amount": 10}"#),
+            message(0, 2, "{ this is not json"),
+        ],
+        commit_fails: false,
+        polls: Arc::new(AtomicUsize::new(0)),
+        slow: Duration::ZERO,
+        handed: Arc::new(AtomicBool::new(false)),
+    });
+    until(&store, broker, |store| {
+        let transaction = store.begin().unwrap();
+        !landed(store).is_empty() && !transaction.quarantined(1).unwrap_or_default().is_empty()
+    });
+    drop(store);
+
+    let reopened = Store::open(Arc::clone(&backend)).unwrap();
+    let mut session = Session::new(&reopened);
+    let answered = session
+        .run("USE NAMESPACE prod; USE DATABASE shop; INFO FOR KAFKA CONSUMER orders_in;")
+        .unwrap();
+    let Some(Outcome::Value(Value::Object(info))) = answered.last() else {
+        panic!("not an object: {answered:?}");
+    };
+    let Some(Value::Array(held)) = info.get("quarantine") else {
+        panic!("no quarantine: {info:?}");
+    };
+    assert_eq!(held.len(), 1, "{held:?}");
+    let Value::Object(parked) = &held[0] else {
+        panic!("{held:?}");
+    };
+    assert_eq!(parked.get("partition"), Some(&Value::from(0_i64)));
+    assert_eq!(parked.get("offset"), Some(&Value::from(2_i64)));
+    assert_eq!(
+        parked.get("payload"),
+        Some(&Value::from("{ this is not json"))
+    );
+    assert!(matches!(parked.get("reason"), Some(Value::String(why)) if !why.is_empty()));
+    assert!(matches!(parked.get("at"), Some(Value::Datetime(_))));
+}
+
+/// The real client against a real broker (G011 S5, Q-709): every other test in
+/// this file drives the runner through a scripted source, which proves the
+/// runner and says nothing about the client underneath it.
+///
+/// Needs a broker at `TESSARIDB_TEST_KAFKA` (`host:port`), for example
+/// `docker run -d --name tessaridb-kafka-test -p 9092:9092 apache/kafka:3.9.0`,
+/// then `cargo test -p tessari-ingest --features kafka --test consuming -- --ignored`.
+#[cfg(feature = "kafka")]
+mod broker {
+    use std::time::{Duration, Instant};
+
+    use rdkafka::config::ClientConfig;
+    use rdkafka::producer::{BaseProducer, BaseRecord, Producer as _};
+
+    use super::*;
+
+    fn publish(brokers: &str, topic: &str, offset_key: &str, body: &str) {
+        let producer: BaseProducer = ClientConfig::new()
+            .set("bootstrap.servers", brokers)
+            .create()
+            .unwrap();
+        producer
+            .send(BaseRecord::to(topic).key(offset_key).payload(body))
+            .map_err(|(failure, _)| failure)
+            .unwrap();
+        producer.flush(Duration::from_secs(10)).unwrap();
+    }
+
+    fn until_settled(store: &Store, settled: impl Fn(&Store) -> bool) -> bool {
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(60))
+            .unwrap_or_else(Instant::now);
+        while Instant::now() < deadline {
+            if settled(store) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        false
+    }
+
+    #[test]
+    #[ignore = "needs a Kafka broker at TESSARIDB_TEST_KAFKA; see the module note"]
+    fn the_real_client_lands_both_sides_of_a_restart_and_parks_the_poison() {
+        let brokers = std::env::var("TESSARIDB_TEST_KAFKA")
+            .expect("TESSARIDB_TEST_KAFKA names the broker this test was asked to use");
+        // A topic and a group of their own, so a rerun starts from nothing.
+        let run = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let topic = format!("orders-{run}");
+        let store = Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>).unwrap();
+        let mut session = Session::new(&store);
+        session
+            .run(&format!(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
+                 DEFINE DATABASE shop; USE DATABASE shop; DEFINE COLLECTION orders; \
+                 DEFINE KAFKA CONSUMER orders_in FROM '{brokers}' TOPIC '{topic}' \
+                 GROUP 'shop-{run}' FORMAT json INTO orders IDENTITY order_id \
+                 MAP amount AS total ON FAILURE quarantine;"
+            ))
+            .unwrap();
+        let client: Arc<dyn Broker> = Arc::new(tessari_ingest::Kafka);
+
+        // Published before the consumer first runs: a new group starts at the
+        // oldest message, not at the end.
+        publish(&brokers, &topic, "1", r#"{"order_id": 1, "amount": 10}"#);
+        let mut started = Runner::start(&store, Arc::clone(&client)).unwrap();
+        assert!(
+            until_settled(&store, |store| landed(store).len() == 1),
+            "the first message did not land: {:?}",
+            landed(&store)
+        );
+        started.stop();
+
+        // A restart: the group resumes from its committed offset.
+        publish(&brokers, &topic, "2", r#"{"order_id": 2, "amount": 20}"#);
+        publish(&brokers, &topic, "3", "{ this is not json");
+        let mut restarted = Runner::start(&store, Arc::clone(&client)).unwrap();
+        let parked = |store: &Store| {
+            let transaction = store.begin().unwrap();
+            transaction.quarantined(1).unwrap_or_default().len()
+        };
+        assert!(
+            until_settled(&store, |store| landed(store).len() == 2
+                && parked(store) == 1),
+            "after the restart: landed {:?}, parked {}",
+            landed(&store),
+            parked(&store)
+        );
+        restarted.stop();
+        let records = landed(&store);
+        assert_eq!(total(&records["1"]), Some(10));
+        assert_eq!(total(&records["2"]), Some(20));
+    }
+
+    fn total(record: &Value) -> Option<i64> {
+        match record {
+            Value::Object(fields) => match fields.get("total") {
+                Some(Value::Number(tessari_types::Number::Integer(total))) => Some(*total),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}

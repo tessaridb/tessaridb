@@ -198,6 +198,10 @@ pub const VIEW_MEMBERS: TableId = TableId::new(27);
 /// recently written for that key (ADR-0114, Q-927).
 pub const ROLLUP_STATES: TableId = TableId::new(28);
 
+/// The messages each Kafka consumer quarantined, by partition and offset
+/// (Q-708).
+pub const KAFKA_QUARANTINE: TableId = TableId::new(29);
+
 /// The one record [`VAULT_ROOT`] holds.
 pub const VAULT_ROOT_ID: u32 = 1;
 
@@ -359,6 +363,7 @@ mod tests {
             VIEW_STATES,
             VIEW_MEMBERS,
             ROLLUP_STATES,
+            KAFKA_QUARANTINE,
         ];
         for (index, table) in ids.iter().enumerate() {
             assert!(

@@ -145,6 +145,13 @@ pub const HISTORY_SCAN_RECORDS: usize = 2_048;
 /// timeline has been used against a real store.
 pub const HISTORY_EVENTS: usize = 50;
 
+/// How many quarantined messages one Kafka consumer keeps findable (Q-708).
+///
+/// Past it the oldest of the lowest partition goes. A thousand is generous for a
+/// failure an operator is meant to look at, and small enough that a consumer fed
+/// nothing but poison costs a bounded corner of the store.
+pub const KAFKA_QUARANTINE_HELD: usize = 1_000;
+
 /// How many index entries a bounded ordered read fetches at a time.
 ///
 /// Unit: index entries.

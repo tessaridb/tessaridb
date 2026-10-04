@@ -612,3 +612,58 @@ fn deleting_the_declarer_stops_the_consumer_rather_than_freeing_it() {
         "a deleted declarer must refuse rather than fall back to nobody: {refusal}"
     );
 }
+
+#[test]
+fn a_parked_payload_is_shown_only_to_who_may_read_its_destination_whole() {
+    // A quarantined payload is a message bound for the destination table, so
+    // `manage` — which is all `INFO FOR KAFKA CONSUMER` demands — does not show
+    // it; reading the destination does (Q-708, G058 SG6).
+    let backend = backend();
+    let store = shaped(&backend);
+    peopled(&store);
+    let mut root = Session::new(&store);
+    root.sign_in("root", PASSWORD).unwrap();
+    root.run(
+        "USE NAMESPACE prod; USE DATABASE shop; \
+         DEFINE USER pat ON prod.shop AUTHORITIES manage PASSWORD 'correct horse battery';",
+    )
+    .unwrap();
+    root.run(DECLARE).unwrap();
+    {
+        let mut transaction = store.begin().unwrap();
+        let consumer = tessari_storage::Catalog::new(&mut transaction)
+            .consumers()
+            .unwrap()
+            .into_iter()
+            .find(|held| held.name == "orders_in")
+            .unwrap();
+        let parked = Value::Object(std::collections::BTreeMap::from([
+            ("offset".to_owned(), Value::from(2_i64)),
+            ("payload".to_owned(), Value::from("{ \"card\": \"4111\"")),
+        ]));
+        transaction
+            .keep_quarantined(consumer.id, 0, 2, &parked)
+            .unwrap();
+        transaction.commit().unwrap();
+    }
+    let payload = |name: &str| {
+        let report = reported(
+            signed_in(&store, name)
+                .run("INFO FOR KAFKA CONSUMER orders_in;")
+                .unwrap(),
+        );
+        let Some(Value::Array(parked)) = report.get("quarantine") else {
+            panic!("no quarantine: {report:?}");
+        };
+        let Some(Value::Object(first)) = parked.first() else {
+            panic!("nothing parked: {parked:?}");
+        };
+        first.get("payload").cloned()
+    };
+    assert_eq!(payload("nina"), Some(Value::from("{ \"card\": \"4111\"")));
+    let withheld = payload("pat");
+    assert!(
+        matches!(&withheld, Some(Value::String(text)) if text.starts_with("withheld") && !text.contains("4111")),
+        "{withheld:?}"
+    );
+}

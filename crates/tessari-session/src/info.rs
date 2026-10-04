@@ -70,6 +70,7 @@ mod access;
 mod cluster;
 mod consumers;
 mod measures;
+mod parked;
 mod records;
 mod replicas;
 mod shapes;

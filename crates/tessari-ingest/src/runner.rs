@@ -291,7 +291,8 @@ impl Consuming {
         }
 
         let mut records = Vec::new();
-        let mut parked = 0_u64;
+        let mut parked: Vec<Value> = Vec::new();
+        let mut parked_at: Vec<(i32, i64)> = Vec::new();
         for message in &batch {
             match shape(&message.payload, &self.definition) {
                 Ok(shaped) => records.push(shaped),
@@ -315,7 +316,8 @@ impl Consuming {
                             message.partition,
                             message.offset
                         );
-                        parked = parked.saturating_add(1);
+                        parked.push(quarantine_record(message, &why.to_string()));
+                        parked_at.push((message.partition, message.offset));
                     }
                 },
             }
@@ -324,7 +326,7 @@ impl Consuming {
         let applied = u64::try_from(records.len()).unwrap_or(u64::MAX);
         // **The store first.** A crash between here and the offset commit
         // redelivers the batch, which re-applies to the same identities.
-        self.write(&records)?;
+        self.write(&records, &parked_at, &parked)?;
 
         // And only then the offset. A failure here is not fatal: the batch is
         // already durable and will be redelivered, which is the direction this
@@ -344,7 +346,9 @@ impl Consuming {
             .running()
             .advanced(&self.definition.name, |progress| {
                 progress.applied = progress.applied.saturating_add(applied);
-                progress.quarantined = progress.quarantined.saturating_add(parked);
+                progress.quarantined = progress
+                    .quarantined
+                    .saturating_add(u64::try_from(parked.len()).unwrap_or(u64::MAX));
                 for (partition, offset) in positions {
                     progress.positions.insert(partition, offset);
                 }
@@ -362,12 +366,20 @@ impl Consuming {
     /// Every value travels as a **parameter**. No byte of any message reaches
     /// the statement text, so a payload holding a quote is a payload holding a
     /// quote and not a statement.
-    fn write(&self, records: &[crate::apply::Shaped]) -> Result<(), String> {
-        if records.is_empty() {
+    ///
+    /// The messages the batch quarantined are parked in the same transaction,
+    /// so they are kept exactly when their neighbours land (Q-708).
+    fn write(
+        &self,
+        records: &[crate::apply::Shaped],
+        parked_at: &[(i32, i64)],
+        parked: &[Value],
+    ) -> Result<(), String> {
+        if records.is_empty() && parked.is_empty() {
             return Ok(());
         }
         let mut script = format!(
-            "USE NAMESPACE {}; USE DATABASE {}; BEGIN;",
+            "USE NAMESPACE {}; USE DATABASE {};",
             self.table.namespace, self.table.database
         );
         let mut parameters = tessari_session::Parameters::new();
@@ -376,7 +388,6 @@ impl Consuming {
             parameters.insert(format!("id{at}"), identity_value(&shaped.id));
             parameters.insert(format!("rec{at}"), shaped.record.clone());
         }
-        script.push_str(" COMMIT;");
 
         let mut attempt = 0_u32;
         loop {
@@ -402,8 +413,17 @@ impl Consuming {
                     self.definition.name
                 ));
             }
-            match session.run_with(&script, &parameters) {
-                Ok(_) => return Ok(()),
+            let written = session.atomically(|work| {
+                if !records.is_empty() {
+                    work.run_with(&script, &parameters)?;
+                }
+                for (at, record) in parked_at.iter().zip(parked) {
+                    work.keep_quarantined(self.definition.id, *at, record)?;
+                }
+                Ok::<(), tessari_session::Error>(())
+            });
+            match written {
+                Ok(()) => return Ok(()),
                 Err(failure) => {
                     attempt = attempt.saturating_add(1);
                     if attempt > RETRIES {
@@ -417,6 +437,39 @@ impl Consuming {
             }
         }
     }
+}
+
+/// What a quarantined message is kept as: where it came from, why it was
+/// refused, when, and the payload — as text when it is text, which a JSON
+/// payload that failed to parse still is, and as bytes when it is not.
+fn quarantine_record(message: &crate::Message, why: &str) -> Value {
+    let payload = match std::str::from_utf8(&message.payload) {
+        Ok(text) => Value::from(text),
+        Err(_) => Value::Bytes(message.payload.clone()),
+    };
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|since| {
+            tessari_types::Datetime::new(
+                i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
+                since.subsec_nanos(),
+            )
+        })
+        .map_or(Value::None, Value::Datetime);
+    Value::Object(std::collections::BTreeMap::from([
+        (
+            "partition".to_owned(),
+            Value::Number(tessari_types::Number::Integer(i64::from(message.partition))),
+        ),
+        (
+            "offset".to_owned(),
+            Value::Number(tessari_types::Number::Integer(message.offset)),
+        ),
+        ("reason".to_owned(), Value::from(why)),
+        ("payload".to_owned(), payload),
+        ("at".to_owned(), at),
+    ]))
 }
 
 /// A record identity, as the value a parameter carries.

@@ -56,6 +56,7 @@ mod log_holds;
 mod node;
 mod ordering;
 mod pruning;
+mod quarantine;
 mod reclaim;
 mod retention;
 mod rollup_states;

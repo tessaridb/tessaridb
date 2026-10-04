@@ -352,6 +352,12 @@ impl Session<'_> {
                 "running".to_owned(),
                 running_state(self.store.running().progress(&consumer.name).as_ref()),
             ),
+            // What `ON FAILURE quarantine` parked, kept in the store and so
+            // here after any restart (Q-708).
+            (
+                "quarantine".to_owned(),
+                self.parked(transaction, &consumer, &destination, span)?,
+            ),
             ("guarantees".to_owned(), guarantees()),
         ]))
     }

@@ -53,6 +53,26 @@ impl Atomic<'_, '_> {
 }
 
 impl Atomic<'_, '_> {
+    /// Park a message a Kafka consumer quarantined, in the held transaction —
+    /// so it is kept exactly when the batch around it lands (Q-708).
+    ///
+    /// # Errors
+    ///
+    /// Whatever reading the consumer's parked messages refuses.
+    pub fn keep_quarantined(
+        &mut self,
+        consumer: u32,
+        (partition, offset): (i32, i64),
+        record: &tessari_types::Value,
+    ) -> Result<()> {
+        let Some((transaction, _)) = self.open.as_mut() else {
+            return Err(Error::TransactionVerbInAtomic {
+                span: Span::new(0, 0),
+            });
+        };
+        Ok(transaction.keep_quarantined(consumer, partition, offset, record)?)
+    }
+
     /// Run a script that is already parsed, bound and vetted inside the held
     /// transaction — a restore, whose statements were read against the store
     /// before any of them runs.

@@ -533,9 +533,18 @@ resolved **when the declaration is made**, so there is no window in which a
 consumer is consuming into a table that does not exist. A consumer whose group
 has never committed starts at the **oldest** message still on the topic, so what
 was published before the declaration is ingested too; a group that has committed
-resumes where it stopped. `DROP KAFKA CONSUMER` stops it
-and removes the declaration; the records it already wrote stay, because they are
-records like any others. `DEFINE TOPIC CONSUMER` is the same declaration with a
+resumes where it stopped. `ON FAILURE stop` halts the consumer at a message it
+cannot apply and says why; `ON FAILURE quarantine` parks the message and keeps
+the partition moving — and from `0.26.0-beta` the parked message is **kept in the
+store**, in the transaction that writes its batch: `INFO FOR KAFKA CONSUMER`
+lists it under `quarantine` with its `partition`, `offset`, `reason`, `payload`
+and `at`, after any restart, up to the newest 1 000 per consumer (before, it was
+a count that ended with the process). A payload was on its way into the
+destination, so it is shown to a user who may read that table whole; asking
+about the consumer needs only `manage`, and anyone else sees each entry with its
+`payload` withheld and saying so. `DROP KAFKA CONSUMER` stops it
+and removes the declaration and what it parked; the records it already wrote
+stay, because they are records like any others. `DEFINE TOPIC CONSUMER` is the same declaration with a
 topic of this store as the source — see [Reading a topic into a table](#reading-a-topic-into-a-table).
 
 **A store with no users is open**, and declaring the first one closes it —
@@ -4559,11 +4568,13 @@ All three are contextual, like the rest of the tail — a field, a table or an
 index called `without`, `scan` or `guard` stays itself — but once `WITHOUT`
 begins the clause, both words after it are required.
 
-**It is meant to be temporary.** The clause exists because the threshold is a
-policy rather than a measurement, and it is retired when this planner acquires a
-cost model or the statistics that would make the policy unnecessary. A hint with
-no stated end is one nobody dares remove years later, so its end is stated here
-where the next reader will find it.
+**It stays.** It was once meant to be retired when the planner gained
+statistics; it has them (`ANALYZE TABLE`), and the veto now compares an
+estimate from them with the table — a better estimate, still an estimate. A read
+whose estimate is wrong is exactly when lifting the veto is the fix, so from
+`0.26.0-beta` the clause is a permanent part of the language rather than a hint
+with an end date. If a later planner drops the half-table veto altogether, the
+clause will still parse and do nothing.
 
 **The plan can only change the cost.** Whichever candidate narrows, the whole
 condition is still tested against every record it produced, which is what makes
@@ -8351,7 +8362,10 @@ ordinary case a schemaless read is built for: it is how a read over records of
 differing shapes narrows rather than failing. A note there would fire on nearly
 every read in the language, which is worse than no note because it looks like a
 feature. `null` is left out from the other side, being a value deliberately
-written rather than a mistake.
+written rather than a mistake. Membership is judged by the **members**: from
+`0.26.0-beta`, `x IN [1, 3.0]` and `tags CONTAINS 3` compare a number with
+numbers and say nothing, while `x IN ['1', '3']` over numbers says what it
+crossed (it used to name `array` and `number` on every membership test).
 
 The note names a **pair of kinds, once**. A comparison runs per record, so a read
 over a million mixed records has one thing to say and not a million; and the pair
