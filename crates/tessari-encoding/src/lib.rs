@@ -72,7 +72,8 @@ pub use payload::{decode as decode_payload, encode as encode_payload};
 pub use spatial_keys::{SpatialExtent, SpatialIndexKey};
 pub use topic_key::{TopicBytesKey, TopicEntryKey, TopicHeadKey, TopicOffsetKey};
 pub use transaction_key::{
-    AcrossBarredKey, AcrossPartKey, AcrossUnsettledKey, IntentOfKey, TransactionRecordKey,
+    AcrossBarredKey, AcrossPartKey, AcrossUnsettledKey, IntentOfKey, ResolvedOfKey,
+    TransactionRecordKey,
 };
 pub use value::{
     Across, CODEC_VERSION, Decision, FormatVersion, LogRecord, Mutation, Part, Participant,

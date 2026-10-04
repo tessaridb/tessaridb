@@ -155,6 +155,11 @@ pub enum KeyKind {
     /// its prepare had not landed when status recovery asked (ADR-0112 D14c) —
     /// at the version the bar applied; a prepare meeting it is refused.
     AcrossBarred,
+    /// One version a committed transaction across leaders resolved on this
+    /// node, keyed by the transaction and then the record, the version as its
+    /// value — what lets reclamation find the versions whose provenance it
+    /// folds away with the transaction's markers (ADR-0112, Q-922).
+    ResolvedOf,
 }
 
 impl KeyKind {
@@ -206,6 +211,7 @@ impl KeyKind {
         Self::AcrossPart,
         Self::AcrossUnsettled,
         Self::AcrossBarred,
+        Self::ResolvedOf,
     ];
 
     /// The leading byte that identifies this kind on disk.
@@ -262,6 +268,7 @@ impl KeyKind {
             Self::AcrossPart => 0x52,
             Self::AcrossUnsettled => 0x53,
             Self::AcrossBarred => 0x54,
+            Self::ResolvedOf => 0x55,
         }
     }
 
@@ -311,7 +318,8 @@ impl KeyKind {
             | Self::IntentOf
             | Self::AcrossPart
             | Self::AcrossUnsettled
-            | Self::AcrossBarred => Keyspace::META,
+            | Self::AcrossBarred
+            | Self::ResolvedOf => Keyspace::META,
         }
     }
 
@@ -365,6 +373,7 @@ impl KeyKind {
             Self::AcrossPart => "across-part",
             Self::AcrossUnsettled => "across-unsettled",
             Self::AcrossBarred => "across-barred",
+            Self::ResolvedOf => "resolved-of",
         }
     }
 
@@ -467,6 +476,7 @@ mod tests {
             (KeyKind::AcrossPart, 0x52),
             (KeyKind::AcrossUnsettled, 0x53),
             (KeyKind::AcrossBarred, 0x54),
+            (KeyKind::ResolvedOf, 0x55),
         ];
         assert_eq!(expected.len(), KeyKind::ALL.len(), "a kind is untested");
         for (kind, tag) in expected {

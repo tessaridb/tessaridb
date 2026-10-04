@@ -17,6 +17,7 @@ use tessari_types::Sequence;
 use crate::error::{Error, Result};
 use crate::store::Store;
 
+mod folding;
 mod standing;
 mod unsettled;
 
