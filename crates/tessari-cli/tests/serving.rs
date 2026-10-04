@@ -4186,15 +4186,15 @@ fn a_rolling_upgrade_across_one_minor_version_keeps_every_record() {
             written.push(key);
         }
     };
-    // Which build answers: only this one reports a peer's `preferred` flag
-    // (G053 SG5b) — the version string alone does not move between the two.
+    // Which build answers: only this one reports a peer's `region` (G057 C3),
+    // a field the previous minor version does not have — a version string
+    // alone can match when both are built under one label.
     let this_build = |surface: &str| {
-        value_at(surface, "INFO FOR NODE;").is_ok_and(|report| report.contains("\"preferred\""))
+        value_at(surface, "INFO FOR NODE;").is_ok_and(|report| report.contains("\"region\""))
     };
     assert!(
         UPGRADING.iter().all(|(surface, _)| {
-            value_at(surface, "INFO FOR NODE;")
-                .is_ok_and(|report| !report.contains("\"preferred\""))
+            value_at(surface, "INFO FOR NODE;").is_ok_and(|report| !report.contains("\"region\""))
         }),
         "a node answered as this build, or not at all, before it was replaced"
     );
