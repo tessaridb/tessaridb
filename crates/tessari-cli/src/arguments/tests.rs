@@ -1,0 +1,573 @@
+#![allow(clippy::panic)]
+
+use tessaridb::Number;
+
+use super::{Asked, PASSWORD, Source, USAGE, Value, credentials, parse};
+
+fn asked(arguments: &[&str]) -> Result<Asked, String> {
+    parse(arguments.iter().map(|held| (*held).to_owned()))
+}
+
+/// The four cluster flags that take a path or an address, with `--serve`
+/// because they need it. `--seed` is left to the caller, since it is the
+/// repeatable one.
+fn told_a_cluster(extra: &[&str]) -> Vec<String> {
+    let mut given = vec![
+        "--serve".to_owned(),
+        "127.0.0.1:0".to_owned(),
+        "--cluster-credential".to_owned(),
+        "leaf.pem".to_owned(),
+        "--cluster-key".to_owned(),
+        "key.pem".to_owned(),
+        "--cluster-authority".to_owned(),
+        "ca.pem".to_owned(),
+        "--cluster-address".to_owned(),
+        "0.0.0.0:9081".to_owned(),
+    ];
+    given.extend(extra.iter().map(|held| (*held).to_owned()));
+    given
+}
+
+#[test]
+fn a_node_told_nothing_about_a_cluster_is_the_node_it_is_today() {
+    let held = asked(&["--serve", "127.0.0.1:0"]).expect("serving alone");
+    assert!(
+        held.cluster.is_none(),
+        "absent is the single node, not a defect"
+    );
+}
+
+#[test]
+fn a_node_told_every_part_keeps_each_path_and_every_seed() {
+    let given = told_a_cluster(&["--seed", "one.example:9080", "--seed", "two.example:9080"]);
+    let held = parse(given.into_iter()).expect("all five parts");
+    let cluster = held.cluster.expect("told about a cluster");
+    assert_eq!(cluster.chain, std::path::PathBuf::from("leaf.pem"));
+    assert_eq!(cluster.key, std::path::PathBuf::from("key.pem"));
+    assert_eq!(cluster.authority, std::path::PathBuf::from("ca.pem"));
+    assert_eq!(cluster.door, "0.0.0.0:9081", "its own door's address");
+    assert_eq!(
+        cluster.seeds,
+        vec!["one.example:9080".to_owned(), "two.example:9080".to_owned()],
+        "--seed is repeatable and keeps its order"
+    );
+}
+
+#[test]
+fn a_node_told_half_a_cluster_is_refused_before_it_starts() {
+    let refused = parse(
+        [
+            "--serve",
+            "127.0.0.1:0",
+            "--cluster-credential",
+            "leaf.pem",
+            "--seed",
+            "one.example:9080",
+        ]
+        .iter()
+        .map(|held| (*held).to_owned()),
+    )
+    .expect_err("half a cluster is not a configuration");
+    let (given, missing) = refused
+        .split_once("but not")
+        .expect("the refusal separates what was given from what was missing");
+    assert!(given.contains("a peer credential"), "names what was given");
+    assert!(missing.contains("a private key"), "names what was missing");
+    assert!(missing.contains("a cluster authority"), "names both gaps");
+    assert!(missing.contains("a peer address"), "and the address too");
+}
+
+#[test]
+fn a_node_told_where_to_dial_but_not_where_to_answer_is_refused() {
+    // The asymmetric one: four flags are about reaching somebody else and
+    // this one is about being reachable, so it is the part an operator
+    // forgets without noticing. A node missing it would dial its seeds,
+    // learn the cluster, and be a member nothing could ever call back.
+    let given: Vec<String> = told_a_cluster(&["--seed", "one.example:9080"])
+        .into_iter()
+        .filter(|held| held != "--cluster-address" && held != "0.0.0.0:9081")
+        .collect();
+    let refused = parse(given.into_iter()).expect_err("a cluster with nowhere to be reached at");
+    let (given, missing) = refused
+        .split_once("but not")
+        .expect("the refusal separates what was given from what was missing");
+    assert!(missing.contains("a peer address"), "names what was missing");
+    assert!(given.contains("seed addresses"), "names what was given");
+}
+
+#[test]
+fn a_cluster_address_with_nothing_after_it_is_refused_rather_than_swallowing_the_next_flag() {
+    let refused = asked(&["--serve", "127.0.0.1:0", "--cluster-address"])
+        .expect_err("a flag that wants a value and got none");
+    assert!(
+        refused.contains("--cluster-address wants a host:port"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn a_cluster_credential_without_anything_to_serve_is_refused() {
+    let refused = parse(
+        ["--health", "--cluster-credential", "leaf.pem"]
+            .iter()
+            .map(|held| (*held).to_owned()),
+    )
+    .expect_err("a value silently dropped is a value somebody believes was used");
+    assert!(
+        refused.contains("serves nothing"),
+        "says why, not merely that: {refused}"
+    );
+}
+
+#[test]
+fn a_seed_with_no_address_after_it_is_refused_rather_than_swallowing_the_next_flag() {
+    let refused = asked(&["--serve", "127.0.0.1:0", "--seed"])
+        .expect_err("a flag that wants a value and got none");
+    assert!(
+        refused.contains("--seed wants <node-id>@<host:port>"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn no_arguments_is_an_in_memory_store_read_from_standard_input() {
+    let held = asked(&[]).expect("defaults");
+    assert!(held.store.is_none());
+    assert!(matches!(held.source, Source::Standard));
+}
+
+#[test]
+fn asking_for_the_version_is_its_own_thing_to_do() {
+    assert!(matches!(
+        asked(&["--version"]).expect("--version").source,
+        Source::Version
+    ));
+    assert!(matches!(
+        asked(&["-V"]).expect("-V").source,
+        Source::Version
+    ));
+}
+
+#[test]
+fn asking_for_the_help_is_a_request_and_not_a_refusal() {
+    // It used to be `Err(USAGE)`, which `main` printed to standard error
+    // with a non-zero status — so `tessaridb --help | grep serve` came back
+    // empty and any packaging check that runs `--help` failed. A parse
+    // *error* is still an error; being asked for the usage is not one.
+    assert!(matches!(
+        asked(&["--help"]).expect("--help").source,
+        Source::Help
+    ));
+    assert!(matches!(asked(&["-h"]).expect("-h").source, Source::Help));
+}
+
+#[test]
+fn a_misspelled_flag_is_still_a_refusal_and_still_carries_the_usage() {
+    // The other half of the split above: the usage text did double duty as
+    // both the answer to `--help` and the body of a parse error, and only
+    // the first of those changed channel.
+    let complaint = asked(&["--nonsense"]).expect_err("a typo");
+    assert!(
+        complaint.contains("--nonsense") && complaint.contains("usage:"),
+        "a refusal that names neither the flag nor the usage: {complaint}"
+    );
+}
+
+#[test]
+fn a_misspelled_flag_beside_the_version_is_still_reported() {
+    // The reason `--version` is read by the parser rather than
+    // short-circuited ahead of it. A binary that answered the version and
+    // swallowed a typo would be the one place this module lets an
+    // unrecognised option through.
+    let complaint = asked(&["--version", "--serv", "127.0.0.1:0"]).expect_err("a typo");
+    assert!(
+        complaint.contains("--serv"),
+        "the typo is not named: {complaint}"
+    );
+}
+
+#[test]
+fn a_parameter_bound_for_a_version_that_runs_no_script_is_refused() {
+    let complaint = asked(&["--version", "--param", "x=1"]).expect_err("no script");
+    assert!(
+        complaint.contains("--version"),
+        "the refusal does not say which flag runs no script: {complaint}"
+    );
+}
+
+#[test]
+fn a_bare_argument_is_the_store() {
+    let held = asked(&["./data"]).expect("a path");
+    assert_eq!(held.store.as_deref(), Some(std::path::Path::new("./data")));
+}
+
+#[test]
+fn a_script_and_a_file_are_told_apart() {
+    assert!(matches!(
+        asked(&["-e", "SELECT * FROM users;"])
+            .expect("a script")
+            .source,
+        Source::Inline(_)
+    ));
+    assert!(matches!(
+        asked(&["-f", "setup.tessariql"]).expect("a file").source,
+        Source::File(_)
+    ));
+}
+
+#[test]
+fn a_misspelled_option_is_refused_rather_than_read_as_a_path() {
+    // Otherwise `--excute 'DELETE …'` opens a store called `--excute`.
+    assert!(asked(&["--excute", "x"]).is_err());
+    assert!(asked(&["-e"]).is_err());
+    assert!(asked(&["-f"]).is_err());
+}
+
+#[test]
+fn a_second_store_is_refused_rather_than_silently_ignored() {
+    assert!(asked(&["./one", "./two"]).is_err());
+}
+
+#[test]
+fn a_path_and_an_address_are_two_stores_and_are_refused_as_one() {
+    // Quietly preferring one of them is how somebody writes to the wrong
+    // store, which is the same reason two paths are refused.
+    assert!(asked(&["./data", "--at", "127.0.0.1:7654"]).is_err());
+    assert!(asked(&["--at", "127.0.0.1:7654", "./data"]).is_err());
+    assert!(asked(&["--at", "127.0.0.1:7654"]).is_ok());
+    assert!(asked(&["--at"]).is_err());
+}
+
+#[test]
+fn what_reaches_past_the_session_is_refused_over_an_address() {
+    // The protocol carries scripts. Ignoring the address and running these
+    // against a store in this process is the opposite of what was asked.
+    for reaching in [
+        vec!["--at", "127.0.0.1:7654", "--health"],
+        vec!["--at", "127.0.0.1:7654", "--backup", "out"],
+        vec!["--at", "127.0.0.1:7654", "--restore", "in"],
+        vec!["--at", "127.0.0.1:7654", "--serve", "0.0.0.0:1"],
+    ] {
+        let complaint = asked(&reaching).expect_err("refused");
+        assert!(
+            complaint.contains("--at names one it did not"),
+            "{complaint}"
+        );
+    }
+    // A script is not, because a script is what the protocol carries.
+    assert!(asked(&["--at", "127.0.0.1:7654", "-e", "SELECT 1;"]).is_ok());
+}
+
+#[test]
+fn a_password_is_never_read_from_an_argument() {
+    // It would be in the process table for anybody on the machine and in the
+    // shell history afterwards. `--password` is not a flag, so it is refused
+    // the way any unknown option is.
+    assert!(asked(&["--password", "hunter2"]).is_err());
+    let held = asked(&["--user", "ada"]).expect("a name");
+    assert_eq!(held.user.as_deref(), Some("ada"));
+}
+
+#[test]
+fn a_name_without_the_password_in_the_environment_is_refused() {
+    // Signing in anonymously after a failed sign-in would answer a different
+    // question than the one that was asked.
+    let complaint = credentials(Some("ada".to_owned()));
+    match std::env::var(PASSWORD) {
+        Ok(_) => assert!(complaint.is_ok()),
+        Err(_) => assert!(
+            complaint.expect_err("refused").contains(PASSWORD),
+            "the refusal should say where the password comes from"
+        ),
+    }
+}
+
+#[test]
+fn serving_takes_an_address_of_its_own() {
+    let held = asked(&["./data", "--serve", "0.0.0.0:7654"]).expect("an address");
+    assert!(matches!(held.source, Source::Serve));
+    assert_eq!(held.serving.wire.as_deref(), Some("0.0.0.0:7654"));
+    assert_eq!(held.serving.http, None);
+    assert!(asked(&["--serve"]).is_err());
+}
+
+#[test]
+fn each_surface_takes_its_own_address_and_they_may_be_asked_for_together() {
+    let held = asked(&[
+        "./data",
+        "--serve",
+        "0.0.0.0:7654",
+        "--http",
+        "127.0.0.1:8000",
+    ])
+    .expect("two addresses");
+    assert!(matches!(held.source, Source::Serve));
+    assert_eq!(held.serving.wire.as_deref(), Some("0.0.0.0:7654"));
+    assert_eq!(held.serving.http.as_deref(), Some("127.0.0.1:8000"));
+
+    // Either alone, because a process holds whichever subset was named.
+    let only_http = asked(&["./data", "--http", "127.0.0.1:8000"]).expect("one address");
+    assert_eq!(only_http.serving.wire, None);
+    assert_eq!(only_http.serving.http.as_deref(), Some("127.0.0.1:8000"));
+
+    assert!(asked(&["--http"]).is_err());
+}
+
+#[test]
+fn a_backup_folder_belongs_to_a_serving_node() {
+    let held = asked(&[
+        "./data",
+        "--http",
+        "127.0.0.1:8000",
+        "--backup-dir",
+        "/backups",
+    ])
+    .expect("a folder beside a surface");
+    assert_eq!(
+        held.serving.backups.as_deref(),
+        Some(std::path::Path::new("/backups"))
+    );
+    assert_eq!(
+        asked(&["./data", "--http", "127.0.0.1:8000"])
+            .expect("no folder")
+            .serving
+            .backups,
+        None
+    );
+
+    // Refused rather than ignored: a folder named and never written to is
+    // one somebody believes holds their backups.
+    let refusal = asked(&["./data", "--backup-dir", "/backups", "-e", "SELECT 1;"])
+        .expect_err("nothing serves");
+    assert!(
+        refusal.contains("--backup-dir"),
+        "the refusal does not name the flag: {refusal}"
+    );
+    assert!(asked(&["./data", "--http", "127.0.0.1:8000", "--backup-dir"]).is_err());
+}
+
+#[test]
+fn a_retained_count_is_a_positive_number_or_none() {
+    assert_eq!(
+        super::retained_records("100000"),
+        Ok(tessari_storage::Retention::Keep(
+            tessari_types::Sequence::new(100_000)
+        ))
+    );
+    assert_eq!(
+        super::retained_records("NONE"),
+        Ok(tessari_storage::Retention::Unbounded)
+    );
+    for written in ["0", "-1", "ten", "", "1e5"] {
+        assert!(
+            super::retained_records(written).is_err(),
+            "`{written}` is not a count, and a start that guessed would \
+                 prune where nobody said"
+        );
+    }
+}
+
+#[test]
+fn an_unseal_period_is_a_positive_duration_on_a_serving_node() {
+    let held = asked(&["./data", "--http", "127.0.0.1:8000", "--unseal-for", "90s"])
+        .expect("a period beside a surface");
+    assert_eq!(
+        held.serving.unseal_for,
+        Some(core::time::Duration::from_secs(90))
+    );
+    assert_eq!(
+        asked(&["./data", "--http", "127.0.0.1:8000"])
+            .expect("no period")
+            .serving
+            .unseal_for,
+        None
+    );
+
+    for (text, why) in [
+        ("0s", "zero"),
+        ("ten", "not a duration"),
+        ("10", "a number"),
+    ] {
+        let refusal =
+            asked(&["./data", "--http", "127.0.0.1:8000", "--unseal-for", text]).expect_err(why);
+        assert!(
+            refusal.contains("--unseal-for"),
+            "the refusal of {why} does not name the flag: {refusal}"
+        );
+    }
+    let refusal =
+        asked(&["./data", "--unseal-for", "10m", "-e", "SELECT 1;"]).expect_err("nothing serves");
+    assert!(refusal.contains("--unseal-for"), "{refusal}");
+}
+
+#[test]
+fn an_address_next_to_something_that_is_not_serving_is_refused() {
+    // Not ignored. A port that was named and never opened is worse than one
+    // that was refused, because nothing says which happened.
+    let refusal = asked(&["./data", "--http", "127.0.0.1:8000", "-e", "SELECT 1;"])
+        .expect_err("two programs");
+    assert!(
+        refusal.contains("two programs"),
+        "the refusal should say why: {refusal}"
+    );
+}
+
+#[test]
+fn a_parameter_is_read_as_a_tessariql_value() {
+    let held = asked(&[
+        "-e",
+        "SELECT * FROM users WHERE name = $who;",
+        "--param",
+        "who='ada'",
+    ])
+    .expect("a parameter");
+    assert_eq!(
+        held.parameters.get("who"),
+        Some(&Value::String("ada".to_owned()))
+    );
+}
+
+#[test]
+fn a_parameter_keeps_the_kinds_json_would_have_flattened() {
+    let held = asked(&[
+        "-e",
+        "SELECT 1;",
+        "--param",
+        "cost=dec 12.34",
+        "--param",
+        "span=1h30m",
+    ])
+    .expect("two parameters");
+    assert!(matches!(
+        held.parameters.get("cost"),
+        Some(Value::Number(Number::Decimal(_)))
+    ));
+    assert!(matches!(
+        held.parameters.get("span"),
+        Some(Value::Duration(_))
+    ));
+}
+
+#[test]
+fn a_parameter_may_be_written_with_its_marker() {
+    // `--param $who='ada'` is what somebody types after reading the script,
+    // and refusing it would be pedantry with a shell-quoting trap attached.
+    let held = asked(&["-e", "SELECT 1;", "--param", "$who='ada'"]).expect("a parameter");
+    assert!(held.parameters.contains_key("who"));
+}
+
+#[test]
+fn a_parameter_that_is_not_a_value_is_refused() {
+    // The rule one layer out from the grammar: a value is a value or it is
+    // nothing, so a statement smuggled in as one is refused here rather
+    // than pasted into a script.
+    for given in [
+        "who=1; DROP TABLE users",
+        "who=SELECT * FROM users",
+        "who=name",
+    ] {
+        assert!(
+            asked(&["-e", "SELECT 1;", "--param", given]).is_err(),
+            "{given} was accepted as a value"
+        );
+    }
+}
+
+#[test]
+fn a_parameter_needs_a_name_and_a_value() {
+    assert!(asked(&["--param"]).is_err());
+    assert!(asked(&["--param", "who"]).is_err());
+    assert!(asked(&["--param", "='ada'"]).is_err());
+}
+
+#[test]
+fn a_sequence_bounds_a_backup_or_a_restore_and_nothing_else() {
+    assert_eq!(
+        asked(&["./data", "--backup", "./out", "--from", "42"])
+            .expect("a bounded backup")
+            .at_sequence,
+        Some(42)
+    );
+    assert_eq!(
+        asked(&["./data", "--restore", "./in", "--upto", "7"])
+            .expect("a bounded restore")
+            .at_sequence,
+        Some(7)
+    );
+    // Elsewhere it means nothing, and silence would answer with everything.
+    assert!(asked(&["./data", "--from", "42"]).is_err());
+    assert!(asked(&["./data", "--health", "--upto", "7"]).is_err());
+    assert!(asked(&["./data", "--backup", "./out", "--from", "soon"]).is_err());
+}
+
+#[test]
+fn verifying_needs_a_path_and_no_store() {
+    assert!(matches!(
+        asked(&["--verify", "./held"]).expect("a path").source,
+        Source::Verify(_)
+    ));
+    assert!(asked(&["--verify"]).is_err());
+    // It reads a file, so an address is a store it was not asked about.
+    assert!(asked(&["--at", "127.0.0.1:1", "--verify", "./held"]).is_err());
+}
+
+#[test]
+fn a_parameter_is_refused_where_no_script_runs() {
+    // Ignoring it would leave somebody believing a value was used.
+    for source in [
+        vec!["./data", "--health"],
+        vec!["./data", "--backup", "./out"],
+        vec!["./data", "--serve", "127.0.0.1:0"],
+    ] {
+        let mut arguments = source.clone();
+        arguments.extend(["--param", "who='ada'"]);
+        assert!(
+            asked(&arguments).is_err(),
+            "{source:?} accepted a parameter"
+        );
+    }
+}
+
+/// The usage names every option form the parser accepts.
+///
+/// # Why this reads the source and not a list
+///
+/// `--help` listed four forms fewer than the binary accepted — `--execute`,
+/// `--file`, `-V` and `-h` all worked and none was printed — and the
+/// documentation site published the complete table under the sentence
+/// *"this is the binary's own usage"*, which was therefore false in one
+/// direction, with the incomplete side being the binary (Q-367).
+///
+/// A list of forms written beside the parser would pin two lists to each
+/// other and neither to the binary, so this reads the `match` itself. The
+/// scan stops at the test module, so a form spelled inside a test is not
+/// mistaken for one the parser takes.
+#[test]
+fn the_usage_names_every_option_the_parser_accepts() {
+    let source = include_str!("../arguments.rs");
+    let parser = source
+        .split_once("#[cfg(test)]")
+        .map_or(source, |(before, _)| before);
+    let mut forms = Vec::new();
+    for line in parser.lines().filter(|line| line.contains("=>")) {
+        let mut rest = line;
+        while let Some(open) = rest.find('"') {
+            rest = &rest[open + 1..];
+            let Some(close) = rest.find('"') else { break };
+            let (form, after) = rest.split_at(close);
+            rest = &after[1..];
+            if form.starts_with('-') && form.len() > 1 {
+                forms.push(form.to_owned());
+            }
+        }
+    }
+    assert!(forms.len() > 10, "the scan found almost nothing: {forms:?}");
+    let missing: Vec<&String> = forms
+        .iter()
+        .filter(|form| !USAGE.contains(form.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "the parser accepts option forms the usage does not print: {missing:?}"
+    );
+}
