@@ -9,6 +9,7 @@
 // `expect_used` and `as_conversions` govern production code; a test states its own expectations.
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
+mod across;
 mod bootstrap;
 mod catch_up;
 mod from_a_running_node;

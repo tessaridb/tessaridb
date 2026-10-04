@@ -171,6 +171,10 @@ pub fn verify_state(input: &mut impl Read) -> Result<StateTaken> {
 /// file read twice, which is the price of never leaving half a state behind a
 /// refusal.
 ///
+/// A transaction across leaders whose outcome the snapshot's cut decided is
+/// finished at the end, as nobody else will; one the cut left undecided stays
+/// standing and unseen, for the log after the snapshot to finish.
+///
 /// # Errors
 ///
 /// [`Error::WrongBase`] when the store holds anything, the refusals of
@@ -195,6 +199,9 @@ pub fn read_state<R: Read>(
         Ok(())
     })?;
     store.finish_state(&taken.positions, &topics)?;
+    // Restored on its own, nobody else will finish what the cut decided: the
+    // store settles it, leaving the undecided for the log above (Q-922b).
+    store.settle_restored()?;
     Ok(taken)
 }
 

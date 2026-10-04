@@ -18,6 +18,7 @@ use crate::error::{Error, Result};
 use crate::store::Store;
 
 mod folding;
+mod restored;
 mod standing;
 mod unsettled;
 

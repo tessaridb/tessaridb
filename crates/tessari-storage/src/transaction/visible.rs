@@ -119,4 +119,7 @@ mod indexes;
 mod restoring;
 
 #[cfg(test)]
+mod settling;
+
+#[cfg(test)]
 mod tests;
