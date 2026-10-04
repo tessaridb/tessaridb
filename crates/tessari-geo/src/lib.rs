@@ -27,7 +27,9 @@
 #![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 pub mod accept;
+pub mod antipode;
 pub mod around;
+pub mod between;
 pub mod bounds;
 pub mod curve;
 pub mod grid;
@@ -39,7 +41,9 @@ pub mod shape;
 mod witness;
 
 pub use crate::accept::{Defect, Refused, accept};
+pub use crate::antipode::{ANTIPODAL_MARGIN_DEGREES, antipodal_zone};
 pub use crate::around::within_reach;
+pub use crate::between::{TOLERANCE_METRES, distance_between};
 pub use crate::bounds::{Bounds, Relation};
 pub use crate::curve::{Cell, Class, ORDER, covering, hilbert_index, hilbert_point};
 pub use crate::grid::{Axis, OffGrid, SCALE, Snapped};

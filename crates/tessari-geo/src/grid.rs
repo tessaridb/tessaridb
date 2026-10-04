@@ -284,7 +284,7 @@ fn snap(value: f64, axis: Axis, limit: i64, spelling: &'static str) -> Result<i6
     clippy::as_conversions,
     reason = "bounded by the range check every caller performs first"
 )]
-fn degrees_to_units(degrees: f64) -> i64 {
+pub(crate) fn degrees_to_units(degrees: f64) -> i64 {
     (degrees * SCALE).round() as i64
 }
 

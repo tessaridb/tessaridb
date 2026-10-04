@@ -173,7 +173,7 @@ impl<'a> Session<'a> {
             let condition = Script {
                 statements: vec![Statement {
                     kind: StatementKind::Return {
-                        value: tessari_ql::parse_expression(when)?,
+                        value: super::parsed::condition(when)?,
                     },
                     span: Span::new(0, 0),
                     acknowledge: None,
@@ -193,7 +193,7 @@ impl<'a> Session<'a> {
                 return Ok(());
             }
         }
-        let mut body = tessari_ql::parse(&event.body)?.bind(bindings)?;
+        let mut body = super::parsed::body(&event.body)?.bind(bindings)?;
         // A writer that reached a write is either signed in, which means the
         // store has a user and is closed, or anonymous on a store with none.
         let open = self.identity.user().is_none();

@@ -70,6 +70,11 @@ impl Session<'_> {
         let Some(ranked) = searched.ranked(wanted.field) else {
             return Ok(Walked::NotServed);
         };
+        // A walk over its postings is a membership read, which an index an
+        // earlier tokenizer may have built does not serve (G058 C3).
+        if ranked.index.needs_rebuild() {
+            return Ok(Walked::NotServed);
+        }
         let Some(visible) = self.index_serving_score(transaction, context, table, wanted.field)?
         else {
             return Ok(Walked::NotServed);

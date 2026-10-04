@@ -385,7 +385,7 @@ fn apply_one(
         if let RecordValue::Present(payload) = mutation.value.value()
             && let Some(held) = projected_vector(definition, &decode_payload(payload)?)
         {
-            let touched = graph.insert(&mutation.id, held);
+            let touched = graph.insert(&mutation.id, held)?;
             batch = graph::write(batch, &address, &touched);
         }
         return Ok(batch);
@@ -626,6 +626,7 @@ mod tests {
             spatial: false,
             costs: crate::catalog::SearchCosts::default(),
             engine: None,
+            tokenizer: None,
         }
     }
 

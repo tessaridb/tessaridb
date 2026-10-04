@@ -215,7 +215,26 @@ pub(crate) fn described_index(index: &IndexDefinition) -> Value {
     if let Some(distance) = index.vector {
         described.insert("vector".to_owned(), Value::from(distance.name()));
     }
+    described.extend(tokenizer_report(index));
     Value::Object(described)
+}
+
+/// For an index holding terms, the tokenizer generation that built it (`NULL`
+/// when it recorded none) and whether it needs rebuilding (G058 C3). Nothing for
+/// an index holding no terms, whose report keeps the shape it always had.
+pub(crate) fn tokenizer_report(index: &IndexDefinition) -> Vec<(String, Value)> {
+    if !index.holds_terms() {
+        return Vec::new();
+    }
+    vec![
+        (
+            "tokenizer".to_owned(),
+            index
+                .tokenizer
+                .map_or(Value::Null, |generation| Value::from(i64::from(generation))),
+        ),
+        ("rebuild".to_owned(), Value::Bool(index.needs_rebuild())),
+    ]
 }
 
 /// A balanced table's shards as the balancing pass last measured them

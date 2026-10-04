@@ -4,7 +4,7 @@ use std::ops::ControlFlow;
 
 use tessari_ql::Expr;
 use tessari_storage::{Catalog, RecordAddress, Transaction};
-use tessari_types::{TableId, Value};
+use tessari_types::TableId;
 
 use crate::condition::boolean;
 use crate::consume::Consumer;
@@ -13,7 +13,7 @@ use crate::plan;
 use crate::search::Searched;
 use crate::session::Session;
 
-use super::{Approximated, Asked, Candidates, Gated, Reached, Scope, Testing, Walked};
+use super::{Approximated, Asked, Candidates, Gated, Reached, Scope, Testing};
 
 impl Session<'_> {
     /// The records worth testing, and how they were reached.
@@ -363,64 +363,5 @@ impl Session<'_> {
             query,
             visible,
         }))
-    }
-
-    /// Walk a spatial index nearest-first, when there is one that answers this
-    /// read.
-    ///
-    /// `None` is the scan, and every `None` here is a way the order a walk
-    /// produces can differ from the order the read must answer in. The first
-    /// four are the same four an ordered walk refuses, and for the same reason:
-    /// an ordering has nothing to re-test, because the entry's **position** is
-    /// the answer rather than a candidate for one.
-    ///
-    /// - **no spatial index on that field.** An ordered index holds values and a
-    ///   vector index holds a graph; neither is stored by place.
-    /// - **the field is not visible to this caller.** A field permission removes
-    ///   the field before anything reads the record, so a caller without it
-    ///   sorts by `none`. An order taken from the index would sort by the
-    ///   geometries themselves — the ordering disclosing what the projection
-    ///   hides, one comparison at a time.
-    /// - **this transaction has written to the table.** Entries are derived at
-    ///   commit, so an uncommitted record has none and the walk cannot place it.
-    /// - **the snapshot is not the committed tail.** Entries hold the current
-    ///   state and carry no version, so a record moved since the snapshot sits
-    ///   in the index at a place this reader cannot see, and the answer comes
-    ///   back in the **wrong order** rather than short.
-    ///
-    /// The query position is the last: the walk ranks from a position, and a
-    /// larger query shape is measured by the scan. [`Transaction::records_by_place`] owns the three
-    /// remaining refusals, which are facts about the records rather than about
-    /// the session.
-    pub(super) fn walk_to_place(
-        &self,
-        transaction: &mut Transaction<'_>,
-        context: crate::context::Context,
-        table: TableId,
-        wanted: &plan::Closest<'_>,
-    ) -> Result<Walked> {
-        let Some((index, visible)) =
-            self.index_serving_place(transaction, context, table, wanted.path)?
-        else {
-            return Ok(Walked::NotServed);
-        };
-        // Not a decline: a query that is not a point, or a point no cell can
-        // hold, is a statement this walk does not serve rather than an index
-        // that ran out.
-        let Value::Geometry(tessari_types::Geometry::Point(position)) =
-            self.evaluate(transaction, wanted.query)?
-        else {
-            return Ok(Walked::NotServed);
-        };
-        let Ok(target) = tessari_geo::Snapped::of(position) else {
-            return Ok(Walked::NotServed);
-        };
-        let Some(nearby) = transaction.records_by_place(&index, target, wanted.wanted)? else {
-            return Ok(Walked::Declined);
-        };
-        Ok(Walked::Served {
-            found: self.records_of(nearby.rows, &visible)?,
-            index: index.name,
-        })
     }
 }

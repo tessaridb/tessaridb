@@ -12,6 +12,84 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.26.0-beta — 2026-10-04
+
+Engines and search finished before the format freezes (G058).
+
+### Upgrade
+
+- **Rebuild every full-text index once after upgrading.** A term index now
+  records which tokenizer built it, and one written before this release (or by
+  another tokenizer) is not answered from until it is rebuilt: `REBUILD INDEX`
+  for a field index, a redefinition for a `DEFINE SEARCH`. Until then a field
+  read is answered by the exact scan, and a search over a stale member reads it
+  with a `needs-rebuild` note. `INFO FOR TABLE` and `INFO FOR SEARCH` report each
+  index's `tokenizer` and whether it needs a `rebuild`.
+- **A grouped materialized view is rebuilt once**, on its first maintenance pass
+  after the upgrade, and its row identities change then (see Changed).
+
+### Changed
+
+- **A grouped materialized view is kept a group at a time.** A view whose read
+  groups by `GROUP BY` and neither orders, bounds nor splits its groups
+  recomputes only the groups a batch's changes left and joined, and stores each
+  row under its group key's ordered bytes (`view:0x…`, was its position), so it
+  reads in the read's group order and a row keeps its identity while other
+  groups come and go. A membership map beside the rows says which group each
+  record was in. 50 000 records in 500 groups, one change per batch, on disk:
+  51.5 → 5.1 ms per batch at the median; declaring the view costs more (51 →
+  630 ms there) for the map.
+- **Nearest-first reads are walked by the spatial index over areas and under a
+  `WHERE`.** Each record the walk reaches is tested against the whole condition
+  and measured by the statement's own ordering expression, so the order is the
+  scan's to the last digit; a walk that would examine more than 4 096 records,
+  or a target whose antipode holds data, is answered by the scan with a
+  `fell-back` note.
+  <!-- landed: nearest-first-under-a-where -->
+- **A fuzzy field read scores what it matched.** `search::score` over
+  `MATCHES FUZZY` weighs each reached term by 1/(1 + edits) under one document
+  frequency (it scored 0 for a corrected term): field fuzzy NDCG@10 on the
+  judgment set 0.25 → 0.79.
+- **An approximate vector read and index maintenance read graph nodes as the
+  walk reaches them**, rather than decoding the whole graph first — same
+  answers; 20 000 × 32-d on disk, p50 27.5 → 1.7 ms.
+- **Membership no longer raises the cross-kind note for its collection.** `IN`
+  and `CONTAINS` compare the value with each member, so `x IN [1, 3.0]` says
+  nothing and `x IN ['1', '3']` over numbers still says what it crossed.
+- **`WITHOUT SCAN GUARD` is a permanent clause**, no longer promised an end now
+  that the planner has statistics (a wrong estimate is when lifting the veto is
+  the fix).
+- **An event's body and condition are parsed once per text**, not on every
+  write it runs for.
+
+### Added
+
+- **`geo::distance` between any two shapes**, to their nearest points, within a
+  millimetre.
+  <!-- landed: distance-between-two-larger-shapes -->
+- **A measured query covering** — sixteen cells per query box, chosen by a sweep
+  over a skewed corpus (`benchmarks/2026-10-04-macos-aarch64-covering-budget.md`).
+  <!-- landed: measured-covering-budget -->
+- **A Kafka consumer's quarantined messages are kept in the store.** `ON FAILURE
+  quarantine` parks each message in the transaction that writes its batch, and
+  `INFO FOR KAFKA CONSUMER` lists them under `quarantine` — partition, offset,
+  reason, payload, time — after any restart, the newest 1 000 per consumer. The
+  payload is shown to a user who may read the destination table whole; anyone
+  else sees it withheld. `DROP KAFKA CONSUMER` removes them.
+- **A note kind, `needs-rebuild`**, naming an index built by another tokenizer.
+
+### Fixed
+
+- **An insert under a generated identity no longer slows as its table grows.**
+  Every commit read every stored version of each record it wrote to look for a
+  concurrent one, and the counter generated identities are taken from is
+  rewritten by every insert: a run of inserts was quadratic (91.5 µs a write after
+  a thousand, against 12.4 µs naming the identity). Only a namespace declared
+  `MULTI MASTER` can hold a concurrent version, and only there are they read.
+- **A rollup's float `sum` kept insert by insert is the exact total** — the same
+  bits a `GROUP BY` over the raw window answers (it was a running rounded total:
+  `1e16`, four `1.0`, `-1e16` kept `0`, now `4`).
+
 ## 0.25.0-beta — 2026-10-04
 
 The cluster without its remaining limits (G057).

@@ -10,7 +10,7 @@ Eleven engines. One transaction. One binary. A real-time multi-model database,
 written in Rust, for AI applications and the products built around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.25.0--beta-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.26.0--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.98%2B-6B5FD1?style=flat-square)](Cargo.toml)
 [![conformance](https://img.shields.io/badge/conformance-1539%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
@@ -22,8 +22,8 @@ written in Rust, for AI applications and the products built around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is a beta — `0.25.0-beta`.** It is released and tested, published as
-> a container image (`tessaridb/tessaridb:0.25.0-beta`; the image tracks the
+> **TessariDB is a beta — `0.26.0-beta`.** It is released and tested, published as
+> a container image (`tessaridb/tessaridb:0.26.0-beta`; the image tracks the
 > larger releases), and the licence makes production use free, including inside
 > a commercial company.
 > What a beta does not promise yet is permanence of shape: before 1.0 the query
@@ -157,7 +157,7 @@ store rather than three stores, and queues and topics share one row. The
 | **Time-series** | `DEFINE SERIES` — a table with a declared retention, past which a record is not answered with while its bytes are still there and its removal is a separate act, epoch-anchored windows every process agrees on, aggregates per window, and retention as a statement over any table that reports what it removed; ordered by event time with `TIME`, windows filled over a stated range, the newest record per key, `ASOF JOIN`, counter folds, rollups kept by the writes, aged records removed as one range, and batches of events appended over HTTP | 27 | ✅ runs |
 | **References** | `FETCH` — follow a reference, an array of them, or a nested route, without a join | 12 | ✅ runs |
 | **Queues & topics** | `DEFINE QUEUE` — work handed out one holder at a time under a hold that lapses, first-in-first-out by identity, by a declared priority, or on the record you name, held back until a declared instant, an attempt ceiling whose dead letter is a predicate rather than a second table, a claim that is an ordinary write so it replicates, recovers and needs no lease manager, and a claimant a session declares so it can hand back everything it holds and nobody else's, by name or one record at a time, on a strict table or a loose one, and work a holder may compare-and-set without losing the hold — declared strict or lenient and in a graph or in none, so a queue is an end of a link like any other table, and a hold that no write can drop by saying nothing about it; and `DEFINE TOPIC` — an append-only order whose messages hold dense positions decided at commit, whose named readers keep their place in the store and move it in their own transaction, whose retention — by age or by bytes kept — tells a reader how much it missed, and which a topic declared `PUBLIC` lets a caller nobody signed in append to at a declared rate; and `DEFINE GROUP` — workers sharing a topic, each message held in flight until it is acknowledged, handed out again on a negative acknowledgement or a passed deadline, and dead-lettered past its deliveries; and `DEFINE TOPIC CONSUMER` — a topic read into a table through a group, each message applied exactly once in the transaction that acknowledges it | 71 + 37 | ✅ runs |
-| **Geospatial** | a geometry type on an exact integer grid, eight predicates over whole shapes, geodesic distance and area, shapes written as literals, a spatial index seven of the eight predicates and a radius read go through, a nearest-first read over positions, distance from a position to the nearest point of any shape, counting by cell, a geo store declared as one so the field, the index and the requirement cannot come apart, and a measured refinement ratio saying what that index's candidates cost | 74 | 🚧 partial — no distance between two larger shapes; the nearest few is served over positions |
+| **Geospatial** | a geometry type on an exact integer grid, eight predicates over whole shapes, geodesic distance and area, shapes written as literals, a spatial index seven of the eight predicates and a radius read go through, a nearest-first read over positions and areas and under a `WHERE`, distance between any two shapes to their nearest points, counting by cell, a geo store declared as one so the field, the index and the requirement cannot come apart, a measured query covering, and a measured refinement ratio saying what that index's candidates cost | 74 | ✅ runs |
 
 Underneath all of them, one substrate with two backends: **in memory**, and
 **on disk** on a log-structured merge-tree engine. Everything above the
@@ -201,7 +201,7 @@ surviving version and the node that wrote it.
 
 ## Status
 
-**Stage: active development · `0.25.0-beta` · not published to crates.io.** What
+**Stage: active development · `0.26.0-beta` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 
@@ -255,28 +255,22 @@ follows is what runs today, not a roadmap.
   log can now be **bounded** — `DEFINE NODE RETAIN <n> RECORDS` keeps the newest
   *n* per log on this machine and prunes the rest, **default off**, with a reader
   below the horizon refused by name rather than served a short answer.
-- 🚧 **Partial:** geospatial can store a shape, answer eight predicates over
-  whole shapes, measure geodesic distance and area, and be written as a literal
-  in a script. `DEFINE INDEX … SPATIAL` writes and maintains a **spatial index**
-  — the cells covering each geometry, with the record's bounding box in each
-  entry — and **seven of the eight predicates now read through it**: the query
-  shape is covered by cells of its own, the entries under and above them are
-  read, the stored boxes reject what they can, and the exact predicate decides
-  the rest. `geo::disjoint` is the complement of a region and stays an exact
-  scan by design. The same index answers **the nearest few** —
-  `ORDER BY geo::distance(at, …) LIMIT k` walks cells cheapest-first, keyed by a
-  distance nothing inside the cell can beat, and stops when the best cell left is
-  further than the worst answer held; that is exact rather than approximate, so
-  it asks nothing of the statement. `geo::distance` measures from a position to
-  the **nearest point** of any shape, a **radius read** (`geo::distance(at, …) < r`)
-  is served by the same index through the query's box widened by `r`, and
-  `geo::cell(at, n)` answers the index's own cell as a polygon to group by. What
-  is missing is a distance between two shapes that are both larger than a
-  position, a nearest-first read under a `WHERE` or over areas, and any measured
-  tuning of how finely a query is covered.
-  <!-- absent: distance-between-two-larger-shapes -->
-  <!-- absent: nearest-first-under-a-where -->
-  <!-- absent: measured-covering-budget -->
+- ✅ **Geospatial** can store a shape, answer eight predicates over whole
+  shapes, measure geodesic distance and area, and be written as a literal in a
+  script. `DEFINE INDEX … SPATIAL` writes and maintains a **spatial index** —
+  the cells covering each geometry, with the record's bounding box in each entry
+  — and **seven of the eight predicates read through it**: the query shape is
+  covered by cells of its own (sixteen, a budget measured on a skewed corpus),
+  the entries under and above them are read, the stored boxes reject what they
+  can, and the exact predicate decides the rest. `geo::disjoint` is the
+  complement of a region and stays an exact scan by design. The same index
+  answers **the nearest few** — `ORDER BY geo::distance(at, …) LIMIT k`, over
+  points or areas and under a `WHERE` — by walking cells and records
+  cheapest-first and measuring each record with the statement's own expression,
+  so the order is the scan's to the last digit. `geo::distance` measures between
+  **any two shapes**, to their nearest points; a **radius read**
+  (`geo::distance(at, …) < r`) is served through the query's box widened by `r`;
+  and `geo::cell(at, n)` answers the index's own cell as a polygon to group by.
 - 🚧 **Partial:** a read that runs whole on every shard's node. A table can
   be split by the identities of its records (`SPLIT AT`), and each shard is
   logged, replicated and — where a member row places it (`LEADS`) — elected and

@@ -67,10 +67,9 @@ pub(crate) fn suggested(
         // The first search index on the path. Any of them holds the same terms
         // for the same field, so which one is asked cannot change the answer —
         // only which of two identical dictionaries is read.
-        let Some(index) = indexes
-            .iter()
-            .find(|index| index.search && index.fields.first() == Some(path))
-        else {
+        let Some(index) = indexes.iter().find(|index| {
+            index.search && !index.needs_rebuild() && index.fields.first() == Some(path)
+        }) else {
             continue;
         };
         consulted = true;

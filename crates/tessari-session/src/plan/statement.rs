@@ -147,6 +147,9 @@ pub(crate) fn nearest(select: &Select) -> Option<Nearest<'_>> {
 /// - a `FETCH`, which replaces a reference with the record it names before the
 ///   sort sees it.
 pub(crate) struct Closest<'a> {
+    /// The ordering expression itself, measured on each record the walk takes
+    /// so the order is the scan's to the last digit.
+    pub(crate) key: &'a Expr,
     /// The field holding the geometries.
     pub(crate) path: &'a Path,
     /// The position measured from, still an expression.
@@ -213,6 +216,7 @@ pub(crate) fn closest(select: &Select) -> Option<Closest<'_>> {
     // the walk asks for rather than making the read unservable.
     let wanted = limit.saturating_add(select.start.unwrap_or(0));
     Some(Closest {
+        key: &ordering.key,
         path: &field.path,
         query,
         wanted: usize::try_from(wanted).unwrap_or(usize::MAX),

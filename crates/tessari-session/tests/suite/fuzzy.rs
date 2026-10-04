@@ -318,10 +318,12 @@ fn an_expanded_term_never_outranks_the_word_that_was_typed() {
             .1
     };
 
-    // A record reached only through the expansion scores nothing…
+    // A record reached only through the expansion weighs by its distance — an
+    // explicit per-edit penalty, the criterion's second form (G058 C3, Q-909;
+    // it scored nothing until then, which left a ranked fuzzy read unranked)…
     assert!(
-        relevance('2').abs() < f64::EPSILON,
-        "an expanded term carried weight: {scored:?}",
+        relevance('2') > 0.0,
+        "a corrected term carried no weight: {scored:?}",
     );
     // …and every record holding the word that was actually typed outranks it.
     for holder in ['1', '3'] {
@@ -413,5 +415,62 @@ fn an_index_without_surfaces_leaves_the_word_to_the_scan() {
     assert_eq!(
         answered(&mut session, read),
         (vec!["6".to_owned()], AccessPath::Scan)
+    );
+}
+
+/// The score of each answered record, by id.
+fn scores(session: &mut Session<'_>, read: &str) -> Vec<(String, f64)> {
+    let outcomes = session.run(read).unwrap();
+    let Some(Outcome::Records { records, .. }) = outcomes.last() else {
+        panic!("{read}: {:?}", outcomes.last());
+    };
+    records
+        .iter()
+        .map(|(id, value)| {
+            let tessari_types::Value::Object(fields) = value else {
+                panic!("{value:?}");
+            };
+            let Some(tessari_types::Value::Number(score)) = fields.get("score") else {
+                panic!("no score in {fields:?}");
+            };
+            (id.to_string(), score.as_float().unwrap())
+        })
+        .collect()
+}
+
+/// G058 C3 (Q-909): a score over a field read fuzzily measures the words the
+/// read reached, each weighed by its distance, rather than the typed spelling —
+/// which scored every misspelling `0` and left a ranked fuzzy read in store order.
+#[test]
+fn a_fuzzy_score_measures_what_the_read_reached_and_an_exact_term_weighs_most() {
+    let (store, use_it) = opened(true);
+    let mut session = Session::new(&store);
+    session.run(use_it).unwrap();
+    let found = scores(
+        &mut session,
+        "SELECT id, search::score(body, 'vectr') AS score FROM notes \
+         WHERE body MATCHES FUZZY 'vectr';",
+    );
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].1 > 0.0, "a misspelling scored nothing: {found:?}");
+
+    // The same words but one, so only the spelling differs: the exact term must
+    // outweigh the corrected one, not tie with it.
+    session
+        .run("CREATE notes:8 = { body: 'Vectr search over a store' };")
+        .unwrap();
+    let ranked = scores(
+        &mut session,
+        "SELECT id, search::score(body, 'vector') AS score FROM notes \
+         WHERE body MATCHES FUZZY 'vector' ORDER BY score DESC;",
+    );
+    assert_eq!(
+        ranked.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+        ["1", "8"],
+        "{ranked:?}"
+    );
+    assert!(
+        ranked[0].1 > ranked[1].1,
+        "the exact term did not outweigh: {ranked:?}"
     );
 }

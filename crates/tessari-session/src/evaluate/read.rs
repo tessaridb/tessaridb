@@ -188,6 +188,7 @@ impl Session<'_> {
                         },
                         within,
                     )?;
+                    notes.extend(searched.rebuild_notes().iter().cloned());
                     (prepared, searched, None)
                 }
             };

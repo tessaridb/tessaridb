@@ -9,7 +9,9 @@
 #![allow(clippy::expect_used, clippy::as_conversions)]
 
 mod accept;
+mod antipode;
 mod around;
+mod between;
 mod golden;
 mod kernel;
 mod measure;

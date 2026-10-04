@@ -62,6 +62,28 @@ pub(crate) fn take(reader: &mut KeyReader<'_>) -> Result<RecordId> {
     }
 }
 
+/// A record id on its own, in the bytes a key carries it as — for an id kept
+/// inside a value rather than at the end of a key (ADR-0109, a view's group
+/// membership).
+#[must_use]
+pub fn encode_record_id(id: &RecordId) -> Vec<u8> {
+    let mut writer = KeyWriter::new();
+    put(&mut writer, id);
+    writer.finish()
+}
+
+/// Read back what [`encode_record_id`] wrote.
+///
+/// # Errors
+///
+/// Returns an error when the bytes are not exactly one record id.
+pub fn decode_record_id(bytes: &[u8]) -> Result<RecordId> {
+    let mut reader = KeyReader::new(crate::kind::KeyKind::Record, bytes);
+    let id = take(&mut reader)?;
+    reader.finish()?;
+    Ok(id)
+}
+
 #[cfg(test)]
 mod tests {
     // Test assertions are exactly where a panic is the correct outcome; the
@@ -80,6 +102,25 @@ mod tests {
     fn decode(bytes: &[u8]) -> Result<RecordId> {
         let mut reader = KeyReader::new(KeyKind::Record, bytes);
         take(&mut reader)
+    }
+
+    #[test]
+    fn an_id_kept_in_a_value_reads_back_and_refuses_trailing_bytes() {
+        for id in [
+            RecordId::Int(-7),
+            RecordId::from("a\0b"),
+            RecordId::Uuid([9; 16]),
+            RecordId::Bytes(vec![0, 1, 255]),
+        ] {
+            let bytes = encode_record_id(&id);
+            assert_eq!(decode_record_id(&bytes).unwrap(), id);
+            let mut longer = bytes.clone();
+            longer.push(0);
+            assert!(matches!(
+                decode_record_id(&longer),
+                Err(Error::TrailingBytes { .. })
+            ));
+        }
     }
 
     #[test]

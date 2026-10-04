@@ -448,7 +448,8 @@ impl Catalog<'_, '_> {
         ));
         self.transaction
             .delete(system::address(system::NAMES, RecordId::from(qualified)));
-        Ok(())
+        // The messages it parked go with it (Q-708).
+        self.transaction.forget_quarantined(consumer.id)
     }
 
     /// Every declared consumer, in name order.

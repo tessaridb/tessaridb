@@ -369,10 +369,10 @@ impl Session<'_> {
         let Some(TableKind::View(declared)) = kind else {
             return Err(unknown());
         };
-        // A kept view's rows go with its table; its state is kept beside them
-        // and goes too (ADR-0109 D1).
+        // A kept view's rows go with its table; its state and its membership
+        // map are kept beside them and go too (ADR-0109 D1, D2).
         if declared.materialized {
-            transaction.forget_view(id);
+            transaction.forget_view(id)?;
         }
         Catalog::new(transaction).drop_table(id)?;
         Ok(Outcome::Done)

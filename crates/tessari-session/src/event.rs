@@ -19,6 +19,7 @@
 //! cannot see into a table the writer can.
 
 mod fire;
+mod parsed;
 
 use tessari_ql::{Name, Span, TableRef};
 use tessari_storage::{Catalog, EventDeclaration, TableKind, Transaction};

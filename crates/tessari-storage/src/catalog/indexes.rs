@@ -162,6 +162,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             vector: shape.vector,
             spatial: shape.spatial,
             costs: shape.costs,
+            tokenizer: (shape.search || engine.is_some())
+                .then_some(tessari_types::TOKENIZER_GENERATION),
             engine,
         };
         self.write(system::INDEXES, id.get(), &definition.to_value());
@@ -224,8 +226,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         Ok(found)
     }
 
-    /// Write an index's definition again, unchanged, so its entries are built
-    /// from the table's rows as they now stand.
+    /// Write an index's definition again, so its entries are built from the
+    /// table's rows as they now stand.
     ///
     /// The whole of `REBUILD INDEX`. A catalog entry is an ordinary record
     /// (ADR-0009), so writing this one puts a mutation in the log that index
@@ -238,6 +240,9 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
     /// applies the same record. And the rebuild is atomic with whatever else the
     /// transaction does, because it is the same batch.
     ///
+    /// The definition is written **as given**, `tokenizer` included: the
+    /// caller says which tokenizer generation the rebuilt entries are made by
+    /// (the statement stamps this build's), and the catalog does not decide it.
     pub fn rebuild_index(&mut self, definition: &IndexDefinition) {
         self.write(system::INDEXES, definition.id.get(), &definition.to_value());
     }

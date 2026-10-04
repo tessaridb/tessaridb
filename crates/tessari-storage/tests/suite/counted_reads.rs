@@ -1014,3 +1014,47 @@ fn the_range_gate_costs_a_commit_the_same_on_a_large_store_as_on_a_small_one() {
          started tracking the size of the store instead"
     );
 }
+
+/// A commit that rewrites a record reads what it writes, not the record's
+/// history.
+///
+/// The record a generated identity is counted in is rewritten by every insert
+/// into its table, so a commit whose cost grew with the versions it already
+/// held made a run of inserts quadratic — measured at 91.5 µs a write after a
+/// thousand of them against 12.4 µs for the same write naming its own identity
+/// (Q-912's measurement, G058). Two surviving versions can only be held where a
+/// namespace admits two writers, and this one, like every namespace not
+/// declared `MULTI MASTER`, does not.
+#[test]
+fn a_commit_rewriting_a_record_reads_the_same_after_ten_rewrites_as_after_a_thousand() {
+    let address = RecordAddress::new(
+        NamespaceId::new(1),
+        DatabaseId::new(1),
+        TableId::new(1),
+        RecordId::from("counter"),
+    );
+    let measure = |rewrites: usize| {
+        let counting = Counting::new();
+        let store = Store::open(Arc::clone(&counting) as Arc<dyn KvBackend>).unwrap();
+        for nth in 0..rewrites {
+            let mut transaction = store.begin().unwrap();
+            transaction.put(address.clone(), format!("{{\"n\":{nth}}}").into_bytes());
+            transaction.commit().unwrap();
+        }
+        counting.reset();
+        let mut transaction = store.begin().unwrap();
+        transaction.put(address.clone(), b"{}".to_vec());
+        transaction.commit().unwrap();
+        counting.entries()
+    };
+
+    let few = measure(10);
+    let many = measure(1_000);
+
+    assert_eq!(
+        few, many,
+        "rewriting a record after a thousand rewrites read {many} entries and \
+         after ten read {few} — the commit has started reading the record's \
+         history"
+    );
+}

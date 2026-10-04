@@ -3,12 +3,12 @@
 use super::{
     EngineMember, FIELD_DATABASE, FIELD_ENGINE, FIELD_FIELDS, FIELD_ID, FIELD_NAME,
     FIELD_NAMESPACE, FIELD_OFFSETS, FIELD_POSITIONS, FIELD_QUANTIZED, FIELD_SEARCH, FIELD_SPATIAL,
-    FIELD_TABLE, FIELD_UNIQUE, FIELD_UNSCORED, FIELD_VECTOR, field_id, field_name, flag, number,
-    object,
+    FIELD_TABLE, FIELD_TOKENIZER, FIELD_UNIQUE, FIELD_UNSCORED, FIELD_VECTOR, field_id, field_name,
+    flag, id_of, number, object,
 };
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
-use tessari_types::{DatabaseId, IndexId, NamespaceId, Path, TableId, Value};
+use tessari_types::{DatabaseId, IndexId, NamespaceId, Path, TOKENIZER_GENERATION, TableId, Value};
 
 /// What a `DEFINE INDEX` says beyond which values it projects.
 ///
@@ -158,9 +158,36 @@ pub struct IndexDefinition {
     /// its own: `search` is false on a member and [`Self::is_ordered`] answers
     /// no for it.
     pub engine: Option<EngineMember>,
+    /// The tokenizer generation that built this index's terms, when it holds
+    /// terms and recorded one (G058 C3, Q-911).
+    ///
+    /// Written when the index is defined or rebuilt from `0.26.0-beta`; an index
+    /// written earlier holds no such field and reads `None` — not known to be
+    /// stale, and not known to be current either, which for a term index is the
+    /// same thing (see [`Self::needs_rebuild`]).
+    pub tokenizer: Option<u32>,
 }
 
 impl IndexDefinition {
+    /// Whether this index's entries are terms the analyzer made — a field's
+    /// search index or a search's member — and so depend on the tokenizer.
+    #[must_use]
+    pub const fn holds_terms(&self) -> bool {
+        self.search || self.engine.is_some()
+    }
+
+    /// Whether this index holds terms that this build's tokenizer may not
+    /// produce: it recorded another generation, or none.
+    ///
+    /// A read through such an index can answer a **subset** of what the scan
+    /// answers with nothing in an error state, so it is not served where a scan
+    /// can answer instead, and reported where it cannot. `REBUILD INDEX` (or
+    /// defining a search again) writes it with the current generation.
+    #[must_use]
+    pub fn needs_rebuild(&self) -> bool {
+        self.holds_terms() && self.tokenizer != Some(TOKENIZER_GENERATION)
+    }
+
     /// Whether this index's entries are ordered by the indexed **value**.
     ///
     /// The question every reader wanting a lookup, a range or an order is
@@ -227,6 +254,11 @@ impl IndexDefinition {
         // bytes it always had.
         if let Some(engine) = &self.engine {
             value.insert(FIELD_ENGINE.to_owned(), engine.to_value());
+        }
+        // Written only when recorded: an ordered, vector or spatial index holds
+        // no terms and keeps the bytes it always had.
+        if let Some(generation) = self.tokenizer {
+            value.insert(FIELD_TOKENIZER.to_owned(), number(generation));
         }
         Value::Object(value)
     }
@@ -311,6 +343,11 @@ impl IndexDefinition {
             engine: fields
                 .get(FIELD_ENGINE)
                 .map(EngineMember::from_value)
+                .transpose()?,
+            // Absent on every index written before `0.26.0-beta`.
+            tokenizer: fields
+                .get(FIELD_TOKENIZER)
+                .map(|held| id_of(held, "index", FIELD_TOKENIZER))
                 .transpose()?,
         })
     }

@@ -9,6 +9,8 @@
 //! maintainer reads, and it travels in the log like any catalog row: a follower
 //! holds the rows and the state its leader wrote.
 
+mod members;
+
 use std::collections::BTreeMap;
 
 use tessari_encoding::{AppliedPositionKey, LogId, StoreKey, decode_payload, encode_payload};
@@ -23,6 +25,7 @@ const ENTITY: &str = "view state";
 const FIELD_VERSION: &str = "version";
 const FIELD_POSITIONS: &str = "positions";
 const FIELD_REFRESHED: &str = "refreshed";
+const FIELD_BY_GROUP: &str = "by_group";
 const FIELD_LOG: &str = "log";
 const FIELD_AT: &str = "at";
 
@@ -36,6 +39,10 @@ pub struct ViewState {
     /// When the view last reached the store's head, as milliseconds since the
     /// Unix epoch.
     pub refreshed: i64,
+    /// Whether the rows are kept a group at a time, under their group keys and
+    /// with a membership map. A state written before that form existed says
+    /// no, and its view is rebuilt whole before it is kept by group.
+    pub by_group: bool,
 }
 
 impl ViewState {
@@ -53,14 +60,18 @@ impl ViewState {
                 ]))
             })
             .collect();
-        Value::Object(BTreeMap::from([
+        let mut fields = BTreeMap::from([
             (FIELD_VERSION.to_owned(), count(self.version.get())),
             (FIELD_POSITIONS.to_owned(), Value::Array(positions)),
             (
                 FIELD_REFRESHED.to_owned(),
                 Value::Number(Number::Integer(self.refreshed)),
             ),
-        ]))
+        ]);
+        if self.by_group {
+            fields.insert(FIELD_BY_GROUP.to_owned(), Value::Bool(true));
+        }
+        Value::Object(fields)
     }
 
     fn from_value(value: &Value) -> Result<Self> {
@@ -90,10 +101,16 @@ impl ViewState {
             Some(Value::Number(Number::Integer(at))) => *at,
             other => return Err(malformed_field(FIELD_REFRESHED, other)),
         };
+        let by_group = match fields.get(FIELD_BY_GROUP) {
+            None => false,
+            Some(Value::Bool(held)) => *held,
+            other => return Err(malformed_field(FIELD_BY_GROUP, other)),
+        };
         Ok(Self {
             version,
             positions,
             refreshed,
+            by_group,
         })
     }
 }
@@ -160,9 +177,15 @@ impl Transaction<'_> {
         Ok(())
     }
 
-    /// Remove the state kept beside a materialized view's rows.
-    pub fn forget_view(&mut self, view: TableId) {
+    /// Remove what is kept beside a materialized view's rows: its state and,
+    /// for a grouped view, its membership map.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the membership rows cannot be read.
+    pub fn forget_view(&mut self, view: TableId) -> Result<()> {
         self.delete(system::address(system::VIEW_STATES, state_id(view)));
+        self.forget_view_members(view)
     }
 }
 

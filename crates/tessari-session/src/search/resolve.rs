@@ -52,6 +52,7 @@ pub(crate) struct Searched {
     wanted: BTreeMap<Path, Vec<(BinaryOp, String)>>,
     suggestion: Option<Suggestion>,
     offsets: BTreeMap<Path, IndexDefinition>,
+    rebuild: Vec<crate::Note>,
 }
 
 impl Searched {
@@ -87,6 +88,12 @@ impl Searched {
     /// may be marked from it rather than by analysing the text (ADR-0100 D4).
     pub(crate) fn offsets(&self, path: &Path) -> Option<&IndexDefinition> {
         self.offsets.get(path)
+    }
+
+    /// One note per searched field's index that an earlier tokenizer may have
+    /// built (G058 C3) — not answered from, and named so the reader can rebuild it.
+    pub(crate) fn rebuild_notes(&self) -> &[crate::Note] {
+        &self.rebuild
     }
 }
 
@@ -254,6 +261,7 @@ impl Session<'_> {
             for path in asked_of.keys().filter(|path| !hidden(path)) {
                 if let Some(index) = self.index_on_path(transaction, table, path)?
                     && index.search
+                    && !index.needs_rebuild()
                     && index.costs.offsets
                 {
                     offsets.insert(path.clone(), index);
@@ -298,23 +306,33 @@ impl Session<'_> {
             }
             // Only the terms this statement asks about: counting the rest would
             // be reading the index to answer a question nobody put.
-            let words = match self.evaluate(transaction, query)? {
-                Value::String(text) => scored_words(analyzer, &text),
-                _ => Vec::new(),
+            let text = match self.evaluate(transaction, query)? {
+                Value::String(text) => text,
+                _ => String::new(),
             };
-            let mut asked = Vec::with_capacity(words.len());
+            // A score over a field the statement reads fuzzily measures each
+            // word as that read reached it (G058 C3, Q-909).
+            let fuzzy = asked_of
+                .get(path)
+                .is_some_and(|asked| asked.iter().any(|(op, _)| *op == BinaryOp::MatchesFuzzy));
+            let mut asked = Vec::new();
             let mut starred = Vec::new();
-            for word in words {
-                match word {
-                    Word::Term(term) => asked.push(term),
-                    Word::Prefix(alternatives) => starred.push(alternatives),
+            let mut near = Vec::new();
+            if fuzzy {
+                near = analyzer.prefixes(&text);
+            } else {
+                for word in scored_words(analyzer, &text) {
+                    match word {
+                        Word::Term(term) => asked.push(term),
+                        Word::Prefix(alternatives) => starred.push(alternatives),
+                    }
                 }
             }
             let floors: Vec<&[String]> = starred.iter().map(Vec::as_slice).collect();
             too_short(&floors, query.span)?;
             // ADR-0104 D5: which terms a prefix blends is a question about the
             // whole collection's dictionary, and this node may hold part of it.
-            if !starred.is_empty() {
+            if !starred.is_empty() || !near.is_empty() {
                 self.refuse_reading_a_part(transaction, table, Part::Whole)?;
             }
             let statistics = transaction.search_statistics(&index)?;
@@ -329,6 +347,16 @@ impl Session<'_> {
             let mut blends = Vec::with_capacity(starred.len());
             for alternatives in &starred {
                 let blend = blended(transaction, &index, alternatives)?;
+                for term in &blend.expansions {
+                    if !terms.contains_key(term) {
+                        let held = transaction.term_statistics(&index, term)?;
+                        terms.insert(term.clone(), held);
+                    }
+                }
+                blends.push(blend);
+            }
+            for alternatives in &near {
+                let blend = super::weighted::fuzzy_blended(transaction, &index, alternatives)?;
                 for term in &blend.expansions {
                     if !terms.contains_key(term) {
                         let held = transaction.term_statistics(&index, term)?;
@@ -394,13 +422,48 @@ impl Session<'_> {
             suggested(transaction, &indexes, &analyzers, &matched)?
         };
 
+        // A field the grant hides is a field with no index as far as this caller
+        // can tell, so its index is not named here either.
+        let rebuild = self.rebuild_notes_for(
+            transaction,
+            table,
+            asked_of.keys().filter(|path| !hidden(path)),
+        )?;
         Ok(Searched {
             analyzers,
             corpora,
             wanted: asked_of,
             suggestion,
             offsets,
+            rebuild,
         })
+    }
+
+    /// The notes for every searched path whose search index needs rebuilding.
+    fn rebuild_notes_for<'p>(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: TableId,
+        paths: impl Iterator<Item = &'p Path>,
+    ) -> Result<Vec<crate::Note>> {
+        let mut notes = Vec::new();
+        let Some(definition) = Catalog::new(transaction).table(table)? else {
+            return Ok(notes);
+        };
+        for path in paths {
+            if let Some(index) = self.index_on_path(transaction, table, path)?
+                && index.search
+                && index.needs_rebuild()
+            {
+                notes.push(crate::Note::NeedsRebuild {
+                    index: index.name,
+                    table: definition.name.clone(),
+                    built: index.tokenizer,
+                    member: false,
+                });
+            }
+        }
+        Ok(notes)
     }
 }
 
@@ -527,6 +590,7 @@ fn blended(
     Ok(Blend {
         prefix: alternatives.first().cloned().unwrap_or_default(),
         documents: ranked.first().map_or(0, |(held, _)| *held),
+        weights: vec![1.0; ranked.len()],
         expansions: ranked.into_iter().map(|(_, term)| term).collect(),
     })
 }

@@ -193,6 +193,27 @@ impl<'a> Scope<'a> {
         }
     }
 
+    /// Record a comparison as `op` makes it. Membership compares the value
+    /// with the collection's **members** — an array of numbers searched for a
+    /// number crossed no kinds (Q-928) — and every other operator compares the
+    /// two values themselves.
+    pub(crate) fn compared_by(self, op: BinaryOp, left: &Value, right: &Value) {
+        let (collection, wanted) = match op {
+            BinaryOp::In => (right, left),
+            BinaryOp::Contains => (left, right),
+            _ => return self.compared(left, right),
+        };
+        match collection {
+            Value::Array(members) => members
+                .iter()
+                .for_each(|member| self.compared(member, wanted)),
+            Value::Set(members) => members
+                .iter()
+                .for_each(|member| self.compared(member, wanted)),
+            _ => self.compared(collection, wanted),
+        }
+    }
+
     /// The analyzer this path's field declares, if it declares one.
     pub(crate) fn analyzer(self, path: &Path) -> Option<&'a Analyzer> {
         self.searched.and_then(|held| held.analyzer(path))

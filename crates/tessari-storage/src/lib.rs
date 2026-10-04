@@ -56,8 +56,10 @@ mod log_holds;
 mod node;
 mod ordering;
 mod pruning;
+mod quarantine;
 mod reclaim;
 mod retention;
+mod rollup_states;
 mod running;
 mod sampled_shards;
 mod schema;
@@ -135,8 +137,8 @@ pub use tessari_encoding::{
     TransactionRecord, Writer,
 };
 pub use transaction::{
-    AcrossPart, Committed, Expansion, FieldedPostings, Nearby, Neighbour, RecordAddress, Region,
-    SearchCounts, StoredRecord, Transaction, Window,
+    AcrossPart, Committed, Expansion, FieldedPostings, Neighbour, PlacesNearest, RecordAddress,
+    Region, SearchCounts, StoredRecord, Transaction, Window,
 };
 pub use vault::{OpenVault, SealState};
 pub use views::ViewState;

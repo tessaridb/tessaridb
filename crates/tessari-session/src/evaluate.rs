@@ -42,6 +42,7 @@ mod keys;
 mod latest;
 mod lent;
 mod nearest;
+mod nearest_place;
 mod ordered;
 mod partition;
 mod paths;
@@ -277,7 +278,7 @@ impl Session<'_> {
                         BinaryOp::MatchesFuzzy => matches_fuzzy_terms(analyzer, value, &other),
                         BinaryOp::MatchesInfix => matches_infix_terms(analyzer, value, &other),
                         held_op => {
-                            scope.compared(value, &other);
+                            scope.compared_by(held_op, value, &other);
                             apply(held_op, value, &other)
                         }
                     })));
@@ -309,7 +310,7 @@ impl Session<'_> {
                 // means once both sides are values belongs to `tessari_types`,
                 // which the store's `ASSERT` path shares and which has no notes
                 // and should not grow any.
-                scope.compared(&held, &other);
+                scope.compared_by(*op, &held, &other);
                 Ok(Value::Bool(apply(*op, &held, &other)))
             }
             ExprKind::Literal(value) => Ok(value.clone()),

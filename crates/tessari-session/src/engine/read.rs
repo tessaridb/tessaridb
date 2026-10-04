@@ -71,6 +71,8 @@ pub(crate) struct Resolved {
     pub(crate) stopwords: BTreeSet<String>,
     /// The members this caller may read.
     pub(crate) members: Vec<Member>,
+    /// One note per member an earlier tokenizer may have built (G058 C3).
+    pub(crate) rebuild: Vec<crate::Note>,
 }
 
 /// One answered record.
@@ -138,6 +140,7 @@ impl Session<'_> {
         };
         let readable = self.readable_in(transaction)?;
         let mut reached = Vec::new();
+        let mut rebuild = Vec::new();
         for index in members {
             let Some(engine) = index.engine.clone() else {
                 continue;
@@ -162,6 +165,16 @@ impl Session<'_> {
             let Some(table) = Catalog::new(transaction).table(index.table)? else {
                 continue;
             };
+            // No scan stands in for a member — it is the search — so it is read
+            // and the answer says it can miss records until it is defined again.
+            if index.needs_rebuild() {
+                rebuild.push(crate::Note::NeedsRebuild {
+                    index: engine.search.clone(),
+                    table: table.name.clone(),
+                    built: index.tokenizer,
+                    member: true,
+                });
+            }
             let (statistics, lengths) = transaction.member_statistics(&index)?;
             let mut fields = Vec::with_capacity(index.fields.len());
             for (at, (path, declared)) in index.fields.iter().zip(&engine.fields).enumerate() {
@@ -210,6 +223,7 @@ impl Session<'_> {
             analyzer,
             stopwords,
             members: reached,
+            rebuild,
         })
     }
 

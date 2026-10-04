@@ -487,6 +487,7 @@ fn table_with_rows(unique: bool) -> Fixture {
             vector: None,
             costs: tessari_storage::SearchCosts::default(),
             engine: None,
+            tokenizer: None,
         },
     };
     bare.write("u1", Some(Value::from("ada@example.com")))

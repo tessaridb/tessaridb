@@ -400,6 +400,23 @@ pub enum Note {
         /// How many windows were filled.
         windows: u64,
     },
+    /// A search index this read met holds terms this build's tokenizer may not
+    /// make (G058 C3, Q-911): it recorded another generation, or none.
+    ///
+    /// A field's index is then not answered from — the read scans, which is
+    /// exact — and a search's member, which no scan stands in for, is read and
+    /// can miss records. Either way the fix is one statement, and the note names
+    /// it, because nothing else in the answer would.
+    NeedsRebuild {
+        /// The field index, or the search the member belongs to.
+        index: String,
+        /// The table it is on.
+        table: String,
+        /// The generation it recorded, if any.
+        built: Option<u32>,
+        /// Whether it is a search's member rather than a field's index.
+        member: bool,
+    },
 }
 
 impl Note {
@@ -417,6 +434,7 @@ impl Note {
             Self::Lapsed { .. } => "lapsed",
             Self::Filled { .. } => "filled",
             Self::Path { .. } => "path",
+            Self::NeedsRebuild { .. } => "needs-rebuild",
         }
     }
 
@@ -466,6 +484,33 @@ impl Note {
                 if *windows == 1 { "was" } else { "were" },
                 if *windows == 1 { "its" } else { "their" },
             ),
+            Self::NeedsRebuild {
+                index,
+                table,
+                built,
+                member,
+            } => {
+                let by = built.map_or_else(
+                    || "an engine that recorded no tokenizer generation".to_owned(),
+                    |generation| format!("tokenizer generation {generation}"),
+                );
+                let now = tessari_types::TOKENIZER_GENERATION;
+                if *member {
+                    format!(
+                        "the search `{index}`'s member on `{table}` was built by {by}, not this \
+                         build's generation {now}, so its terms may not be the ones this build \
+                         makes and this answer can miss records; DROP SEARCH and DEFINE SEARCH \
+                         again to rebuild it"
+                    )
+                } else {
+                    format!(
+                        "the search index `{index}` on `{table}` was built by {by}, not this \
+                         build's generation {now}, so this read did not answer from its terms \
+                         (a score is still measured against its statistics); \
+                         REBUILD INDEX {index} ON {table} rebuilds it"
+                    )
+                }
+            }
             Self::Gathered { table, shards } => format!(
                 "shard{} {} of `{table}` {} read from {} leader{} on other nodes, each when \
                  it was asked, so this answer is complete and not one snapshot",

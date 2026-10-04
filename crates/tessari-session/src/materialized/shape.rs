@@ -18,8 +18,12 @@ pub(crate) enum Shape {
     /// record's own identity — so a batch recomputes only the records it saw
     /// change.
     PerRecord,
-    /// Anything that folds, orders, bounds or splits: one change can move any
-    /// row, so a batch recomputes the whole read.
+    /// One stored row per group of a `GROUP BY` and nothing that orders, bounds
+    /// or reshapes the groups, under the group key's order-preserving bytes —
+    /// so a batch recomputes only the groups its changes left and joined.
+    Grouped,
+    /// Anything else that folds, orders, bounds or splits: one change can move
+    /// any row, so a batch recomputes the whole read.
     Whole,
 }
 
@@ -81,16 +85,19 @@ impl Understood {
                 "depend on anything but its records — the clock, a generator, a subquery or a key",
             ));
         }
-        let shape = if groups(&select)
-            || !select.order.is_empty()
+        let reshaped = !select.order.is_empty()
             || select.limit.is_some()
             || select.start.is_some()
             || select.split.is_some()
             || select.latest.is_some()
             || select.fill.is_some()
-            || select.only.is_some()
-        {
+            || select.only.is_some();
+        // A fold with no `GROUP BY` is one group every change reaches, so it
+        // gains nothing from being kept a group at a time.
+        let shape = if reshaped || (groups(&select) && select.group.is_empty()) {
             Shape::Whole
+        } else if groups(&select) {
+            Shape::Grouped
         } else {
             Shape::PerRecord
         };

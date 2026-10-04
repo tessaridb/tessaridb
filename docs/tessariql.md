@@ -533,9 +533,18 @@ resolved **when the declaration is made**, so there is no window in which a
 consumer is consuming into a table that does not exist. A consumer whose group
 has never committed starts at the **oldest** message still on the topic, so what
 was published before the declaration is ingested too; a group that has committed
-resumes where it stopped. `DROP KAFKA CONSUMER` stops it
-and removes the declaration; the records it already wrote stay, because they are
-records like any others. `DEFINE TOPIC CONSUMER` is the same declaration with a
+resumes where it stopped. `ON FAILURE stop` halts the consumer at a message it
+cannot apply and says why; `ON FAILURE quarantine` parks the message and keeps
+the partition moving — and from `0.26.0-beta` the parked message is **kept in the
+store**, in the transaction that writes its batch: `INFO FOR KAFKA CONSUMER`
+lists it under `quarantine` with its `partition`, `offset`, `reason`, `payload`
+and `at`, after any restart, up to the newest 1 000 per consumer (before, it was
+a count that ended with the process). A payload was on its way into the
+destination, so it is shown to a user who may read that table whole; asking
+about the consumer needs only `manage`, and anyone else sees each entry with its
+`payload` withheld and saying so. `DROP KAFKA CONSUMER` stops it
+and removes the declaration and what it parked; the records it already wrote
+stay, because they are records like any others. `DEFINE TOPIC CONSUMER` is the same declaration with a
 topic of this store as the source — see [Reading a topic into a table](#reading-a-topic-into-a-table).
 
 **A store with no users is open**, and declaring the first one closes it —
@@ -2729,7 +2738,8 @@ tokens, so `MATCHES '"東京"'` finds it — a quoted run of ideographs is an ex
 substring — and not `京東`, while an unquoted `東京` asks for both characters
 anywhere, as any unquoted query asks for every word. Katakana and Hangul keep
 their runs. An index over such text built before `0.22.0-beta` holds the old
-tokens and needs `REBUILD INDEX`. The filters are the part that differs:
+tokens and needs `REBUILD INDEX` — see *Which tokenizer built an index* below.
+The filters are the part that differs:
 
 | Filter | What it does |
 |---|---|
@@ -2740,6 +2750,43 @@ tokens and needs `REBUILD INDEX`. The filters are the part that differs:
 
 A letter the fold does not know passes through rather than being dropped — a
 letter it has no opinion about is still a letter.
+
+#### Which tokenizer built an index
+
+A search index holds what the analyzer made of each record **when the entry was
+written**, so when the code that makes terms changes — the tokenizer splits
+differently, a filter folds or stems differently — every entry written before is
+a term the analyzer would no longer produce, and a read through it answers a
+**subset** of what the scan answers with nothing in an error state. That
+happened once, when `0.22.0-beta` split ideograph runs.
+
+From `0.26.0-beta` an index records the **tokenizer generation** that built it
+(`2` today; `1` is everything before `0.22.0-beta`), and a read compares it with
+the build's own. An index that recorded another generation, or none — every
+search index written before `0.26.0-beta`, because nothing then could say which
+build wrote it — is treated as one that may be stale:
+
+- a field's `SEARCH` index **is not answered from**: `MATCHES`, a ranked walk, a
+  highlight from stored offsets and a suggestion all take the scan, which is
+  exact, and `USING INDEX` naming it is refused. A `search::score` is still
+  measured against its statistics;
+- a search's member is **read** — no scan stands in for it, because it is the
+  search — and its answer can miss records;
+- every read that met one carries the note `needs-rebuild`, which names it and
+  the statement that rebuilds it, and `INFO FOR TABLE` (for an index) and
+  `INFO FOR SEARCH` (for each member) report `tokenizer` — the generation, or
+  `NULL` when none was recorded — and `rebuild`, `true` until it is rebuilt.
+
+```
+REBUILD INDEX by_body ON notes;          -- a field's index
+BEGIN;                                   -- a search: define it again
+DROP SEARCH knowledge;
+DEFINE SEARCH knowledge ON notes FIELDS title WEIGHT 3, body ANALYZER plain;
+COMMIT;
+```
+
+**After an upgrade to `0.26.0-beta`, rebuild every search index once**: until
+then a field's search reads scan, and a `FROM SEARCH` says it can miss records.
 
 The first two make two **spellings** of a word meet. `stemmer` is the one that
 makes two **words** meet, which is what a person usually means by search: without
@@ -3114,8 +3161,14 @@ to five, two beyond. Two edits on a four-letter word is a different word.
 **A corrected word ranks below the word itself.** In a `FROM SEARCH`, which
 ranks a fuzzy word, each occurrence counts `1 / (1 + edits)`: an exact term one,
 a one-edit term a half, a two-edit term a third, so a rare misspelling can never
-outrank the common word it stands for. (`search::score` scores the words typed,
-so a corrected word adds nothing there.)
+outrank the common word it stands for. The same weighing ranks a field read: from
+`0.26.0-beta`, a `search::score` over a field the statement asks `MATCHES FUZZY`
+of measures each of its words as that read reached it — the terms within the
+edit budget share one document frequency, the largest among them, and each
+occurrence counts `1 / (1 + edits)` — so `ORDER BY search::score(body, 'vectr')
+DESC` ranks the records the misspelling found instead of answering in store
+order. Before, it scored the typed spelling, which a misspelling's record does
+not hold, so every record scored `0`.
 
 **The first two characters are not fuzzy, and this is the cost worth knowing
 before you rely on it** (three until `0.22.0-beta`, which lost every typo in the
@@ -3992,9 +4045,14 @@ exact filtered ten and p50 against the exact filtered read:
 
 A condition admitting about one record in a hundred is where the walk stops
 paying: most walks give up and the read pays for part of the walk and the exact
-read. Most of what is left is the walk reading the whole graph before its first
-step, which every approximate read pays. An index on the condition is what lets
-the read choose the exact path before walking at all.
+read. The table was measured before `0.26.0-beta`, when every approximate read
+also decoded the whole graph before its first step; from `0.26.0-beta` a walk
+reads only the nodes it reaches, so the walk columns are lower than shown — on
+disk, an unfiltered read over 20 000 thirty-two-dimensional vectors went from
+27.5 ms to 1.7 ms at the warm median with the same answers
+(`benchmarks/2026-10-04-macos-aarch64-vector-walk.md` in the engine
+repository). An index on the condition is still what lets the read choose the
+exact path before walking at all.
 
 **What it buys, measured rather than claimed:** on two thousand clustered
 thirty-two-dimensional vectors, a read of the ten nearest goes from 3.7 ms to
@@ -4510,11 +4568,13 @@ All three are contextual, like the rest of the tail — a field, a table or an
 index called `without`, `scan` or `guard` stays itself — but once `WITHOUT`
 begins the clause, both words after it are required.
 
-**It is meant to be temporary.** The clause exists because the threshold is a
-policy rather than a measurement, and it is retired when this planner acquires a
-cost model or the statistics that would make the policy unnecessary. A hint with
-no stated end is one nobody dares remove years later, so its end is stated here
-where the next reader will find it.
+**It stays.** It was once meant to be retired when the planner gained
+statistics; it has them (`ANALYZE TABLE`), and the veto now compares an
+estimate from them with the table — a better estimate, still an estimate. A read
+whose estimate is wrong is exactly when lifting the veto is the fix, so from
+`0.26.0-beta` the clause is a permanent part of the language rather than a hint
+with an end date. If a later planner drops the half-table veto altogether, the
+clause will still parse and do nothing.
 
 **The plan can only change the cost.** Whichever candidate narrows, the whole
 condition is still tested against every record it produced, which is what makes
@@ -4730,7 +4790,12 @@ delete recomputes its window from the raw records.
 
 It keeps `count`, `sum`, `min` and `max` — the folds that merge exactly from the
 row alone. A `mean` is refused: keep `sum` and `count` and divide, which is
-exact. Declaring a rollup fills it from the series already written, in a second
+exact. A `sum` over floats is the exact total rounded once, the same bits a
+`GROUP BY` over the raw window answers however the records arrived: from
+`0.26.0-beta` the row's exact sum is kept beside it for the window its key last
+wrote, and an insert into another window that already has a row recomputes that
+row from the raw records instead (before, a run of inserts kept a running
+rounded total). Declaring a rollup fills it from the series already written, in a second
 commit after the declaration's, which is why `DEFINE ROLLUP` runs outside
 `BEGIN … COMMIT`. A write to the series that was already under way when the
 rollup was declared is refused with `Conflict` and succeeds on retry, folded in.
@@ -5835,9 +5900,15 @@ search. The answer is always a distance to a point that is on the shape — neve
 corner chosen in advance, which is right for some positions and wrong by
 kilometres for others.
 
-Between **two** shapes that are both larger than a position the nearest pair of
-points is a different search, and it is refused by name rather than answered
-from a representative point of each.
+Between **two** shapes that are both larger than a position (from `0.26.0-beta`)
+the answer is the least distance between a point of one and a point of the
+other — zero when they share a point, decided by the same exact rule
+`geo::intersects` answers with. It is found the same way: the edges of one are
+cut into pieces, a piece is dropped once a floor proves nothing on it can be
+nearer, and the survivors are settled by a local search, so the figure is a
+distance between two actual points and never a corner chosen in advance. It is
+at most a millimetre above the true least distance; very long edges passing far
+apart close to a pole are where the local search is weakest.
 
 **There is no distance in degrees, anywhere.** Not exposed, not labelled, not
 behind a flag. A function returning degrees is a function somebody reads as
@@ -5988,11 +6059,19 @@ field is not that. `SELECT name FROM places ORDER BY geo::distance(shape, $here)
 LIMIT 3` keeps its bound, because the ordering stage reads the source record
 beneath the projection for a key naming a field the projection did not offer.
 
-The walk ranks **positions**. A record holding a path or an area is measured to
-its nearest point, which its stored box does not know, so the walk hands the read
-to the scan when it reaches one — the answer is the scan's either way, and a
-table holding areas is ordered by the scan. For the same reason a query shape
-larger than a position is measured by the scan.
+The walk takes records in the order of a **floor** — the distance to the record's
+stored box, which nothing in it can be nearer than — and measures each one it
+takes by the statement's own `geo::distance`, so a path or an area is ranked by
+its nearest point exactly as the scan ranks it (from `0.26.0-beta`; before, a
+table holding areas was ordered by the scan). Under a `WHERE` the walk tests the
+whole condition on each record it takes and keeps walking until it holds as many
+as the read wants (also from `0.26.0-beta`). It stops once the next floor is
+beyond the worst record it holds, and gives the read to the scan — with the note
+`fell-back` — when it would have to take more than 4 096 records, when the index
+holds anything near the query position's antipode (where a distance does not
+converge and answers `none`, which sorts first), or when it runs out before the
+bound is filled. A query shape larger than a position is still measured by the
+scan.
 
 #### Within a distance
 
@@ -6057,11 +6136,10 @@ number from 0 to 32.
 
 #### What is not there yet
 
-There is no measured tuning of how finely a query is covered — the budget is a
-declared constant, and the candidate-to-result ratio the store measures is what
-will move it. A nearest-first read under a `WHERE` is still a scan, and so is one
-over a table holding paths or areas. There is no distance between two shapes
-that are both larger than positions.
+A nearest-first read **from** a shape larger than a position is still a scan.
+How finely a query box is covered — sixteen cells — was measured on a skewed
+corpus at three query sizes and is recorded beside the engine
+(`benchmarks/2026-10-04-macos-aarch64-covering-budget.md`).
 
 ### Ranking
 
@@ -7123,7 +7201,9 @@ for the views over it.
 patch a stored row: it opens one transaction, collects the source changes up to
 that transaction's snapshot, and asks the read engine again for the part they can
 have touched — the changed records, for a view that answers one row per record;
-the whole read, for one that groups, folds, orders, bounds or splits. Rows and
+the groups those records left and joined, for one that groups by `GROUP BY` and
+neither orders, bounds nor splits its groups; the whole read, for anything else
+that folds, orders, bounds or splits. Rows and
 version are written in the same commit. So `SELECT * FROM big_orders` answers what
 `SELECT n, total FROM orders WHERE total > 30 VERSION 812` answers, record for
 record, where 812 is the `version` `INFO FOR TABLE` reports.
@@ -7149,9 +7229,22 @@ the source, and one who may read only some of its fields is refused
 after the fact. Nothing but its maintainer writes it, and `DROP VIEW` takes its
 rows and its state.
 
-**What it costs.** A per-record view recomputes one record per change; any other
-recomputes its whole read per batch that saw a change, which is the price of an
-answer that is always exactly its read. Its rows are a node's writes like any
+**A grouped view's row is its group.** From `0.26.0-beta` a view that groups by
+`GROUP BY` keeps each group's row under the group key's order-preserving bytes
+(`kept:0x…`) rather than under its position, so `SELECT * FROM` it answers in the
+read's group order and a row keeps its identity while other groups come and go.
+To know which group a changed record **left** — the change feed carries no old
+value — it keeps a membership map beside its rows, written in the same commit. A
+grouped view declared before `0.26.0-beta` is rebuilt this way on its first
+maintenance pass after the upgrade, which is when its row identities change.
+
+**What it costs.** A per-record view recomputes one record per change, and a
+grouped view the groups its changes touched — 50 000 records in 500 groups, one
+change per batch, on disk: 51.5 → 5.1 ms per batch at the median, about one
+synced commit. The membership map is two small rows per source record, paid
+when the view is declared (51 → 630 ms for those 50 000) and on every change
+after. Any other view recomputes its whole read per batch that saw a change,
+which is the price of an answer that is always exactly its read. Its rows are a node's writes like any
 other: they travel in the log, a follower holds what its leader wrote, and a
 failover moves the maintenance with the leadership.
 
@@ -8254,6 +8347,7 @@ The kinds include:
 | `cursor-walked` | an `AFTER` page was reached by reading the records rather than seeking to the anchor, so it cost what the read costs and not what the page costs (§5, *Resuming a page from a record*) |
 | `nearing-ceiling` | a held read is four fifths of the way to the ceiling that will refuse it, so a view reading fine today stops working as the table grows (§6d) |
 | `path` | the answer is a shortest path, and this is how many steps it took and what they cost (§4a, *The shortest path*) |
+| `needs-rebuild` | a search index this read met may hold an earlier tokenizer's terms: a field's index was not answered from (the read scanned) and a search's member was read and can miss records; the message names the statement that rebuilds it (§4, *Which tokenizer built an index*) |
 
 **`fell-back` fires on an index that declined, never on a table that has none.**
 A bounded ordered read over an unindexed table is the most ordinary read in the
@@ -8268,7 +8362,10 @@ ordinary case a schemaless read is built for: it is how a read over records of
 differing shapes narrows rather than failing. A note there would fire on nearly
 every read in the language, which is worse than no note because it looks like a
 feature. `null` is left out from the other side, being a value deliberately
-written rather than a mistake.
+written rather than a mistake. Membership is judged by the **members**: from
+`0.26.0-beta`, `x IN [1, 3.0]` and `tags CONTAINS 3` compare a number with
+numbers and say nothing, while `x IN ['1', '3']` over numbers says what it
+crossed (it used to name `array` and `number` on every membership test).
 
 The note names a **pair of kinds, once**. A comparison runs per record, so a read
 over a million mixed records has one thing to say and not a million; and the pair
@@ -9637,7 +9734,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.25.0", "build": "0.25.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.26.0", "build": "0.26.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

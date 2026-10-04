@@ -87,7 +87,14 @@ impl Session<'_> {
                 // ordered by a floor visits every record that could rank above
                 // the ones it holds.
                 if let Some(closest) = plan::closest(select) {
-                    match self.walk_to_place(transaction, context, id, &closest)? {
+                    match self.walk_to_place(
+                        transaction,
+                        context,
+                        id,
+                        &closest,
+                        None,
+                        Scope::over(searched, reporting.noticed),
+                    )? {
                         Walked::Served { found, index } => {
                             hand_over(found, transaction, consumer)?;
                             return Ok(Plan {
@@ -286,6 +293,30 @@ impl Session<'_> {
                     reached_early = Some(reached);
                 }
                 let mut declined = false;
+                // A bounded order by distance from a position, under the
+                // condition: the spatial walk tests the whole condition on each
+                // record it takes and measures it exactly (G058 C1).
+                if let Some(closest) = plan::closest(select) {
+                    match self.walk_to_place(
+                        transaction,
+                        context,
+                        id,
+                        &closest,
+                        Some(condition),
+                        Scope::over(searched, reporting.noticed),
+                    )? {
+                        Walked::Served { found, index } => {
+                            hand_over(found, transaction, consumer)?;
+                            return Ok(Plan {
+                                shape: Some("nearest"),
+                                index: Some(index),
+                                ..over(AccessPath::Ordered)
+                            });
+                        }
+                        Walked::Declined => declined = true,
+                        Walked::NotServed => {}
+                    }
+                }
                 if let Some(bound) = plan::ordered(select) {
                     match self.walk_matching(
                         transaction,

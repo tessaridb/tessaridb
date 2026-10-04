@@ -371,3 +371,54 @@ fn a_note_never_reaches_an_outcome_that_is_not_records() {
         );
     }
 }
+
+/// Membership compares the value with the collection's **members**, so a
+/// collection of numbers searched for a number crossed no kinds — and one of
+/// text searched for a number did (Q-928).
+#[test]
+fn membership_is_judged_by_its_members_and_not_by_the_collection() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run(
+            "CREATE events:1 = { x: 1, tags: [1, 2] };\n\
+             CREATE events:2 = { x: 3, tags: [3.0] };\n\
+             CREATE events:3 = { x: 5, tags: [] };",
+        )
+        .unwrap();
+    let crossed = |notes: &[Note]| {
+        notes
+            .iter()
+            .any(|note| matches!(note, Note::ComparedAcrossKinds { .. }))
+    };
+    let cases = [
+        (
+            "SELECT * FROM events WHERE [1, 3.0] CONTAINS x;",
+            vec![1, 2],
+            false,
+        ),
+        (
+            "SELECT * FROM events WHERE x IN [1, 3.0, dec 2];",
+            vec![1, 2],
+            false,
+        ),
+        (
+            "SELECT * FROM events WHERE tags CONTAINS 3;",
+            vec![2],
+            false,
+        ),
+        ("SELECT * FROM events WHERE x IN ['1', '3'];", vec![], true),
+        // Every number sorts below every text, so all three answer — the note
+        // is what says the comparison was across kinds.
+        ("SELECT * FROM events WHERE x < '3';", vec![1, 2, 3], true),
+    ];
+    for (read, expected, noted) in cases {
+        let (ids, notes, _) = answered(&mut session, read);
+        assert_eq!(
+            ids,
+            expected.into_iter().map(RecordId::Int).collect::<Vec<_>>(),
+            "{read}"
+        );
+        assert_eq!(crossed(&notes), noted, "{read}: {notes:?}");
+    }
+}
