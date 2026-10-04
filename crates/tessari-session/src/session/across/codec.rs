@@ -21,6 +21,9 @@
 //! record; a conclusion as a resolution does, its section carrying the
 //! decided record (ADR-0112 D13a, D13b).
 //!
+//! Status recovery's question travels as the bar it may write, its kind saying
+//! whether to write it (ADR-0112 D14c).
+//!
 //! An answer is a tag and a position, except an outcome, which is the tag and
 //! the record as it stands.
 
@@ -42,6 +45,8 @@ const ASK_FORGET: u8 = 6;
 const ASK_LOOKUP: u8 = 7;
 const ASK_BEGIN: u8 = 8;
 const ASK_CONCLUDE: u8 = 9;
+const ASK_BAR: u8 = 10;
+const ASK_LANDED: u8 = 11;
 
 const PREPARED: u8 = 1;
 const DECIDED: u8 = 2;
@@ -50,6 +55,8 @@ const NOTHING_LEFT: u8 = 4;
 const OUTCOME: u8 = 5;
 const HOLDING: u8 = 6;
 const FORGOTTEN: u8 = 7;
+const LANDED: u8 = 8;
+const NOT_LANDED: u8 = 9;
 
 impl AcrossAsk {
     /// The bytes a peer frame carries.
@@ -131,6 +138,18 @@ impl AcrossAsk {
                     part: Part::Forget {
                         coordinator: *coordinator,
                     },
+                }),
+            ),
+            Self::Bar {
+                transaction,
+                range,
+                prevent,
+            } => (
+                if *prevent { ASK_BAR } else { ASK_LANDED },
+                Sequence::ZERO,
+                LogRecord::new(Vec::new()).across(Across {
+                    transaction: *transaction,
+                    part: Part::Prevent { range: *range },
                 }),
             ),
             Self::Begin {
@@ -227,6 +246,15 @@ impl AcrossAsk {
                     range: coordinator,
                 }
             }
+            (kind @ (ASK_BAR | ASK_LANDED), Part::Prevent { range })
+                if record.mutations().is_empty() =>
+            {
+                Self::Bar {
+                    transaction: across.transaction,
+                    range,
+                    prevent: kind == ASK_BAR,
+                }
+            }
             (ASK_FORGET, Part::Forget { coordinator }) if record.mutations().is_empty() => {
                 Self::Forget {
                     transaction: across.transaction,
@@ -309,6 +337,8 @@ impl AcrossAnswer {
             Self::Resolved(None) => (NOTHING_LEFT, 0),
             Self::Holding(holds) => (HOLDING, u64::from(*holds)),
             Self::Forgotten(at) => (FORGOTTEN, at.get()),
+            Self::Landed(Some(at)) => (LANDED, at.get()),
+            Self::Landed(None) => (NOT_LANDED, 0),
             Self::Outcome(record) => {
                 let encoded = record.encode();
                 let mut bytes = Vec::with_capacity(encoded.as_slice().len().saturating_add(1));
@@ -352,6 +382,8 @@ impl AcrossAnswer {
                 found => Err(format!("a cross-leader holding answer of {found}")),
             },
             FORGOTTEN => Ok(Self::Forgotten(at)),
+            LANDED => Ok(Self::Landed(Some(at))),
+            NOT_LANDED => Ok(Self::Landed(None)),
             found => Err(format!("a cross-leader answer of unknown kind {found}")),
         }
     }

@@ -342,7 +342,7 @@ pub(crate) fn home_of(record: &LogRecord) -> Result<Reach> {
     }
     // A landed part restored from a snapshot names its range (ADR-0112 D9a).
     if let Some(tessari_encoding::Across {
-        part: tessari_encoding::Part::Landed { range },
+        part: tessari_encoding::Part::Landed { range } | tessari_encoding::Part::Prevent { range },
         ..
     }) = record.part_of()
     {

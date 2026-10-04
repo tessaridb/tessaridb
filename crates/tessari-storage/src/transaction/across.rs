@@ -118,9 +118,33 @@ impl Transaction<'_> {
         self.commit_placed()
     }
 
+    /// Bar `transaction`'s part in `range` for good, its prepare not having
+    /// landed here — status recovery's step before it aborts a `STAGING`
+    /// record (ADR-0112 D14c). Committed in `range`'s own log; the caller
+    /// waits for a majority to hold it before answering *barred*.
+    ///
+    /// # Errors
+    ///
+    /// Whatever a commit returns, and [`Error::AcrossDecided`] (`prepared`)
+    /// when the part has landed here, which no bar can undo.
+    pub fn prevent_across(mut self, transaction: TransactionId, range: Reach) -> Result<Committed> {
+        self.writes.clear();
+        self.across = Some(Work {
+            across: Across {
+                transaction,
+                part: Part::Prevent { range },
+            },
+            coordinator: range,
+            seen: None,
+            participants: Vec::new(),
+        });
+        self.commit_placed()
+    }
+
     /// Begin `transaction` in the coordinator's range: its record written
-    /// `PENDING` and this transaction's buffered writes — the coordinator
-    /// range's own part — held as intents, in one commit (ADR-0112 D13a).
+    /// `STAGING` and this transaction's buffered writes — the coordinator
+    /// range's own part — held as intents, in one commit (ADR-0112 D13a,
+    /// D14a).
     ///
     /// The record is written only where none stands, so a participant that
     /// found it absent and aborted it while this was on its way wins (D7). The
@@ -284,11 +308,15 @@ impl Transaction<'_> {
         committed: bool,
         records: &[RecordAddress],
     ) -> Result<Option<Reach>> {
-        // No records named: every intent of the transaction this node holds,
-        // read off its index — how a participant resolves after the
-        // coordinator that knew the addresses is gone (D7).
+        // No records named: every intent of the transaction this node holds
+        // in a range it leads, read off its index — how a participant resolves
+        // after the coordinator that knew the addresses is gone (D7). A copy of
+        // another leader's intent follows that leader's resolution: resolved
+        // here with the rest, the commit would span two leaders and be refused,
+        // pass after pass, leaving this node's own intents standing with it.
+        let every_held = records.is_empty();
         let held;
-        let records = if records.is_empty() {
+        let records = if every_held {
             held = self.store.intents_of(transaction)?;
             held.as_slice()
         } else {
@@ -309,6 +337,31 @@ impl Transaction<'_> {
                 RecordValue::Tombstone
             };
             self.writes.insert(address.clone(), value);
+        }
+        if every_held && !self.writes.is_empty() {
+            // Buffered first, so the placement knows every table they fall in.
+            let placement = self.placement()?;
+            let mut elsewhere = Vec::new();
+            for address in self.writes.keys() {
+                let home =
+                    crate::catalog::home_of(&LogRecord::new(vec![tessari_encoding::Mutation {
+                        namespace: address.namespace,
+                        database: address.database,
+                        table: address.table,
+                        id: address.id.clone(),
+                        shard: placement.shard_of(address),
+                        value: tessari_encoding::StampedValue::new(RecordValue::Tombstone),
+                    }]))?;
+                if !self.store.leads(home)? {
+                    elsewhere.push(address.clone());
+                }
+            }
+            for address in elsewhere {
+                self.writes.remove(&address);
+            }
+            if self.writes.is_empty() {
+                return Ok(None);
+            }
         }
         Ok(coordinator)
     }

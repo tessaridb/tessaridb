@@ -241,5 +241,39 @@ impl StoreKey for AcrossUnsettledKey {
     }
 }
 
+/// One transaction across leaders' part in one range, barred by status
+/// recovery before its prepare landed (ADR-0112 D14c).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcrossBarredKey {
+    /// The transaction.
+    pub transaction: TransactionId,
+    /// The range whose part is barred.
+    pub range: Reach,
+}
+
+impl StoreKey for AcrossBarredKey {
+    type Value = Sequence;
+
+    const KIND: KeyKind = KeyKind::AcrossBarred;
+
+    fn encode(&self) -> Key {
+        let mut writer = KeyWriter::with_capacity(TRANSACTION_ID_LEN.saturating_add(24));
+        writer
+            .put_u8(Self::KIND.tag())
+            .put_fixed(&self.transaction.bytes());
+        put_reach(&mut writer, self.range);
+        Key::from(writer.finish())
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self> {
+        let mut reader = KeyReader::new(Self::KIND, bytes);
+        reader.expect_kind()?;
+        let transaction = TransactionId::new(reader.take_fixed::<TRANSACTION_ID_LEN>()?);
+        let range = take_reach(&mut reader)?;
+        reader.finish()?;
+        Ok(Self { transaction, range })
+    }
+}
+
 #[cfg(test)]
 mod tests;

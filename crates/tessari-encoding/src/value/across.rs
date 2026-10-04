@@ -57,6 +57,18 @@ pub enum Decision {
     Committed,
     /// A participant refused, or the record's liveness lapsed.
     Aborted,
+    /// Written with the coordinator's own prepare, naming every participant
+    /// (ADR-0112 D14a): committed implicitly once every participant's prepare
+    /// is held, and decided explicitly behind the caller's answer.
+    Staging,
+}
+
+impl Decision {
+    /// Whether the record holds an outcome: `COMMITTED` or `ABORTED`.
+    #[must_use]
+    pub const fn is_decided(self) -> bool {
+        matches!(self, Self::Committed | Self::Aborted)
+    }
 }
 
 /// One range the transaction writes, as its record names it.
@@ -121,6 +133,13 @@ pub enum Part {
     /// The record decided and the coordinator's own range's intents resolved
     /// as it says, in one record (ADR-0112 D13b).
     Conclude(TransactionRecord),
+    /// The transaction's part in `range` barred for good, its prepare not
+    /// having landed there — what status recovery writes before it aborts a
+    /// `STAGING` record (ADR-0112 D14c).
+    Prevent {
+        /// The participant range whose part is barred.
+        range: Reach,
+    },
 }
 
 impl Part {
@@ -132,7 +151,8 @@ impl Part {
             Self::Prepare { .. }
             | Self::Resolve { .. }
             | Self::Forget { .. }
-            | Self::Landed { .. } => None,
+            | Self::Landed { .. }
+            | Self::Prevent { .. } => None,
         }
     }
 
@@ -153,7 +173,8 @@ impl Part {
             | Self::Decide(_)
             | Self::Forget { .. }
             | Self::Landed { .. }
-            | Self::Begin(_) => None,
+            | Self::Begin(_)
+            | Self::Prevent { .. } => None,
         }
     }
 }
@@ -199,6 +220,7 @@ const PART_FORGET: u8 = 4;
 const PART_LANDED: u8 = 5;
 const PART_BEGIN: u8 = 6;
 const PART_CONCLUDE: u8 = 7;
+const PART_PREVENT: u8 = 8;
 
 const RESOLVED: u8 = 0;
 const PROVISIONAL: u8 = 1;
@@ -206,6 +228,7 @@ const PROVISIONAL: u8 = 1;
 const DECISION_PENDING: u8 = 0;
 const DECISION_COMMITTED: u8 = 1;
 const DECISION_ABORTED: u8 = 2;
+const DECISION_STAGING: u8 = 3;
 
 /// Append an [`Across`] section.
 pub(super) fn put(writer: &mut KeyWriter, across: &Across) {
@@ -237,6 +260,10 @@ pub(super) fn put(writer: &mut KeyWriter, across: &Across) {
         Part::Conclude(record) => {
             writer.put_u8(PART_CONCLUDE);
             put_record(writer, record);
+        }
+        Part::Prevent { range } => {
+            writer.put_u8(PART_PREVENT);
+            put_reach(writer, *range);
         }
     }
 }
@@ -270,6 +297,9 @@ pub(super) fn take(reader: &mut KeyReader<'_>) -> Result<Across> {
         },
         PART_BEGIN => Part::Begin(take_record(reader)?),
         PART_CONCLUDE => Part::Conclude(take_record(reader)?),
+        PART_PREVENT => Part::Prevent {
+            range: take_reach(reader)?,
+        },
         found => return Err(unknown("part", found)),
     };
     Ok(Across { transaction, part })
@@ -282,6 +312,7 @@ fn put_record(writer: &mut KeyWriter, record: &TransactionRecord) {
         Decision::Pending => DECISION_PENDING,
         Decision::Committed => DECISION_COMMITTED,
         Decision::Aborted => DECISION_ABORTED,
+        Decision::Staging => DECISION_STAGING,
     });
     writer.put_u64(record.deadline);
     // A count here, unlike in front of a log record's mutations: in a part
@@ -324,6 +355,7 @@ fn take_record(reader: &mut KeyReader<'_>) -> Result<TransactionRecord> {
         DECISION_PENDING => Decision::Pending,
         DECISION_COMMITTED => Decision::Committed,
         DECISION_ABORTED => Decision::Aborted,
+        DECISION_STAGING => Decision::Staging,
         found => return Err(unknown("decision", found)),
     };
     let deadline = reader.take_u64()?;

@@ -232,3 +232,126 @@ fn a_decided_record_is_forgotten_only_once_no_intent_of_it_stands() {
     // What readers see is untouched by forgetting.
     assert_eq!(note(&db, &address), Value::from("new"));
 }
+
+#[test]
+fn a_pass_resolves_the_intents_this_node_leads_and_leaves_another_leaders_copy() {
+    // A node leading one participant range holds a follower's copy of the
+    // other's intent. Resolving every intent it holds in one commit would span
+    // two leaders and be refused, every pass, leaving its own intent standing
+    // for good: it resolves what it leads, and the copy follows its leader.
+    let db = Db::in_memory().unwrap();
+    db.session()
+        .run(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+             USE DATABASE shop; DEFINE TABLE orders (n int) IDENTITY uuid SPLIT AT 'g';",
+        )
+        .unwrap();
+    let store = db.store();
+    let mut reading = store.begin().unwrap();
+    let catalog = tessari_storage::Catalog::new(&mut reading);
+    let namespace = catalog.namespace_id("prod").unwrap().unwrap();
+    let database = catalog.database_id(namespace, "shop").unwrap().unwrap();
+    let table = catalog
+        .table_id(namespace, database, "orders")
+        .unwrap()
+        .unwrap();
+    reading.rollback();
+    let shard = |at: u32| Reach::Shard(namespace, database, table, tessari_types::ShardId::new(at));
+    let write = |id: &str| tessari_encoding::Mutation {
+        namespace,
+        database,
+        table,
+        id: tessari_types::RecordId::from(id),
+        shard: None,
+        value: tessari_encoding::StampedValue::new(tessari_encoding::RecordValue::Present(
+            tessari_encoding::encode_payload(&Value::Object(
+                [("n".to_owned(), Value::from(1_i64))].into_iter().collect(),
+            ))
+            .into_bytes(),
+        )),
+    };
+    // Standing alone, it took both parts' intents; then the cluster formed.
+    let mut session = db.session();
+    for (id, at) in [("a", 1), ("h", 2)] {
+        session
+            .answer_across(&AcrossAsk::Prepare {
+                transaction: TRANSACTION,
+                coordinator: shard(1),
+                seen: store
+                    .committed_tail(store.own_log(shard(at)).unwrap())
+                    .unwrap(),
+                writes: vec![write(id)],
+            })
+            .unwrap();
+    }
+    let committed = TransactionRecord {
+        decision: Decision::Committed,
+        deadline: 0,
+        participants: [1, 2]
+            .into_iter()
+            .map(|at| Participant {
+                range: shard(at),
+                prepared_at: Some(tessari_types::Sequence::new(1)),
+            })
+            .collect(),
+    };
+    for decision in [Decision::Pending, Decision::Committed] {
+        session
+            .answer_across(&AcrossAsk::Decide {
+                transaction: TRANSACTION,
+                record: TransactionRecord {
+                    decision,
+                    ..committed.clone()
+                },
+            })
+            .unwrap();
+    }
+    let me = store.node_identity().unwrap().id;
+    let other = [0x9f; tessari_storage::NODE_ID_LEN];
+    session
+        .run(&format!(
+            "USE NAMESPACE prod; USE DATABASE shop; \
+             DEFINE REPLICA b AT 'b:9001' NODE '{}' LEADS SHARD prod.shop.orders 2;",
+            other
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        ))
+        .unwrap();
+    let mut leading = store.begin().unwrap();
+    let mut catalog = tessari_storage::Catalog::new(&mut leading);
+    catalog
+        .record_leadership(shard(1), me, tessari_types::Epoch::new(1))
+        .unwrap();
+    catalog
+        .record_leadership(shard(2), other, tessari_types::Epoch::new(1))
+        .unwrap();
+    leading.commit().unwrap();
+    assert!(store.leads(shard(1)).unwrap() && !store.leads(shard(2)).unwrap());
+
+    let resolved =
+        store
+            .begin()
+            .unwrap()
+            .resolve_across(TRANSACTION, true, &[], &committed.participants);
+    assert!(
+        matches!(resolved, Ok(Some(_))),
+        "the intent this node leads is resolved: {resolved:?}"
+    );
+    // Asked again, nothing this node leads is left to resolve — and the copy
+    // it does not lead still stands. (A read cannot tell them apart: a
+    // committed record whose every part this node holds shows the copy as a
+    // value already, D6a.)
+    let again =
+        store
+            .begin()
+            .unwrap()
+            .resolve_across(TRANSACTION, true, &[], &committed.participants);
+    assert!(matches!(again, Ok(None)), "{again:?}");
+    assert!(
+        store.holds_intents_of(TRANSACTION).unwrap(),
+        "the other leader's copy is left to follow it"
+    );
+}
+
+mod staging;

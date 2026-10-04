@@ -12,7 +12,7 @@ impl Fixture {
     fn begin(&self, seen: Sequence) -> Result<Committed> {
         let mut transaction = self.store.begin()?;
         transaction.put(self.address(), b"new".to_vec());
-        transaction.begin_across(TRANSACTION, self.record(Decision::Pending), seen)
+        transaction.begin_across(TRANSACTION, self.record(Decision::Staging), seen)
     }
 
     fn conclude(&self, decided: TransactionRecord) -> Result<Committed> {
@@ -36,7 +36,7 @@ fn a_begin_writes_the_record_and_the_intents_in_one_log_record() -> Result<()> {
     let logged = fixture.logged(begun.sequence)?;
     assert_eq!(
         logged.part_of().map(|across| &across.part),
-        Some(&Part::Begin(fixture.record(Decision::Pending)))
+        Some(&Part::Begin(fixture.record(Decision::Staging)))
     );
     assert!(logged.mutations().iter().all(|mutation| {
         mutation
@@ -46,7 +46,7 @@ fn a_begin_writes_the_record_and_the_intents_in_one_log_record() -> Result<()> {
     }));
     assert_eq!(
         fixture.store.transaction_record(TRANSACTION)?,
-        Some(fixture.record(Decision::Pending))
+        Some(fixture.record(Decision::Staging))
     );
     assert_eq!(fixture.read()?, Some(b"old".to_vec()));
     Ok(())
@@ -208,5 +208,32 @@ fn applying_a_conclusion_never_asks_the_records_leader() -> Result<()> {
         "an apply asked the record's leader"
     );
     assert_eq!(follower.read()?, Some(b"new".to_vec()));
+    Ok(())
+}
+
+#[test]
+fn a_bar_lands_in_the_range_and_refuses_the_prepare_after_it() -> Result<()> {
+    // Status recovery barring a part whose prepare has not landed (ADR-0112
+    // D14c): one log record in that range, and the prepare refused for good.
+    let fixture = Fixture::new()?;
+    let seen = fixture.seen()?;
+    let barred = fixture
+        .store
+        .begin()?
+        .prevent_across(TRANSACTION, fixture.coordinator())?;
+    let logged = fixture.logged(barred.sequence)?;
+    assert_eq!(
+        logged.part_of().map(|across| &across.part),
+        Some(&Part::Prevent {
+            range: fixture.coordinator()
+        })
+    );
+    assert!(logged.mutations().is_empty());
+    let refused = fixture.prepare(seen);
+    assert!(
+        matches!(refused, Err(Error::AcrossDecided { decided: "barred" })),
+        "{refused:?}"
+    );
+    assert_eq!(fixture.read()?, Some(b"old".to_vec()));
     Ok(())
 }

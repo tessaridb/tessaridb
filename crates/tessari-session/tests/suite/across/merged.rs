@@ -9,14 +9,14 @@ use tessari_types::{RecordId, Value};
 
 use super::{TRANSACTION, ids, note, prepare, record, signed_in, store};
 
-fn begin(store: &tessari_storage::Store, table: &str) -> AcrossAsk {
+pub(super) fn begin(store: &tessari_storage::Store, table: &str) -> AcrossAsk {
     let AcrossAsk::Prepare { seen, writes, .. } = prepare(store, table) else {
         unreachable!("prepare builds a prepare")
     };
     AcrossAsk::Begin {
         transaction: TRANSACTION,
         record: tessari_encoding::TransactionRecord {
-            participants: record(store, Decision::Pending)
+            participants: record(store, Decision::Staging)
                 .participants
                 .into_iter()
                 .map(|participant| tessari_encoding::Participant {
@@ -24,7 +24,7 @@ fn begin(store: &tessari_storage::Store, table: &str) -> AcrossAsk {
                     ..participant
                 })
                 .collect(),
-            ..record(store, Decision::Pending)
+            ..record(store, Decision::Staging)
         },
         seen,
         writes,
@@ -57,7 +57,7 @@ fn a_begun_write_is_the_value_only_once_concluded() {
             .transaction_record(TRANSACTION)
             .unwrap()
             .map(|standing| standing.decision),
-        Some(Decision::Pending)
+        Some(Decision::Staging)
     );
     let concluded = owner
         .answer_across(&conclude(&store, Decision::Committed))
@@ -106,4 +106,100 @@ fn a_begin_whose_record_a_participant_aborted_is_refused() {
     );
     assert_eq!(note(&store), Value::from("old"));
     assert!(!store.holds_intents_of(TRANSACTION).unwrap());
+}
+
+#[test]
+fn a_staging_record_is_answered_as_it_stands_and_never_aborted() {
+    // Status recovery decides a staging record, never a settle or a reader's
+    // lookup, however late (ADR-0112 D14c, D14e).
+    let store = store();
+    let mut owner = signed_in(&store, "root");
+    owner.answer_across(&begin(&store, "notes")).unwrap();
+    let (namespace, database, _) = ids(&store, "notes");
+    let coordinator = Reach::Database(namespace, database);
+    for asked in [
+        AcrossAsk::Settle {
+            transaction: TRANSACTION,
+            coordinator,
+        },
+        AcrossAsk::Lookup {
+            transaction: TRANSACTION,
+            coordinator,
+        },
+    ] {
+        let answered = owner.answer_across(&asked).unwrap();
+        assert!(
+            matches!(&answered, AcrossAnswer::Outcome(standing) if standing.decision == Decision::Staging),
+            "{asked:?} → {answered:?}"
+        );
+    }
+    assert_eq!(
+        store
+            .transaction_record(TRANSACTION)
+            .unwrap()
+            .map(|standing| standing.decision),
+        Some(Decision::Staging),
+        "nothing aborted it, its deadline of zero long past"
+    );
+}
+
+#[test]
+fn a_part_is_reported_where_it_landed_and_barred_where_it_did_not() {
+    let store = store();
+    let mut owner = signed_in(&store, "root");
+    let (namespace, database, _) = ids(&store, "notes");
+    let bar = |prevent| AcrossAsk::Bar {
+        transaction: TRANSACTION,
+        range: Reach::Database(namespace, database),
+        prevent,
+    };
+    // Only asked: reported missing, and nothing barred.
+    assert_eq!(
+        owner.answer_across(&bar(false)).unwrap(),
+        AcrossAnswer::Landed(None)
+    );
+    let prepared = owner
+        .answer_across(&super::prepare(&store, "notes"))
+        .unwrap();
+    let AcrossAnswer::Prepared(at) = prepared else {
+        panic!("{prepared:?}");
+    };
+    assert!(
+        matches!(
+            owner.answer_across(&bar(true)).unwrap(),
+            AcrossAnswer::Landed(Some(_))
+        ),
+        "a landed part cannot be barred"
+    );
+    assert!(at.get() > 0);
+    assert!(
+        store.holds_intents_of(TRANSACTION).unwrap(),
+        "the prepare stands"
+    );
+}
+
+#[test]
+fn a_barred_part_refuses_the_prepare_that_arrives_after_it() {
+    let store = store();
+    let mut owner = signed_in(&store, "root");
+    let (namespace, database, _) = ids(&store, "notes");
+    let barred = owner
+        .answer_across(&AcrossAsk::Bar {
+            transaction: TRANSACTION,
+            range: Reach::Database(namespace, database),
+            prevent: true,
+        })
+        .unwrap();
+    assert_eq!(barred, AcrossAnswer::Landed(None));
+    let refused = owner.answer_across(&super::prepare(&store, "notes"));
+    assert!(
+        matches!(
+            &refused,
+            Err(Error::Store(tessari_storage::Error::AcrossDecided {
+                decided: "barred"
+            }))
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(note(&store), Value::from("old"));
 }

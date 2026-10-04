@@ -21,11 +21,16 @@
 //!   majority holds yet and die with it — a resolution waits for its leader
 //!   alone.
 //!
-//! - **The caller's answer** (D13), told at the decision rather than after
-//!   the resolutions, while the coordinator's own range takes its record and
-//!   its prepare in one commit and the decision with its own resolution in
-//!   another — and a reader that starts after the answer, reading at the
-//!   leaders, must see T1.
+//! - **The caller's answer** (D14, parallel commit), told once every
+//!   participant's prepare is held and the record is `STAGING` — before any
+//!   decision is written. The coordinator's own range takes the staging record
+//!   and its prepare in one commit, and the explicit decision with its own
+//!   resolution in another, after the answer. A reader that starts after the
+//!   answer, reading at the leaders, must see T1.
+//! - **Status recovery** (D14), by anyone, at any time — a timeout is allowed
+//!   to be early: a `STAGING` record whose every prepare is held is committed;
+//!   one whose prepare at `B` is missing is aborted only after `B` has been
+//!   barred from ever taking it.
 //!
 //! Each rule the ADR relies on is a switch in [`Rules`]. The protocol is
 //! checked with all of them on; then each is turned off alone and the explorer
@@ -54,8 +59,10 @@ pub(crate) enum World {
 /// The rules ADR-0112 relies on, each removable to prove it is load-bearing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Rules {
-    /// D4/D7: a decision is written by compare-and-set on `PENDING`, so the
-    /// coordinator and a lapse cannot both record one.
+    /// D4/D7: the record is begun by compare-and-set on *absent* and decided
+    /// by compare-and-set on `STAGING`, so a participant that aborted an
+    /// absent record and the coordinator's begin cannot both stand. Under D14
+    /// the begin's half carries it: the decision follows from what is held.
     pub(crate) decide_by_compare_and_set: bool,
     /// D3: a participant prepares only if the version the transaction read is
     /// still the latest, and a prepare it already holds is answered, not
@@ -63,8 +70,10 @@ pub(crate) struct Rules {
     pub(crate) prepare_checks_the_stamp: bool,
     /// D5: an ordinary commit touching a key under a standing intent is refused.
     pub(crate) intent_refuses_writes: bool,
-    /// D6: a `PENDING` record makes the transaction invisible.
-    pub(crate) pending_is_invisible: bool,
+    /// D6/D14: a record not yet committed makes the transaction invisible —
+    /// a `STAGING` one unless every participant's prepare is held, which is
+    /// what committing implicitly means.
+    pub(crate) undecided_is_invisible: bool,
     /// D6: one visibility decision per reading transaction, *invisible* when
     /// another participant range has already been read.
     pub(crate) one_decision_per_reader: bool,
@@ -82,6 +91,10 @@ pub(crate) struct Rules {
     /// decision rather than reading its own copy of the record, which may not
     /// hold the decision yet when the caller was already told.
     pub(crate) readers_ask_the_record_leader: bool,
+    /// D14: status recovery aborts a `STAGING` record only after barring the
+    /// missing prepare at its participant, so an implicit commit and an abort
+    /// cannot both happen.
+    pub(crate) recovery_prevents_the_missing_prepare: bool,
 }
 
 impl Rules {
@@ -90,12 +103,13 @@ impl Rules {
         decide_by_compare_and_set: true,
         prepare_checks_the_stamp: true,
         intent_refuses_writes: true,
-        pending_is_invisible: true,
+        undecided_is_invisible: true,
         one_decision_per_reader: true,
         visible_reads_its_own_version: true,
         restore_reads_by_the_snapshot: true,
         forget_waits_for_a_majority: true,
         readers_ask_the_record_leader: true,
+        recovery_prevents_the_missing_prepare: true,
     };
 }
 
@@ -140,8 +154,9 @@ pub(crate) enum Writer {
 /// The state T1's record holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Decision {
-    /// Written before the first prepare is sent.
-    Pending,
+    /// Written with the coordinator's own prepare, naming every participant
+    /// (D14): committed implicitly once every participant's prepare is held.
+    Staging,
     /// Every participant prepared.
     Committed,
     /// A participant refused, or the record's liveness lapsed.
@@ -163,6 +178,9 @@ pub(crate) enum Entry {
     Record(Decision),
     /// T1's record deleted, its outcome settled everywhere (range `A`, D12).
     Forget,
+    /// Status recovery barred T1's prepare from ever landing in this range
+    /// (`B` only, D14).
+    Prevent,
 }
 
 /// What an invariant check found.
@@ -180,13 +198,16 @@ pub(crate) enum Violation {
     FracturedRead,
     /// A restore of a backup shows part of T1.
     FracturedRestore,
-    /// A finished run left a record pending or an intent standing.
+    /// A finished run left a record staging or an intent standing.
     LeftInDoubt,
     /// The caller was told an outcome the record does not hold.
     ToldAgainstTheRecord,
     /// A reader that began after the caller was told T1 committed, reading
     /// every key at its leader, did not see T1 (D13).
     AcknowledgedUnseen,
+    /// T1 was committed implicitly — its record `STAGING` and every prepare
+    /// held — and its record was then decided aborted (D14).
+    ImplicitCommitLost,
 }
 
 #[cfg(test)]
@@ -224,12 +245,22 @@ mod tests {
             "both outcomes must be reached"
         );
         assert!(explored.second_after, "T2 never committed on top of T1");
+        // D14's situations: the caller told while the record still stages,
+        // and recovery reaching each of its two outcomes.
+        assert!(
+            explored.told_while_staging,
+            "the caller was never told before the decision was written"
+        );
+        assert!(
+            explored.recovered_committed && explored.prevented,
+            "status recovery never committed, or never barred a prepare"
+        );
         // The floor proves the interleavings were generated. It was 100 000
         // until D13 merged `A`'s record with its prepare and its decision with
-        // its resolution, which removed `A`'s prepare message and its
-        // duplicates: 31 664 states measured at that change.
+        // its resolution (31 664 states measured then); D14's status recovery,
+        // its barred prepare and the lost answer bring it to 97 537.
         assert!(
-            explored.states > 30_000,
+            explored.states > 90_000,
             "only {} states were explored",
             explored.states
         );
@@ -238,11 +269,17 @@ mod tests {
 
     #[test]
     fn every_rule_is_load_bearing() -> Result<(), String> {
-        let cases: [Case; 9] = [
+        let cases: [Case; 10] = [
             (
                 "decide by compare-and-set",
                 |rules| rules.decide_by_compare_and_set = false,
-                &[Violation::TwoOutcomes, Violation::ResolvedAgainstTheRecord],
+                // Under D14 most often a begin staging over a record a
+                // participant had already aborted.
+                &[
+                    Violation::TwoOutcomes,
+                    Violation::ResolvedAgainstTheRecord,
+                    Violation::ImplicitCommitLost,
+                ],
             ),
             (
                 "prepare checks the stamp",
@@ -258,8 +295,8 @@ mod tests {
                 &[Violation::LostUpdate],
             ),
             (
-                "pending is invisible",
-                |rules| rules.pending_is_invisible = false,
+                "an undecided record is invisible",
+                |rules| rules.undecided_is_invisible = false,
                 &[Violation::DirtyRead, Violation::FracturedRead],
             ),
             (
@@ -296,6 +333,20 @@ mod tests {
                 // may not hold it yet: the answer said committed, and a
                 // reader at the leaders sees nothing of T1.
                 &[Violation::AcknowledgedUnseen],
+            ),
+            (
+                "recovery prevents the missing prepare",
+                |rules| rules.recovery_prevents_the_missing_prepare = false,
+                // A recovery that aborts while `B`'s prepare is still in
+                // flight: the prepare lands, the caller is told committed, and
+                // the record says aborted.
+                // Or a backup cut holding the staging record and both parts,
+                // restored as committed while the transaction aborted.
+                &[
+                    Violation::ToldAgainstTheRecord,
+                    Violation::ImplicitCommitLost,
+                    Violation::FracturedRestore,
+                ],
             ),
         ];
         for (name, remove, expected) in cases {

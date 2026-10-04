@@ -152,7 +152,7 @@ pub(crate) struct Placement {
 
 impl Placement {
     /// The shard `address` falls in, or `None` when its table is not split.
-    fn shard_of(&self, address: &RecordAddress) -> Option<ShardId> {
+    pub(super) fn shard_of(&self, address: &RecordAddress) -> Option<ShardId> {
         self.maps
             .get(&address.table)
             .map(|map| map.shard_of(&address.id))

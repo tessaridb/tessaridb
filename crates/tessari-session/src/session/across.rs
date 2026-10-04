@@ -28,9 +28,11 @@ use tessari_types::{Acknowledge, DatabaseId, NamespaceId, Reach, Sequence, Table
 
 mod codec;
 mod driver;
+mod recovery;
 mod refusal;
 
 pub use driver::across_lapse_millis;
+pub use recovery::{Recovery, recover_staging};
 pub use refusal::{AcrossRefusal, PartRefused, RefusalKind};
 
 use super::{Session, advised};
@@ -95,12 +97,12 @@ pub enum AcrossAsk {
         coordinator: Reach,
     },
     /// Begin the transaction in the coordinator's range: its record written
-    /// `PENDING` where none stands and these writes — that range's own part —
-    /// held as intents, in one record (D13a). Answered as a prepare is.
+    /// `STAGING` where none stands and these writes — that range's own part —
+    /// held as intents, in one record (D13a, D14a). Answered as a prepare is.
     Begin {
         /// The transaction.
         transaction: TransactionId,
-        /// The record, `PENDING`.
+        /// The record, `STAGING`.
         record: TransactionRecord,
         /// The coordinator range's log position the transaction's node had
         /// applied.
@@ -131,6 +133,18 @@ pub enum AcrossAsk {
         /// Every participant and where its prepare landed, as the committed
         /// record names them; the resolved versions carry them (D6a).
         participants: Vec<tessari_encoding::Participant>,
+    },
+    /// Status recovery's question to a participant range's leader (D14c):
+    /// where the transaction's part landed, once a majority holds it — and,
+    /// when it has not landed and `prevent` asks for it, the part barred there
+    /// for good, at a majority, before the answer says so.
+    Bar {
+        /// The transaction.
+        transaction: TransactionId,
+        /// The participant range asked about.
+        range: Reach,
+        /// Whether a part not landed is barred, or only reported.
+        prevent: bool,
     },
 }
 
@@ -170,6 +184,9 @@ pub enum AcrossAnswer {
     Holding(bool),
     /// The record's forgetting landed at this position and a majority holds it.
     Forgotten(Sequence),
+    /// Where the part landed, a majority holding it; `None` when it has not
+    /// landed — and, asked to prevent it, never will (D14c).
+    Landed(Option<Sequence>),
 }
 
 impl Session<'_> {
@@ -289,6 +306,11 @@ impl Session<'_> {
             AcrossAsk::Holds { transaction, range } => {
                 self.holds_across(*transaction, *range, span)
             }
+            AcrossAsk::Bar {
+                transaction,
+                range,
+                prevent,
+            } => self.bar_across(*transaction, *range, *prevent, span),
             AcrossAsk::Forget {
                 transaction,
                 coordinator,
@@ -341,7 +363,12 @@ impl Session<'_> {
         let store = self.store;
         let standing = store.transaction_record(transaction)?;
         let record = match standing {
-            Some(record) if record.decision != tessari_encoding::Decision::Pending => record,
+            Some(record) if record.decision.is_decided() => record,
+            // Decided by status recovery and nothing else (D14c): it may be
+            // committed implicitly already, which no deadline undoes.
+            Some(record) if record.decision == tessari_encoding::Decision::Staging => {
+                return Ok(AcrossAnswer::Outcome(record));
+            }
             Some(record) if record.deadline > now_millis() => {
                 return Ok(AcrossAnswer::Outcome(record));
             }
@@ -377,14 +404,16 @@ impl Session<'_> {
 
     /// `transaction`'s outcome for a reader: decided → as `Settle` answers it,
     /// so only an outcome a majority holds is ever read; undecided or absent →
-    /// the record as it stands, `PENDING`, with nothing written (D13d).
+    /// the record as it stands, `PENDING` or `STAGING`, with nothing written
+    /// (D13d) — a staging one for the reader to recover without barring
+    /// (D14e).
     fn lookup_across(
         &mut self,
         transaction: TransactionId,
         coordinator: Reach,
     ) -> Result<AcrossAnswer> {
         match self.store.transaction_record(transaction)? {
-            Some(record) if record.decision != tessari_encoding::Decision::Pending => {
+            Some(record) if record.decision.is_decided() => {
                 self.settle_across(transaction, coordinator)
             }
             Some(record) => Ok(AcrossAnswer::Outcome(record)),
@@ -410,17 +439,63 @@ impl Session<'_> {
         if store.holds_intents_of(transaction)? {
             return Ok(AcrossAnswer::Holding(true));
         }
+        self.hold_tail(range, span)?;
+        Ok(AcrossAnswer::Holding(false))
+    }
+
+    /// Where `transaction`'s part in `range` landed here, once a majority of
+    /// that range holds this log through its tail — a part only this leader
+    /// holds is one a failover can lose, and an implicit commit counted on it
+    /// would not be one (D14c). Not landed and `prevent`: barred first, at a
+    /// majority, so the prepare can never land after the answer.
+    fn bar_across(
+        &mut self,
+        transaction: TransactionId,
+        range: Reach,
+        prevent: bool,
+        span: Span,
+    ) -> Result<AcrossAnswer> {
+        let store = self.store;
+        if let Some(at) = store.part_landed(transaction, range)? {
+            self.hold_tail(range, span)?;
+            return Ok(AcrossAnswer::Landed(Some(at)));
+        }
+        if !prevent {
+            return Ok(AcrossAnswer::Landed(None));
+        }
+        let mut barring = store.begin()?;
+        let waiting =
+            self.acknowledgement_in(&mut barring, Some(range), Some(Acknowledge::Majority), span)?;
+        match barring.prevent_across(transaction, range) {
+            Ok(committed) => {
+                Self::await_acknowledged(store, committed, waiting, span)?;
+                Ok(AcrossAnswer::Landed(None))
+            }
+            // The prepare landed between the look and the bar: it stands.
+            Err(tessari_storage::Error::AcrossDecided {
+                decided: "prepared",
+            }) => self.bar_across(transaction, range, prevent, span),
+            Err(refused) => Err(advised(refused)),
+        }
+    }
+
+    /// Wait until a majority of `range`'s voters hold its log through the tail
+    /// as it stands now.
+    fn hold_tail(&mut self, range: Reach, span: Span) -> Result<()> {
+        let store = self.store;
         let mut reading = store.begin()?;
         let waiting =
             self.acknowledgement_in(&mut reading, Some(range), Some(Acknowledge::Majority), span)?;
         reading.rollback();
-        let log = store.own_log(range)?;
+        // The log the range's commits go to: its line's under a leadership,
+        // this node's own before one. Its own log alone stands still once the
+        // line holds records, and a wait on that is a wait nobody answers.
+        let log = store.history_log(range)?;
         let tail = tessari_storage::Committed {
             log,
             sequence: store.committed_tail(log)?,
         };
-        Self::await_acknowledged(store, tail, waiting, span)?;
-        Ok(AcrossAnswer::Holding(false))
+        Self::await_acknowledged(store, tail, waiting, span)
     }
 
     /// Refuse writes this session's user could not have made here, or into a

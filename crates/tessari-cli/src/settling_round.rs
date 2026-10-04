@@ -26,10 +26,12 @@ pub(crate) async fn settle_across(
         &stop,
         move |_| match db.settle_across() {
             Ok(settled) => {
-                if settled.aborted > 0 || settled.resolved > 0 {
+                if settled.aborted > 0 || settled.committed > 0 || settled.resolved > 0 {
                     log::info!(
-                        "finished cross-leader transactions: {} overdue aborted, {} resolved here",
+                        "finished cross-leader transactions: {} overdue aborted, {} found \
+                         committed, {} resolved here",
                         settled.aborted,
+                        settled.committed,
                         settled.resolved
                     );
                 }

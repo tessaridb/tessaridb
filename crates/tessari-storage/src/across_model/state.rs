@@ -8,11 +8,14 @@ use super::{Decision, Entry, Range, Writer};
 pub(super) enum Coordinator {
     /// Nothing written yet.
     Idle,
-    /// `B`'s prepare sent; `A`'s record and its own prepare not yet written —
-    /// one commit in `A`'s range (D13a), racing `B`'s delivery.
+    /// `B`'s prepare sent; `A`'s staging record and its own prepare not yet
+    /// written — one commit in `A`'s range (D13a), racing `B`'s delivery.
     Starting,
-    /// `PENDING` written, prepares sent, collecting replies (one per range).
+    /// `STAGING` written, prepares sent, collecting replies (one per range).
     Waiting { replies: [Option<bool>; 2] },
+    /// Every prepare held and the caller told committed; the explicit
+    /// decision and `A`'s resolution are still to be written (D14).
+    Concluding,
     /// It recorded (or tried to record) a decision and reported it.
     Done,
     /// It died; only the log remembers it.
@@ -62,6 +65,9 @@ pub(super) struct State {
     pub(super) tail: Option<bool>,
     /// What the caller was told: `Some(true)` committed, `Some(false)` not.
     pub(super) told: Option<bool>,
+    /// Whether T1 was ever committed implicitly: its record `STAGING` while
+    /// every participant's prepare stood (D14). Bookkeeping of the model.
+    pub(super) implicit: bool,
 }
 
 impl State {
@@ -79,6 +85,7 @@ impl State {
             reader: Reader::default(),
             tail: None,
             told: None,
+            implicit: false,
         }
     }
 
@@ -114,6 +121,15 @@ impl State {
     /// Whether the record has been forgotten.
     pub(super) fn forgotten(&self) -> bool {
         self.log(Range::A).contains(&Entry::Forget)
+    }
+
+    /// Whether T1 is committed implicitly right now: its record `STAGING` and
+    /// an intent standing in every range (D14).
+    pub(super) fn committed_implicitly(&self) -> bool {
+        self.record() == Some(Decision::Staging)
+            && Range::BOTH
+                .iter()
+                .all(|range| intent_stands(self.log(*range)))
     }
 
     /// Whether an intent stands as `range`'s leader sees it: its log, and for
@@ -160,7 +176,7 @@ pub(super) fn versions(log: &[Entry]) -> Vec<Shown> {
                     }
                 }
             }
-            Entry::Record(_) | Entry::Forget => {}
+            Entry::Record(_) | Entry::Forget | Entry::Prevent => {}
         }
     }
     shown

@@ -151,6 +151,10 @@ pub enum KeyKind {
     /// its readers and its indexes disagree about it — keyed by the table first,
     /// so a read asks about its own table with one prefix seek (Q-919).
     AcrossUnsettled,
+    /// One transaction across leaders' part in one range barred for good —
+    /// its prepare had not landed when status recovery asked (ADR-0112 D14c) —
+    /// at the version the bar applied; a prepare meeting it is refused.
+    AcrossBarred,
 }
 
 impl KeyKind {
@@ -201,6 +205,7 @@ impl KeyKind {
         Self::IntentOf,
         Self::AcrossPart,
         Self::AcrossUnsettled,
+        Self::AcrossBarred,
     ];
 
     /// The leading byte that identifies this kind on disk.
@@ -256,6 +261,7 @@ impl KeyKind {
             Self::IntentOf => 0x51,
             Self::AcrossPart => 0x52,
             Self::AcrossUnsettled => 0x53,
+            Self::AcrossBarred => 0x54,
         }
     }
 
@@ -304,7 +310,8 @@ impl KeyKind {
             | Self::TransactionRecord
             | Self::IntentOf
             | Self::AcrossPart
-            | Self::AcrossUnsettled => Keyspace::META,
+            | Self::AcrossUnsettled
+            | Self::AcrossBarred => Keyspace::META,
         }
     }
 
@@ -357,6 +364,7 @@ impl KeyKind {
             Self::IntentOf => "intent-of",
             Self::AcrossPart => "across-part",
             Self::AcrossUnsettled => "across-unsettled",
+            Self::AcrossBarred => "across-barred",
         }
     }
 
@@ -458,6 +466,7 @@ mod tests {
             (KeyKind::IntentOf, 0x51),
             (KeyKind::AcrossPart, 0x52),
             (KeyKind::AcrossUnsettled, 0x53),
+            (KeyKind::AcrossBarred, 0x54),
         ];
         assert_eq!(expected.len(), KeyKind::ALL.len(), "a kind is untested");
         for (kind, tag) in expected {

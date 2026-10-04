@@ -71,7 +71,7 @@ fn every_request_travels_and_arrives_as_itself() -> Result<(), String> {
         AcrossAsk::Begin {
             transaction: TRANSACTION,
             record: TransactionRecord {
-                decision: Decision::Pending,
+                decision: Decision::Staging,
                 deadline: 9,
                 participants: vec![Participant {
                     range,
@@ -92,6 +92,16 @@ fn every_request_travels_and_arrives_as_itself() -> Result<(), String> {
                 }],
             },
             records: vec![address(1), address(2)],
+        },
+        AcrossAsk::Bar {
+            transaction: TRANSACTION,
+            range,
+            prevent: true,
+        },
+        AcrossAsk::Bar {
+            transaction: TRANSACTION,
+            range,
+            prevent: false,
         },
     ];
     for ask in asks {
@@ -120,6 +130,9 @@ fn every_answer_travels_and_arrives_as_itself() -> Result<(), String> {
         outcome(Decision::Pending),
         outcome(Decision::Committed),
         outcome(Decision::Aborted),
+        outcome(Decision::Staging),
+        AcrossAnswer::Landed(Some(Sequence::new(9))),
+        AcrossAnswer::Landed(None),
         AcrossAnswer::Holding(true),
         AcrossAnswer::Holding(false),
         AcrossAnswer::Forgotten(Sequence::new(8)),

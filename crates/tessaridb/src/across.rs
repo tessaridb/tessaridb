@@ -10,7 +10,7 @@
 
 use std::collections::BTreeSet;
 
-use tessari_session::{AcrossAnswer, AcrossAsk};
+use tessari_session::{AcrossAnswer, AcrossAsk, Recovery};
 use tessari_storage::Decision;
 
 use crate::{Db, Result};
@@ -20,6 +20,9 @@ use crate::{Db, Result};
 pub struct SettledAcross {
     /// Overdue records this node aborted.
     pub aborted: usize,
+    /// Overdue `STAGING` records this node found committed — every part
+    /// landed — and wrote so (ADR-0112 D14c).
+    pub committed: usize,
     /// Transactions whose intents here were resolved.
     pub resolved: usize,
     /// Transactions whose outcome could not be asked for this pass.
@@ -64,6 +67,10 @@ impl Db {
             if record.deadline > now || store.leader_of(coordinator)?.is_some() {
                 continue;
             }
+            if record.decision == Decision::Staging {
+                self.recover(transaction, &record, &mut settled, &mut silent)?;
+                continue;
+            }
             match self.session().answer_across(&AcrossAsk::Settle {
                 transaction,
                 coordinator,
@@ -101,9 +108,9 @@ impl Db {
                 }
             };
             let record = match self.ask_leader_of(coordinator, &asked, &mut silent)? {
-                Some(Ok(AcrossAnswer::Outcome(record))) if record.decision != Decision::Pending => {
-                    record
-                }
+                // Undecided, `STAGING` included: it may be committed
+                // implicitly already, and only recovery decides it (D14c).
+                Some(Ok(AcrossAnswer::Outcome(record))) if record.decision.is_decided() => record,
                 Some(Ok(_)) => continue,
                 Some(Err(why)) => {
                     settled.unreachable = settled.unreachable.saturating_add(1);
@@ -150,6 +157,56 @@ impl Db {
 }
 
 impl Db {
+    /// Recover an overdue `STAGING` record this node leads (ADR-0112 D14c):
+    /// every part landed → `COMMITTED`; one not landed is barred at its range
+    /// first → `ABORTED`. The decision by compare-and-set on `STAGING`, so a
+    /// coordinator concluding meanwhile wins, and loses nothing.
+    fn recover(
+        &self,
+        transaction: tessari_storage::TransactionId,
+        record: &tessari_storage::TransactionRecord,
+        settled: &mut SettledAcross,
+        silent: &mut BTreeSet<[u8; tessari_storage::NODE_ID_LEN]>,
+    ) -> Result<()> {
+        let mut failed = Ok(());
+        let recovered =
+            tessari_session::recover_staging(transaction, record, true, |range, asked| match self
+                .ask_leader_of(range, asked, silent)
+            {
+                Ok(Some(answered)) => answered,
+                Ok(None) => Err(format!("the leader of {range:?} did not answer this pass")),
+                Err(why) => {
+                    let said = why.to_string();
+                    failed = Err(why);
+                    Err(said)
+                }
+            });
+        failed?;
+        let decided = match recovered {
+            Recovery::Committed(committed) => committed,
+            Recovery::Barred(_) => tessari_storage::TransactionRecord {
+                decision: Decision::Aborted,
+                ..record.clone()
+            },
+            Recovery::Missing(_) => return Ok(()),
+            Recovery::Unknown(why) => {
+                settled.unreachable = settled.unreachable.saturating_add(1);
+                settled.last_refusal = Some(why);
+                return Ok(());
+            }
+        };
+        let committed = decided.decision == Decision::Committed;
+        match self.session().answer_across(&AcrossAsk::Decide {
+            transaction,
+            record: decided,
+        }) {
+            Ok(_) if committed => settled.committed = settled.committed.saturating_add(1),
+            Ok(_) => settled.aborted = settled.aborted.saturating_add(1),
+            Err(why) => settled.last_refusal = Some(why.to_string()),
+        }
+        Ok(())
+    }
+
     /// Forget each decided record whose range this node leads once every
     /// participant answers that its intents are gone for good (ADR-0112 D12).
     fn forget_decided(
@@ -320,9 +377,28 @@ impl tessari_storage::Decisions for LeadersDecide {
             transaction,
             coordinator,
         };
-        match db.ask_leader_of(coordinator, &asked, &mut BTreeSet::new()) {
-            Ok(Some(Ok(AcrossAnswer::Outcome(record)))) if record.decision != Decision::Pending => {
+        let mut silent = BTreeSet::new();
+        match db.ask_leader_of(coordinator, &asked, &mut silent) {
+            Ok(Some(Ok(AcrossAnswer::Outcome(record)))) if record.decision.is_decided() => {
                 Some(record)
+            }
+            // Committed implicitly only if every part is held — asked without
+            // barring, so a read never aborts a live transaction (D14e).
+            Ok(Some(Ok(AcrossAnswer::Outcome(record)))) if record.decision == Decision::Staging => {
+                let recovered = tessari_session::recover_staging(
+                    transaction,
+                    &record,
+                    false,
+                    |range, asked| match db.ask_leader_of(range, asked, &mut silent) {
+                        Ok(Some(answered)) => answered,
+                        Ok(None) => Err(format!("the leader of {range:?} did not answer")),
+                        Err(why) => Err(why.to_string()),
+                    },
+                );
+                match recovered {
+                    Recovery::Committed(committed) => Some(committed),
+                    Recovery::Barred(_) | Recovery::Missing(_) | Recovery::Unknown(_) => None,
+                }
             }
             _ => None,
         }

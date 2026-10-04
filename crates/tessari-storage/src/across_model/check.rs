@@ -8,6 +8,9 @@ pub(super) fn always(state: &State, rules: Rules) -> Result<(), Violation> {
     if state.two_outcomes() {
         return Err(Violation::TwoOutcomes);
     }
+    if state.implicit && state.outcome() == Some(Decision::Aborted) {
+        return Err(Violation::ImplicitCommitLost);
+    }
     if let Some(told) = state.told
         && let Some(outcome) = state.outcome()
         && told != (outcome == Decision::Committed)
@@ -59,7 +62,7 @@ pub(super) fn finally(state: &State) -> Result<(), Violation> {
         {
             false
         }
-        Some(Decision::Pending) | None => return Err(Violation::LeftInDoubt),
+        Some(Decision::Staging) | None => return Err(Violation::LeftInDoubt),
     };
     for range in Range::BOTH {
         let log = state.log(range);
@@ -126,15 +129,20 @@ fn atomic(state: &State, seen: [Writer; 2]) -> bool {
 /// versions did.
 fn restored(state: &State, rules: Rules, applied: [usize; 2]) -> [Writer; 2] {
     let prefix = |range: Range| &state.log(range)[..applied[range.slot()]];
-    let committed = record_in(prefix(Range::A)) == Some(Decision::Committed)
-        || Range::BOTH
-            .iter()
-            .any(|range| prefix(*range).contains(&Entry::Resolved { committed: true }));
     let landed = Range::BOTH.iter().all(|range| {
         prefix(*range)
             .iter()
             .any(|entry| matches!(entry, Entry::Intent { .. }))
     });
+    // A cut whose record stages and that holds every part shows T1 committed
+    // implicitly (D14) — and a commit is final.
+    let committed = match record_in(prefix(Range::A)) {
+        Some(Decision::Committed) => true,
+        Some(Decision::Staging) => landed,
+        Some(Decision::Aborted) | None => false,
+    } || Range::BOTH
+        .iter()
+        .any(|range| prefix(*range).contains(&Entry::Resolved { committed: true }));
     let shown = committed && (landed || !rules.restore_reads_by_the_snapshot);
     let mut seen = [Writer::Initial; 2];
     for range in Range::BOTH {

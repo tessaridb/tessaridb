@@ -8,8 +8,8 @@
 //! `across_model` requires of both sides before anything can prepare.
 
 use tessari_encoding::{
-    Across, AcrossPartKey, Decision, IntentOfKey, LogRecord, Part, Provenance, RecordKey,
-    StampedValue, StoreKey, StoreValue, TransactionRecord, TransactionRecordKey,
+    Across, AcrossBarredKey, AcrossPartKey, Decision, IntentOfKey, LogRecord, Part, Provenance,
+    RecordKey, StampedValue, StoreKey, StoreValue, TransactionRecord, TransactionRecordKey,
 };
 use tessari_kv::WriteBatch;
 use tessari_types::Sequence;
@@ -70,6 +70,7 @@ pub(crate) fn settle(
     };
     match &across.part {
         Part::Prepare { .. } => {
+            unbarred(store, across, record)?;
             let batch = prepared(store, across, record, batch, version, "prepare")?;
             unsettled::reconcile(store, across, record, batch)
         }
@@ -89,12 +90,12 @@ pub(crate) fn settle(
         }
         // D13a: the record first, so a begin that finds it standing — a
         // participant aborted it while this record was on its way — writes
-        // no intent either.
+        // no intent either. It stages (D14a): nothing else commits implicitly.
         Part::Begin(begun) => {
-            if begun.decision != Decision::Pending {
+            if begun.decision != Decision::Staging {
                 return Err(Error::AcrossMalformed {
                     part: "begin",
-                    problem: "a record begun already decided",
+                    problem: "a record begun other than staging",
                 });
             }
             let batch = recorded(store, across, begun, batch)?;
@@ -103,7 +104,7 @@ pub(crate) fn settle(
         }
         // D13b: the outcome and this range's resolution, or neither.
         Part::Conclude(decided) => {
-            if decided.decision == Decision::Pending {
+            if !decided.decision.is_decided() {
                 return Err(Error::AcrossMalformed {
                     part: "conclude",
                     problem: "a record concluded undecided",
@@ -133,7 +134,7 @@ pub(crate) fn settle(
                 .get(TransactionRecordKey::keyspace(), &key.encode())?
                 .map(|value| TransactionRecord::decode(value.as_slice()))
                 .transpose()?;
-            if standing.is_some_and(|record| record.decision == Decision::Pending) {
+            if standing.is_some_and(|record| !record.decision.is_decided()) {
                 return Err(Error::AcrossMalformed {
                     part: "forget",
                     problem: "a record that has not decided",
@@ -158,7 +159,59 @@ pub(crate) fn settle(
             let batch = landed(store, &part, batch, version)?;
             unsettled::reconcile(store, across, record, batch)
         }
+        // D14c: a part is barred only where its prepare has not landed, and
+        // then for good — the prepare meeting the bar is refused.
+        Part::Prevent { range } => {
+            if !record.mutations().is_empty() {
+                return Err(Error::AcrossMalformed {
+                    part: "prevent",
+                    problem: "a bar that carries writes",
+                });
+            }
+            let part = AcrossPartKey {
+                transaction: across.transaction,
+                range: *range,
+            };
+            if store
+                .backend()
+                .get(AcrossPartKey::keyspace(), &part.encode())?
+                .is_some()
+            {
+                return Err(Error::AcrossDecided {
+                    decided: "prepared",
+                });
+            }
+            let barred = AcrossBarredKey {
+                transaction: across.transaction,
+                range: *range,
+            }
+            .encode();
+            if store
+                .backend()
+                .get(AcrossBarredKey::keyspace(), &barred)?
+                .is_some()
+            {
+                return Ok(batch);
+            }
+            Ok(batch.put(AcrossBarredKey::keyspace(), barred, version.encode()))
+        }
     }
+}
+
+/// Refuse a prepare whose part status recovery barred here (ADR-0112 D14c).
+fn unbarred(store: &Store, across: &Across, record: &LogRecord) -> Result<()> {
+    let barred = AcrossBarredKey {
+        transaction: across.transaction,
+        range: crate::catalog::home_of(record)?,
+    };
+    if store
+        .backend()
+        .get(AcrossBarredKey::keyspace(), &barred.encode())?
+        .is_some()
+    {
+        return Err(Error::AcrossDecided { decided: "barred" });
+    }
+    Ok(())
 }
 
 /// Whether every write of `record` is a version of `across`'s transaction,
@@ -199,7 +252,14 @@ fn recorded(
     let refused = match standing.as_ref().map(|record| record.decision) {
         None => (decided.decision == Decision::Committed).then_some("absent"),
         Some(Decision::Pending) if matches!(across.part, Part::Begin(_)) => Some("pending"),
-        Some(Decision::Pending) => None,
+        // A staging record may be committed implicitly already (D14a): it is
+        // decided, or written again as it stands, and never reopened.
+        Some(Decision::Staging)
+            if matches!(across.part, Part::Begin(_)) || decided.decision == Decision::Pending =>
+        {
+            Some("staging")
+        }
+        Some(Decision::Pending | Decision::Staging) => None,
         Some(Decision::Committed) => {
             (decided.decision != Decision::Committed).then_some("committed")
         }

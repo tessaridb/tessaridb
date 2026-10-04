@@ -4,24 +4,23 @@
 //!
 //! # The order, and why each step waits for the one before
 //!
-//! The record is written `PENDING` first, so a prepare never lands for a
-//! transaction nobody can decide (D7: a record that does not exist after the
-//! deadline is an abort). Every prepare is answered only once a majority holds
-//! it; the decision is `COMMITTED` only once every prepare answered, and the
-//! caller is told only once a majority holds the decision. Resolutions follow
-//! and do not hold the caller (D13c): this node's own part is resolved before
-//! the answer, the other leaders' behind it, and a reader there that meets an
-//! intent before its resolution asks the record's leader (D13d). A lost
-//! resolution is the record's to finish.
+//! With a peer on an older build, or one not heard from, the record is written
+//! `PENDING` first, so a prepare never lands for a transaction nobody can
+//! decide (D7: a record that does not exist after the deadline is an abort).
+//! Every prepare is answered only once a majority holds it; the decision is
+//! `COMMITTED` only once every prepare answered, and the caller is told only
+//! once a majority holds the decision. Resolutions follow and do not hold the
+//! caller (D13c): this node's own part is resolved before the answer, the
+//! other leaders' behind it, and a reader there that meets an intent before
+//! its resolution asks the record's leader (D13d). A lost resolution is the
+//! record's to finish.
 //!
-//! # Two records in the coordinator's range, where every node can read them
+//! # One round, where every node can read it
 //!
-//! Once every peer is known to read them (ADR-0112 D13a, D13b), the
-//! coordinator's range takes two records rather than four: its record begun
-//! with that range's own writes as intents — sent in the same round as the
-//! other prepares, since a prepare that lands first is covered by D7 — and its
-//! record decided with those intents resolved. With a peer on an older build,
-//! or one not heard from, the four are written as they always were.
+//! Once every peer is known to read them (ADR-0112 D13a, D14), the
+//! coordinator's range is begun with its record `STAGING` and that range's own
+//! writes as intents, in the same round as the other prepares, and the caller
+//! is answered when that round is — see [`parallel`].
 //!
 //! # Parallel where it is only waiting
 //!
@@ -94,7 +93,14 @@ impl Session<'_> {
         transaction.rollback();
         let user = self.identity.user().cloned();
         let id = fresh_id();
-        let answered = self.drive(&carrier, &parts, (id, lapse, merged), user.as_ref(), span);
+        let answered = self.drive(
+            store,
+            &carrier,
+            &parts,
+            (id, lapse, merged),
+            user.as_ref(),
+            span,
+        );
         // Counted where the client hears it (ADR-0112 D11), whichever way.
         store.across_finished(match &answered {
             Ok(()) => AcrossOutcome::Committed,
@@ -104,9 +110,10 @@ impl Session<'_> {
         answered
     }
 
-    /// The protocol itself, from the `PENDING` record to the resolutions.
+    /// The protocol itself, from the first record to the resolutions.
     fn drive(
         &mut self,
+        store: &Store,
         carrying: &std::sync::Arc<dyn Participants>,
         parts: &[AcrossPart],
         (id, lapse, merged): (TransactionId, u64, bool),
@@ -119,7 +126,11 @@ impl Session<'_> {
         };
         let (coordinator, coordinator_leader) = (first.home, first.leader);
         let mut record = TransactionRecord {
-            decision: Decision::Pending,
+            decision: if merged {
+                Decision::Staging
+            } else {
+                Decision::Pending
+            },
             deadline: super::now_millis().saturating_add(lapse),
             participants: parts
                 .iter()
@@ -129,21 +140,10 @@ impl Session<'_> {
                 })
                 .collect(),
         };
-        // Merged, the coordinator's own records are a begin and a conclusion,
-        // and its own part is resolved by the conclusion.
-        let own = records_of(first);
         let deciding = |this: &mut Self, record: &TransactionRecord| {
-            let asked = if merged {
-                AcrossAsk::Conclude {
-                    transaction: id,
-                    record: record.clone(),
-                    records: own.clone(),
-                }
-            } else {
-                AcrossAsk::Decide {
-                    transaction: id,
-                    record: record.clone(),
-                }
+            let asked = AcrossAsk::Decide {
+                transaction: id,
+                record: record.clone(),
             };
             this.ask_one(carrier, coordinator_leader, user, &asked)
         };
@@ -199,6 +199,9 @@ impl Session<'_> {
             );
             refused.get_or_insert(refusal);
         }
+        if merged {
+            return self.finish_parallel(store, carrying, parts, (id, record, refused), user, span);
+        }
         record.decision = if refused.is_some() {
             Decision::Aborted
         } else {
@@ -213,9 +216,7 @@ impl Session<'_> {
         } else {
             Vec::new()
         };
-        // The coordinator's own part was resolved by its conclusion.
-        let unresolved = parts.get(usize::from(merged)..).unwrap_or_default();
-        let resolves: Vec<AcrossAsk> = unresolved
+        let resolves: Vec<AcrossAsk> = parts
             .iter()
             .map(|part| AcrossAsk::Resolve {
                 transaction: id,
@@ -230,11 +231,11 @@ impl Session<'_> {
             // decided is the outcome even when no majority confirmed it yet.
             // The intents can go.
             (_, Some(refusal)) => {
-                self.resolve_parts(carrying, unresolved, user, resolves);
+                self.resolve_parts(carrying, parts, user, resolves);
                 Err(Error::AcrossAborted { refusal, span })
             }
             (Ok(_), None) => {
-                self.resolve_parts(carrying, unresolved, user, resolves);
+                self.resolve_parts(carrying, parts, user, resolves);
                 Ok(())
             }
             // The record had already been decided — a lapse aborted it while
@@ -396,7 +397,8 @@ impl Session<'_> {
 }
 
 /// The first build whose nodes read a begun and a concluded record (ADR-0112
-/// D13a, D13b) and answer the asks that write them.
+/// D13a, D13b), a staging record and a bar (D14), and answer the asks that
+/// write them.
 const MERGED_FROM: NodeVersion = NodeVersion {
     major: 0,
     minor: 25,
@@ -455,6 +457,8 @@ fn fresh_id() -> TransactionId {
     OsRng.fill_bytes(&mut bytes);
     TransactionId::new(bytes)
 }
+
+mod parallel;
 
 #[cfg(test)]
 mod tests;

@@ -64,9 +64,13 @@ fn every_part_round_trips_with_its_mutations_behind_it() -> Result<()> {
         Part::Landed {
             range: coordinator(),
         },
-        Part::Begin(record_of(Decision::Pending)),
+        Part::Begin(record_of(Decision::Staging)),
+        Part::Decide(record_of(Decision::Staging)),
         Part::Conclude(record_of(Decision::Committed)),
         Part::Conclude(record_of(Decision::Aborted)),
+        Part::Prevent {
+            range: coordinator(),
+        },
     ];
     for part in parts {
         let across = Across {

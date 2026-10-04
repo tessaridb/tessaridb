@@ -25,7 +25,7 @@ impl Fixture {
 
     fn begin(&mut self) -> Result<()> {
         let intent = self.write(self.new_value(true));
-        self.apply(Part::Begin(self.decided(Decision::Pending)), vec![intent])
+        self.apply(Part::Begin(self.decided(Decision::Staging)), vec![intent])
     }
 
     /// Whether this node marks the coordinator's own part landed.
@@ -43,13 +43,13 @@ impl Fixture {
 }
 
 #[test]
-fn a_begin_lands_the_pending_record_and_its_intents_together() -> Result<()> {
+fn a_begin_lands_the_staging_record_and_its_intents_together() -> Result<()> {
     let mut fixture = Fixture::new()?;
     let before = fixture.index_entries()?;
     fixture.begin()?;
     assert_eq!(
         record_of(&fixture.store)?,
-        Some(fixture.decided(Decision::Pending))
+        Some(fixture.decided(Decision::Staging))
     );
     assert!(fixture.intent_left()?, "the writes stand as intents");
     assert!(
@@ -95,12 +95,31 @@ fn a_begin_carrying_a_plain_write_is_refused() -> Result<()> {
     let plain = fixture.write(tessari_encoding::StampedValue::new(
         tessari_encoding::RecordValue::Present(doc("new")),
     ));
-    let refused = fixture.apply(Part::Begin(fixture.decided(Decision::Pending)), vec![plain]);
+    let refused = fixture.apply(Part::Begin(fixture.decided(Decision::Staging)), vec![plain]);
     assert!(
         matches!(refused, Err(Error::AcrossMalformed { part: "begin", .. })),
         "{refused:?}"
     );
     assert_eq!(record_of(&fixture.store)?, None);
+    Ok(())
+}
+
+#[test]
+fn a_begin_that_does_not_stage_is_refused() -> Result<()> {
+    // A begin is the parallel commit's first record (ADR-0112 D14a): a record
+    // begun undecided in any other way would never commit implicitly.
+    let mut fixture = Fixture::new()?;
+    let intent = fixture.write(fixture.new_value(true));
+    let refused = fixture.apply(
+        Part::Begin(fixture.decided(Decision::Pending)),
+        vec![intent],
+    );
+    assert!(
+        matches!(refused, Err(Error::AcrossMalformed { part: "begin", .. })),
+        "{refused:?}"
+    );
+    assert_eq!(record_of(&fixture.store)?, None);
+    assert!(!fixture.intent_left()?);
     Ok(())
 }
 
@@ -166,6 +185,24 @@ fn a_conclude_against_a_lapsed_record_resolves_nothing() -> Result<()> {
     assert!(
         fixture.intent_left()?,
         "the abort's own resolution drops it"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_staging_record_is_never_reopened_as_pending() -> Result<()> {
+    // A staging record may be committed implicitly already (ADR-0112 D14a):
+    // reopened as PENDING, a lapse could abort what was committed.
+    let mut fixture = Fixture::new()?;
+    fixture.begin()?;
+    let refused = fixture.apply(Part::Decide(fixture.decided(Decision::Pending)), vec![]);
+    assert!(
+        matches!(refused, Err(Error::AcrossDecided { decided: "staging" })),
+        "{refused:?}"
+    );
+    assert_eq!(
+        record_of(&fixture.store)?,
+        Some(fixture.decided(Decision::Staging))
     );
     Ok(())
 }

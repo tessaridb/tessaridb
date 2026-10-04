@@ -116,6 +116,19 @@ fn a_part_key_round_trips_for_every_kind_of_range() -> Result<()> {
 }
 
 #[test]
+fn a_barred_part_key_round_trips_beside_the_landed_one() -> Result<()> {
+    let transaction = TransactionId::new([7; TRANSACTION_ID_LEN]);
+    let range = Reach::Namespace(NamespaceId::new(2));
+    let barred = AcrossBarredKey { transaction, range };
+    let bytes = barred.encode();
+    assert_eq!(bytes.as_slice()[0], 0x54);
+    assert_eq!(AcrossBarredKey::decode(bytes.as_slice())?, barred);
+    // Its own kind: a barred part never reads as a landed one.
+    assert!(AcrossPartKey::decode(bytes.as_slice()).is_err());
+    Ok(())
+}
+
+#[test]
 fn an_unsettled_table_key_round_trips_and_groups_by_table() -> Result<()> {
     let key = |table: u32, fill: u8| AcrossUnsettledKey {
         table: tessari_types::TableId::new(table),

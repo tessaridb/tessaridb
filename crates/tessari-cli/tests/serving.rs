@@ -3590,7 +3590,7 @@ fn a_transaction_across_two_shard_leaders_commits_whole_or_is_refused() {
     let spanning = |commit: &str, key: &str| {
         format!(
             "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
-             CREATE orders:'a{key}' = {{ n: 7 }}; CREATE orders:'h{key}' = {{ n: 7 }}; \
+             UPSERT orders:'a{key}' = {{ n: 7 }}; UPSERT orders:'h{key}' = {{ n: 7 }}; \
              {commit};"
         )
     };
@@ -3603,8 +3603,10 @@ fn a_transaction_across_two_shard_leaders_commits_whole_or_is_refused() {
     // Asked, it commits whole: both records, on both leaders and on the node
     // that leads neither. Asked again while it is refused: on a cluster this
     // young a follower may not yet hold a shard's log, so a prepare's majority
-    // wait runs out and the transaction aborts with nothing applied — the
-    // retriable refusal a client answers by asking again.
+    // wait runs out — an abort, or in doubt when a part had landed, and one in
+    // doubt may yet commit once the follower catches up (ADR-0112 D14d). The
+    // writes are UPSERTs so that asking again is the same transaction either
+    // way, as a client retrying an in-doubt answer must make it.
     let mut committed = Err(String::from("never asked"));
     let began = Instant::now();
     while committed.is_err() && began.elapsed() < Duration::from_secs(60) {
@@ -4410,11 +4412,26 @@ fn a_transaction_whose_coordinator_died_mid_prepare_leaves_nothing_standing() {
             None,
         )
     });
-    // The local prepare takes milliseconds and the remote one is held for as
-    // long as the pause lasts. The kill comes before the record's lapse —
-    // four failover rounds, about two seconds here — or the coordinator
-    // would abort its own record and nothing would be left to a successor.
-    std::thread::sleep(Duration::from_millis(500));
+    // The local begin takes milliseconds and the remote prepare is held for
+    // as long as the pause lasts. The kill comes once the successor holds the
+    // record its begin wrote — the record and the coordinator's own intent are
+    // one commit, so a successor holding one holds both — and not on a timer:
+    // killed before its begin reached a second node, the coordinator leaves
+    // nothing for anyone to finish, which is not the case this tests.
+    let held = until(Duration::from_secs(10), || {
+        cluster_report(ABANDONED[successor].0).is_ok_and(|report| {
+            matches!(
+                report.get("across"),
+                Some(tessari_types::Value::Object(across))
+                    if across.get("pending") == Some(&tessari_types::Value::from(1_i64))
+            )
+        })
+    });
+    assert!(
+        held,
+        "node {successor} never held the coordinator's record{}",
+        what_the_nodes_said(&ABANDONED, &cluster.logs)
+    );
     cluster.running[leader] = None;
     let answered = driving.join().expect("the client thread ends");
     assert!(
@@ -4423,9 +4440,10 @@ fn a_transaction_whose_coordinator_died_mid_prepare_leaves_nothing_standing() {
     );
     signal("-CONT", &participant);
     // Nobody restarts the coordinator. Its successor takes shard 1, finds the
-    // record overdue, aborts it and drops the intent — and until then a
-    // standing intent refuses every writer, so writing the record again is
-    // only possible once it has.
+    // record overdue and recovers it (ADR-0112 D14c) — aborted once n1's part
+    // is barred, or committed if n1, released, landed the prepare first — and
+    // until then a standing intent refuses every writer, so writing the record
+    // again is only possible once it has.
     let mut last = String::new();
     let rewritten = until(Duration::from_secs(180), || {
         [(successor, "ak"), (1, "hk")].iter().all(|(at, key)| {
