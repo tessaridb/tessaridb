@@ -1622,6 +1622,8 @@ name = "tessari-bench"
 version = "0.25.0-beta"
 dependencies = [
  "tessari-backup",
+ "tessari-encoding",
+ "tessari-geo",
  "tessari-kv",
  "tessari-lsm",
  "tessari-storage",
