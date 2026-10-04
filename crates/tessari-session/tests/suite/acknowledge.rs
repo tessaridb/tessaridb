@@ -319,3 +319,50 @@ fn a_local_majority_is_weaker_than_a_majority_and_stronger_than_the_leader() {
         .run("CREATE t:3 = { a: 3 } ACKNOWLEDGE MAJORITY;")
         .unwrap_or_else(|why| panic!("{why}"));
 }
+
+/// Q-921, the Raft rule (ADR-0112 D12): a node that has just taken a range's
+/// leadership holds a tail an earlier leader wrote, which a majority may hold
+/// today and a later election may still overrule. It answers that a
+/// transaction's intents there are gone for good only once an entry of its
+/// own leadership is held by a majority — which covers everything before it.
+#[test]
+fn a_new_leader_says_intents_are_gone_only_once_its_own_entry_is_held() {
+    let store = clustered("", "prod");
+    let mut session = writing(&store);
+    // Both peers hold whatever this log will carry, so every wait below is
+    // answered and only the leader rule can refuse.
+    acknowledged_by(&store, FIRST);
+    acknowledged_by(&store, SECOND);
+    session.run("CREATE t:1 = { n: 1 };").unwrap();
+    let range = {
+        let mut transaction = store.begin().unwrap();
+        let catalog = Catalog::new(&mut transaction);
+        let namespace = catalog.namespace_id("prod").unwrap().unwrap();
+        let database = catalog.database_id(namespace, "app").unwrap().unwrap();
+        Reach::Database(namespace, database)
+    };
+    let holds = tessari_session::AcrossAsk::Holds {
+        transaction: tessari_encoding::TransactionId::new(
+            [7; tessari_encoding::TRANSACTION_ID_LEN],
+        ),
+        range,
+    };
+    // Re-elected at epoch 2, its tail still written at epoch 1.
+    store.hold(Epoch::new(2), Lease::taken(Duration::from_secs(60)));
+    let refused = session.answer_across(&holds);
+    assert!(
+        matches!(
+            &refused,
+            Err(Error::Store(
+                tessari_storage::Error::LeadershipUnconfirmed { .. }
+            ))
+        ),
+        "{refused:?}"
+    );
+    // Its own first entry, held by a majority: now it may answer.
+    session.run("CREATE t:2 = { n: 2 };").unwrap();
+    assert_eq!(
+        session.answer_across(&holds).unwrap(),
+        tessari_session::AcrossAnswer::Holding(false)
+    );
+}

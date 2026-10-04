@@ -480,7 +480,8 @@ impl Session<'_> {
     }
 
     /// Wait until a majority of `range`'s voters hold its log through the tail
-    /// as it stands now.
+    /// as it stands now — a tail that holds an entry of this node's own
+    /// leadership, or the wait proves nothing a later election keeps.
     fn hold_tail(&mut self, range: Reach, span: Span) -> Result<()> {
         let store = self.store;
         let mut reading = store.begin()?;
@@ -491,6 +492,15 @@ impl Session<'_> {
         // this node's own before one. Its own log alone stands still once the
         // line holds records, and a wait on that is a wait nobody answers.
         let log = store.history_log(range)?;
+        // The Raft rule: a tail held by a majority is settled only once an
+        // entry of this node's own leadership is part of it (Q-921) — an
+        // earlier leader's entries a majority holds may still be overruled.
+        let leading = store.writing_epoch(range)?;
+        if store.tail_leadership(log)? < leading {
+            return Err(Error::Store(
+                tessari_storage::Error::LeadershipUnconfirmed { range },
+            ));
+        }
         let tail = tessari_storage::Committed {
             log,
             sequence: store.committed_tail(log)?,
