@@ -56,7 +56,7 @@ The cluster without its remaining limits (G057).
   `ALTER REPLICA … REGION`). Ordered between `LEADER` and `MAJORITY`; it
   survives losing nodes outside the region while the leader lives and is not
   promised across a failover. New refusal: `LocalMajorityWithoutRegion`
-  (ADR-0106).
+  (ADR-0106). The console shows each peer's region.
 - **Measurements across network distance** — `benchmarks/cluster-distance.sh`
   measures commit levels, replication lag, failover and a commit across leaders
   at injected round trips, and writes the benchmark file.
