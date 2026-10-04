@@ -1,7 +1,7 @@
 //! Reading a backup back: into a store, into a new node, or only to say what it holds.
 
 use super::format::{Frame, Head};
-use super::{Bootstrapped, Error, LogSpan, Restored, Verified, VerifiedLog, read};
+use super::{Bootstrapped, Error, LogSpan, Restored, Verified, VerifiedLog};
 use crate::Result;
 use std::io::Read;
 use tessari_encoding::{LogId, LogRecord, StoreValue};
@@ -241,4 +241,25 @@ pub fn verify(input: &mut impl Read) -> Result<Verified> {
         truncated: truncated || logs.len() < usize::try_from(head.sections).unwrap_or(0),
         logs,
     })
+}
+
+/// Replay a backup into an **empty** store.
+///
+/// # Errors
+///
+/// Returns [`Error::NotABackup`] or [`Error::Unsupported`] before applying
+/// anything, [`Error::NotEmpty`] when the store is not empty, and the store's
+/// own error when a record cannot be applied.
+pub fn read(store: &Store, input: &mut impl Read) -> Result<Restored> {
+    read_until(store, input, None)
+}
+
+/// How much of a buffer a read managed to fill.
+pub(crate) enum Filled {
+    /// All of it.
+    Whole,
+    /// Some of it, and then the stream ended — a cut record.
+    Short,
+    /// None of it, which is the clean end of the file.
+    Empty,
 }

@@ -26,7 +26,7 @@ log = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 # No default features: they pull an async runtime this node deliberately does not
 # have, and the synchronous `BaseConsumer` is what ADR-0024 measured and chose.
-rdkafka = { version = "0.39", default-features = false, optional = true }
+rdkafka = { workspace = true, optional = true }
 
 [lints]
 workspace = true

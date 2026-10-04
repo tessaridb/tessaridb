@@ -34,7 +34,7 @@ sha2.workspace = true
 tessari-constants.workspace = true
 # The terminal's raw mode, and the immediate exit a second stop signal asks for.
 # Already in the tree through the engine, so this costs no crate.
-libc = "0.2"
+libc.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "signal", "macros", "io-util"] }
 tokio-util.workspace = true
 futures-util.workspace = true
@@ -56,7 +56,7 @@ rcgen.workspace = true
 tessari-kv.workspace = true
 # Already in the tree through `tessari-lsm`; the process-level test needs a
 # directory that cleans itself up when the node it served is killed.
-tempfile = "3"
+tempfile.workspace = true
 # The supervisor's restart pause is tested on a paused clock.
 tokio = { workspace = true, features = ["rt-multi-thread", "signal", "macros", "test-util"] }
 

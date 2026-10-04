@@ -509,8 +509,22 @@ const TABLES: &[Table] = &[
         // writes (`across::a_user_without_the_write_grant_cannot_prepare`,
         // `across::nobody_signed_in_cannot_prepare_on_a_closed_store`).
         // Re-classification trigger: coordinate_through's.
-        expected: 37,
-        count: |text| public_functions(&block(text, "impl Db")),
+        //
+        // 40 since G060 split the facade into child modules (`opening`,
+        // `wiring`, `leadership`, `naming`, `changes`) and the count began
+        // reading EVERY `impl Db` block of the module rather than the first —
+        // which is what found three public methods that had always lived in
+        // child files and were never counted: `balance_shards` (balance.rs),
+        // `settle_across` and `decide_reads_through_leaders` (across.rs). Each
+        // is classified **exempt under E3** on the ground the node cadences'
+        // other entry points are: its only callers are the binary's own rounds
+        // (`tessari-cli` `balancing_round.rs`, `settling_round.rs`,
+        // `serving.rs`), it takes no caller identity and no reach, and it acts
+        // as the node on the node's own store — moving a leadership, settling a
+        // transaction this node coordinated, or choosing where a read goes. None
+        // returns a record to anybody.
+        expected: 40,
+        count: |text| public_functions(&every_block(text, "impl Db")),
     },
     Table {
         file: "crates/tessari-storage/src/store.rs",
@@ -1238,7 +1252,11 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 154 since the balancer is observable (ADR-0113 D4): three `Store`
     // methods, not data paths, classified above.
-    assert_eq!(total, 154, "the counted tables no longer sum to 154");
+    //
+    // 157 since G060 counts every `impl Db` block of the facade: three node
+    // cadence entry points that had always been there and were never counted,
+    // exempt under E3, classified above.
+    assert_eq!(total, 157, "the counted tables no longer sum to 157");
 }
 
 /// Every `.rs` file under a directory.

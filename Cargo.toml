@@ -123,8 +123,13 @@ rcgen = "0.13"
 # Facade only. The binary picks the implementation, so a library caller keeps
 # control of whether anything is emitted at all, and `log` pulls in nothing.
 log = { version = "0.4", features = ["std"] }
+libc = "0.2"
+rocksdb = { version = "0.25", default-features = false }
+librocksdb-sys = { version = "0.19", default-features = false }
+rdkafka = { version = "0.39", default-features = false }
 
 proptest = "1"
+tempfile = "3"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

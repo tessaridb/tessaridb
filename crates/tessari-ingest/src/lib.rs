@@ -33,19 +33,19 @@
 #![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
 mod apply;
+mod error;
 mod json;
 #[cfg(feature = "kafka")]
 mod kafka;
-mod refused;
 mod runner;
 mod source;
 mod topic;
 
 pub use apply::{Shaped, shape, shape_value};
-pub use json::{Malformed, read};
-pub use refused::ShapeRefused;
+pub use error::{Malformed, ShapeRefused, SourceError};
+pub use json::read;
 pub use runner::{Broker, Runner, Started};
-pub use source::{Message, Source, SourceError};
+pub use source::{Message, Source};
 pub use topic::run_topic_consumers;
 
 #[cfg(feature = "kafka")]
