@@ -148,7 +148,7 @@ impl SharedBudget {
             Ok((_, Answered::Attempted(answer))) => Some(answer),
             Ok(_) => None,
             Err(why) => {
-                log::warn!("the cluster's sign-in budget could not be asked at {endpoint}: {why}");
+                tracing::warn!(endpoint = %endpoint, error = %why, "the cluster's sign-in budget could not be asked");
                 None
             }
         }

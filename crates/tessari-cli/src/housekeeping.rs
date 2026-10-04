@@ -31,24 +31,24 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
         &stop,
         move |_| {
             match db.store().trim_logs() {
-                Ok(Some(trimmed)) if trimmed.records > 0 => log::info!(
-                    "pruned {} log record(s) across {} log(s) to the retained count",
-                    trimmed.records,
-                    trimmed.logs
+                Ok(Some(trimmed)) if trimmed.records > 0 => tracing::info!(
+                    records = trimmed.records,
+                    logs = trimmed.logs,
+                    "pruned the log to the retained count"
                 ),
                 Ok(_) => {}
-                Err(why) => log::warn!("this node cannot trim its log: {why}"),
+                Err(why) => tracing::warn!(error = %why, "this node cannot trim its log"),
             }
             // Removal of expired keys rides the same cadence (G035). Reads never
             // wait for it; it only returns space. A node that does not lead a
             // range is refused at commit exactly as any write would be, which is
             // the design rather than a fault, so that refusal stays quiet.
             match db.store().remove_expired() {
-                Ok(lapsed) if lapsed.records > 0 || lapsed.stale > 0 => log::info!(
-                    "removed {} expired record(s) in {} commit(s); {} stale expiry entr(ies)",
-                    lapsed.records,
-                    lapsed.batches,
-                    lapsed.stale
+                Ok(lapsed) if lapsed.records > 0 || lapsed.stale > 0 => tracing::info!(
+                    records = lapsed.records,
+                    commits = lapsed.batches,
+                    stale = lapsed.stale,
+                    "removed expired records"
                 ),
                 Ok(_) => {}
                 Err(
@@ -56,9 +56,9 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
                     | tessari_storage::Error::NoLeadershipYet
                     | tessari_storage::Error::WriteIsElsewhere { .. }),
                 ) => {
-                    log::debug!("expired records are removed where the range is led: {why}");
+                    tracing::debug!(reason = %why, "expired records are removed where the range is led");
                 }
-                Err(why) => log::warn!("this node cannot remove expired records: {why}"),
+                Err(why) => tracing::warn!(error = %why, "this node cannot remove expired records"),
             }
             // An unseal past its period. No statement is served by that key
             // whether this runs or not — every use judges the deadline — so this
@@ -68,12 +68,12 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
             match db.store().vault().seal_if_due() {
                 // The store's key or one vault's own (ADR-0093): either way an
                 // unseal ran its period out, and the log names neither secret.
-                Ok(true) => log::info!(
-                    "an unseal ended and its key was dropped: an unseal lasts {}s on this node",
-                    db.store().vault().period().as_secs()
+                Ok(true) => tracing::info!(
+                    lasts_seconds = db.store().vault().period().as_secs(),
+                    "an unseal ended and its key was dropped"
                 ),
                 Ok(false) => {}
-                Err(why) => log::warn!("this node cannot drop an expired unseal: {why}"),
+                Err(why) => tracing::warn!(error = %why, "this node cannot drop an expired unseal"),
             }
             // The planner's statistics, taken where an index has none or has
             // changed past the one it has (G055 W3). This node's own: each node
@@ -82,41 +82,41 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
             // said at `warn`, not acted on.
             match db.store().refresh_statistics() {
                 Ok(taken) if taken > 0 => {
-                    log::debug!("took the statistics of {taken} index(es) for the planner");
+                    tracing::debug!(indexes = taken, "took index statistics for the planner");
                 }
                 Ok(_) => {}
-                Err(why) => log::warn!("this node cannot take index statistics: {why}"),
+                Err(why) => tracing::warn!(error = %why, "this node cannot take index statistics"),
             }
             // Materialized views brought current from their sources' changes
             // (ADR-0109 D6). A view this node may not write is refused at its
             // commit before anything changes, which is the design rather than a
             // fault, so that refusal stays quiet like expiry's.
             match tessari_session::maintain_views(db.store()) {
-                Ok(done) if done.views > 0 => log::debug!(
-                    "applied {} change(s) to {} materialized view(s)",
-                    done.changes,
-                    done.views
+                Ok(done) if done.views > 0 => tracing::debug!(
+                    changes = done.changes,
+                    views = done.views,
+                    "brought materialized views current"
                 ),
                 Ok(_) => {}
                 Err(tessari_session::Error::Store(
                     tessari_storage::Error::LeaseSpent { .. }
                     | tessari_storage::Error::NoLeadershipYet
                     | tessari_storage::Error::WriteIsElsewhere { .. },
-                )) => log::debug!("materialized views are kept where the range is led"),
-                Err(why) => log::warn!("this node cannot keep its materialized views: {why}"),
+                )) => tracing::debug!("materialized views are kept where the range is led"),
+                Err(why) => tracing::warn!(error = %why, "this node cannot keep its materialized views"),
             }
             // A series' records past its floor, removed as one range per table
             // (G044 C11). This node's own storage work: every node runs it over
             // its own copy, leader or not, because the answer already changed
             // when the floor passed.
             match db.store().expire_every_series() {
-                Ok(expired) if expired.ranges > 0 => log::info!(
-                    "removed aged series records as {} range(s); {} record(s) unindexed first",
-                    expired.ranges,
-                    expired.indexed
+                Ok(expired) if expired.ranges > 0 => tracing::info!(
+                    ranges = expired.ranges,
+                    unindexed = expired.indexed,
+                    "removed aged series records"
                 ),
                 Ok(_) => {}
-                Err(why) => log::warn!("this node cannot remove aged series records: {why}"),
+                Err(why) => tracing::warn!(error = %why, "this node cannot remove aged series records"),
             }
         },
     )

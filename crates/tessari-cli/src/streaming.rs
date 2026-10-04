@@ -91,7 +91,7 @@ impl Streams {
             if let Some(running) = self.running.remove(&ended)
                 && running.thread.join().is_err()
             {
-                log::warn!("the stream from {} ended in a panic", hex(&ended.0));
+                tracing::warn!(leader = %hex(&ended.0), "a held stream ended in a panic");
             }
         }
         self.running.contains_key(&line)
@@ -117,13 +117,14 @@ impl Streams {
             .spawn(move || {
                 let ended = follow(&db, &keys, (leader, address), (&*homes, &*still), &stop);
                 match ended {
-                    Ok(()) => log::info!(
-                        "the stream from {} ended; the collection round takes over",
-                        hex(&leader)
+                    Ok(()) => tracing::info!(
+                        leader = %hex(&leader),
+                        "a held stream ended; the collection round takes over"
                     ),
-                    Err(why) => log::warn!(
-                        "the stream from {} ended: {why}; the collection round takes over",
-                        hex(&leader)
+                    Err(why) => tracing::warn!(
+                        leader = %hex(&leader),
+                        error = %why,
+                        "a held stream ended; the collection round takes over"
                     ),
                 }
                 // Last, and Release: whoever reads `false` may join at once.
@@ -135,10 +136,10 @@ impl Streams {
             });
         match started {
             Ok(thread) => {
-                log::info!("following {} on a held stream", hex(&leader));
+                tracing::info!(leader = %hex(&leader), "following the leader on a held stream");
                 self.running.insert(line, Running { alive, thread });
             }
-            Err(why) => log::warn!("a stream thread could not be started: {why}"),
+            Err(why) => tracing::warn!(error = %why, "a stream thread could not be started"),
         }
     }
 
@@ -148,7 +149,7 @@ impl Streams {
     pub(crate) fn join(self) {
         for ((leader, _), running) in self.running {
             if running.thread.join().is_err() {
-                log::warn!("the stream from {} ended in a panic", hex(&leader));
+                tracing::warn!(leader = %hex(&leader), "a held stream ended in a panic");
             }
         }
     }

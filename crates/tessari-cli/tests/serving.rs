@@ -898,7 +898,9 @@ fn a_cluster_node_told_nothing_about_its_clients_serves_them_in_the_clear_and_it
     // The surface accepts before the posture line is written, so it is waited for.
     let said = said_within(&log, "clients in the clear", Duration::from_secs(20));
     assert!(
-        said.contains("clients in the clear, on loopback only") && said.contains("--tls-cert"),
+        said.contains("clients in the clear")
+            && said.contains("reach=on loopback only")
+            && said.contains("--tls-cert"),
         "the plaintext posture is said at start, with the way to encrypt: {said}"
     );
 
@@ -1920,7 +1922,7 @@ fn started_by(
 /// reader to three processes that no longer exist.
 ///
 /// Every failure the collection and awareness cadences can have is reported
-/// through `log::warn!`, which this binary writes to standard error and nowhere
+/// through `tracing::warn!`, which this binary writes to standard error and nowhere
 /// else — a peer that did not answer, a subscription nobody granted, a log that
 /// no longer reaches back far enough. A harness that discards that stream can
 /// say a cluster replicated nothing and can never say why.

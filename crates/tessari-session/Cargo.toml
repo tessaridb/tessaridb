@@ -25,7 +25,7 @@ tessari-storage.workspace = true
 tessari-types.workspace = true
 tessari-vault.workspace = true
 rust_decimal.workspace = true
-log.workspace = true
+tracing.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

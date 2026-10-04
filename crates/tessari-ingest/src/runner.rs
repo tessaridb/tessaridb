@@ -168,9 +168,10 @@ impl Runner {
                 let source = match broker.open(&definition) {
                     Ok(source) => source,
                     Err(failure) => {
-                        log::warn!(
-                            "consumer {} could not be opened: {failure}",
-                            definition.name
+                        tracing::warn!(
+                            consumer = %definition.name,
+                            error = %failure,
+                            "a stream consumer could not be opened"
                         );
                         store.running().stopped(&definition.name);
                         break;
@@ -192,9 +193,10 @@ impl Runner {
                 {
                     Ok(thread) => threads.push(thread),
                     Err(failure) => {
-                        log::warn!(
-                            "consumer {} could not be started: {failure}",
-                            definition.name
+                        tracing::warn!(
+                            consumer = %definition.name,
+                            error = %failure,
+                            "a stream consumer could not be started"
                         );
                     }
                 }
@@ -260,7 +262,7 @@ impl Consuming {
             match self.once(source.as_mut()) {
                 Ok(()) => {}
                 Err(failure) => {
-                    log::error!("consumer {} stopped: {failure}", self.definition.name);
+                    tracing::error!(consumer = %self.definition.name, error = %failure, "a stream consumer stopped");
                     // `stop` halts this consumer and leaves the rest alone.
                     self.store
                         .running()
@@ -310,11 +312,12 @@ impl Consuming {
                         // — which is the failure this policy exists to avoid, and
                         // the one whose absence stalls every other consumer in
                         // the group through a rebalance.
-                        log::warn!(
-                            "consumer {} quarantined partition {} offset {}: {why}",
-                            self.definition.name,
-                            message.partition,
-                            message.offset
+                        tracing::warn!(
+                            consumer = %self.definition.name,
+                            partition = message.partition,
+                            offset = message.offset,
+                            reason = %why,
+                            "a stream consumer quarantined a message"
                         );
                         parked.push(quarantine_record(message, &why.to_string()));
                         parked_at.push((message.partition, message.offset));
@@ -332,9 +335,10 @@ impl Consuming {
         // already durable and will be redelivered, which is the direction this
         // design chose.
         if let Err(failure) = source.commit() {
-            log::warn!(
-                "consumer {} wrote its batch but could not commit the offset: {failure}",
-                self.definition.name
+            tracing::warn!(
+                consumer = %self.definition.name,
+                error = %failure,
+                "a stream consumer wrote its batch but could not commit the offset"
             );
         }
 
@@ -429,9 +433,12 @@ impl Consuming {
                     if attempt > RETRIES {
                         return Err(format!("the batch could not be written: {failure}"));
                     }
-                    log::warn!(
-                        "consumer {} retrying a batch ({attempt}/{RETRIES}): {failure}",
-                        self.definition.name
+                    tracing::warn!(
+                        consumer = %self.definition.name,
+                        attempt,
+                        of = RETRIES,
+                        error = %failure,
+                        "a stream consumer is retrying a batch"
                     );
                 }
             }

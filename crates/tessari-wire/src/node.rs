@@ -23,6 +23,7 @@ use crate::carrier::Carrier;
 use crate::conversation;
 use crate::error::Result;
 use crate::{frame, frame_async};
+use tracing::Instrument;
 
 /// Names one connection across every line it produces.
 ///
@@ -245,7 +246,7 @@ impl Node {
                     if let Err(why) = joined
                         && why.is_panic()
                     {
-                        log::warn!("a connection ended in a panic: {why}");
+                        tracing::warn!(error = %why, "a connection ended in a panic");
                     }
                     continue;
                 }
@@ -259,12 +260,12 @@ impl Node {
                     // A reply written in pieces must not wait for the peer's
                     // delayed acknowledgement (Q-762).
                     if let Err(why) = stream.set_nodelay(true) {
-                        log::warn!("a connection could not turn off Nagle's algorithm: {why}");
+                        tracing::warn!(error = %why, "a connection could not turn off Nagle's algorithm");
                     }
                     stream
                 }
                 Err(why) if passes(&why) => {
-                    log::warn!("accepting a connection failed ({why}); resting before the next");
+                    tracing::warn!(error = %why, "accepting a connection failed; resting before the next");
                     tokio::time::sleep(ACCEPT_PAUSE).await;
                     continue;
                 }
@@ -276,56 +277,66 @@ impl Node {
             // under TLS the socket is closed, since a frame before the
             // handshake is bytes the client cannot read.
             let Some(place) = self.door.admit() else {
-                log::warn!(
-                    "connection {id} refused from {}: {} already open",
-                    from_where(&stream),
-                    self.door.limit()
+                tracing::warn!(
+                    connection = id,
+                    from = %from_where(&stream),
+                    open = self.door.limit(),
+                    "connection refused: as many open as this node takes"
                 );
                 if self.secured.is_none() {
                     conversations.spawn(turn_away(stream));
                 }
                 continue;
             };
-            log::info!("connection {id} accepted from {}", from_where(&stream));
-            let (talk, session) = carrier.opening(id);
+            tracing::info!(connection = id, from = %from_where(&stream), "connection accepted");
+            let span = tracing::info_span!("connection", connection = id);
+            let (talk, session) = carrier.opening();
             let busy = self.stopping.busy();
             if let Some(acceptor) = self.secured.clone() {
-                conversations.spawn(async move {
-                    // Under the greeting's deadline, which is what it replaces
-                    // at the door: a client that opens a socket and never
-                    // finishes a handshake holds a place exactly as one that
-                    // never greets would.
-                    let shaken = tokio::time::timeout(
-                        std::time::Duration::from_secs(GREETING_SECONDS),
-                        acceptor.accept(stream),
-                    )
-                    .await;
-                    let secured = match shaken {
-                        Ok(Ok(secured)) => secured,
-                        Ok(Err(why)) => {
-                            log::info!("connection {id} failed its TLS handshake: {why}");
-                            return;
+                conversations.spawn(
+                    async move {
+                        // Under the greeting's deadline, which is what it replaces
+                        // at the door: a client that opens a socket and never
+                        // finishes a handshake holds a place exactly as one that
+                        // never greets would.
+                        let shaken = tokio::time::timeout(
+                            std::time::Duration::from_secs(GREETING_SECONDS),
+                            acceptor.accept(stream),
+                        )
+                        .await;
+                        let secured = match shaken {
+                            Ok(Ok(secured)) => secured,
+                            Ok(Err(why)) => {
+                                tracing::info!(error = %why, "connection failed its TLS handshake");
+                                return;
+                            }
+                            Err(_) => {
+                                tracing::info!(
+                                    "connection did not finish its TLS handshake in time"
+                                );
+                                return;
+                            }
+                        };
+                        match conversation::converse(talk, busy, place, session, secured).await {
+                            Ok(()) => tracing::info!("connection closed"),
+                            Err(why) => tracing::info!(reason = %why, "connection ended"),
                         }
-                        Err(_) => {
-                            log::info!("connection {id} did not finish its TLS handshake in time");
-                            return;
-                        }
-                    };
-                    match conversation::converse(talk, busy, place, session, secured).await {
-                        Ok(()) => log::info!("connection {id} closed"),
-                        Err(why) => log::info!("connection {id} ended: {why}"),
                     }
-                });
+                    .instrument(span),
+                );
                 continue;
             }
-            conversations.spawn(async move {
-                match conversation::converse(talk, busy, place, session, stream).await {
-                    Ok(()) => log::info!("connection {id} closed"),
-                    // Not a warning. A client hanging up mid-frame is the
-                    // ordinary end of a conversation.
-                    Err(why) => log::info!("connection {id} ended: {why}"),
+            conversations.spawn(
+                async move {
+                    match conversation::converse(talk, busy, place, session, stream).await {
+                        Ok(()) => tracing::info!("connection closed"),
+                        // Not a warning. A client hanging up mid-frame is the
+                        // ordinary end of a conversation.
+                        Err(why) => tracing::info!(reason = %why, "connection ended"),
+                    }
                 }
-            });
+                .instrument(span),
+            );
         }
         conversations.detach_all();
         Ok(())

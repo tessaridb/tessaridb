@@ -81,7 +81,7 @@ impl Session<'_> {
                 custody: VaultCustody::Own(moved),
             },
         )?;
-        log::info!("a vault passphrase was changed");
+        tracing::info!("a vault passphrase was changed");
         Ok(Outcome::Done)
     }
 

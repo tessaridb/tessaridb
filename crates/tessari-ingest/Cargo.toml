@@ -20,7 +20,7 @@ kafka = ["dep:rdkafka"]
 tessari-types = { workspace = true }
 tessari-storage = { workspace = true }
 tessari-session = { workspace = true }
-log = { workspace = true }
+tracing.workspace = true
 # The topic runner (ADR-0087): members are tasks on the node's runtime, and each
 # batch crosses to the synchronous store through `spawn_blocking`.
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }

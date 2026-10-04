@@ -56,8 +56,6 @@ pub(crate) const BUSY: &str =
 /// What one conversation shares with the node that accepted it.
 #[derive(Clone)]
 pub(crate) struct Conversation {
-    /// Names this connection across every line it produces.
-    pub(crate) id: u64,
     pub(crate) db: Arc<Db>,
     pub(crate) committed: Arc<Commits>,
     pub(crate) stopping: Arc<Stopping>,
@@ -122,7 +120,7 @@ pub(crate) async fn converse<C: Carried>(
             // `push.rs` for why one connection does one job. Moved to the feed
             // count so a shutdown's drain does not wait for it.
             busy.became_a_feed();
-            log::info!("connection {} became a subscription", talk.id);
+            tracing::info!("connection became a subscription");
             let asked = Follow::decode(&body)?;
             let fed = feed(talk, session, reader, writer, asked).await;
             drop((busy, place));
@@ -134,12 +132,11 @@ pub(crate) async fn converse<C: Carried>(
             // connection it shares a worker with.
             let asked = crate::VaultAsk::decode(&body)?;
             let db = Arc::clone(&talk.db);
-            let id = talk.id;
             let bridged = talk
                 .bridge
                 .call(session, move |held: Detached| {
                     let mut attached = held.attach(db.store());
-                    let answer = respond_vault(id, &mut attached, &asked);
+                    let answer = respond_vault(&mut attached, &asked);
                     (attached.detach(), answer)
                 })
                 .await;
@@ -209,12 +206,11 @@ pub(crate) async fn converse<C: Carried>(
             continue;
         }
         let db = Arc::clone(&talk.db);
-        let id = talk.id;
         let bridged = talk
             .bridge
             .call(session, move |held: Detached| {
                 let mut attached = held.attach(db.store());
-                let answer = respond(id, &db, &mut attached, &request, theirs);
+                let answer = respond(&db, &mut attached, &request, theirs);
                 (attached.detach(), answer)
             })
             .await;
@@ -229,7 +225,7 @@ pub(crate) async fn converse<C: Carried>(
             }
             Bridged::Busy(back) => {
                 session = back;
-                log::warn!("connection {id} refused a statement: every store call slot is taken");
+                tracing::warn!("statement refused: every store call slot is taken");
                 reply(
                     &mut writer,
                     &talk.stopping,
@@ -271,7 +267,6 @@ async fn reply(
 /// Runs on the blocking pool — a password hash, a statement and a forwarded
 /// write all block.
 pub(crate) fn respond(
-    id: u64,
     db: &Db,
     session: &mut tessaridb::Session<'_>,
     request: &Request,
@@ -287,7 +282,7 @@ pub(crate) fn respond(
     {
         // The session's own refusal, travelling as one. A second rule here
         // would be a second place for "who may do this" to be decided.
-        log::warn!("connection {id} refused: {refused}");
+        tracing::warn!(refusal = %refused, "request refused");
         return refusal(refused.to_string());
     }
     // What the caller had selected BEFORE the script ran: a carried request is
@@ -427,7 +422,6 @@ pub fn render_coordinated(
 /// who may unseal, the throttle and the answer are the statement's. A refusal is
 /// the session's own words, which never quote the passphrase.
 pub(crate) fn respond_vault(
-    id: u64,
     session: &mut tessaridb::Session<'_>,
     asked: &crate::VaultAsk,
 ) -> Answer {
@@ -439,7 +433,7 @@ pub(crate) fn respond_vault(
     if let Some((name, password)) = &asked.credentials
         && let Err(refused) = session.sign_in(name, password)
     {
-        log::warn!("connection {id} refused: {refused}");
+        tracing::warn!(refusal = %refused, "request refused");
         return refusal(refused.to_string());
     }
     let act = match &asked.call {

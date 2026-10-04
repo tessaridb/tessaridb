@@ -181,7 +181,7 @@ impl Session<'_> {
                 .map_err(tessari_storage::Error::Vault)
         })?;
         Catalog::new(transaction).set_vault_root(&tessari_storage::VaultRoot(moved));
-        log::info!("the vault passphrase was changed");
+        tracing::info!("the vault passphrase was changed");
         Ok(Outcome::Done)
     }
 
@@ -481,11 +481,11 @@ pub(super) fn guessed<T>(
 ) -> Result<T> {
     let key = passphrase_key(root);
     if !store.attempts().permit(&key) {
-        log::warn!("unseal refused: too many recent wrong passphrases");
+        tracing::warn!("unseal refused: too many recent wrong passphrases");
         return Err(Error::PassphraseThrottled);
     }
     let Some(_verifying) = crate::throttle::verifying() else {
-        log::warn!("unseal refused: already verifying as many as this node will");
+        tracing::warn!("unseal refused: already verifying as many as this node will");
         return Err(Error::PassphraseThrottled);
     };
     match attempt() {
@@ -495,7 +495,7 @@ pub(super) fn guessed<T>(
         }
         Err(refused) => {
             if refused.is_wrong_key() {
-                log::warn!("unseal refused: wrong passphrase");
+                tracing::warn!("unseal refused: wrong passphrase");
                 store.attempts().failed(&key);
             }
             Err(refused.into())

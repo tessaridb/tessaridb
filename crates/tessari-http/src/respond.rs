@@ -278,7 +278,7 @@ pub(crate) fn open_session(db: &Db, presented: &Presented, tokens: &Tokens) -> A
     };
     match tokens.issue(ticket) {
         Ok(bearer) => {
-            log::info!("a session was opened for {}", credentials.name);
+            tracing::info!(user = %credentials.name, "a session was opened");
             Answer::new(
                 200,
                 format!(r#"{{"token":"{bearer}","expires_in":{SESSION_TOKEN_SECONDS}}}"#),
@@ -317,7 +317,7 @@ pub(crate) fn change_password(db: &Db, presented: &Presented, body: &str) -> Ans
             // Every token this user held stopped working the moment the record
             // changed, so a client holding one has to sign in again — and is
             // told so here rather than discovering it on its next request.
-            log::info!("{} changed their own password", credentials.name);
+            tracing::info!(user = %credentials.name, "a user changed their own password");
             Answer::new(200, r#"{"changed":true,"tokens_ended":true}"#.to_owned())
         }
         Err(error) => failure(&error),

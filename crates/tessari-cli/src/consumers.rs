@@ -62,15 +62,12 @@ pub fn start(db: Arc<Db>) -> Running {
     match tessari_ingest::Runner::start(db.store(), broker) {
         Ok(started) => {
             if started.threads() > 0 {
-                eprintln!(
-                    "tessaridb — {} stream consumer(s) running",
-                    started.threads()
-                );
+                tracing::info!(consumers = started.threads(), "stream consumers running");
             }
             Some(started)
         }
         Err(failure) => {
-            eprintln!("tessaridb — the declared consumers could not be started: {failure}");
+            tracing::warn!(error = %failure, "the declared consumers could not be started");
             None
         }
     }
@@ -87,9 +84,9 @@ pub fn start(db: Arc<Db>) -> Running {
         .run("INFO FOR KAFKA CONSUMERS;")
         .is_ok_and(|answered| format!("{answered:?}").contains("name"));
     if declared {
-        eprintln!(
-            "tessaridb — this build carries no broker client, so the declared \
-             consumers are not running (build with `--features kafka`)"
+        tracing::warn!(
+            "this build carries no broker client, so the declared consumers are not running \
+             (build with `--features kafka`)"
         );
     }
     None
@@ -131,7 +128,10 @@ pub fn stop(running: Running) {
     if let Some(mut started) = running {
         let waiting = started.threads();
         if waiting > 0 {
-            eprintln!("tessaridb — waiting for {waiting} stream consumer(s) to finish their batch");
+            tracing::info!(
+                consumers = waiting,
+                "waiting for stream consumers to finish their batch"
+            );
         }
         started.stop();
         return;

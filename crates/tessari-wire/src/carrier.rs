@@ -17,6 +17,7 @@ use tokio::io::DuplexStream;
 use tokio::sync::Semaphore;
 
 use crate::conversation::{self, Conversation};
+use tracing::Instrument;
 
 /// What a node lends another surface so it can hold wire sessions.
 #[derive(Clone)]
@@ -42,7 +43,7 @@ impl Carrier {
     pub fn admit(&self) -> Option<Admission> {
         let place = self.door.admit()?;
         let id = crate::node::next_connection();
-        let (talk, session) = self.opening(id);
+        let (talk, session) = self.opening();
         Some(Admission {
             id,
             talk,
@@ -57,14 +58,13 @@ impl Carrier {
     /// Given the cluster's answer once, at the session, rather than at each
     /// statement: what this node knows about its peers is a fact about the
     /// process and not about the request.
-    pub(crate) fn opening(&self, id: u64) -> (Conversation, Detached) {
+    pub(crate) fn opening(&self) -> (Conversation, Detached) {
         let session = match &self.elsewhere {
             Some(known) => self.db.session().among(Arc::clone(known)),
             None => self.db.session(),
         }
         .detach();
         let talk = Conversation {
-            id,
             db: Arc::clone(&self.db),
             committed: Arc::clone(&self.committed),
             stopping: Arc::clone(&self.stopping),
@@ -91,13 +91,19 @@ impl Admission {
     /// The place and the drain count are released when this returns, which is
     /// when the conversation is over.
     pub async fn converse(self, stream: DuplexStream) {
-        let id = self.id;
-        log::info!("connection {id} accepted over a websocket");
-        match conversation::converse(self.talk, self.busy, self.place, self.session, stream).await {
-            Ok(()) => log::info!("connection {id} closed"),
-            // Not a warning, as over TCP: a client hanging up mid-frame is the
-            // ordinary end of a conversation.
-            Err(why) => log::info!("connection {id} ended: {why}"),
+        let span = tracing::info_span!("connection", connection = self.id);
+        async move {
+            tracing::info!("connection accepted over a websocket");
+            match conversation::converse(self.talk, self.busy, self.place, self.session, stream)
+                .await
+            {
+                Ok(()) => tracing::info!("connection closed"),
+                // Not a warning, as over TCP: a client hanging up mid-frame is the
+                // ordinary end of a conversation.
+                Err(why) => tracing::info!(reason = %why, "connection ended"),
+            }
         }
+        .instrument(span)
+        .await;
     }
 }

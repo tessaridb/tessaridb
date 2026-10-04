@@ -97,11 +97,11 @@ pub(crate) fn host(
             {
                 Ok(Ok(identity)) => identity.id,
                 Ok(Err(why)) => {
-                    log::warn!("the peer door cannot say who this node is: {why}");
+                    tracing::warn!(error = %why, "the peer door cannot say who this node is");
                     return;
                 }
                 Err(why) => {
-                    log::warn!("the peer door cannot say who this node is: {why}");
+                    tracing::warn!(error = %why, "the peer door cannot say who this node is");
                     return;
                 }
             };
@@ -118,11 +118,11 @@ pub(crate) fn host(
                         // ends rather than failing every peer in turn,
                         // and the client surfaces are untouched.
                         Err(why @ tessari_wire::Error::NothingToSay(_)) => {
-                            log::warn!("the peer door cannot say what this node holds: {why}");
+                            tracing::warn!(error = %why, "the peer door cannot say what this node holds");
                         }
                         Err(why) => {
-                            log::error!("the peer door failed ({why}); the node ends here");
-                            std::process::abort();
+                            tracing::error!(error = %why, "the peer door failed; the node ends here");
+                            crate::logging::abort();
                         }
                     }
                 }

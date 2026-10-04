@@ -428,7 +428,7 @@ impl Transaction<'_> {
             loop {
                 attempt = attempt.saturating_add(1);
                 if attempt > MAX_COMMIT_ATTEMPTS {
-                    log::error!("commit gave up after {MAX_COMMIT_ATTEMPTS} attempts");
+                    tracing::error!(attempts = MAX_COMMIT_ATTEMPTS, "commit gave up");
                     return Err(Error::CommitContention {
                         attempts: MAX_COMMIT_ATTEMPTS,
                     });
@@ -448,7 +448,10 @@ impl Transaction<'_> {
                 // map is a new `Arc` and no reason to start again.
                 if self.placement()? != placement {
                     drop(turn);
-                    log::debug!("a shard map moved before commit attempt {attempt}; placing again");
+                    tracing::debug!(
+                        attempt,
+                        "a shard map moved before the commit; placing again"
+                    );
                     continue 'placed;
                 }
                 self.refuse_if_fenced_since(store_line, &placed, &ranges)?;
@@ -620,7 +623,7 @@ impl Transaction<'_> {
                         // At debug: one contended key under load produces this line
                         // per loser per attempt, and a retry that then succeeds is
                         // the design working rather than an event.
-                        log::debug!("commit lost attempt {attempt}, retrying");
+                        tracing::debug!(attempt, "commit lost an attempt; retrying");
                         back_off(attempt);
                         continue;
                     }

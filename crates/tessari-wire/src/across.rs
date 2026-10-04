@@ -101,7 +101,7 @@ impl Participants for Coordinator {
                     return Err(PartRefused::retriable(format!("a kept link: {why}")));
                 }
                 Err(kept::KeptFailed::Unsent(why)) => {
-                    log::debug!("a kept cross-leader link could not take a record: {why}");
+                    tracing::debug!(error = %why, "a kept cross-leader link could not take a record");
                 }
             }
         }

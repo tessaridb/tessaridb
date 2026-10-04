@@ -48,33 +48,36 @@ pub(crate) fn reseed(
     let store = db.store();
     if leads {
         store.upstream_is(Upstream::Stranded);
-        log::warn!(
-            "this node cannot continue {endpoint}'s log — it is below its start or forked from \
-             it — and leads a range of its own, so it is not copied over: restore it from a \
-             snapshot (`tessaridb --restore`) and start it again"
+        tracing::warn!(
+            from = %endpoint,
+            "this node cannot continue that log — it is below its start or forked from it — and \
+             leads a range of its own, so it is not copied over: restore it from a snapshot \
+             (`tessaridb --restore`) and start it again"
         );
         return false;
     }
     store.upstream_is(Upstream::Copying);
-    log::info!(
-        "this node cannot continue {endpoint}'s log — below its start or forked from it; copying \
-         its state"
+    tracing::info!(
+        from = %endpoint,
+        "this node cannot continue that log — below its start or forked from it; copying its state"
     );
     match tessari_wire::copy(endpoint, keys, node, said, store) {
         Ok(copied) => {
             store.replica_copied(copied.records);
-            log::info!(
-                "copied {} record(s) from {endpoint} and removed {}; collecting from there",
-                copied.records,
-                copied.removed
+            tracing::info!(
+                from = %endpoint,
+                records = copied.records,
+                removed = copied.removed,
+                "copied a peer's state; collecting from there"
             );
             true
         }
         Err(why) => {
             store.upstream_is(Upstream::CopyFailed);
-            log::warn!(
-                "copying the state of {endpoint} failed: {why}. This node is behind, not \
-                 damaged, and tries again next round."
+            tracing::warn!(
+                from = %endpoint,
+                error = %why,
+                "copying a peer's state failed; this node is behind, not damaged, and tries again next round"
             );
             false
         }

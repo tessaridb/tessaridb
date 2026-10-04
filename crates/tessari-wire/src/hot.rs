@@ -78,16 +78,12 @@ pub(crate) fn serve(
     loop {
         let answer = match talk.bridge.slot() {
             Some(slot) => {
-                let answer =
-                    conversation::respond(talk.id, &talk.db, &mut attached, &request, theirs);
+                let answer = conversation::respond(&talk.db, &mut attached, &request, theirs);
                 drop(slot);
                 answer
             }
             None => {
-                log::warn!(
-                    "connection {} refused a statement: every store call slot is taken",
-                    talk.id
-                );
+                tracing::warn!("statement refused: every store call slot is taken");
                 Answer {
                     kind: frame::Kind::Refusal,
                     body: BUSY.as_bytes().to_vec(),
@@ -221,7 +217,6 @@ mod tests {
         let (server, _) = listener.accept().expect("the connection");
         client.write_all(then).expect("what the client says next");
         let talk = Conversation {
-            id: 1,
             db: Arc::clone(&db),
             committed: Arc::new(Commits::default()),
             stopping: Stopping::new(),

@@ -148,20 +148,20 @@ impl Watched {
     pub(crate) fn look_and_say(&mut self) {
         match self.look() {
             Looked::Unchanged => {}
-            Looked::Replaced => log::info!(
-                "the {} certificate at {} was renewed; new connections present it",
-                self.surface,
-                self.chain.display()
+            Looked::Replaced => tracing::info!(
+                surface = %self.surface,
+                chain = %self.chain.display(),
+                "a certificate was renewed; new connections present it"
             ),
-            Looked::Refused(why) => log::warn!(
-                "the {} certificate files changed and were not taken ({why}); \
-                 the previous certificate is still presented",
-                self.surface
+            Looked::Refused(why) => tracing::warn!(
+                surface = %self.surface,
+                refusal = %why,
+                "the certificate files changed and were not taken; the previous certificate is still presented"
             ),
-            Looked::Unreadable(why) => log::warn!(
-                "the {} certificate files could not be read ({why}); \
-                 the previous certificate is still presented",
-                self.surface
+            Looked::Unreadable(why) => tracing::warn!(
+                surface = %self.surface,
+                error = %why,
+                "the certificate files could not be read; the previous certificate is still presented"
             ),
         }
     }
@@ -215,18 +215,18 @@ impl Revoking {
             .map_err(|why| why.to_string())?;
         let listed: tessari_wire::Revoked = listed.into_iter().collect();
         if listed != self.keys.refusing() {
-            log::info!(
-                "the peer link now refuses {} revoked certificate(s)",
-                listed.len()
+            tracing::info!(
+                revoked = listed.len(),
+                "the peer link now refuses the revoked certificates"
             );
             self.keys.refuse(listed);
         }
         // And the nodes the cluster removed (ADR-0108 D9), by the same route.
         let removed: tessari_wire::Removed = removed.into_iter().collect();
         if removed != self.keys.refusing_nodes() {
-            log::info!(
-                "the peer link now refuses {} removed node(s)",
-                removed.len()
+            tracing::info!(
+                removed = removed.len(),
+                "the peer link now refuses the removed nodes"
             );
             self.keys.refuse_nodes(removed);
         }
@@ -252,7 +252,7 @@ pub(crate) async fn watch(
                 pair.look_and_say();
             }
             if let Some(Err(why)) = revoking.as_ref().map(Revoking::refresh) {
-                log::warn!("the revocation list could not be read ({why}); the last one stands");
+                tracing::warn!(error = %why, "the revocation list could not be read; the last one stands");
             }
         },
     )

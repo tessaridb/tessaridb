@@ -266,27 +266,28 @@ pub(crate) fn serve(
     let mut client_addresses = Vec::with_capacity(2);
     if let Some(node) = &wire {
         let bound = node.address().map_err(|failure| failure.to_string())?;
-        eprintln!("tessaridb — wire protocol on {bound}");
+        tracing::info!(address = %bound, "serving the wire protocol");
         client_addresses.push(bound);
     }
     if let Some(node) = &http {
         let bound = node.address();
-        eprintln!("tessaridb — http on {bound}");
+        tracing::info!(address = %bound, "serving http");
         client_addresses.push(bound);
     }
     match &clients {
         crate::tls::Clients::Tls { cert, required, .. } => {
-            let required = if *required { ", as required" } else { "" };
-            eprintln!(
-                "tessaridb — clients over TLS only{required}, presenting {}",
-                cert.display()
+            tracing::info!(
+                presenting = %cert.display(),
+                required = *required,
+                "clients over TLS only"
             );
         }
         crate::tls::Clients::Plaintext => {
             let reach = crate::tls::reach(&client_addresses);
-            eprintln!(
-                "tessaridb — clients in the clear, {reach}: --tls-cert and --tls-key would \
-                 encrypt them, and --require-client-tls refuses to start without them"
+            tracing::warn!(
+                reach = %reach,
+                "clients in the clear: --tls-cert and --tls-key would encrypt them, and \
+                 --require-client-tls refuses to start without them"
             );
         }
     }
@@ -300,8 +301,7 @@ pub(crate) fn serve(
             .address()
             .map_err(|failure| failure.to_string())?;
         let seeds = surface.seeds.len();
-        eprintln!("tessaridb — peers on {bound}, {seeds} seed address(es) to reach the cluster");
-        eprintln!("tessaridb — the peer door serves greetings and ballots, and no collection yet");
+        tracing::info!(address = %bound, seeds, "serving peers");
     }
 
     // After both surfaces are bound and before either serves, so a node that
@@ -534,7 +534,7 @@ pub(crate) fn serve(
     // owns it — the stages know about surfaces, not about a store.
     drop(db);
     runtime.shutdown_timeout(runtime::LEAVING);
-    eprintln!("tessaridb — stopped");
+    tracing::info!("stopped");
     Ok(Ended::Fine)
 }
 

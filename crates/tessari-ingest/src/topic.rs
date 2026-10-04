@@ -123,9 +123,9 @@ fn declared(store: &Store) -> Result<Vec<(ConsumerDefinition, Names)>, tessari_s
                 }
             }
             _ => {
-                log::warn!(
-                    "topic consumer {} names a topic or table that is gone, so it is not started",
-                    definition.name
+                tracing::warn!(
+                    consumer = %definition.name,
+                    "a topic consumer names a topic or table that is gone, so it is not started"
                 );
                 continue;
             }
@@ -176,11 +176,11 @@ async fn reconcile(store: &Store, running: &mut HashMap<String, Members>) {
     let declared = match tokio::task::spawn_blocking(move || declared(&reading)).await {
         Ok(Ok(declared)) => declared,
         Ok(Err(failure)) => {
-            log::warn!("the topic consumers could not be read: {failure}");
+            tracing::warn!(error = %failure, "the topic consumers could not be read");
             return;
         }
         Err(failure) => {
-            log::warn!("reading the topic consumers ended abnormally: {failure}");
+            tracing::warn!(error = %failure, "reading the topic consumers ended abnormally");
             return;
         }
     };
@@ -238,9 +238,11 @@ async fn leave(store: &Store, name: &str, members: Members) {
         match tokio::time::timeout(DRAIN, task).await {
             Ok(Ok(())) => {}
             Ok(Err(failure)) => {
-                log::warn!("a member of topic consumer {name} ended abnormally: {failure}");
+                tracing::warn!(consumer = %name, error = %failure, "a member of a topic consumer ended abnormally");
             }
-            Err(_) => log::warn!("a member of topic consumer {name} did not finish its batch"),
+            Err(_) => {
+                tracing::warn!(consumer = %name, "a member of a topic consumer did not finish its batch")
+            }
         }
     }
     store.running().stopped(name);
@@ -339,7 +341,7 @@ async fn member(
 
 /// Record why a member stopped itself and keep it readable (ADR-0087 §3).
 fn halt(store: &Store, name: &str, reason: String) {
-    log::error!("topic consumer {name} halted: {reason}");
+    tracing::error!(consumer = %name, reason = %reason, "a topic consumer halted");
     store.running().advanced(name, |progress| {
         progress.last_error = Some(reason);
         progress.halted = true;

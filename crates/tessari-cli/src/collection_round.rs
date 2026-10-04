@@ -72,7 +72,7 @@ pub(crate) async fn collect_from_upstream(
     let woken = std::sync::Arc::clone(&wakes);
     tessari_wire::every_paced(&stop, &woken.collection, move |_| {
         let Ok(mut streams) = streams.lock() else {
-            log::warn!("the stream registry is poisoned; collecting by rounds only");
+            tracing::warn!("the stream registry is poisoned; collecting by rounds only");
             return collection;
         };
         let (handle, published_handle) = (
@@ -84,7 +84,7 @@ pub(crate) async fn collect_from_upstream(
         let roles = match store.effective_roles() {
             Ok(roles) => roles,
             Err(why) => {
-                log::warn!("this node cannot say what it is for: {why}");
+                tracing::warn!(error = %why, "this node cannot say what it is for");
                 return collection;
             }
         };
@@ -106,14 +106,14 @@ pub(crate) async fn collect_from_upstream(
                 declared
             }
             Err(why) => {
-                log::warn!("this node cannot say who its peers are: {why}");
+                tracing::warn!(error = %why, "this node cannot say who its peers are");
                 return collection;
             }
         };
         let me = match store.node_identity() {
             Ok(identity) => identity.id,
             Err(why) => {
-                log::warn!("this node cannot say who it is: {why}");
+                tracing::warn!(error = %why, "this node cannot say who it is");
                 return collection;
             }
         };
@@ -159,14 +159,14 @@ pub(crate) async fn collect_from_upstream(
         let address = match endpoint.parse() {
             Ok(address) => address,
             Err(why) => {
-                log::warn!("the writable peer's endpoint {endpoint} is not an address: {why}");
+                tracing::warn!(endpoint = %endpoint, error = %why, "the writable peer's endpoint is not an address");
                 return collection;
             }
         };
         let said = match greeting(db) {
             Ok(said) => said,
             Err(why) => {
-                log::warn!("this node cannot say what it holds: {why}");
+                tracing::warn!(error = %why, "this node cannot say what it holds");
                 return collection;
             }
         };
@@ -182,7 +182,7 @@ pub(crate) async fn collect_from_upstream(
         let logs = match tessari_wire::logs_to_collect(store) {
             Ok(logs) => on_the_store_line(logs, &declared),
             Err(why) => {
-                log::warn!("this node cannot say which logs it should hold: {why}");
+                tracing::warn!(error = %why, "this node cannot say which logs it should hold");
                 return collection;
             }
         };
@@ -214,14 +214,14 @@ pub(crate) async fn collect_from_upstream(
             let log = match store.followed_log(home, tessari_storage::Writer::new(node)) {
                 Ok(log) => log,
                 Err(why) => {
-                    log::warn!("this node cannot say which log of {home:?} it follows: {why}");
+                    tracing::warn!(range = ?home, error = %why, "this node cannot say which log of a range it follows");
                     continue;
                 }
             };
             let seed = match store.committed_tail(log) {
                 Ok(tail) => tessari_types::Sequence::new(tail.get().saturating_add(1)),
                 Err(why) => {
-                    log::warn!("this node cannot say how far {home:?} reaches: {why}");
+                    tracing::warn!(range = ?home, error = %why, "this node cannot say how far a range reaches");
                     continue;
                 }
             };
@@ -241,16 +241,20 @@ pub(crate) async fn collect_from_upstream(
                 // in the same place, and an operator reading only the
                 // cursor cannot tell a cluster that has stopped
                 // replicating from one that is level.
-                Err(why) => log::warn!(
-                    "collecting {home:?} from {endpoint} was refused: {why}. \
-                         This node's copy of that log is not advancing."
+                Err(why) => tracing::warn!(
+                    range = ?home,
+                    from = %endpoint,
+                    refusal = %why,
+                    "collecting was refused; this node's copy of that log is not advancing"
                 ),
-                Ok(reached) if before == Some(reached) => log::debug!(
-                    "nothing collected for {home:?} from {endpoint}; still at {}",
-                    reached.get()
+                Ok(reached) if before == Some(reached) => tracing::debug!(
+                    range = ?home,
+                    from = %endpoint,
+                    at = reached.get(),
+                    "nothing collected"
                 ),
                 Ok(reached) => {
-                    log::info!("collected {home:?} to {} from {endpoint}", reached.get());
+                    tracing::info!(range = ?home, to = reached.get(), from = %endpoint, "collected");
                 }
             }
         }
@@ -303,7 +307,7 @@ pub(crate) async fn collect_from_upstream(
         }
     });
     if joining.await.is_err() {
-        log::warn!("joining the collection streams panicked");
+        tracing::warn!("joining the collection streams panicked");
     }
 }
 
@@ -378,13 +382,17 @@ fn catch_up_from(
     for ((home, from), answer) in asks.iter().zip(collector.round(store, &asks)) {
         match answer {
             Ok(reached) if reached.get() >= from.get() => {
-                log::info!(
-                    "caught {home:?} up to {} from {at}, which holds it",
-                    reached.get()
+                tracing::info!(
+                    range = ?home,
+                    to = reached.get(),
+                    from = %at,
+                    "caught up from the node that holds it"
                 );
             }
             Ok(_) => {}
-            Err(why) => log::debug!("catching {home:?} up from {at} was refused: {why}"),
+            Err(why) => {
+                tracing::debug!(range = ?home, from = %at, refusal = %why, "catching up was refused")
+            }
         }
     }
 }
@@ -469,14 +477,14 @@ pub(crate) fn collect_placed_ranges(
     let logs = match tessari_wire::logs_to_collect(store) {
         Ok(logs) => logs,
         Err(why) => {
-            log::warn!("this node cannot say which logs it should hold: {why}");
+            tracing::warn!(error = %why, "this node cannot say which logs it should hold");
             return false;
         }
     };
     let said = match greeting(db) {
         Ok(said) => said,
         Err(why) => {
-            log::warn!("this node cannot say what it holds: {why}");
+            tracing::warn!(error = %why, "this node cannot say what it holds");
             return false;
         }
     };
@@ -488,8 +496,10 @@ pub(crate) fn collect_placed_ranges(
             continue;
         }
         let Ok(address) = endpoint.parse() else {
-            log::warn!(
-                "the leader of {range:?} has an endpoint that is not an address: {endpoint}"
+            tracing::warn!(
+                range = ?range,
+                endpoint = %endpoint,
+                "a range's leader has an endpoint that is not an address"
             );
             continue;
         };
@@ -512,14 +522,14 @@ pub(crate) fn collect_placed_ranges(
             let log = match store.followed_log(home, tessari_storage::Writer::new(node)) {
                 Ok(log) => log,
                 Err(why) => {
-                    log::warn!("this node cannot say which log of {home:?} it follows: {why}");
+                    tracing::warn!(range = ?home, error = %why, "this node cannot say which log of a range it follows");
                     continue;
                 }
             };
             let seed = match store.committed_tail(log) {
                 Ok(tail) => tessari_types::Sequence::new(tail.get().saturating_add(1)),
                 Err(why) => {
-                    log::warn!("this node cannot say how far {home:?} reaches: {why}");
+                    tracing::warn!(range = ?home, error = %why, "this node cannot say how far a range reaches");
                     continue;
                 }
             };
@@ -530,8 +540,11 @@ pub(crate) fn collect_placed_ranges(
         let below = repaired_by_a_copy(&answers);
         for ((home, at), answer) in asks.into_iter().zip(answers) {
             if let Err(why) = collecting.once(home, at, |_| answer) {
-                log::warn!(
-                    "collecting {home:?} from {endpoint}, its range's leader, was refused: {why}"
+                tracing::warn!(
+                    range = ?home,
+                    from = %endpoint,
+                    refusal = %why,
+                    "collecting from the range's leader was refused"
                 );
             }
         }

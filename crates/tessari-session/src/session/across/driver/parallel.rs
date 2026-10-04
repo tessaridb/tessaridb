@@ -134,8 +134,9 @@ impl Session<'_> {
                 // abort is the outcome whether or not this decision is
                 // confirmed, and its intents can go.
                 if let Err(why) = self.ask_one(carrier, first.leader, user, &aborted) {
-                    log::info!(
-                        "a barred cross-leader transaction's abort was not confirmed: {why}"
+                    tracing::info!(
+                        error = %why,
+                        "a barred cross-leader transaction's abort was not confirmed"
                     );
                 }
                 behind(store, carrying, user, aborting(parts, id));
@@ -226,9 +227,9 @@ fn behind(
                                 .map_err(|why| why.reason),
                         };
                         if let Err(why) = landed {
-                            log::warn!(
-                                "a cross-leader record behind the answer did not land and is \
-                                 left to its record: {why}"
+                            tracing::warn!(
+                                error = %why,
+                                "a cross-leader record behind the answer did not land and is left to its record"
                             );
                         }
                     });
@@ -236,7 +237,7 @@ fn behind(
             });
         });
     if let Err(why) = spawned {
-        log::warn!("cross-leader records behind the answer left to their record: {why}");
+        tracing::warn!(error = %why, "cross-leader records behind the answer left to their record");
     }
 }
 

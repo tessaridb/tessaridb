@@ -71,7 +71,12 @@ impl Bridge {
             self.refused.fetch_add(1, Ordering::Relaxed);
             return Bridged::Busy(state);
         };
+        // The blocking pool runs the work on a thread of its own, which is in no
+        // span; the caller's — the connection, the request — goes with it, so
+        // what the work reports says whose work it was.
+        let span = tracing::Span::current();
         let ran = tokio::task::spawn_blocking(move || {
+            let _inside = span.enter();
             let answer = work(state);
             drop(slot);
             answer

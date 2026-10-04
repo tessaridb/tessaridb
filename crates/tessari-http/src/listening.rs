@@ -31,7 +31,7 @@ impl Accept for TcpListener {
         // A response written in pieces must not wait for the client's delayed
         // acknowledgement (Q-762).
         if let Err(why) = stream.set_nodelay(true) {
-            log::warn!("an HTTP connection could not turn off Nagle's algorithm: {why}");
+            tracing::warn!(error = %why, "an HTTP connection could not turn off Nagle's algorithm");
         }
         Ok((stream, from))
     }
@@ -86,13 +86,14 @@ impl<A: Accept> axum::serve::Listener for Listening<A> {
             match self.accepting.accept().await {
                 Ok(accepted) => return accepted,
                 Err(why) if tessari_serve::passes(&why) => {
-                    log::warn!(
-                        "accepting an HTTP connection failed ({why}); resting before the next"
+                    tracing::warn!(
+                        error = %why,
+                        "accepting an HTTP connection failed; resting before the next"
                     );
                     tokio::time::sleep(tessari_serve::ACCEPT_PAUSE).await;
                 }
                 Err(why) => {
-                    log::error!("the HTTP listener failed ({why})");
+                    tracing::error!(error = %why, "the HTTP listener failed");
                     if let Some(failed) = self.failed.take() {
                         // A caller that stopped listening for the failure has
                         // nothing to be told.

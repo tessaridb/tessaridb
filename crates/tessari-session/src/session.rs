@@ -508,7 +508,7 @@ impl<'a> Session<'a> {
             .and_then(|budget| budget.permit(name))
             .unwrap_or_else(|| self.store.attempts().permit(name));
         if !permitted {
-            log::warn!("sign-in for {name} refused: too many recent failures");
+            tracing::warn!(user = %name, "sign-in refused: too many recent failures");
             return Err(Error::SignInThrottled);
         }
         let mut transaction = self.store.begin()?;
@@ -526,7 +526,7 @@ impl<'a> Session<'a> {
             // The two limits are one answer to the caller and two lines here,
             // because an operator tuning them needs to know which was reached
             // and an attacker must not.
-            log::warn!("sign-in for {name} refused: already verifying as many as this node will");
+            tracing::warn!(user = %name, "sign-in refused: already verifying as many as this node will");
             return Err(Error::SignInThrottled);
         };
 
@@ -537,7 +537,7 @@ impl<'a> Session<'a> {
             // The name is reported and the reason is not, for the same reason
             // the caller is told neither: a log an operator reads is also a log
             // an attacker reads once they are inside.
-            log::warn!("sign-in refused for {name}");
+            tracing::warn!(user = %name, "sign-in refused");
             // Counted against the name that was tried, not against the user that
             // was not found. Counting only known names would let an attacker
             // enumerate the catalog by watching which names start to wait.
@@ -545,11 +545,11 @@ impl<'a> Session<'a> {
             return Err(Error::SignInRefused);
         };
         if !identity::verifies(password, &user.secret) {
-            log::warn!("sign-in refused for {name}");
+            tracing::warn!(user = %name, "sign-in refused");
             self.missed(name);
             return Err(Error::SignInRefused);
         }
-        log::info!("signed in as {name}");
+        tracing::info!(user = %name, "signed in");
         self.store.attempts().succeeded(name);
         if let Some(budget) = &self.budget {
             budget.succeeded(name);
@@ -739,7 +739,7 @@ impl<'a> Session<'a> {
             return Err(Error::SignInThrottled);
         };
         if !identity::verifies(current, &user.secret) {
-            log::warn!("a password change was refused for {}", user.name);
+            tracing::warn!(user = %user.name, "a password change was refused");
             return Err(Error::CurrentPasswordRefused);
         }
 
@@ -747,7 +747,7 @@ impl<'a> Session<'a> {
         let mut transaction = self.store.begin()?;
         Catalog::new(&mut transaction).update_user(&user);
         transaction.commit()?;
-        log::info!("{} changed their own password", user.name);
+        tracing::info!(user = %user.name, "a user changed their own password");
         // The session keeps running as the same user, with the record it now
         // has: leaving the old copy here would make the next `ticket()` cut one
         // against a record that no longer exists.

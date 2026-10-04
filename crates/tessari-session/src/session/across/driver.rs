@@ -193,9 +193,10 @@ impl Session<'_> {
             };
             // Said here because the caller may only ever hear that the
             // decision is in doubt, and this is why it was an abort.
-            log::info!(
-                "a cross-leader prepare for {:?} was refused: {refusal}",
-                part.home
+            tracing::info!(
+                range = ?part.home,
+                refusal = %refusal,
+                "a cross-leader prepare was refused"
             );
             refused.get_or_insert(refusal);
         }
@@ -355,10 +356,10 @@ impl Session<'_> {
             match part.leader {
                 None => {
                     if let Err(why) = self.answer_across(&asked) {
-                        log::warn!(
-                            "a cross-leader resolution for {:?} did not land and is left to its \
-                             record: {why}",
-                            part.home
+                        tracing::warn!(
+                            range = ?part.home,
+                            error = %why,
+                            "a cross-leader resolution did not land and is left to its record"
                         );
                     }
                 }
@@ -378,10 +379,10 @@ impl Session<'_> {
                         let (carrier, user) = (&carrier, user.as_ref());
                         scope.spawn(move || {
                             if let Err(why) = carrier.ask(*node, user, asked) {
-                                log::warn!(
-                                    "a cross-leader resolution for {home:?} did not land and is \
-                                     left to its record: {}",
-                                    why.reason
+                                tracing::warn!(
+                                    range = ?home,
+                                    error = %why.reason,
+                                    "a cross-leader resolution did not land and is left to its record"
                                 );
                             }
                         });
@@ -391,7 +392,7 @@ impl Session<'_> {
         // No thread to be had: the resolutions are the record's to finish,
         // which the housekeeping of every participant does (D7).
         if let Err(why) = behind {
-            log::warn!("cross-leader resolutions left to their records: {why}");
+            tracing::warn!(error = %why, "cross-leader resolutions left to their records");
         }
     }
 }

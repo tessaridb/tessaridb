@@ -43,9 +43,10 @@ pub(super) async fn handle(
     // the resource. A refused request is answered — 503 with a `Retry-After`,
     // which is what a load balancer acts on.
     let Some(place) = node.door.admit() else {
-        log::warn!(
-            "request {id} refused: {} already in flight",
-            node.door.limit()
+        tracing::warn!(
+            request = id,
+            in_flight = node.door.limit(),
+            "request refused: as many already in flight as this node takes"
         );
         node.stopping.answered(true);
         return refused_at_the_door();
@@ -55,7 +56,7 @@ pub(super) async fn handle(
         .uri
         .path_and_query()
         .map_or_else(|| parts.uri.path().to_owned(), ToString::to_string);
-    log::info!("request {id} {} {url} from {from}", parts.method);
+    tracing::info!(request = id, method = %parts.method, url = %url, from = %from, "request received");
     // Taken before the shared reply path because an upgrade consumes the
     // request: the socket outlives this function. Counted inside, for the same
     // reason every other answer is counted once.
@@ -98,7 +99,7 @@ pub(super) async fn handle(
         // A panic in one request takes that request down and nothing else: the
         // listener goes on answering everybody after it.
         Bridged::Panicked => {
-            log::error!("request {id} panicked");
+            tracing::error!(request = id, "request panicked");
             node.stopping.answered(true);
             to_response(Answer::new(
                 500,
@@ -305,11 +306,11 @@ pub(super) fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
     // 404 is traffic and a 500 is an event, and an operator filtering by level
     // should not have to know which routes produce which.
     if reply.status >= 500 {
-        log::error!("request {id} answered {}", reply.status);
+        tracing::error!(request = id, status = reply.status, "request answered");
     } else if reply.status >= 400 {
-        log::warn!("request {id} answered {}", reply.status);
+        tracing::warn!(request = id, status = reply.status, "request answered");
     } else {
-        log::info!("request {id} answered {}", reply.status);
+        tracing::info!(request = id, status = reply.status, "request answered");
     }
 
     reply

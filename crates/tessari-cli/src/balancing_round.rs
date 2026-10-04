@@ -27,35 +27,35 @@ pub(crate) async fn balance(db: std::sync::Arc<Db>, stop: tokio_util::sync::Canc
             match db.balance_shards(&mut samples) {
                 Ok(balanced) => {
                     if balanced.split > 0 || balanced.merged > 0 {
-                        log::info!(
-                            "balanced table shards: {} split, {} pairs merged",
-                            balanced.split,
-                            balanced.merged
+                        tracing::info!(
+                            split = balanced.split,
+                            merged = balanced.merged,
+                            "balanced table shards"
                         );
                     }
                     if let Some(why) = balanced.last_refusal {
-                        log::warn!("a table's shards were not balanced this pass: {why}");
+                        tracing::warn!(error = %why, "a table's shards were not balanced this pass");
                     }
                 }
-                Err(why) => log::warn!("this node cannot balance table shards: {why}"),
+                Err(why) => tracing::warn!(error = %why, "this node cannot balance table shards"),
             }
             match db.hand_back_ranges() {
                 Ok(folded) => {
                     for row in folded {
-                        log::info!("handed back to the store line: the placement of {row}");
+                        tracing::info!(placement = %row, "a range was handed back to the store line");
                     }
                 }
-                Err(why) => log::warn!("this node cannot hand ranges back: {why}"),
+                Err(why) => tracing::warn!(error = %why, "this node cannot hand ranges back"),
             }
             match db.balance_leaderships(&mut moves) {
-                Ok(Some(moved)) => log::info!(
-                    "balanced leaderships: moved the placement of {:?} from {} to {}",
-                    moved.range,
-                    moved.from,
-                    moved.to
+                Ok(Some(moved)) => tracing::info!(
+                    range = ?moved.range,
+                    from = %moved.from,
+                    to = %moved.to,
+                    "balanced leaderships: a placement moved"
                 ),
                 Ok(None) => {}
-                Err(why) => log::warn!("this node cannot balance leaderships: {why}"),
+                Err(why) => tracing::warn!(error = %why, "this node cannot balance leaderships"),
             }
         },
     )

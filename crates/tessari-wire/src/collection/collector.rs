@@ -134,7 +134,7 @@ impl Collector<'_> {
                     tessari_storage::Writer::new(self.peer.0),
                 );
                 if let Err(why) = into.adopt_into_line(copy) {
-                    log::warn!("this node's copy of its leader's log could not be adopted: {why}");
+                    tracing::warn!(error = %why, "this node's copy of its leader's log could not be adopted");
                 }
             }
         }

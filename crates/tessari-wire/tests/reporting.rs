@@ -22,21 +22,23 @@ fn captured() -> Arc<Mutex<Vec<String>>> {
     Arc::clone(LINES.get_or_init(|| Arc::new(Mutex::new(Vec::new()))))
 }
 
+/// A writer that keeps each formatted event as one line of the capture.
+///
+/// The formatter writes a whole event in one call, so one call is one line.
 struct Capture;
 
-impl log::Log for Capture {
-    fn enabled(&self, _: &log::Metadata<'_>) -> bool {
-        true
-    }
-
-    fn log(&self, record: &log::Record<'_>) {
+impl std::io::Write for Capture {
+    fn write(&mut self, written: &[u8]) -> std::io::Result<usize> {
         captured()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(format!("{} {}", record.level(), record.args()));
+            .push(String::from_utf8_lossy(written).trim().to_owned());
+        Ok(written.len())
     }
 
-    fn flush(&self) {}
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Nothing here runs beside anything else here.
@@ -55,8 +57,12 @@ static ALONE: Mutex<()> = Mutex::new(());
 fn listening() -> std::sync::MutexGuard<'static, ()> {
     static INSTALLED: OnceLock<()> = OnceLock::new();
     INSTALLED.get_or_init(|| {
-        log::set_boxed_logger(Box::new(Capture)).unwrap();
-        log::set_max_level(log::LevelFilter::Trace);
+        tracing_subscriber::fmt()
+            .with_max_level(tracing_subscriber::filter::LevelFilter::TRACE)
+            .with_ansi(false)
+            .without_time()
+            .with_writer(|| Capture)
+            .init();
     });
     // A test that panicked while holding this poisoned it; the floor is still
     // free and the next test's assertions are still its own.
@@ -100,10 +106,12 @@ fn serving(db: Db) -> (Arc<Node>, String) {
     (node, address)
 }
 
-/// The connection number in a line that names one, if it does.
+/// The connection number in a line that names one, if it does — as the
+/// `connection=` field of the accept line, or of the span every later line of
+/// that connection is reported inside.
 fn connection_in(line: &str) -> Option<u64> {
-    let rest = line.split_once("connection ")?.1;
-    let number = rest.split_whitespace().next()?;
+    let rest = line.split_once("connection=")?.1;
+    let number: String = rest.chars().take_while(char::is_ascii_digit).collect();
     number.parse().ok()
 }
 
@@ -127,7 +135,7 @@ fn one_conversation_is_reported_from_accept_to_close_under_one_name() {
     // exactly the mistake the floor was taken to avoid.
     let id = lines()
         .iter()
-        .find_map(|line| connection_in(line).filter(|_| line.contains("accepted from")))
+        .find_map(|line| connection_in(line).filter(|_| line.contains("connection accepted")))
         .expect("the node should report the connection arriving");
     assert!(
         until(|| lines()
@@ -143,7 +151,7 @@ fn one_conversation_is_reported_from_accept_to_close_under_one_name() {
         .collect();
 
     assert!(
-        mine.iter().any(|line| line.contains("accepted from")),
+        mine.iter().any(|line| line.contains("connection accepted")),
         "no accept line: {mine:?}"
     );
     assert!(
@@ -169,7 +177,9 @@ fn a_refused_sign_in_reports_the_name_and_never_the_password() {
 
     let held = lines().join("\n");
     assert!(
-        held.contains("sign-in refused for ada"),
+        lines()
+            .iter()
+            .any(|line| line.contains("sign-in refused") && line.contains("user=ada")),
         "the name is what makes a refusal followable: {held}"
     );
     assert!(

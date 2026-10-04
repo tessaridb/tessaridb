@@ -160,7 +160,7 @@ impl Peers {
                         }
                         // A connection that panics takes its own task down
                         // and nothing else.
-                        Err(why) => log::warn!("a peer connection ended in a panic: {why}"),
+                        Err(why) => tracing::warn!(error = %why, "a peer connection ended in a panic"),
                     }
                     continue;
                 }
@@ -172,12 +172,12 @@ impl Peers {
                     // delayed acknowledgement: the replication stream rides
                     // this socket, and on Linux that wait is 40 ms a record.
                     if let Err(why) = socket.set_nodelay(true) {
-                        log::warn!("a peer connection could not turn off Nagle's algorithm: {why}");
+                        tracing::warn!(error = %why, "a peer connection could not turn off Nagle's algorithm");
                     }
                     socket
                 }
                 Err(why) if passes(&why) => {
-                    log::warn!("accepting a peer failed ({why}); resting before the next");
+                    tracing::warn!(error = %why, "accepting a peer failed; resting before the next");
                     tokio::time::sleep(ACCEPT_PAUSE).await;
                     continue;
                 }
@@ -185,8 +185,9 @@ impl Peers {
             };
             // Before the task, because the connection is what is bounded.
             let Ok(place) = Arc::clone(&places).try_acquire_owned() else {
-                log::warn!(
-                    "a peer connection was closed unanswered: {PEER_CONNECTIONS} already open"
+                tracing::warn!(
+                    open = PEER_CONNECTIONS,
+                    "a peer connection was closed unanswered: as many open as this node takes"
                 );
                 continue;
             };
@@ -215,7 +216,7 @@ impl Peers {
             })
             .await;
         if drained.is_err() {
-            log::warn!("the peer door stopped with connections still open; they are cut");
+            tracing::warn!("the peer door stopped with connections still open; they are cut");
             connections.abort_all();
         }
         outcome
@@ -250,7 +251,7 @@ impl<H: Holding> Connection<H> {
                 if let Bridged::Busy(()) | Bridged::Panicked =
                     self.bridge.call((), move |()| holding.met(&met)).await
                 {
-                    log::warn!("a peer was served but could not be recorded");
+                    tracing::warn!("a peer was served but could not be recorded");
                 }
                 Ended::Served
             }
@@ -258,7 +259,7 @@ impl<H: Holding> Connection<H> {
             // Info and not warn: a peer hanging up and a credential this
             // cluster does not issue are ordinary events on a door.
             Err(why) => {
-                log::info!("a peer connection ended: {why}");
+                tracing::info!(reason = %why, "a peer connection ended");
                 Ended::Served
             }
         }
@@ -312,7 +313,7 @@ impl<H: Holding> Connection<H> {
                 if let Bridged::Busy(()) | Bridged::Panicked =
                     self.bridge.call((), move |()| holding.met(&met)).await
                 {
-                    log::warn!("a peer opened a stream but could not be recorded");
+                    tracing::warn!("a peer opened a stream but could not be recorded");
                 }
                 self.stream(&mut link, said.node, body, shown.as_ref())
                     .await?;
@@ -386,9 +387,10 @@ impl<H: Holding> Connection<H> {
                     .copied();
                 let (tag, reply) = match believed {
                     Err(why) => {
-                        log::warn!(
-                            "a request carried from {} was refused: {why}",
-                            tessari_types::uuid_to_text(&said.node)
+                        tracing::warn!(
+                            peer = %tessari_types::uuid_to_text(&said.node),
+                            refusal = %why,
+                            "a carried request was refused"
                         );
                         (
                             PeerFrame::NotCoordinated.tag(),
@@ -396,15 +398,15 @@ impl<H: Holding> Connection<H> {
                         )
                     }
                     Ok(assertion) => {
-                        log::info!(
-                            "a request carried from {} acts for {} (nonce {})",
-                            tessari_types::uuid_to_text(&said.node),
-                            match assertion.principal {
+                        tracing::info!(
+                            peer = %tessari_types::uuid_to_text(&said.node),
+                            acts_for = %match assertion.principal {
                                 crate::assertion::Principal::Anonymous => "nobody".to_owned(),
                                 crate::assertion::Principal::User { id, .. } =>
                                     format!("user {id}"),
                             },
-                            hex(&assertion.nonce)
+                            nonce = %hex(&assertion.nonce),
+                            "a carried request was accepted"
                         );
                         let holding = Arc::clone(&self.holding);
                         let from = said.node;
@@ -460,9 +462,10 @@ impl<H: Holding> Connection<H> {
             .copied();
         let (tag, reply) = match believed {
             Err(why) => {
-                log::warn!(
-                    "a cross-leader record carried from {} was refused: {why}",
-                    tessari_types::uuid_to_text(&said.node)
+                tracing::warn!(
+                    peer = %tessari_types::uuid_to_text(&said.node),
+                    refusal = %why,
+                    "a carried cross-leader record was refused"
                 );
                 // This node will not act for the caller as asserted,
                 // and asking again changes nothing.
@@ -522,10 +525,9 @@ impl<H: Holding> Connection<H> {
                 Ok(Err(why)) => return Err(why),
             };
             if !self.keys.still_admits(shown) {
-                log::warn!(
-                    "a kept cross-leader link from {} ended: its certificate is no longer \
-                     admitted here",
-                    tessari_types::uuid_to_text(&said.node)
+                tracing::warn!(
+                    peer = %tessari_types::uuid_to_text(&said.node),
+                    "a kept cross-leader link ended: its certificate is no longer admitted here"
                 );
                 return Ok(());
             }
@@ -564,7 +566,7 @@ impl<H: Holding> Connection<H> {
             let asked = StreamAsk::decode(&body)?;
             let round = loop {
                 if !admitted() {
-                    log::warn!(
+                    tracing::warn!(
                         "a held stream ended: the peer's certificate is no longer admitted here"
                     );
                     return Ok(());
@@ -619,9 +621,8 @@ impl<H: Holding> Connection<H> {
                         }
                         () = tokio::time::sleep(heartbeat) => {
                             if !admitted() {
-                                log::warn!(
-                                    "a held stream ended: the peer's certificate is no longer \
-                                     admitted here"
+                                tracing::warn!(
+                                    "a held stream ended: the peer's certificate is no longer admitted here"
                                 );
                                 return Ok(());
                             }
