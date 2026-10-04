@@ -150,12 +150,50 @@ them.
 | `0x0d` | `object` | `<count:u32>` then `<name-len:u32><name>` and a value, in name order |
 | `0x0e` | `range` | two bounds, each `<kind:1>` and, unless open, a value |
 | `0x0f` | `set` | `<count:u32>` then values |
+| `0x10` | `geometry` | the shape byte (§5.2), then its positions as `<longitude:f64><latitude:f64>` pairs, counted per part |
+| `0x11` | `regex` | `<len:u32>` then the pattern's UTF-8 source |
 
 An unknown tag is **refused**, and refused as `incompatible` rather than
 `corruption`: the bytes are well formed and a newer build would read them, so the
 operator action is to deploy a different binary, not to repair data. Inferring a
 type from what follows the tag would read a newer format as a plausible wrong
 value, and nothing downstream could tell.
+
+### 5.1 Number kinds
+
+The byte after a `number` tag says which number follows. Permanent, like the tags.
+
+| Kind | Number | Payload |
+|---|---|---|
+| `0x01` | `integer` | `i64` |
+| `0x02` | `float` | the `f64` bits as a `u64` |
+| `0x03` | `decimal` | `<mantissa:i128><scale:u32>` |
+
+### 5.2 Geometry shapes
+
+The byte after a `geometry` tag says which shape follows; a position is
+`<longitude:f64><latitude:f64>` as big-endian bits, and every list of positions,
+rings, parts or members is preceded by its `<count:u32>`.
+
+| Shape | Geometry |
+|---|---|
+| `0x01` | `Point` |
+| `0x02` | `LineString` |
+| `0x03` | `Polygon` |
+| `0x04` | `MultiPoint` |
+| `0x05` | `MultiLineString` |
+| `0x06` | `MultiPolygon` |
+| `0x07` | `GeometryCollection` |
+
+### 5.3 Range bounds
+
+Each bound of a `range` begins with its kind; an `unbounded` one carries no value.
+
+| Kind | Bound |
+|---|---|
+| `0x01` | `unbounded` |
+| `0x02` | `included` |
+| `0x03` | `excluded` |
 
 ### A decimal is stored in our terms
 

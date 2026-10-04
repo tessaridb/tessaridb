@@ -21,6 +21,14 @@ const TEXT: u8 = 0x02;
 const UUID: u8 = 0x03;
 const BYTES: u8 = 0x04;
 
+/// Every discriminant and the variant it names, for the format surface.
+pub(crate) const SURFACE: &[(u8, &str)] = &[
+    (INT, "Int"),
+    (TEXT, "Text"),
+    (UUID, "Uuid"),
+    (BYTES, "Bytes"),
+];
+
 /// Append a record id to a key under construction.
 pub(crate) fn put(writer: &mut KeyWriter, id: &RecordId) {
     match id {

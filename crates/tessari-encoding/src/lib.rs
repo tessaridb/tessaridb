@@ -43,6 +43,7 @@ mod order;
 mod payload;
 mod record_id;
 mod spatial_keys;
+mod surface;
 mod topic_key;
 mod transaction_key;
 mod value;
@@ -71,6 +72,7 @@ pub use order::{KeyReader, KeyWriter};
 pub use payload::{decode as decode_payload, encode as encode_payload};
 pub use record_id::{decode_record_id, encode_record_id};
 pub use spatial_keys::{SpatialExtent, SpatialIndexKey};
+pub use surface::{Family, FormatUnit, units as format_surface};
 pub use topic_key::{TopicBytesKey, TopicEntryKey, TopicHeadKey, TopicOffsetKey};
 pub use transaction_key::{
     AcrossBarredKey, AcrossPartKey, AcrossUnsettledKey, IntentOfKey, ResolvedOfKey,

@@ -60,6 +60,27 @@ const TAG_SET: u8 = 0x0f;
 const TAG_GEOMETRY: u8 = 0x10;
 const TAG_REGEX: u8 = 0x11;
 
+/// Every index value tag and the type it names, for the format surface.
+pub(crate) const SURFACE: &[(u8, &str)] = &[
+    (TAG_NONE, "none"),
+    (TAG_NULL, "null"),
+    (TAG_BOOL, "bool"),
+    (TAG_NUMBER, "number"),
+    (TAG_STRING, "string"),
+    (TAG_BYTES, "bytes"),
+    (TAG_DURATION, "duration"),
+    (TAG_DATETIME, "datetime"),
+    (TAG_UUID, "uuid"),
+    (TAG_TABLE, "table"),
+    (TAG_RECORD, "record"),
+    (TAG_ARRAY, "array"),
+    (TAG_OBJECT, "object"),
+    (TAG_RANGE, "range"),
+    (TAG_SET, "set"),
+    (TAG_GEOMETRY, "geometry"),
+    (TAG_REGEX, "regex"),
+];
+
 // Where a number sits before its magnitude is consulted. Ordered as bytes, so
 // the declared places of the infinities and of not-a-number are simply their
 // tags.

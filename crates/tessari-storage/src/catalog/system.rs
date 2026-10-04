@@ -202,6 +202,40 @@ pub const ROLLUP_STATES: TableId = TableId::new(28);
 /// (Q-708).
 pub const KAFKA_QUARANTINE: TableId = TableId::new(29);
 
+/// Every system table and its name, in id order — part of the on-disk format,
+/// because a row's key carries the table id (`docs/key-grammar.md` §9).
+pub const ALL: &[(TableId, &str)] = &[
+    (NAMESPACES, "NAMESPACES"),
+    (DATABASES, "DATABASES"),
+    (TABLES, "TABLES"),
+    (NAMES, "NAMES"),
+    (ALLOCATORS, "ALLOCATORS"),
+    (INDEXES, "INDEXES"),
+    (FIELDS, "FIELDS"),
+    (ANALYZERS, "ANALYZERS"),
+    (USERS, "USERS"),
+    (GRANTS, "GRANTS"),
+    (REPLICAS, "REPLICAS"),
+    (CONSUMERS, "CONSUMERS"),
+    (RECORD_SEQUENCES, "RECORD_SEQUENCES"),
+    (GRAPHS, "GRAPHS"),
+    (EDGE_KINDS, "EDGE_KINDS"),
+    (VAULT_ROOT, "VAULT_ROOT"),
+    (VAULT_AUDIT, "VAULT_AUDIT"),
+    (RECORD_COUNTS, "RECORD_COUNTS"),
+    (LEADERSHIPS, "LEADERSHIPS"),
+    (FAILOVER, "FAILOVER"),
+    (TOPIC_POSITIONS, "TOPIC_POSITIONS"),
+    (TOPIC_GROUPS, "TOPIC_GROUPS"),
+    (WORD_SETS, "WORD_SETS"),
+    (REVOKED_CERTIFICATES, "REVOKED_CERTIFICATES"),
+    (TOMBSTONED_NODES, "TOMBSTONED_NODES"),
+    (VIEW_STATES, "VIEW_STATES"),
+    (VIEW_MEMBERS, "VIEW_MEMBERS"),
+    (ROLLUP_STATES, "ROLLUP_STATES"),
+    (KAFKA_QUARANTINE, "KAFKA_QUARANTINE"),
+];
+
 /// The one record [`VAULT_ROOT`] holds.
 pub const VAULT_ROOT_ID: u32 = 1;
 

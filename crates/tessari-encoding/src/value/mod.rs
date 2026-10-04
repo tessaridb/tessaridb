@@ -104,6 +104,17 @@ const FLAG_EXPIRES: u8 = 0b0010_0000;
 /// value written before this bit existed, so nothing on disk is rewritten.
 const FLAG_ACROSS: u8 = 0b0100_0000;
 
+/// Every defined flag bit and what it names, for the format surface.
+pub(crate) const FLAGS: &[(u8, &str)] = &[
+    (FLAG_TOMBSTONE, "tombstone"),
+    (FLAG_EPOCH, "epoch"),
+    (FLAG_STAMP, "stamp"),
+    (FLAG_SHARDS, "shards"),
+    (FLAG_ORDER, "order"),
+    (FLAG_EXPIRES, "expires"),
+    (FLAG_ACROSS, "across"),
+];
+
 /// Bytes an expiry instant occupies when a version carries one.
 const EXPIRES_LEN: usize = 8;
 
