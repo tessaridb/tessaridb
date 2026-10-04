@@ -39,7 +39,7 @@ impl Transaction<'_> {
         };
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
         let graph = crate::graph::Graph::read(self.store, &address, distance, index.quantized)?;
-        Ok(graph.nearest(query, wanted, effort))
+        graph.nearest(query, wanted, effort)
     }
 
     /// The graph a vector index is, read whole, for a walk the caller drives.

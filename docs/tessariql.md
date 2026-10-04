@@ -4036,9 +4036,14 @@ exact filtered ten and p50 against the exact filtered read:
 
 A condition admitting about one record in a hundred is where the walk stops
 paying: most walks give up and the read pays for part of the walk and the exact
-read. Most of what is left is the walk reading the whole graph before its first
-step, which every approximate read pays. An index on the condition is what lets
-the read choose the exact path before walking at all.
+read. The table was measured before `0.26.0-beta`, when every approximate read
+also decoded the whole graph before its first step; from `0.26.0-beta` a walk
+reads only the nodes it reaches, so the walk columns are lower than shown — on
+disk, an unfiltered read over 20 000 thirty-two-dimensional vectors went from
+27.5 ms to 1.7 ms at the warm median with the same answers
+(`benchmarks/2026-10-04-macos-aarch64-vector-walk.md` in the engine
+repository). An index on the condition is still what lets the read choose the
+exact path before walking at all.
 
 **What it buys, measured rather than claimed:** on two thousand clustered
 thirty-two-dimensional vectors, a read of the ten nearest goes from 3.7 ms to
