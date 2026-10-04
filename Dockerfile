@@ -112,6 +112,21 @@ ENV TESSARIDB_STORE=/var/lib/tessaridb/store \
 #
 #   TESSARIDB_PASSWORD          the password for `--user`, when this image is
 #                               run as a client rather than as a node.
+#
+# Transport security, read when the matching flag is absent and not defaulted:
+# a certificate is a deployment's own, and an image carrying one would be a
+# key the whole internet holds.
+#
+#   TESSARIDB_TLS_CERT          the client surfaces' certificate chain, PEM
+#   TESSARIDB_TLS_KEY           its private key, PEM
+#   TESSARIDB_REQUIRE_CLIENT_TLS  `1` refuses to start without the two above
+#   TESSARIDB_TLS_AUTHORITY     the certificates a client run of this image
+#                               trusts a node by, PEM
+#   TESSARIDB_JOIN_TOKEN        the one-time token a node presents when it
+#                               asks to join a cluster
+#   TESSARIDB_CLIENT_PLAINTEXT  retired in 0.24.0-beta; `1` is refused, because
+#                               a node with no certificate serves in the clear
+#                               by default
 
 VOLUME ["/var/lib/tessaridb"]
 EXPOSE 9080/tcp 8000/tcp

@@ -128,10 +128,50 @@ const RELEASED: &[&str] = &[
     "0.24.0-beta",
     "0.25.0-beta",
     "0.26.0-beta",
+    "0.27.0-beta",
+    "0.27.1-beta",
 ];
 
 /// The binary this crate builds, which is the one an operator upgrades to.
 const TESSARIDB: &str = env!("CARGO_BIN_EXE_tessaridb");
+
+/// The minor number of a `0.MINOR.PATCH-beta` version.
+fn minor(version: &str) -> u32 {
+    version.split('.').nth(1).unwrap().parse().unwrap()
+}
+
+/// `RELEASED` is a list that grows with every release, and nothing else fails
+/// when it stops growing: 0.27.0 and 0.27.1 shipped the format promise and were
+/// missing from it (G062 G1). So the list must name exactly the stores on disk,
+/// and the newest of them may trail this build by one minor at most — the
+/// current release cannot be among them before its image is published. It
+/// compares minors only, so across a major bump it says nothing — that release
+/// checks the fixtures by hand.
+#[test]
+fn the_released_stores_keep_up_with_the_releases() {
+    let mut listed: Vec<&str> = RELEASED.to_vec();
+    listed.sort_unstable();
+    let directory =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/released");
+    let mut on_disk: Vec<String> = std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| entry.file_type().unwrap().is_dir())
+        .map(|entry| entry.file_name().into_string().unwrap())
+        .collect();
+    on_disk.sort_unstable();
+    assert_eq!(
+        listed, on_disk,
+        "RELEASED and tests/fixtures/released disagree"
+    );
+    let newest = RELEASED.iter().map(|version| minor(version)).max().unwrap();
+    let this_build = minor(env!("CARGO_PKG_VERSION"));
+    assert!(
+        this_build.saturating_sub(newest) <= 1,
+        "the newest released store is 0.{newest}; this build is 0.{this_build} — \
+         run generate.sh for the releases in between"
+    );
+}
 
 fn released(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -200,7 +240,7 @@ fn a_store_written_by_each_released_build_reads_back_what_that_build_answered() 
         // aside — the records above came from the scan — and the read says so.
         assert_eq!(
             before.contains("recorded no tokenizer generation"),
-            *version != "0.26.0-beta",
+            minor(version) < 26,
             "{version}: whether the old search index was set aside:\n{before}"
         );
         // Rebuilt by this build, its indexes answer the same records again —

@@ -53,8 +53,8 @@ undone by reading the result.
 
 ## 3. Literals
 
-Literals map onto the fifteen types of the value system, and nothing else is
-literal syntax.
+Literals map onto the types of the value system, and nothing else is literal
+syntax.
 
 | Literal | Type |
 |---|---|
