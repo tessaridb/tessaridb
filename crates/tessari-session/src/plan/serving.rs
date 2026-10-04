@@ -32,7 +32,10 @@ pub(super) fn serving<'a>(
         .filter(|index| {
             index.fields.first() == Some(path)
                 && if search {
-                    index.search
+                    // An index whose terms an earlier tokenizer may have made
+                    // answers a subset of the scan with nothing in an error
+                    // state, so it serves no term read until rebuilt (G058 C3).
+                    index.search && !index.needs_rebuild()
                 } else {
                     // Not `!index.search`: a vector or spatial index is not a
                     // search index and is not an ordered one either, and asking

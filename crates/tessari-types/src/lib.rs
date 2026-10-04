@@ -39,7 +39,7 @@ mod value;
 mod write_kind;
 
 pub use acknowledge::{Acknowledge, Acknowledgement};
-pub use analyzer::{Analyzer, Filter, Language, Memo, Token};
+pub use analyzer::{Analyzer, Filter, Language, Memo, TOKENIZER_GENERATION, Token};
 pub use assertion::{Assertion, Operand};
 pub use calendar::Civil;
 pub use condition::{BinaryOp, apply};

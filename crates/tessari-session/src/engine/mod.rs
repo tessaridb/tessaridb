@@ -186,6 +186,7 @@ impl Session<'_> {
             });
         }
         let resolved = self.resolve_search(transaction, name)?;
+        notes.extend(resolved.rebuild.iter().cloned());
         let skip = select
             .start
             .map_or(0, |start| usize::try_from(start).unwrap_or(usize::MAX));

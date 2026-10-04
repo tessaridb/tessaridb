@@ -70,6 +70,7 @@ mod tests {
             spatial: false,
             costs: tessari_storage::SearchCosts::default(),
             engine: None,
+            tokenizer: search.then_some(tessari_types::TOKENIZER_GENERATION),
         }
     }
 

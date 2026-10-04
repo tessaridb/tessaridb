@@ -2729,7 +2729,8 @@ tokens, so `MATCHES '"東京"'` finds it — a quoted run of ideographs is an ex
 substring — and not `京東`, while an unquoted `東京` asks for both characters
 anywhere, as any unquoted query asks for every word. Katakana and Hangul keep
 their runs. An index over such text built before `0.22.0-beta` holds the old
-tokens and needs `REBUILD INDEX`. The filters are the part that differs:
+tokens and needs `REBUILD INDEX` — see *Which tokenizer built an index* below.
+The filters are the part that differs:
 
 | Filter | What it does |
 |---|---|
@@ -2740,6 +2741,43 @@ tokens and needs `REBUILD INDEX`. The filters are the part that differs:
 
 A letter the fold does not know passes through rather than being dropped — a
 letter it has no opinion about is still a letter.
+
+#### Which tokenizer built an index
+
+A search index holds what the analyzer made of each record **when the entry was
+written**, so when the code that makes terms changes — the tokenizer splits
+differently, a filter folds or stems differently — every entry written before is
+a term the analyzer would no longer produce, and a read through it answers a
+**subset** of what the scan answers with nothing in an error state. That
+happened once, when `0.22.0-beta` split ideograph runs.
+
+From `0.26.0-beta` an index records the **tokenizer generation** that built it
+(`2` today; `1` is everything before `0.22.0-beta`), and a read compares it with
+the build's own. An index that recorded another generation, or none — every
+search index written before `0.26.0-beta`, because nothing then could say which
+build wrote it — is treated as one that may be stale:
+
+- a field's `SEARCH` index **is not answered from**: `MATCHES`, a ranked walk, a
+  highlight from stored offsets and a suggestion all take the scan, which is
+  exact, and `USING INDEX` naming it is refused. A `search::score` is still
+  measured against its statistics;
+- a search's member is **read** — no scan stands in for it, because it is the
+  search — and its answer can miss records;
+- every read that met one carries the note `needs-rebuild`, which names it and
+  the statement that rebuilds it, and `INFO FOR TABLE` (for an index) and
+  `INFO FOR SEARCH` (for each member) report `tokenizer` — the generation, or
+  `NULL` when none was recorded — and `rebuild`, `true` until it is rebuilt.
+
+```
+REBUILD INDEX by_body ON notes;          -- a field's index
+BEGIN;                                   -- a search: define it again
+DROP SEARCH knowledge;
+DEFINE SEARCH knowledge ON notes FIELDS title WEIGHT 3, body ANALYZER plain;
+COMMIT;
+```
+
+**After an upgrade to `0.26.0-beta`, rebuild every search index once**: until
+then a field's search reads scan, and a `FROM SEARCH` says it can miss records.
 
 The first two make two **spellings** of a word meet. `stemmer` is the one that
 makes two **words** meet, which is what a person usually means by search: without
@@ -3114,8 +3152,14 @@ to five, two beyond. Two edits on a four-letter word is a different word.
 **A corrected word ranks below the word itself.** In a `FROM SEARCH`, which
 ranks a fuzzy word, each occurrence counts `1 / (1 + edits)`: an exact term one,
 a one-edit term a half, a two-edit term a third, so a rare misspelling can never
-outrank the common word it stands for. (`search::score` scores the words typed,
-so a corrected word adds nothing there.)
+outrank the common word it stands for. The same weighing ranks a field read: from
+`0.26.0-beta`, a `search::score` over a field the statement asks `MATCHES FUZZY`
+of measures each of its words as that read reached it — the terms within the
+edit budget share one document frequency, the largest among them, and each
+occurrence counts `1 / (1 + edits)` — so `ORDER BY search::score(body, 'vectr')
+DESC` ranks the records the misspelling found instead of answering in store
+order. Before, it scored the typed spelling, which a misspelling's record does
+not hold, so every record scored `0`.
 
 **The first two characters are not fuzzy, and this is the cost worth knowing
 before you rely on it** (three until `0.22.0-beta`, which lost every typo in the
@@ -8254,6 +8298,7 @@ The kinds include:
 | `cursor-walked` | an `AFTER` page was reached by reading the records rather than seeking to the anchor, so it cost what the read costs and not what the page costs (§5, *Resuming a page from a record*) |
 | `nearing-ceiling` | a held read is four fifths of the way to the ceiling that will refuse it, so a view reading fine today stops working as the table grows (§6d) |
 | `path` | the answer is a shortest path, and this is how many steps it took and what they cost (§4a, *The shortest path*) |
+| `needs-rebuild` | a search index this read met may hold an earlier tokenizer's terms: a field's index was not answered from (the read scanned) and a search's member was read and can miss records; the message names the statement that rebuilds it (§4, *Which tokenizer built an index*) |
 
 **`fell-back` fires on an index that declined, never on a table that has none.**
 A bounded ordered read over an unindexed table is the most ordinary read in the

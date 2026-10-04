@@ -697,7 +697,12 @@ impl Session<'_> {
             // what makes them get built — see `Catalog::rebuild_index`.
             StatementKind::RebuildIndex { name, table } => {
                 let (_, id) = self.resolve_table(transaction, table)?;
-                let index = self.index_named(transaction, id, name)?;
+                let mut index = self.index_named(transaction, id, name)?;
+                // The rebuilt entries are this build's terms, so the definition
+                // says so (G058 C3).
+                if index.holds_terms() {
+                    index.tokenizer = Some(tessari_types::TOKENIZER_GENERATION);
+                }
                 Catalog::new(transaction).rebuild_index(&index);
                 Ok(Outcome::Done)
             }

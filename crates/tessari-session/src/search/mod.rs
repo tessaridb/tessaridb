@@ -39,6 +39,7 @@ mod matching;
 mod query;
 mod resolve;
 mod suggest;
+mod weighted;
 
 pub(crate) use highlight::{marked, whole_terms};
 pub(crate) use matching::{

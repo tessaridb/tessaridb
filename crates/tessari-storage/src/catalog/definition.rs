@@ -52,6 +52,7 @@ const FIELD_UNIQUE: &str = "unique";
 const FIELD_SEARCH: &str = "search";
 const FIELD_VECTOR: &str = "vector";
 const FIELD_QUANTIZED: &str = "quantized";
+const FIELD_TOKENIZER: &str = "tokenizer";
 const FIELD_MATERIALIZED: &str = "materialized";
 const FIELD_SPATIAL: &str = "spatial";
 const FIELD_POSITIONS: &str = "positions";
@@ -862,11 +863,51 @@ mod tests {
             vector: None,
             costs: crate::catalog::SearchCosts::default(),
             engine: None,
+            tokenizer: None,
         };
         assert_eq!(
             IndexDefinition::from_value(&index.to_value()).unwrap(),
             index
         );
+    }
+
+    #[test]
+    fn a_search_index_keeps_the_tokenizer_generation_it_was_built_by() {
+        let mut index = IndexDefinition {
+            id: IndexId::new(4),
+            namespace: NamespaceId::new(7),
+            database: DatabaseId::new(3),
+            table: TableId::new(11),
+            name: "by_body".to_owned(),
+            fields: vec![Path::field("body")],
+            unique: false,
+            search: true,
+            spatial: false,
+            quantized: false,
+            vector: None,
+            costs: crate::catalog::SearchCosts::default(),
+            engine: None,
+            tokenizer: Some(tessari_types::TOKENIZER_GENERATION),
+        };
+        let read = IndexDefinition::from_value(&index.to_value()).unwrap();
+        assert_eq!(read, index);
+        assert!(!read.needs_rebuild());
+        // An index written before the generation was recorded: no field at all.
+        index.tokenizer = None;
+        let stored = index.to_value();
+        assert!(
+            matches!(&stored, Value::Object(fields) if !fields.contains_key(FIELD_TOKENIZER)),
+            "nothing written when unrecorded: {stored:?}"
+        );
+        let legacy = IndexDefinition::from_value(&stored).unwrap();
+        assert_eq!(legacy.tokenizer, None);
+        assert!(
+            legacy.needs_rebuild(),
+            "an unrecorded term index is not known current"
+        );
+        // An ordered index holds no terms and never needs one.
+        index.search = false;
+        assert!(!index.needs_rebuild());
     }
 
     #[test]

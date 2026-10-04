@@ -324,6 +324,9 @@ impl Session<'_> {
                     )),
                 ),
             ])));
+            if let Some(Value::Object(last)) = described.last_mut() {
+                last.extend(crate::info::tokenizer_report(member));
+            }
         }
         let mut info = BTreeMap::from([
             ("name".to_owned(), Value::from(name.text.as_str())),

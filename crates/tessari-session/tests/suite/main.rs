@@ -72,6 +72,7 @@ mod graphs;
 mod held;
 mod highlighting;
 mod history;
+mod index_generation;
 mod index_kinds_do_not_leak;
 mod info;
 mod inserts;

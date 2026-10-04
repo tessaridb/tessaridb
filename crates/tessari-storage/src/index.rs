@@ -626,6 +626,7 @@ mod tests {
             spatial: false,
             costs: crate::catalog::SearchCosts::default(),
             engine: None,
+            tokenizer: None,
         }
     }
 

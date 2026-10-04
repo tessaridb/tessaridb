@@ -105,6 +105,10 @@ pub(crate) struct Blend {
     /// The terms it reaches, at most the expansion cap of them, the most-held
     /// first.
     pub(crate) expansions: Vec<String>,
+    /// What one occurrence of each expansion counts for, in the same order:
+    /// `1` for a prefix's terms, `1 / (1 + edits)` for a fuzzy word's, so an
+    /// exact term always outweighs a corrected one (G058 C3, Q-909).
+    pub(crate) weights: Vec<f64>,
     /// The largest document frequency among them.
     pub(crate) documents: u64,
 }
@@ -214,16 +218,21 @@ pub(crate) fn scored(corpus: &Corpus, held: &Held) -> f64 {
             inverse_document_frequency(total, frequency) * saturation(occurrences, length, average);
     }
     for blend in &corpus.blends {
-        let occurrences = blend
+        let occurrences: f64 = blend
             .expansions
             .iter()
-            .filter_map(|term| held.occurrences.get(term))
-            .fold(0_u64, |total, one| total.saturating_add(u64::from(*one)));
-        if occurrences == 0 {
+            .zip(&blend.weights)
+            .filter_map(|(term, weight)| {
+                held.occurrences
+                    .get(term)
+                    .map(|one| as_float(u64::from(*one)) * weight)
+            })
+            .sum();
+        if occurrences <= 0.0 {
             continue;
         }
         sum += inverse_document_frequency(total, as_float(blend.documents))
-            * saturation(as_float(occurrences), length, average);
+            * saturation(occurrences, length, average);
     }
     sum
 }

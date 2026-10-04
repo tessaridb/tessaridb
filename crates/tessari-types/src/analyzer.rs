@@ -24,6 +24,9 @@
 use core::fmt;
 use core::ops::Range;
 
+mod generation;
+pub use generation::TOKENIZER_GENERATION;
+
 /// One token of a text: the bytes it occupied and the term it became.
 ///
 /// The two travel together because a caller that has one and not the other

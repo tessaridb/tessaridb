@@ -206,7 +206,12 @@ fn statement(kind: &str, engine: Option<&str>) -> String {
         "prefix" => format!(
             "SELECT page FROM fragment WHERE text MATCHES $q ORDER BY search::score(text, $q) DESC LIMIT {READ};"
         ),
-        _ => format!("SELECT page FROM fragment WHERE text MATCHES FUZZY $q LIMIT {READ};"),
+        // Ranked by what the fuzzy read reached, each term weighed by its
+        // distance (G058 C3); before that a misspelling scored `0` and this
+        // read ran in store order.
+        _ => format!(
+            "SELECT page FROM fragment WHERE text MATCHES FUZZY $q ORDER BY search::score(text, $q) DESC LIMIT {READ};"
+        ),
     }
 }
 
