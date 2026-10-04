@@ -1626,6 +1626,7 @@ dependencies = [
  "tessari-geo",
  "tessari-kv",
  "tessari-lsm",
+ "tessari-session",
  "tessari-storage",
  "tessari-types",
  "tessaridb",
@@ -1799,6 +1800,7 @@ name = "tessari-session"
 version = "0.25.0-beta"
 dependencies = [
  "argon2",
+ "dashmap",
  "log",
  "md-5",
  "proptest",

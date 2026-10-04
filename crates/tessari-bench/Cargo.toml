@@ -29,3 +29,4 @@ tessari-lsm.workspace = true
 tessari-kv.workspace = true
 tessari-geo.workspace = true
 tessari-encoding.workspace = true
+tessari-session.workspace = true
