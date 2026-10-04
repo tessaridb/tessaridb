@@ -13,6 +13,40 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.27.1-beta — 2026-10-05
+
+The code to the Rust canon after a full review (G060). Nothing a statement, a client
+or a store sees changes; what an operator reads in the log does.
+
+### Upgrade
+
+- **Nothing to do for the store.** The on-disk format is unchanged (format 5), and
+  so are the language, the wire protocol and the HTTP routes.
+- **A log parser needs a look.** Each line is now `<time> <level> <module>: <what
+  happened> <field>=<value> …` — values are named fields rather than words in the
+  sentence — and lines about one connection carry `connection{connection=N}`. A
+  collector that wants JSON asks for it with `TESSARIDB_LOG_FORMAT=json`.
+
+### Changed
+
+- **The node reports through structured tracing.** `TESSARIDB_LOG` takes a level or
+  directives (`info,tessari_wire=debug`); `TESSARIDB_LOG_FORMAT` is `text` (the
+  default) or `json`; colour only on a terminal without `NO_COLOR`; lines are written
+  off the thread that spoke, and flushed before the process ends on a fatal stop.
+- **Every timer the node keeps reports each pass the same way.** Housekeeping,
+  settling, balancing, credential watching, the campaign, the greeting round and
+  collection each run inside a `cadence{cadence=…}` span; a pass that cannot do its
+  work says `pass failed` with what it could not do and why, and one that outlasts
+  its period says `pass overran` once — passes of one cadence still never overlap.
+
+### Internal
+
+- The workspace is brought to the Rust structure canon: inherited dependencies,
+  thin crate roots, an error home per crate, every source file at most 500 lines
+  except seven catalog files kept whole on purpose, and test modules in files of
+  their own. A log-hold id counter is an atomic, shared handles are passed as the
+  `Arc` they are kept as, and three long argument lists became named fields.
+
 ## 0.27.0-beta — 2026-10-04
 
 A storage format that holds across versions (G059).
