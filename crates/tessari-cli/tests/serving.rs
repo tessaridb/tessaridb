@@ -4262,9 +4262,14 @@ fn cross_leader_commit_latency_against_one_leader_at_majority() {
         )
     };
     // Warm: the first transaction across leaders may be refused while a
-    // follower does not yet hold a shard's log (the across test's own note).
+    // follower does not yet hold a shard's log (the across test's own note) —
+    // or answered in doubt and commit afterwards, so the warming writes are
+    // UPSERTs and asking again is the same transaction (ADR-0112 D14d).
+    let warming = "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
+                   UPSERT orders:'awarm' = { n: 1 }; UPSERT orders:'hwarm' = { n: 1 }; \
+                   COMMIT ACROSS LEADERS;";
     let began = Instant::now();
-    while client.run(&across("warm"), None).is_err() {
+    while client.run(warming, None).is_err() {
         assert!(
             began.elapsed() < Duration::from_secs(60),
             "no transaction across leaders ever committed{}",
