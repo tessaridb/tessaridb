@@ -296,3 +296,53 @@ fn every_value_and_record_id_encodes_under_a_listed_tag() {
         "record id discriminants written against those listed"
     );
 }
+
+/// The format surface each format version was published with, as a digest.
+///
+/// A change to any value of the format — a key kind, a tag, a flag bit, a
+/// system table — changes what an older build would misread, so it moves the
+/// format version, and the version pins the surface it shipped with here. The
+/// first pin is format 5 as `0.26.0-beta` left it: values arrived under 5
+/// without a bump — among them the `expires` and `across` flag bits and system
+/// tables 26–29 — which is what this test exists to stop happening again. Catalog definitions are records whose fields an
+/// older build ignores, so a field added to one is not part of the surface.
+const PINNED: &[(u32, u64)] = &[(5, 0xb7b3_5f45_79e3_c43d)];
+
+/// FNV-1a over one line per unit — stable across builds and platforms, which
+/// is all a pin needs; nothing here defends against a deliberate collision.
+fn digest_of_the_surface() -> u64 {
+    let mut lines: Vec<String> = format_surface()
+        .into_iter()
+        .filter(|unit| unit.family != Family::Format)
+        .map(|unit| format!("{:?}:{}:{}", unit.family, unit.code, unit.name))
+        .collect();
+    lines.extend(
+        SYSTEM_TABLES
+            .iter()
+            .map(|(id, name)| format!("SystemTable:{}:{name}", id.get())),
+    );
+    lines.sort_unstable();
+    lines
+        .iter()
+        .flat_map(|line| line.bytes().chain(std::iter::once(b'\n')))
+        .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        })
+}
+
+#[test]
+fn the_format_surface_moves_only_with_the_format_version() {
+    let current = the_code_says(Family::Format)
+        .first()
+        .map(|(code, _)| *code)
+        .expect("a current format");
+    let now = digest_of_the_surface();
+    assert_eq!(
+        PINNED.last(),
+        Some(&(current, now)),
+        "the format surface is {now:#018x} at format {current}: a value of the format changed \
+         without the format version moving — bump FormatVersion::CURRENT, add its row to \
+         docs/key-grammar.md §10, and pin ({}, {now:#018x}) here",
+        current.saturating_add(1)
+    );
+}

@@ -1121,3 +1121,20 @@ and is rewritten at open only where the row below says so.
 | `3` | the log is per range: a log key carries its home | rewritten: an old log key does not decode |
 | `4` | a record version carries its causal stamp — flag `0x04` | opened as is: a clear bit reads as an empty stamp |
 | `5` | a log key carries the writer that allocated it (G027 S2.2) | rewritten: an old and a new key differ in length |
+
+Format 5 also took values that arrived after it without a bump — among them the
+`expires` and `across` flag bits (§7.1) and system tables 26–29 (§9.1) — so a
+build older than the one that introduced a value can open a store holding it.
+From `0.27.0-beta` that is closed: the digest of every value in §3, §5, §7.1, §7a,
+§9.1 and `docs/value-system.md` §5 is pinned beside the format version it shipped
+with (`crates/tessari-storage/tests/suite/format_spec.rs`), and changing any of
+them without moving the version fails the build's own tests. Catalog definitions
+are records whose fields an older build ignores, so a field added to one is not
+a format change.
+
+A store holding data and **no** format version is refused at open
+(`UnstampedStore`, naming the first keyspace found holding data) and left
+untouched. Every store this engine creates is stamped before anything else is
+written to it, so such a store was written by something else or has lost the key
+that says what it is, and stamping it as new would write this build's format
+over data whose format nobody knows. An empty store is a new one.

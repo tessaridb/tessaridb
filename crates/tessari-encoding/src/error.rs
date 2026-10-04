@@ -289,6 +289,21 @@ pub enum Error {
         /// The highest version this build understands.
         supported: u32,
     },
+
+    /// The store holds data and no format version.
+    ///
+    /// Every store this engine creates is stamped before anything else is
+    /// written to it, so data with no stamp was written by something else or
+    /// has lost the key that says what it is. Treating it as a new store would
+    /// stamp it with this build's format and write into it as if it were one —
+    /// over data whose format nobody knows.
+    #[error(
+        "the store holds data in its {keyspace} keyspace and no format version, so it was not written by this engine or has lost the key that says which format it is; it is left untouched"
+    )]
+    UnstampedStore {
+        /// The first keyspace found holding data.
+        keyspace: &'static str,
+    },
 }
 
 impl Error {
@@ -316,7 +331,8 @@ impl Error {
             | Self::NestedTooDeep { .. }
             | Self::InvalidNodeEndpoint
             | Self::NoSuchCell { .. }
-            | Self::NotABox { .. } => ErrorCategory::Corruption,
+            | Self::NotABox { .. }
+            | Self::UnstampedStore { .. } => ErrorCategory::Corruption,
             Self::UnsupportedCodecVersion { .. }
             | Self::ReservedFlags { .. }
             | Self::UnknownValueTag { .. }
