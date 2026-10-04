@@ -48,6 +48,8 @@
 //! on a timer.
 
 #[cfg(test)]
+mod fault_tests;
+#[cfg(test)]
 mod group_tests;
 mod overlay;
 #[cfg(test)]
@@ -55,9 +57,9 @@ mod overlay_tests;
 mod pending;
 
 use std::cell::Cell;
-use std::sync::{Mutex, MutexGuard, PoisonError, RwLock};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
 
-use tessari_kv::{KvBackend, WriteBatch};
+use tessari_kv::{ErrorCategory, KvBackend, WriteBatch};
 
 pub(crate) use overlay::Overlaid;
 pub(crate) use pending::Ticket;
@@ -84,6 +86,10 @@ pub(crate) struct WriteGate {
     turn: Mutex<()>,
     pending: pending::Pending,
     landed: Hooks,
+    /// Why this store stopped taking writes, once a write it could not make
+    /// durable failed (G059 C4). Set once, never cleared: only reopening the
+    /// store, which recovers from its log, takes writes again.
+    stopped: OnceLock<String>,
 }
 
 /// What to call once a write that filed a log record has landed.
@@ -134,7 +140,9 @@ impl WriteGate {
     /// The batch's own failure, or the retryable conflict when it was derived
     /// on a batch that did not land.
     pub(crate) fn land(&self, ticket: Ticket, backend: &dyn KvBackend) -> tessari_kv::Result<()> {
+        self.refuse_if_stopped()?;
         let landed = self.pending.land(ticket, backend);
+        self.stop_on(&landed);
         if landed.is_ok() {
             self.announce();
         }
@@ -154,14 +162,43 @@ impl WriteGate {
         backend: &dyn KvBackend,
         landing: Landing,
     ) -> tessari_kv::Result<()> {
+        self.refuse_if_stopped()?;
         let applied = match landing {
             Landing::Synced => backend.apply(batch),
             Landing::Deferred => backend.apply_unsynced(batch),
         };
+        self.stop_on(&applied);
         if applied.is_ok() {
             self.announce();
         }
         applied
+    }
+
+    /// Refuse a write once one this store could not make durable has failed.
+    fn refuse_if_stopped(&self) -> tessari_kv::Result<()> {
+        match self.stopped.get() {
+            Some(reason) => Err(tessari_kv::Error::Stopped {
+                reason: reason.clone(),
+            }),
+            None => Ok(()),
+        }
+    }
+
+    /// Stop taking writes when `outcome` is a failure that may have lost bytes
+    /// the engine was asked to keep. A refusal that took no write — busy, a
+    /// conflict, a bad request, a shutdown — leaves the store running.
+    fn stop_on(&self, outcome: &tessari_kv::Result<()>) {
+        let Err(failure) = outcome else {
+            return;
+        };
+        if matches!(
+            failure.category(),
+            ErrorCategory::Unavailable | ErrorCategory::Corruption | ErrorCategory::Internal
+        ) {
+            // The first failure is the one an operator needs; a later one is
+            // its consequence.
+            let _first = self.stopped.set(failure.to_string());
+        }
     }
 
     /// Call `hook` after every write that files a log record lands, on the

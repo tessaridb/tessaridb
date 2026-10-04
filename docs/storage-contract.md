@@ -78,6 +78,36 @@ discharged by the test suite passing:
   That it holds under a *divergent* flush — one keyspace flushed, another not —
   needs a crash placed inside the flush, and is not yet proven.
 
+### A write that could not be made durable stops the store
+
+When a write that files a log record fails in a way that may have lost bytes
+the engine was asked to keep — `unavailable` (an I/O error, a failed sync),
+`corruption` or `internal` — the store **stops taking writes** until it is
+reopened. It does not retry, and it does not believe a later write that
+succeeds: after a failed sync the bytes it covered may be gone while the cache
+holding them marks them clean, and a log with a hole in it recovers only up to
+the hole, taking every commit acknowledged after it along. Every later write is
+refused as `lifecycle`, naming the failure that stopped it; reads still answer;
+reopening the store recovers from its log. A refusal that took no write —
+`busy`, `conflict`, `validation` — leaves the store running. Node-local
+housekeeping (statistics, pruning marks, expiry sweeps) acknowledges nothing to
+a caller and is not gated this way.
+
+### What is proven, and how
+
+- **Kill and reopen, a hundred times.** Four writers commit three-record
+  transactions in a child process killed at a point drawn from a seed, a hundred
+  times over one store, every tenth followed by a kill of the process
+  recovering from it. After each reopen every acknowledged transaction is
+  present and every transaction a writer could have reached is present whole or
+  not at all (`tessari-lsm/tests/durability.rs`, seed in `TESSARIDB_CRASH_SEED`
+  to replay one).
+- **A failed write stops the store**, on both paths a commit takes to the
+  engine, and a busy refusal does not (`tessari-storage/src/gate/fault_tests.rs`).
+- **A flipped byte in a sorted file is refused as `corruption`**, never answered
+  as a different value (`tessari-lsm/tests/recovery.rs`).
+- What none of these prove is the power-loss half, for the reason above.
+
 ## What a write conflict means at this layer
 
 A batch may carry preconditions, and the substrate guarantees they are evaluated
@@ -131,7 +161,7 @@ help. Callers branch on the category, never on the message text.
 | `busy` | **yes** | contention or a stall; the caller owns the backoff |
 | `unavailable` | **yes** | a dependency is temporarily unreachable — including this node's own leadership, when the lease it writes under has run out |
 | `corruption` | no | stored data failed an integrity check; an operator decision |
-| `lifecycle` | no | shutting down, or the keyspace was dropped |
+| `lifecycle` | no | shutting down, the keyspace was dropped, or the store stopped taking writes after one it could not make durable failed — reopen it |
 | `incompatible` | no | the data is intact but written in a format this binary does not support; deploy a newer binary rather than repair the store |
 | `internal` | no | a bug or violated invariant |
 
