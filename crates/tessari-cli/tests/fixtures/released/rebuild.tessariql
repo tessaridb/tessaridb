@@ -1,0 +1,5 @@
+USE NAMESPACE fixture;
+USE DATABASE main;
+REBUILD INDEX by_body ON notes;
+REBUILD INDEX by_age ON people;
+REBUILD INDEX by_name ON people;

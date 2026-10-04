@@ -118,3 +118,103 @@ fn tessari_cli_render(held: &Value) -> String {
     // empty resolver is the honest one here.
     render::value(held, &render::Names::new())
 }
+
+/// Stores written by released builds, each beside the answers that build gave
+/// (`tests/fixtures/released`, made by its `generate.sh` from the published
+/// images — G059 C3).
+const RELEASED: &[&str] = &[
+    "0.22.0-beta",
+    "0.23.0-beta",
+    "0.24.0-beta",
+    "0.25.0-beta",
+    "0.26.0-beta",
+];
+
+/// The binary this crate builds, which is the one an operator upgrades to.
+const TESSARIDB: &str = env!("CARGO_BIN_EXE_tessaridb");
+
+fn released(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/released")
+        .join(name)
+}
+
+/// Run one script against `store` with this build and keep what it printed, on
+/// either stream.
+fn answer(store: &std::path::Path, script: &str) -> String {
+    let ran = std::process::Command::new(TESSARIDB)
+        .arg(store)
+        .arg("-f")
+        .arg(released(script))
+        .output()
+        .unwrap();
+    assert!(
+        ran.status.success(),
+        "{script} failed: {}{}",
+        String::from_utf8_lossy(&ran.stdout),
+        String::from_utf8_lossy(&ran.stderr)
+    );
+    // Notes go to standard error; the records are what decides the comparison,
+    // and a note is read only for whether it is there.
+    let mut printed = String::from_utf8(ran.stdout).unwrap();
+    printed.push_str(&String::from_utf8(ran.stderr).unwrap());
+    printed
+}
+
+/// What an answer says about the data: every record and every count, without
+/// the access path that served it or the notes about how — those are what a
+/// newer build is allowed to change.
+fn records_and_counts(printed: &str) -> Vec<String> {
+    printed
+        .lines()
+        .filter(|line| !line.starts_with("note:"))
+        .map(|line| match line.split_once(", via ") {
+            Some((count, _)) if line.starts_with('(') => format!("{count})"),
+            _ => line.to_owned(),
+        })
+        .collect()
+}
+
+#[test]
+fn a_store_written_by_each_released_build_reads_back_what_that_build_answered() {
+    for version in RELEASED {
+        let copy = tempfile::tempdir().unwrap();
+        let store = copy.path().join("store");
+        std::fs::create_dir(&store).unwrap();
+        for file in std::fs::read_dir(released(version)).unwrap() {
+            let file = file.unwrap();
+            std::fs::copy(file.path(), store.join(file.file_name())).unwrap();
+        }
+        let expected = records_and_counts(
+            &std::fs::read_to_string(released(&format!("{version}.answers"))).unwrap(),
+        );
+        assert!(expected.len() > 40, "{version}: the oracle is empty");
+
+        let before = answer(&store, "read.tessariql");
+        assert_eq!(
+            records_and_counts(&before),
+            expected,
+            "{version}: this build reads the store differently from the build that wrote it"
+        );
+        // A search index from before 0.26 recorded no tokenizer, so it was set
+        // aside — the records above came from the scan — and the read says so.
+        assert_eq!(
+            before.contains("recorded no tokenizer generation"),
+            *version != "0.26.0-beta",
+            "{version}: whether the old search index was set aside:\n{before}"
+        );
+        // Rebuilt by this build, its indexes answer the same records again —
+        // through the index this time, where the store's own was set aside.
+        answer(&store, "rebuild.tessariql");
+        let after = answer(&store, "read.tessariql");
+        assert_eq!(
+            records_and_counts(&after),
+            expected,
+            "{version}: the rebuilt indexes answer differently"
+        );
+        assert!(
+            !after.contains("tokenizer generation"),
+            "{version}: an index still waits for a rebuild:\n{after}"
+        );
+    }
+}
