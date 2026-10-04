@@ -22,8 +22,8 @@
 use tessari_storage::ConsumerDefinition;
 use tessari_types::{Number, Path, RecordId, Value};
 
+use crate::error::ShapeRefused;
 use crate::json;
-use crate::refused::ShapeRefused;
 
 /// A message, ready to be written.
 #[derive(Debug, Clone, PartialEq, Eq)]

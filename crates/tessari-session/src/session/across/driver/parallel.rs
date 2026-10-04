@@ -36,7 +36,7 @@ impl Session<'_> {
     pub(super) fn finish_parallel(
         &mut self,
         store: &Store,
-        carrying: &std::sync::Arc<dyn Participants>,
+        carrying: std::sync::Arc<dyn Participants>,
         parts: &[AcrossPart],
         (id, record, refused): (TransactionId, TransactionRecord, Option<AcrossRefusal>),
         user: Option<&tessari_storage::UserDefinition>,
@@ -134,8 +134,9 @@ impl Session<'_> {
                 // abort is the outcome whether or not this decision is
                 // confirmed, and its intents can go.
                 if let Err(why) = self.ask_one(carrier, first.leader, user, &aborted) {
-                    log::info!(
-                        "a barred cross-leader transaction's abort was not confirmed: {why}"
+                    tracing::info!(
+                        error = %why,
+                        "a barred cross-leader transaction's abort was not confirmed"
                     );
                 }
                 behind(store, carrying, user, aborting(parts, id));
@@ -202,15 +203,11 @@ fn aborting(parts: &[AcrossPart], id: TransactionId) -> Vec<Behind> {
 /// recovery re-derives the outcome from the parts (D14c).
 fn behind(
     store: &Store,
-    carrying: &std::sync::Arc<dyn Participants>,
+    carrying: std::sync::Arc<dyn Participants>,
     user: Option<&tessari_storage::UserDefinition>,
     records: Vec<Behind>,
 ) {
-    let (store, carrier, user) = (
-        store.clone(),
-        std::sync::Arc::clone(carrying),
-        user.cloned(),
-    );
+    let (store, carrier, user) = (store.clone(), carrying, user.cloned());
     let spawned = std::thread::Builder::new()
         .name("across-behind".to_owned())
         .spawn(move || {
@@ -226,9 +223,9 @@ fn behind(
                                 .map_err(|why| why.reason),
                         };
                         if let Err(why) = landed {
-                            log::warn!(
-                                "a cross-leader record behind the answer did not land and is \
-                                 left to its record: {why}"
+                            tracing::warn!(
+                                error = %why,
+                                "a cross-leader record behind the answer did not land and is left to its record"
                             );
                         }
                     });
@@ -236,7 +233,7 @@ fn behind(
             });
         });
     if let Err(why) = spawned {
-        log::warn!("cross-leader records behind the answer left to their record: {why}");
+        tracing::warn!(error = %why, "cross-leader records behind the answer left to their record");
     }
 }
 

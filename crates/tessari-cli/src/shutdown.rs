@@ -127,7 +127,7 @@ pub async fn watch(
     quiet: &(dyn Fn() + Send + Sync),
 ) {
     asked.cancelled().await;
-    eprintln!("tessaridb — stopping; a second signal exits immediately");
+    tracing::info!("stopping; a second signal exits immediately");
 
     // Stage 0. Say *not ready* and keep serving, so whatever is routing traffic
     // here learns it before the port goes rather than by a refused connection.
@@ -135,9 +135,9 @@ pub async fn watch(
     for surface in surfaces {
         surface.stopping.leaving();
     }
-    eprintln!(
-        "tessaridb — not ready; still serving for {}s so a load balancer can notice",
-        LAME_DUCK.as_secs()
+    tracing::info!(
+        for_seconds = LAME_DUCK.as_secs(),
+        "not ready; still serving so a load balancer can notice"
     );
     // No check for a second signal here: the listener exits the process itself
     // on the second one, so an operator who does not want to wait out this
@@ -186,10 +186,11 @@ async fn drain_requests(surfaces: &[Surface]) {
         match surface.stopping.drain(PATIENCE).await {
             Drained::Finished => {}
             Drained::Deadline { left } => {
-                eprintln!(
-                    "tessaridb — {} still had {left} request(s) running after {}s",
-                    surface.name,
-                    PATIENCE.as_secs()
+                tracing::warn!(
+                    surface = surface.name,
+                    running = left,
+                    after_seconds = PATIENCE.as_secs(),
+                    "requests were still running when the drain ended"
                 );
             }
         }

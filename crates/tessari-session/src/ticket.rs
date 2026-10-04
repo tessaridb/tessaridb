@@ -144,7 +144,7 @@ impl Session<'_> {
         // to `UserDefinition` later is then covered by default rather than
         // covered once somebody remembers this line exists.
         let Some(user) = found.filter(|user| user == ticket.held.as_ref()) else {
-            log::info!("a token for {} is no longer current", ticket.held.name);
+            tracing::info!(user = %ticket.held.name, "a token is no longer current");
             return Err(Error::TicketStale);
         };
         self.identity = Identity::Signed(Box::new(user));

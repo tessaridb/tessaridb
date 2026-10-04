@@ -27,6 +27,7 @@
 pub mod case;
 pub mod coverage;
 pub mod document;
+mod error;
 pub mod runner;
 
 pub use case::{Case, Corpus, Expectation, MalformedCorpus, read};

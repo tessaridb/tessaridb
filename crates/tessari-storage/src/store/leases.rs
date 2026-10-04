@@ -47,7 +47,7 @@ impl Store {
     /// held either way, and the next lease taken tries again.
     fn adopt_on_leading(&self) {
         if let Err(why) = self.adopt_own_history() {
-            log::warn!("this node's own history could not be adopted into the line's log: {why}");
+            tracing::warn!(error = %why, "this node's own history could not be adopted into the line's log");
         }
     }
 

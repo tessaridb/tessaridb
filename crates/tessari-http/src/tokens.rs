@@ -117,7 +117,10 @@ impl Tokens {
         let now = Instant::now();
         self.live.retain(|_, held| held.expires > now);
         if self.live.len() >= MAX_SESSION_TOKENS {
-            log::warn!("a token was refused: this node is holding {MAX_SESSION_TOKENS} already");
+            tracing::warn!(
+                held = MAX_SESSION_TOKENS,
+                "a token was refused: this node holds as many as it takes"
+            );
             return Err(Refused::Full);
         }
         self.live.insert(

@@ -1,219 +1,154 @@
 //! What a running node reports, and where it goes.
 //!
-//! The library crates carry the `log` facade and nothing else, so a caller that
-//! embeds this store emits nothing unless it installs a logger of its own. The
-//! binary is where that choice is made, and this is the choice: one line per
-//! event on standard error, at a level `TESSARIDB_LOG` sets.
+//! The library crates emit `tracing` events and spans and install nothing, so a
+//! caller that embeds this store sees nothing unless it installs a subscriber of
+//! its own. The binary is where that choice is made, and this is the choice:
+//! one event per line on standard error, filtered by `TESSARIDB_LOG`, as text
+//! a person reads or as JSON a collector reads (`TESSARIDB_LOG_FORMAT`).
 //!
-//! # Why this and not a logging crate
+//! # What a line carries
 //!
-//! Because the whole implementation is below, and it costs no dependency. The
-//! tree takes third-party crates deliberately — the HTTP server, the WebSocket
-//! framing, the JSON encoder and the base64 decoder are all written here for the
-//! same reason — and a line with a timestamp, a level, a target and a message is
-//! not where that budget should go.
+//! The time in UTC to the microsecond, the level, the module that spoke, the
+//! spans the event happened inside — `connection{connection=7 peer=…}` — then a
+//! sentence and the values as named fields. A value is never spliced into the
+//! sentence: `records=3` can be searched for and summed, and "pruned 3 log
+//! record(s)" can only be read.
 //!
-//! # The timestamp is a real date
+//! # Colour only where somebody is looking
 //!
-//! An operator correlating a refusal with something else needs a time they can
-//! compare, and seconds since the epoch is not one. The conversion below is the
-//! standard days-to-civil arithmetic and is exercised by the tests at the foot
-//! of this file, including the leap day and the century rule that a naive
-//! version gets wrong.
+//! Levels and field names are coloured when standard error is a terminal and
+//! `NO_COLOR` is not set, and plain otherwise, so a container's log driver and a
+//! file never receive escape codes.
+//!
+//! # Written off the thread that spoke
+//!
+//! Events go through a queue to one writer thread, so a slow terminal or a full
+//! pipe never stalls a connection or a store call. The queue is flushed when the
+//! guard [`install`] returns is dropped at the end of `main`, and by [`abort`],
+//! which the paths that end the node at once go through, so the line explaining
+//! why is the last one written rather than one left in the queue.
 
-use std::io::Write;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::io::IsTerminal;
+use std::sync::{Mutex, PoisonError};
 
-use log::{LevelFilter, Log, Metadata, Record, SetLoggerError};
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::time::SystemTime;
 
-/// The variable that sets how much is reported.
+/// The variable that sets how much is reported: a level, or directives such as
+/// `info,tessari_wire=debug`.
 const LEVEL: &str = "TESSARIDB_LOG";
+
+/// The variable that chooses the line format: `text` (the default) or `json`.
+const FORMAT: &str = "TESSARIDB_LOG_FORMAT";
 
 /// Report at this level when nothing says otherwise.
 ///
 /// `info` rather than `warn`: the events this exists for — a connection
 /// accepted, a sign-in refused — are not warnings, and a node that reports only
 /// its problems cannot answer "was it even reached".
-const DEFAULT: LevelFilter = LevelFilter::Info;
+const DEFAULT: &str = "info";
 
-/// Send every record at or below `level` to standard error.
-struct Stderr {
-    level: LevelFilter,
-}
+/// The writer's guard, where [`abort`] can reach it.
+///
+/// Held here rather than only in `main` because the paths that end the process
+/// at once never return to `main`, and dropping the guard is what flushes.
+static WRITER: Mutex<Option<WorkerGuard>> = Mutex::new(None);
 
-impl Log for Stderr {
-    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
-        metadata.level() <= self.level
-    }
+/// Flushes what was reported when it goes out of scope; hold it for all of `main`.
+#[must_use = "dropping this flushes and stops the log writer"]
+pub struct Flushing;
 
-    fn log(&self, record: &Record<'_>) {
-        if !self.enabled(record.metadata()) {
-            return;
-        }
-        let mut out = std::io::stderr().lock();
-        // A failure to report cannot itself be reported: this *is* the reporting
-        // channel. A closed stderr is the operator's decision and not an error.
-        drop(writeln!(
-            out,
-            "{} {:<5} {} {}",
-            stamped(SystemTime::now()),
-            record.level(),
-            record.target(),
-            record.args()
-        ));
-    }
-
-    fn flush(&self) {
-        drop(std::io::stderr().flush());
+impl Drop for Flushing {
+    fn drop(&mut self) {
+        drop(WRITER.lock().unwrap_or_else(PoisonError::into_inner).take());
     }
 }
 
-/// Install the logger, reading its level from the environment.
-///
-/// # Errors
-///
-/// Returns the facade's own refusal when a logger is already installed, which
-/// happens only if a caller installed one before `main` reached here.
-pub fn install() -> Result<(), SetLoggerError> {
-    let level = std::env::var(LEVEL)
-        .ok()
-        .map_or(DEFAULT, |asked| level(&asked));
-    log::set_boxed_logger(Box::new(Stderr { level }))?;
-    log::set_max_level(level);
-    Ok(())
+/// How the lines are written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Format {
+    Text,
+    Json,
 }
 
-/// The level a word asks for, or the default when it asks for nothing known.
+/// Install the subscriber, reading the filter and the format from the
+/// environment.
 ///
-/// An unreadable value is not an error: refusing to start a database because a
-/// log level was misspelled would be a worse outcome than reporting at the
-/// level it would have used anyway.
-fn level(asked: &str) -> LevelFilter {
-    match asked.trim().to_ascii_lowercase().as_str() {
-        "off" => LevelFilter::Off,
-        "error" => LevelFilter::Error,
-        "warn" => LevelFilter::Warn,
-        "debug" => LevelFilter::Debug,
-        "trace" => LevelFilter::Trace,
-        _ => DEFAULT,
-    }
-}
-
-/// One instant as `YYYY-MM-DDThh:mm:ssZ`.
-///
-/// UTC, because a log compared against another machine's log is compared in one
-/// zone or not at all.
-fn stamped(at: SystemTime) -> String {
-    let seconds = at
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs());
-    let days = seconds / 86_400;
-    let rest = seconds % 86_400;
-    let (year, month, day) = civil_from_days(days);
-    let (hour, minute, second) = (rest / 3_600, (rest / 60) % 60, rest % 60);
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
-}
-
-/// The last day this converts, 9999-12-31.
-///
-/// A clock reporting past it is a clock that is wrong, and clamping is a better
-/// answer than a year with five digits in a fixed-width field.
-const LAST_DAY: u64 = 2_932_896;
-
-/// The civil date `days` after 1970-01-01, by Howard Hinnant's algorithm.
-///
-/// Shifting the epoch to 0000-03-01 is what makes a leap day the *last* day of
-/// its year rather than a discontinuity in the middle of one, which is why the
-/// arithmetic below has no special case for February.
-///
-/// # Why every operation is saturating
-///
-/// Not defensiveness — the workspace denies `arithmetic_side_effects` and there
-/// is not one suppression anywhere in this tree. The clamp above makes every
-/// intermediate below fit in seven digits, so each `saturating_*` is exact and
-/// the saturation is unreachable; what they buy is that this stays true if the
-/// clamp is ever changed, and that the rule holds without an exception written
-/// for the one file that found it inconvenient.
-fn civil_from_days(days: u64) -> (u64, u64, u64) {
-    let shifted = days.min(LAST_DAY).saturating_add(719_468);
-    let era = shifted / 146_097;
-    let of_era = shifted % 146_097;
-    let year_of_era = of_era
-        .saturating_sub(of_era / 1_460)
-        .saturating_add(of_era / 36_524)
-        .saturating_sub(of_era / 146_096)
-        / 365;
-    let year = year_of_era.saturating_add(era.saturating_mul(400));
-    let day_of_year = of_era.saturating_sub(
-        year_of_era
-            .saturating_mul(365)
-            .saturating_add(year_of_era / 4)
-            .saturating_sub(year_of_era / 100),
-    );
-    let month_prime = day_of_year.saturating_mul(5).saturating_add(2) / 153;
-    let day = day_of_year
-        .saturating_sub(month_prime.saturating_mul(153).saturating_add(2) / 5)
-        .saturating_add(1);
-    let month = if month_prime < 10 {
-        month_prime.saturating_add(3)
-    } else {
-        month_prime.saturating_sub(9)
+/// A value it cannot read is not an error: refusing to start a database because
+/// a log setting was misspelled would be a worse outcome than reporting at the
+/// level and in the format it would have used anyway. It says so instead, once,
+/// as the first thing it reports.
+pub fn install() -> Flushing {
+    let asked_level = std::env::var(LEVEL).ok();
+    let asked_format = std::env::var(FORMAT).ok();
+    let (filter, unread_level) = filter(asked_level.as_deref());
+    let (format, unread_format) = format(asked_format.as_deref());
+    let (writer, guard) = tracing_appender::non_blocking(std::io::stderr());
+    let coloured = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
+    let installed = match format {
+        Format::Text => tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_timer(SystemTime)
+            .with_ansi(coloured)
+            .with_writer(writer)
+            .try_init(),
+        Format::Json => tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
+            .with_current_span(true)
+            .with_span_list(true)
+            .with_env_filter(filter)
+            .with_timer(SystemTime)
+            .with_writer(writer)
+            .try_init(),
     };
-    let year = if month <= 2 {
-        year.saturating_add(1)
-    } else {
-        year
+    // A subscriber an embedding caller installed first has won, which is the
+    // right outcome; this one's writer is then simply not kept.
+    if installed.is_ok() {
+        *WRITER.lock().unwrap_or_else(PoisonError::into_inner) = Some(guard);
+    }
+    if let Some(unread) = unread_level {
+        tracing::warn!(variable = LEVEL, value = %unread, using = DEFAULT, "unreadable log filter");
+    }
+    if let Some(unread) = unread_format {
+        tracing::warn!(variable = FORMAT, value = %unread, using = "text", "unreadable log format");
+    }
+    Flushing
+}
+
+/// End the process at once, after writing out what was reported.
+///
+/// Aborting rather than exiting keeps the reason these paths exist — nothing
+/// runs teardown on a process already known to be wrong — and flushing first
+/// keeps the one line that says why.
+pub fn abort() -> ! {
+    drop(WRITER.lock().unwrap_or_else(PoisonError::into_inner).take());
+    std::process::abort()
+}
+
+/// The filter `asked` describes, or the default and the text it could not read.
+fn filter(asked: Option<&str>) -> (EnvFilter, Option<String>) {
+    let Some(asked) = asked.map(str::trim).filter(|asked| !asked.is_empty()) else {
+        return (EnvFilter::new(DEFAULT), None);
     };
-    (year, month, day)
+    match EnvFilter::try_new(asked.to_ascii_lowercase()) {
+        Ok(filter) => (filter, None),
+        Err(_) => (EnvFilter::new(DEFAULT), Some(asked.to_owned())),
+    }
+}
+
+/// The format `asked` names, or text and the word it could not read.
+fn format(asked: Option<&str>) -> (Format, Option<String>) {
+    match asked
+        .map(|asked| asked.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        None | Some("" | "text") => (Format::Text, None),
+        Some("json") => (Format::Json, None),
+        Some(_) => (Format::Text, asked.map(str::to_owned)),
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use super::{DEFAULT, civil_from_days, level, stamped};
-    use log::LevelFilter;
-
-    fn at(seconds: u64) -> String {
-        stamped(
-            super::UNIX_EPOCH
-                .checked_add(Duration::from_secs(seconds))
-                .expect("a second count this test wrote is representable"),
-        )
-    }
-
-    #[test]
-    fn the_epoch_is_the_day_it_is_named_after() {
-        assert_eq!(at(0), "1970-01-01T00:00:00Z");
-    }
-
-    #[test]
-    fn a_leap_day_is_a_date_and_not_a_shift() {
-        // 2024-02-29. A year-length table that forgets the leap day answers
-        // 03-01 here, one day early and wrong for the rest of the year.
-        assert_eq!(at(1_709_164_800), "2024-02-29T00:00:00Z");
-    }
-
-    #[test]
-    fn the_century_rule_holds_where_a_naive_version_breaks() {
-        // 2000 is a leap year and 1900 was not, which is the pair that catches
-        // an implementation testing only `year % 4`.
-        assert_eq!(at(951_782_400), "2000-02-29T00:00:00Z");
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-    }
-
-    #[test]
-    fn the_time_of_day_is_carried_too() {
-        assert_eq!(at(86_399), "1970-01-01T23:59:59Z");
-        assert_eq!(at(86_400), "1970-01-02T00:00:00Z");
-    }
-
-    #[test]
-    fn a_level_nobody_recognises_is_the_default_rather_than_a_refusal() {
-        assert_eq!(level("warn"), LevelFilter::Warn);
-        assert_eq!(level("  ERROR "), LevelFilter::Error);
-        assert_eq!(level("off"), LevelFilter::Off);
-        assert_eq!(level("shout"), DEFAULT);
-        assert_eq!(level(""), DEFAULT);
-    }
-}
+mod tests;

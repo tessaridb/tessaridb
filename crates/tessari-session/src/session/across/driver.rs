@@ -95,7 +95,7 @@ impl Session<'_> {
         let id = fresh_id();
         let answered = self.drive(
             store,
-            &carrier,
+            carrier,
             &parts,
             (id, lapse, merged),
             user.as_ref(),
@@ -114,7 +114,7 @@ impl Session<'_> {
     fn drive(
         &mut self,
         store: &Store,
-        carrying: &std::sync::Arc<dyn Participants>,
+        carrying: std::sync::Arc<dyn Participants>,
         parts: &[AcrossPart],
         (id, lapse, merged): (TransactionId, u64, bool),
         user: Option<&tessari_storage::UserDefinition>,
@@ -193,9 +193,10 @@ impl Session<'_> {
             };
             // Said here because the caller may only ever hear that the
             // decision is in doubt, and this is why it was an abort.
-            log::info!(
-                "a cross-leader prepare for {:?} was refused: {refusal}",
-                part.home
+            tracing::info!(
+                range = ?part.home,
+                refusal = %refusal,
+                "a cross-leader prepare was refused"
             );
             refused.get_or_insert(refusal);
         }
@@ -345,7 +346,7 @@ impl Session<'_> {
     /// leader until the resolution lands (D13d).
     fn resolve_parts(
         &mut self,
-        carrying: &std::sync::Arc<dyn Participants>,
+        carrying: std::sync::Arc<dyn Participants>,
         parts: &[AcrossPart],
         user: Option<&tessari_storage::UserDefinition>,
         resolves: Vec<AcrossAsk>,
@@ -355,10 +356,10 @@ impl Session<'_> {
             match part.leader {
                 None => {
                     if let Err(why) = self.answer_across(&asked) {
-                        log::warn!(
-                            "a cross-leader resolution for {:?} did not land and is left to its \
-                             record: {why}",
-                            part.home
+                        tracing::warn!(
+                            range = ?part.home,
+                            error = %why,
+                            "a cross-leader resolution did not land and is left to its record"
                         );
                     }
                 }
@@ -368,7 +369,7 @@ impl Session<'_> {
         if remote.is_empty() {
             return;
         }
-        let carrier = std::sync::Arc::clone(carrying);
+        let carrier = carrying;
         let user = user.cloned();
         let behind = std::thread::Builder::new()
             .name("across-resolve".to_owned())
@@ -378,10 +379,10 @@ impl Session<'_> {
                         let (carrier, user) = (&carrier, user.as_ref());
                         scope.spawn(move || {
                             if let Err(why) = carrier.ask(*node, user, asked) {
-                                log::warn!(
-                                    "a cross-leader resolution for {home:?} did not land and is \
-                                     left to its record: {}",
-                                    why.reason
+                                tracing::warn!(
+                                    range = ?home,
+                                    error = %why.reason,
+                                    "a cross-leader resolution did not land and is left to its record"
                                 );
                             }
                         });
@@ -391,7 +392,7 @@ impl Session<'_> {
         // No thread to be had: the resolutions are the record's to finish,
         // which the housekeeping of every participant does (D7).
         if let Err(why) = behind {
-            log::warn!("cross-leader resolutions left to their records: {why}");
+            tracing::warn!(error = %why, "cross-leader resolutions left to their records");
         }
     }
 }

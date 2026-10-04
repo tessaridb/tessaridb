@@ -76,13 +76,12 @@ impl tessari_wire::Holding for PeerDoor {
     }
 
     fn met(&self, met: &tessari_wire::Met) {
-        log::info!(
-            "peer {} greeted at epoch {}, tail {}{}",
-            hex(&met.said.node),
-            met.said.epoch.get(),
-            met.said.tail.get(),
-            met.voted
-                .map_or(String::new(), |vote| format!(", {vote:?}")),
+        tracing::info!(
+            peer = %hex(&met.said.node),
+            epoch = met.said.epoch.get(),
+            tail = met.said.tail.get(),
+            voted = ?met.voted,
+            "a peer greeted"
         );
         bind_the_greeter(&self.db, met.said.node, Some(&met.presented), None);
     }

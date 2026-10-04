@@ -93,13 +93,16 @@ pub fn first_user(db: &Db) -> Result<Option<String>, String> {
     let mut session = db.session();
     match session.run(&script) {
         Ok(_) => {
-            log::info!("declared {name} as the store's first user, from {USER}");
+            tracing::info!(user = %name, from = USER, "declared the store's first user");
             Ok(Some(name))
         }
         // The store is closed, which means it already has users. Every start
         // after the first reaches this, so it is not a failure.
         Err(Error::NotSignedIn { .. }) => {
-            log::info!("this store already has users, so {USER} was not applied");
+            tracing::info!(
+                variable = USER,
+                "this store already has users, so the variable was not applied"
+            );
             Ok(None)
         }
         Err(failure) => Err(format!("{USER}: {failure}")),

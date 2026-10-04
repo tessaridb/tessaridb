@@ -140,10 +140,11 @@ fn undo(created: &[String], defined: &BTreeSet<String>) -> String {
 /// the restore, and the operator is the one who can remove what is left.
 fn undone(restorer: &mut Session<'_>, created: &[String], defined: &BTreeSet<String>) {
     if let Err(failure) = restorer.run(&undo(created, defined)) {
-        log::warn!(
-            "a refused restore could not take away what it created ({}; {}): {failure}",
-            created.join(", "),
-            defined.iter().cloned().collect::<Vec<_>>().join(", ")
+        tracing::warn!(
+            created = %created.join(", "),
+            defined = %defined.iter().cloned().collect::<Vec<_>>().join(", "),
+            error = %failure,
+            "a refused restore could not take away what it created"
         );
     }
 }

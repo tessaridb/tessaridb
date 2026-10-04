@@ -9,6 +9,7 @@
 //! for a bounded grace afterwards: long enough for the follower's first collect,
 //! never long enough for a follower that died to pin the disk.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -30,12 +31,19 @@ struct Hold {
 #[derive(Debug, Default)]
 pub(crate) struct LogHolds {
     held: Mutex<Vec<Hold>>,
-    next: Mutex<u64>,
+    /// The last id given. An id needs only to be unique, never ordered against
+    /// the held list, which its own lock orders — so a counter, not a lock.
+    next: AtomicU64,
 }
 
 impl LogHolds {
     pub(crate) fn shared() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// An id no other hold of this process carries; the first is 1.
+    fn next_id(&self) -> u64 {
+        self.next.fetch_add(1, Ordering::Relaxed).wrapping_add(1)
     }
 
     /// The lowest position held in `log`, after dropping the holds that lapsed.
@@ -100,11 +108,7 @@ impl Store {
     #[must_use]
     pub fn hold_logs(&self, positions: &[(LogId, Sequence)]) -> LogHold {
         let holds = Arc::clone(self.log_holds());
-        let id = {
-            let mut next = holds.next.lock().unwrap_or_else(PoisonError::into_inner);
-            *next = next.wrapping_add(1);
-            *next
-        };
+        let id = holds.next_id();
         holds
             .held
             .lock()
@@ -121,3 +125,6 @@ impl Store {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

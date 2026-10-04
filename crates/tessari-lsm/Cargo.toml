@@ -12,10 +12,10 @@ publish.workspace = true
 [dependencies]
 tessari-kv.workspace = true
 thiserror.workspace = true
-rocksdb = { version = "0.25", default-features = false, features = ["lz4", "zstd", "bindgen-runtime"] }
+rocksdb = { workspace = true, features = ["lz4", "zstd", "bindgen-runtime"] }
 # Named directly so its build tells this one where the engine's headers are,
 # for the encryption provider; the same version the binding above links.
-librocksdb-sys = { version = "0.19", default-features = false }
+librocksdb-sys.workspace = true
 tessari-vault.workspace = true
 chacha20.workspace = true
 getrandom.workspace = true
@@ -31,7 +31,7 @@ tessari-encoding.workspace = true
 tessari-session.workspace = true
 tessari-storage.workspace = true
 tessari-types.workspace = true
-tempfile = "3"
+tempfile.workspace = true
 
 [lints]
 workspace = true

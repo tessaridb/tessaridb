@@ -24,7 +24,7 @@
 //! Nothing on the answering side coordinates again, so a stale view cannot send
 //! a request round the cluster (Q-109).
 
-use std::sync::{Arc, Weak};
+use std::sync::Weak;
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -261,10 +261,13 @@ impl core::fmt::Debug for Coordinator {
 impl Coordinator {
     /// A coordinator for the node that holds `db`, speaking as `me` with its
     /// peer `credential`, whose key also signs every assertion.
+    ///
+    /// `db` is a weak handle because the store holds the coordinator: a strong
+    /// one would keep a stopped node's store alive for as long as it does.
     #[must_use]
-    pub fn new(db: &Arc<Db>, me: [u8; NODE_ID_LEN], keys: PeerKeys, greeting: Greeting) -> Self {
+    pub fn new(db: Weak<Db>, me: [u8; NODE_ID_LEN], keys: PeerKeys, greeting: Greeting) -> Self {
         Self {
-            db: Arc::downgrade(db),
+            db,
             me,
             keys,
             greeting,
@@ -383,7 +386,7 @@ mod tests {
             .self_signed(&key)
             .expect("a certificate");
         Coordinator::new(
-            db,
+            Arc::downgrade(db),
             ME,
             crate::keys::PeerKeys::new(
                 Credential {

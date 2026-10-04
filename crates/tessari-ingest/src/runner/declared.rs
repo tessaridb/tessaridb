@@ -23,9 +23,9 @@ pub(crate) fn declarations(
     {
         match destination_of(&mut transaction, &definition) {
             Some(table) => found.push((definition, table)),
-            None => log::warn!(
-                "consumer {} has no destination any more, so it is not started",
-                definition.name
+            None => tracing::warn!(
+                consumer = %definition.name,
+                "a stream consumer has no destination any more, so it is not started"
             ),
         }
     }

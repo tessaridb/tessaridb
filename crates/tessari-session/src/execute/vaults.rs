@@ -1,5 +1,7 @@
 //! Vaults: declaring, unsealing, recipients and reading secrets.
 
+mod guessing;
+
 use std::collections::BTreeMap;
 use tessari_encoding::{decode_payload, encode_payload};
 use tessari_ql::{Name, RecordTarget, Span, TableRef};
@@ -13,6 +15,7 @@ use tessari_types::{IdentityKind, TableId, Value};
 use crate::error::{Error, Result};
 use crate::outcome::Outcome;
 use crate::session::Session;
+pub(super) use guessing::guessed;
 
 impl Session<'_> {
     /// `DROP GEO places` — the store's definition, its geometry field and its
@@ -181,7 +184,7 @@ impl Session<'_> {
                 .map_err(tessari_storage::Error::Vault)
         })?;
         Catalog::new(transaction).set_vault_root(&tessari_storage::VaultRoot(moved));
-        log::info!("the vault passphrase was changed");
+        tracing::info!("the vault passphrase was changed");
         Ok(Outcome::Done)
     }
 
@@ -461,46 +464,6 @@ pub(crate) fn unseal_throttled(
     passphrase: &str,
 ) -> Result<()> {
     guessed(store, root, || store.vault().unseal(&root.0, passphrase))
-}
-
-/// Try `attempt`, which checks a passphrase against `root`, under the bounds
-/// sign-in has, counting misses in `store`'s table.
-///
-/// A passphrase is guessed exactly as a password is — an attempt costs the
-/// guesser nothing and costs this node an Argon2id derivation — so it gets the
-/// same two bounds, asked before the derivation runs: a run of misses is made
-/// to wait, and only so many derivations run at once. The count is kept under
-/// the root's salt, because what is being guessed is this store's passphrase
-/// and not anybody's account: a guesser holding many accounts still gets three
-/// tries, not three each. Unseal and change share it, so a change is not a
-/// second, unthrottled way to test a guess.
-pub(super) fn guessed<T>(
-    store: &tessari_storage::Store,
-    root: &tessari_storage::VaultRoot,
-    attempt: impl FnOnce() -> tessari_storage::Result<T>,
-) -> Result<T> {
-    let key = passphrase_key(root);
-    if !store.attempts().permit(&key) {
-        log::warn!("unseal refused: too many recent wrong passphrases");
-        return Err(Error::PassphraseThrottled);
-    }
-    let Some(_verifying) = crate::throttle::verifying() else {
-        log::warn!("unseal refused: already verifying as many as this node will");
-        return Err(Error::PassphraseThrottled);
-    };
-    match attempt() {
-        Ok(held) => {
-            store.attempts().succeeded(&key);
-            Ok(held)
-        }
-        Err(refused) => {
-            if refused.is_wrong_key() {
-                log::warn!("unseal refused: wrong passphrase");
-                store.attempts().failed(&key);
-            }
-            Err(refused.into())
-        }
-    }
 }
 
 /// The throttle's key for guesses at one store's passphrase.

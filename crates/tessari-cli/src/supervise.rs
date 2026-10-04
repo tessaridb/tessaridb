@@ -73,13 +73,18 @@ where
             return;
         };
         if stop.is_cancelled() {
-            log::error!("{name} panicked while stopping ({})", described(&*payload));
+            tracing::error!(
+                cadence = name,
+                panic = described(&*payload),
+                "a cadence panicked while stopping"
+            );
             return;
         }
-        log::error!(
-            "{name} panicked ({}); starting it again in {} ms",
-            described(&*payload),
-            pause.as_millis()
+        tracing::error!(
+            cadence = name,
+            panic = described(&*payload),
+            restart_in_ms = pause.as_millis(),
+            "a cadence panicked; starting it again"
         );
         tokio::select! {
             biased;
@@ -107,20 +112,21 @@ pub async fn listener<E>(
     match tokio::spawn(serving).await {
         Ok(Ok(())) => {}
         Ok(Err(why)) => {
-            log::error!("the {name} listener failed ({why}); the node ends here");
-            std::process::abort();
+            tracing::error!(listener = name, error = %why, "a listener failed; the node ends here");
+            crate::logging::abort();
         }
         Err(ended) => {
             match ended.try_into_panic() {
-                Ok(payload) => log::error!(
-                    "the {name} listener panicked ({}); the node ends here",
-                    described(&*payload)
+                Ok(payload) => tracing::error!(
+                    listener = name,
+                    panic = described(&*payload),
+                    "a listener panicked; the node ends here"
                 ),
                 Err(ended) => {
-                    log::error!("the {name} listener ended ({ended}); the node ends here")
+                    tracing::error!(listener = name, reason = %ended, "a listener ended; the node ends here")
                 }
             }
-            std::process::abort();
+            crate::logging::abort();
         }
     }
 }
@@ -137,10 +143,11 @@ pub fn log_panics() {
             || "an unknown place".to_owned(),
             |at| format!("{}:{}", at.file(), at.line()),
         );
-        log::error!(
-            "thread '{}' panicked at {place}: {}",
-            thread.name().unwrap_or("unnamed"),
-            described(info.payload())
+        tracing::error!(
+            thread = thread.name().unwrap_or("unnamed"),
+            at = %place,
+            panic = described(info.payload()),
+            "a thread panicked"
         );
     }));
 }

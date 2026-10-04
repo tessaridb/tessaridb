@@ -32,6 +32,7 @@ pub mod around;
 pub mod between;
 pub mod bounds;
 pub mod curve;
+mod error;
 pub mod grid;
 pub mod measure;
 pub mod predicate;

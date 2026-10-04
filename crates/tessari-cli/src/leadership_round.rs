@@ -80,7 +80,7 @@ pub(crate) async fn stand_for_leadership(
         let me = match store.node_identity() {
             Ok(identity) => identity,
             Err(why) => {
-                log::warn!("this node cannot say who it is: {why}");
+                tracing::warn!(error = %why, "this node cannot say who it is");
                 return;
             }
         };
@@ -98,7 +98,7 @@ pub(crate) async fn stand_for_leadership(
         }) {
             Ok(read) => read,
             Err(why) => {
-                log::warn!("this node cannot say who its peers are: {why}");
+                tracing::warn!(error = %why, "this node cannot say who its peers are");
                 return;
             }
         };
@@ -196,11 +196,10 @@ pub(crate) async fn stand_for_leadership(
             now,
             periods.staleness_floor(),
         ) {
-            log::info!(
-                "not standing: a peer runs the failover policy set at epoch {} version {}, \
-                     which supersedes this node's own",
-                newer.epoch.get(),
-                newer.version
+            tracing::info!(
+                epoch = newer.epoch.get(),
+                version = newer.version,
+                "not standing: a peer runs a failover policy that supersedes this node's own"
             );
             return;
         }
@@ -213,7 +212,7 @@ pub(crate) async fn stand_for_leadership(
             match endpoint.parse() {
                 Ok(address) => peers.push((*node, address)),
                 Err(why) => {
-                    log::warn!("the voting peer's endpoint {endpoint} is not an address: {why}");
+                    tracing::warn!(endpoint = %endpoint, error = %why, "the voting peer's endpoint is not an address");
                 }
             }
         }
@@ -223,7 +222,7 @@ pub(crate) async fn stand_for_leadership(
         let said = match greeting(db) {
             Ok(said) => said,
             Err(why) => {
-                log::warn!("this node cannot say what it holds: {why}");
+                tracing::warn!(error = %why, "this node cannot say what it holds");
                 return;
             }
         };
@@ -254,7 +253,7 @@ pub(crate) async fn stand_for_leadership(
             db.hold(held.epoch, held.lease());
         }
         if held.epoch != before.epoch {
-            log::info!("leading at epoch {}", held.epoch.get());
+            tracing::info!(epoch = held.epoch.get(), "leading the store line");
             // Written when the EPOCH changes and not when the lease does: a
             // renewal keeps its epoch and only moves the lease, about every
             // 300 ms for as long as this node keeps leading, and a row per
@@ -269,18 +268,19 @@ pub(crate) async fn stand_for_leadership(
             // node, and treating it as fatal would let a disk hiccup
             // overturn a decision a majority took.
             if let Err(refused) = db.record_leadership(tessaridb::Reach::Store, held.epoch) {
-                log::warn!(
-                    "leading at epoch {} but could not record it: {refused}",
-                    held.epoch.get()
+                tracing::warn!(
+                    epoch = held.epoch.get(),
+                    refusal = %refused,
+                    "leading the store line but could not record it"
                 );
             }
         }
     };
     // Nothing wakes the campaign early: it runs on the policy's cadence alone.
     let unwoken = tokio::sync::Notify::new();
-    tessari_wire::every_paced(&stop, &unwoken, move |now| {
+    tessari_wire::every_paced("leadership", &stop, &unwoken, cadence, move |now| {
         pass(now, &mut cadence);
-        cadence
+        Ok(cadence)
     })
     .await;
 }
@@ -373,7 +373,7 @@ pub(crate) fn stand_for_a_placed_range(
     }) {
         Ok(said) => said,
         Err(why) => {
-            log::warn!("this node cannot say what it holds: {why}");
+            tracing::warn!(error = %why, "this node cannot say what it holds");
             return;
         }
     };
@@ -409,11 +409,13 @@ pub(crate) fn stand_for_a_placed_range(
         db.store().hold_range(range, held.epoch, held.lease());
     }
     if held.epoch != before.epoch {
-        log::info!("leading {range:?} at epoch {}", held.epoch.get());
+        tracing::info!(range = ?range, epoch = held.epoch.get(), "leading a range");
         if let Err(refused) = db.record_leadership(range, held.epoch) {
-            log::warn!(
-                "leading {range:?} at epoch {} but could not record it: {refused}",
-                held.epoch.get()
+            tracing::warn!(
+                range = ?range,
+                epoch = held.epoch.get(),
+                refusal = %refused,
+                "leading a range but could not record it"
             );
         }
     }
@@ -459,9 +461,10 @@ fn hands_to_the_preferred(
     ) else {
         return false;
     };
-    log::info!(
-        "handing {range:?} to its preferred candidate {}",
-        crate::greeting_round::hex(&to)
+    tracing::info!(
+        range = ?range,
+        to = %crate::greeting_round::hex(&to),
+        "handing a range to its preferred candidate"
     );
     *yielded = Some((range, now));
     true

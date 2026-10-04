@@ -19,6 +19,7 @@
 //! A span over identities is therefore exactly a span over the table's keys, and
 //! a boundary written `'g'` bounds the records a span read `t:'g'..` would walk.
 
+mod declared;
 mod moving;
 
 pub(crate) use moving::Unmovable;
@@ -31,6 +32,7 @@ use tessari_types::IdentityKind;
 
 use super::definition::{TableKind, TableShape, object};
 use crate::error::{Error, Result};
+pub(crate) use declared::declared_for;
 
 const FIELD_ID: &str = "id";
 const FIELD_FROM: &str = "from";
@@ -392,69 +394,6 @@ impl ShardMap {
     }
 }
 
-/// The map a table declaration asks for, or the refusal that says why not.
-///
-/// The rules live here, beside the map, rather than in the grammar: a parser is
-/// the wrong place for an invariant about a stored table, because nothing stops
-/// a later caller building a shape by hand.
-///
-/// # Errors
-///
-/// [`Error::SplitOnAKindThatIsNotRecords`] for any kind but a table, [`Error::SplitNeedsGeneratedUuid`] for a counter identity, and
-/// [`Error::SplitPointsOutOfOrder`] for points that do not ascend strictly.
-pub(crate) fn declared_for(table: &str, shape: &TableShape) -> Result<Option<ShardMap>> {
-    if shape.split.is_empty() {
-        return Ok(None);
-    }
-    let kind = match &shape.kind {
-        TableKind::Table => None,
-        TableKind::Collection => Some("a collection"),
-        TableKind::Bucket(_) => Some("a bucket"),
-        TableKind::Edge(_) => Some("an edge table"),
-        TableKind::Vector(_) => Some("a vector store"),
-        TableKind::Geo => Some("a geo store"),
-        TableKind::Vault(_) => Some("a vault"),
-        TableKind::Queue(_) => Some("a queue"),
-        TableKind::View(_) => Some("a view"),
-        TableKind::Series(_) => Some("a series"),
-        TableKind::Space(_) => Some("a space"),
-        TableKind::Topic(_) => Some("a topic"),
-    };
-    if let Some(kind) = kind {
-        return Err(Error::SplitOnAKindThatIsNotRecords {
-            table: table.to_owned(),
-            kind,
-        });
-    }
-    // A node table of a graph is walked from its neighbours, and a walk has no
-    // span to confine it to one shard; splitting one would make every traversal
-    // on a node holding part of it answer from the part (G031 S3.3).
-    if shape.graph.is_some() {
-        return Err(Error::SplitOnAKindThatIsNotRecords {
-            table: table.to_owned(),
-            kind: "a node table of a graph",
-        });
-    }
-    if shape.identity != IdentityKind::Uuid {
-        return Err(Error::SplitNeedsGeneratedUuid {
-            table: table.to_owned(),
-        });
-    }
-    ShardMap::declared(&shape.split).map_err(|refused| match refused {
-        Unsplittable::OutOfOrder { position } => Error::SplitPointsOutOfOrder {
-            table: table.to_owned(),
-            position: position.saturating_add(1),
-        },
-        // A shard id is a u32; four billion split points is not a declaration
-        // anybody writes, and it is refused under the ordering name because the
-        // list, as written, does not describe a map.
-        Unsplittable::TooMany => Error::SplitPointsOutOfOrder {
-            table: table.to_owned(),
-            position: shape.split.len(),
-        },
-    })
-}
-
 /// A stored shard id: a positive whole number that fits one.
 fn shard_id(value: &Value) -> Option<ShardId> {
     let Value::Number(number) = value else {
@@ -497,126 +436,4 @@ fn id_from_value(value: &Value) -> Option<RecordId> {
 }
 
 #[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used)]
-
-    use super::*;
-
-    fn text(value: &str) -> RecordId {
-        RecordId::Text(value.to_owned())
-    }
-
-    fn map(points: &[&str]) -> ShardMap {
-        let points: Vec<_> = points.iter().map(|point| text(point)).collect();
-        ShardMap::declared(&points).unwrap().unwrap()
-    }
-
-    #[test]
-    fn no_points_is_no_map() {
-        assert_eq!(ShardMap::declared(&[]).unwrap(), None);
-    }
-
-    #[test]
-    fn two_points_make_three_shards_numbered_in_key_order() {
-        let spans: Vec<_> = map(&["g", "p"]).spans().map(|span| span.id.get()).collect();
-        assert_eq!(spans, vec![1, 2, 3]);
-    }
-
-    #[test]
-    fn a_boundary_belongs_to_the_shard_it_begins() {
-        let shards = map(&["g", "p"]);
-        assert_eq!(shards.shard_of(&text("a")).get(), 1);
-        assert_eq!(shards.shard_of(&text("f")).get(), 1);
-        assert_eq!(
-            shards.shard_of(&text("g")).get(),
-            2,
-            "a lower bound is inclusive"
-        );
-        assert_eq!(shards.shard_of(&text("o")).get(), 2);
-        assert_eq!(shards.shard_of(&text("p")).get(), 3);
-        assert_eq!(shards.shard_of(&text("zzz")).get(), 3);
-    }
-
-    #[test]
-    fn identity_kinds_order_as_their_keys_do() {
-        // Every integer sorts before every text, and every text before every
-        // uuid — the discriminant order the key grammar fixes.
-        let points = [RecordId::Int(100), text("m")];
-        let shards = ShardMap::declared(&points).unwrap().unwrap();
-        assert_eq!(shards.shard_of(&RecordId::Int(-5)).get(), 1);
-        assert_eq!(shards.shard_of(&RecordId::Int(100)).get(), 2);
-        assert_eq!(shards.shard_of(&text("a")).get(), 2);
-        assert_eq!(shards.shard_of(&RecordId::Uuid([0; 16])).get(), 3);
-    }
-
-    #[test]
-    fn points_out_of_order_or_repeated_are_named_not_sorted() {
-        assert_eq!(
-            ShardMap::declared(&[text("p"), text("g")]),
-            Err(Unsplittable::OutOfOrder { position: 1 })
-        );
-        assert_eq!(
-            ShardMap::declared(&[text("a"), text("g"), text("g")]),
-            Err(Unsplittable::OutOfOrder { position: 2 })
-        );
-    }
-
-    #[test]
-    fn a_map_round_trips_through_the_value_the_catalog_holds() {
-        let points = [
-            RecordId::Int(7),
-            text("m"),
-            RecordId::Uuid([3; 16]),
-            RecordId::Bytes(vec![1, 2]),
-        ];
-        let shards = ShardMap::declared(&points).unwrap().unwrap();
-        assert_eq!(ShardMap::from_value(&shards.to_value()).unwrap(), shards);
-    }
-
-    #[test]
-    fn spans_report_both_ends_with_the_open_ends_as_none() {
-        let shards = map(&["g"]);
-        let spans: Vec<_> = shards.spans().collect();
-        assert_eq!(spans[0].from, None);
-        assert_eq!(spans[0].to, Some(&text("g")));
-        assert_eq!(spans[1].from, Some(&text("g")));
-        assert_eq!(spans[1].to, None);
-    }
-
-    #[test]
-    fn a_stored_map_that_is_not_one_map_is_refused_whole() {
-        let bad = |value: Value| ShardMap::from_value(&value).is_err();
-        assert!(bad(Value::Array(Vec::new())), "empty");
-        let shard = |id: i64, from: Option<&str>| {
-            let mut fields = BTreeMap::from([("id".to_owned(), Value::from(id))]);
-            if let Some(from) = from {
-                fields.insert("from".to_owned(), Value::from(from));
-            }
-            Value::Object(fields)
-        };
-        assert!(
-            bad(Value::Array(vec![shard(1, Some("a"))])),
-            "first has a bound"
-        );
-        assert!(
-            bad(Value::Array(vec![shard(1, None), shard(2, None)])),
-            "second has none"
-        );
-        assert!(
-            bad(Value::Array(vec![
-                shard(1, None),
-                shard(2, Some("p")),
-                shard(3, Some("g"))
-            ])),
-            "out of order"
-        );
-        assert!(
-            bad(Value::Array(vec![shard(1, None), shard(1, Some("g"))])),
-            "repeated id"
-        );
-        assert!(
-            bad(Value::Array(vec![shard(0, None)])),
-            "zero is not a shard"
-        );
-    }
-}
+mod tests;

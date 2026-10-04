@@ -60,9 +60,10 @@ impl<A: Accept<Io = TcpStream>> Accept for Securing<A> {
                 accepted = self.accepting.accept() => {
                     let (stream, from) = accepted?;
                     let Ok(held) = Arc::clone(&self.room).try_acquire_owned() else {
-                        log::warn!(
-                            "an HTTP connection from {from} was closed: {MAX_CONNECTIONS} \
-                             TLS handshakes already in flight"
+                        tracing::warn!(
+                            from = %from,
+                            in_flight = MAX_CONNECTIONS,
+                            "an HTTP connection was closed: as many TLS handshakes in flight as this node takes"
                         );
                         continue;
                     };
@@ -77,11 +78,11 @@ impl<A: Accept<Io = TcpStream>> Accept for Securing<A> {
                         match shaken {
                             Ok(Ok(secured)) => Some((secured, from)),
                             Ok(Err(why)) => {
-                                log::info!("an HTTP connection from {from} failed its TLS handshake: {why}");
+                                tracing::info!(from = %from, error = %why, "an HTTP connection failed its TLS handshake");
                                 None
                             }
                             Err(_) => {
-                                log::info!("an HTTP connection from {from} did not finish its TLS handshake in time");
+                                tracing::info!(from = %from, "an HTTP connection did not finish its TLS handshake in time");
                                 None
                             }
                         }

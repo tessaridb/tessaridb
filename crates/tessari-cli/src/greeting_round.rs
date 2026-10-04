@@ -29,6 +29,12 @@ use tessaridb::Db;
 /// a healthy node out of all routing. A round in which nobody answered is a
 /// cluster in trouble rather than an operation that went wrong, so it is logged
 /// and the cadence runs again.
+#[expect(
+    unused_assignments,
+    reason = "the failover period the pass re-reads is state for the NEXT pass; rustc lints a \
+              by-value capture assigned in an FnMut closure as never read when the closure also \
+              returns early without reading it (G060 SG4)"
+)]
 pub(crate) async fn dial_peers(
     db: std::sync::Arc<Db>,
     (keys, join): (tessari_wire::PeerKeys, Option<[u8; 32]>),
@@ -45,7 +51,8 @@ pub(crate) async fn dial_peers(
     // The leader the last round pointed this node at, so the collection round is
     // woken when that changes and not on every greeting.
     let mut followed: Option<[u8; tessari_storage::NODE_ID_LEN]> = None;
-    tessari_wire::every_paced(&stop, &woken.greeting, move |now| {
+    let first = tessari_storage::Failover::DEFAULT.awareness();
+    tessari_wire::every_paced("greeting", &stop, &woken.greeting, first, move |now| {
         let (db, keys, seeds, published) = (&*db, &keys, &seeds[..], &*published);
         // Read through the pieces the facade already publishes rather than
         // through a new `Db` method: `Db::store` and `Store::begin` are both
@@ -58,7 +65,7 @@ pub(crate) async fn dial_peers(
         // staleness floor is derived from. It rides this round rather than
         // the commit path deliberately: see `Store::mark_tail`.
         if let Err(why) = store.mark_tail(tessari_types::Reach::Store) {
-            log::warn!("this node cannot date its own log position: {why}");
+            tracing::warn!(error = %why, "this node cannot date its own log position");
         }
         let declared = store.begin().and_then(|mut transaction| {
             let catalog = tessari_storage::Catalog::new(&mut transaction);
@@ -72,12 +79,16 @@ pub(crate) async fn dial_peers(
                 (identity.id, declared)
             }
             (Err(why), _) => {
-                log::warn!("this node cannot say who it is: {why}");
-                return periods.awareness();
+                return Err(tessari_wire::PassFailed::new(
+                    "this node cannot say who it is",
+                    why,
+                ));
             }
             (_, Err(why)) => {
-                log::warn!("this node cannot say who its peers are: {why}");
-                return periods.awareness();
+                return Err(tessari_wire::PassFailed::new(
+                    "this node cannot say who its peers are",
+                    why,
+                ));
             }
         };
         let mut reached = 0_usize;
@@ -111,7 +122,7 @@ pub(crate) async fn dial_peers(
                     // refreshing is a follower that stops knowing who to
                     // follow, whose symptom is a copy that silently never
                     // changes.
-                    log::warn!("the greeting to {endpoint} did not land: {why}");
+                    tracing::warn!(endpoint = %endpoint, error = %why, "a greeting did not land");
                     why.to_string()
                 })
             };
@@ -140,9 +151,9 @@ pub(crate) async fn dial_peers(
             ("seed", seeds.len())
         };
         if reached == 0 && dialled > 0 {
-            log::warn!("no {kind} answered this round; {dialled} were dialled");
+            tracing::warn!(kind, dialled, "nobody answered this round");
         } else {
-            log::info!("{reached} of {dialled} {kind}(s) answered");
+            tracing::info!(kind, reached, dialled, "greeting round answered");
         }
         // G053 SG2b. A clustered node that may not write and can name no
         // leader to follow greets again after one round time rather than
@@ -161,9 +172,9 @@ pub(crate) async fn dial_peers(
             wakes.collection.notify_one();
         }
         if tessari_wire::names_a_peer(&declared, &me) && !leading && leader.is_none() {
-            periods.round()
+            Ok(periods.round())
         } else {
-            periods.awareness()
+            Ok(periods.awareness())
         }
     })
     .await;
@@ -179,7 +190,7 @@ fn offer_the_token(
     let said = match greeting(db) {
         Ok(said) => said,
         Err(why) => {
-            log::warn!("this node cannot say what it holds: {why}");
+            tracing::warn!(error = %why, "this node cannot say what it holds");
             return;
         }
     };
@@ -192,14 +203,15 @@ fn offer_the_token(
             tessari_wire::Ask::Join(token),
         ) {
             Ok((_, tessari_wire::Answered::Joined(true))) => {
-                log::info!("{} bound this node to its row", seed.endpoint);
+                tracing::info!(seed = %seed.endpoint, "a seed bound this node to its row");
             }
-            Ok(_) => log::info!(
-                "{} holds no row this join token binds; it may not lead, or the token \
-                 expired or was replaced",
-                seed.endpoint
+            Ok(_) => tracing::info!(
+                seed = %seed.endpoint,
+                "the seed holds no row this join token binds; it may not lead, or the token expired or was replaced"
             ),
-            Err(why) => log::info!("the join token did not reach {}: {why}", seed.endpoint),
+            Err(why) => {
+                tracing::info!(seed = %seed.endpoint, error = %why, "the join token did not reach the seed")
+            }
         }
     }
 }
@@ -283,20 +295,20 @@ pub(crate) fn bind_the_greeter(
     };
     match bind() {
         Ok((bound, Some(name))) => {
-            log::info!("peer {} now names replica {name}", hex(&node));
+            tracing::info!(peer = %hex(&node), replica = %name, "a peer now names its replica row");
             bound
         }
         Ok((bound, None)) => {
             if token.is_some() && !bound {
-                log::info!(
-                    "peer {} offered a join token that binds no row here",
-                    hex(&node)
+                tracing::info!(
+                    peer = %hex(&node),
+                    "a peer offered a join token that binds no row here"
                 );
             }
             bound
         }
         Err(why) => {
-            log::info!("peer {} was not bound to a declared row: {why}", hex(&node));
+            tracing::info!(peer = %hex(&node), refusal = %why, "a peer was not bound to a declared row");
             false
         }
     }

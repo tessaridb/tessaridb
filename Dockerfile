@@ -63,7 +63,11 @@ RUN chmod +x /usr/local/bin/tessaridb-entrypoint /usr/local/bin/tessaridb-health
 #   TESSARIDB_ADDRESS         the wire protocol's address. Empty turns it off.
 #   TESSARIDB_HTTP_ADDRESS    the HTTP surface's address. Empty turns it off.
 #   TESSARIDB_LOG             how much the node reports: error, warn, info,
-#                             debug or trace.
+#                             debug or trace, or per-module directives such
+#                             as `info,tessari_wire=debug`.
+#   TESSARIDB_LOG_FORMAT      `text` (one readable line per event) or `json`
+#                             (one object per event, for a log collector).
+#                             Not set here, so a container logs text.
 #   TESSARIDB_BACKUP_DIR      where `BACKUP … TO '<name>'` (and the console's
 #                             Backup tab) writes; inside the volume, so a
 #                             backup outlives the container. Empty refuses

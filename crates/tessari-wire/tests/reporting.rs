@@ -1,4 +1,5 @@
-//! What a node says about a connection while it serves it.
+//! What a node says about a connection while it serves it, and about each pass
+//! of the cadences it runs.
 //!
 //! A logger is process-wide and installable exactly once, so every assertion
 //! about what was reported lives in this one file and runs against one captured
@@ -12,8 +13,12 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
-use tessari_wire::{Client, Node};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Duration;
+
+use tessari_wire::{Client, Node, PassFailed, every, every_paced};
 use tessaridb::Db;
+use tokio_util::sync::CancellationToken;
 
 /// Everything the node reported, in order.
 static LINES: OnceLock<Arc<Mutex<Vec<String>>>> = OnceLock::new();
@@ -22,21 +27,23 @@ fn captured() -> Arc<Mutex<Vec<String>>> {
     Arc::clone(LINES.get_or_init(|| Arc::new(Mutex::new(Vec::new()))))
 }
 
+/// A writer that keeps each formatted event as one line of the capture.
+///
+/// The formatter writes a whole event in one call, so one call is one line.
 struct Capture;
 
-impl log::Log for Capture {
-    fn enabled(&self, _: &log::Metadata<'_>) -> bool {
-        true
-    }
-
-    fn log(&self, record: &log::Record<'_>) {
+impl std::io::Write for Capture {
+    fn write(&mut self, written: &[u8]) -> std::io::Result<usize> {
         captured()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(format!("{} {}", record.level(), record.args()));
+            .push(String::from_utf8_lossy(written).trim().to_owned());
+        Ok(written.len())
     }
 
-    fn flush(&self) {}
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Nothing here runs beside anything else here.
@@ -55,8 +62,12 @@ static ALONE: Mutex<()> = Mutex::new(());
 fn listening() -> std::sync::MutexGuard<'static, ()> {
     static INSTALLED: OnceLock<()> = OnceLock::new();
     INSTALLED.get_or_init(|| {
-        log::set_boxed_logger(Box::new(Capture)).unwrap();
-        log::set_max_level(log::LevelFilter::Trace);
+        tracing_subscriber::fmt()
+            .with_max_level(tracing_subscriber::filter::LevelFilter::TRACE)
+            .with_ansi(false)
+            .without_time()
+            .with_writer(|| Capture)
+            .init();
     });
     // A test that panicked while holding this poisoned it; the floor is still
     // free and the next test's assertions are still its own.
@@ -100,10 +111,12 @@ fn serving(db: Db) -> (Arc<Node>, String) {
     (node, address)
 }
 
-/// The connection number in a line that names one, if it does.
+/// The connection number in a line that names one, if it does — as the
+/// `connection=` field of the accept line, or of the span every later line of
+/// that connection is reported inside.
 fn connection_in(line: &str) -> Option<u64> {
-    let rest = line.split_once("connection ")?.1;
-    let number = rest.split_whitespace().next()?;
+    let rest = line.split_once("connection=")?.1;
+    let number: String = rest.chars().take_while(char::is_ascii_digit).collect();
     number.parse().ok()
 }
 
@@ -127,7 +140,7 @@ fn one_conversation_is_reported_from_accept_to_close_under_one_name() {
     // exactly the mistake the floor was taken to avoid.
     let id = lines()
         .iter()
-        .find_map(|line| connection_in(line).filter(|_| line.contains("accepted from")))
+        .find_map(|line| connection_in(line).filter(|_| line.contains("connection accepted")))
         .expect("the node should report the connection arriving");
     assert!(
         until(|| lines()
@@ -143,7 +156,7 @@ fn one_conversation_is_reported_from_accept_to_close_under_one_name() {
         .collect();
 
     assert!(
-        mine.iter().any(|line| line.contains("accepted from")),
+        mine.iter().any(|line| line.contains("connection accepted")),
         "no accept line: {mine:?}"
     );
     assert!(
@@ -169,7 +182,9 @@ fn a_refused_sign_in_reports_the_name_and_never_the_password() {
 
     let held = lines().join("\n");
     assert!(
-        held.contains("sign-in refused for ada"),
+        lines()
+            .iter()
+            .any(|line| line.contains("sign-in refused") && line.contains("user=ada")),
         "the name is what makes a refusal followable: {held}"
     );
     assert!(
@@ -278,4 +293,162 @@ fn serve_until_the_test_ends(node: &Node) {
         .build()
         .unwrap();
     drop(runtime.block_on(node.serve(tokio_util::sync::CancellationToken::new())));
+}
+
+/// A runtime on the real clock, for a budget that has to run out while a pass
+/// is still on the blocking pool.
+fn real() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+}
+
+/// A runtime whose clock moves only when everything on it is waiting, so a
+/// cadence's budget and its periods run out at once instead of in real time.
+fn paused() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .unwrap()
+}
+
+#[test]
+fn a_pass_that_outlasts_its_period_is_reported_and_the_next_one_waits_for_it() {
+    // The budget cannot cancel a pass — it runs on the blocking pool — so what
+    // the runner owes is to SAY it overran, under the cadence's name, and to
+    // keep the passes one after another anyway. On the real clock: a paused one
+    // does not move while a blocking task is out, so no budget would ever run
+    // out. The pass sleeps fifteen times its budget, which a loaded machine
+    // does not close.
+    let _floor = listening();
+    real().block_on(async {
+        let stop = CancellationToken::new();
+        let stopping = stop.clone();
+        let inside = Arc::new(AtomicUsize::new(0));
+        let overlapped = Arc::new(AtomicBool::new(false));
+        let passes = Arc::new(AtomicUsize::new(0));
+        let (entering, crossed, counted) = (
+            Arc::clone(&inside),
+            Arc::clone(&overlapped),
+            Arc::clone(&passes),
+        );
+        every("slow-test", Duration::from_millis(20), &stop, move |_| {
+            if entering.fetch_add(1, Ordering::SeqCst) > 0 {
+                crossed.store(true, Ordering::SeqCst);
+            }
+            std::thread::sleep(Duration::from_millis(300));
+            entering.fetch_sub(1, Ordering::SeqCst);
+            if counted.fetch_add(1, Ordering::SeqCst) >= 1 {
+                stopping.cancel();
+            }
+            Ok(())
+        })
+        .await;
+        assert_eq!(passes.load(Ordering::SeqCst), 2);
+        assert!(
+            !overlapped.load(Ordering::SeqCst),
+            "a pass started while the one that overran was still running"
+        );
+        let said = lines();
+        let overran: Vec<_> = said
+            .iter()
+            .filter(|line| line.contains("overran") && line.contains("slow-test"))
+            .collect();
+        assert_eq!(
+            overran.len(),
+            2,
+            "each overrun said once, by name: {said:#?}"
+        );
+        assert!(
+            said.iter()
+                .any(|line| line.contains("pass completed") && line.contains("slow-test")),
+            "a pass that overran and then finished was not reported finished: {said:#?}"
+        );
+    });
+}
+
+#[test]
+fn a_pass_that_fails_is_reported_with_its_cadence_and_the_cadence_goes_on() {
+    let _floor = listening();
+    paused().block_on(async {
+        let stop = CancellationToken::new();
+        let stopping = stop.clone();
+        let passes = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&passes);
+        every("failing-test", Duration::from_secs(1), &stop, move |_| {
+            if counted.fetch_add(1, Ordering::SeqCst) >= 1 {
+                stopping.cancel();
+            }
+            Err(PassFailed::new(
+                "the test cannot do its work",
+                std::io::Error::other("refused on purpose"),
+            ))
+        })
+        .await;
+        assert_eq!(
+            passes.load(Ordering::SeqCst),
+            2,
+            "a failed pass ended the cadence"
+        );
+        let said = lines();
+        let failed: Vec<_> = said
+            .iter()
+            .filter(|line| line.contains("pass failed") && line.contains("failing-test"))
+            .collect();
+        assert_eq!(failed.len(), 2, "{said:#?}");
+        assert!(
+            failed
+                .iter()
+                .all(|line| line.contains("the test cannot do its work")
+                    && line.contains("refused on purpose")),
+            "the failure lost what the pass could not do or why: {failed:#?}"
+        );
+        assert!(
+            !said.iter().any(|line| line.contains("pass completed")),
+            "a failed pass was also reported completed: {said:#?}"
+        );
+    });
+}
+
+#[test]
+fn a_paced_pass_that_fails_waits_the_last_period_rather_than_running_again_at_once() {
+    // A failed paced pass names no next period. Running again at once would
+    // turn a node that cannot read its catalog into a loop that does nothing
+    // else; the period the cadence last chose is the one it waits instead.
+    let _floor = listening();
+    paused().block_on(async {
+        let stop = CancellationToken::new();
+        let stopping = stop.clone();
+        let wake = tokio::sync::Notify::new();
+        let began = tokio::time::Instant::now();
+        let at = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&at);
+        every_paced(
+            "paced-test",
+            &stop,
+            &wake,
+            Duration::from_secs(3600),
+            move |_| {
+                let mut seen = seen.lock().unwrap();
+                seen.push(began.elapsed());
+                if seen.len() >= 2 {
+                    stopping.cancel();
+                }
+                Err(PassFailed::new(
+                    "the test cannot read its catalog",
+                    std::io::Error::other("refused on purpose"),
+                ))
+            },
+        )
+        .await;
+        let at = at.lock().unwrap();
+        assert_eq!(at.len(), 2);
+        assert!(
+            at[1].saturating_sub(at[0]) >= Duration::from_secs(3600),
+            "a failed paced pass ran again after {:?}",
+            at[1].saturating_sub(at[0])
+        );
+    });
 }

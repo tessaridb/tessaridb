@@ -5,6 +5,7 @@
 //! client's own business or a feature this database does not expose, and a wider
 //! trait would be a wider surface to keep two implementations honest across.
 
+pub use crate::error::SourceError;
 use std::time::Duration;
 
 /// One message, as the runner needs it.
@@ -21,23 +22,6 @@ pub struct Message {
     /// The bytes, exactly as they arrived.
     pub payload: Vec<u8>,
 }
-
-/// Why a source could not do what was asked.
-///
-/// A string rather than an enum, because what can go wrong is the client's
-/// vocabulary and not this crate's: inventing categories here would mean
-/// mapping every client's failures onto a set chosen before any of them were
-/// read, and the operator needs the client's own words.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SourceError(pub String);
-
-impl std::fmt::Display for SourceError {
-    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        out.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for SourceError {}
 
 /// Somewhere messages come from, and somewhere a position is committed.
 pub trait Source: Send {

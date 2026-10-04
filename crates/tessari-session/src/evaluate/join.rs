@@ -19,6 +19,16 @@ use super::{
     shown,
 };
 
+/// The join clause a read names: its two sides, the key each is matched on,
+/// and the condition the matched pairs must also meet.
+pub(super) struct JoinClause<'a> {
+    pub(super) left: &'a JoinSide,
+    pub(super) right: &'a JoinSide,
+    pub(super) left_key: &'a tessari_ql::FieldPath,
+    pub(super) right_key: &'a tessari_ql::FieldPath,
+    pub(super) condition: Option<&'a Expr>,
+}
+
 impl Session<'_> {
     /// Two tables matched on a value neither of them stores a pointer for.
     ///
@@ -66,22 +76,21 @@ impl Session<'_> {
     /// thousand would refuse a join that works — trading a silent wrong answer
     /// for a loud wrong refusal. Making a single mismatched pair *visible*
     /// without failing the read is the note channel's job and belongs with it.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "every one is a distinct part of the clause, and a struct here                   would be the clause spelled twice"
-    )]
     pub(super) fn join(
         &self,
         transaction: &mut Transaction<'_>,
         select: &Select,
-        left: &JoinSide,
-        right: &JoinSide,
-        left_key: &tessari_ql::FieldPath,
-        right_key: &tessari_ql::FieldPath,
-        condition: Option<&Expr>,
+        clause: JoinClause<'_>,
         reporting: Reporting<'_>,
         within: Option<Deadline>,
     ) -> Result<Joined> {
+        let JoinClause {
+            left,
+            right,
+            left_key,
+            right_key,
+            condition,
+        } = clause;
         let left_name = left.name().to_owned();
         let right_name = right.name().to_owned();
 

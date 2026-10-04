@@ -88,10 +88,11 @@ compile_error!(
 );
 
 fn main() -> ExitCode {
-    // Before anything that could have something to report. A second logger
-    // installed by an embedding caller would already have won, and that is the
-    // right outcome — this one belongs to the binary.
-    drop(logging::install());
+    // Before anything that could have something to report, and held until
+    // `main` returns: dropping it is what writes out the last lines. A second
+    // subscriber installed by an embedding caller would already have won, and
+    // that is the right outcome — this one belongs to the binary.
+    let _logging = logging::install();
     supervise::log_panics();
     let asked = match parse(env::args().skip(1)) {
         Ok(asked) => asked,

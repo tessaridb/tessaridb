@@ -22,33 +22,40 @@ pub(crate) async fn settle_across(
     stop: tokio_util::sync::CancellationToken,
 ) {
     tessari_wire::every(
+        "settling",
         std::time::Duration::from_secs(tessari_constants::AWARENESS_SECONDS),
         &stop,
         move |_| match db.settle_across() {
             Ok(settled) => {
                 if settled.aborted > 0 || settled.committed > 0 || settled.resolved > 0 {
-                    log::info!(
-                        "finished cross-leader transactions: {} overdue aborted, {} found \
-                         committed, {} resolved here",
-                        settled.aborted,
-                        settled.committed,
-                        settled.resolved
+                    tracing::info!(
+                        aborted = settled.aborted,
+                        committed = settled.committed,
+                        resolved = settled.resolved,
+                        "finished cross-leader transactions"
                     );
                 }
                 // Every decided transaction ends here, so it is routine and
                 // said at `debug`: a count at `info` would repeat each second.
                 if settled.forgotten > 0 {
-                    log::debug!("forgot {} decided cross-leader records", settled.forgotten);
-                }
-                if let Some(why) = settled.last_refusal {
-                    log::debug!(
-                        "a cross-leader transaction is finished elsewhere or later \
-                         ({} unreachable this pass): {why}",
-                        settled.unreachable
+                    tracing::debug!(
+                        forgotten = settled.forgotten,
+                        "forgot decided cross-leader records"
                     );
                 }
+                if let Some(why) = settled.last_refusal {
+                    tracing::debug!(
+                        unreachable = settled.unreachable,
+                        reason = %why,
+                        "a cross-leader transaction is finished elsewhere or later"
+                    );
+                }
+                Ok(())
             }
-            Err(why) => log::warn!("this node cannot finish cross-leader transactions: {why}"),
+            Err(why) => Err(tessari_wire::PassFailed::new(
+                "this node cannot finish cross-leader transactions",
+                why,
+            )),
         },
     )
     .await;

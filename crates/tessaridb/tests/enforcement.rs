@@ -509,8 +509,22 @@ const TABLES: &[Table] = &[
         // writes (`across::a_user_without_the_write_grant_cannot_prepare`,
         // `across::nobody_signed_in_cannot_prepare_on_a_closed_store`).
         // Re-classification trigger: coordinate_through's.
-        expected: 37,
-        count: |text| public_functions(&block(text, "impl Db")),
+        //
+        // 40 since G060 split the facade into child modules (`opening`,
+        // `wiring`, `leadership`, `naming`, `changes`) and the count began
+        // reading EVERY `impl Db` block of the module rather than the first —
+        // which is what found three public methods that had always lived in
+        // child files and were never counted: `balance_shards` (balance.rs),
+        // `settle_across` and `decide_reads_through_leaders` (across.rs). Each
+        // is classified **exempt under E3** on the ground the node cadences'
+        // other entry points are: its only callers are the binary's own rounds
+        // (`tessari-cli` `balancing_round.rs`, `settling_round.rs`,
+        // `serving.rs`), it takes no caller identity and no reach, and it acts
+        // as the node on the node's own store — moving a leadership, settling a
+        // transaction this node coordinated, or choosing where a read goes. None
+        // returns a record to anybody.
+        expected: 40,
+        count: |text| public_functions(&every_block(text, "impl Db")),
     },
     Table {
         file: "crates/tessari-storage/src/store.rs",
@@ -1238,7 +1252,11 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 154 since the balancer is observable (ADR-0113 D4): three `Store`
     // methods, not data paths, classified above.
-    assert_eq!(total, 154, "the counted tables no longer sum to 154");
+    //
+    // 157 since G060 counts every `impl Db` block of the facade: three node
+    // cadence entry points that had always been there and were never counted,
+    // exempt under E3, classified above.
+    assert_eq!(total, 157, "the counted tables no longer sum to 157");
 }
 
 /// Every `.rs` file under a directory.
@@ -1248,11 +1266,21 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
 /// at the end of the file, cut off at its `#[cfg(test)]` (tests last, in one
 /// module, which `cargo fmt` keeps), or a sibling file named `tests.rs`,
 /// declared `#[cfg(test)] mod tests;` by its parent — the layout new modules use
-/// so a module's code is not buried under its tests (owner, 2026-09-26). A
-/// scanner that knew only the first reads the second as production and reports
-/// every fixture in it.
+/// so a module's code is not buried under its tests (owner, 2026-09-26) — and
+/// every file in the `tests/` folder beside it, which a `tests.rs` too long for
+/// one file declares as its own children (G060). A scanner that knew only the
+/// first reads the others as production and reports every fixture in them.
 fn production<'a>(path: &Path, text: &'a str) -> &'a str {
-    if path.file_name().is_some_and(|name| name == "tests.rs") {
+    // Only the folders below the crate's `src` decide it: a checkout that
+    // happens to sit inside a folder called `tests` is not a test.
+    let inside_src = path
+        .iter()
+        .skip_while(|part| *part != "src")
+        .collect::<Vec<_>>();
+    let under_tests = inside_src
+        .split_last()
+        .is_some_and(|(_, folders)| folders.iter().any(|part| *part == "tests"));
+    if path.file_name().is_some_and(|name| name == "tests.rs") || under_tests {
         return "";
     }
     text.split("#[cfg(test)]").next().unwrap_or_default()
@@ -1412,6 +1440,10 @@ const CLASSIFIED: &[(&str, &str)] = &[
         "let seed = match store.committed_tail(log) {",
     ),
     (
+        "tessari-cli/src/collection_round/placed.rs",
+        "let seed = match store.committed_tail(log) {",
+    ),
+    (
         "tessari-cli/src/greeting_round.rs",
         "tail: store.committed_tail(log)?,",
     ),
@@ -1424,15 +1456,15 @@ const CLASSIFIED: &[(&str, &str)] = &[
         "let tail = store.committed_tail(log).map_err(|why| why.to_string())?;",
     ),
     (
-        "tessari-wire/src/collection.rs",
+        "tessari-wire/src/collection/serving.rs",
         "tail: self.log.committed_tail(log).map_err(refused)?,",
     ),
     (
-        "tessari-wire/src/collection.rs",
+        "tessari-wire/src/collection/serving.rs",
         "let page = match self.log.log_records_within(",
     ),
     (
-        "tessari-wire/src/collection.rs",
+        "tessari-wire/src/collection/serving.rs",
         "let held = match store.log_records_within(over, log, before, 1) {",
     ),
 ];
@@ -1491,7 +1523,7 @@ const DECODERS: [&str; 3] = ["decode", "from_value", "split_epoch"];
 /// this pair are asserted: that nothing else creates one, and that this still
 /// does — a ratchet whose subject has been renamed away passes by finding
 /// nothing, which is the failure mode of every allow-list nobody re-reads.
-const PRODUCER: (&str, &str) = ("tessari-wire/src/driver/leadership.rs", "once");
+const PRODUCER: (&str, &str) = ("tessari-wire/src/driver/leadership/renewing.rs", "once");
 
 #[test]
 fn the_campaign_is_the_only_place_an_epoch_is_created() {

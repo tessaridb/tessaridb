@@ -31,7 +31,7 @@ server = [
     "dep:tessari-serve",
     "dep:tessari-session",
     "dep:tessari-storage",
-    "dep:log",
+    "dep:tracing",
     "dep:rustls",
     "dep:rustls-webpki",
     "dep:sha2",
@@ -57,7 +57,7 @@ tessari-storage = { workspace = true, optional = true }
 tessari-types.workspace = true
 # Server-side only: a client that logs nothing keeps the crate count the lean
 # build is measured by.
-log = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
 # Server-side only, and the peer link is the only caller: a client speaks to a
 # node over the wire's own framing and has no peer to authenticate.
 rustls = { workspace = true, optional = true }
@@ -77,6 +77,8 @@ thiserror.workspace = true
 
 [dev-dependencies]
 tessari-constants.workspace = true
+# The reporting test captures what a served connection says, as a subscriber.
+tracing-subscriber.workspace = true
 # The tests serve a node, and a node is served on a runtime the caller owns.
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 tokio-util.workspace = true
