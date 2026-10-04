@@ -30,8 +30,9 @@ async fn a_cadence_runs_no_pass_once_the_node_is_asked_to_stop() {
     stop.cancel();
     let passes = Arc::new(AtomicUsize::new(0));
     let counting = Arc::clone(&passes);
-    every(Duration::ZERO, &stop, move |_| {
+    every("test", Duration::ZERO, &stop, move |_| {
         counting.fetch_add(1, Ordering::Relaxed);
+        Ok(())
     })
     .await;
     assert_eq!(
@@ -51,9 +52,10 @@ async fn a_cadence_keeps_its_state_between_passes_and_a_stop_ends_its_wait() {
     // hop to the blocking pool and back.
     let mut rounds = 0_usize;
     let cadence = tokio::spawn(async move {
-        every(Duration::from_secs(3600), &stopping, move |_| {
+        every("test", Duration::from_secs(3600), &stopping, move |_| {
             rounds = rounds.saturating_add(1);
             counting.store(rounds, Ordering::Relaxed);
+            Ok(())
         })
         .await;
     });
@@ -78,9 +80,14 @@ async fn a_pass_that_panics_is_raised_on_the_cadence_task() {
     let stop = CancellationToken::new();
     let stopping = stop.clone();
     let cadence = tokio::spawn(async move {
-        every(Duration::ZERO, &stopping, |_| {
-            std::panic::resume_unwind(Box::new("a defect in a pass"));
-        })
+        every(
+            "test",
+            Duration::ZERO,
+            &stopping,
+            |_| -> Result<(), PassFailed> {
+                std::panic::resume_unwind(Box::new("a defect in a pass"));
+            },
+        )
         .await;
     });
     let ended = cadence.await.expect_err("the panic did not reach the task");

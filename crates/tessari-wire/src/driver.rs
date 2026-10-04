@@ -20,14 +20,15 @@
 //! deadline would be delayed by the one with the loosest, for no reason beyond
 //! their sharing a loop.
 //!
-//! # Nothing here hands a `Result` to a timer
+//! # A failed pass is reported by the runner, and the cadence goes on
 //!
-//! Each cadence answers *what it did* — a cursor, a lease — rather than whether
-//! it went well. The caller is a loop that runs again either way, so an error
-//! return would only ever be dropped, and a dropped error reads at the call site
-//! as if failure were impossible. What each driver owns instead is the rule for
+//! Each driver answers *what it did* — a cursor, a lease — and owns the rule for
 //! **what a failed pass does to the state it holds**, which is the part that is
-//! genuinely easy to get wrong.
+//! genuinely easy to get wrong. Whether a whole pass went well is the runner's
+//! to report: a pass handed to [`every`] answers [`PassFailed`] when it could
+//! not do its work, and the runner says so under the cadence's name, beside the
+//! pass that overran its budget and the one that completed. The loop runs again
+//! either way, so the failure is said once, where every cadence says it.
 //!
 //! # The pass is a parameter
 //!
@@ -36,6 +37,7 @@
 //! be tested by standing up peers, and one that read the clock itself could only
 //! have its timing rule tested by waiting.
 
+mod cadence;
 mod collecting;
 mod leadership;
 use std::collections::BTreeMap;
@@ -49,112 +51,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::directory::{Destination, Directory};
 use crate::joining::Seed;
+pub use cadence::{CadenceError, PassFailed, due_in, every, every_paced};
+pub use collecting::{Collecting, bootstrap_from, upstream};
 pub use leadership::{
     Renewing, campaign_line, campaigns_for, election_timeout, heard_a_leader, heard_a_leader_on,
     heard_a_newer_policy, leader_of_range, preferred_to_yield_to, released, stands, stands_for,
     stands_for_the_store, voters,
 };
-
-/// How long to wait before the next pass, given when the last one started.
-///
-/// # A missed tick is not made up
-///
-/// When a pass overran its period — the peer was slow, the thread was
-/// descheduled — this answers [`Duration::ZERO`] and the next pass runs at once.
-/// It never answers *run it three times because three periods went by*.
-///
-/// Catching up would be wrong for each cadence separately. Three greeting rounds
-/// back to back dial every peer three times to learn one thing. Three
-/// collections are unnecessary because the cursor already carries the position,
-/// so one pass fetches as much as the peer's limit allows regardless of how long
-/// it has been. And three renewals are three elections where the cluster needed
-/// none.
-#[must_use]
-pub fn due_in(period: Duration, ran_at: Instant, now: Instant) -> Duration {
-    period.saturating_sub(now.saturating_duration_since(ran_at))
-}
-
-/// Run `pass` on `period` until the node is asked to stop.
-///
-/// The token is checked **before** each pass, so a node already stopping runs
-/// none, and it ends the wait between passes the moment it is cancelled — a
-/// cadence holds nothing a stop would have to wait for.
-///
-/// Each pass runs on the runtime's blocking pool, because a pass is store work
-/// and a TLS call, both synchronous. The closure is moved there and back, so a
-/// pass keeps what it learned between rounds, and one cadence's passes never
-/// overlap: the campaign's ballots stay one after another. A pass that panics
-/// is re-raised on this task, where the supervisor that started it sees it.
-///
-/// The token is the node's own stop rather than one of this module's. A driver
-/// with a private flag gives a process two ways to ask a node to stop, and the
-/// state between them — a node that has stopped serving while it goes on
-/// dialling peers — is worse than either.
-pub async fn every<P>(period: Duration, stop: &CancellationToken, mut pass: P)
-where
-    P: FnMut(Instant) + Send + 'static,
-{
-    while !stop.is_cancelled() {
-        let ran_at = Instant::now();
-        pass = match tokio::task::spawn_blocking(move || {
-            pass(ran_at);
-            pass
-        })
-        .await
-        {
-            Ok(pass) => pass,
-            Err(ended) => match ended.try_into_panic() {
-                Ok(payload) => std::panic::resume_unwind(payload),
-                // Cancelled: the runtime is shutting down under it.
-                Err(_) => return,
-            },
-        };
-        tokio::select! {
-            biased;
-            () = stop.cancelled() => return,
-            () = tokio::time::sleep(due_in(period, ran_at, Instant::now())) => {}
-        }
-    }
-}
-
-/// [`every`], where each pass names how long until the next one, and `wake`
-/// starts the next one early.
-///
-/// For the two rounds whose right period depends on what the last pass found
-/// (G053 SG2b): a node that can name no leader greets every round time rather
-/// than every awareness interval, because that is when a stale directory costs
-/// the most; and a follower whose stream ended collects again the moment the
-/// greeting round has found where its leader went, rather than up to a period
-/// later. A [`Notify`](tokio::sync::Notify) keeps one permit, so a wake that
-/// arrives while a pass is running is not lost — the next wait returns at once.
-pub async fn every_paced<P>(stop: &CancellationToken, wake: &tokio::sync::Notify, mut pass: P)
-where
-    P: FnMut(Instant) -> Duration + Send + 'static,
-{
-    while !stop.is_cancelled() {
-        let ran_at = Instant::now();
-        let (returned, period) = match tokio::task::spawn_blocking(move || {
-            let period = pass(ran_at);
-            (pass, period)
-        })
-        .await
-        {
-            Ok(ran) => ran,
-            Err(ended) => match ended.try_into_panic() {
-                Ok(payload) => std::panic::resume_unwind(payload),
-                // Cancelled: the runtime is shutting down under it.
-                Err(_) => return,
-            },
-        };
-        pass = returned;
-        tokio::select! {
-            biased;
-            () = stop.cancelled() => return,
-            () = wake.notified() => {}
-            () = tokio::time::sleep(due_in(period, ran_at, Instant::now())) => {}
-        }
-    }
-}
 
 /// The directory the routing side reads, and the greeting side replaces.
 ///
@@ -320,7 +223,6 @@ impl tessari_session::Elsewhere for Published {
     }
 }
 
-pub use collecting::{Collecting, bootstrap_from, upstream};
 /// Does the catalog name a peer that is not this node?
 ///
 /// Re-exported from `tessari_storage` and not defined here: the write gate asks

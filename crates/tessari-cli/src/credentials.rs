@@ -245,6 +245,7 @@ pub(crate) async fn watch(
     stop: tokio_util::sync::CancellationToken,
 ) {
     tessari_wire::every(
+        "credentials",
         std::time::Duration::from_secs(LOOK_SECONDS),
         &stop,
         move |_| {
@@ -254,6 +255,7 @@ pub(crate) async fn watch(
             if let Some(Err(why)) = revoking.as_ref().map(Revoking::refresh) {
                 tracing::warn!(error = %why, "the revocation list could not be read; the last one stands");
             }
+            Ok(())
         },
     )
     .await;

@@ -290,6 +290,76 @@ fn a_second_stop_signal_ends_the_node_without_waiting_out_the_window() {
 }
 
 #[test]
+fn one_stop_signal_drains_the_node_and_it_exits_clean_with_its_writes_kept() {
+    // The other half of the second-signal test above: ONE signal is a stop the
+    // node carries out in full — it waits out the lame-duck window, ends every
+    // cadence (none of which may hold the exit up), closes the store and says
+    // so with a zero exit. Asserted on the process, because a node whose
+    // cadences ignored the stop would pass every test that only probes routes.
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    let (wire, http) = ("127.0.0.1:47934", "127.0.0.1:47935");
+    let mut node = serving_both(&path, wire, http);
+    {
+        let mut client = Client::connect(wire).unwrap();
+        client
+            .run(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
+                 DEFINE DATABASE orders; USE DATABASE orders; \
+                 DEFINE COLLECTION users; CREATE users:1 = { who: 'ada' };",
+                None,
+            )
+            .unwrap();
+    }
+    let signalled = Command::new("kill")
+        .args(["-TERM", &node.0.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(signalled.success(), "the signal was not delivered");
+
+    // Five seconds of lame duck, then the drain; twenty is the bound on both
+    // together, so a node held up by a cadence that never ends fails here.
+    let began = Instant::now();
+    let ended = loop {
+        if let Some(status) = node.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "the node was still running twenty seconds after one stop signal"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(
+        ended.code(),
+        Some(0),
+        "a stop carried out in full exited unclean"
+    );
+
+    // What was acknowledged before the signal is there after it.
+    let mut reopened = serving(&path, wire);
+    {
+        let mut client = Client::connect(wire).unwrap();
+        let answers = client
+            .run(
+                "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM users;",
+                None,
+            )
+            .unwrap();
+        let Answer::Records { records, .. } = &answers[2] else {
+            panic!("not records: {:?}", answers[2]);
+        };
+        assert_eq!(
+            records.len(),
+            1,
+            "a drained node lost an acknowledged write"
+        );
+    }
+    reopened.kill().unwrap();
+    drop(reopened.wait());
+}
+
+#[test]
 fn a_scrape_describes_the_whole_process_and_not_one_listener() {
     // The census is what makes this possible and it is the claim: the metrics
     // route is served by HTTP but must report the **wire** protocol's counters

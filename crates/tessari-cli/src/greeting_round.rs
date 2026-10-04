@@ -29,6 +29,12 @@ use tessaridb::Db;
 /// a healthy node out of all routing. A round in which nobody answered is a
 /// cluster in trouble rather than an operation that went wrong, so it is logged
 /// and the cadence runs again.
+#[expect(
+    unused_assignments,
+    reason = "the failover period the pass re-reads is state for the NEXT pass; rustc lints a \
+              by-value capture assigned in an FnMut closure as never read when the closure also \
+              returns early without reading it (G060 SG4)"
+)]
 pub(crate) async fn dial_peers(
     db: std::sync::Arc<Db>,
     (keys, join): (tessari_wire::PeerKeys, Option<[u8; 32]>),
@@ -45,7 +51,8 @@ pub(crate) async fn dial_peers(
     // The leader the last round pointed this node at, so the collection round is
     // woken when that changes and not on every greeting.
     let mut followed: Option<[u8; tessari_storage::NODE_ID_LEN]> = None;
-    tessari_wire::every_paced(&stop, &woken.greeting, move |now| {
+    let first = tessari_storage::Failover::DEFAULT.awareness();
+    tessari_wire::every_paced("greeting", &stop, &woken.greeting, first, move |now| {
         let (db, keys, seeds, published) = (&*db, &keys, &seeds[..], &*published);
         // Read through the pieces the facade already publishes rather than
         // through a new `Db` method: `Db::store` and `Store::begin` are both
@@ -72,12 +79,16 @@ pub(crate) async fn dial_peers(
                 (identity.id, declared)
             }
             (Err(why), _) => {
-                tracing::warn!(error = %why, "this node cannot say who it is");
-                return periods.awareness();
+                return Err(tessari_wire::PassFailed::new(
+                    "this node cannot say who it is",
+                    why,
+                ));
             }
             (_, Err(why)) => {
-                tracing::warn!(error = %why, "this node cannot say who its peers are");
-                return periods.awareness();
+                return Err(tessari_wire::PassFailed::new(
+                    "this node cannot say who its peers are",
+                    why,
+                ));
             }
         };
         let mut reached = 0_usize;
@@ -161,9 +172,9 @@ pub(crate) async fn dial_peers(
             wakes.collection.notify_one();
         }
         if tessari_wire::names_a_peer(&declared, &me) && !leading && leader.is_none() {
-            periods.round()
+            Ok(periods.round())
         } else {
-            periods.awareness()
+            Ok(periods.awareness())
         }
     })
     .await;

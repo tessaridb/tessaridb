@@ -22,6 +22,7 @@ pub(crate) async fn settle_across(
     stop: tokio_util::sync::CancellationToken,
 ) {
     tessari_wire::every(
+        "settling",
         std::time::Duration::from_secs(tessari_constants::AWARENESS_SECONDS),
         &stop,
         move |_| match db.settle_across() {
@@ -49,10 +50,12 @@ pub(crate) async fn settle_across(
                         "a cross-leader transaction is finished elsewhere or later"
                     );
                 }
+                Ok(())
             }
-            Err(why) => {
-                tracing::warn!(error = %why, "this node cannot finish cross-leader transactions")
-            }
+            Err(why) => Err(tessari_wire::PassFailed::new(
+                "this node cannot finish cross-leader transactions",
+                why,
+            )),
         },
     )
     .await;

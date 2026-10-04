@@ -27,6 +27,7 @@ use tessaridb::Db;
 /// delay is least affordable.
 pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::CancellationToken) {
     tessari_wire::every(
+        "housekeeping",
         std::time::Duration::from_secs(tessari_constants::AWARENESS_SECONDS),
         &stop,
         move |_| {
@@ -118,6 +119,7 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
                 Ok(_) => {}
                 Err(why) => tracing::warn!(error = %why, "this node cannot remove aged series records"),
             }
+            Ok(())
         },
     )
     .await;

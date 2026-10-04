@@ -21,6 +21,7 @@ pub(crate) async fn balance(db: std::sync::Arc<Db>, stop: tokio_util::sync::Canc
     let mut samples = ShardSamples::default();
     let mut moves = LeadershipMoves::default();
     tessari_wire::every(
+        "balancing",
         std::time::Duration::from_secs(tessari_constants::BALANCE_SECONDS),
         &stop,
         move |_| {
@@ -57,6 +58,7 @@ pub(crate) async fn balance(db: std::sync::Arc<Db>, stop: tokio_util::sync::Canc
                 Ok(None) => {}
                 Err(why) => tracing::warn!(error = %why, "this node cannot balance leaderships"),
             }
+            Ok(())
         },
     )
     .await;

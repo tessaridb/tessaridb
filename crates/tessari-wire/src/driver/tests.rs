@@ -11,10 +11,10 @@ use tokio_util::sync::CancellationToken;
 use tessari_storage::{FailoverStamp, ReplicaDefinition};
 
 use super::{
-    Collecting, Published, Renewing, Seed, bootstrap_from, campaign_line, campaigns_for, due_in,
-    election_timeout, every, heard_a_leader, heard_a_leader_on, heard_a_newer_policy,
-    leader_of_range, names_a_peer, preferred_to_yield_to, released, stands, stands_for,
-    stands_for_the_store, upstream, voters,
+    Collecting, PassFailed, Published, Renewing, Seed, bootstrap_from, campaign_line,
+    campaigns_for, due_in, election_timeout, every, heard_a_leader, heard_a_leader_on,
+    heard_a_newer_policy, leader_of_range, names_a_peer, preferred_to_yield_to, released, stands,
+    stands_for, stands_for_the_store, upstream, voters,
 };
 use crate::campaign::Stood;
 use crate::directory::Directory;

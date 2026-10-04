@@ -278,9 +278,9 @@ pub(crate) async fn stand_for_leadership(
     };
     // Nothing wakes the campaign early: it runs on the policy's cadence alone.
     let unwoken = tokio::sync::Notify::new();
-    tessari_wire::every_paced(&stop, &unwoken, move |now| {
+    tessari_wire::every_paced("leadership", &stop, &unwoken, cadence, move |now| {
         pass(now, &mut cadence);
-        cadence
+        Ok(cadence)
     })
     .await;
 }

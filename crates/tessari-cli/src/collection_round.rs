@@ -37,6 +37,12 @@ use tessaridb::Db;
 /// the cursor alone and are logged. The node goes on serving what it holds, and
 /// its copy goes on ageing, which is exactly what a staleness bound is there to
 /// notice.
+#[expect(
+    unused_assignments,
+    reason = "the failover period the pass re-reads is state for the NEXT pass; rustc lints a \
+              by-value capture assigned in an FnMut closure as never read when the closure also \
+              returns early without reading it (G060 SG4)"
+)]
 pub(crate) async fn collect_from_upstream(
     db: std::sync::Arc<Db>,
     keys: tessari_wire::PeerKeys,
@@ -73,10 +79,13 @@ pub(crate) async fn collect_from_upstream(
     // follower whose stream ended follows the new leader as soon as one is
     // heard rather than up to a collection interval later (G053 SG2b).
     let woken = std::sync::Arc::clone(&wakes);
-    tessari_wire::every_paced(&stop, &woken.collection, move |_| {
+    let first = tessari_storage::Failover::DEFAULT.collection();
+    tessari_wire::every_paced("collection", &stop, &woken.collection, first, move |_| {
         let Ok(mut streams) = streams.lock() else {
-            tracing::warn!("the stream registry is poisoned; collecting by rounds only");
-            return collection;
+            return Err(tessari_wire::PassFailed::new(
+                "the stream registry is poisoned; collecting by rounds only",
+                "a thread panicked while it held the registry",
+            ));
         };
         let (handle, published_handle) = (
             std::sync::Arc::clone(&db),
@@ -87,8 +96,10 @@ pub(crate) async fn collect_from_upstream(
         let roles = match store.effective_roles() {
             Ok(roles) => roles,
             Err(why) => {
-                tracing::warn!(error = %why, "this node cannot say what it is for");
-                return collection;
+                return Err(tessari_wire::PassFailed::new(
+                    "this node cannot say what it is for",
+                    why,
+                ));
             }
         };
         // Every declared peer, not the one row the catalog marks writable.
@@ -109,15 +120,19 @@ pub(crate) async fn collect_from_upstream(
                 declared
             }
             Err(why) => {
-                tracing::warn!(error = %why, "this node cannot say who its peers are");
-                return collection;
+                return Err(tessari_wire::PassFailed::new(
+                    "this node cannot say who its peers are",
+                    why,
+                ));
             }
         };
         let me = match store.node_identity() {
             Ok(identity) => identity.id,
             Err(why) => {
-                tracing::warn!(error = %why, "this node cannot say who it is");
-                return collection;
+                return Err(tessari_wire::PassFailed::new(
+                    "this node cannot say who it is",
+                    why,
+                ));
             }
         };
         let heard = published.current();
@@ -149,12 +164,12 @@ pub(crate) async fn collect_from_upstream(
             tessari_wire::bootstrap_from(roles, seeds, &heard)
         };
         let Some((node, endpoint)) = origin else {
-            return collection;
+            return Ok(collection);
         };
         // A live stream is carrying this line; the round stays out of it.
         if streams.following((node, None)) {
             streamed_from = Some(node);
-            return collection;
+            return Ok(collection);
         }
         if streamed_from.take().is_some() {
             collecting = tessari_wire::Collecting::new();
@@ -163,14 +178,16 @@ pub(crate) async fn collect_from_upstream(
             Ok(address) => address,
             Err(why) => {
                 tracing::warn!(endpoint = %endpoint, error = %why, "the writable peer's endpoint is not an address");
-                return collection;
+                return Ok(collection);
             }
         };
         let said = match greeting(db) {
             Ok(said) => said,
             Err(why) => {
-                tracing::warn!(error = %why, "this node cannot say what it holds");
-                return collection;
+                return Err(tessari_wire::PassFailed::new(
+                    "this node cannot say what it holds",
+                    why,
+                ));
             }
         };
         let collector = tessari_wire::Collector {
@@ -185,8 +202,10 @@ pub(crate) async fn collect_from_upstream(
         let logs = match tessari_wire::logs_to_collect(store) {
             Ok(logs) => on_the_store_line(logs, &declared),
             Err(why) => {
-                tracing::warn!(error = %why, "this node cannot say which logs it should hold");
-                return collection;
+                return Err(tessari_wire::PassFailed::new(
+                    "this node cannot say which logs it should hold",
+                    why,
+                ));
             }
         };
         // Every home is asked in ONE round and applied in the writer's
@@ -300,7 +319,7 @@ pub(crate) async fn collect_from_upstream(
             collecting = tessari_wire::Collecting::new();
             by_leader.clear();
         }
-        collection
+        Ok(collection)
     })
     .await;
     // Off the runtime: each stream notices the stop within a heartbeat.
