@@ -115,6 +115,52 @@ mod bound_kind {
     pub(super) const EXCLUDED: u8 = 0x03;
 }
 
+/// Every payload type tag and the type it names, for the format surface.
+pub(crate) const TAGS: &[(u8, &str)] = &[
+    (tag::NONE, "none"),
+    (tag::NULL, "null"),
+    (tag::BOOL, "bool"),
+    (tag::NUMBER, "number"),
+    (tag::STRING, "string"),
+    (tag::BYTES, "bytes"),
+    (tag::DURATION, "duration"),
+    (tag::DATETIME, "datetime"),
+    (tag::UUID, "uuid"),
+    (tag::TABLE, "table"),
+    (tag::RECORD, "record"),
+    (tag::ARRAY, "array"),
+    (tag::OBJECT, "object"),
+    (tag::RANGE, "range"),
+    (tag::SET, "set"),
+    (tag::GEOMETRY, "geometry"),
+    (tag::REGEX, "regex"),
+];
+
+/// Every shape byte of a geometry, for the format surface.
+pub(crate) const SHAPES: &[(u8, &str)] = &[
+    (shape::POINT, "Point"),
+    (shape::LINE, "LineString"),
+    (shape::POLYGON, "Polygon"),
+    (shape::MULTI_POINT, "MultiPoint"),
+    (shape::MULTI_LINE, "MultiLineString"),
+    (shape::MULTI_POLYGON, "MultiPolygon"),
+    (shape::COLLECTION, "GeometryCollection"),
+];
+
+/// Every kind byte of a number, for the format surface.
+pub(crate) const NUMBER_KINDS: &[(u8, &str)] = &[
+    (number_kind::INTEGER, "integer"),
+    (number_kind::FLOAT, "float"),
+    (number_kind::DECIMAL, "decimal"),
+];
+
+/// Every kind byte of a range bound, for the format surface.
+pub(crate) const BOUND_KINDS: &[(u8, &str)] = &[
+    (bound_kind::UNBOUNDED, "unbounded"),
+    (bound_kind::INCLUDED, "included"),
+    (bound_kind::EXCLUDED, "excluded"),
+];
+
 /// Encode a value into the bytes a record payload carries.
 #[must_use]
 pub fn encode(value: &Value) -> StoredBytes {

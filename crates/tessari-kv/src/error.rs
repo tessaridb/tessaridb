@@ -156,6 +156,22 @@ pub enum Error {
         reason: String,
     },
 
+    /// A write this store could not make durable failed, so it takes no more.
+    ///
+    /// After a failed sync the bytes it covered may be gone while the cache
+    /// holding them marks them clean, so a later sync that succeeds proves
+    /// nothing about them — and a log with a hole in it recovers only up to
+    /// the hole, taking every commit acknowledged after it along. Reads still
+    /// answer; reopening the store recovers from its log.
+    #[error(
+        "the store stopped taking writes after a write it could not make durable failed \
+         ({reason}); reads still answer, and reopening the store recovers from its log"
+    )]
+    Stopped {
+        /// The failure that stopped it.
+        reason: String,
+    },
+
     /// The backend failed for a reason the caller cannot act on.
     #[error("backend {backend} failed: {reason}")]
     Backend {
@@ -179,7 +195,7 @@ impl Error {
             Self::Busy { .. } => ErrorCategory::Busy,
             Self::Unavailable { .. } => ErrorCategory::Unavailable,
             Self::Corruption { .. } => ErrorCategory::Corruption,
-            Self::Lifecycle { .. } => ErrorCategory::Lifecycle,
+            Self::Lifecycle { .. } | Self::Stopped { .. } => ErrorCategory::Lifecycle,
             Self::Backend { .. } => ErrorCategory::Internal,
         }
     }

@@ -15,6 +15,7 @@ mod descending_order;
 mod expansion_bound;
 mod expiring;
 mod feed;
+mod format_spec;
 mod index_maintenance;
 mod index_sweep;
 mod isolation;

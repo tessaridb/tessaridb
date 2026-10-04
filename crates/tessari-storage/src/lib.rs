@@ -96,6 +96,8 @@ pub use catalog::{
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.
 pub use catalog::VaultRoot;
+/// The system tables, by id and name — part of the written format (`docs/key-grammar.md` §9).
+pub use catalog::system::ALL as SYSTEM_TABLES;
 pub use collections::{Collection, Collections, Currency, Upstream, UpstreamReport};
 pub use covering::MEASURED_RELATION;
 pub use decisions::Decisions;

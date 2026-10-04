@@ -10,7 +10,7 @@ Eleven engines. One transaction. One binary. A real-time multi-model database,
 written in Rust, for AI applications and the products built around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.26.0--beta-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.27.0--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.98%2B-6B5FD1?style=flat-square)](Cargo.toml)
 [![conformance](https://img.shields.io/badge/conformance-1539%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
@@ -22,14 +22,16 @@ written in Rust, for AI applications and the products built around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is a beta — `0.26.0-beta`.** It is released and tested, published as
-> a container image (`tessaridb/tessaridb:0.26.0-beta`; the image tracks the
+> **TessariDB is a beta — `0.27.0-beta`.** It is released and tested, published as
+> a container image (`tessaridb/tessaridb:0.27.0-beta`; the image tracks the
 > larger releases), and the licence makes production use free, including inside
 > a commercial company.
-> What a beta does not promise yet is permanence of shape: before 1.0 the query
-> language, the wire format and the on-disk format may still change, there is no
-> migration between versions, and several engines are still partial. So pin a
-> released version and expect to re-ingest across one.
+> What a beta does not promise yet is permanence of the language and the wire:
+> before 1.0 the query language and the wire format may still change, and several
+> engines are still partial. The **on-disk format is held**: a store written by
+> `0.22.0-beta` or any release after it opens under a newer one and reads back the
+> same, and a store from a newer format is refused rather than opened. So pin a
+> released version, and keep a backup you have restored.
 > [**Status**](#status) says what runs today, engine by engine — it is a report,
 > not a roadmap. The [**changelog**](CHANGELOG.md) says what each version is and
 > what it is missing.
@@ -201,7 +203,7 @@ surviving version and the node that wrote it.
 
 ## Status
 
-**Stage: active development · `0.26.0-beta` · not published to crates.io.** What
+**Stage: active development · `0.27.0-beta` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 
@@ -290,9 +292,20 @@ follows is what runs today, not a roadmap.
   What still fetches the records is a fold that does not merge — `median`,
   `collect` and the counter folds.
   <!-- absent: holistic-folds-on-the-leaders -->
-- 🔄 **Not promised yet:** before 1.0 the query language, the wire format and the
-  on-disk format may still change, and there is no migration between versions.
-  <!-- absent: migration-between-versions -->
+- ✅ **The on-disk format holds across versions:** a store written by
+  `0.22.0-beta` or any release since opens under this build and reads back what the
+  build that wrote it answered — tested against a store each of those releases
+  wrote, its indexes included — and an older layout is rewritten at open where it
+  has to be. A store from a newer format, or one holding data with no format
+  stamp, is refused by name and left untouched. The format is written down
+  ([`docs/key-grammar.md`](docs/key-grammar.md),
+  [`docs/value-system.md`](docs/value-system.md)) and a test fails when the code
+  and the documents disagree, or when the format changes without its version
+  moving. Going back to an older build is not promised. A write the engine could
+  not make durable stops the store until it is reopened and recovers from its log
+  ([`docs/storage-contract.md`](docs/storage-contract.md)).
+- 🔄 **Not promised yet:** before 1.0 the query language and the wire format may
+  still change.
 
 Pin a released version rather than tracking `dev`, which moves. And keep a backup
 you have actually restored: the log *is* the backup, and `--verify` reads one

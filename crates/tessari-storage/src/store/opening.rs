@@ -12,7 +12,7 @@ use crate::snapshots::Registry;
 
 use super::{
     Store, give_an_older_log_its_home, give_an_older_log_its_writer, read_format_version,
-    seed_version_position, write_initial_metadata,
+    refuse_data_without_a_stamp, seed_version_position, write_initial_metadata,
 };
 
 impl Store {
@@ -36,7 +36,10 @@ impl Store {
                 give_an_older_log_its_home(Arc::clone(&backend), found)?;
                 give_an_older_log_its_writer(Arc::clone(&backend), found)?;
             }
-            None => write_initial_metadata(Arc::clone(&backend))?,
+            None => {
+                refuse_data_without_a_stamp(backend.as_ref())?;
+                write_initial_metadata(Arc::clone(&backend))?;
+            }
         }
         seed_version_position(Arc::clone(&backend))?;
         crate::node::ensure(Arc::clone(&backend))?;

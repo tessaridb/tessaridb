@@ -12,7 +12,7 @@ use tessari_encoding::{
     AppliedPositionKey, FormatVersion, FormatVersionKey, KeyKind, LogId, LogKey, NODE_ID_LEN,
     REACH_LEN, StoreKey, StoreValue, VersionPositionKey, Writer,
 };
-use tessari_kv::{Key, KeyRange, KvBackend, ScanDirection, ScanRequest, WriteBatch};
+use tessari_kv::{Key, KeyRange, Keyspace, KvBackend, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::{Epoch, Sequence};
 
 use crate::catalog::Reach;
@@ -339,6 +339,25 @@ fn read_format_version(backend: Arc<dyn KvBackend>) -> Result<Option<FormatVersi
 ///
 /// The `Absent` precondition is what makes two processes opening the same
 /// new store safe: exactly one of them writes the metadata.
+/// Refuse a store that holds data and no format version.
+///
+/// Every store this engine creates is stamped before anything else is written
+/// to it, so data without a stamp is data whose format nobody knows; stamping
+/// it as new would write this build's format over it. One key per keyspace is
+/// read, which is what an empty store costs to tell apart from one that is not.
+fn refuse_data_without_a_stamp(backend: &dyn KvBackend) -> Result<()> {
+    for &keyspace in Keyspace::ALL {
+        let first = backend.scan(&ScanRequest::new(keyspace, KeyRange::all()).with_limit(1))?;
+        if !first.is_empty() {
+            return Err(tessari_encoding::Error::UnstampedStore {
+                keyspace: keyspace.name(),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
 fn write_initial_metadata(backend: Arc<dyn KvBackend>) -> Result<()> {
     let format_key = FormatVersionKey.encode();
     let batch = WriteBatch::new()
@@ -987,5 +1006,48 @@ mod tests {
             }
             other => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn a_store_holding_data_without_a_format_stamp_is_refused_and_left_alone() {
+        let shared = backend();
+        let record = tessari_kv::Key::from(vec![KeyKind::Record.tag(), 1, 2, 3]);
+        shared
+            .apply(WriteBatch::new().put(
+                tessari_kv::Keyspace::DATA,
+                record.clone(),
+                tessari_kv::Value::from(vec![1]),
+            ))
+            .unwrap();
+
+        let error = Store::open(Arc::clone(&shared)).unwrap_err();
+        assert_eq!(error.code(), "corruption", "{error}");
+        match &error {
+            Error::Encoding(tessari_encoding::Error::UnstampedStore { keyspace }) => {
+                assert_eq!(*keyspace, "data");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        assert_eq!(
+            read_format_version(Arc::clone(&shared)).unwrap(),
+            None,
+            "not stamped on the way to refusing"
+        );
+        assert!(
+            shared
+                .get(tessari_kv::Keyspace::DATA, &record)
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn an_empty_store_is_a_new_one_and_is_stamped() {
+        let shared = backend();
+        Store::open(Arc::clone(&shared)).unwrap();
+        assert_eq!(
+            read_format_version(shared).unwrap(),
+            Some(FormatVersion::CURRENT)
+        );
     }
 }

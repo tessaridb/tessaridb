@@ -287,3 +287,75 @@ fn scan(store: &LsmBackend) -> Vec<(Vec<u8>, Vec<u8>)> {
         .map(|(key, value)| (key.as_slice().to_vec(), value.as_slice().to_vec()))
         .collect()
 }
+
+/// The sorted files of a store, largest first.
+fn sorted_files(path: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<(u64, PathBuf)> = fs::read_dir(path)
+        .unwrap()
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|held| held.extension().is_some_and(|held| held == "sst"))
+        .map(|held| (fs::metadata(&held).unwrap().len(), held))
+        .collect();
+    found.sort_by(|a, b| b.cmp(a));
+    found.into_iter().map(|(_, held)| held).collect()
+}
+
+#[test]
+fn a_flipped_byte_in_a_sorted_file_is_refused_as_corruption_and_never_answered() {
+    // G059 C4: corruption is detected by checksum and named. A byte flipped in
+    // the middle of a sorted file lands in a data block; every read of it must
+    // either answer exactly what was written or refuse with `corruption` — a
+    // different value, or a record silently missing, is the failure.
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("store");
+    const RECORDS: usize = 4_000;
+    let large = |n: usize| Value::from_slice(format!("{n:0>200}").as_bytes());
+
+    let store = LsmBackend::open(&path, config()).unwrap();
+    let batch = (0..RECORDS).fold(WriteBatch::new(), |batch, n| {
+        batch.put(Keyspace::DATA, key(n), large(n))
+    });
+    store.apply(batch).unwrap();
+    store.compact().unwrap();
+    drop(store);
+
+    let target = sorted_files(&path)
+        .into_iter()
+        .next()
+        .expect("the compaction left a sorted file");
+    let mut bytes = fs::read(&target).unwrap();
+    let middle = bytes.len() / 2;
+    bytes[middle] ^= 0xff;
+    fs::write(&target, &bytes).unwrap();
+
+    let reopened = match LsmBackend::open(&path, config()) {
+        Ok(reopened) => reopened,
+        Err(refused) => {
+            assert_eq!(
+                refused.code(),
+                "corruption",
+                "open refused, but not by name: {refused}"
+            );
+            return;
+        }
+    };
+    let mut refused = 0usize;
+    for n in 0..RECORDS {
+        match reopened.get(Keyspace::DATA, &key(n)) {
+            Ok(held) => assert_eq!(
+                held.map(|found| found.as_slice().to_vec()),
+                Some(large(n).as_slice().to_vec()),
+                "record {n} answered something other than what was written"
+            ),
+            Err(failure) => {
+                assert_eq!(failure.code(), "corruption", "record {n}: {failure}");
+                refused = refused.saturating_add(1);
+            }
+        }
+    }
+    assert!(
+        refused > 0,
+        "the flipped byte was read past without a refusal"
+    );
+}

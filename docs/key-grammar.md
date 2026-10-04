@@ -115,6 +115,8 @@ because renumbering after data exists is a full rebuild.
 | `0x51` | `IntentOf` (an intent this node holds, by transaction) | `meta` | implemented — see §6.5 |
 | `0x52` | `AcrossPart` (where a transaction's part in one range landed here) | `meta` | implemented — see §6.5 |
 | `0x53` | `AcrossUnsettled` (a table whose indexes and readers disagree about a transaction) | `meta` | implemented — see §6.5 |
+| `0x54` | `AcrossBarred` (a part a leader was barred from landing after the transaction was decided) | `meta` | implemented — see §6.5 |
+| `0x55` | `ResolvedOf` (a version resolved from a transaction across leaders, by transaction) | `meta` | implemented — see §6.5 |
 
 `0x40` and `0x41` open a fifth family, `0x4_`: what the planner keeps about an
 index. Both keys are an index prefix with no suffix (`<tag> <namespace:u32>
@@ -959,7 +961,7 @@ error naming the version found and the versions supported.
 |---|---|
 | `codec-version` | `0x01` for this format. Not a payload byte. |
 | `flags` | bit 0 = tombstone, for value types that have versions. Bit 6 = the value belongs to a transaction across leaders (ADR-0112): on a log record, the section saying which of its records this is; on a record version, its provenance — `<transaction:16> <kind:1> <coordinator reach>`, kind `0` resolved, `1` provisional (an intent); a resolved version follows it with `<count:u32>` participants, each `<range reach> <known:u8> [<prepared at:u64>]`, so a reader can tell whether its snapshot holds the whole transaction (ADR-0112 D6a). The other bits are defined per value type in the codec; an undefined bit is reserved, and so is bit 0 for value types that cannot be deleted. |
-| `payload` | opaque to this layer; the document codec (SG2.T4) owns it |
+| `payload` | opaque to this layer; the payload codec owns it (`docs/value-system.md` §5) |
 
 Policies, stated rather than left to be discovered:
 
@@ -974,6 +976,25 @@ Policies, stated rather than left to be discovered:
 - **No compression in the codec.** When a block-compressing engine is added
   (SG2.T5), compressing again per value defeats cross-record redundancy and
   doubles the CPU. Compression belongs to exactly one layer.
+
+### 7.1 Flag bits
+
+A bit means one thing on every value type that sets it, so a decode routed to
+the wrong type is an error rather than a plausible wrong value. A clear bit is
+what every value written before the bit existed carries, which is why adding one
+rewrote nothing.
+
+| Mask | Flag | Set on | Meaning |
+|---|---|---|---|
+| `0x01` | `tombstone` | a record version | the record was deleted at this version |
+| `0x02` | `epoch` | a log record | it names the leadership that wrote it; clear is epoch zero |
+| `0x04` | `stamp` | a record version | it carries the causal context its writer had seen; clear is an empty stamp |
+| `0x08` | `shards` | a log record | every mutation carries the shard of its table it falls in |
+| `0x10` | `order` | a log record | it carries its writer's commit order |
+| `0x20` | `expires` | a record version | it carries the instant it expires at |
+| `0x40` | `across` | both | it belongs to a transaction across leaders (see the `flags` row above) |
+
+Bit 7 is reserved and must be zero.
 
 ## 7a. The index value tag table
 
@@ -993,6 +1014,8 @@ order across types **is** the declared cross-type order.
 | `0x0c` `0x0f` | `array`, `set` | elements, then `0x00` |
 | `0x0d` | `object` | escaped name and value per field in name order, then `0x00` |
 | `0x0e` | `range` | two bounds, each `<kind:1>` and, unless open, a value |
+| `0x10` | `geometry` | the shape byte (`docs/value-system.md` §5.2), then its positions as the payload writes them |
+| `0x11` | `regex` | the pattern's source text, escaped (§4.3) |
 
 These are the same numbers as the payload codec's tags (`docs/value-system.md`
 §5) so that a hex dump reads the same way in both. They are nonetheless
@@ -1025,7 +1048,7 @@ the reservation is not withdrawn — withdrawing it would let a future kind reus
 those bytes, and tags are permanent.
 
 The catalog is instead ordinary records in a reserved tenancy: namespace `0`,
-database `0`, and seven well-known table ids inside it. Two properties are what
+database `0`, and the well-known table ids inside it listed in §9.1. Two properties are what
 decided it, and neither is available to a `meta` key kind:
 
 - **It rides the log.** State is a deterministic function of the log, so a
@@ -1044,3 +1067,74 @@ A key never carries a catalog name. Names live inside the definition, and a
 separate name record makes them unique — conflict detection is over what a
 transaction wrote, so an invariant two transactions must not both satisfy has to
 be materialised into a key they both write.
+
+### 9.1 The system tables
+
+Every row of the catalog is a record of one of these tables, at namespace `0`,
+database `0`. An id is permanent for the reason a key-kind tag is: every row
+already written carries it. A new table takes the next id; none is reused.
+
+| Id | Table | Holds |
+|---|---|---|
+| `1` | `NAMESPACES` | namespace definitions, by namespace id |
+| `2` | `DATABASES` | database definitions, by database id |
+| `3` | `TABLES` | table definitions, by table id |
+| `4` | `NAMES` | qualified names, each holding the id it resolves to — what makes a name unique |
+| `5` | `ALLOCATORS` | the id counters, by the level they hand out ids for |
+| `6` | `INDEXES` | index definitions, by index id |
+| `7` | `FIELDS` | field definitions, by field id |
+| `8` | `ANALYZERS` | declared analyzers |
+| `9` | `USERS` | declared users |
+| `10` | `GRANTS` | which tables a user may reach, and for what |
+| `11` | `REPLICAS` | the peers this store knows about, by replica id |
+| `12` | `CONSUMERS` | declared stream consumers (the declaration only) |
+| `13` | `RECORD_SEQUENCES` | the next identity each table generates, by table id |
+| `14` | `GRAPHS` | declared graphs |
+| `15` | `EDGE_KINDS` | declared edge kinds, by edge-kind id |
+| `16` | `VAULT_ROOT` | the vault root: the salt and the master key sealed under the passphrase |
+| `17` | `VAULT_AUDIT` | reads of a vault, one record per read |
+| `18` | `RECORD_COUNTS` | how many records each table holds, by table id |
+| `19` | `LEADERSHIPS` | which node the log last showed leading a range, and under which leadership |
+| `20` | `FAILOVER` | the cluster's failover policy, one row |
+| `21` | `TOPIC_POSITIONS` | each topic reader's stored position |
+| `22` | `TOPIC_GROUPS` | each topic consumer group: declaration, last position handed out, what is in flight |
+| `23` | `WORD_SETS` | synonym and stop-word sets, by kind and name |
+| `24` | `REVOKED_CERTIFICATES` | peer certificates no handshake accepts, by fingerprint |
+| `25` | `TOMBSTONED_NODES` | nodes removed from the cluster, never admitted again |
+| `26` | `VIEW_STATES` | how far each materialized view has been brought |
+| `27` | `VIEW_MEMBERS` | which group of a grouped materialized view each source record is in, both ways round |
+| `28` | `ROLLUP_STATES` | the exact state of each rollup key's float sums for its last-written window |
+| `29` | `KAFKA_QUARANTINE` | the messages each Kafka consumer quarantined, by partition and offset |
+
+## 10. Format versions
+
+The store's own format version (`FormatVersion`, key kind `0x30`) is written
+when a store is created and read before anything else when it is opened. A store
+stamped **newer** than this build is refused (`UnsupportedFormatVersion`): opening
+it would write this build's format into it. A store stamped **older** is opened,
+and is rewritten at open only where the row below says so.
+
+| Version | Change | Older store at open |
+|---|---|---|
+| `1` | the first format | — |
+| `2` | a log record carries the leadership (epoch) that wrote it — flag `0x02` (ADR-0059) | opened as is: a clear bit reads as epoch zero |
+| `3` | the log is per range: a log key carries its home | rewritten: an old log key does not decode |
+| `4` | a record version carries its causal stamp — flag `0x04` | opened as is: a clear bit reads as an empty stamp |
+| `5` | a log key carries the writer that allocated it (G027 S2.2) | rewritten: an old and a new key differ in length |
+
+Format 5 also took values that arrived after it without a bump — among them the
+`expires` and `across` flag bits (§7.1) and system tables 26–29 (§9.1) — so a
+build older than the one that introduced a value can open a store holding it.
+From `0.27.0-beta` that is closed: the digest of every value in §3, §5, §7.1, §7a,
+§9.1 and `docs/value-system.md` §5 is pinned beside the format version it shipped
+with (`crates/tessari-storage/tests/suite/format_spec.rs`), and changing any of
+them without moving the version fails the build's own tests. Catalog definitions
+are records whose fields an older build ignores, so a field added to one is not
+a format change.
+
+A store holding data and **no** format version is refused at open
+(`UnstampedStore`, naming the first keyspace found holding data) and left
+untouched. Every store this engine creates is stamped before anything else is
+written to it, so such a store was written by something else or has lost the key
+that says what it is, and stamping it as new would write this build's format
+over data whose format nobody knows. An empty store is a new one.
