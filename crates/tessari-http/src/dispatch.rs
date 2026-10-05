@@ -320,7 +320,8 @@ pub(super) fn answer(id: u64, node: &Shared, mut request: Incoming) -> Answer {
 /// An answer as axum sends it, with the headers its status obliges.
 pub(super) fn to_response(reply: Answer) -> Response {
     let status = StatusCode::from_u16(reply.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    let mut response = (status, reply.body).into_response();
+    let body = respond::coded(reply.status, reply.body);
+    let mut response = (status, body).into_response();
     let headers = response.headers_mut();
     // A `401` without a challenge is not a `401` a client can act on — RFC 9110
     // requires the header, so it follows from the status rather than from a

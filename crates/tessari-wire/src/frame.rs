@@ -65,7 +65,12 @@ pub(crate) const MAJOR: u8 = 1;
 /// major one: a value nested inside an array carries no length of its own, so an
 /// unknown one cannot be stepped over.
 ///
-/// # Why this is 2
+/// # Why this is 3
+///
+/// 3 since a refusal carries its class (ADR-0117 D3): a node at 3 starts the
+/// refusal body it sends a client of 3 or more with the class byte.
+///
+/// # Why it was 2
 ///
 /// 2 since the vault frame (ADR-0092 D2): a node at 2 answers
 /// [`Kind::Vault`], and a client asks one only of a node that said 2 or more.
@@ -77,7 +82,7 @@ pub(crate) const MAJOR: u8 = 1;
 /// sends is worse than the gap**: a peer that believed this build could redirect
 /// would have been believing something false. This build sends one, so the minor
 /// moves with the sender and not with the frame.
-pub(crate) const MINOR: u8 = 2;
+pub(crate) const MINOR: u8 = 3;
 
 /// The minor at which a peer can be sent a [`Kind::Elsewhere`] frame.
 ///
@@ -108,6 +113,51 @@ pub(crate) const VAULT: u8 = 2;
 
 /// This build's node answers the frame this build's client may send.
 const _: () = assert!(MINOR >= VAULT);
+
+/// The minor at which a client is sent a refusal's class (ADR-0117 D3).
+///
+/// The refusal body has no length prefix, so a client older than this would
+/// read the byte as the first character of the message; it is sent the text
+/// alone, exactly as before.
+pub(crate) const CODES: u8 = 3;
+
+/// This build's node classes the refusals this build's client reads.
+const _: () = assert!(MINOR >= CODES);
+
+/// The bytes a refusal body starts with when it carries a class: one, from
+/// `0` (the node could not class it) to `9`. A message is UTF-8 prose and never
+/// starts with a byte this low, which is what lets a reader tell a classed body
+/// from one an older node — or the door, before any greeting — wrote as text.
+pub(crate) const CLASS_BYTES: std::ops::RangeInclusive<u8> = 0..=9;
+
+/// A refusal body for a peer of minor `theirs`: the class byte first when it
+/// can read one, the store's own words after.
+#[must_use]
+pub(crate) fn refusal(theirs: u8, class: tessari_types::RefusalClass, text: &str) -> Vec<u8> {
+    let mut body = Vec::with_capacity(text.len().saturating_add(1));
+    if theirs >= CODES {
+        body.push(class.byte());
+    }
+    body.extend_from_slice(text.as_bytes());
+    body
+}
+
+/// A refusal body read back: its class, when it carried a readable one, and its
+/// words.
+///
+/// `Some(None)` is a body that carried a class byte this build does not know, or
+/// `0` — a class nobody could decide — and a reader treats it as not
+/// retriable; `None` is a body with no class at all, from an older node.
+#[must_use]
+pub(crate) fn read_refusal(body: &[u8]) -> (Option<Option<tessari_types::RefusalClass>>, String) {
+    match body.split_first() {
+        Some((&first, rest)) if CLASS_BYTES.contains(&first) => (
+            Some(tessari_types::RefusalClass::from_byte(first)),
+            String::from_utf8_lossy(rest).into_owned(),
+        ),
+        _ => (None, String::from_utf8_lossy(body).into_owned()),
+    }
+}
 
 /// The largest frame this build will read.
 ///

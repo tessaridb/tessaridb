@@ -138,6 +138,9 @@ pub use tessari_encoding::{
     BUILD_VERSION, Decision, IndexStatistics, LogId, NODE_ID_LEN, Roles, TransactionId,
     TransactionRecord, Writer,
 };
+/// The category [`Error::category`] answers, re-exported so a caller can match it
+/// without reaching below this crate.
+pub use tessari_kv::ErrorCategory;
 pub use transaction::{
     AcrossPart, Committed, Expansion, FieldedPostings, Neighbour, PlacesNearest, RecordAddress,
     Region, SearchCounts, StoredRecord, Transaction, Window,

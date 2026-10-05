@@ -9,6 +9,9 @@ target/
 target-lint/
 target-pkg/
 target-ra/
+# The fuzz crate and its own target directory (gigabytes after a run); the image
+# never builds it.
+fuzz/
 
 # The git directory is history, and the build wants a working tree. Excluding it
 # also keeps the branch and the remote out of the image's layers.

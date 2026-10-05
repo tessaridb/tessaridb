@@ -107,7 +107,9 @@ impl tessari_wire::Holding for PeerDoor {
             &asked.parameters,
         );
         Ok(match asked.surface {
-            tessaridb::Surface::Wire { .. } => tessari_wire::render_coordinated(&self.db, &ran),
+            tessaridb::Surface::Wire { minor } => {
+                tessari_wire::render_coordinated(&self.db, &ran, minor)
+            }
             tessaridb::Surface::Http => tessari_http::render_coordinated(&self.db, &ran),
         })
     }

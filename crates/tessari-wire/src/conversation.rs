@@ -37,6 +37,7 @@ use std::time::{Duration, Instant};
 use tessari_constants::GREETING_SECONDS;
 use tessari_serve::{Admitted, Bridge, Bridged, Busy, Stopping};
 use tessari_session::Detached;
+use tessari_types::RefusalClass;
 use tessaridb::Db;
 use tessaridb::feed::Commits;
 use tokio::io::{BufReader, BufWriter as AsyncBufWriter};
@@ -125,7 +126,7 @@ pub(crate) async fn converse<C: Carried>(
             busy.became_a_feed();
             tracing::info!("connection became a subscription");
             let asked = Follow::decode(&body)?;
-            let fed = feed(talk, session, reader, writer, asked).await;
+            let fed = feed(talk, session, reader, writer, asked, theirs).await;
             drop((busy, place));
             return fed;
         }
@@ -139,7 +140,7 @@ pub(crate) async fn converse<C: Carried>(
                 .bridge
                 .call(session, move |held: Detached| {
                     let mut attached = held.attach(db.store());
-                    let answer = respond_vault(&mut attached, &asked);
+                    let answer = respond_vault(&mut attached, &asked, theirs);
                     (attached.detach(), answer)
                 })
                 .await;
@@ -154,7 +155,7 @@ pub(crate) async fn converse<C: Carried>(
                         &mut writer,
                         &talk.stopping,
                         frame::Kind::Refusal,
-                        BUSY.as_bytes(),
+                        &frame::refusal(theirs, RefusalClass::Unavailable, BUSY),
                     )
                     .await?;
                 }
@@ -233,7 +234,7 @@ pub(crate) async fn converse<C: Carried>(
                     &mut writer,
                     &talk.stopping,
                     frame::Kind::Refusal,
-                    BUSY.as_bytes(),
+                    &frame::refusal(theirs, RefusalClass::Unavailable, BUSY),
                 )
                 .await?;
             }

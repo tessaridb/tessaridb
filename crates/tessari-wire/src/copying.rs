@@ -54,6 +54,7 @@ pub(crate) fn serve(
 ) -> Result<()> {
     let refused = |why: tessari_storage::Error| Error::Refused {
         message: why.to_string(),
+        class: None,
     };
     let mut reader = store.read_state_within(over).map_err(refused)?;
     let positions = reader.positions().to_vec();
@@ -130,6 +131,7 @@ pub fn copy(
 fn receive(link: &mut impl std::io::Read, into: &Store) -> Result<Copied> {
     let refused = |why: tessari_storage::Error| Error::Refused {
         message: why.to_string(),
+        class: None,
     };
     let (over, version, positions) = match next(link)? {
         (tag, body) if tag == PeerFrame::StateHead.tag() => head(&body)?,

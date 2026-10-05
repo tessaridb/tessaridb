@@ -59,6 +59,29 @@ pub enum FeedRefused {
     },
 }
 
+impl FeedRefused {
+    /// What the subscriber should do about it (ADR-0117).
+    #[must_use]
+    pub fn class(&self) -> tessari_types::RefusalClass {
+        use tessari_types::RefusalClass;
+        match self {
+            Self::Store(error) => error.class(),
+            Self::TableNotGranted { .. } => RefusalClass::Forbidden,
+            // The table moved under the feed: follow it again, from the cursor.
+            Self::SplitAfterStart => RefusalClass::Conflict,
+            // This node's log is another writer's; the feed belongs elsewhere.
+            Self::AnotherWriter { .. } => RefusalClass::Unavailable,
+            Self::NoDatabaseSelected
+            | Self::TenancyGone
+            | Self::NoSuchTable { .. }
+            | Self::CursorWithoutSplit { .. }
+            | Self::StrayLog { .. }
+            | Self::CursorUnreadable { .. }
+            | Self::CursorFromAnotherDatabase { .. } => RefusalClass::Invalid,
+        }
+    }
+}
+
 impl fmt::Display for FeedRefused {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

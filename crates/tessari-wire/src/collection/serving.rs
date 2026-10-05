@@ -98,6 +98,7 @@ impl Origin for Serving<'_> {
     fn reached_on(&self, range: Reach) -> Result<Option<crate::grant::Reached>> {
         let refused = |why: tessari_storage::Error| Error::Refused {
             message: why.to_string(),
+            class: None,
         };
         let log = self.log.history_log(range).map_err(refused)?;
         Ok(Some(crate::grant::Reached {
@@ -183,6 +184,7 @@ impl Origin for Serving<'_> {
             .history_log(asked.home)
             .map_err(|why| Error::Refused {
                 message: why.to_string(),
+                class: None,
             })?;
         let previous = preceding(self.log, over, served, asked.from)?;
         // The ask is the acknowledgement (ADR-0106 D6): a follower asks for the
@@ -348,6 +350,7 @@ pub(super) fn preceding(store: &Store, over: Reach, log: LogId, from: Sequence) 
         Err(why) => {
             return Err(Error::Refused {
                 message: why.to_string(),
+                class: None,
             });
         }
     };

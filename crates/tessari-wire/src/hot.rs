@@ -86,7 +86,7 @@ pub(crate) fn serve(
                 tracing::warn!("statement refused: every store call slot is taken");
                 Answer {
                     kind: frame::Kind::Refusal,
-                    body: BUSY.as_bytes().to_vec(),
+                    body: frame::refusal(theirs, tessari_types::RefusalClass::Unavailable, BUSY),
                     redirect: None,
                 }
             }
@@ -343,7 +343,11 @@ mod tests {
         for _ in 0..2 {
             let (kind, body) = answered(&mut client);
             assert_eq!(kind, frame::Kind::Refusal, "a full bridge answered");
-            assert_eq!(body, BUSY.as_bytes(), "refused, but not for being busy");
+            assert_eq!(
+                body,
+                frame::refusal(frame::MINOR, tessari_types::RefusalClass::Unavailable, BUSY),
+                "refused, but not for being busy, or without its class"
+            );
         }
         assert_eq!(bridge.refused(), 2, "a refusal went uncounted");
         drop(client);

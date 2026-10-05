@@ -251,6 +251,7 @@ impl Following {
         if !admitted {
             return Err(Error::Refused {
                 message: "the leader's certificate is no longer admitted here".to_owned(),
+                class: None,
             });
         }
         let mut link = rustls::Stream::new(&mut self.session, &mut self.socket);

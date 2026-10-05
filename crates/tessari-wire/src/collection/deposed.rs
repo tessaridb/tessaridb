@@ -49,6 +49,7 @@ pub(super) fn refused(into: &Store, fetched: Vec<Result<Collected>>) -> Vec<Resu
                     message: format!(
                         "this node cannot say which leadership its copy reaches: {why}"
                     ),
+                    class: None,
                 })?;
             if stated < newest {
                 return Err(Error::Deposed { stated, newest });

@@ -48,7 +48,7 @@ fn a_shard_home_crosses_the_wire_and_the_older_three_keep_nine_bytes() {
 /// constant makes a protocol change fail in this crate until somebody has
 /// been to `spec/protocol-v1.md` §2.3 and §3.1 and changed the document a
 /// third-party client is written against.
-const SPECIFIED_GREETING: [u8; 6] = [b'T', b'E', b'S', b'S', 1, 2];
+const SPECIFIED_GREETING: [u8; 6] = [b'T', b'E', b'S', b'S', 1, 3];
 
 /// A peer: what it will say, and what it hears.
 ///
@@ -93,7 +93,7 @@ fn the_greeting_this_node_sends_is_the_six_bytes_the_specification_names() {
         peer.heard, SPECIFIED_GREETING,
         "what this node puts on the wire is not what the specification says"
     );
-    assert_eq!(minor, 2, "the peer's minor is kept, not discarded");
+    assert_eq!(minor, 3, "the peer's minor is kept, not discarded");
 }
 
 #[test]

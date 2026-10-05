@@ -7929,7 +7929,7 @@ there:
   a file is refused rather than followed out of the folder;
 - a file already at that name is **never replaced** — `BackupExists` (`409`),
   because the file it would replace is most likely an earlier backup;
-- a node started without a folder refuses every `TO` as `NoBackupFolder` (`409`)
+- a node started without a folder refuses every `TO` as `NoBackupFolder` (`503`)
   rather than writing somewhere nobody chose.
 
 The bytes go to `<name>.partial`, are synced, read back through the verifier
@@ -9815,7 +9815,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.29.0", "build": "0.29.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.30.0", "build": "0.30.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

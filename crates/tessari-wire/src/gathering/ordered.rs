@@ -90,6 +90,7 @@ pub(super) fn ranked_page(
     })
     .map_err(|why| Error::Refused {
         message: why.to_string(),
+        class: None,
     })?;
     let mut more = false;
     let mut records = Vec::new();

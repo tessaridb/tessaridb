@@ -31,6 +31,7 @@ pub(super) fn folded(
     let Some(partials) =
         tessari_session::reducing(store, reduce, found).map_err(|why| Error::Refused {
             message: why.to_string(),
+            class: None,
         })?
     else {
         return Ok(declined);

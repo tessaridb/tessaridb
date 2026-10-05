@@ -1,4 +1,5 @@
 use super::*;
+use tessari_types::RefusalClass;
 
 /// Answer one request: sign in if it carries credentials, then run it.
 ///
@@ -10,9 +11,9 @@ pub(crate) fn respond(
     request: &Request,
     theirs: u8,
 ) -> Answer {
-    let refusal = |message: String| Answer {
+    let refusal = |class, message: String| Answer {
         kind: frame::Kind::Refusal,
-        body: message.into_bytes(),
+        body: frame::refusal(theirs, class, &message),
         redirect: None,
     };
     if let Some((name, password)) = &request.credentials
@@ -21,7 +22,7 @@ pub(crate) fn respond(
         // The session's own refusal, travelling as one. A second rule here
         // would be a second place for "who may do this" to be decided.
         tracing::warn!(refusal = %refused, "request refused");
-        return refusal(refused.to_string());
+        return refused_as(&refused, theirs);
     }
     // What the caller had selected BEFORE the script ran: a carried request is
     // run again from the start on the node that answers it.
@@ -60,30 +61,36 @@ pub(crate) fn respond(
                     body: answer.body,
                     redirect: None,
                 },
-                None => refusal(format!(
-                    "the node that answered sent a kind this node does not know ({})",
-                    answer.kind
-                )),
+                None => refusal(
+                    RefusalClass::Internal,
+                    format!(
+                        "the node that answered sent a kind this node does not know ({})",
+                        answer.kind
+                    ),
+                ),
             },
             // The hop failed, and the client is told that rather than being
             // told the statement was wrong. It was not.
-            Err(why) => refusal(why),
+            Err(why) => refusal(RefusalClass::Unavailable, why),
         };
     }
     // No peer link, so nothing to carry it over: the write is refused, naming
     // where the writable peer takes writes. The caller's password stays here
     // (ADR-0108 D1, R-10) — it used to be relayed to that address in clear.
     if matches!(ran, Err(tessaridb::Error::NotWritable { .. })) {
-        return refusal(match db.writable_peer() {
-            Ok(Some(peer)) => format!(
-                "this node does not take writes; the peer declared writable takes them at {}",
-                peer.clients.unwrap_or(peer.endpoint)
-            ),
-            Ok(None) => {
-                "this node does not accept writes, and no peer is declared writable".to_owned()
-            }
-            Err(why) => why.to_string(),
-        });
+        return refusal(
+            RefusalClass::Unavailable,
+            match db.writable_peer() {
+                Ok(Some(peer)) => format!(
+                    "this node does not take writes; the peer declared writable takes them at {}",
+                    peer.clients.unwrap_or(peer.endpoint)
+                ),
+                Ok(None) => {
+                    "this node does not accept writes, and no peer is declared writable".to_owned()
+                }
+                Err(why) => why.to_string(),
+            },
+        );
     }
     // A redirect is an **instruction** and leaves as its own frame rather than
     // as a refusal carrying a hint (`redirect.rs`), gated on what the client
@@ -103,12 +110,16 @@ pub(crate) fn respond(
             redirect: Some(sent.settlement == redirect::Settlement::Settled),
         };
     }
-    render(db, &ran)
+    render(db, &ran, theirs)
 }
 
 /// A run's answer as this surface writes it: one outcome per statement, or the
 /// refusal in the store's own words.
-pub(super) fn render(db: &Db, ran: &tessaridb::Result<Vec<tessaridb::Outcome>>) -> Answer {
+pub(super) fn render(
+    db: &Db,
+    ran: &tessaridb::Result<Vec<tessaridb::Outcome>>,
+    theirs: u8,
+) -> Answer {
     match ran {
         Ok(outcomes) => {
             let mut answer = Vec::new();
@@ -131,11 +142,17 @@ pub(super) fn render(db: &Db, ran: &tessaridb::Result<Vec<tessaridb::Outcome>>) 
         }
         // A refusal does not close the connection: a client that mistyped a
         // statement has not stopped being a client.
-        Err(refused) => Answer {
-            kind: frame::Kind::Refusal,
-            body: refused.to_string().into_bytes(),
-            redirect: None,
-        },
+        Err(refused) => refused_as(refused, theirs),
+    }
+}
+
+/// A refusal for a client of minor `theirs`, carrying its class when the client
+/// can read one (ADR-0117).
+pub(crate) fn refused_as(refused: &tessaridb::Error, theirs: u8) -> Answer {
+    Answer {
+        kind: frame::Kind::Refusal,
+        body: frame::refusal(theirs, refused.class(), &refused.to_string()),
+        redirect: None,
     }
 }
 
@@ -146,8 +163,9 @@ pub(super) fn render(db: &Db, ran: &tessaridb::Result<Vec<tessaridb::Outcome>>) 
 pub fn render_coordinated(
     db: &Db,
     ran: &tessaridb::Result<Vec<tessaridb::Outcome>>,
+    minor: u8,
 ) -> tessaridb::Coordinated {
-    let answer = render(db, ran);
+    let answer = render(db, ran, minor);
     tessaridb::Coordinated {
         kind: u16::from(answer.kind.tag()),
         body: answer.body,
@@ -162,17 +180,13 @@ pub fn render_coordinated(
 pub(crate) fn respond_vault(
     session: &mut tessaridb::Session<'_>,
     asked: &crate::VaultAsk,
+    theirs: u8,
 ) -> Answer {
-    let refusal = |message: String| Answer {
-        kind: frame::Kind::Refusal,
-        body: message.into_bytes(),
-        redirect: None,
-    };
     if let Some((name, password)) = &asked.credentials
         && let Err(refused) = session.sign_in(name, password)
     {
         tracing::warn!(refusal = %refused, "request refused");
-        return refusal(refused.to_string());
+        return refused_as(&refused, theirs);
     }
     let act = match &asked.call {
         crate::VaultCall::Status => tessaridb::VaultAct::Status,
@@ -204,6 +218,6 @@ pub(crate) fn respond_vault(
                 redirect: None,
             }
         }
-        Err(refused) => refusal(refused.to_string()),
+        Err(refused) => refused_as(&refused, theirs),
     }
 }
