@@ -156,7 +156,7 @@ pub(crate) fn areas_share_ground(one: &Area, other: &Area) -> bool {
 pub(crate) fn inside_area(area: &Area) -> Option<Fine> {
     let holds = |at: Fine| (area_holds(area, at) == Containment::Inside).then_some(at);
 
-    if let Some(witness) = inside_ring(&area.shell).and_then(&holds) {
+    if let Some(witness) = inside_ring(&area.shell).and_then(holds) {
         return Some(witness);
     }
     for hole in &area.holes {
