@@ -146,10 +146,15 @@ fn certified(chain: Pem<'_>, key: Pem<'_>) -> Result<Arc<CertifiedKey>, Refused>
 
 /// A private key file's bytes, refused when anybody but its owner may read it.
 ///
-/// The rule a private SSH key follows, and the one the at-rest key file already
-/// follows: a key that every account on the host can read authenticates this
-/// node to nobody who can log in to it. Checked before the bytes are read, so a
-/// refused key is never held in memory. Off Unix there is no mode to check.
+/// The rule a private SSH key follows: a key that every account on the host can
+/// read authenticates this node to nobody who can log in to it. Checked before
+/// the bytes are read, so a refused key is never held in memory. Off Unix there
+/// is no mode to check.
+///
+/// One allowance, PostgreSQL's: a file **owned by root** may also be readable by
+/// its group. That is how an orchestrator mounts a secret for a process running
+/// as another user — root owns it, the process's group may read it — and refusing
+/// it would leave no way to hand this node a key there.
 ///
 /// # Errors
 ///
@@ -163,15 +168,17 @@ pub fn read_private_key(path: &Path) -> Result<Vec<u8>, String> {
 
 #[cfg(unix)]
 fn owner_only(metadata: &std::fs::Metadata) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
     let mode = metadata.permissions().mode();
-    if mode & 0o077 == 0 {
-        Ok(())
-    } else {
+    let others = mode & 0o007 != 0;
+    let group = mode & 0o070 != 0 && metadata.uid() != 0;
+    if others || group {
         Err(format!(
             "may be read by others (mode {:o}); `chmod 600` it",
             mode & 0o777
         ))
+    } else {
+        Ok(())
     }
 }
 
