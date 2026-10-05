@@ -40,8 +40,10 @@ FROM debian:bookworm-slim
 # `libstdc++6` because RocksDB is C++ and the binary links it dynamically; it is
 # usually already present in this base, and naming it is what stops that from
 # being an assumption. `bash` for the health check, which speaks HTTP over
-# `/dev/tcp` rather than adding an HTTP client to a database image.
+# `/dev/tcp` rather than adding an HTTP client to a database image. The upgrade
+# takes the base's security fixes published after the base image was built.
 RUN apt-get update \
+ && apt-get upgrade -y --no-install-recommends \
  && apt-get install -y --no-install-recommends libstdc++6 bash \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --home-dir /var/lib/tessaridb --shell /usr/sbin/nologin tessaridb \
