@@ -34,6 +34,9 @@ tungstenite.workspace = true
 # TLS on the listener (ADR-0108 D4): the rustls the peer link already uses.
 rustls.workspace = true
 tokio-rustls.workspace = true
+# A password a request carried is wiped when the request is done with it
+# (G061, R-06). Already in the tree.
+zeroize.workspace = true
 
 [dev-dependencies]
 # The tests serve a node, and a node is served on a runtime the caller owns.

@@ -38,6 +38,7 @@ server = [
     "dep:tokio",
     "dep:tokio-util",
     "dep:tokio-rustls",
+    "dep:zeroize",
 ]
 
 [dependencies]
@@ -70,6 +71,9 @@ sha2 = { workspace = true, optional = true }
 # Server-side only: connections are tasks on the process's runtime, which the
 # binary builds; this crate creates none (ADR-0085).
 tokio = { workspace = true, optional = true, features = ["net", "io-util", "time", "rt", "sync", "macros"] }
+# Server-side only: a password or passphrase a node received is wiped from the
+# request when the request is dropped (G061, R-06). Already in the tree.
+zeroize = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
 # Server-side only: the peer door completes its mutual TLS on the runtime.
 tokio-rustls = { workspace = true, optional = true }

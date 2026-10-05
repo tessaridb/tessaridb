@@ -36,6 +36,21 @@ pub enum VaultCall {
     },
 }
 
+/// A node wipes a passphrase when the call is dropped (G061, R-06).
+#[cfg(feature = "server")]
+impl Drop for VaultCall {
+    fn drop(&mut self) {
+        match self {
+            Self::Unseal(passphrase) => zeroize::Zeroize::zeroize(passphrase),
+            Self::Change { current, new } => {
+                zeroize::Zeroize::zeroize(current);
+                zeroize::Zeroize::zeroize(new);
+            }
+            Self::Status | Self::Seal => {}
+        }
+    }
+}
+
 /// Written by hand, because the derived one would print the passphrase.
 impl std::fmt::Debug for VaultCall {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -69,6 +84,16 @@ pub struct VaultAsk {
     pub credentials: Option<(String, String)>,
     /// One vault, or `None` for the store's own key.
     pub place: Option<VaultPlace>,
+}
+
+/// A node wipes the password when the ask is dropped (G061, R-06).
+#[cfg(feature = "server")]
+impl Drop for VaultAsk {
+    fn drop(&mut self) {
+        if let Some((_, password)) = &mut self.credentials {
+            zeroize::Zeroize::zeroize(password);
+        }
+    }
 }
 
 /// Written by hand for [`crate::Request`]'s reason: the name is shown, the

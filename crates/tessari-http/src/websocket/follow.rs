@@ -24,7 +24,6 @@ use crate::json::{self, Names};
 use crate::request::Reader;
 
 /// What a subscriber asked for, as it arrives on the socket.
-#[derive(Debug)]
 pub(crate) struct Asked {
     /// The namespace to follow changes in.
     pub(crate) namespace: String,
@@ -47,6 +46,30 @@ pub(crate) struct Asked {
     /// be revoked is a better thing to put there than a password that does
     /// neither.
     pub(crate) token: Option<String>,
+}
+
+/// Wiped when the request is done with, as [`crate::basic::Credentials`] is.
+impl Drop for Asked {
+    fn drop(&mut self) {
+        if let Some((_, password)) = &mut self.credentials {
+            zeroize::Zeroize::zeroize(password);
+        }
+    }
+}
+
+/// Written by hand, because the derived one prints the password.
+impl std::fmt::Debug for Asked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Asked")
+            .field("namespace", &self.namespace)
+            .field("database", &self.database)
+            .field("from", &self.from)
+            .field("table", &self.table)
+            .field("cursor", &self.cursor)
+            .field("as", &self.credentials.as_ref().map(|(name, _)| name))
+            .field("token", &self.token.as_ref().map(|_| ".."))
+            .finish()
+    }
 }
 
 /// Read a follow request.
@@ -168,6 +191,17 @@ pub(crate) fn refusal(reason: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::read;
+
+    #[test]
+    fn printing_a_request_never_shows_its_password() {
+        let asked = read(
+            r#"{"namespace":"n","database":"d","from":0,"user":"ada","password":"correct horse"}"#,
+        )
+        .expect("a well-formed request");
+        let printed = format!("{asked:?}");
+        assert!(printed.contains("ada"), "{printed}");
+        assert!(!printed.contains("correct horse"), "{printed}");
+    }
 
     #[test]
     fn a_request_names_where_to_follow_and_from_when() {
