@@ -13,6 +13,36 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.31.0-beta — 2026-10-05
+
+An upgrade that can be taken back (G065, ADR-0118).
+
+### Added
+
+- **`ALTER STORE FINALIZE FORMAT`.** A store keeps the on-disk format it held when a newer build first opened it,
+  so the build before can still open it. The statement raises the format to the one this build writes and
+  answers `{ format: <n> }`; it is one-way, never lowers, writes nothing on a store already at this build's
+  format, and needs store-wide authority. On a cluster every replica raises its own format as it applies the
+  record, a node upgraded later raises its format when it opens, and the statement is refused
+  (`FormatPeerTooOld`) while a declared replica has not reported a release that writes the format.
+- **`INFO FOR STORE` reports `format` and `writes`** — the format the store holds and the one this build writes;
+  they differ exactly while a finalize is still to come. The console's This node screen shows the pair.
+- **1588 conformance cases** define the language and run in the build.
+
+### Changed
+
+- **A value of a newer format is written only into a store finalized to it.** On a store an older build wrote
+  (format 5), `DEFINE INDEX … CONTAINS` is refused (`FormatNotFinalized`, class `conflict`) instead of moving the
+  store to format 6 on the spot. A store created by `0.28.0-beta` or later already holds 6 and sees no
+  difference.
+- A store too new for a build is refused with the way back named: a backup from before the newer build wrote
+  or finalized it.
+
+### Upgrade
+
+- Upgrade every node, let each one collect once, and finalize when no older build will ever open the store
+  again. Until then, going back to the previous release is a restart with the old binary.
+
 ## 0.30.0-beta — 2026-10-05
 
 A refusal says what to do next (G064, ADR-0117).

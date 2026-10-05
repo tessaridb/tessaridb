@@ -8043,6 +8043,39 @@ A node holding a vault keeps its sealed values sealed under the vault's own key
 whether or not the store is encrypted; the two are separate keys with separate
 custody.
 
+### Upgrading, and finalizing the format
+
+```
+ALTER STORE FINALIZE FORMAT;
+```
+
+A store keeps the on-disk format it held when a newer build first opened it, so
+the build before can still open it and an upgrade can be taken back (ADR-0118).
+The newer build reads and writes the store in that format, and a statement that
+would write a value only its own format holds is refused —
+`FormatNotFinalized`, naming both formats and this statement — with nothing
+written. Today that is a containment index, which needs format `6`.
+
+`ALTER STORE FINALIZE FORMAT` raises the format the store holds to the one this
+build writes, and answers `{ format: <n> }`. It is one-way: afterwards no older
+build opens the store, and the way back is a backup taken before the finalize.
+It never lowers a format, and on a store that already holds this build's format
+it writes nothing. It needs store-wide authority.
+
+On a cluster it is a record every replica applies by raising its own format, and
+a node upgraded after the finalize raises its format when it next opens. It is
+refused — `FormatPeerTooOld`, naming the replica — while any declared replica has
+not opened a stream to this node since it started, or runs a release older than
+the first one that writes the format: finalizing over a node that cannot read
+the result is the failure the statement exists to prevent. Upgrade every node,
+let each collect once, then finalize.
+
+A store this build creates holds its format from the start.
+
+`INFO FOR STORE` reports the pair beside the namespaces: `format`, the format the
+store holds, and `writes`, the one this build writes. They differ exactly while a
+finalize is still to come.
+
 ## 7b. Looking at a plan
 
 ```
@@ -9815,7 +9848,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.30.0", "build": "0.30.0-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.31.0", "build": "0.31.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

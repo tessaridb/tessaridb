@@ -50,6 +50,7 @@ impl Error {
             | Self::BackupExists { .. }
             | Self::RestoreTargetExists { .. }
             | Self::NoVaultRoot
+            | Self::FormatNotFinalized { .. }
             | Self::AcrossInDoubt { .. }
             | Self::NotAcknowledgedInTime { .. }
             | Self::ConditionNotMet { .. }
@@ -58,6 +59,7 @@ impl Error {
             | Self::SearchExists { .. }
             | Self::GroupExists { .. } => RefusalClass::Conflict,
             Self::NoBackupFolder
+            | Self::FormatPeerTooOld { .. }
             | Self::NotWritable { .. }
             | Self::MajorityUnreachable { .. }
             | Self::AcrossUnavailable { .. }

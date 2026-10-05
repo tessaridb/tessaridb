@@ -55,6 +55,7 @@ mod fetch;
 mod file_ranges;
 mod files;
 mod fill;
+mod finalize_format;
 mod folds;
 mod follower_lag;
 mod full_tuple;

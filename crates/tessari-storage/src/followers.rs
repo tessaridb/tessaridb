@@ -37,7 +37,7 @@
 use std::time::{Duration, Instant};
 
 use scc::{Guard, TreeIndex};
-use tessari_encoding::NODE_ID_LEN;
+use tessari_encoding::{NODE_ID_LEN, NodeVersion};
 use tessari_types::{Reach, Sequence};
 
 /// What a leader has given one follower, and when.
@@ -117,6 +117,12 @@ pub struct Followers {
     /// here, and reads — the lag report, in id order — take no lock at all. A
     /// record is replaced whole, which is the one kind of write it takes.
     seen: TreeIndex<[u8; NODE_ID_LEN], Served>,
+    /// The build each follower said it runs when it last opened a stream here.
+    ///
+    /// What a finalize asks before it raises a format no peer may be unable to
+    /// read (ADR-0118 D3). Kept apart from [`Self::seen`]: a follower greets
+    /// before it collects, and a greeting is not a position.
+    builds: TreeIndex<[u8; NODE_ID_LEN], NodeVersion>,
 }
 
 impl Followers {
@@ -135,6 +141,18 @@ impl Followers {
                 at: Instant::now(),
             },
         );
+    }
+
+    /// Record the build `node` said it runs.
+    pub fn greeted(&self, node: [u8; NODE_ID_LEN], build: NodeVersion) {
+        self.builds.upsert_sync(node, build);
+    }
+
+    /// The build `node` last said it runs, or `None` when it has not greeted
+    /// this process — which is not an answer about its build at all.
+    #[must_use]
+    pub fn build_of(&self, node: &[u8; NODE_ID_LEN]) -> Option<NodeVersion> {
+        self.builds.peek_with(node, |_, build| *build)
     }
 
     /// Every follower this process has served, in id order.

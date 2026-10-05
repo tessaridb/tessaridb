@@ -84,6 +84,10 @@ impl tessari_wire::Holding for PeerDoor {
             "a peer greeted"
         );
         bind_the_greeter(&self.db, met.said.node, Some(&met.presented), None);
+        // What a finalize asks before it raises the format (ADR-0118 D3).
+        self.db
+            .store()
+            .follower_greeted(met.said.node, met.said.build);
     }
 
     fn commits(&self) -> tokio::sync::watch::Receiver<u64> {

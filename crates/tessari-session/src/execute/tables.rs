@@ -1,5 +1,6 @@
 //! Declaring tables, indexes and vectors, and dropping the kinds of table.
 
+use tessari_encoding::FormatVersion;
 use tessari_ql::{ColumnDeclaration, FieldPath, Name, Span, TableRef};
 use tessari_storage::{
     Catalog, FieldShape, IndexShape, TableKind, TableShape, Transaction, VECTOR_FIELD,
@@ -69,6 +70,12 @@ impl Session<'_> {
             return Ok(Outcome::Done);
         }
         self.refuse_indexing_a_secret(transaction, id, table, fields)?;
+        if shape.containment {
+            self.refuse_a_format_the_store_does_not_hold(
+                "a containment index",
+                FormatVersion::CONTAINMENT_INDEX,
+            )?;
+        }
         let fields = fields.iter().map(|field| field.path.clone()).collect();
         Catalog::new(transaction).create_index(id, &name.text, fields, shape)?;
         Ok(Outcome::Done)

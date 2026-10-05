@@ -341,6 +341,47 @@ pub enum Error {
     )]
     NoBackupFolder,
 
+    /// A statement that would write a value of a format newer than the store
+    /// holds (ADR-0118).
+    ///
+    /// The store keeps the format it held when this build first opened it, so
+    /// the build before can still take it back; writing the newer value would
+    /// end that. Nothing is written.
+    #[error(
+        "this store holds format {holds}, and {what} needs format {needs}; this build writes it only \
+         once the store is finalized — `ALTER STORE FINALIZE FORMAT`, after which no older build opens it"
+    )]
+    FormatNotFinalized {
+        /// What the statement would write.
+        what: &'static str,
+        /// The format that needs.
+        needs: u32,
+        /// The format the store holds.
+        holds: u32,
+    },
+
+    /// A finalize refused because a declared replica may not be able to read
+    /// the format it would raise (ADR-0118 D3).
+    ///
+    /// A peer that has not opened a stream to this node since it started is
+    /// refused the same way as one running an older build: its build is not
+    /// known, and finalizing over a node that cannot read the result is the
+    /// failure the statement exists to prevent.
+    #[error(
+        "the store was not finalized: replica '{name}' {heard}, and format {format} needs {needs} or later \
+         on every replica — upgrade it, or wait until it has collected from this node"
+    )]
+    FormatPeerTooOld {
+        /// The replica, by its declared name.
+        name: String,
+        /// What this node heard about its build.
+        heard: String,
+        /// The format the finalize would raise to.
+        format: u32,
+        /// The first release that writes it.
+        needs: String,
+    },
+
     /// A `BACKUP … TO` name that would not stay inside the backup folder.
     ///
     /// Refused before anything is written: a name is a relative path of plain

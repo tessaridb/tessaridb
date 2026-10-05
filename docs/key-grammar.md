@@ -1114,7 +1114,7 @@ already written carries it. A new table takes the next id; none is reused.
 | `17` | `VAULT_AUDIT` | reads of a vault, one record per read |
 | `18` | `RECORD_COUNTS` | how many records each table holds, by table id |
 | `19` | `LEADERSHIPS` | which node the log last showed leading a range, and under which leadership |
-| `20` | `FAILOVER` | the cluster's failover policy, one row |
+| `20` | `FAILOVER` | the cluster's failover policy (row `policy`) and the format the store was finalized to (row `format`, ADR-0118) |
 | `21` | `TOPIC_POSITIONS` | each topic reader's stored position |
 | `22` | `TOPIC_GROUPS` | each topic consumer group: declaration, last position handed out, what is in flight |
 | `23` | `WORD_SETS` | synonym and stop-word sets, by kind and name |
@@ -1140,7 +1140,18 @@ and is rewritten at open only where the row below says so.
 | `3` | the log is per range: a log key carries its home | rewritten: an old log key does not decode |
 | `4` | a record version carries its causal stamp — flag `0x04` | opened as is: a clear bit reads as an empty stamp |
 | `5` | a log key carries the writer that allocated it (G027 S2.2) | rewritten: an old and a new key differ in length |
-| `6` | a containment index's entries, key kind `0x44` (ADR-0116) | opened as is and keeps its stamp; stamped `6` when its first containment index is built |
+| `6` | a containment index's entries, key kind `0x44` (ADR-0116) | opened as is and keeps its stamp; a containment index is refused until the store is finalized (ADR-0118) |
+
+**The stamp is the format the store holds, and it lags this build** (ADR-0118,
+from `0.31.0-beta`). A build opens an older store and keeps its stamp, so the
+build before can still open it; a statement that would write a value of a newer
+format is refused (`FormatNotFinalized`) until `ALTER STORE FINALIZE FORMAT`
+raises it. The finalize is a record in system table `20` (row `format`, beside
+the failover policy's row, which is all an older build reads there), and every
+replica raises its own stamp in the batch that applies it; a node whose older
+build applied it raises the stamp when a newer build next opens it. The stamps
+below `5` are still rewritten at open, as the table says: those stores predate
+the format a newer build promises to open.
 
 Format 5 also took values that arrived after it without a bump — among them the
 `expires` and `across` flag bits (§7.1) and system tables 26–29 (§9.1) — so a

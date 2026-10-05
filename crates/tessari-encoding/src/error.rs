@@ -282,7 +282,10 @@ pub enum Error {
     },
 
     /// The store's on-disk format version is newer than this build supports.
-    #[error("store on-disk format version is {found}, this build supports up to {supported}")]
+    #[error(
+        "store on-disk format version is {found}, this build supports up to {supported}; a newer build \
+         wrote or finalized it, and a backup taken before that is the way back to this build"
+    )]
     UnsupportedFormatVersion {
         /// The version read from the store.
         found: u32,

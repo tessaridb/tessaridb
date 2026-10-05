@@ -352,8 +352,11 @@ fn the_index_reads_back_after_the_store_is_closed_and_opened() {
     assert_eq!(outcome.records().unwrap().len(), 1);
 }
 
+/// A store an older build wrote keeps its format until it is finalized, so that
+/// build can take it back (ADR-0118): a containment index, whose entries an
+/// older build cannot read, is refused rather than moving the store to 6.
 #[test]
-fn a_store_moves_to_format_six_only_when_its_first_containment_index_is_built() {
+fn a_store_holding_format_five_refuses_a_containment_index_and_keeps_its_format() {
     use tessari_encoding::{FormatVersion, FormatVersionKey, StoreValue};
     use tessari_kv::WriteBatch;
 
@@ -387,12 +390,36 @@ fn a_store_moves_to_format_six_only_when_its_first_containment_index_is_built() 
         Some(5),
         "an ordinary index moved the format"
     );
-    session
+    let refused = session
         .run("DEFINE INDEX by_doc ON notes FIELDS doc CONTAINS;")
-        .unwrap();
+        .unwrap_err();
+    assert!(
+        matches!(
+            refused,
+            tessari_session::Error::FormatNotFinalized {
+                needs: 6,
+                holds: 5,
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
     assert_eq!(
         stamp(&backend),
-        Some(6),
-        "a containment index left the format at 5"
+        Some(5),
+        "a refused containment index moved the format"
+    );
+    let entries = backend
+        .scan(&ScanRequest {
+            keyspace: KeyKind::Containment.keyspace(),
+            range: KeyRange::prefix(&[KeyKind::Containment.tag()]),
+            direction: ScanDirection::Forward,
+            limit: None,
+        })
+        .unwrap();
+    assert!(
+        entries.is_empty(),
+        "containment entries were written: {}",
+        entries.len()
     );
 }

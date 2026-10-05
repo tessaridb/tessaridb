@@ -1036,7 +1036,19 @@ const TABLES: &[Table] = &[
         // are the balancing pass after its walk and the INFO and `/metrics`
         // reports. Re-classification trigger: a caller reachable from a
         // statement that could change what an operator reads without the pass.
-        expected: 72,
+        //
+        // 75 since the format lags the binary (ADR-0118): `Store::held_format`,
+        // `Store::follower_greeted` and `Store::follower_build`. **Not data
+        // paths**: the first reads the node-local format stamp, which every
+        // greeting already implies and which no grant governs; the other two
+        // write and read the build a follower announced in its link greeting,
+        // held in memory, never a record, catalog entry or grant. Their callers
+        // are the statement gate and `ALTER STORE FINALIZE FORMAT` (which needs
+        // store-wide authority before it runs) and the peer door after it has
+        // verified the follower's credential. Re-classification trigger: a
+        // caller that records a build for a node it did not verify, which would
+        // let an unproven peer clear the finalize's check.
+        expected: 75,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1256,7 +1268,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // 157 since G060 counts every `impl Db` block of the facade: three node
     // cadence entry points that had always been there and were never counted,
     // exempt under E3, classified above.
-    assert_eq!(total, 157, "the counted tables no longer sum to 157");
+    //
+    // 160 since the format lags the binary (ADR-0118): three `Store` methods,
+    // not data paths, classified above.
+    assert_eq!(total, 160, "the counted tables no longer sum to 160");
 }
 
 /// Every `.rs` file under a directory.

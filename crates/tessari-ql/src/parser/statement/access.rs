@@ -73,6 +73,13 @@ impl Parser<'_> {
             let change = self.replica_change()?;
             return Ok(StatementKind::AlterReplica { name, change });
         }
+        // ADR-0118. `STORE` is already a keyword; the other two are words, since
+        // reserving them would take two names away from every table.
+        if self.eat_keyword(Keyword::Store) {
+            self.expect_word("finalize", "`FINALIZE FORMAT`")?;
+            self.expect_word("format", "`FORMAT`")?;
+            return Ok(StatementKind::FinalizeFormat);
+        }
         if self.eat_keyword(Keyword::Table) {
             let table = self.table_ref()?;
             // The columnar spellings first, because `SET` is the one that reads
@@ -156,8 +163,9 @@ impl Parser<'_> {
             return Ok(StatementKind::AlterNamespace { name, change });
         }
         if !self.eat_keyword(Keyword::User) {
-            return Err(self
-                .error_here("`NAMESPACE`, `USER`, `TABLE` or `REPLICA` and the thing to change"));
+            return Err(self.error_here(
+                "`NAMESPACE`, `USER`, `TABLE`, `REPLICA` or `STORE` and the thing to change",
+            ));
         }
         let name = self.name()?;
         self.expect_keyword(Keyword::Set, "`SET` and the one thing to change")?;

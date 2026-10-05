@@ -195,6 +195,7 @@ impl Needs {
             // other machines hold the data is that.
             StatementKind::DefineNode { .. }
             | StatementKind::DefineFailover { .. }
+            | StatementKind::FinalizeFormat
             | StatementKind::RevokeCertificate { .. }
             | StatementKind::CreateJoinToken { .. }
             | StatementKind::DefineReplica { .. }

@@ -177,6 +177,19 @@ DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 0s CAMPAIGN 1s LEASE 30s;
 DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s CAMPAIGN 9s LEASE 30s;
 --- expect: error FailoverRefused
 
+# The format a store holds lags the one its build writes until an operator
+# finalizes it, so the build before can still open the store (ADR-0118). A
+# store this build created already holds its format, so there is nothing to
+# raise and the statement answers what it holds.
+
+--- case: finalizing a store that already holds this build's format changes nothing
+ALTER STORE FINALIZE FORMAT;
+--- expect: ok
+
+--- case: the statement names what it finalizes
+ALTER STORE FINALIZE;
+--- expect: error UnexpectedToken
+
 --- case: a peer certificate is revoked by its SHA-256 fingerprint
 REVOKE CERTIFICATE '0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0';
 --- expect: ok

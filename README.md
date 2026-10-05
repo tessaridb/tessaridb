@@ -10,10 +10,10 @@ Eleven engines. One transaction. One binary. A real-time multi-model database,
 written in Rust, for AI applications and the products built around them.
 
 [![status](https://img.shields.io/badge/status-in%20development-D98E33?style=flat-square)](#status)
-[![version](https://img.shields.io/badge/version-0.30.0--beta-6B5FD1?style=flat-square)](#status)
+[![version](https://img.shields.io/badge/version-0.31.0--beta-6B5FD1?style=flat-square)](#status)
 [![licence](https://img.shields.io/badge/licence-BUSL--1.1-6B5FD1?style=flat-square)](LICENSE)
 [![rust](https://img.shields.io/badge/rust-1.98%2B-6B5FD1?style=flat-square)](Cargo.toml)
-[![conformance](https://img.shields.io/badge/conformance-1586%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
+[![conformance](https://img.shields.io/badge/conformance-1588%20cases-6B5FD1?style=flat-square)](crates/tessari-conformance/tests/corpus)
 
 [tessaridb.com](https://tessaridb.com) · [docs](https://docs.tessaridb.com) ·
 [protocol](https://github.com/tessaridb/tessaridb-protocol) ·
@@ -22,8 +22,8 @@ written in Rust, for AI applications and the products built around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is a beta — `0.30.0-beta`.** It is released and tested, published as
-> a container image (`tessaridb/tessaridb:0.30.0-beta`; the image tracks the
+> **TessariDB is a beta — `0.31.0-beta`.** It is released and tested, published as
+> a container image (`tessaridb/tessaridb:0.31.0-beta`; the image tracks the
 > larger releases), and the licence makes production use free, including inside
 > a commercial company.
 > What a beta does not promise yet is permanence of the language and the wire:
@@ -203,7 +203,7 @@ surviving version and the node that wrote it.
 
 ## Status
 
-**Stage: active development · `0.30.0-beta` · not published to crates.io.** What
+**Stage: active development · `0.31.0-beta` · not published to crates.io.** What
 follows is what runs today, not a roadmap.
 <!-- absent: published-to-crates-io -->
 
@@ -301,7 +301,9 @@ follows is what runs today, not a roadmap.
   ([`docs/key-grammar.md`](docs/key-grammar.md),
   [`docs/value-system.md`](docs/value-system.md)) and a test fails when the code
   and the documents disagree, or when the format changes without its version
-  moving. Going back to an older build is not promised. A write the engine could
+  moving. From `0.31.0-beta` a store keeps the format it held until an operator
+  runs `ALTER STORE FINALIZE FORMAT`, so the build before can take an upgrade
+  back until then; after it, the way back is a backup. A write the engine could
   not make durable stops the store until it is reopened and recovers from its log
   ([`docs/storage-contract.md`](docs/storage-contract.md)).
 - 🔄 **Not promised yet:** before 1.0 the query language and the wire format may

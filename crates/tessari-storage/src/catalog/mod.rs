@@ -35,6 +35,7 @@ mod dropping;
 mod edge_kind;
 mod failover;
 mod field;
+mod format;
 mod grant;
 mod graph;
 mod group;
@@ -75,6 +76,7 @@ pub use definition::{
 pub use edge_kind::EdgeKindDefinition;
 pub use failover::{FailoverDefinition, FailoverStamp};
 pub use field::{FieldDefinition, FieldShape};
+pub(crate) use format::finalized_in;
 pub use grant::GrantDefinition;
 pub use graph::GraphDefinition;
 pub use group::{GroupDeclaration, GroupState, InFlight};

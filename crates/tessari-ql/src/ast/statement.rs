@@ -1447,6 +1447,11 @@ pub enum StatementKind {
         /// What changes.
         change: super::ReplicaChange,
     },
+    /// `ALTER STORE FINALIZE FORMAT`
+    ///
+    /// Raises the format the store holds to the one this build writes, on every
+    /// replica; after it no older build opens the store (ADR-0118).
+    FinalizeFormat,
     /// `ALTER TABLE users SET SCHEMAFULL` · `… SET SCHEMALESS`
     ///
     /// The one thing about a table worth changing after it exists.

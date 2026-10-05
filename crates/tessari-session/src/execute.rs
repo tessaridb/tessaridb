@@ -24,6 +24,7 @@ mod containers;
 mod defaults;
 mod editing;
 mod fields;
+mod format;
 mod relations;
 mod tables;
 mod topic_consumer;
@@ -335,6 +336,7 @@ impl Session<'_> {
                 endpoints,
                 retain,
             } => self.define_node(roles.as_deref(), endpoints.as_deref(), *retain),
+            StatementKind::FinalizeFormat => self.finalize_format(transaction),
             StatementKind::DefineFailover {
                 awareness,
                 collection,

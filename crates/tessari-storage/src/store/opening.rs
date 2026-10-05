@@ -90,6 +90,9 @@ impl Store {
         // Last, because it reads the catalog: the format is settled and the
         // identity exists by the time this asks which node it is.
         store.reconcile_roles()?;
+        // And after it for the same reason: a finalize this node's older build
+        // applied left the record and not the stamp (ADR-0118).
+        store.catch_up_with_the_finalized_format()?;
         // Rows are held only for readers at or above this: history before the
         // open is not known to have left them unchanged.
         store.catalog_rows.changed(store.committed_version()?);
