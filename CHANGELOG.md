@@ -25,6 +25,8 @@ An upgrade that can be taken back (G065, ADR-0118).
   format, and needs store-wide authority. On a cluster every replica raises its own format as it applies the
   record, a node upgraded later raises its format when it opens, and the statement is refused
   (`FormatPeerTooOld`) while a declared replica has not reported a release that writes the format.
+- **`INFO FOR STORE` reports `format` and `writes`** — the format the store holds and the one this build writes;
+  they differ exactly while a finalize is still to come. The console's This node screen shows the pair.
 - **1588 conformance cases** define the language and run in the build.
 
 ### Changed

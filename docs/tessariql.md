@@ -8072,6 +8072,10 @@ let each collect once, then finalize.
 
 A store this build creates holds its format from the start.
 
+`INFO FOR STORE` reports the pair beside the namespaces: `format`, the format the
+store holds, and `writes`, the one this build writes. They differ exactly while a
+finalize is still to come.
+
 ## 7b. Looking at a plan
 
 ```

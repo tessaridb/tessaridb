@@ -752,7 +752,11 @@ fn a_listing_carries_the_names_and_nothing_that_counts_what_was_dropped() {
     // class says how many writers the range admits, which decides what a write
     // to it MEANS, and an operator who cannot read it from the engine is
     // guessing which semantics their data has. Like its neighbour it is
-    // constant across callers, so it reports nothing about the filter. The list
+    // constant across callers, so it reports nothing about the filter. It fired
+    // a third time when `INFO FOR STORE` gained `format` and `writes` (ADR-0118):
+    // the format the store holds and the one this build writes are properties of
+    // the whole store and of the binary, the same for every caller, so they
+    // count nothing the filter removed. The list
     // below is the whole report and it is written out per statement rather than
     // as "the names plus anything", so the next field fires this again.
     let store = store();
@@ -760,7 +764,7 @@ fn a_listing_carries_the_names_and_nothing_that_counts_what_was_dropped() {
     let mut nina = signed_in(&store, "nina");
 
     for (statement, expected) in [
-        ("INFO FOR STORE;", vec!["namespaces"]),
+        ("INFO FOR STORE;", vec!["format", "namespaces", "writes"]),
         (
             "INFO FOR NAMESPACE;",
             vec!["acknowledge", "class", "databases", "replication"],

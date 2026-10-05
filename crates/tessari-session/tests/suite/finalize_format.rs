@@ -149,3 +149,25 @@ fn a_follower_raises_its_stamp_when_it_applies_the_finalize() {
     }
     assert_eq!(stamp(&follower_backend), FormatVersion::CURRENT.get());
 }
+
+#[test]
+fn info_for_the_store_says_which_format_it_holds_and_which_this_build_writes() {
+    let writes = |outcomes: &[Outcome]| match outcomes.last() {
+        Some(Outcome::Value(Value::Object(fields))) => fields.get("writes").cloned(),
+        other => panic!("not a value: {other:?}"),
+    };
+    let current = i64::from(FormatVersion::CURRENT.get());
+    let (_backend, store) = held_at_five();
+    let mut session = Session::new(&store);
+
+    let before = session.run("INFO FOR STORE;").unwrap();
+    assert_eq!(answered_format(&before), 5);
+    assert_eq!(
+        writes(&before),
+        Some(Value::Number(Number::Integer(current)))
+    );
+
+    session.run("ALTER STORE FINALIZE FORMAT;").unwrap();
+    let after = session.run("INFO FOR STORE;").unwrap();
+    assert_eq!(answered_format(&after), current);
+}

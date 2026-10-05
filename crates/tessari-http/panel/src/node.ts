@@ -64,7 +64,10 @@ export async function readNode(): Promise<void> {
     // `cluster` is its own object and belongs on the cluster tab; what is left
     // is this machine, which is what this pane claims to show.
     const { cluster, ...mine } = all;
-    facts("node-facts", mine);
+    // The format the store holds beside the one this build writes: they differ
+    // until `ALTER STORE FINALIZE FORMAT`, which closes the way back (ADR-0118).
+    const store = held(await valueOf("INFO FOR STORE;", "Node")) ?? {};
+    facts("node-facts", { ...mine, format: store["format"], writes: store["writes"] });
     const peers =
       typeof cluster === "object" && cluster !== null
         ? (cluster as { peers?: unknown }).peers

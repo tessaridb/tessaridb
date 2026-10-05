@@ -4,6 +4,7 @@ mod engines;
 
 use std::collections::BTreeMap;
 
+use tessari_encoding::FormatVersion;
 use tessari_ql::{Name, Span, TableRef};
 use tessari_storage::{Catalog, ConsumerDefinition, GEO_FIELD, TableKind, Transaction};
 use tessari_types::{Number, Value};
@@ -42,7 +43,16 @@ impl Session<'_> {
             }
             names.push(namespace.name);
         }
-        Ok(BTreeMap::from([("namespaces".to_owned(), by_name(names))]))
+        // The format the store holds beside the one this build writes: the
+        // pair an operator reads before `ALTER STORE FINALIZE FORMAT`, which
+        // closes the way back to the release before (ADR-0118).
+        let format =
+            |version: FormatVersion| Value::Number(Number::Integer(i64::from(version.get())));
+        Ok(BTreeMap::from([
+            ("namespaces".to_owned(), by_name(names)),
+            ("format".to_owned(), format(self.store.held_format()?)),
+            ("writes".to_owned(), format(FormatVersion::CURRENT)),
+        ]))
     }
 
     /// The databases in the selected namespace, and how many copies of it the
