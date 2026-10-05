@@ -71,6 +71,7 @@ mod reach;
 pub mod redact;
 mod reduce;
 mod reference;
+mod refusal_class;
 mod restore;
 mod rollup;
 mod script;
