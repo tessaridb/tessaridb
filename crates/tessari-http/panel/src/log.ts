@@ -33,6 +33,8 @@ export interface Entry {
   /** The node's answer, or its refusal, in the node's own words. */
   readonly said: string;
   readonly failed: boolean;
+  /** A refusal's class, as the node named it — absent on an answer. */
+  readonly refusal?: string | undefined;
   readonly ms: number;
   /** The screen that issued it. */
   readonly screen: string;
@@ -128,6 +130,11 @@ function entry(one: Entry): HTMLElement {
   const took = made("span", "faint");
   took.textContent = one.ms + " ms";
   head.append(screen, took);
+  if (one.refusal !== undefined) {
+    const refusal = made("span", "faint");
+    refusal.textContent = "refused: " + one.refusal;
+    head.append(refusal);
+  }
 
   const what = made("pre", "logged-what");
   what.textContent = one.what;

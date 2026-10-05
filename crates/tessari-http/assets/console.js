@@ -207,6 +207,11 @@
     const took = made("span", "faint");
     took.textContent = one2.ms + " ms";
     head.append(screen, took);
+    if (one2.refusal !== void 0) {
+      const refusal2 = made("span", "faint");
+      refusal2.textContent = "refused: " + one2.refusal;
+      head.append(refusal2);
+    }
     const what = made("pre", "logged-what");
     what.textContent = one2.what;
     const said3 = made("p", one2.failed ? "note warn" : "note");
@@ -437,7 +442,7 @@
       return { said: words4 === "" ? `${status}` : words4, failed: status >= 400 };
     }
     if (typeof body.error === "string") {
-      return { said: body.error, failed: true };
+      return { said: body.error, failed: true, refusal: typeof body.code === "string" ? body.code : void 0 };
     }
     if (!Array.isArray(body.results)) {
       return { said: text, failed: status >= 400 };

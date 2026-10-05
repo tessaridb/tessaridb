@@ -53,6 +53,8 @@ export interface Result {
 export interface Answer {
   readonly results?: readonly Result[];
   readonly error?: string;
+  /** The refusal's class (ADR-0117): what to do about it, where `error` is the words. */
+  readonly code?: string;
 }
 
 /**
@@ -70,7 +72,10 @@ const outcome = (result: Result): string => {
 };
 
 /** The node's own words about what it just did — its answer, or its refusal. */
-function said(text: string, status: number): { said: string; failed: boolean } {
+function said(
+  text: string,
+  status: number,
+): { said: string; failed: boolean; refusal?: string | undefined } {
   let body: Answer;
   try {
     body = JSON.parse(text) as Answer;
@@ -81,7 +86,7 @@ function said(text: string, status: number): { said: string; failed: boolean } {
     return { said: words === "" ? `${status}` : words, failed: status >= 400 };
   }
   if (typeof body.error === "string") {
-    return { said: body.error, failed: true };
+    return { said: body.error, failed: true, refusal: typeof body.code === "string" ? body.code : undefined };
   }
   if (!Array.isArray(body.results)) {
     return { said: text, failed: status >= 400 };
