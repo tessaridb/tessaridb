@@ -170,7 +170,9 @@ impl Watched {
         let read = |path: &PathBuf| {
             std::fs::read(path).map_err(|why| format!("{}: {why}", path.display()))
         };
-        Ok((read(&self.chain)?, read(&self.key)?))
+        let key = tessari_serve::tls::read_private_key(&self.key)
+            .map_err(|why| format!("{}: {why}", self.key.display()))?;
+        Ok((read(&self.chain)?, key))
     }
 }
 
@@ -272,6 +274,11 @@ mod tests {
         let (chain, key) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
         std::fs::write(&chain, "first chain").expect("a chain file");
         std::fs::write(&key, "first key").expect("a key file");
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600))
+                .expect("owner only");
+        }
         let taken = Arc::new(Mutex::new(Vec::new()));
         let into = Arc::clone(&taken);
         let pair = Watched::new(
@@ -406,6 +413,15 @@ mod tests {
         std::fs::remove_file(dir.path().join("key.pem")).expect("a key moved away");
         assert!(matches!(pair.look(), Looked::Unreadable(_)));
         std::fs::write(dir.path().join("key.pem"), "second key").expect("the key back");
+        // Put back the way an operator must, or it is refused for its mode.
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(
+                dir.path().join("key.pem"),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .expect("owner only");
+        }
         assert_eq!(pair.look(), Looked::Replaced);
         assert_eq!(taken(&record), vec!["first chain"]);
     }

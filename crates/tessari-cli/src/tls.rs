@@ -139,7 +139,9 @@ pub(crate) fn reach(addresses: &[String]) -> &'static str {
 /// naming which.
 pub(crate) fn credential(cert: &Path, key: &Path) -> Result<tls::Credential, String> {
     let chain = read(cert, "certificate")?;
-    let private = read(key, "key")?;
+    // Refused before it is read when others on the host may read it.
+    let private = tls::read_private_key(key)
+        .map_err(|why| format!("the TLS key at {} could not be used: {why}", key.display()))?;
     tls::Credential::read(
         Pem {
             bytes: &chain,
@@ -181,7 +183,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        CLIENT_PLAINTEXT, Clients, Given, REQUIRE_CLIENT_TLS, TLS_CERT, TLS_KEY, decide, reach,
+        CLIENT_PLAINTEXT, Clients, Given, REQUIRE_CLIENT_TLS, TLS_CERT, TLS_KEY, credential,
+        decide, reach,
     };
 
     fn given(cert: Option<&str>, key: Option<&str>) -> Given {
@@ -222,6 +225,31 @@ mod tests {
                 key: PathBuf::from("k.pem"),
                 required: true,
             })
+        );
+    }
+
+    #[test]
+    fn a_tls_key_others_may_read_keeps_the_node_from_starting_and_names_the_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let made = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()])
+            .expect("a certificate");
+        let dir = tempfile::tempdir().expect("a directory");
+        let (cert, key) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
+        std::fs::write(&cert, made.cert.pem()).expect("cert");
+        std::fs::write(&key, made.key_pair.serialize_pem()).expect("key");
+
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        let refused = credential(&cert, &key).expect_err("a key others may read");
+        assert!(
+            refused.contains(&key.display().to_string()) && refused.contains("chmod 600"),
+            "{refused}"
+        );
+
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        assert!(
+            credential(&cert, &key).is_ok(),
+            "an owner-only key is taken"
         );
     }
 
