@@ -34,6 +34,7 @@ use crate::snapshots::Registry;
 
 mod adoption;
 mod apply;
+mod format;
 mod history;
 mod leadership;
 pub(crate) use leadership::Led;

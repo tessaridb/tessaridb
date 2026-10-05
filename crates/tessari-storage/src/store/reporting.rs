@@ -127,6 +127,21 @@ impl Store {
         self.followers.served(node, home, reached);
     }
 
+    /// Record the build a follower said it runs when it opened a stream here.
+    pub fn follower_greeted(&self, node: [u8; NODE_ID_LEN], build: tessari_encoding::NodeVersion) {
+        self.followers.greeted(node, build);
+    }
+
+    /// The build a follower last said it runs here, if it has greeted this
+    /// process (ADR-0118 D3).
+    #[must_use]
+    pub fn follower_build(
+        &self,
+        node: &[u8; NODE_ID_LEN],
+    ) -> Option<tessari_encoding::NodeVersion> {
+        self.followers.build_of(node)
+    }
+
     /// Record that this leader sent `node` the records of `log` through
     /// `through` — the bound on what that follower's next ask can vouch for.
     pub fn follower_sent(&self, node: [u8; NODE_ID_LEN], log: LogId, through: Sequence) {

@@ -234,7 +234,10 @@ impl Transaction<'_> {
                     let batch =
                         crate::bounded::maintain(self.store, carried, batch, commit_version)?;
                     // And a topic's positions, dense in commit order (G037).
-                    crate::topic::maintain(self.store, carried, batch)?
+                    let batch = crate::topic::maintain(self.store, carried, batch)?;
+                    // And this node's format stamp, when the record finalizes it
+                    // (ADR-0118) — on the leader as on every follower.
+                    crate::format_stamp::maintain(self.store, carried, batch)?
                 };
                 // Everything above this ran. This is the whole difference between a
                 // rehearsal and a write, and it is one line so that it can only ever

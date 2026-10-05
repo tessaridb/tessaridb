@@ -120,6 +120,7 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // are `Needs::Administer`, decided before this list is consulted.
         | StatementKind::DefineNode { .. }
         | StatementKind::DefineFailover { .. }
+        | StatementKind::FinalizeFormat
         | StatementKind::RevokeCertificate { .. }
         | StatementKind::CreateJoinToken { .. }
         | StatementKind::DefineReplica { .. }

@@ -41,6 +41,7 @@ mod expiry;
 mod failover;
 mod feed;
 mod followers;
+mod format_stamp;
 mod gate;
 mod graph;
 mod holds;

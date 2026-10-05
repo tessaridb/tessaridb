@@ -78,6 +78,27 @@ impl FormatVersion {
     /// Named for the reason [`Self::HOMED_LOG`] is named.
     pub const WRITER_QUALIFIED_LOG: Self = Self(5);
 
+    /// The first release that writes this format: what every peer must run
+    /// before a store is finalized to it (ADR-0118 D3).
+    ///
+    /// `None` for a format no release has been recorded against. Every format
+    /// up to 5 is held by `0.22.0-beta`, the oldest release whose stores a newer
+    /// build promises to open; a new format adds its row when `CURRENT` moves,
+    /// and a test holds `CURRENT` to having one.
+    #[must_use]
+    pub const fn first_written_by(self) -> Option<crate::NodeVersion> {
+        let (major, minor) = match self.0 {
+            1..=5 => (0, 22),
+            6 => (0, 28),
+            _ => return None,
+        };
+        Some(crate::NodeVersion {
+            major,
+            minor,
+            patch: 0,
+        })
+    }
+
     /// Wrap a raw format version.
     #[must_use]
     pub const fn new(value: u32) -> Self {

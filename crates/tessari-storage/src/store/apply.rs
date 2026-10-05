@@ -242,6 +242,8 @@ impl Store {
         let batch = crate::lapse::maintain(self, record, batch)?;
         let batch = crate::bounded::maintain(self, record, batch, version)?;
         let batch = crate::topic::maintain(self, record, batch)?;
+        // A finalize raises this node's own stamp as it lands (ADR-0118).
+        let batch = crate::format_stamp::maintain(self, record, batch)?;
         // The map a split carries, taught under the turn this apply holds and
         // before it lands, exactly as the leader's commit teaches it (ADR-0095
         // D8): a follower that wrote under the old map after applying the split

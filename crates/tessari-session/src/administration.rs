@@ -28,6 +28,7 @@ pub(crate) fn administered(kind: &StatementKind) -> Option<(&'static str, &str)>
         StatementKind::AlterReplica { name, .. } => ("ALTER REPLICA", name.text.as_str()),
         StatementKind::DropReplica { name } => ("DROP REPLICA", name.text.as_str()),
         StatementKind::DefineFailover { .. } => ("DEFINE FAILOVER", "the store"),
+        StatementKind::FinalizeFormat => ("ALTER STORE FINALIZE FORMAT", "the store"),
         StatementKind::RevokeCertificate { fingerprint } => {
             ("REVOKE CERTIFICATE", fingerprint.as_str())
         }

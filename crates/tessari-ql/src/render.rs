@@ -144,6 +144,7 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::DropStopwords { .. } => Err(unrenderable("DROP STOPWORDS", span)),
         StatementKind::DropReplica { .. } => Err(unrenderable("DROP REPLICA", span)),
         StatementKind::AlterReplica { .. } => Err(unrenderable("ALTER REPLICA", span)),
+        StatementKind::FinalizeFormat => Err(unrenderable("ALTER STORE FINALIZE FORMAT", span)),
         StatementKind::DropDatabase { .. } => Err(unrenderable("DROP DATABASE", span)),
         StatementKind::DropNamespace { .. } => Err(unrenderable("DROP NAMESPACE", span)),
         StatementKind::DefineGraph { .. } => Err(unrenderable("DEFINE GRAPH", span)),

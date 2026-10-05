@@ -233,6 +233,9 @@ impl Effect {
             // but one writes to `META` about this box and the other writes a
             // catalog record the whole cluster must hold.
             StatementKind::DefineFailover { .. } => Self::Write,
+            // A catalog record every replica applies by raising its own stamp
+            // (ADR-0118), for the reason a failover policy is a write.
+            StatementKind::FinalizeFormat => Self::Write,
             // A revocation is a catalog record every node must hold, for the
             // reason a failover policy is.
             StatementKind::RevokeCertificate { .. } => Self::Write,

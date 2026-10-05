@@ -440,6 +440,7 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::DropStopwords { .. }
         | StatementKind::DropReplica { .. }
         | StatementKind::AlterReplica { .. }
+        | StatementKind::FinalizeFormat
         | StatementKind::DropDatabase { .. }
         | StatementKind::DropNamespace { .. }
         | StatementKind::AlterTable { .. }

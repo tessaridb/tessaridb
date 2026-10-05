@@ -89,3 +89,20 @@ fn a_sequence_round_trips_as_a_stored_value() {
     let encoded = sequence.encode();
     assert_eq!(Sequence::decode(encoded.as_slice()).unwrap(), sequence);
 }
+
+/// A store can be finalized only to a format whose first release is recorded,
+/// because a finalize refuses while a peer runs anything older (ADR-0118 D3) —
+/// so the format this build writes must always have its row.
+#[test]
+fn the_format_this_build_writes_names_the_first_release_that_wrote_it() {
+    assert!(
+        FormatVersion::CURRENT.first_written_by().is_some(),
+        "FormatVersion::CURRENT moved without a row in `first_written_by`"
+    );
+    assert_eq!(
+        FormatVersion::CONTAINMENT_INDEX
+            .first_written_by()
+            .map(|build| (build.major, build.minor)),
+        Some((0, 28))
+    );
+}
