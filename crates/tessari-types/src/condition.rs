@@ -228,19 +228,60 @@ pub fn apply(op: BinaryOp, left: &Value, right: &Value) -> bool {
     }
 }
 
-/// Membership: does this collection hold that value.
+/// Membership: does this collection hold that value — or, when the left side is
+/// a document, containment: does it hold that sub-document (ADR-0116 D3).
 ///
 /// A different question from [`BinaryOp::Like`], which is why the language has
-/// both. Only a collection answers it — a field holding a single value is not a
-/// one-element collection, because treating it as one would make
+/// both. Only a collection or a document answers it — a field holding a single
+/// value is not a one-element collection, because treating it as one would make
 /// `name CONTAINS 'ada'` quietly mean `name = 'ada'` and hide a mistake in the
 /// query rather than showing it as no match.
+///
+/// A document on the left was always `false` before containment existed, so
+/// giving it an answer changes no statement that could match before.
 fn holds(collection: &Value, wanted: &Value) -> bool {
     match collection {
         Value::Array(items) => items.contains(wanted),
         Value::Set(items) => items.contains(wanted),
+        Value::Object(_) if matches!(wanted, Value::Object(_)) => contains(collection, wanted),
         _ => false,
     }
+}
+
+/// Whether `held` contains `asked`, by the rule `CONTAINS` states over documents.
+///
+/// - a document contains a document when every field asked for is there and its
+///   value is contained — a field asked for as `NONE` is a field not asked for;
+/// - an array (or a set) contains an array (or a set) when **each** element asked
+///   for is contained by **some** element held: order and repeats do not matter;
+/// - anything else is contained when it is equal, by the store's own equality.
+///
+/// A single value asked for against an array is not contained: a value is not an
+/// array of one, here as in membership. Recursion is bounded by the nesting
+/// ceiling every stored value already respects.
+fn contains(held: &Value, asked: &Value) -> bool {
+    match (held, asked) {
+        (Value::Object(fields), Value::Object(wanted)) => wanted.iter().all(|(name, value)| {
+            !value.is_present() || fields.get(name).is_some_and(|there| contains(there, value))
+        }),
+        (Value::Array(_) | Value::Set(_), Value::Array(_) | Value::Set(_)) => {
+            elements(asked).all(|wanted| elements(held).any(|there| contains(there, wanted)))
+        }
+        _ => held == asked,
+    }
+}
+
+/// The members of an array or a set; nothing for any other value.
+///
+/// Chained rather than boxed: this runs once per record a filter tests, and a
+/// box per call is an allocation per record for no answer it changes.
+fn elements(value: &Value) -> impl Iterator<Item = &Value> {
+    let (array, set) = match value {
+        Value::Array(items) => (Some(items), None),
+        Value::Set(items) => (None, Some(items)),
+        _ => (None, None),
+    };
+    array.into_iter().flatten().chain(set.into_iter().flatten())
 }
 
 /// SQL's `LIKE`, over the whole value.
@@ -393,5 +434,44 @@ mod tests {
         assert!(apply(BinaryOp::In, &text("urgent"), &tags));
         // A single value is not a one-element collection.
         assert!(!apply(BinaryOp::Contains, &text("urgent"), &text("urgent")));
+    }
+
+    fn document(fields: &[(&str, Value)]) -> Value {
+        Value::Object(
+            fields
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), value.clone()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn a_document_contains_what_it_holds_and_nothing_it_does_not() {
+        let one = Value::Number(Number::Integer(1));
+        let two = Value::Number(Number::Integer(2));
+        let held = document(&[
+            ("a", one.clone()),
+            ("b", document(&[("c", two.clone())])),
+            ("tags", Value::Array(vec![text("x"), text("y")])),
+        ]);
+        let asked = document(&[("b", document(&[("c", two.clone())]))]);
+        assert!(apply(BinaryOp::Contains, &held, &asked));
+        assert!(apply(BinaryOp::In, &asked, &held));
+        // Order inside an array does not matter; a value is not an array of one.
+        let reordered = document(&[("tags", Value::Array(vec![text("y"), text("x")]))]);
+        assert!(apply(BinaryOp::Contains, &held, &reordered));
+        assert!(!apply(
+            BinaryOp::Contains,
+            &held,
+            &document(&[("tags", text("x"))])
+        ));
+        // A missing field, a different value, and a non-document asked for.
+        assert!(!apply(
+            BinaryOp::Contains,
+            &held,
+            &document(&[("z", one.clone())])
+        ));
+        assert!(!apply(BinaryOp::Contains, &held, &document(&[("a", two)])));
+        assert!(!apply(BinaryOp::Contains, &held, &one));
     }
 }

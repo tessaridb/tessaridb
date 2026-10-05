@@ -78,6 +78,8 @@ impl Function {
             | Self::EncodingBase64Decode
             | Self::EncodingHex
             | Self::EncodingHexDecode
+            | Self::JsonParse
+            | Self::JsonEncode
             | Self::StringReverse
             | Self::StringTrimStart
             | Self::StringTrimEnd
@@ -228,6 +230,8 @@ impl Function {
             | Self::EncodingBase64Decode
             | Self::EncodingHex
             | Self::EncodingHexDecode
+            | Self::JsonParse
+            | Self::JsonEncode
             | Self::StringStartsWith
             | Self::StringEndsWith
             | Self::StringContains

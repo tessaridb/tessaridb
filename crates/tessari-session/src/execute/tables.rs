@@ -253,6 +253,7 @@ impl Session<'_> {
                 unique: false,
                 search: false,
                 spatial: false,
+                containment: false,
                 quantized,
                 vector: Some(distance),
                 costs: tessari_storage::SearchCosts::default(),

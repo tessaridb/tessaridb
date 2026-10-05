@@ -306,7 +306,7 @@ fn every_value_and_record_id_encodes_under_a_listed_tag() {
 /// without a bump — among them the `expires` and `across` flag bits and system
 /// tables 26–29 — which is what this test exists to stop happening again. Catalog definitions are records whose fields an
 /// older build ignores, so a field added to one is not part of the surface.
-const PINNED: &[(u32, u64)] = &[(5, 0xb7b3_5f45_79e3_c43d)];
+const PINNED: &[(u32, u64)] = &[(5, 0xb7b3_5f45_79e3_c43d), (6, 0x0f84_240b_dcf7_1521)];
 
 /// FNV-1a over one line per unit — stable across builds and platforms, which
 /// is all a pin needs; nothing here defends against a deliberate collision.

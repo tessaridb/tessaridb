@@ -2097,6 +2097,18 @@ fn a_cluster_of_rows_by(
         let home = directory.path().join(format!("n{index}"));
         std::fs::create_dir_all(&home).unwrap();
         let store = home.join("store");
+        // An upgrade upgrades stores the older release created, so it creates
+        // them: one this build created is stamped with its own format, which an
+        // older build refuses by design whenever the format moved between them.
+        // Opening it here afterwards keeps the older stamp (ADR-0116 D4).
+        if let Some(binary) = binary {
+            let created = Command::new(binary)
+                .arg(&store)
+                .args(["-e", "RETURN 1;"])
+                .output()
+                .unwrap();
+            assert!(created.status.success(), "{created:?}");
+        }
         let db = tessaridb::Db::open(&store).unwrap();
         let id = db.store().node_identity().unwrap().id;
         drop(db);

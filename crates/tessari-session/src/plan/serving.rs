@@ -114,6 +114,18 @@ pub(super) fn spatial<'a>(
         .collect()
 }
 
+/// Every declared containment index on this path, asked positively for
+/// [`spatial`]'s reason.
+pub(super) fn containing_indexes<'a>(
+    declared: &'a [IndexDefinition],
+    path: &Path,
+) -> Vec<&'a IndexDefinition> {
+    declared
+        .iter()
+        .filter(|index| index.containment && index.fields.first() == Some(path))
+        .collect()
+}
+
 /// The leading run of this index's fields the condition fixes to a value.
 ///
 /// It stops at the first field nothing fixes, so the result is always a genuine

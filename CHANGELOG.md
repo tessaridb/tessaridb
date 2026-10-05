@@ -13,6 +13,40 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.28.0-beta — 2026-10-05
+
+JSON in the language (G067).
+
+### Added
+
+- **`json::parse(text)` and `json::encode(value)`.** JSON text becomes a document and a document becomes JSON
+  text inside a statement, through the one mapping the store already had: the reader a Kafka consumer uses (an
+  integer stays exact, the last duplicate key wins, `null` is `NULL`) and the writer the HTTP surface uses (keys
+  in name order, a decimal quoted, a reference by its table's name, a `NONE` field left out). Text that is not one
+  JSON value answers `NONE`.
+- **Containment.** `doc CONTAINS { customer: { city: 'Paris' } }` asks whether a document holds a sub-document:
+  every field asked for is there and contained, an array holds each element asked for in any order, anything else
+  is equal. With an array or a set on the left `CONTAINS` is still membership, and a document on the left — which
+  never matched before — is the only thing that changed.
+- **A containment index.** `DEFINE INDEX by_doc ON orders FIELDS doc CONTAINS` keeps one entry per (path, leaf)
+  pair of each record's document, and a `CONTAINS` with a document is served by walking the pairs it asks for and
+  re-testing what they offer. `EXPLAIN` reports the shape `containment`; a document asking for nothing (`{}`) keeps
+  the scan.
+- **1586 conformance cases** define the language and run in the build.
+
+### Upgrade
+
+- **The on-disk format moves to 6**, for the containment index's entries (key kind `0x44`). A store from
+  `0.22.0-beta` onwards opens, is not rewritten, and keeps its stamp — so `0.27.x` can still open it — until its
+  first containment index is built, which stamps it 6. A store this build creates, or one holding a containment
+  index, is refused by `0.27.x` and earlier, by name, rather than read without the index.
+
+### Fixed
+
+- **A node's timed rounds measure their wait on the clock they sleep on.** The arithmetic used the wall clock and
+  the wait the runtime's: the same in a running node, a millisecond apart under a test's paused clock whenever a
+  round took longer than one, which failed one test intermittently.
+
 ## 0.27.2-beta — 2026-10-05
 
 Ready-for-1.0 groundwork (G062). Nothing a statement, a client or a store sees changes.

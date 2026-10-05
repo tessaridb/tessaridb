@@ -68,6 +68,7 @@ mod tests {
             quantized: false,
             vector: None,
             spatial: false,
+            containment: false,
             costs: tessari_storage::SearchCosts::default(),
             engine: None,
             tokenizer: search.then_some(tessari_types::TOKENIZER_GENERATION),
@@ -100,6 +101,10 @@ mod tests {
                 ),
                 relation: Relation::Meets,
             },
+            Shape::Containment => Served::Containment(vec![tessari_encoding::IndexValues::of(&[
+                Value::Array(vec![Value::from("x")]),
+                Value::from("x"),
+            ])]),
         };
         Candidate {
             served,

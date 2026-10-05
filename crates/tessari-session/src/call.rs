@@ -91,6 +91,24 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
             function, arguments, 0, span,
         )?)
         .map_or(Value::None, Value::Bytes)),
+        // Text that is not one JSON value answers `NONE`, on the decoders'
+        // reading above: the kind was checked, and what is left is a value.
+        Function::JsonParse => Ok(tessari_types::json::read(
+            text_at(function, arguments, 0, span)?.as_bytes(),
+        )
+        .unwrap_or(Value::None)),
+        // Reached with no catalog in hand — a statement's own evaluation names
+        // the tables first (`Session::json_encode`) — so a reference is spelled
+        // by its table's id, visibly, as the HTTP surface spells a dropped one.
+        Function::JsonEncode => {
+            let mut out = String::new();
+            tessari_types::json::write(
+                &mut out,
+                arguments.first().unwrap_or(&Value::None),
+                &tessari_types::json::Names::new(),
+            );
+            Ok(Value::from(out.as_str()))
+        }
         Function::StringStartsWith => {
             let text = text_at(function, arguments, 0, span)?;
             let prefix = text_at(function, arguments, 1, span)?;

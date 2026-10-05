@@ -40,6 +40,7 @@ mod composite_range;
 mod conditionals;
 mod configuration;
 mod consumers;
+mod containment_index;
 mod coordinated;
 mod counters;
 mod descending;

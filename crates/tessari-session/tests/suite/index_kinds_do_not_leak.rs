@@ -109,6 +109,22 @@ fn a_search_index_does_not_capture_an_equality_on_its_field() {
 }
 
 #[test]
+fn a_containment_index_does_not_capture_an_equality_or_a_range_on_its_field() {
+    // Its entries are pairs, not the field's value: read as an ordered index,
+    // `doc = { … }` would look a whole document up among its leaves.
+    unchanged_by(
+        "CREATE notes:1 = { doc: { a: 1 } };",
+        "SELECT * FROM notes WHERE doc = { a: 1 };",
+        "DEFINE INDEX by_doc ON notes FIELDS doc CONTAINS;",
+    );
+    unchanged_by(
+        "CREATE notes:1 = { doc: 5 };",
+        "SELECT * FROM notes WHERE doc > 1;",
+        "DEFINE INDEX by_doc ON notes FIELDS doc CONTAINS;",
+    );
+}
+
+#[test]
 fn a_spatial_index_does_not_capture_a_range_on_its_field() {
     // The other door into the same room: `ranged` enumerated the kinds it skips
     // exactly as `serving` did, so both had to be fixed and both need a case.

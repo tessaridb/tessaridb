@@ -72,6 +72,9 @@ pub enum KeyKind {
     SearchSurface,
     /// How many payload bytes one size-retained topic holds (G055 C8).
     TopicBytes,
+    /// One (path, leaf) pair one record's document holds, in a containment
+    /// index (ADR-0116 D4).
+    Containment,
     /// One entry in the ordered log.
     LogEntry,
     /// The store's own on-disk format version.
@@ -189,6 +192,7 @@ impl KeyKind {
         Self::SearchSuffix,
         Self::SearchSurface,
         Self::TopicBytes,
+        Self::Containment,
         Self::LogEntry,
         Self::FormatVersion,
         Self::AppliedPosition,
@@ -246,6 +250,7 @@ impl KeyKind {
             Self::SearchSuffix => 0x1f,
             Self::SearchSurface => 0x42,
             Self::TopicBytes => 0x43,
+            Self::Containment => 0x44,
             Self::LogEntry => 0x20,
             Self::FormatVersion => 0x30,
             Self::AppliedPosition => 0x31,
@@ -296,7 +301,8 @@ impl KeyKind {
             | Self::TopicHead
             | Self::SearchSuffix
             | Self::SearchSurface
-            | Self::TopicBytes => Keyspace::INDEX,
+            | Self::TopicBytes
+            | Self::Containment => Keyspace::INDEX,
             Self::LogEntry => Keyspace::LOG,
             Self::FormatVersion
             | Self::AppliedPosition
@@ -351,6 +357,7 @@ impl KeyKind {
             Self::SearchSuffix => "search-suffix",
             Self::SearchSurface => "search-surface",
             Self::TopicBytes => "topic-bytes",
+            Self::Containment => "containment",
             Self::LogEntry => "log-entry",
             Self::FormatVersion => "format-version",
             Self::AppliedPosition => "applied-position",
@@ -454,6 +461,7 @@ mod tests {
             (KeyKind::SearchSuffix, 0x1f),
             (KeyKind::SearchSurface, 0x42),
             (KeyKind::TopicBytes, 0x43),
+            (KeyKind::Containment, 0x44),
             (KeyKind::LogEntry, 0x20),
             (KeyKind::FormatVersion, 0x30),
             (KeyKind::AppliedPosition, 0x31),

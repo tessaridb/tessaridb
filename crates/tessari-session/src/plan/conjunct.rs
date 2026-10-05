@@ -26,6 +26,35 @@ pub(super) struct Regional<'a> {
     pub(super) widened_by: Option<&'a Expr>,
 }
 
+/// The `<path> CONTAINS <document>` conjuncts of a condition a containment index
+/// could serve (ADR-0116 D4), each as the path and the expression asked for.
+///
+/// `AND` only, for [`regional`]'s reasons. The path is a plain route — one
+/// holding `[*]` asks about every element and is a question about a different
+/// column — and the document must be a constant of the statement, since one read
+/// from the record names no entries to walk. Whether it is a document at all is
+/// known only once it is evaluated, and is judged there.
+pub(super) fn containing(condition: &Expr) -> Vec<(&Path, &Expr)> {
+    match &condition.kind {
+        ExprKind::And(left, right) => {
+            let mut found = containing(left);
+            found.extend(containing(right));
+            found
+        }
+        ExprKind::Binary {
+            op: BinaryOp::Contains,
+            left,
+            right,
+        } => match &left.kind {
+            ExprKind::Path(field) if !field.path.is_several() && !reads_a_record(right) => {
+                vec![(&field.path, right.as_ref())]
+            }
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
 /// The `geo::` conjuncts of a condition a spatial index could serve.
 ///
 /// Walks `AND` only, exactly as [`seekable`] does and for the same reasons:
@@ -236,6 +265,8 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::EncodingBase64Decode
         | Function::EncodingHex
         | Function::EncodingHexDecode
+        | Function::JsonParse
+        | Function::JsonEncode
         | Function::StringStartsWith
         | Function::StringEndsWith
         | Function::StringContains

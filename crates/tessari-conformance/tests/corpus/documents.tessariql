@@ -170,3 +170,150 @@ DEFINE INDEX by_tag_search ON people FIELDS tags[*] SEARCH;
 --- case: and one index holds one multi-valued route
 DEFINE INDEX by_two ON people FIELDS tags[*], aliases[*];
 --- expect: error SeveralRoutesInOneIndex
+
+# Containment (ADR-0116): `CONTAINS` with an object on the left asks whether the
+# document holds the sub-document on the right. With an array or a set on the
+# left it is still membership.
+
+--- case: a document contains a sub-document it holds
+RETURN { a: 1, b: { c: 2, d: 3 } } CONTAINS { b: { c: 2 } };
+--- expect: value true
+
+--- case: a key the document lacks is not contained
+RETURN { a: 1 } CONTAINS { b: 1 };
+--- expect: value false
+
+--- case: nor is a key holding something else
+RETURN { a: 1 } CONTAINS { a: 2 };
+--- expect: value false
+
+--- case: the empty document is contained by every document
+RETURN { a: 1 } CONTAINS {};
+--- expect: value true
+
+--- case: an array contains the elements asked for in any order
+RETURN { tags: ['a', 'b', 'c'] } CONTAINS { tags: ['c', 'a'] };
+--- expect: value true
+
+--- case: an array element is matched as a sub-document
+RETURN { items: [{ id: 1, qty: 2 }, { id: 2 }] } CONTAINS { items: [{ id: 1 }] };
+--- expect: value true
+
+--- case: nested arrays follow the same rule
+RETURN { a: [[1, 2], 3] } CONTAINS { a: [[1]] };
+--- expect: value true
+
+--- case: a single value is not an array of one, inside a document too
+RETURN { tags: ['a'] } CONTAINS { tags: 'a' };
+--- expect: value false
+
+--- case: what is asked for must be a document
+RETURN { a: 1 } CONTAINS 1;
+--- expect: value false
+
+--- case: values compare the way equality does
+RETURN { a: 1 } CONTAINS { a: 1.0 };
+--- expect: value true
+
+--- case: and two kinds that equality keeps apart stay apart
+RETURN { a: 1 } CONTAINS { a: '1' };
+--- expect: value false
+
+--- case: a null asked for must be there and be null
+RETURN { a: NULL } CONTAINS { a: NULL };
+--- expect: value true
+
+--- case: an absent field is not a null one
+RETURN { b: 1 } CONTAINS { a: NULL };
+--- expect: value false
+
+--- case: a field asked for as NONE is a field not asked for
+RETURN { a: 1 } CONTAINS { a: 1, b: NONE };
+--- expect: value true
+
+--- case: with an array on the left it is still membership, and membership is exact
+RETURN [{ a: 1, b: 2 }] CONTAINS { a: 1 };
+--- expect: value false
+
+--- case: IN asks the same question from the other end
+RETURN { b: { c: 2 } } IN { a: 1, b: { c: 2, d: 3 } };
+--- expect: value true
+
+--- case: documents to filter by what they contain
+DEFINE COLLECTION orders;
+CREATE orders:1 = { doc: { status: 'paid', customer: { city: 'Paris' }, lines: [{ sku: 'a', qty: 1 }, { sku: 'b', qty: 2 }] } };
+CREATE orders:2 = { doc: { status: 'paid', customer: { city: 'Lyon' }, lines: [{ sku: 'b', qty: 1 }] } };
+CREATE orders:3 = { doc: { status: 'open', customer: { city: 'Paris' }, lines: [] } };
+CREATE orders:4 = { doc: 'not a document' };
+CREATE orders:5 = { other: 1 };
+--- expect: ok
+
+--- case: a filter by a nested field
+SELECT * FROM orders WHERE doc CONTAINS { customer: { city: 'Paris' } };
+--- expect: rows 2
+
+--- case: by two fields at once
+SELECT * FROM orders WHERE doc CONTAINS { status: 'paid', customer: { city: 'Paris' } };
+--- expect: rows 1
+
+--- case: by an element of an array
+SELECT * FROM orders WHERE doc CONTAINS { lines: [{ sku: 'b' }] };
+--- expect: rows 2
+
+--- case: a record whose field is not a document, or is absent, is not a match
+SELECT * FROM orders WHERE doc CONTAINS {};
+--- expect: rows 3
+
+# The same questions with a containment index (ADR-0116 D4): it changes what the
+# read costs and never what it answers.
+
+--- case: a containment index reads one document field
+DEFINE INDEX by_doc ON orders FIELDS doc CONTAINS;
+--- expect: ok
+
+--- case: the read is served by it
+EXPLAIN SELECT * FROM orders WHERE doc CONTAINS { customer: { city: 'Paris' } };
+--- expect: value { access: 'index', columns: 1, exact: true, index: 'by_doc', shape: 'containment', table: 'orders' }
+
+--- case: and answers what the scan answered, by a nested field
+SELECT * FROM orders WHERE doc CONTAINS { customer: { city: 'Paris' } };
+--- expect: rows 2
+
+--- case: by two fields at once, through the index
+SELECT * FROM orders WHERE doc CONTAINS { status: 'paid', customer: { city: 'Paris' } };
+--- expect: rows 1
+
+--- case: by an element of an array, through the index
+SELECT * FROM orders WHERE doc CONTAINS { lines: [{ sku: 'b' }] };
+--- expect: rows 2
+
+--- case: a document asking for nothing keeps the scan
+EXPLAIN SELECT * FROM orders WHERE doc CONTAINS {};
+--- expect: value { access: 'scan', exact: true, table: 'orders' }
+
+--- case: a write moves the record out of the answer
+UPDATE orders:2 SET doc.lines = [];
+SELECT * FROM orders WHERE doc CONTAINS { lines: [{ sku: 'b' }] };
+--- expect: rows 1
+
+--- case: a field holding an array is still membership, and the index finds it
+CREATE orders:7 = { doc: [{ a: 1 }, { a: 1, b: 2 }] };
+SELECT * FROM orders WHERE doc CONTAINS { a: 1 };
+--- expect: rows 1
+
+--- case: the definition reads back as written
+INFO FOR TABLE orders;
+--- expect: ok
+
+--- case: a containment index reads one field
+DEFINE INDEX by_two ON orders FIELDS doc, other CONTAINS;
+--- expect: error IndexReadsOneField
+
+--- case: and a whole document, not every element of a route
+DEFINE INDEX by_each ON orders FIELDS doc[*] CONTAINS;
+--- expect: error SeveralInAnAnalysedIndex
+
+--- case: dropping it leaves the scan answering the same
+DROP INDEX by_doc ON orders;
+SELECT * FROM orders WHERE doc CONTAINS { customer: { city: 'Paris' } };
+--- expect: rows 2

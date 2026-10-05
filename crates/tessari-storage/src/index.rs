@@ -88,7 +88,7 @@ use crate::store::Store;
 use crate::transaction::RecordAddress;
 use apply::apply_one;
 pub(crate) use build::build;
-pub(crate) use entries::{displace, insert, place, place_cells, remove};
+pub(crate) use entries::{contain, displace, insert, place, place_cells, remove, uncontain};
 pub(crate) use projecting::{
     analysed, analyzer_for, analyzers_named, analyzers_on, covering_of, project, projected_vector,
     search_analyzer, terms_of,

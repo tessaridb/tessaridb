@@ -111,6 +111,7 @@ because renumbering after data exists is a full rebuild.
 | `0x41` | `IndexChanges` | `index` | implemented — entries one value index has gained or lost on this node (G055); never in the log |
 | `0x42` | `SearchSurface` (surface forms of stemmed terms) | `index` | implemented — see §6.2b-6 |
 | `0x43` | `TopicBytes` (payload bytes a size-retained topic holds) | `index` | implemented — see §6.2d |
+| `0x44` | `Containment` (one (path, leaf) pair of one record's document) | `index` | implemented — see §6.2a |
 | `0x50` | `TransactionRecord` (one transaction across leaders) | `meta` | implemented — see §6.5 |
 | `0x51` | `IntentOf` (an intent this node holds, by transaction) | `meta` | implemented — see §6.5 |
 | `0x52` | `AcrossPart` (where a transaction's part in one range landed here) | `meta` | implemented — see §6.5 |
@@ -124,7 +125,8 @@ index. Both keys are an index prefix with no suffix (`<tag> <namespace:u32>
 and decide which access path a read takes and never which records it returns.
 `0x42` sits in that family by number only: it is a search index's derived
 entry, written with its postings like `0x1f`, not a planner summary. `0x43`
-is a topic's, beside `0x1e`, likewise by number only.
+is a topic's, beside `0x1e`, likewise by number only. `0x44` is a containment
+index's entry (ADR-0116), by number only as well.
 
 `0x50` opens a sixth family, `0x5_`: what this store keeps about transactions
 whose writes fall in ranges led by different nodes (ADR-0112). The family was
@@ -621,6 +623,23 @@ declaration order, the term's occurrences in that field and that field's token
 count, so a `FROM SEARCH` decides and scores BM25F from its postings alone. A
 member written before it holds the counted form, and is read from its records'
 text as it always was.
+
+A **containment** entry is `0x44` with the same shape as a secondary entry and
+exactly two values — a path and a leaf:
+
+```
+containment  <0x44> <namespace:u32> <database:u32> <table:u32> <index:u32> <path> <leaf> <0x00> <record-id>
+```
+
+One per (path, leaf) pair the record's indexed document holds. The path is an
+array of steps — a field's name as a string, and `NULL` for every element of an
+array — so a leaf's position in an array is not part of it, as it is not part of
+`CONTAINS`. Both are encoded per §4.5 and §7a, so the pair is self-delimiting and
+the entries for one pair are one contiguous run. A field holding an array writes
+each element's pairs as if the element were the document, because `CONTAINS`
+with an array on the left is membership. The value is empty. A read walks one
+pair asked for at a time and keeps the records holding all of them — a
+**candidate** set, re-tested against the whole condition.
 
 ### 6.2b `SearchStatistics` — keyspace `index`
 
@@ -1121,6 +1140,7 @@ and is rewritten at open only where the row below says so.
 | `3` | the log is per range: a log key carries its home | rewritten: an old log key does not decode |
 | `4` | a record version carries its causal stamp — flag `0x04` | opened as is: a clear bit reads as an empty stamp |
 | `5` | a log key carries the writer that allocated it (G027 S2.2) | rewritten: an old and a new key differ in length |
+| `6` | a containment index's entries, key kind `0x44` (ADR-0116) | opened as is and keeps its stamp; stamped `6` when its first containment index is built |
 
 Format 5 also took values that arrived after it without a bump — among them the
 `expires` and `across` flag bits (§7.1) and system tables 26–29 (§9.1) — so a

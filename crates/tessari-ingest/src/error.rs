@@ -84,23 +84,5 @@ impl std::fmt::Display for SourceError {
 
 impl std::error::Error for SourceError {}
 
-/// Why a message could not be read.
-///
-/// A position rather than a line and column, because the payload is bytes off a
-/// wire rather than a file somebody wrote — the useful thing to say is where in
-/// the payload, so the operator can look at that byte in the quarantined copy.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Malformed {
-    /// What was wrong.
-    pub reason: &'static str,
-    /// Which byte of the payload.
-    pub at: usize,
-}
-
-impl std::fmt::Display for Malformed {
-    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(out, "{} at byte {}", self.reason, self.at)
-    }
-}
-
-impl std::error::Error for Malformed {}
+/// Why a message could not be read — the shared JSON reader's own failure.
+pub use tessari_types::json::Malformed;

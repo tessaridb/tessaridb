@@ -38,6 +38,7 @@ mod folded;
 mod fused;
 mod graph;
 mod join;
+mod json;
 mod keys;
 mod latest;
 mod lent;
@@ -238,6 +239,12 @@ impl Session<'_> {
                 }
                 if *function == Function::SessionContext {
                     return self.session_context();
+                }
+                // A record reference is written by its table's name, and the
+                // name is the catalog's — not a value the call is given.
+                if *function == Function::JsonEncode {
+                    let arguments = self.values(transaction, arguments, scope)?;
+                    return self.json_encode(transaction, &arguments);
                 }
                 if let Some(distance) =
                     self.distance_between(transaction, *function, arguments, scope)?

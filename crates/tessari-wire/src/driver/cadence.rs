@@ -61,6 +61,13 @@ pub enum CadenceError {
 
 /// How long to wait before the next pass, given when the last one started.
 ///
+/// Both instants are the **runtime's** clock, the one the wait then sleeps on.
+/// Measured on the wall clock instead, the arithmetic and the sleep are two
+/// clocks: the same reading in production, and apart wherever the runtime's
+/// clock is not the wall's — a test's paused clock, where the real time a pass
+/// took was subtracted from a sleep that time does not pass in, and a period
+/// came out a millisecond short whenever a pass took more than one (Q-939).
+///
 /// # A missed tick is not made up
 ///
 /// When a pass overran its period — the peer was slow, the thread was
@@ -74,7 +81,11 @@ pub enum CadenceError {
 /// it has been. And three renewals are three elections where the cluster needed
 /// none.
 #[must_use]
-pub fn due_in(period: Duration, ran_at: Instant, now: Instant) -> Duration {
+pub fn due_in(
+    period: Duration,
+    ran_at: tokio::time::Instant,
+    now: tokio::time::Instant,
+) -> Duration {
     period.saturating_sub(now.saturating_duration_since(ran_at))
 }
 
@@ -110,6 +121,7 @@ pub async fn every<P>(
 {
     while !stop.is_cancelled() {
         let ran_at = Instant::now();
+        let waited_from = tokio::time::Instant::now();
         let Some((returned, _)) = run_pass(cadence, period, ran_at, pass).await else {
             return;
         };
@@ -117,7 +129,7 @@ pub async fn every<P>(
         tokio::select! {
             biased;
             () = stop.cancelled() => return,
-            () = tokio::time::sleep(due_in(period, ran_at, Instant::now())) => {}
+            () = tokio::time::sleep(due_in(period, waited_from, tokio::time::Instant::now())) => {}
         }
     }
 }
@@ -149,6 +161,7 @@ pub async fn every_paced<P>(
     let mut period = first;
     while !stop.is_cancelled() {
         let ran_at = Instant::now();
+        let waited_from = tokio::time::Instant::now();
         let Some((returned, chosen)) = run_pass(cadence, period, ran_at, pass).await else {
             return;
         };
@@ -160,7 +173,7 @@ pub async fn every_paced<P>(
             biased;
             () = stop.cancelled() => return,
             () = wake.notified() => {}
-            () = tokio::time::sleep(due_in(period, ran_at, Instant::now())) => {}
+            () = tokio::time::sleep(due_in(period, waited_from, tokio::time::Instant::now())) => {}
         }
     }
 }

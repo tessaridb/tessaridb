@@ -110,6 +110,8 @@ impl Function {
         EncodingBase64Decode => "encoding::base64_decode",
         EncodingHex => "encoding::hex",
         EncodingHexDecode => "encoding::hex_decode",
+        JsonParse => "json::parse",
+        JsonEncode => "json::encode",
         StringStartsWith => "string::starts_with",
         StringEndsWith => "string::ends_with",
         StringContains => "string::contains",

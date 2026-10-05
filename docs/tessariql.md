@@ -831,6 +831,20 @@ stays an exact scan by design.
 A box match is a candidate and never a result, which is what keeps the index from
 changing an answer: an index may change what a read costs, never what it says.
 
+**`CONTAINS` indexes a document by the leaves it holds.** `DEFINE INDEX by_doc
+ON orders FIELDS doc CONTAINS` gives each record one entry per (path, leaf) pair
+of its document — `customer.city = 'Paris'`, `lines[*].sku = 'b'` — where every
+element of an array is one step, because position is not part of containment. A
+`WHERE doc CONTAINS { … }` with a constant document is then served by walking the
+entries for each pair the document asks for and keeping the records holding all
+of them; what that produces is a candidate set, re-tested against the whole
+condition, because a path forgets which element a leaf was in. A document asking
+for nothing a pair can say — `{}`, or only empty arrays and documents — keeps the
+scan, since every record holding a document would be a candidate. A field holding
+an array asks membership rather than containment, and the index finds it too: each
+element is indexed as a document of its own. The index reads one field, and a
+whole document rather than every element of a route.
+
 Three shapes are refused, each because it has no single meaning rather than
 because it is hard:
 
@@ -5262,6 +5276,34 @@ because both are asked, and neither is a spelling of the other. `IN` is the same
 question from the other end — `'urgent' IN tags` — because both read naturally
 in different sentences.
 
+**With a document on the left, `CONTAINS` asks containment**: does this document
+hold that sub-document.
+
+```
+SELECT * FROM orders WHERE doc CONTAINS { customer: { city: 'Paris' } };
+SELECT * FROM orders WHERE doc CONTAINS { status: 'paid', lines: [{ sku: 'b' }] };
+```
+
+The rule, all of it:
+
+- a document contains a document when **every field asked for is there** and its
+  value is contained — fields the document has and the question does not name do
+  not matter, so the empty document `{}` is contained by every document;
+- an array contains an array when **each element asked for is contained by some
+  element held** — order and repeats do not matter, and an element may itself be a
+  document asked for in part (`lines: [{ sku: 'b' }]`);
+- anything else is contained when it is **equal**, by the same equality `=` uses.
+
+What it deliberately is not: a single value asked for against an array is not
+contained — `{ tags: 'a' }` is not in `{ tags: ['a'] }` — because a value is not an
+array of one, here as in membership. A field asked for as `NULL` must be there
+and be `NULL`; one asked for as `NONE` is a field not asked for. And with an
+array or a set on the left `CONTAINS` is still membership, which is exact:
+`[{ a: 1, b: 2 }] CONTAINS { a: 1 }` is false. Something that is not a document,
+on either side, contains nothing.
+
+`IN` asks the same question from the other end, here too.
+
 ### A value that depends on a test
 
 ```
@@ -5822,6 +5864,44 @@ follow. What counts as "no bytes" is exact: a length that is not a multiple of
 four (or of two, for hex), a character outside the alphabet, padding anywhere
 but the end, or padding bits that are not zero — because two strings that
 decoded to one value would make the round trip a lie.
+
+### JSON text
+
+| Written | What it answers |
+|---|---|
+| `json::parse(text)` | the value that JSON text spells, or `NONE` |
+| `json::encode(value)` | the value as compact JSON text |
+
+```
+SELECT json::parse(payload) AS document FROM inbox;
+UPDATE inbox:1 SET document = json::parse(payload);
+SELECT json::encode(address) AS address FROM people;
+```
+
+A collection already holds documents — nested objects and arrays, typed — so
+these are not a second document model. They are the road between a document and
+**text that happens to be JSON**: a payload a column received as a string, a
+document leaving for something that only reads JSON.
+
+**There is one JSON mapping in this store, and both functions use it.**
+`json::parse` is the reader a stream consumer uses, so a script reads a payload
+exactly as a Kafka consumer would: a number written without a fraction or an
+exponent is an `int` (exact, which is the point — a millisecond timestamp read as
+a double comes back rounded), anything else is a `float`; a duplicate key keeps
+its last value; JSON's `null` is `NULL` and never `NONE`; nesting is bounded.
+`json::encode` is what the HTTP surface writes, so it answers what `POST /script`
+would show for the same value: a decimal quoted, so it does not become a double; a
+datetime as RFC 3339; a shape as GeoJSON; a record reference by its table's name;
+a field holding `NONE` left out, because that is what `NONE` means.
+
+**Keys come out in name order.** A document's fields are held in name order
+(`docs/value-system.md` §5), so the order a producer wrote them in is not kept and
+`json::encode` cannot give it back. A use that needs JSON byte for byte — a
+signature over the text, say — keeps the text in a `string` field.
+
+**Text that is not one JSON value answers `NONE`**, on the decoders' reading
+above: the kind is checked, and a row that does not parse narrows a read rather
+than ending it. Two values in one text are not one value.
 
 ### Shapes
 
@@ -6397,6 +6477,7 @@ visible rather than folklore.
 | `path LIKE '%ada'`, `'%ada%'`, `'a_a%'`, `'ada%lace'` | scan |
 | `path ILIKE 'ada%'` | scan |
 | `path CONTAINS 'ada'`, `'ada' IN path` | scan |
+| `path CONTAINS { … }` (a document) | index read on a `CONTAINS` index — candidates, then the rest applied |
 | `path < 'ada'`, `path > 'ada'` | scan — an ordered index could serve this as a range, and that is not built yet |
 | `path = 'ada' OR <anything>` | scan |
 | `NOT (path = 'ada')` | scan |
@@ -9734,7 +9815,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.27.2", "build": "0.27.2-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.28.0", "build": "0.28.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

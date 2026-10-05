@@ -1,6 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::float_cmp)]
 
 use super::*;
+use std::collections::BTreeMap;
+use tessari_types::json::Malformed;
+use tessari_types::{Number, Value};
 
 fn parsed(text: &str) -> Value {
     read(text.as_bytes()).unwrap_or_else(|failure| panic!("{text} did not read: {failure}"))

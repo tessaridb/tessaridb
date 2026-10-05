@@ -69,6 +69,9 @@ pub(crate) enum Shape {
     /// `geo::intersects(<path>, <constant>)`, and the five other relations a box
     /// test is a superset of — the cells a query box covers.
     ///
+    /// Beside it, and for its reason: a containment read produces candidates to
+    /// re-test, and a document asked for can be held by the whole table.
+    ///
     /// Last, and conservatively so. A query box can be the world, so like a
     /// prefix and a range its size is not knowable without the read; unlike
     /// them, what it produces is a set of **candidates** to refine rather than a
@@ -76,6 +79,10 @@ pub(crate) enum Shape {
     /// doing the most work per row it returns. Ranking it above anything would
     /// be a claim about selectivity this store keeps no statistics to make.
     Region,
+    /// `<path> CONTAINS <document>` — the records holding every (path, leaf)
+    /// pair the document holds, intersected (ADR-0116 D4). Candidates, like a
+    /// region's: a path forgets where in an array a leaf was.
+    Containment,
 }
 
 /// What a chosen candidate hands the executor, ready to run.
@@ -191,6 +198,10 @@ pub(crate) enum Served {
         /// Which comparison the predicate's semantics permit.
         relation: Relation,
     },
+    /// The (path, leaf) pairs the document asked for holds, as the index values
+    /// of the entries to walk — never empty: a document asking for nothing an
+    /// index can narrow by is answered by the scan.
+    Containment(Vec<tessari_encoding::IndexValues>),
 }
 
 impl Served {
@@ -207,6 +218,7 @@ impl Served {
             Self::Phrase { .. } => Shape::Phrase,
             Self::Range { .. } => Shape::Range,
             Self::Region { .. } => Shape::Region,
+            Self::Containment(_) => Shape::Containment,
         }
     }
 
@@ -229,7 +241,8 @@ impl Served {
             | Self::InfixTerms(_)
             | Self::AnyTerms(_)
             | Self::Phrase { .. }
-            | Self::Region { .. } => 1,
+            | Self::Region { .. }
+            | Self::Containment(_) => 1,
             Self::Range { fixed, .. } => fixed.len().saturating_add(1),
         }
     }
@@ -380,6 +393,7 @@ impl Shape {
             Self::Prefix => "prefix",
             Self::Range => "range",
             Self::Region => "region",
+            Self::Containment => "containment",
             Self::Terms => "terms",
             Self::PrefixTerms => "prefix-terms",
             Self::FuzzyTerms => "fuzzy-terms",

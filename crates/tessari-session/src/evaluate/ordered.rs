@@ -339,6 +339,11 @@ impl Session<'_> {
                     .records_in_region(&chosen.index, cells, *bounds, *relation)
                     .map(|region| region.rows)
             }
+            // Candidates too, and re-tested above for the same reason: a path
+            // forgets where in an array a leaf was (ADR-0116 D4).
+            plan::Served::Containment(pairs) => {
+                transaction.records_containing(&chosen.index, pairs)
+            }
             plan::Served::Terms(terms) => {
                 let mut rows = Vec::new();
                 for id in transaction.records_by_terms(&chosen.index, analyzer, terms)? {

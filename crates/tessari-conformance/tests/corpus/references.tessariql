@@ -67,3 +67,7 @@ SELECT author FROM posts:2 FETCH author;
 CREATE posts:6 = { fetch: 'a field called fetch', author: users:1 };
 SELECT fetch FROM posts:6 FETCH author;
 --- expect: rows 1
+
+--- case: json::encode writes a reference by its table's name, as the HTTP surface does
+RETURN json::encode({ author: users:1 });
+--- expect: value '{"author":"users:1"}'
