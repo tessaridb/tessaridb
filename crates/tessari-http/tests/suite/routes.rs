@@ -1293,3 +1293,61 @@ fn the_vault_routes_ask_a_closed_store_for_a_credential_and_refuse_a_viewer() {
         }
     }
 }
+
+#[test]
+fn every_error_answer_names_its_class_beside_its_message() {
+    // ADR-0117 D4: the status is coarse — two classes share 409 — and the
+    // message is prose; `code` is what a client branches on. Asked of a
+    // refusal from each class the session raises here, and of answers no
+    // refusal produced (a route that does not exist, a method it does not take).
+    let (_node, address) = closed();
+    let in_prod = |script: &str| format!("{IN_PROD}{script}");
+    for (script, credential, status, code) in [
+        (in_prod("SELECT FROM;"), Some(ROOT), 400, "invalid"),
+        (
+            in_prod("SELECT * FROM notes;"),
+            None,
+            401,
+            "unauthenticated",
+        ),
+        (
+            in_prod("SELECT * FROM notes;"),
+            Some(WRONG),
+            401,
+            "unauthenticated",
+        ),
+        (
+            in_prod("CREATE notes:2 = { body: 'y' };"),
+            Some(GRACE),
+            403,
+            "forbidden",
+        ),
+        (
+            in_prod("DEFINE COLLECTION notes;"),
+            Some(ROOT),
+            409,
+            "conflict",
+        ),
+        (
+            in_prod("CREATE notes:1 = { body: 'again' };"),
+            Some(ROOT),
+            409,
+            "conflict",
+        ),
+    ] {
+        let (got, _, body) = send(&address, "POST", "/script", &script, credential);
+        assert_eq!(got, status, "{script}: {body}");
+        assert!(
+            body.contains(&format!(r#""code":"{code}""#)),
+            "{script}: {body}"
+        );
+    }
+    for (method, path, status) in [("GET", "/no/such/route/here", 404), ("GET", "/script", 405)] {
+        let (got, _, body) = send(&address, method, path, "", None);
+        assert_eq!(got, status, "{method} {path}: {body}");
+        assert!(
+            body.contains(r#""code":"invalid""#),
+            "{method} {path}: {body}"
+        );
+    }
+}

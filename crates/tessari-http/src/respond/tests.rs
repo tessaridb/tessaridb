@@ -63,7 +63,15 @@ fn an_aborted_transaction_across_leaders_answers_with_the_kind_of_its_refusal() 
         refusal: AcrossRefusal::Here(Box::new(Error::NoBackupFolder)),
         span,
     };
-    assert_eq!(failure(&here).status, 409);
+    assert_eq!(
+        failure(&here).status,
+        failure(&Error::NoBackupFolder).status
+    );
+    assert_eq!(
+        failure(&here).status,
+        503,
+        "a node with no backup folder is unavailable"
+    );
     // In doubt is a store that could not confirm what it did, like a
     // commit a majority did not confirm in time: read, then decide.
     let doubt = Error::AcrossInDoubt {
@@ -246,5 +254,43 @@ fn a_refusal_that_is_not_the_callers_fault_does_not_answer_400() {
             expected,
             "{error} answered the wrong status"
         );
+    }
+}
+
+#[test]
+fn an_error_body_built_from_a_status_is_given_that_status_class_once() {
+    let coded = super::coded(404, br#"{"error":"no such route"}"#.to_vec());
+    assert_eq!(
+        coded,
+        br#"{"error":"no such route","code":"invalid"}"#.to_vec()
+    );
+    // Already carrying one: left exactly as it was, so a refusal's own class is
+    // never overwritten by the coarser one its status suggests.
+    let refusal = br#"{"error":"try again","code":"retry"}"#.to_vec();
+    assert_eq!(super::coded(409, refusal.clone()), refusal);
+    // Twice is once.
+    assert_eq!(super::coded(404, coded.clone()), coded);
+    // Not an error, or not an error body: untouched.
+    let answer = br#"[{"kind":"value"}]"#.to_vec();
+    assert_eq!(super::coded(200, answer.clone()), answer);
+    let file = b"raw bytes".to_vec();
+    assert_eq!(super::coded(404, file.clone()), file);
+}
+
+#[test]
+fn each_class_answers_with_its_own_status() {
+    use tessari_types::RefusalClass;
+    for (class, status) in [
+        (RefusalClass::Invalid, 400),
+        (RefusalClass::Unauthenticated, 401),
+        (RefusalClass::Forbidden, 403),
+        (RefusalClass::Throttled, 429),
+        (RefusalClass::Elsewhere, 307),
+        (RefusalClass::Retry, 409),
+        (RefusalClass::Conflict, 409),
+        (RefusalClass::Unavailable, 503),
+        (RefusalClass::Internal, 500),
+    ] {
+        assert_eq!(super::failure::status_of(class), status, "{class:?}");
     }
 }

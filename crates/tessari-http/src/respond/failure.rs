@@ -1,128 +1,16 @@
 use super::*;
+use tessari_types::RefusalClass;
 
 /// A failure, as the status that says what kind it was.
 pub(crate) fn failure(error: &Error) -> Answer {
-    let status = match error {
-        // A transaction across leaders that did not commit answers as the
-        // refusal that stopped it: this node's own as itself, another node's by
-        // the kind that node judged it with — which `refusal_kind` reads off
-        // this same mapping there (Q-924). It used to reach the catch-all,
-        // telling a caller whose abort was a conflict not to retry.
-        Error::AcrossAborted { refusal, .. } => match refusal {
-            tessaridb::AcrossRefusal::Here(cause) => failure(cause).status,
-            tessaridb::AcrossRefusal::There(refused) => match refused.kind {
-                tessaridb::RefusalKind::Retriable => 409,
-                tessaridb::RefusalKind::Forbidden => 403,
-                tessaridb::RefusalKind::Invalid => 400,
-            },
-        },
-        // This node does not know who is asking: no credential against a closed
-        // store, or one it refused. Both are answered the same way, because
-        // telling them apart tells an attacker which half to keep guessing at.
-        // A token whose account has since changed belongs here too, and for the
-        // same reason it is not a 403: the holder was somebody, the store no
-        // longer agrees, and what fixes it is signing in again.
-        Error::NotSignedIn { .. }
-        | Error::SignInRefused
-        | Error::TicketStale
-        // The caller is signed in and the second proof failed, which is still
-        // "identify yourself" — a client acts on it by asking for the password
-        // again, exactly as for the first.
-        | Error::CurrentPasswordRefused => 401,
-        // It declined to look. Not a 401, because a client told "wrong" retries
-        // with a different password and one told "too many" must retry with the
-        // same one later — and 429 is the status every client library already
-        // backs off on.
-        // A public topic's anonymous allowance is spent: the same back-off, for
-        // the same reason, and it is earned back over the topic's window.
-        Error::SignInThrottled | Error::PassphraseThrottled | Error::TopicRateExceeded { .. } => {
-            429
-        }
-        // It knows, and the answer is still no. A different thing entirely, and
-        // a client that cannot tell retries a signin that will never help.
-        //
-        // `NotGranted` belongs here for exactly that reason and was reaching the
-        // catch-all instead: a caller whose grants do not cover the table was
-        // being told they had written the request wrongly, which is the one
-        // thing they could not fix.
-        // `NotTheWholeStore` belongs with these and not with `401`: the node
-        // knows exactly who is asking, and signing in again will never help.
-        // `CannotHandOut` is here for the same reason and not with the 400s: a
-        // caller trying to grant past their own holdings wrote the statement
-        // exactly right, and the refusal is about who they are.
-        // These four were reaching the catch-all for the same reason
-        // `NotGranted` did. A grant-governed user asking for a backup or trying
-        // to declare structure wrote a statement this store understands
-        // perfectly; an owner reaching a user outside their own tenancy, or
-        // declaring somebody who would reach further than they do, likewise.
-        // Every one of them is `CannotHandOut`'s case — the statement is right
-        // and the refusal is about who is asking.
-        Error::RoleForbids { .. }
-        | Error::OutsideTenancy { .. }
-        | Error::NotGranted { .. }
-        | Error::NotTheWholeStore { .. }
-        | Error::CannotHandOut { .. }
-        | Error::GrantedUserCannotBackUp { .. }
-        | Error::GrantedUserCannotDeclare { .. }
-        | Error::NotYours { .. }
-        | Error::WiderThanYou { .. }
-        // Carried here from another node, and authority or membership changes
-        // only for a caller signed in to the node that judges it (ADR-0108 D2).
-        | Error::MayNotTravel { .. } => 403,
-        // The caller wrote it wrong, and no amount of changing the data helps.
-        // A new password that is not one is a bad request rather than a
-        // refusal: nothing about the caller's authority is in question.
-        Error::PasswordEmpty { .. } => 400,
-        Error::Script(_) => 400,
-        // Not a failure at all. It is here because this surface has one door for
-        // everything the session returns, and it leaves through a different one.
-        //
-        // `307` and not `302`: only the temporary-redirect status promises that
-        // the method and the body survive the hop, and a `POST /script` whose
-        // script a client quietly dropped on the way to the other node is a
-        // worse outcome than the refusal this used to be. Not `301` or `308`
-        // either — both say *permanently*, and a redirect taken on how stale a
-        // copy is right now is the least permanent fact this store holds.
-        Error::ReadIsElsewhere { .. }
-        | Error::Store(tessaridb::StoreError::WriteIsElsewhere { .. }) => 307,
-        // The caller wrote it right and the data says no. Retriable after a
-        // change, which is the whole reason this is not a 400.
-        //
-        // The session raises its own two of these rather than wrapping a store
-        // error, so they were answering 400 while meaning exactly what this arm
-        // means: a `CREATE` over a record that exists succeeds once the record
-        // goes, and a drop blocked by a dependency succeeds once the dependant
-        // does. A client told `400` stops retrying, which is the one response
-        // that never becomes right.
-        Error::Store(_)
-        | Error::RecordExists { .. }
-        | Error::StillDepended { .. }
-        | Error::BackupExists { .. }
-        | Error::RestoreTargetExists { .. }
-        | Error::NoVaultRoot
-        | Error::NoBackupFolder
-        | Error::ShardMapMoved { .. }
-        | Error::AcrossSettling { .. }
-        // The decision was sent and not confirmed: like a commit a majority
-        // did not confirm in time, the store is the one that does not know, and
-        // a read of the records says what to do next.
-        | Error::AcrossInDoubt { .. } => 409,
-        // A substrate or decoding failure. Anything reaching here is a bug.
-        //
-        // A backup the writer could not write is a device speaking, not a
-        // caller; an identity the store could not produce and a fold that
-        // reached the evaluator are invariants of this build. Reported as 400
-        // they read as user error and no alert ever sees them.
-        Error::Encoding(_)
-        | Error::BackupFailed { .. }
-        | Error::IdentityUnavailable { .. }
-        | Error::FoldOutsideAGroup { .. } => 500,
-        // Everything else the session raises is about the script: an unselected
-        // namespace, a wrong argument, a condition that is not a boolean.
-        _ => 400,
-    };
+    // Decided once, in the session (ADR-0117): the status is the class's, so the
+    // wire's byte and this status cannot disagree about what to do next.
+    let class = error.class();
+    let status = status_of(class);
     let mut body = String::from(r#"{"error":"#);
     json::string(&mut body, &error.to_string());
+    body.push_str(r#","code":"#);
+    json::string(&mut body, class.word());
     body.push('}');
     let mut answer = Answer::new(status, body);
     // The address travels in the header rather than only in the prose, for the
@@ -195,4 +83,61 @@ pub fn refusal_kind(error: &Error) -> tessaridb::RefusalKind {
         307 | 409 | 429 | 500..=599 => tessaridb::RefusalKind::Retriable,
         _ => tessaridb::RefusalKind::Invalid,
     }
+}
+
+/// The status a class answers with (ADR-0117 D1).
+pub(crate) const fn status_of(class: RefusalClass) -> u16 {
+    match class {
+        RefusalClass::Invalid => 400,
+        RefusalClass::Unauthenticated => 401,
+        RefusalClass::Forbidden => 403,
+        RefusalClass::Throttled => 429,
+        RefusalClass::Elsewhere => 307,
+        RefusalClass::Retry | RefusalClass::Conflict => 409,
+        RefusalClass::Unavailable => 503,
+        RefusalClass::Internal => 500,
+    }
+}
+
+/// The class an error answer built from a status alone carries — a route that
+/// does not exist, a method a route does not take, a body past the ceiling.
+/// Every refusal the session raises is classed by [`Error::class`] instead.
+pub(crate) const fn class_of_status(status: u16) -> RefusalClass {
+    match status {
+        401 => RefusalClass::Unauthenticated,
+        403 => RefusalClass::Forbidden,
+        307 => RefusalClass::Elsewhere,
+        409 => RefusalClass::Conflict,
+        429 => RefusalClass::Throttled,
+        503 => RefusalClass::Unavailable,
+        500..=599 => RefusalClass::Internal,
+        _ => RefusalClass::Invalid,
+    }
+}
+
+/// An error body carrying its class, as every one must (ADR-0117 D4).
+///
+/// A refusal from the session already says its own; an answer built from a
+/// status alone — no such route, not that method, a body past the ceiling — is
+/// given the class its status means. Applied where every answer becomes a
+/// response, so a route added later cannot forget it.
+pub(crate) fn coded(status: u16, body: Vec<u8>) -> Vec<u8> {
+    const OPENING: &[u8] = br#"{"error":"#;
+    const CODE: &[u8] = br#""code":"#;
+    if status < 300
+        || !body.starts_with(OPENING)
+        || body.windows(CODE.len()).any(|window| window == CODE)
+    {
+        return body;
+    }
+    let Some(close) = body.iter().rposition(|byte| *byte == b'}') else {
+        return body;
+    };
+    let mut coded = Vec::with_capacity(body.len().saturating_add(24));
+    coded.extend_from_slice(body.get(..close).unwrap_or_default());
+    coded.extend_from_slice(br#","code":""#);
+    coded.extend_from_slice(class_of_status(status).word().as_bytes());
+    coded.extend_from_slice(br#""}"#);
+    coded.extend_from_slice(body.get(close.saturating_add(1)..).unwrap_or_default());
+    coded
 }

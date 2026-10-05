@@ -35,7 +35,7 @@ use crate::basic::Presented;
 use crate::json;
 use crate::tokens::{Refused, Tokens};
 pub use failure::refusal_kind;
-pub(crate) use failure::{failure, script_failure};
+pub(crate) use failure::{coded, failure, script_failure};
 pub(crate) use metrics::metrics;
 pub(crate) use scripts::{listing, script};
 
