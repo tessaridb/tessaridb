@@ -55,6 +55,7 @@ mod kv;
 mod listening;
 mod node;
 mod object;
+mod protect;
 mod request;
 mod respond;
 mod securing;

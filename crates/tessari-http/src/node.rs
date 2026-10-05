@@ -133,7 +133,13 @@ impl Node {
             rounds: Arc::clone(&self.rounds),
             wire: self.wire.clone(),
         });
-        let app = axum::Router::new().fallback(handle).with_state(shared);
+        let secured = self.secured.is_some();
+        let app = axum::Router::new()
+            .fallback(handle)
+            .with_state(shared)
+            .layer(axum::middleware::map_response(move |answer| async move {
+                crate::protect::headers(answer, secured)
+            }));
         match &self.secured {
             None => served(listening::Listening::new(listener), app, stop).await,
             Some(acceptor) => {

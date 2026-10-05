@@ -135,3 +135,25 @@ fn a_node_with_a_certificate_answers_no_request_in_the_clear() {
         String::from_utf8_lossy(&back)
     );
 }
+
+#[test]
+fn a_node_serving_tls_tells_a_browser_to_keep_using_it() {
+    // The half `console.rs` cannot ask: in the clear the header is absent, and
+    // over TLS it is present, so a browser that reached the console once over
+    // TLS never falls back to sending its token in the clear.
+    let (address, authority) = served();
+    let answered = over_tls(
+        &address,
+        &authority,
+        "GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+    );
+    let head = answered
+        .split("\r\n\r\n")
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    assert!(
+        head.contains("strict-transport-security: max-age=63072000"),
+        "{answered}"
+    );
+}

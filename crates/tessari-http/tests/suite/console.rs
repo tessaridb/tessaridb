@@ -2438,3 +2438,40 @@ fn a_peer_is_amended_by_its_row_and_never_sent_this_nodes_drain() {
         "the drawer has no apply or removal control, so this test read the wrong page"
     );
 }
+
+#[test]
+fn every_answer_tells_a_browser_not_to_frame_sniff_or_leak_it() {
+    // The console carries a session token, so a page that another site can
+    // frame, or whose content a browser may reinterpret, is a page that can be
+    // turned against the operator signed into it. Asked of the page, an asset,
+    // an API answer and a refusal: the headers are a property of the surface,
+    // not of the console's own routes.
+    let (_node, address) = node();
+    for path in ["/", "/console.js", "/health", "/no/such/route"] {
+        let (_, headers, _) = get(&address, path);
+        for (field, wanted) in [
+            ("x-content-type-options", "nosniff"),
+            ("x-frame-options", "DENY"),
+            ("referrer-policy", "no-referrer"),
+        ] {
+            assert_eq!(header(&headers, field), Some(wanted), "{path}: {field}");
+        }
+        let policy = header(&headers, "content-security-policy")
+            .unwrap_or_else(|| panic!("{path}: no content-security-policy"));
+        for directive in [
+            "default-src 'self'",
+            "frame-ancestors 'none'",
+            "object-src 'none'",
+            "base-uri 'none'",
+        ] {
+            assert!(policy.contains(directive), "{path}: {policy}");
+        }
+        // A node serving in the clear must not tell a browser to insist on TLS
+        // it cannot offer; `secured.rs` asks the other half.
+        assert_eq!(
+            header(&headers, "strict-transport-security"),
+            None,
+            "{path}"
+        );
+    }
+}
