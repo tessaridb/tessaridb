@@ -24,7 +24,11 @@ JSON in the language (G067).
   integer stays exact, the last duplicate key wins, `null` is `NULL`) and the writer the HTTP surface uses (keys
   in name order, a decimal quoted, a reference by its table's name, a `NONE` field left out). Text that is not one
   JSON value answers `NONE`.
-- **1553 conformance cases** define the language and run in the build.
+- **Containment.** `doc CONTAINS { customer: { city: 'Paris' } }` asks whether a document holds a sub-document:
+  every field asked for is there and contained, an array holds each element asked for in any order, anything else
+  is equal. With an array or a set on the left `CONTAINS` is still membership, and a document on the left — which
+  never matched before — is the only thing that changed.
+- **1574 conformance cases** define the language and run in the build.
 
 ## 0.27.2-beta — 2026-10-05
 

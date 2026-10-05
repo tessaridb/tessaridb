@@ -5262,6 +5262,34 @@ because both are asked, and neither is a spelling of the other. `IN` is the same
 question from the other end — `'urgent' IN tags` — because both read naturally
 in different sentences.
 
+**With a document on the left, `CONTAINS` asks containment**: does this document
+hold that sub-document.
+
+```
+SELECT * FROM orders WHERE doc CONTAINS { customer: { city: 'Paris' } };
+SELECT * FROM orders WHERE doc CONTAINS { status: 'paid', lines: [{ sku: 'b' }] };
+```
+
+The rule, all of it:
+
+- a document contains a document when **every field asked for is there** and its
+  value is contained — fields the document has and the question does not name do
+  not matter, so the empty document `{}` is contained by every document;
+- an array contains an array when **each element asked for is contained by some
+  element held** — order and repeats do not matter, and an element may itself be a
+  document asked for in part (`lines: [{ sku: 'b' }]`);
+- anything else is contained when it is **equal**, by the same equality `=` uses.
+
+What it deliberately is not: a single value asked for against an array is not
+contained — `{ tags: 'a' }` is not in `{ tags: ['a'] }` — because a value is not an
+array of one, here as in membership. A field asked for as `NULL` must be there
+and be `NULL`; one asked for as `NONE` is a field not asked for. And with an
+array or a set on the left `CONTAINS` is still membership, which is exact:
+`[{ a: 1, b: 2 }] CONTAINS { a: 1 }` is false. Something that is not a document,
+on either side, contains nothing.
+
+`IN` asks the same question from the other end, here too.
+
 ### A value that depends on a test
 
 ```
@@ -6435,6 +6463,7 @@ visible rather than folklore.
 | `path LIKE '%ada'`, `'%ada%'`, `'a_a%'`, `'ada%lace'` | scan |
 | `path ILIKE 'ada%'` | scan |
 | `path CONTAINS 'ada'`, `'ada' IN path` | scan |
+| `path CONTAINS { … }` (a document) | scan |
 | `path < 'ada'`, `path > 'ada'` | scan — an ordered index could serve this as a range, and that is not built yet |
 | `path = 'ada' OR <anything>` | scan |
 | `NOT (path = 'ada')` | scan |
