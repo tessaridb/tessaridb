@@ -11,9 +11,10 @@ built for exactness and for surviving a format change instead.
 
 ---
 
-## 1. The fifteen types
+## 1. The seventeen types
 
-Fixed by the milestone-1 scope.
+Fifteen were fixed by the milestone-1 scope; `geometry` and `regex` were added
+later, each with a tag of its own (§5), which is what adding a type means here.
 
 | Type | Holds |
 |---|---|
@@ -32,12 +33,12 @@ Fixed by the milestone-1 scope.
 | `object` | a map from field name to value |
 | `range` | a span between two values, either end open or closed |
 | `set` | a collection with no duplicates and no significant order |
+| `geometry` | a shape: a point, a line, a polygon, their multi forms, or a collection of them (§5.2) |
+| `regex` | a pattern, held rather than executed |
 
-Three types exist in the wider design and are deliberately absent: `geometry`,
-`file` and `regex`. Each is named here rather than merely missing, so that its
-absence reads as a decision instead of an oversight. `file` needs a bucket
-subsystem that does not exist; `regex` is a query-language concern before it is a
-storage one; `geometry` is deferred with the rest of its milestone.
+A `file` is not a type and never became one: a file is a record in a bucket, and
+its bytes are records too (`docs/tessariql.md` §6a), so nothing in a value names
+one.
 
 ## 2. Absent and null are different values
 
@@ -269,7 +270,7 @@ for them.
 
 | Decision | Status |
 |---|---|
-| The fifteen types | fixed for milestone 1; adding a sixteenth is additive |
+| The seventeen types | fixed; adding an eighteenth is additive — a new tag (§5) |
 | Type tags | **permanent** — never reused, never renumbered |
 | The cross-type rank order | **contract** — changing it is a data migration |
 | Numbers comparing semantically across kinds | **contract** |

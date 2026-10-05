@@ -13,6 +13,26 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.27.2-beta — 2026-10-05
+
+Ready-for-1.0 groundwork (G062). Nothing a statement, a client or a store sees changes.
+
+### Upgrade
+
+- **Nothing to do.** The on-disk format (5), the language, the wire protocol and the HTTP routes are unchanged.
+
+### Changed
+
+- **The format promise is tested for every release since 0.22.0-beta.** Stores written by 0.27.0-beta and
+  0.27.1-beta now join the read-back test, and a check fails when the list of released stores falls more than one
+  minor behind the build.
+- **The rolling-upgrade test tells builds apart by their release label.** It had compared a field only one release
+  pair differed in, and so could not check an upgrade from 0.25 onwards.
+- `docs/value-system.md` lists all seventeen types — `geometry` and `regex` were still described as absent.
+- The Dockerfile names the six variables the node reads for transport security and joining
+  (`TESSARIDB_TLS_CERT`, `_TLS_KEY`, `_REQUIRE_CLIENT_TLS`, `_TLS_AUTHORITY`, `_JOIN_TOKEN`, and the retired
+  `_CLIENT_PLAINTEXT`).
+
 ## 0.27.1-beta — 2026-10-05
 
 The code to the Rust canon after a full review (G060). Nothing a statement, a client

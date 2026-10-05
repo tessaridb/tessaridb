@@ -4258,15 +4258,21 @@ fn a_rolling_upgrade_across_one_minor_version_keeps_every_record() {
             written.push(key);
         }
     };
-    // Which build answers: only this one reports a peer's `region` (G057 C3),
-    // a field the previous minor version does not have — a version string
-    // alone can match when both are built under one label.
+    // Which build answers: the exact build each node reports. A field only
+    // this build had (`region`, G057 C3) told one release pair apart and then
+    // silently stopped telling any apart once the next release shipped it
+    // (G062 G6), so the release label is compared instead. An old binary built
+    // under this build's own label fails the check below, because an upgrade
+    // between two builds nobody can tell apart proves nothing.
     let this_build = |surface: &str| {
-        value_at(surface, "INFO FOR NODE;").is_ok_and(|report| report.contains("\"region\""))
+        value_at(surface, "INFO FOR NODE;")
+            .is_ok_and(|report| reported_build(&report) == Some(env!("CARGO_PKG_VERSION")))
     };
     assert!(
         UPGRADING.iter().all(|(surface, _)| {
-            value_at(surface, "INFO FOR NODE;").is_ok_and(|report| !report.contains("\"region\""))
+            value_at(surface, "INFO FOR NODE;").is_ok_and(|report| {
+                reported_build(&report).is_some_and(|build| build != env!("CARGO_PKG_VERSION"))
+            })
         }),
         "a node answered as this build, or not at all, before it was replaced"
     );
@@ -5215,6 +5221,14 @@ const PARTITIONED: &str = "DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMES
                            PARTITION BY region SPLIT AT 'de', 'fr';";
 
 /// One answer's value at `surface`, rendered, or the refusal.
+/// The `build` an `INFO FOR NODE` report names: the first quoted text after
+/// the key, whatever the value's debug spelling wraps it in.
+fn reported_build(report: &str) -> Option<&str> {
+    let (_, after) = report.split_once("\"build\"")?;
+    let (_, opened) = after.split_once('"')?;
+    opened.split_once('"').map(|(build, _)| build)
+}
+
 fn value_at(surface: &str, read: &str) -> Result<String, String> {
     let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
     let script = format!("USE NAMESPACE prod; USE DATABASE shop; {read}");
