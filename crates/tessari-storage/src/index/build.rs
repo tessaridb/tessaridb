@@ -12,8 +12,8 @@ use crate::store::Store;
 use crate::transaction::Transaction;
 use std::collections::{BTreeMap, BTreeSet};
 use tessari_encoding::{
-    IndexAddress, IndexValues, KeyKind, LogRecord, PostingKey, RecordValue, SearchSuffixKey,
-    SearchSurfaceKey, StoreKey, decode_payload,
+    FormatVersion, FormatVersionKey, IndexAddress, IndexValues, KeyKind, LogRecord, PostingKey,
+    RecordValue, SearchSuffixKey, SearchSurfaceKey, StoreKey, StoreValue, decode_payload,
 };
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest, WriteBatch};
 use tessari_types::RecordId;
@@ -121,6 +121,24 @@ pub(crate) fn build(
     }
 
     if definition.containment {
+        // The entries are a kind an older build does not know, and one that
+        // opened this store would read the catalog without the flag and take
+        // this index for an ordered one. So the store moves to the format that
+        // holds them in the same batch as the entries — on every replica, since
+        // this runs where the definition is applied — and only now, so a store
+        // that never declares one stays open to the builds before it.
+        let stamped = store
+            .backend()
+            .get(FormatVersionKey::keyspace(), &FormatVersionKey.encode())?
+            .map(|held| FormatVersion::decode(held.as_slice()))
+            .transpose()?;
+        if stamped.is_none_or(|held| held < FormatVersion::CONTAINMENT_INDEX) {
+            batch = batch.put(
+                FormatVersionKey::keyspace(),
+                FormatVersionKey.encode(),
+                FormatVersion::CONTAINMENT_INDEX.encode(),
+            );
+        }
         for (id, payload) in &rows {
             batch = contain(batch, &address, id, &decode_payload(payload)?, definition);
         }

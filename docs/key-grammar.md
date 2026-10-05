@@ -1140,7 +1140,7 @@ and is rewritten at open only where the row below says so.
 | `3` | the log is per range: a log key carries its home | rewritten: an old log key does not decode |
 | `4` | a record version carries its causal stamp — flag `0x04` | opened as is: a clear bit reads as an empty stamp |
 | `5` | a log key carries the writer that allocated it (G027 S2.2) | rewritten: an old and a new key differ in length |
-| `6` | a containment index's entries, key kind `0x44` (ADR-0116) | opened as is: no key or value already written changes |
+| `6` | a containment index's entries, key kind `0x44` (ADR-0116) | opened as is and keeps its stamp; stamped `6` when its first containment index is built |
 
 Format 5 also took values that arrived after it without a bump — among them the
 `expires` and `across` flag bits (§7.1) and system tables 26–29 (§9.1) — so a

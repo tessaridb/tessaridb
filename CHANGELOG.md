@@ -37,8 +37,9 @@ JSON in the language (G067).
 ### Upgrade
 
 - **The on-disk format moves to 6**, for the containment index's entries (key kind `0x44`). A store from
-  `0.22.0-beta` onwards opens and is not rewritten. A store this build creates is refused by `0.27.x` and earlier,
-  by name, rather than read without its containment index.
+  `0.22.0-beta` onwards opens, is not rewritten, and keeps its stamp — so `0.27.x` can still open it — until its
+  first containment index is built, which stamps it 6. A store this build creates, or one holding a containment
+  index, is refused by `0.27.x` and earlier, by name, rather than read without the index.
 
 ### Fixed
 

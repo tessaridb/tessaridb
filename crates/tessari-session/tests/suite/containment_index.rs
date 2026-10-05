@@ -351,3 +351,48 @@ fn the_index_reads_back_after_the_store_is_closed_and_opened() {
     assert_eq!(outcome.path(), Some(AccessPath::Index));
     assert_eq!(outcome.records().unwrap().len(), 1);
 }
+
+#[test]
+fn a_store_moves_to_format_six_only_when_its_first_containment_index_is_built() {
+    use tessari_encoding::{FormatVersion, FormatVersionKey, StoreValue};
+    use tessari_kv::WriteBatch;
+
+    let stamp = |backend: &Arc<dyn KvBackend>| {
+        backend
+            .get(FormatVersionKey::keyspace(), &FormatVersionKey.encode())
+            .unwrap()
+            .map(|held| FormatVersion::decode(held.as_slice()).unwrap().get())
+    };
+    let (backend, store) = memory();
+    drop(store);
+    // A store an older build wrote: format 5, which this build opens as is.
+    backend
+        .apply(WriteBatch::new().put(
+            FormatVersionKey::keyspace(),
+            FormatVersionKey.encode(),
+            FormatVersion::new(5).encode(),
+        ))
+        .unwrap();
+    let store = Store::open(Arc::clone(&backend)).unwrap();
+    let mut session = Session::new(&store);
+    session
+        .run(
+            "DEFINE NAMESPACE n; USE NAMESPACE n; DEFINE DATABASE d; USE DATABASE d;\n\
+             DEFINE COLLECTION notes; CREATE notes:1 = { doc: { a: 1 }, n: 1 };\n\
+             DEFINE INDEX by_n ON notes FIELDS n;",
+        )
+        .unwrap();
+    assert_eq!(
+        stamp(&backend),
+        Some(5),
+        "an ordinary index moved the format"
+    );
+    session
+        .run("DEFINE INDEX by_doc ON notes FIELDS doc CONTAINS;")
+        .unwrap();
+    assert_eq!(
+        stamp(&backend),
+        Some(6),
+        "a containment index left the format at 5"
+    );
+}

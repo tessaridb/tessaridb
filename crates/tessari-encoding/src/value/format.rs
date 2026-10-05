@@ -55,6 +55,16 @@ impl FormatVersion {
     /// entries it cannot read.
     pub const CURRENT: Self = Self(6);
 
+    /// The first format whose stores may hold a containment index's entries
+    /// (ADR-0116 D4).
+    ///
+    /// A store below it is opened **as is** and keeps its stamp — so a build
+    /// before it can still open a store this one merely read — and is stamped
+    /// here when its first containment index is built, the moment a build that
+    /// cannot read those entries must start refusing it. Named for the reason
+    /// [`Self::HOMED_LOG`] is.
+    pub const CONTAINMENT_INDEX: Self = Self(6);
+
     /// The first format whose log keys carry a home.
     ///
     /// Named rather than written as a literal at the one place that compares
