@@ -22,8 +22,8 @@ written in Rust, for AI applications and the products built around them.
 </div>
 
 > [!NOTE]
-> **TessariDB is a beta — `0.27.2-beta`.** It is released and tested, published as
-> a container image (`tessaridb/tessaridb:0.27.2-beta`; the image tracks the
+> **TessariDB is a beta — `0.28.0-beta`.** It is released and tested, published as
+> a container image (`tessaridb/tessaridb:0.28.0-beta`; the image tracks the
 > larger releases), and the licence makes production use free, including inside
 > a commercial company.
 > What a beta does not promise yet is permanence of the language and the wire:
