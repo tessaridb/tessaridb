@@ -43,6 +43,7 @@ mod consumers;
 mod containment_index;
 mod coordinated;
 mod counters;
+mod demand_classes;
 mod descending;
 mod describing_kinds;
 mod differential;
