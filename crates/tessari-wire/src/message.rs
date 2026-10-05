@@ -88,6 +88,17 @@ pub struct Request {
     pub parameters: Parameters,
 }
 
+/// A node wipes the password a request carried when the request is dropped, so
+/// it does not outlive the sign-in it was sent for in a freed allocation.
+#[cfg(feature = "server")]
+impl Drop for Request {
+    fn drop(&mut self) {
+        if let Some((_, password)) = &mut self.credentials {
+            zeroize::Zeroize::zeroize(password);
+        }
+    }
+}
+
 /// Written by hand rather than derived, because the derived one prints the
 /// password.
 ///

@@ -222,6 +222,12 @@ pub enum Error {
     #[error("the connection ended mid-frame")]
     Truncated,
 
+    /// A frame started and then nothing more of it arrived for
+    /// `FRAME_STALL_SECONDS` — distinct from [`Self::Truncated`], because the
+    /// connection is still open and it is this node that gave up on it.
+    #[error("a frame started and then stopped arriving; the connection was given up on")]
+    Stalled,
+
     /// A body that does not hold what it claims.
     #[error("a frame's body is not the shape its own header says")]
     Malformed,

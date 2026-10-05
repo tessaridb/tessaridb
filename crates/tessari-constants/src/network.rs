@@ -126,3 +126,14 @@ pub const SOCKET_MAX_MESSAGE_BYTES: usize = 64 * 1024;
 /// the wire's own ceiling still checks every frame inside, so nothing larger
 /// is ever needed.
 pub const WIRE_SOCKET_MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024 + 5;
+
+/// How long a frame that has started may go without another byte arriving.
+///
+/// Between frames a connection may be idle for as long as it likes: a pooled
+/// session and a subscriber both sit quietly for hours, and that is what they
+/// are for. Inside a frame it is different — the header announced bytes that
+/// have not come, and a peer that stops there holds one of the surface's places
+/// for nothing. Measured per read rather than per frame, so a 16 MiB body on a
+/// slow link is never cut while it keeps arriving; sixty seconds is the stall
+/// nginx allows between two reads of a request body (G061, R-01).
+pub const FRAME_STALL_SECONDS: u64 = 60;

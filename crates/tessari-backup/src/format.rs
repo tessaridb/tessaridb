@@ -202,8 +202,13 @@ impl Frame {
         ));
         let expected = u32::from_be_bytes(checked.try_into().map_err(|_| Error::NotABackup)?);
 
-        let mut body = vec![0_u8; length];
-        if !matches!(fill(input, &mut body)?, Filled::Whole) {
+        // Read as it arrives rather than allocated as declared: the length is the
+        // file's claim, and a file that claims 4 GiB in 190 bytes must cost what
+        // it holds, not what it says (G061, found by fuzzing).
+        let mut body = Vec::new();
+        let wanted = u64::try_from(length).unwrap_or(u64::MAX);
+        let arrived = input.by_ref().take(wanted).read_to_end(&mut body)?;
+        if arrived < length {
             return Ok(Some(Self::Cut));
         }
         if check::crc32(&body) != expected {
@@ -236,4 +241,49 @@ pub(crate) fn fill(input: &mut impl Read, into: &mut [u8]) -> std::io::Result<Fi
         held = held.saturating_add(read);
     }
     Ok(Filled::Whole)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::panic)]
+
+    use super::Frame;
+
+    /// A reader holding a few bytes that refuses to be handed a buffer far
+    /// larger than anything it could fill — the shape of a reader allocating
+    /// what a file *says* rather than what it holds.
+    struct Short<'a> {
+        held: &'a [u8],
+    }
+
+    impl std::io::Read for Short<'_> {
+        fn read(&mut self, into: &mut [u8]) -> std::io::Result<usize> {
+            assert!(
+                into.len() <= 1 << 20,
+                "handed a {} byte buffer for {} bytes that exist",
+                into.len(),
+                self.held.len()
+            );
+            let taken = into.len().min(self.held.len());
+            let (now, rest) = self.held.split_at(taken);
+            into.get_mut(..taken)
+                .unwrap_or_default()
+                .copy_from_slice(now);
+            self.held = rest;
+            Ok(taken)
+        }
+    }
+
+    #[test]
+    fn a_record_claiming_more_than_the_file_holds_is_a_cut_and_allocates_what_arrived() {
+        // Found by fuzzing (G061 C3): a 190-byte file whose record frame claimed
+        // 4 GiB made `--verify` allocate it before reading a byte of it.
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&u32::MAX.to_be_bytes());
+        frame.extend_from_slice(&7_u64.to_be_bytes());
+        frame.extend_from_slice(&0_u32.to_be_bytes());
+        frame.extend_from_slice(b"only these bytes");
+        let read = Frame::record(&mut Short { held: &frame });
+        assert!(matches!(read, Ok(Some(Frame::Cut))), "{read:?}");
+    }
 }

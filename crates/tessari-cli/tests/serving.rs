@@ -704,6 +704,14 @@ fn credentials(
     credentials_fingerprinted(minted, node, into).0
 }
 
+/// Write a private key the way an operator must: readable by its owner alone,
+/// or the node refuses it.
+fn write_private_key(path: impl AsRef<std::path::Path>, key: impl AsRef<[u8]>) {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::write(&path, key).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+}
+
 /// [`credentials`], and the fingerprint of the certificate it wrote.
 fn credentials_fingerprinted(
     minted: &Minted,
@@ -713,7 +721,7 @@ fn credentials_fingerprinted(
     let (leaf, key, fingerprint) = minted.issue_fingerprinted(node);
     let at = |name: &str| into.join(name).to_string_lossy().into_owned();
     std::fs::write(at("leaf.pem"), leaf).unwrap();
-    std::fs::write(at("key.pem"), key).unwrap();
+    write_private_key(at("key.pem"), key);
     std::fs::write(at("ca.pem"), minted.authority.pem()).unwrap();
     ((at("leaf.pem"), at("key.pem"), at("ca.pem")), fingerprint)
 }
@@ -1165,7 +1173,7 @@ fn a_node_with_a_certificate_answers_at_over_tls_and_never_in_the_clear() {
         .unwrap();
     let at = |name: &str| directory.path().join(name).to_string_lossy().into_owned();
     std::fs::write(at("cert.pem"), leaf.pem()).unwrap();
-    std::fs::write(at("key.pem"), leaf_key.serialize_pem()).unwrap();
+    write_private_key(at("key.pem"), leaf_key.serialize_pem());
     std::fs::write(at("ca.pem"), minted.authority.pem()).unwrap();
 
     let _node = Running(
@@ -1225,7 +1233,7 @@ fn a_renewed_client_certificate_is_presented_without_a_restart() {
     };
     let (chain, key) = issue(&first);
     std::fs::write(at("cert.pem"), chain).unwrap();
-    std::fs::write(at("key.pem"), key).unwrap();
+    write_private_key(at("key.pem"), key);
     std::fs::write(at("first.pem"), first.authority.pem()).unwrap();
     std::fs::write(at("second.pem"), second.authority.pem()).unwrap();
 
@@ -1261,7 +1269,7 @@ fn a_renewed_client_certificate_is_presented_without_a_restart() {
 
     let (chain, key) = issue(&second);
     std::fs::write(at("cert.pem"), chain).unwrap();
-    std::fs::write(at("key.pem"), key).unwrap();
+    write_private_key(at("key.pem"), key);
     // The node looks every two seconds; ten is five looks.
     let deadline = Instant::now() + Duration::from_secs(10);
     while !answered("second.pem") {
@@ -6885,7 +6893,7 @@ fn started_arg(cluster: &Three, node: usize, flag: &str) -> std::path::PathBuf {
 fn rotated(cluster: &Three, node: usize, times: usize) -> String {
     let (leaf, key, fingerprint) = cluster.minted.issue_fingerprinted(cluster.ids[node]);
     std::fs::write(started_arg(cluster, node, "--cluster-credential"), leaf).unwrap();
-    std::fs::write(started_arg(cluster, node, "--cluster-key"), key).unwrap();
+    write_private_key(started_arg(cluster, node, "--cluster-key"), key);
     let began = Instant::now();
     while std::fs::read_to_string(&cluster.logs[node])
         .map(|said| said.matches("certificate at").count() < times)

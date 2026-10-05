@@ -1,0 +1,67 @@
+[package]
+name = "tessaridb-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "BUSL-1.1"
+description = "Fuzz targets for every parser a node runs on bytes it did not write (G061 C3)"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace, so the engine's `cargo test --workspace` never builds it and
+# a fuzz dependency never reaches the engine's lockfile.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+tessari-ql = { path = "../crates/tessari-ql" }
+tessari-types = { path = "../crates/tessari-types" }
+tessari-encoding = { path = "../crates/tessari-encoding" }
+tessari-backup = { path = "../crates/tessari-backup" }
+tessari-wire = { path = "../crates/tessari-wire", features = ["fuzzing"] }
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "tessariql"
+path = "fuzz_targets/tessariql.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_client"
+path = "fuzz_targets/wire_client.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_peer"
+path = "fuzz_targets/wire_peer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json"
+path = "fuzz_targets/json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "value_codec"
+path = "fuzz_targets/value_codec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "backup"
+path = "fuzz_targets/backup.rs"
+test = false
+doc = false
+bench = false

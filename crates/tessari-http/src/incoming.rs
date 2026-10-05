@@ -90,3 +90,29 @@ pub(crate) async fn read(headers: &HeaderMap, body: Body) -> Result<Vec<u8>, Unr
     }
     Ok(held)
 }
+
+/// Read a body a route does not take, and throw it away.
+///
+/// RFC 9112 §9.6: a server that closes a connection with request bytes still
+/// unread makes its kernel answer them with a reset, and a client still reading
+/// loses the response it was already sent (Q-935). So a body nobody wants is
+/// read anyway, under the same ceiling a wanted one is held to; past the ceiling
+/// it is left, as a body that size is refused on every route.
+pub(crate) async fn discard(headers: &HeaderMap, body: Body) {
+    let declared = headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    let ceiling = u64::try_from(HTTP_MAX_BODY_BYTES).unwrap_or(u64::MAX);
+    if declared.is_some_and(|length| length > ceiling) {
+        return;
+    }
+    let mut seen = 0_usize;
+    let mut chunks = body.into_data_stream();
+    while let Some(Ok(chunk)) = chunks.next().await {
+        seen = seen.saturating_add(chunk.len());
+        if seen > HTTP_MAX_BODY_BYTES {
+            return;
+        }
+    }
+}

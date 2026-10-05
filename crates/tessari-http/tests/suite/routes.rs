@@ -1225,3 +1225,71 @@ fn the_certificate_a_surface_presents_says_when_it_expires_and_only_to_an_operat
         "{left} seconds left, expected about {expected}"
     );
 }
+
+#[test]
+fn an_answer_given_before_the_body_was_needed_still_reaches_the_client() {
+    // RFC 9112 §9.6: a server that closes with request bytes unread makes its
+    // kernel send a reset, and a client still reading loses the answer it was
+    // sent. A route that takes no body — here a path nothing serves — must
+    // therefore still read the body it was sent before the connection closes.
+    // Measured before the fix: one in two of these lost its answer (Q-935).
+    let (_node, address) = node();
+    let body = vec![b'x'; 1024 * 1024];
+    for attempt in 0..20 {
+        let mut stream = TcpStream::connect(&address).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        write!(
+            stream,
+            "PUT /not/a/route/at/all HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\n\
+             Connection: close\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        // Half first, then a pause, so the node can answer before the rest is
+        // sent — the order that loses the answer.
+        let (first, rest) = body.split_at(body.len() / 2);
+        stream.write_all(first).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        drop(stream.write_all(rest));
+        let mut answer = Vec::new();
+        match stream.read_to_end(&mut answer) {
+            Ok(_) => assert!(
+                answer.starts_with(b"HTTP/1.1 404"),
+                "attempt {attempt}: {}",
+                String::from_utf8_lossy(&answer)
+            ),
+            Err(failure) => panic!("attempt {attempt}: the answer was lost: {failure}"),
+        }
+    }
+}
+
+#[test]
+fn the_vault_routes_ask_a_closed_store_for_a_credential_and_refuse_a_viewer() {
+    // The vault surface reaches the store's key, so it is held to the rule every
+    // route is: nobody is answered 401 with a challenge, a viewer — who holds no
+    // `operate` — 403 on every act, and a wrong password 401 again.
+    let (_node, address) = closed();
+    let passphrases = r#"{"current": "a", "new": "b"}"#;
+    // `GET /vault` reports only whether secrets can be opened, so any signed-in
+    // caller may ask (ADR-0092 D1): a viewer is answered, nobody is not.
+    for (who, credential, wanted) in [("nobody", None, 401), ("a viewer", Some(GRACE), 200)] {
+        let (status, _, said) = send(&address, "GET", "/vault", "", credential);
+        assert_eq!(status, wanted, "GET /vault by {who}: {said}");
+    }
+    for (method, path, body) in [
+        ("POST", "/vault/seal", ""),
+        ("POST", "/vault/unseal", "a passphrase"),
+        ("POST", "/vault/passphrase", passphrases),
+    ] {
+        for (who, credential, wanted) in [
+            ("nobody", None, 401),
+            ("a wrong password", Some(WRONG), 401),
+            ("a viewer", Some(GRACE), 403),
+        ] {
+            let (status, _, said) = send(&address, method, path, body, credential);
+            assert_eq!(status, wanted, "{method} {path} by {who}: {said}");
+        }
+    }
+}

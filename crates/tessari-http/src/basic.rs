@@ -75,12 +75,30 @@ fn bearer(header: &str) -> Option<&str> {
 }
 
 /// The name and password a request presents, if it presents any.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Credentials {
     /// The user name.
     pub(crate) name: String,
     /// The password, in the clear, for as long as it takes to verify it.
     pub(crate) password: String,
+}
+
+/// Wiped when the request is done with it, so the password does not outlive the
+/// sign-in in a freed allocation (G061, R-06).
+impl Drop for Credentials {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.password);
+    }
+}
+
+/// Written by hand, because the derived one prints the password: who a request
+/// claimed to be is worth a log line, and the secret never is.
+impl std::fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Credentials")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Read credentials out of an `Authorization` header value.
@@ -94,14 +112,21 @@ pub(crate) fn read(header: &str) -> Option<Credentials> {
         .strip_prefix("Basic ")
         .or_else(|| header.strip_prefix("basic "))?;
     let decoded = decode(payload.trim())?;
-    let text = String::from_utf8(decoded).ok()?;
+    let mut text = match String::from_utf8(decoded) {
+        Ok(text) => text,
+        Err(refused) => {
+            zeroize::Zeroize::zeroize(&mut refused.into_bytes());
+            return None;
+        }
+    };
     // The first colon separates them, because a name may not contain one and a
     // password very much may.
-    let (name, password) = text.split_once(':')?;
-    Some(Credentials {
+    let read = text.split_once(':').map(|(name, password)| Credentials {
         name: name.to_owned(),
         password: password.to_owned(),
-    })
+    });
+    zeroize::Zeroize::zeroize(&mut text);
+    read
 }
 
 /// The sextet a base64 character stands for.
@@ -161,6 +186,19 @@ mod tests {
     #![allow(clippy::panic)]
 
     use super::{Presented, decode, presented, read};
+
+    #[test]
+    fn printing_a_credential_shows_who_and_never_the_password() {
+        // "ada:correct horse" in base64.
+        let header = "Basic YWRhOmNvcnJlY3QgaG9yc2U=";
+        for printed in [
+            format!("{:?}", read(header).expect("well formed")),
+            format!("{:?}", presented(Some(header))),
+        ] {
+            assert!(printed.contains("ada"), "{printed}");
+            assert!(!printed.contains("correct horse"), "{printed}");
+        }
+    }
 
     #[test]
     fn each_scheme_is_read_as_the_claim_it_makes() {

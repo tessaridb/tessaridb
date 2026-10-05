@@ -274,7 +274,14 @@ impl Joining {
     /// `<node-id>@<host:port>`.
     pub fn read(told: &Told) -> Result<Self> {
         let chain = slurp(&told.chain, CHAIN)?;
-        let key = slurp(&told.key, KEY)?;
+        // Refused before it is read when others on the host may read it.
+        let key = tessari_serve::tls::read_private_key(&told.key).map_err(|reason| {
+            Error::CredentialUnreadable {
+                part: KEY,
+                path: shown(&told.key),
+                reason,
+            }
+        })?;
         let authority = slurp(&told.authority, AUTHORITY)?;
         Self::parse(
             CredentialFile {

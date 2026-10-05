@@ -10,6 +10,7 @@
 //! setting that widens either, because a legacy version enabled for one old
 //! client is offered to every client, including one that downgrades on purpose.
 
+use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
 pub use crate::error::Refused;
@@ -141,6 +142,49 @@ fn certified(chain: Pem<'_>, key: Pem<'_>) -> Result<Arc<CertifiedKey>, Refused>
     let certified = CertifiedKey::new(certificates, signing);
     certified.keys_match().map_err(mismatched)?;
     Ok(Arc::new(certified))
+}
+
+/// A private key file's bytes, refused when anybody but its owner may read it.
+///
+/// The rule a private SSH key follows: a key that every account on the host can
+/// read authenticates this node to nobody who can log in to it. Checked before
+/// the bytes are read, so a refused key is never held in memory. Off Unix there
+/// is no mode to check.
+///
+/// One allowance, PostgreSQL's: a file **owned by root** may also be readable by
+/// its group. That is how an orchestrator mounts a secret for a process running
+/// as another user — root owns it, the process's group may read it — and refusing
+/// it would leave no way to hand this node a key there.
+///
+/// # Errors
+///
+/// The file cannot be read, or its group or others may read it — the message
+/// names the mode and the fix.
+pub fn read_private_key(path: &Path) -> Result<Vec<u8>, String> {
+    let metadata = std::fs::metadata(path).map_err(|why| why.to_string())?;
+    owner_only(&metadata)?;
+    std::fs::read(path).map_err(|why| why.to_string())
+}
+
+#[cfg(unix)]
+fn owner_only(metadata: &std::fs::Metadata) -> Result<(), String> {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    let mode = metadata.permissions().mode();
+    let others = mode & 0o007 != 0;
+    let group = mode & 0o070 != 0 && metadata.uid() != 0;
+    if others || group {
+        Err(format!(
+            "may be read by others (mode {:o}); `chmod 600` it",
+            mode & 0o777
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(unix))]
+fn owner_only(_: &std::fs::Metadata) -> Result<(), String> {
+    Ok(())
 }
 
 /// The certificates a client trusts a node by: every certificate in the file.
@@ -294,7 +338,7 @@ fn days_since_epoch(year: i64, month: i64, day: i64) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Credential, Pem, Refused, authority, not_after};
+    use super::{Credential, Pem, Refused, authority, not_after, read_private_key};
 
     /// A self-signed leaf for `localhost`, minted here so no key is ever kept.
     fn minted() -> (String, String) {
@@ -308,6 +352,41 @@ mod tests {
             bytes: bytes.as_bytes(),
             path,
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_private_key_others_on_the_host_may_read_is_refused_and_one_only_its_owner_reads_is_taken()
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let (_, key) = minted();
+        let file = tempfile::NamedTempFile::new().expect("a file");
+        std::fs::write(file.path(), &key).expect("written");
+
+        for (mode, shown) in [(0o644, "644"), (0o640, "640"), (0o604, "604")] {
+            std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(mode))
+                .expect("chmod");
+            let refused = read_private_key(file.path()).expect_err("readable by others");
+            assert!(
+                refused.contains(shown) && refused.contains("chmod 600"),
+                "{refused}"
+            );
+        }
+
+        std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o600))
+            .expect("chmod");
+        assert_eq!(
+            read_private_key(file.path()).expect("private"),
+            key.as_bytes()
+        );
+    }
+
+    #[test]
+    fn a_private_key_that_is_not_there_says_so() {
+        let refused = read_private_key(std::path::Path::new("/nonexistent/key.pem"))
+            .expect_err("no such file");
+        assert!(!refused.is_empty());
     }
 
     #[test]

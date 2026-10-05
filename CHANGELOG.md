@@ -13,6 +13,44 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.29.0-beta — 2026-10-05
+
+A security review (G061): a threat model, a refusal test for every surface, six parsers fuzzed, the supply chain
+audited, and what they found fixed.
+
+### Changed
+
+- **A private key file anybody else may read is refused.** `--tls-key` and `--cluster-key` (and their
+  environment variables) name a file that must be readable by its owner alone; a node given one its group or
+  others may read refuses to start, naming the file, its mode and `chmod 600`. A file owned by root may also be
+  readable by its group, which is how an orchestrator mounts a secret for a process running as another user.
+- **Every HTTP answer tells a browser what it may do with it**: a content policy (`default-src 'self'`, no
+  framing by another site), `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy:
+  no-referrer`, and over TLS `Strict-Transport-Security`. The console can no longer be framed by another page.
+- **A frame that stops arriving is given up on.** A wire or peer connection may stay idle between frames for as
+  long as it likes; once a frame has started, each part of it must arrive within 60 seconds.
+
+### Fixed
+
+- **A backup file could make `--verify` or a restore allocate whatever its record claimed** — 190 bytes claiming
+  4 GiB took 3 GB. A record is now read as it arrives. Found by fuzzing.
+- **An answer could be lost to a connection reset** when a route that takes no body answered before the body was
+  sent. The body is now read and thrown away, under the same 16 MiB ceiling.
+- **The password in an HTTP Basic credential and in a WebSocket follow request was printed by `Debug`.** Both are
+  redacted, and a password or vault passphrase a node received is wiped from memory when the request is done.
+- The container image takes Debian's security updates when it is built.
+
+### Security
+
+- Report a vulnerability to [security@tessaridb.com](mailto:security@tessaridb.com); `SECURITY.md` says how.
+- Fuzz targets for the language, client and peer frames, JSON, the value codec and the backup verifiers live in
+  `fuzz/` (`cargo +nightly fuzz run <target>`).
+
+### Upgrade
+
+- **Check the mode of your TLS and cluster key files before starting this release**: `chmod 600` them, or leave
+  them owned by root with mode `640`/`440`. A key mounted with mode `644` stops the node from starting.
+
 ## 0.28.0-beta — 2026-10-05
 
 JSON in the language (G067).
