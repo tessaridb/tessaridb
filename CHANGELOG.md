@@ -13,6 +13,43 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.30.0-beta — 2026-10-05
+
+A refusal says what to do next (G064, ADR-0117).
+
+### Added
+
+- **Every refusal carries a class** — `invalid`, `unauthenticated`, `forbidden`, `throttled`, `elsewhere`,
+  `retry`, `conflict`, `unavailable` or `internal` — named for what the caller should do. The message stays the
+  store's own words and still changes between releases; the class is what code branches on, and the set is
+  closed for 1.x: a new refusal joins an existing class.
+- **Wire protocol 1.3.** A client whose greeting says minor 3 or later receives one class byte before the words
+  of a Refusal frame. A client of an older minor receives the words alone, exactly as before.
+- **Every HTTP error body names its class** in a new `"code"` field beside `"error"`. Nothing was removed.
+- The five clients `0.9.0` expose the class on their refusal error, read `unknown` for a byte or word they do
+  not know, and read words alone from an older node.
+
+### Changed
+
+- **The HTTP status of a refusal now follows its class**, so the two surfaces cannot disagree:
+  `invalid` 400, `unauthenticated` 401, `forbidden` 403, `throttled` 429, `elsewhere` 307, `retry` and
+  `conflict` 409, `unavailable` 503, `internal` 500. Where that moved a status:
+  - a refusal from the storage layer used to answer `409` whatever its cause; it now answers `400` for a value
+    the store will not take, `503` for a store that is not ready or has no leadership, `500` for damaged data or
+    a format this build cannot read, and still `409` for a conflict or a busy store;
+  - `NoBackupFolder` answers `503` (was `409`): the request was fine and the node was started without a folder;
+  - a held lock, an unmet condition, an acknowledgement that did not arrive in time, and an event, search or
+    consumer group that already exists answer `409` (were `400`);
+  - a node that may not write, a majority it cannot reach, no leader known, a commit across leaders on a node
+    with no peers, no copy within the staleness bound, and a split table this node does not hold or cannot
+    gather answer `503` (were `400`);
+  - a token the node could not issue answers `500` (was `400`).
+
+### Upgrade
+
+- A client that branched on `409` for every storage refusal should branch on the class, or on the new statuses
+  above. Clients of earlier minors keep working unchanged on the wire.
+
 ## 0.29.0-beta — 2026-10-05
 
 A security review (G061): a threat model, a refusal test for every surface, six parsers fuzzed, the supply chain
