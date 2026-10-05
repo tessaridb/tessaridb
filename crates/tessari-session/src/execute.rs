@@ -472,6 +472,7 @@ impl Session<'_> {
                 search,
                 costs,
                 spatial,
+                containment,
                 vector,
                 quantized,
                 if_not_exists,
@@ -484,6 +485,7 @@ impl Session<'_> {
                     unique: *unique,
                     search: *search,
                     spatial: *spatial,
+                    containment: *containment,
                     quantized: *quantized,
                     vector: match vector {
                         Some(named) => {

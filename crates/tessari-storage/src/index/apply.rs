@@ -75,6 +75,32 @@ pub(super) fn apply_one(
         return Ok(batch);
     }
 
+    if definition.containment {
+        // Both sides enumerate with the same function, for the reason the
+        // spatial branch above gives: an orphan pair here is a record offered as
+        // a candidate for a document it no longer holds — caught by the re-test,
+        // but a cost no write ever repairs.
+        if let Some(bytes) = previous {
+            batch = uncontain(
+                batch,
+                &address,
+                &mutation.id,
+                &decode_payload(bytes)?,
+                definition,
+            );
+        }
+        if let RecordValue::Present(payload) = mutation.value.value() {
+            batch = contain(
+                batch,
+                &address,
+                &mutation.id,
+                &decode_payload(payload)?,
+                definition,
+            );
+        }
+        return Ok(batch);
+    }
+
     if definition.search || definition.engine.is_some() {
         let analyzer = analyzer_for(definition, analyzers, named);
         // An unscored index keeps no collection statistics (ADR-0100 D4): it

@@ -215,6 +215,11 @@ pub(crate) fn described_index(index: &IndexDefinition) -> Value {
     if let Some(distance) = index.vector {
         described.insert("vector".to_owned(), Value::from(distance.name()));
     }
+    // Written only on a containment index, so every other index's report keeps
+    // the shape it always had.
+    if index.containment {
+        described.insert("contains".to_owned(), Value::Bool(true));
+    }
     described.extend(tokenizer_report(index));
     Value::Object(described)
 }

@@ -23,6 +23,7 @@
 //! entry that describes it, which matters exactly when something has gone wrong
 //! and an operator is looking at bytes.
 
+mod containment;
 mod posting;
 mod quantized;
 mod search;
@@ -38,6 +39,7 @@ use crate::kind::KeyKind;
 use crate::order::{KeyReader, KeyWriter};
 use crate::record_id;
 use crate::value::{StoreValue, split_header, with_header};
+pub use containment::ContainmentKey;
 use posting::take_values;
 pub use posting::{Located, Posting};
 pub use quantized::{QuantizedVector, StoredVector};

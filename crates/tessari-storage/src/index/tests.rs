@@ -18,6 +18,7 @@ fn definition() -> IndexDefinition {
         quantized: false,
         vector: None,
         spatial: false,
+        containment: false,
         costs: crate::catalog::SearchCosts::default(),
         engine: None,
         tokenizer: None,

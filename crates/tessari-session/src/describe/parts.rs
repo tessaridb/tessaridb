@@ -81,7 +81,12 @@ pub(crate) fn write_index(
         .collect::<Vec<_>>()
         .join(", ");
     let _ = write!(script, "DEFINE INDEX {name} ON {table} FIELDS {projected}");
-    match (index.unique, index.search, index.spatial, index.vector) {
+    match (
+        index.unique,
+        index.search,
+        index.spatial || index.containment,
+        index.vector,
+    ) {
         (false, false, false, None) => {}
         (true, false, false, None) => script.push_str(" UNIQUE"),
         (false, true, false, None) => {
@@ -98,6 +103,12 @@ pub(crate) fn write_index(
                 script.push_str(" NO SCORE");
             }
         }
+        (false, false, true, None) if index.spatial && index.containment => {
+            return Err(Unwritable::at(format!(
+                "index `{name}` carries more than one kind"
+            )));
+        }
+        (false, false, true, None) if index.containment => script.push_str(" CONTAINS"),
         (false, false, true, None) => script.push_str(" SPATIAL"),
         (false, false, false, Some(distance)) => {
             let _ = write!(script, " VECTOR {}", distance.name());

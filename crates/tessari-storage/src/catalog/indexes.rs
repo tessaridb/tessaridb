@@ -120,6 +120,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             Some("SPATIAL")
         } else if shape.vector.is_some() {
             Some("VECTOR")
+        } else if shape.containment {
+            Some("CONTAINS")
         } else {
             None
         };
@@ -161,6 +163,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             quantized: shape.quantized,
             vector: shape.vector,
             spatial: shape.spatial,
+            containment: shape.containment,
             costs: shape.costs,
             tokenizer: (shape.search || engine.is_some())
                 .then_some(tessari_types::TOKENIZER_GENERATION),

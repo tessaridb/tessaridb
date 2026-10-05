@@ -56,6 +56,7 @@ pub(crate) fn kept(index: &IndexDefinition) -> bool {
     !index.unique
         && !index.search
         && !index.spatial
+        && !index.containment
         && index.vector.is_none()
         && index.engine.is_none()
 }

@@ -18,6 +18,7 @@ mod assertion;
 mod calendar;
 mod condition;
 mod conflict_policy;
+pub mod containment;
 mod edits;
 mod field_kind;
 mod float_order;

@@ -6,8 +6,8 @@ use crate::error::{Error, Result};
 use crate::store::Store;
 use std::collections::BTreeSet;
 use tessari_encoding::{
-    IndexAddress, IndexTarget, IndexValues, NoPayload, SecondaryIndexKey, SpatialExtent,
-    SpatialIndexKey, StoreKey, StoreValue, UniqueIndexKey,
+    ContainmentKey, IndexAddress, IndexTarget, IndexValues, NoPayload, SecondaryIndexKey,
+    SpatialExtent, SpatialIndexKey, StoreKey, StoreValue, UniqueIndexKey,
 };
 use tessari_geo::{Bounds, Cell};
 use tessari_kv::{Key, Keyspace, WriteBatch, WriteOp};
@@ -98,6 +98,60 @@ pub(crate) fn remove(
         let key = SecondaryIndexKey::new(*address, values.clone(), id.clone());
         batch.delete(SecondaryIndexKey::keyspace(), key.encode())
     }
+}
+
+/// The (path, leaf) pairs one record's indexed document holds, each as the two
+/// index values of one containment entry (ADR-0116 D4).
+///
+/// The one enumeration both sides of a write use, so a record that kept a leaf
+/// writes back the key it already had and one that lost it leaves none behind.
+pub(crate) fn containment_pairs(definition: &IndexDefinition, record: &Value) -> Vec<IndexValues> {
+    definition
+        .fields
+        .first()
+        .and_then(|field| field.resolve(record))
+        .map(|held| {
+            tessari_types::containment::held_pairs(held)
+                .iter()
+                .map(|pair| IndexValues::of(pair))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Every pair of one record's document, written into `batch`.
+pub(crate) fn contain(
+    mut batch: WriteBatch,
+    address: &IndexAddress,
+    id: &RecordId,
+    record: &Value,
+    definition: &IndexDefinition,
+) -> WriteBatch {
+    for values in containment_pairs(definition, record) {
+        batch = batch.put(
+            ContainmentKey::keyspace(),
+            ContainmentKey::new(*address, values, id.clone()).encode(),
+            NoPayload.encode(),
+        );
+    }
+    batch
+}
+
+/// Every pair of one record's document, deleted from `batch`.
+pub(crate) fn uncontain(
+    mut batch: WriteBatch,
+    address: &IndexAddress,
+    id: &RecordId,
+    record: &Value,
+    definition: &IndexDefinition,
+) -> WriteBatch {
+    for values in containment_pairs(definition, record) {
+        batch = batch.delete(
+            ContainmentKey::keyspace(),
+            ContainmentKey::new(*address, values, id.clone()).encode(),
+        );
+    }
+    batch
 }
 
 /// Every cell of one record's geometry, written into `batch`.

@@ -1,8 +1,8 @@
 //! Building an index over what a table already holds, and clearing one.
 
 use super::{
-    Delta, Moved, Pending, analysed, analyzer_for, analyzers_named, analyzers_on, covering_of,
-    insert, lengthen, place_cells, project, projected_vector,
+    Delta, Moved, Pending, analysed, analyzer_for, analyzers_named, analyzers_on, contain,
+    covering_of, insert, lengthen, place_cells, project, projected_vector,
 };
 use crate::catalog::IndexDefinition;
 use crate::covering;
@@ -120,6 +120,13 @@ pub(crate) fn build(
         return Ok(covering::measure(batch, &address, &placed));
     }
 
+    if definition.containment {
+        for (id, payload) in &rows {
+            batch = contain(batch, &address, id, &decode_payload(payload)?, definition);
+        }
+        return Ok(batch);
+    }
+
     if definition.search || definition.engine.is_some() {
         let declared = analyzers_on(view, definition.table)?;
         let named = if definition.engine.is_some() {
@@ -232,6 +239,7 @@ pub(crate) fn clear(
         KeyKind::SearchSurface,
         KeyKind::IndexStatistics,
         KeyKind::IndexChanges,
+        KeyKind::Containment,
     ] {
         let keyspace = kind.keyspace();
         let prefix = address.prefix(kind);

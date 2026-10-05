@@ -238,6 +238,8 @@ impl Parser<'_> {
             Unique,
             Search,
             Spatial,
+            /// The (path, leaf) pairs of a document, for `CONTAINS` (ADR-0116).
+            Containment,
             /// With the distance its graph is built for, which is required —
             /// a default would silently decide which queries the index serves.
             Vector(crate::Name),
@@ -248,6 +250,10 @@ impl Parser<'_> {
                 Marker::Unique
             } else if self.eat_keyword(Keyword::Search) {
                 Marker::Search
+            } else if self.eat_keyword(Keyword::Contains) {
+                // The operator's own word, so the index reads as the question
+                // it serves and no word is reserved for it.
+                Marker::Containment
             } else if self.eat_word("spatial") {
                 // Contextual for the same reason `vector` is: a field called
                 // `spatial` is not a name to take away from a caller.
@@ -324,7 +330,9 @@ impl Parser<'_> {
                 Some(Marker::Unique) => {
                     return Err(Error::SeveralInAUniqueIndex { span: field.span });
                 }
-                Some(Marker::Search | Marker::Vector(_) | Marker::Spatial) => {
+                Some(
+                    Marker::Search | Marker::Vector(_) | Marker::Spatial | Marker::Containment,
+                ) => {
                     return Err(Error::SeveralInAnAnalysedIndex { span: field.span });
                 }
                 None => {}
@@ -341,6 +349,7 @@ impl Parser<'_> {
             search: matches!(kind, Some(Marker::Search)),
             costs,
             spatial: matches!(kind, Some(Marker::Spatial)),
+            containment: matches!(kind, Some(Marker::Containment)),
             vector: match kind {
                 Some(Marker::Vector(distance)) => Some(distance),
                 _ => None,

@@ -831,6 +831,20 @@ stays an exact scan by design.
 A box match is a candidate and never a result, which is what keeps the index from
 changing an answer: an index may change what a read costs, never what it says.
 
+**`CONTAINS` indexes a document by the leaves it holds.** `DEFINE INDEX by_doc
+ON orders FIELDS doc CONTAINS` gives each record one entry per (path, leaf) pair
+of its document — `customer.city = 'Paris'`, `lines[*].sku = 'b'` — where every
+element of an array is one step, because position is not part of containment. A
+`WHERE doc CONTAINS { … }` with a constant document is then served by walking the
+entries for each pair the document asks for and keeping the records holding all
+of them; what that produces is a candidate set, re-tested against the whole
+condition, because a path forgets which element a leaf was in. A document asking
+for nothing a pair can say — `{}`, or only empty arrays and documents — keeps the
+scan, since every record holding a document would be a candidate. A field holding
+an array asks membership rather than containment, and the index finds it too: each
+element is indexed as a document of its own. The index reads one field, and a
+whole document rather than every element of a route.
+
 Three shapes are refused, each because it has no single meaning rather than
 because it is hard:
 
@@ -6463,7 +6477,7 @@ visible rather than folklore.
 | `path LIKE '%ada'`, `'%ada%'`, `'a_a%'`, `'ada%lace'` | scan |
 | `path ILIKE 'ada%'` | scan |
 | `path CONTAINS 'ada'`, `'ada' IN path` | scan |
-| `path CONTAINS { … }` (a document) | scan |
+| `path CONTAINS { … }` (a document) | index read on a `CONTAINS` index — candidates, then the rest applied |
 | `path < 'ada'`, `path > 'ada'` | scan — an ordered index could serve this as a range, and that is not built yet |
 | `path = 'ada' OR <anything>` | scan |
 | `NOT (path = 'ada')` | scan |

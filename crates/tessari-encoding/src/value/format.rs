@@ -45,7 +45,15 @@ impl FormatVersion {
     /// by their length on the replication read path is a choice made on every
     /// record forever rather than once. `give_an_older_log_its_home` already
     /// refused that trade for the home; this is the same refusal for the writer.
-    pub const CURRENT: Self = Self(5);
+    ///
+    /// Moved to 6 when a containment index's entries arrived under their own key
+    /// kind, `0x44` (ADR-0116 D4). The version-2 shape again: no key or value
+    /// already written changes, so a store below 6 is opened and **not**
+    /// rewritten, and the bump buys the one thing — a build that does not know
+    /// the kind refuses a store this build created at `open`, rather than reading
+    /// the catalog without its `contains` flag and serving an equality from
+    /// entries it cannot read.
+    pub const CURRENT: Self = Self(6);
 
     /// The first format whose log keys carry a home.
     ///

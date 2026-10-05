@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn a_delayed_cadence_runs_once_however_many_periods_it_missed() {
     let period = Duration::from_secs(10);
-    let ran_at = Instant::now();
+    let ran_at = tokio::time::Instant::now();
     let late = ran_at
         .checked_add(Duration::from_secs(35))
         .expect("an instant 35s from now");
@@ -17,7 +17,7 @@ fn a_delayed_cadence_runs_once_however_many_periods_it_missed() {
 #[test]
 fn a_cadence_that_is_early_waits_out_the_remainder() {
     let period = Duration::from_secs(10);
-    let ran_at = Instant::now();
+    let ran_at = tokio::time::Instant::now();
     let soon = ran_at
         .checked_add(Duration::from_secs(3))
         .expect("an instant 3s from now");

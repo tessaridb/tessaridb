@@ -27,6 +27,7 @@ fn an_index_definition_round_trips_a_route_through_the_text_it_is_stored_as() {
         unique: false,
         search: false,
         spatial: false,
+        containment: false,
         quantized: false,
         vector: None,
         costs: crate::catalog::SearchCosts::default(),
@@ -37,6 +38,36 @@ fn an_index_definition_round_trips_a_route_through_the_text_it_is_stored_as() {
         IndexDefinition::from_value(&index.to_value()).unwrap(),
         index
     );
+}
+
+#[test]
+fn a_containment_index_reads_back_as_one_and_no_other_index_carries_the_flag() {
+    let mut index = IndexDefinition {
+        id: IndexId::new(5),
+        namespace: NamespaceId::new(7),
+        database: DatabaseId::new(3),
+        table: TableId::new(11),
+        name: "by_doc".to_owned(),
+        fields: vec![Path::field("doc")],
+        unique: false,
+        search: false,
+        spatial: false,
+        containment: true,
+        quantized: false,
+        vector: None,
+        costs: crate::catalog::SearchCosts::default(),
+        engine: None,
+        tokenizer: None,
+    };
+    assert_eq!(
+        IndexDefinition::from_value(&index.to_value()).unwrap(),
+        index
+    );
+    assert!(!index.is_ordered());
+    // An index that is not one keeps the bytes it always had.
+    index.containment = false;
+    let written = index.to_value();
+    assert!(matches!(&written, Value::Object(fields) if !fields.contains_key(FIELD_CONTAINMENT)));
 }
 
 #[test]
@@ -51,6 +82,7 @@ fn a_search_index_keeps_the_tokenizer_generation_it_was_built_by() {
         unique: false,
         search: true,
         spatial: false,
+        containment: false,
         quantized: false,
         vector: None,
         costs: crate::catalog::SearchCosts::default(),

@@ -233,6 +233,7 @@ fn defined(store: &Store) -> Result<(IndexDefinition, Home), Box<dyn Error>> {
         vec![Path::field("at")],
         IndexShape {
             spatial: true,
+            containment: false,
             ..IndexShape::default()
         },
     )?;

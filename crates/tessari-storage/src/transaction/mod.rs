@@ -29,6 +29,7 @@ mod across;
 mod address;
 mod adjacency;
 mod commit;
+mod containment;
 mod index;
 mod latest;
 mod lifecycle;

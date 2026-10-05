@@ -55,6 +55,7 @@ const FIELD_QUANTIZED: &str = "quantized";
 const FIELD_TOKENIZER: &str = "tokenizer";
 const FIELD_MATERIALIZED: &str = "materialized";
 const FIELD_SPATIAL: &str = "spatial";
+const FIELD_CONTAINMENT: &str = "contains";
 const FIELD_POSITIONS: &str = "positions";
 const FIELD_OFFSETS: &str = "offsets";
 const FIELD_UNSCORED: &str = "unscored";

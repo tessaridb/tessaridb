@@ -263,3 +263,57 @@ SELECT * FROM orders WHERE doc CONTAINS { lines: [{ sku: 'b' }] };
 --- case: a record whose field is not a document, or is absent, is not a match
 SELECT * FROM orders WHERE doc CONTAINS {};
 --- expect: rows 3
+
+# The same questions with a containment index (ADR-0116 D4): it changes what the
+# read costs and never what it answers.
+
+--- case: a containment index reads one document field
+DEFINE INDEX by_doc ON orders FIELDS doc CONTAINS;
+--- expect: ok
+
+--- case: the read is served by it
+EXPLAIN SELECT * FROM orders WHERE doc CONTAINS { customer: { city: 'Paris' } };
+--- expect: value { access: 'index', columns: 1, exact: true, index: 'by_doc', shape: 'containment', table: 'orders' }
+
+--- case: and answers what the scan answered, by a nested field
+SELECT * FROM orders WHERE doc CONTAINS { customer: { city: 'Paris' } };
+--- expect: rows 2
+
+--- case: by two fields at once, through the index
+SELECT * FROM orders WHERE doc CONTAINS { status: 'paid', customer: { city: 'Paris' } };
+--- expect: rows 1
+
+--- case: by an element of an array, through the index
+SELECT * FROM orders WHERE doc CONTAINS { lines: [{ sku: 'b' }] };
+--- expect: rows 2
+
+--- case: a document asking for nothing keeps the scan
+EXPLAIN SELECT * FROM orders WHERE doc CONTAINS {};
+--- expect: value { access: 'scan', exact: true, table: 'orders' }
+
+--- case: a write moves the record out of the answer
+UPDATE orders:2 SET doc.lines = [];
+SELECT * FROM orders WHERE doc CONTAINS { lines: [{ sku: 'b' }] };
+--- expect: rows 1
+
+--- case: a field holding an array is still membership, and the index finds it
+CREATE orders:7 = { doc: [{ a: 1 }, { a: 1, b: 2 }] };
+SELECT * FROM orders WHERE doc CONTAINS { a: 1 };
+--- expect: rows 1
+
+--- case: the definition reads back as written
+INFO FOR TABLE orders;
+--- expect: ok
+
+--- case: a containment index reads one field
+DEFINE INDEX by_two ON orders FIELDS doc, other CONTAINS;
+--- expect: error IndexReadsOneField
+
+--- case: and a whole document, not every element of a route
+DEFINE INDEX by_each ON orders FIELDS doc[*] CONTAINS;
+--- expect: error SeveralInAnAnalysedIndex
+
+--- case: dropping it leaves the scan answering the same
+DROP INDEX by_doc ON orders;
+SELECT * FROM orders WHERE doc CONTAINS { customer: { city: 'Paris' } };
+--- expect: rows 2

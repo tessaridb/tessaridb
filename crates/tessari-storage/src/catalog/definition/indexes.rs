@@ -1,10 +1,10 @@
 //! An index's definition and shape, and the distances a vector index measures.
 
 use super::{
-    EngineMember, FIELD_DATABASE, FIELD_ENGINE, FIELD_FIELDS, FIELD_ID, FIELD_NAME,
-    FIELD_NAMESPACE, FIELD_OFFSETS, FIELD_POSITIONS, FIELD_QUANTIZED, FIELD_SEARCH, FIELD_SPATIAL,
-    FIELD_TABLE, FIELD_TOKENIZER, FIELD_UNIQUE, FIELD_UNSCORED, FIELD_VECTOR, field_id, field_name,
-    flag, id_of, number, object,
+    EngineMember, FIELD_CONTAINMENT, FIELD_DATABASE, FIELD_ENGINE, FIELD_FIELDS, FIELD_ID,
+    FIELD_NAME, FIELD_NAMESPACE, FIELD_OFFSETS, FIELD_POSITIONS, FIELD_QUANTIZED, FIELD_SEARCH,
+    FIELD_SPATIAL, FIELD_TABLE, FIELD_TOKENIZER, FIELD_UNIQUE, FIELD_UNSCORED, FIELD_VECTOR,
+    field_id, field_name, flag, id_of, number, object,
 };
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
@@ -28,6 +28,9 @@ pub struct IndexShape {
     pub quantized: bool,
     /// Whether the index holds cells of each record's geometry.
     pub spatial: bool,
+    /// Whether the index holds the (path, leaf) pairs of each record's document,
+    /// so `CONTAINS` with a document can be served (ADR-0116 D4).
+    pub containment: bool,
     /// What a search index keeps beside its postings.
     pub costs: SearchCosts,
 }
@@ -149,6 +152,14 @@ pub struct IndexDefinition {
     /// A cell match is therefore a **candidate and never a result** — the cells
     /// are coarser than the box and the box is coarser than the shape.
     pub spatial: bool,
+    /// Whether this index holds the **(path, leaf) pairs** of each record's
+    /// document (ADR-0116 D4).
+    ///
+    /// One entry per leaf the document holds, so a `CONTAINS` with a document
+    /// walks one leaf asked for at a time and keeps the records holding every
+    /// one of them. A match is a **candidate and never a result**, for the
+    /// reason a cell match is: a path forgets where in an array a leaf was.
+    pub containment: bool,
     /// What it keeps beside its postings, when it is a search index.
     pub costs: SearchCosts,
     /// The search this index is a member of, when it is one (ADR-0105).
@@ -209,7 +220,11 @@ impl IndexDefinition {
     /// a kind that forgets to update it is excluded rather than admitted.
     #[must_use]
     pub const fn is_ordered(&self) -> bool {
-        !self.search && !self.spatial && self.vector.is_none() && self.engine.is_none()
+        !self.search
+            && !self.spatial
+            && !self.containment
+            && self.vector.is_none()
+            && self.engine.is_none()
     }
 
     /// The value written to the catalog.
@@ -249,6 +264,11 @@ impl IndexDefinition {
         // other index's entry keeps the bytes it always had.
         if self.quantized {
             value.insert(FIELD_QUANTIZED.to_owned(), Value::Bool(true));
+        }
+        // Written only when set, so every other index's entry keeps the bytes
+        // it always had.
+        if self.containment {
+            value.insert(FIELD_CONTAINMENT.to_owned(), Value::Bool(true));
         }
         // Written only on a member, so every other index's entry keeps the
         // bytes it always had.
@@ -332,6 +352,9 @@ impl IndexDefinition {
             // An index written before spatial indexes existed holds no such
             // field and is not one, the same reading the two flags above get.
             spatial: flag(fields, FIELD_SPATIAL, "index")?,
+            // Absent on every index written before containment indexes, which is
+            // what each of them is not.
+            containment: flag(fields, FIELD_CONTAINMENT, "index")?,
             // Written before the options existed: absent, so the default — a
             // scored index with neither positions nor offsets, which is what it
             // is.

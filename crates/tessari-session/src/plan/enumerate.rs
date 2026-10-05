@@ -1,3 +1,4 @@
+mod containing;
 mod regional;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,8 +18,8 @@ use crate::search::budget;
 use crate::session::Session;
 
 use super::candidate::{Candidate, Rows, Served};
-use super::conjunct::{Comparison, regional, seekable};
-use super::serving::{gathered, ranged, serving, spatial};
+use super::conjunct::{Comparison, containing, regional, seekable};
+use super::serving::{containing_indexes, gathered, ranged, serving, spatial};
 
 impl Session<'_> {
     /// Every conjunct one of these indexes could serve, with what it promises.
@@ -436,6 +437,7 @@ impl Session<'_> {
         }
 
         self.offer_regional(transaction, condition, declared, &mut offered)?;
+        self.offer_containing(transaction, condition, declared, &mut offered)?;
         Ok(offered)
     }
 }
