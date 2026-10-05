@@ -301,7 +301,9 @@ follows is what runs today, not a roadmap.
   ([`docs/key-grammar.md`](docs/key-grammar.md),
   [`docs/value-system.md`](docs/value-system.md)) and a test fails when the code
   and the documents disagree, or when the format changes without its version
-  moving. Going back to an older build is not promised. A write the engine could
+  moving. From `0.31.0-beta` a store keeps the format it held until an operator
+  runs `ALTER STORE FINALIZE FORMAT`, so the build before can take an upgrade
+  back until then; after it, the way back is a backup. A write the engine could
   not make durable stops the store until it is reopened and recovers from its log
   ([`docs/storage-contract.md`](docs/storage-contract.md)).
 - 🔄 **Not promised yet:** before 1.0 the query language and the wire format may
