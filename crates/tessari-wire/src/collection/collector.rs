@@ -168,7 +168,10 @@ impl Collector<'_> {
                             Err(if forked {
                                 Error::Forked { message }
                             } else {
-                                Error::Refused { message }
+                                Error::Refused {
+                                    message,
+                                    class: None,
+                                }
                             })
                         })
                     })
@@ -395,5 +398,6 @@ pub(crate) fn refuse_to_reinterpret(into: &Store) -> Result<()> {
 pub(crate) fn refused(why: tessari_storage::Error) -> Error {
     Error::Refused {
         message: why.to_string(),
+        class: None,
     }
 }

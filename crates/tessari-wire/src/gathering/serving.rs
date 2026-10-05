@@ -16,6 +16,7 @@ pub(crate) fn serve(
 ) -> Result<Page> {
     let refused = |why: tessari_storage::Error| Error::Refused {
         message: why.to_string(),
+        class: None,
     };
     let mut transaction = store.begin().map_err(refused)?;
     let definition = Catalog::new(&mut transaction)
@@ -120,6 +121,7 @@ pub(crate) fn serve(
         Some(pushed) => {
             tessari_session::keeping(store, pushed, found).map_err(|why| Error::Refused {
                 message: why.to_string(),
+                class: None,
             })?
         }
         None => found,

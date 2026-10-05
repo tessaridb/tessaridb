@@ -83,6 +83,7 @@ pub(super) fn counted_page(
 ) -> Result<Page> {
     let refused = |why: tessari_storage::Error| Error::Refused {
         message: why.to_string(),
+        class: None,
     };
     let index = Catalog::new(transaction)
         .indexes_on(asked.table)
@@ -91,6 +92,7 @@ pub(super) fn counted_page(
         .find(|index| index.id == counting.index && index.search)
         .ok_or_else(|| Error::Refused {
             message: "the node asked has no such search index on this table".to_owned(),
+            class: None,
         })?;
     let found = transaction
         .records_between(

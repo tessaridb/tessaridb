@@ -182,9 +182,7 @@ impl Client {
             return Err(Error::Truncated);
         };
         match kind {
-            frame::Kind::Refusal => Err(Error::Refused {
-                message: String::from_utf8(body).unwrap_or_else(|_| "unreadable".to_owned()),
-            }),
+            frame::Kind::Refusal => Err(refused(&body)),
             frame::Kind::Answer => {
                 let (count, at) = frame::take_u32(&body, 0)?;
                 if count != 1 {
@@ -228,9 +226,7 @@ impl Client {
             return Err(Error::Truncated);
         };
         match kind {
-            frame::Kind::Refusal => Err(Error::Refused {
-                message: String::from_utf8(body).unwrap_or_else(|_| "unreadable".to_owned()),
-            }),
+            frame::Kind::Refusal => Err(refused(&body)),
             frame::Kind::Answer => {
                 let (count, mut at) = frame::take_u32(&body, 0)?;
                 let mut answers = Vec::new();
@@ -360,9 +356,7 @@ impl Feed {
             // The refusal for a subscription that could not be started arrives
             // here rather than at `follow`, because the node reads the frame
             // before it can judge it.
-            frame::Kind::Refusal => Err(Error::Refused {
-                message: String::from_utf8(body).unwrap_or_else(|_| "unreadable".to_owned()),
-            }),
+            frame::Kind::Refusal => Err(refused(&body)),
             // A redirect belongs to a read that can be answered elsewhere. A
             // subscription is a position in one node's log, so there is nothing
             // for another node to answer and this arm stays a refusal even after
@@ -378,3 +372,9 @@ impl Feed {
 
 #[cfg(test)]
 mod tests;
+
+/// A refusal frame's body as the error a caller matches on.
+fn refused(body: &[u8]) -> Error {
+    let (class, message) = frame::read_refusal(body);
+    Error::Refused { message, class }
+}

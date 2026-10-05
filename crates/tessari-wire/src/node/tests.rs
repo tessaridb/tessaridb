@@ -292,9 +292,13 @@ fn a_statement_refused_as_busy_keeps_the_session_it_arrived_in() {
     let (tag, body) = ask(&mut stream, "SELECT * FROM items;");
     assert_eq!(tag, frame::Kind::Refusal.tag(), "a full bridge answered");
     assert_eq!(
-        String::from_utf8(body).expect("text"),
-        super::conversation::BUSY,
-        "refused, but not for being busy"
+        body,
+        frame::refusal(
+            frame::MINOR,
+            tessari_types::RefusalClass::Unavailable,
+            super::conversation::BUSY
+        ),
+        "refused, but not for being busy, or without its class"
     );
 
     release.send(()).expect("the held call");
@@ -365,4 +369,52 @@ fn a_client_from_before_the_redirect_existed_is_refused_rather_than_confused() {
         frame::Kind::Refusal.tag(),
         "a client that cannot name tag 13 was sent tag 13"
     );
+}
+
+#[test]
+fn a_refusal_carries_its_class_to_a_client_that_can_read_one_and_only_its_words_to_an_older_one() {
+    // ADR-0117 D3: the body has no length prefix, so a client before 1.3 would
+    // read a class byte as the first letter of the message. It is sent the
+    // words exactly as before; a client of 1.3 gets the class first, and the
+    // same words after it.
+    let address = a_node_that_must_redirect();
+    let refused_as = |minor: u8, script: &str| {
+        let mut stream = TcpStream::connect(&address).expect("the node this test started");
+        greet_as(&mut stream, minor);
+        let (tag, body) = ask(&mut stream, script);
+        assert_eq!(tag, frame::Kind::Refusal.tag(), "{script} was answered");
+        body
+    };
+    for (script, class) in [
+        ("SELECT FROM;", tessari_types::RefusalClass::Invalid),
+        // This node serves and does not write, and no peer link can carry the
+        // write elsewhere: the request was fine, this node is the wrong place.
+        (
+            "USE NAMESPACE prod; USE DATABASE orders; DEFINE COLLECTION more;",
+            tessari_types::RefusalClass::Unavailable,
+        ),
+    ] {
+        let older = refused_as(2, script);
+        assert!(
+            older
+                .first()
+                .is_some_and(|first| !frame::CLASS_BYTES.contains(first)),
+            "{script}: an older client was sent a class byte"
+        );
+        let current = refused_as(3, script);
+        assert_eq!(current.first(), Some(&class.byte()), "{script}");
+        assert_eq!(
+            current.get(1..),
+            Some(older.as_slice()),
+            "{script}: the words differ"
+        );
+        let (read, words) = frame::read_refusal(&current);
+        assert_eq!(read, Some(Some(class)));
+        assert_eq!(words.as_bytes(), older.as_slice());
+        assert_eq!(
+            frame::read_refusal(&older).0,
+            None,
+            "an older body read as classed"
+        );
+    }
 }

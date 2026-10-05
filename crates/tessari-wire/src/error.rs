@@ -254,6 +254,10 @@ pub enum Error {
     Refused {
         /// The store's own words.
         message: String,
+        /// What to do about it (ADR-0117): `None` from a node before protocol
+        /// 1.3, which sends words only; `Some(None)` for a class this build does
+        /// not know — treat it as not retriable.
+        class: Option<Option<tessari_types::RefusalClass>>,
     },
 
     /// A peer connection arrived having proved nothing at all.

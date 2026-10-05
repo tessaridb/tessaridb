@@ -26,6 +26,7 @@ pub(crate) async fn feed<R, W>(
     mut reader: BufReader<R>,
     mut writer: AsyncBufWriter<W>,
     asked: Follow,
+    theirs: u8,
 ) -> Result<()>
 where
     R: AsyncRead + Unpin,
@@ -53,12 +54,17 @@ where
             return frame_async::write(
                 &mut writer,
                 frame::Kind::Refusal,
-                refusal.to_string().as_bytes(),
+                &frame::refusal(theirs, refusal.class(), &refusal.to_string()),
             )
             .await;
         }
         Bridged::Busy(_) => {
-            return frame_async::write(&mut writer, frame::Kind::Refusal, BUSY.as_bytes()).await;
+            return frame_async::write(
+                &mut writer,
+                frame::Kind::Refusal,
+                &frame::refusal(theirs, tessari_types::RefusalClass::Unavailable, BUSY),
+            )
+            .await;
         }
         Bridged::Panicked => {
             return Err(Error::Io(std::io::Error::other(
@@ -141,7 +147,7 @@ where
                     return frame_async::write(
                         &mut writer,
                         frame::Kind::Refusal,
-                        refusal.to_string().as_bytes(),
+                        &frame::refusal(theirs, refusal.class(), &refusal.to_string()),
                     )
                     .await;
                 }
