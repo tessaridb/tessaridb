@@ -84,6 +84,9 @@ mod error;
 mod frame;
 #[cfg(feature = "server")]
 mod frame_async;
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing;
 #[cfg(feature = "server")]
 mod gatherer;
 #[cfg(feature = "server")]
