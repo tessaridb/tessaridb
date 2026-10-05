@@ -5823,6 +5823,44 @@ four (or of two, for hex), a character outside the alphabet, padding anywhere
 but the end, or padding bits that are not zero — because two strings that
 decoded to one value would make the round trip a lie.
 
+### JSON text
+
+| Written | What it answers |
+|---|---|
+| `json::parse(text)` | the value that JSON text spells, or `NONE` |
+| `json::encode(value)` | the value as compact JSON text |
+
+```
+SELECT json::parse(payload) AS document FROM inbox;
+UPDATE inbox:1 SET document = json::parse(payload);
+SELECT json::encode(address) AS address FROM people;
+```
+
+A collection already holds documents — nested objects and arrays, typed — so
+these are not a second document model. They are the road between a document and
+**text that happens to be JSON**: a payload a column received as a string, a
+document leaving for something that only reads JSON.
+
+**There is one JSON mapping in this store, and both functions use it.**
+`json::parse` is the reader a stream consumer uses, so a script reads a payload
+exactly as a Kafka consumer would: a number written without a fraction or an
+exponent is an `int` (exact, which is the point — a millisecond timestamp read as
+a double comes back rounded), anything else is a `float`; a duplicate key keeps
+its last value; JSON's `null` is `NULL` and never `NONE`; nesting is bounded.
+`json::encode` is what the HTTP surface writes, so it answers what `POST /script`
+would show for the same value: a decimal quoted, so it does not become a double; a
+datetime as RFC 3339; a shape as GeoJSON; a record reference by its table's name;
+a field holding `NONE` left out, because that is what `NONE` means.
+
+**Keys come out in name order.** A document's fields are held in name order
+(`docs/value-system.md` §5), so the order a producer wrote them in is not kept and
+`json::encode` cannot give it back. A use that needs JSON byte for byte — a
+signature over the text, say — keeps the text in a `string` field.
+
+**Text that is not one JSON value answers `NONE`**, on the decoders' reading
+above: the kind is checked, and a row that does not parse narrows a read rather
+than ending it. Two values in one text are not one value.
+
 ### Shapes
 
 A geometry is a value like any other, so a spatial question is an ordinary
@@ -9734,7 +9772,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.27.2", "build": "0.27.2-beta", "endpoints": ["db-1.internal:9000"],
+ "version": "0.28.0", "build": "0.28.0-beta", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

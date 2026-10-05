@@ -250,6 +250,61 @@ RETURN encoding::hex_decode('abc');
 RETURN encoding::hex_decode('zz');
 --- expect: value NONE
 
+# JSON text as a value and back (ADR-0116). One mapping: the reader a stream
+# consumer uses and the writer the HTTP surface uses.
+
+--- case: json text becomes the value it spells, keys held in name order
+RETURN json::parse('{"b": 2, "a": [1, "x", true, null, {}]}');
+--- expect: value { a: [1, 'x', true, NULL, {}], b: 2 }
+
+--- case: a number written without a fraction is an integer, exact past a double's 2^53
+RETURN json::encode(json::parse('9007199254740993'));
+--- expect: value '9007199254740993'
+
+--- case: and one with a fraction keeps it
+RETURN json::parse('2.5') = 2.5;
+--- expect: value true
+
+--- case: a duplicate key keeps the last value, as every mainstream reader does
+RETURN json::parse('{"a": 1, "a": 2}');
+--- expect: value { a: 2 }
+
+--- case: json null is null and not none
+RETURN json::parse('null') = NULL;
+--- expect: value true
+
+--- case: text that is not json spells no value
+RETURN json::parse('{"a": }');
+--- expect: value NONE
+
+--- case: two values are not one
+RETURN json::parse('1 2');
+--- expect: value NONE
+
+--- case: a value that is not text is the wrong argument
+RETURN json::parse(1);
+--- expect: error WrongArgument
+
+--- case: a value becomes compact json text, keys in name order
+RETURN json::encode({ b: [1, 2.5, 'x'], a: true, c: NULL });
+--- expect: value '{"a":true,"b":[1,2.5,"x"],"c":null}'
+
+--- case: a decimal is quoted so it does not become a double
+RETURN json::encode(dec 12.34);
+--- expect: value '"12.34"'
+
+--- case: a field holding none is not written
+RETURN json::encode({ a: 1, b: NONE });
+--- expect: value '{"a":1}'
+
+--- case: a string is escaped
+RETURN json::encode('say "hi"');
+--- expect: value '"say \\"hi\\""'
+
+--- case: encode then parse gives the document back
+RETURN json::parse(json::encode({ a: [1, { b: 'c' }], d: false }));
+--- expect: value { a: [1, { b: 'c' }], d: false }
+
 # The string functions a pattern cannot serve, because a needle is a value.
 
 --- case: a prefix that is a value and not a pattern

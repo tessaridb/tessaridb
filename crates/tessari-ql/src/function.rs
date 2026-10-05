@@ -312,6 +312,23 @@ pub enum Function {
     /// outside `0-9a-fA-F` answers `NONE`, on [`Self::EncodingBase64Decode`]'s
     /// reading.
     EncodingHexDecode,
+    /// `json::parse(text)` — the value that JSON text spells, or `NONE` when it
+    /// spells none (ADR-0116).
+    ///
+    /// The one JSON reader this store has, so a script reads a document exactly
+    /// as a stream consumer does: a number with no fraction is an integer, a
+    /// duplicate key keeps its last value, `null` is `NULL` and not `NONE`, and
+    /// nesting is bounded. Text that is not one JSON value answers `NONE`, on
+    /// [`Self::EncodingBase64Decode`]'s reading — a question about a value.
+    JsonParse,
+    /// `json::encode(value)` — the value as compact JSON text (ADR-0116).
+    ///
+    /// The mapping the HTTP surface writes, so what this answers is what
+    /// `POST /script` shows: object keys in name order, which is the order the
+    /// store holds them in (a document's insertion order is not kept); a field
+    /// holding `NONE` is left out; a decimal is quoted so it does not become a
+    /// double; a record reference is written by its table's name.
+    JsonEncode,
     /// `string::starts_with(text, prefix)`
     ///
     /// Not a spelling of `LIKE`, and that is the point: a `LIKE` pattern is a

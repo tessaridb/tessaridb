@@ -236,6 +236,8 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::EncodingBase64Decode
         | Function::EncodingHex
         | Function::EncodingHexDecode
+        | Function::JsonParse
+        | Function::JsonEncode
         | Function::StringStartsWith
         | Function::StringEndsWith
         | Function::StringContains

@@ -25,6 +25,7 @@ mod geojson;
 mod geometry;
 mod identity_kind;
 mod ids;
+pub mod json;
 mod nesting;
 mod number;
 mod path;

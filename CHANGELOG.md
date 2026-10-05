@@ -13,6 +13,19 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.28.0-beta — unreleased
+
+JSON in the language (G067).
+
+### Added
+
+- **`json::parse(text)` and `json::encode(value)`.** JSON text becomes a document and a document becomes JSON
+  text inside a statement, through the one mapping the store already had: the reader a Kafka consumer uses (an
+  integer stays exact, the last duplicate key wins, `null` is `NULL`) and the writer the HTTP surface uses (keys
+  in name order, a decimal quoted, a reference by its table's name, a `NONE` field left out). Text that is not one
+  JSON value answers `NONE`.
+- **1553 conformance cases** define the language and run in the build.
+
 ## 0.27.2-beta — 2026-10-05
 
 Ready-for-1.0 groundwork (G062). Nothing a statement, a client or a store sees changes.

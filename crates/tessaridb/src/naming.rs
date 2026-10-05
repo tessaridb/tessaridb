@@ -35,7 +35,7 @@ impl Db {
     pub fn names_in(&self, records: &[(RecordId, Value)]) -> Result<BTreeMap<TableId, String>> {
         let mut wanted = BTreeSet::new();
         for (_, held) in records {
-            referenced(held, &mut wanted);
+            tessari_types::json::referenced_tables(held, &mut wanted);
         }
         let mut named = BTreeMap::new();
         if wanted.is_empty() {
@@ -196,37 +196,5 @@ impl Db {
                 Some((table.name, table.id, shards))
             })
             .collect())
-    }
-}
-
-/// Every table an answer's references point at.
-///
-/// Walked rather than assumed: a reference can be anywhere in a record — in a
-/// field, inside an array, nested in an object — and a walk that stopped at the
-/// top level would render the common shapes and miss the interesting ones.
-fn referenced(value: &Value, into: &mut BTreeSet<TableId>) {
-    match value {
-        Value::Record(held) => {
-            into.insert(held.table);
-        }
-        Value::Table(held) => {
-            into.insert(*held);
-        }
-        Value::Array(items) => {
-            for item in items {
-                referenced(item, into);
-            }
-        }
-        Value::Set(items) => {
-            for item in items {
-                referenced(item, into);
-            }
-        }
-        Value::Object(fields) => {
-            for held in fields.values() {
-                referenced(held, into);
-            }
-        }
-        _ => {}
     }
 }
