@@ -75,6 +75,7 @@ pub(super) async fn handle(
     let read = if incoming::takes_body(&parts.method, &url) {
         Some(incoming::read(&parts.headers, body).await)
     } else {
+        incoming::discard(&parts.headers, body).await;
         None
     };
     let incoming = Incoming {
