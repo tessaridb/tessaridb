@@ -13,7 +13,7 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
-## 0.31.0-beta — unreleased
+## 0.31.0-beta — 2026-10-05
 
 An upgrade that can be taken back (G065, ADR-0118).
 
