@@ -432,7 +432,9 @@ impl StoreValue for VectorNode {
         let (flags, payload) = split_header(bytes, QUANTIZED)?;
         let mut reader = KeyReader::new(KeyKind::VectorNode, payload);
         let dimensions = reader.take_u32()?;
-        let width = usize::try_from(dimensions).unwrap_or(0);
+        // Reserved no further than the bytes could hold: the width is the entry's
+        // claim, and a damaged entry claiming 4 billion must cost what it holds.
+        let width = usize::try_from(dimensions).unwrap_or(0).min(payload.len());
         let vector = if flags & QUANTIZED == 0 {
             let mut vector = Vec::with_capacity(width);
             for _ in 0..dimensions {
