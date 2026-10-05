@@ -1264,3 +1264,32 @@ fn an_answer_given_before_the_body_was_needed_still_reaches_the_client() {
         }
     }
 }
+
+#[test]
+fn the_vault_routes_ask_a_closed_store_for_a_credential_and_refuse_a_viewer() {
+    // The vault surface reaches the store's key, so it is held to the rule every
+    // route is: nobody is answered 401 with a challenge, a viewer — who holds no
+    // `operate` — 403 on every act, and a wrong password 401 again.
+    let (_node, address) = closed();
+    let passphrases = r#"{"current": "a", "new": "b"}"#;
+    // `GET /vault` reports only whether secrets can be opened, so any signed-in
+    // caller may ask (ADR-0092 D1): a viewer is answered, nobody is not.
+    for (who, credential, wanted) in [("nobody", None, 401), ("a viewer", Some(GRACE), 200)] {
+        let (status, _, said) = send(&address, "GET", "/vault", "", credential);
+        assert_eq!(status, wanted, "GET /vault by {who}: {said}");
+    }
+    for (method, path, body) in [
+        ("POST", "/vault/seal", ""),
+        ("POST", "/vault/unseal", "a passphrase"),
+        ("POST", "/vault/passphrase", passphrases),
+    ] {
+        for (who, credential, wanted) in [
+            ("nobody", None, 401),
+            ("a wrong password", Some(WRONG), 401),
+            ("a viewer", Some(GRACE), 403),
+        ] {
+            let (status, _, said) = send(&address, method, path, body, credential);
+            assert_eq!(status, wanted, "{method} {path} by {who}: {said}");
+        }
+    }
+}

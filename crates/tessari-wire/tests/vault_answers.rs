@@ -308,3 +308,54 @@ fn the_vault_frame_reaches_one_vault_and_leaves_the_connection_where_it_was() {
         "the frame's target became the connection's USE"
     );
 }
+
+#[test]
+fn a_closed_store_refuses_every_vault_act_to_nobody_and_every_change_to_a_viewer() {
+    use tessari_wire::VaultCall;
+    let (_node, address) = serving(Db::in_memory().unwrap());
+    let mut client = Client::connect(&address).unwrap();
+    client
+        .run("DEFINE USER root ROLE owner PASSWORD 'root secret';", None)
+        .unwrap();
+    client
+        .run(
+            "DEFINE USER grace ROLE viewer PASSWORD 'watch only';",
+            Some(("root", "root secret")),
+        )
+        .unwrap();
+
+    let acts = [
+        VaultCall::Status,
+        VaultCall::Unseal(PASSPHRASE.to_owned()),
+        VaultCall::Seal,
+        VaultCall::Change {
+            current: PASSPHRASE.to_owned(),
+            new: "another".to_owned(),
+        },
+    ];
+    // A connection is a session, and the one above is now root's: each identity
+    // asks on a connection of its own.
+    drop(client);
+    for act in &acts {
+        let mut nobody = Client::connect(&address).unwrap();
+        let refused = nobody
+            .vault(act, None, None)
+            .expect_err("nobody was answered by a closed store");
+        assert!(refused.to_string().contains("sign"), "{act:?}: {refused}");
+    }
+    // A viewer may ask whether secrets can be opened (ADR-0092 D1) and may do
+    // nothing to the key.
+    let mut grace = Client::connect(&address).unwrap();
+    grace
+        .vault(&VaultCall::Status, None, Some(("grace", "watch only")))
+        .expect("a signed-in caller may ask the state");
+    for act in acts.iter().skip(1) {
+        let refused = grace
+            .vault(act, None, Some(("grace", "watch only")))
+            .expect_err("a viewer acted on the store's key");
+        assert!(
+            refused.to_string().contains("operate"),
+            "{act:?}: {refused}"
+        );
+    }
+}
