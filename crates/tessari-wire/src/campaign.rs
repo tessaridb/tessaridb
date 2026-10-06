@@ -171,6 +171,7 @@ impl Standing<'_> {
         .over(self.range)
         .leasing(self.lease);
         let ballot = round.ballot();
+        let opened = Instant::now();
         // Both sides of the comparison are this node's own greeting, so the log
         // restriction never refuses a candidate its own vote — a node is not
         // behind itself. It is passed rather than skipped because the rule lives
@@ -205,15 +206,32 @@ impl Standing<'_> {
         // its own leadership as a grant to somebody else. Unless that memory
         // granted a HIGHER epoch while the round was in flight: then the round
         // is over, and the next one stands past it (`Voter::carried`).
-        round.held().map_or(Stood::Lost { granted }, |leadership| {
+        let stood = round.held().map_or(Stood::Lost { granted }, |leadership| {
             match voter.carried(&ballot, now) {
                 Ok(()) => Stood::Won(leadership),
                 Err(promised) => Stood::Lost {
                     granted: granted.max(promised),
                 },
             }
-        })
+        });
+        ran(self.range, held, now, opened, stood);
+        stood
     }
+}
+
+/// How a round went against the fence it was defending: how long the canvass
+/// took, how much of the held lease was left when it opened, and how old the
+/// instant it was decided on already was (Q-946); off unless asked for.
+fn ran(range: Reach, held: Lease, now: Instant, opened: Instant, stood: Stood) {
+    let micros = |took: Duration| u64::try_from(took.as_micros()).unwrap_or(u64::MAX);
+    tracing::debug!(
+        range = ?range,
+        elapsed_us = micros(opened.elapsed()),
+        left_us = micros(held.left(opened)),
+        stale_us = micros(opened.saturating_duration_since(now)),
+        won = matches!(stood, Stood::Won(_)),
+        "a renewal round ran"
+    );
 }
 
 impl Standing<'_> {

@@ -157,6 +157,13 @@ fn a_commit_across_leaders_across_injected_distance() {
     let mut refused = 0_usize;
     let mut last_refusal = String::new();
     let mut across = Vec::new();
+    // Where the coordinator's log stood before the timed commits, so their
+    // phases are read without the warming's (Q-931).
+    let logged_before: Vec<u64> = cluster
+        .logs
+        .iter()
+        .map(|log| std::fs::metadata(log).map_or(0, |held| held.len()))
+        .collect();
     for index in 0..COMMITS {
         let script = format!(
             "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
@@ -184,6 +191,16 @@ fn a_commit_across_leaders_across_injected_distance() {
             began.elapsed()
         })
         .collect();
+    // Q-946: a renewal that opens with less than one round left of its lease
+    // lands after the fence, and every write in between is refused.
+    let mut least_left: Option<(usize, Duration)> = None;
+    for (node, (log, from)) in cluster.logs.iter().zip(&logged_before).enumerate() {
+        if let Some(left) = phases(&rtt, node, log, *from)
+            && least_left.is_none_or(|(_, least)| left < least)
+        {
+            least_left = Some((node, left));
+        }
+    }
     let (across_p50, across_p99) = percentiles(across);
     let (one_p50, one_p99) = percentiles(one);
     eprintln!(
@@ -194,10 +211,117 @@ fn a_commit_across_leaders_across_injected_distance() {
         "DISTANCE rtt_ms={rtt} measure=one_write_majority p50_us={one_p50} p99_us={one_p99} \
          n={COMMITS}"
     );
+    let round = Duration::from_millis(tessari_constants::ROUND_MILLIS);
+    if let Some((node, left)) = least_left {
+        assert!(
+            left >= round,
+            "n{node} opened a renewal with {left:?} of its lease left, less than the round's {round:?}"
+        );
+    }
     assert_eq!(
         refused,
         0,
         "transactions across leaders were refused, the last: {last_refusal}{}",
         what_the_nodes_said(&DISTANT_LEADERS, &cluster.logs)
     );
+}
+
+/// The phases of the timed commits as the coordinator logged them — each
+/// part's prepare answered, here or by a remote leader, and each record
+/// carried, by kind and by the link it rode — one `DISTANCE` line each (Q-931).
+/// Nothing when the node was not asked to log them (`TESSARIDB_LOG`).
+///
+/// Answers the least lease any renewal round opened with (Q-946).
+fn phases(rtt: &str, node: usize, log: &std::path::Path, from: u64) -> Option<Duration> {
+    let read = std::fs::read(log).unwrap_or_default();
+    let tail = read
+        .get(usize::try_from(from).unwrap_or(usize::MAX)..)
+        .unwrap_or_default();
+    let field = |line: &str, name: &str| -> Option<String> {
+        let named = format!("{name}=");
+        let at = line.find(&named)?;
+        line.get(at..)?
+            .strip_prefix(&named)?
+            .split_whitespace()
+            .next()
+            .map(|value| value.trim_matches('"').to_owned())
+    };
+    let mut timed: std::collections::BTreeMap<String, Vec<Duration>> =
+        std::collections::BTreeMap::new();
+    let mut least_left: Option<Duration> = None;
+    for line in String::from_utf8_lossy(tail).lines() {
+        let Some(micros) = field(line, "elapsed_us")
+            .or_else(|| field(line, "waited_us"))
+            .and_then(|us| us.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        if line.contains("a renewal round ran") {
+            // Q-946: the canvass, the lease left when it opened, and how old
+            // the instant it was decided on was — per line and outcome.
+            let line_of = if line.contains("range=Store") {
+                "store"
+            } else {
+                "range"
+            };
+            let outcome = if line.contains("won=true") {
+                "won"
+            } else {
+                "lost"
+            };
+            for (name, value) in [
+                ("round", Some(micros)),
+                (
+                    "left_at_open",
+                    field(line, "left_us").and_then(|us| us.parse().ok()),
+                ),
+                (
+                    "decided_before_open",
+                    field(line, "stale_us").and_then(|us| us.parse().ok()),
+                ),
+            ] {
+                if let Some(value) = value {
+                    let value = Duration::from_micros(value);
+                    if name == "left_at_open" && least_left.is_none_or(|least| value < least) {
+                        least_left = Some(value);
+                    }
+                    timed
+                        .entry(format!("renewal_{line_of}_{outcome}_{name}"))
+                        .or_default()
+                        .push(value);
+                }
+            }
+            continue;
+        }
+        let measure = if line.contains("a commit waited for its acknowledgement") {
+            "acknowledgement_waited".to_owned()
+        } else if line.contains("a cross-leader part answered") {
+            match field(line, "local").as_deref() {
+                Some("true") => "across_phase_local_part".to_owned(),
+                _ => "across_phase_remote_part".to_owned(),
+            }
+        } else if line.contains("a reader asked a cross-leader record's leader") {
+            "across_reader_asked_the_record".to_owned()
+        } else if line.contains("a cross-leader record was carried") {
+            format!(
+                "across_carried_{}_{}",
+                field(line, "what").unwrap_or_default(),
+                field(line, "link").unwrap_or_default()
+            )
+        } else {
+            continue;
+        };
+        timed
+            .entry(measure)
+            .or_default()
+            .push(Duration::from_micros(micros));
+    }
+    for (measure, took) in timed {
+        let n = took.len();
+        let (p50, p99) = percentiles(took);
+        eprintln!(
+            "DISTANCE rtt_ms={rtt} measure=n{node}_{measure} p50_us={p50} p99_us={p99} n={n}"
+        );
+    }
+    least_left
 }

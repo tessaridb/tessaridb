@@ -27,6 +27,11 @@ compares carries no pre-release suffix.
     100 000 more records.
   - A bar written by an earlier build does not record where its record is, and stays.
   - No change to the store format.
+- **A node leading a range and the store no longer loses the store's lease at a distance.** One campaign pass renewed
+  the two leases one after the other, and it judged the second against the instant the pass began. At a 50 ms round
+  trip the second canvass opened 210 ms late, with 13 ms of its lease left, and landed after its fence every time.
+  Every write in between was refused with `the lease this node writes under ran out`. The two canvasses now run at
+  once, and both open with about 330 ms left.
 - **Concluding a commit across leaders no longer asks a peer about its own transaction.** The commit's own
   bookkeeping read its record through the reader's visibility check, which still saw the record as staging and asked
   the record's leader. The commit now answers that read from the decision it holds. At a 50 ms round trip a commit

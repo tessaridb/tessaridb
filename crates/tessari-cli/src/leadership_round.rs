@@ -114,167 +114,33 @@ pub(crate) async fn stand_for_leadership(
         let Some(voting) = tessari_wire::voters(me.roles, &declared, &me.id) else {
             return;
         };
-        // ADR-0082. The placed range first, and on its own line: the store
-        // line's own guards below return early — a follower that hears the
-        // store leader does not stand for the STORE — and a range this node
-        // is placed on must still be stood for while somebody else leads
-        // the store.
-        stand_for_a_placed_range(
-            db,
-            &Candidate {
-                me: me.id,
-                declared: &declared,
-                voting: &voting,
-                keys,
-                voter,
-                published,
-                runtime,
-                periods,
-                leads_the_store: store.leads(tessari_types::Reach::Store).unwrap_or(false),
-            },
-            (&mut on_a_line, &mut yielded),
-            now,
-        );
-        // Q-857. The store line's leader must hold every table it writes,
-        // so a node subscribed to less does not stand for it — after its
-        // placed range, which it still leads.
-        if !tessari_wire::stands_for_the_store(&declared, &me.id) {
-            return;
-        }
-        // ADR-0066. A node that can still hear a leader does not stand
-        // against it — and this is not politeness, it is what stops a
-        // follower's own self-vote from refusing that leader's renewal for a
-        // whole lease. The bound is the lease term, because a greeting older
-        // than the leader's lease cannot testify that the leader still holds
-        // it. A node that hears nothing stands, which is the condition an
-        // election exists for.
+        // ADR-0082. The placed range on its own line, and on its own thread:
+        // the store line's own guards return early — a follower that hears
+        // the store leader does not stand for the STORE — and a range
+        // this node is placed on must still be stood for while somebody else
+        // leads the store.
         //
-        // `granted_elsewhere_at(me.id)` and not the grant instant alone: a
-        // candidate self-votes through this same memory, so a node reading
-        // its own vote here would be silenced by the act of standing — and
-        // a leader renews by standing. That is Q-602, and it made a lease
-        // un-renewable.
-        //
-        // The window is the lease plus this node's own spread (G053 SG2b):
-        // every voter hears the same renewal, so without a spread their
-        // memories of a dead leader lapse together and two of them stand on
-        // one tick, grant each other the epoch and both lose it.
-        if tessari_wire::heard_a_leader(
-            &declared,
-            &published.current(),
-            voter.granted_elsewhere_at(me.id),
-            now,
-            tessari_wire::election_timeout(
-                me.id,
-                voter.decided().unwrap_or(tessari_types::Epoch::ZERO),
-                periods.lease(),
-            ),
-        ) {
-            return;
-        }
-        // And the second thing a node can hear that means it should not
-        // stand: a peer running a failover policy that supersedes this
-        // node's own. The periods decide when a leader counts as gone, so a
-        // candidate timing itself by a policy the cluster has already
-        // replaced is the disagreement the policy row exists to remove,
-        // arriving at the one moment where it decides an outcome.
-        //
-        // The bound is the staleness floor — one awareness interval to hear
-        // and one more to notice it did not — because the question is
-        // whether such a peer is still AUDIBLE, and greetings arrive once a
-        // second, which is longer than the lease (G053 SG2b). And the
-        // refusal lasts only while such a peer is audible — a cluster
-        // cannot deadlock behind a node that has gone away, because a node
-        // that has gone away advertises nothing.
-        //
-        // It is inert until somebody sets a policy: with no row anywhere,
-        // every stamp is `None` and nothing supersedes anything.
-        if let Some(newer) = tessari_wire::heard_a_newer_policy(
-            &declared,
-            &published.current(),
-            policy.map(|definition| definition.stamp()),
-            now,
-            periods.staleness_floor(),
-        ) {
-            tracing::info!(
-                epoch = newer.epoch.get(),
-                version = newer.version,
-                "not standing: a peer runs a failover policy that supersedes this node's own"
-            );
-            return;
-        }
-        // A member whose endpoint will not parse is dropped from the set it
-        // is a member of, not silently skipped inside the round: a majority
-        // counted over members that cannot be asked is a majority of a
-        // fiction. The operator hears about it either way.
-        let mut peers = Vec::with_capacity(voting.len());
-        for (node, endpoint) in &voting {
-            match endpoint.parse() {
-                Ok(address) => peers.push((*node, address)),
-                Err(why) => {
-                    tracing::warn!(endpoint = %endpoint, error = %why, "the voting peer's endpoint is not an address");
-                }
-            }
-        }
-        if peers.is_empty() {
-            return;
-        }
-        let said = match greeting(db) {
-            Ok(said) => said,
-            Err(why) => {
-                tracing::warn!(error = %why, "this node cannot say what it holds");
-                return;
-            }
-        };
-        // Counted here, where the decision to stand has actually been
-        // taken: every gate above has passed and a round is about to open.
-        // Counting at the top of the cadence would count ticks, and the
-        // cadence ticks every second whether or not anything happens —
-        // which is precisely the difference this counter exists to show.
-        db.store().campaigned();
-        let standing = tessari_wire::Standing {
-            candidate: me.id,
+        // At once rather than one after the other (Q-946). Both lines are due
+        // together, because one pass won both and dated both from its start;
+        // run in turn, the second canvass opened a whole canvass after the
+        // instant it was decided on — 210 ms at a 50 ms round trip, with
+        // 13 ms of its lease left — and landed after its fence every time.
+        let candidate = Candidate {
+            me: me.id,
+            declared: &declared,
+            voting: &voting,
             keys,
-            said: &said,
-            peers: &peers,
-            round: periods.round(),
-            range: tessari_types::Reach::Store,
-            lease: periods.lease(),
+            voter,
+            published,
+            runtime,
+            periods,
+            leads_the_store: store.leads(tessari_types::Reach::Store).unwrap_or(false),
         };
-        let before = renewing.standing();
-        let held = renewing.once(me.id, now, |lease, next| {
-            runtime.block_on(standing.renew(voter, lease, next, now))
+        let (on_a_line, yielded) = (&mut on_a_line, &mut yielded);
+        std::thread::scope(|scope| {
+            scope.spawn(|| stand_for_a_placed_range(db, &candidate, (on_a_line, yielded), now));
+            stand_for_the_store(db, &candidate, (&mut renewing, policy), now);
         });
-        if held != before {
-            // Installed as it was granted, whole. The lease is dated from the
-            // instant the round opened, so handing the store a span instead
-            // would restart that clock here and spend the canvass out of the
-            // voters' window rather than this node's.
-            db.hold(held.epoch, held.lease());
-        }
-        if held.epoch != before.epoch {
-            tracing::info!(epoch = held.epoch.get(), "leading the store line");
-            // Written when the EPOCH changes and not when the lease does: a
-            // renewal keeps its epoch and only moves the lease, about every
-            // 300 ms for as long as this node keeps leading, and a row per
-            // renewal would put a log record on the wire three times a
-            // second forever — one every follower then pays to apply, on a
-            // log that would never quiesce.
-            //
-            // Logged rather than propagated. The round already granted the
-            // leadership and `hold` already installed it; this records that
-            // grant in the log so a partitioned node can still answer who
-            // leads. A store that refuses the write has not un-elected this
-            // node, and treating it as fatal would let a disk hiccup
-            // overturn a decision a majority took.
-            if let Err(refused) = db.record_leadership(tessaridb::Reach::Store, held.epoch) {
-                tracing::warn!(
-                    epoch = held.epoch.get(),
-                    refusal = %refused,
-                    "leading the store line but could not record it"
-                );
-            }
-        }
     };
     // Nothing wakes the campaign early: it runs on the policy's cadence alone.
     let unwoken = tokio::sync::Notify::new();
@@ -283,6 +149,169 @@ pub(crate) async fn stand_for_leadership(
         Ok(cadence)
     })
     .await;
+}
+
+/// Stand for the store line, if this node is the one that should (ADR-0066).
+fn stand_for_the_store(
+    db: &Db,
+    candidate: &Candidate<'_>,
+    (renewing, policy): (
+        &mut tessari_wire::Renewing,
+        Option<tessari_storage::FailoverDefinition>,
+    ),
+    now: std::time::Instant,
+) {
+    let Candidate {
+        me,
+        declared,
+        voting,
+        keys,
+        voter,
+        published,
+        runtime,
+        periods,
+        ..
+    } = *candidate;
+    // Q-857. The store line's leader must hold every table it writes,
+    // so a node subscribed to less does not stand for it — after its
+    // placed range, which it still leads.
+    if !tessari_wire::stands_for_the_store(declared, &me) {
+        return;
+    }
+    // ADR-0066. A node that can still hear a leader does not stand
+    // against it — and this is not politeness, it is what stops a
+    // follower's own self-vote from refusing that leader's renewal for a
+    // whole lease. The bound is the lease term, because a greeting older
+    // than the leader's lease cannot testify that the leader still holds
+    // it. A node that hears nothing stands, which is the condition an
+    // election exists for.
+    //
+    // `granted_elsewhere_at(me)` and not the grant instant alone: a
+    // candidate self-votes through this same memory, so a node reading
+    // its own vote here would be silenced by the act of standing — and
+    // a leader renews by standing. That is Q-602, and it made a lease
+    // un-renewable.
+    //
+    // The window is the lease plus this node's own spread (G053 SG2b):
+    // every voter hears the same renewal, so without a spread their
+    // memories of a dead leader lapse together and two of them stand on
+    // one tick, grant each other the epoch and both lose it.
+    if tessari_wire::heard_a_leader(
+        declared,
+        &published.current(),
+        voter.granted_elsewhere_at(me),
+        now,
+        tessari_wire::election_timeout(
+            me,
+            voter.decided().unwrap_or(tessari_types::Epoch::ZERO),
+            periods.lease(),
+        ),
+    ) {
+        return;
+    }
+    // And the second thing a node can hear that means it should not
+    // stand: a peer running a failover policy that supersedes this
+    // node's own. The periods decide when a leader counts as gone, so a
+    // candidate timing itself by a policy the cluster has already
+    // replaced is the disagreement the policy row exists to remove,
+    // arriving at the one moment where it decides an outcome.
+    //
+    // The bound is the staleness floor — one awareness interval to hear
+    // and one more to notice it did not — because the question is
+    // whether such a peer is still AUDIBLE, and greetings arrive once a
+    // second, which is longer than the lease (G053 SG2b). And the
+    // refusal lasts only while such a peer is audible — a cluster
+    // cannot deadlock behind a node that has gone away, because a node
+    // that has gone away advertises nothing.
+    //
+    // It is inert until somebody sets a policy: with no row anywhere,
+    // every stamp is `None` and nothing supersedes anything.
+    if let Some(newer) = tessari_wire::heard_a_newer_policy(
+        declared,
+        &published.current(),
+        policy.map(|definition| definition.stamp()),
+        now,
+        periods.staleness_floor(),
+    ) {
+        tracing::info!(
+            epoch = newer.epoch.get(),
+            version = newer.version,
+            "not standing: a peer runs a failover policy that supersedes this node's own"
+        );
+        return;
+    }
+    // A member whose endpoint will not parse is dropped from the set it
+    // is a member of, not silently skipped inside the round: a majority
+    // counted over members that cannot be asked is a majority of a
+    // fiction. The operator hears about it either way.
+    let mut peers = Vec::with_capacity(voting.len());
+    for (node, endpoint) in voting {
+        match endpoint.parse() {
+            Ok(address) => peers.push((*node, address)),
+            Err(why) => {
+                tracing::warn!(endpoint = %endpoint, error = %why, "the voting peer's endpoint is not an address");
+            }
+        }
+    }
+    if peers.is_empty() {
+        return;
+    }
+    let said = match greeting(db) {
+        Ok(said) => said,
+        Err(why) => {
+            tracing::warn!(error = %why, "this node cannot say what it holds");
+            return;
+        }
+    };
+    // Counted here, where the decision to stand has actually been
+    // taken: every gate above has passed and a round is about to open.
+    // Counting at the top of the cadence would count ticks, and the
+    // cadence ticks every second whether or not anything happens —
+    // which is precisely the difference this counter exists to show.
+    db.store().campaigned();
+    let standing = tessari_wire::Standing {
+        candidate: me,
+        keys,
+        said: &said,
+        peers: &peers,
+        round: periods.round(),
+        range: tessari_types::Reach::Store,
+        lease: periods.lease(),
+    };
+    let before = renewing.standing();
+    let held = renewing.once(me, now, |lease, next| {
+        runtime.block_on(standing.renew(voter, lease, next, now))
+    });
+    if held != before {
+        // Installed as it was granted, whole. The lease is dated from the
+        // instant the round opened, so handing the store a span instead
+        // would restart that clock here and spend the canvass out of the
+        // voters' window rather than this node's.
+        db.hold(held.epoch, held.lease());
+    }
+    if held.epoch != before.epoch {
+        tracing::info!(epoch = held.epoch.get(), "leading the store line");
+        // Written when the EPOCH changes and not when the lease does: a
+        // renewal keeps its epoch and only moves the lease, about every
+        // 300 ms for as long as this node keeps leading, and a row per
+        // renewal would put a log record on the wire three times a
+        // second forever — one every follower then pays to apply, on a
+        // log that would never quiesce.
+        //
+        // Logged rather than propagated. The round already granted the
+        // leadership and `hold` already installed it; this records that
+        // grant in the log so a partitioned node can still answer who
+        // leads. A store that refuses the write has not un-elected this
+        // node, and treating it as fatal would let a disk hiccup
+        // overturn a decision a majority took.
+        if let Err(refused) = db.record_leadership(tessaridb::Reach::Store, held.epoch) {
+            tracing::warn!(
+                epoch = held.epoch.get(),
+                refusal = %refused,
+                "leading the store line but could not record it"
+            );
+        }
+    }
 }
 
 /// Everything one campaign tick knows about who is standing and to whom.
