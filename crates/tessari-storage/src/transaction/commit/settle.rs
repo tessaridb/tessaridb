@@ -205,7 +205,13 @@ impl Transaction<'_> {
                 // A record of a transaction across leaders is checked and settled
                 // here as a follower's apply settles it, and an intent derives
                 // nothing until its resolution does (ADR-0112).
-                let written = crate::intents::settle(self.store, carried, written, commit_version)?;
+                let written = crate::intents::settle(
+                    self.store,
+                    carried,
+                    written,
+                    commit_version,
+                    Some((log, commit_at)),
+                )?;
                 let batch = if crate::intents::derives_nothing(carried) {
                     written
                 } else {

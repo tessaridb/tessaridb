@@ -13,6 +13,21 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## Unreleased
+
+### Fixed
+
+- **A barred part no longer stays barred for ever.** When status recovery aborts a transaction across leaders whose
+  part in some range never landed, it bars that part there, so a prepare still in flight can never land (ADR-0112
+  D14c). Before this release the marker stayed for the life of the store. It now goes in the batch that prunes the
+  range's log past the record that wrote it. Past that point the log no longer reaches back to anything the
+  transaction read, so a late prepare is refused as too old (`AcrossReadTooOld`) without the bar. Each node drops its
+  own copy when its own log is pruned (ADR-0119).
+  - Bars are therefore bounded as the log is: under the default retention they last until their range has written
+    100 000 more records.
+  - A bar written by an earlier build does not record where its record is, and stays.
+  - No change to the store format.
+
 ## 0.31.1-beta — 2026-10-06
 
 A release that measures itself (G066), and a restore that no longer pays a device flush per record (G068). No change to the

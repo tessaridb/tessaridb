@@ -21,6 +21,7 @@ pub(super) fn successors(state: &State, rules: Rules, world: World) -> Vec<State
         }
     }
     recover(state, rules, &mut next);
+    prune(state, &mut next);
     // D7, in both worlds since D13a: `B` may hold an intent before `A` holds
     // the record that would decide it.
     settle_absent(state, &mut next);
@@ -189,6 +190,16 @@ fn recovery_step(state: &mut State, rules: Rules) {
     }
 }
 
+/// ADR-0119: `B`'s leader prunes its log past the bar — retention decides
+/// when, so any moment — and the bar is dropped with the record that wrote it.
+fn prune(state: &State, next: &mut Vec<State>) {
+    if !state.pruned && state.log(Range::B).contains(&Entry::Prevent) {
+        let mut pruned = state.clone();
+        pruned.pruned = true;
+        next.push(pruned);
+    }
+}
+
 /// A participant receives T1's prepare: consumed, or kept to arrive again.
 fn deliver(state: &State, rules: Rules, range: Range, next: &mut Vec<State>) {
     let slot = range.slot();
@@ -204,7 +215,10 @@ fn deliver(state: &State, rules: Rules, range: Range, next: &mut Vec<State>) {
         let log = delivered.log(range).to_vec();
         // T1 read the initial version of both keys.
         let valid = latest_committed(&log) == Writer::Initial && !intent_stands(&log);
-        let answer = if log.contains(&Entry::Prevent) {
+        let answer = if delivered.pruned && rules.a_pruned_log_refuses_an_old_prepare {
+            // D3a: T1 read a position this log no longer holds.
+            false
+        } else if log.contains(&Entry::Prevent) && !delivered.pruned {
             // D14: recovery barred this prepare; it is refused for good.
             false
         } else if rules.prepare_checks_the_stamp {

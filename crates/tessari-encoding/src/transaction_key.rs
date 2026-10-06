@@ -318,7 +318,7 @@ pub struct AcrossBarredKey {
 }
 
 impl StoreKey for AcrossBarredKey {
-    type Value = Sequence;
+    type Value = crate::Barred;
 
     const KIND: KeyKind = KeyKind::AcrossBarred;
 

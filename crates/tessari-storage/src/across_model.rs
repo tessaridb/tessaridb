@@ -31,6 +31,9 @@
 //!   to be early: a `STAGING` record whose every prepare is held is committed;
 //!   one whose prepare at `B` is missing is aborted only after `B` has been
 //!   barred from ever taking it.
+//! - **The bar's end** (ADR-0119): `B`'s leader prunes its log past the bar
+//!   at any moment, and the bar goes with it — from then on T1's prepare is
+//!   refused because the log no longer reaches back to what T1 read (D3a).
 //!
 //! Each rule the ADR relies on is a switch in [`Rules`]. The protocol is
 //! checked with all of them on; then each is turned off alone and the explorer
@@ -95,6 +98,10 @@ pub(crate) struct Rules {
     /// missing prepare at its participant, so an implicit commit and an abort
     /// cannot both happen.
     pub(crate) recovery_prevents_the_missing_prepare: bool,
+    /// D3a, relied on by ADR-0119: a prepare whose read position the log no
+    /// longer reaches is refused — what keeps a prepare out once the bar has
+    /// been dropped with the record that wrote it.
+    pub(crate) a_pruned_log_refuses_an_old_prepare: bool,
 }
 
 impl Rules {
@@ -110,6 +117,7 @@ impl Rules {
         forget_waits_for_a_majority: true,
         readers_ask_the_record_leader: true,
         recovery_prevents_the_missing_prepare: true,
+        a_pruned_log_refuses_an_old_prepare: true,
     };
 }
 
@@ -255,6 +263,12 @@ mod tests {
             explored.recovered_committed && explored.prevented,
             "status recovery never committed, or never barred a prepare"
         );
+        // ADR-0119: a bar was dropped with its record, and a prepare arriving
+        // after that was refused for reading what the log no longer holds.
+        assert!(
+            explored.bar_pruned && explored.refused_as_too_old,
+            "no bar was ever pruned, or no prepare ever met a pruned log"
+        );
         // The floor proves the interleavings were generated. It was 100 000
         // until D13 merged `A`'s record with its prepare and its decision with
         // its resolution (31 664 states measured then); D14's status recovery,
@@ -269,7 +283,7 @@ mod tests {
 
     #[test]
     fn every_rule_is_load_bearing() -> Result<(), String> {
-        let cases: [Case; 10] = [
+        let cases: [Case; 11] = [
             (
                 "decide by compare-and-set",
                 |rules| rules.decide_by_compare_and_set = false,
@@ -342,6 +356,19 @@ mod tests {
                 // the record says aborted.
                 // Or a backup cut holding the staging record and both parts,
                 // restored as committed while the transaction aborted.
+                &[
+                    Violation::ToldAgainstTheRecord,
+                    Violation::ImplicitCommitLost,
+                    Violation::FracturedRestore,
+                ],
+            ),
+            (
+                "a pruned log refuses an old prepare",
+                |rules| rules.a_pruned_log_refuses_an_old_prepare = false,
+                // The bar dropped with its record and nothing in its place:
+                // the prepare in flight lands after recovery barred it, so a
+                // caller is told committed against an abort, or a cut shows
+                // the staging record with both parts.
                 &[
                     Violation::ToldAgainstTheRecord,
                     Violation::ImplicitCommitLost,

@@ -68,6 +68,9 @@ pub(super) struct State {
     /// Whether T1 was ever committed implicitly: its record `STAGING` while
     /// every participant's prepare stood (D14). Bookkeeping of the model.
     pub(super) implicit: bool,
+    /// `B`'s leader pruned its log past the bar, which went with the record
+    /// that wrote it (ADR-0119).
+    pub(super) pruned: bool,
 }
 
 impl State {
@@ -86,6 +89,7 @@ impl State {
             tail: None,
             told: None,
             implicit: false,
+            pruned: false,
         }
     }
 

@@ -75,6 +75,8 @@ impl Store {
             record,
             crate::log::state_batch(version, record),
             version,
+            // A state lands in no log: what it carries is applied, not logged.
+            None,
             crate::gate::Landing::Synced,
         );
         // A state writes a decided record as `PENDING` and then its decision

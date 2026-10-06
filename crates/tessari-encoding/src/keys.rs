@@ -119,7 +119,7 @@ pub(crate) fn take_reach(reader: &mut KeyReader<'_>) -> Result<Reach> {
 /// is what lets a reader ask *which logs does this range have* with a single
 /// bound. The writer follows at a fixed width so the sequence after it starts at
 /// one offset and a per-log prefix stays exact.
-fn put_log(writer: &mut KeyWriter, log: LogId) {
+pub(crate) fn put_log(writer: &mut KeyWriter, log: LogId) {
     put_reach(writer, log.home);
     writer.put_fixed(&log.writer.bytes());
 }
@@ -130,7 +130,7 @@ fn put_log(writer: &mut KeyWriter, log: LogId) {
 ///
 /// Returns whatever [`take_reach`] returns, and whatever the reader returns when
 /// the bytes are short.
-fn take_log(reader: &mut KeyReader<'_>) -> Result<LogId> {
+pub(crate) fn take_log(reader: &mut KeyReader<'_>) -> Result<LogId> {
     let home = take_reach(reader)?;
     let writer = Writer::new(reader.take_fixed::<NODE_ID_LEN>()?);
     Ok(LogId::new(home, writer))

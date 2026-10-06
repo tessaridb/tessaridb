@@ -206,3 +206,26 @@ fn a_cut_short_section_is_an_error_and_not_a_panic() {
         );
     }
 }
+
+#[test]
+fn a_bar_says_where_its_record_is_and_an_older_one_reads_as_unknown() -> Result<()> {
+    // ADR-0119: the marker names the log and position of the record that wrote
+    // it, so a prune past that record can drop it.
+    let log = crate::LogId::line(coordinator());
+    let written = super::Barred {
+        version: Sequence::new(41),
+        written: Some((log, Sequence::new(7))),
+    };
+    assert_eq!(super::Barred::decode(written.encode().as_slice())?, written);
+    // A marker an older build wrote is the version alone: it reads, and says
+    // nothing of where its record is.
+    let older = Sequence::new(41).encode();
+    assert_eq!(
+        super::Barred::decode(older.as_slice())?,
+        super::Barred {
+            version: Sequence::new(41),
+            written: None,
+        }
+    );
+    Ok(())
+}
