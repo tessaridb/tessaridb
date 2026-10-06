@@ -3956,7 +3956,7 @@ fn a_node_leading_two_lines_hands_its_placed_range_to_an_idle_voter() {
         taker.is_some()
             && cluster.logs.iter().any(|log| {
                 std::fs::read_to_string(log)
-                    .is_ok_and(|text| text.contains("balanced leaderships: moved the placement"))
+                    .is_ok_and(|text| text.contains("balanced leaderships: a placement moved"))
             })
     });
     assert!(
@@ -5370,8 +5370,12 @@ fn shard_two_epochs(log: &std::path::Path) -> Vec<u64> {
     std::fs::read_to_string(log)
         .unwrap_or_default()
         .lines()
-        .filter(|line| line.contains("leading Shard(") && line.contains("ShardId(2)"))
-        .filter_map(|line| line.rsplit("at epoch ").next()?.trim().parse().ok())
+        .filter(|line| {
+            line.contains("leading a range range=Shard(")
+                && line.contains("ShardId(2)")
+                && !line.contains("could not record it")
+        })
+        .filter_map(|line| line.rsplit("epoch=").next()?.trim().parse().ok())
         .collect()
 }
 
@@ -5889,7 +5893,7 @@ fn a_follower_stopped_past_its_leaders_log_copies_the_state_and_follows_again() 
         .find("copying its state")
         .expect("the follower said it was copying");
     let copied = said
-        .find(" record(s) from ")
+        .find("copied a peer's state")
         .expect("the follower said what it copied");
     assert!(copying < copied, "the copy was reported before it began");
     // A pause for a person: `TESSARIDB_HOLD_FOR_BROWSER=<file>` keeps the
@@ -6777,7 +6781,7 @@ fn a_follower_answers_a_client_that_cannot_follow_a_redirect() {
     // The leader recorded who asked, for whom.
     let said = std::fs::read_to_string(&logs[leader]).unwrap();
     assert!(
-        said.contains("a request carried from") && said.contains("acts for"),
+        said.contains("a carried request was accepted") && said.contains("acts_for="),
         "the leader kept no record of the carried requests{}",
         what_the_nodes_said(&COORDINATING, &logs)
     );
@@ -6896,7 +6900,7 @@ fn rotated(cluster: &Three, node: usize, times: usize) -> String {
     write_private_key(started_arg(cluster, node, "--cluster-key"), key);
     let began = Instant::now();
     while std::fs::read_to_string(&cluster.logs[node])
-        .map(|said| said.matches("certificate at").count() < times)
+        .map(|said| said.matches("a certificate was renewed").count() < times)
         .unwrap_or(true)
     {
         assert!(
@@ -6985,7 +6989,7 @@ fn a_peer_certificate_rotates_under_writes_and_a_revoked_one_is_cut_off() {
     let began = Instant::now();
     while ![leader, other].iter().all(|index| {
         std::fs::read_to_string(&cluster.logs[*index])
-            .is_ok_and(|said| said.contains("now refuses 3 revoked certificate(s)"))
+            .is_ok_and(|said| said.contains("now refuses the revoked certificates revoked=3"))
     }) {
         assert!(
             began.elapsed() < Duration::from_secs(20),
